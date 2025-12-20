@@ -216,6 +216,88 @@ def _cmd_chat(
             print(reply)
 
 
+# --- Sessions command handlers ---
+
+def _count_messages(session_file: Path) -> int:
+    msgs = _load_session_messages(session_file)
+    return len(msgs)
+
+
+def _cmd_sessions_list(sessions_dir: Path | None) -> int:
+    sessions_dir = sessions_dir or _default_sessions_dir()
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    files = sorted(sessions_dir.glob("*.json"), key=lambda p: p.name.lower())
+    if not files:
+        print(f"No sessions found in {sessions_dir}")
+        return 0
+
+    print(f"Sessions in {sessions_dir}:")
+    for p in files:
+        try:
+            mtime = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            mtime = "?"
+        try:
+            n = _count_messages(p)
+        except Exception:
+            n = 0
+        name = p.stem
+        print(f"- {name}  (messages: {n}, modified: {mtime})")
+
+    return 0
+
+
+def _cmd_sessions_delete(name: str, sessions_dir: Path | None) -> int:
+    sessions_dir = sessions_dir or _default_sessions_dir()
+    session_file = _session_file_for(name, sessions_dir)
+
+    if not session_file.exists():
+        print(f"No such session: {name}")
+        return 1
+
+    session_file.unlink()
+    print(f"Deleted session: {name}")
+    return 0
+
+
+def _cmd_sessions_rename(old: str, new: str, sessions_dir: Path | None) -> int:
+    sessions_dir = sessions_dir or _default_sessions_dir()
+    old_file = _session_file_for(old, sessions_dir)
+    new_file = _session_file_for(new, sessions_dir)
+
+    if not old_file.exists():
+        print(f"No such session: {old}")
+        return 1
+
+    if new_file.exists():
+        print(f"Target session already exists: {new}")
+        return 1
+
+    new_file.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(old_file, new_file)
+    print(f"Renamed session: {old} -> {new}")
+    return 0
+
+
+def _cmd_sessions(action: str, sessions_dir: Path | None, name: str | None, new_name: str | None) -> int:
+    if action == "list":
+        return _cmd_sessions_list(sessions_dir)
+    if action == "delete":
+        if not name:
+            print("ERROR: session name is required for delete", file=sys.stderr)
+            return 2
+        return _cmd_sessions_delete(name, sessions_dir)
+    if action == "rename":
+        if not name or not new_name:
+            print("ERROR: old and new session names are required for rename", file=sys.stderr)
+            return 2
+        return _cmd_sessions_rename(name, new_name, sessions_dir)
+
+    print(f"ERROR: unknown sessions action: {action}", file=sys.stderr)
+    return 2
+
+
 def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="mygpt")
     parser.add_argument(
@@ -255,6 +337,23 @@ def cli(argv: list[str] | None = None) -> int:
         help="Override the sessions directory (defaults to ~/.myGPT/sessions)",
     )
 
+    # --- Add sessions subcommand ---
+    sessions_p = sub.add_parser("sessions", help="Manage stored chat sessions")
+    sessions_p.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "delete", "rename"],
+        help="Action to perform",
+    )
+    sessions_p.add_argument("name", nargs="?", help="Session name (for delete/rename)")
+    sessions_p.add_argument("new_name", nargs="?", help="New session name (for rename)")
+    sessions_p.add_argument(
+        "--sessions-dir",
+        type=Path,
+        help="Override the sessions directory (defaults to ~/.myGPT/sessions)",
+    )
+
     args = parser.parse_args(argv)
 
     cmd = args.command or "info"
@@ -272,6 +371,14 @@ def cli(argv: list[str] | None = None) -> int:
             session_name=args.session,
             new_session=args.new,
             sessions_dir=args.sessions_dir,
+        )
+
+    if cmd == "sessions":
+        return _cmd_sessions(
+            action=args.action,
+            sessions_dir=args.sessions_dir,
+            name=args.name,
+            new_name=args.new_name,
         )
 
     parser.print_help()

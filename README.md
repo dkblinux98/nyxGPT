@@ -56,6 +56,24 @@ mygpt chat --session work     # uses ~/.myGPT/sessions/work.json
 mygpt chat --session work --new
 ```
 
+### Sessions CLI
+
+You can manage stored sessions directly from the command line:
+
+```bash
+mygpt sessions                # list all sessions
+mygpt sessions delete NAME    # delete a session
+mygpt sessions rename OLD NEW # rename a session
+```
+
+Examples:
+
+```bash
+mygpt sessions
+mygpt sessions rename default brainstorming
+mygpt sessions delete brainstorming
+```
+
 Because sessions live outside the repo:
 - no `.gitignore` rules are required
 - generated data is never committed by accident
