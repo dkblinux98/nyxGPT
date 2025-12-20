@@ -47,6 +47,7 @@ Conversation history is stored **outside the repository** so that no generated d
 
 - Sessions directory: `~/.myGPT/sessions/`
 - Each session is stored as a JSON file: `<session-name>.json`
+- Session metadata is stored alongside it: `<session-name>.meta.json`
 
 Examples:
 
@@ -61,15 +62,26 @@ mygpt chat --session work --new
 You can manage stored sessions directly from the command line:
 
 ```bash
-mygpt sessions                # list all sessions
-mygpt sessions delete NAME    # delete a session
-mygpt sessions rename OLD NEW # rename a session
+mygpt sessions                         # list all sessions (shows title/summary/tags/pin)
+mygpt sessions show NAME               # show full metadata for a session
+mygpt sessions summarize NAME          # generate title/summary/tags using the model
+mygpt sessions title NAME "New Title"  # set title manually
+mygpt sessions pin NAME                # pin (pinned sessions sort first)
+mygpt sessions unpin NAME              # unpin
+mygpt sessions tag-add NAME tag1 tag2  # add tags
+mygpt sessions tag-rm NAME tag1 tag2   # remove tags
+mygpt sessions rename OLD NEW          # rename a session
+mygpt sessions delete NAME             # delete a session (and its metadata)
 ```
 
 Examples:
 
 ```bash
 mygpt sessions
+mygpt sessions summarize default
+mygpt sessions pin default
+mygpt sessions tag-add default chess training
+mygpt sessions show default
 mygpt sessions rename default brainstorming
 mygpt sessions delete brainstorming
 ```
