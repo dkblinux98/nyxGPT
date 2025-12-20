@@ -41,6 +41,24 @@ Or via the console script:
 mygpt
 ```
 
+## Tools
+
+`mygpt` includes a few explicit, user-invoked local filesystem tools (no agentic behavior):
+
+```bash
+mygpt tools ls PATH
+mygpt tools cat PATH [--head N | --tail N]
+mygpt tools grep PATTERN PATH [--max N]
+```
+
+Examples:
+
+```bash
+mygpt tools ls .
+mygpt tools cat README.md --head 40
+mygpt tools grep "sessions" README.md --max 20
+```
+
 ## Sessions & Memory
 
 Conversation history is stored **outside the repository** so that no generated data ever lives in the project tree.

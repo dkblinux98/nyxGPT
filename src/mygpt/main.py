@@ -6,6 +6,7 @@ import sys
 import urllib.error
 import urllib.request
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -306,7 +307,7 @@ def _cmd_sessions_list(sessions_dir: Path | None) -> int:
     sessions_dir = sessions_dir or _default_sessions_dir()
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    files = list(sessions_dir.glob("*.json"))
+    files = [p for p in sessions_dir.glob("*.json") if not p.name.endswith(".meta.json")]
 
     def sort_key(p: Path):
         meta = _load_session_meta(_meta_file_for(p))
@@ -553,6 +554,132 @@ def _cmd_sessions(action: str, sessions_dir: Path | None, name: str | None, new_
     return 2
 
 
+# --- Tools command handlers (explicit, user-invoked) ---
+
+def _cmd_tools_ls(path: Path) -> int:
+    try:
+        p = path.expanduser().resolve()
+    except Exception:
+        p = path.expanduser()
+
+    if not p.exists():
+        print(f"No such path: {p}", file=sys.stderr)
+        return 1
+
+    if p.is_file():
+        print(str(p))
+        return 0
+
+    try:
+        entries = sorted(p.iterdir(), key=lambda x: x.name.lower())
+    except Exception as e:
+        print(f"ERROR: cannot list {p}: {e}", file=sys.stderr)
+        return 1
+
+    for e in entries:
+        suffix = "/" if e.is_dir() else ""
+        print(f"{e.name}{suffix}")
+
+    return 0
+
+
+def _cmd_tools_cat(path: Path, head: int | None, tail: int | None) -> int:
+    try:
+        p = path.expanduser().resolve()
+    except Exception:
+        p = path.expanduser()
+
+    if not p.exists() or not p.is_file():
+        print(f"No such file: {p}", file=sys.stderr)
+        return 1
+
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        print(f"ERROR: cannot read {p}: {e}", file=sys.stderr)
+        return 1
+
+    lines = text.splitlines()
+
+    if head is not None and tail is not None:
+        print("ERROR: use only one of --head or --tail", file=sys.stderr)
+        return 2
+
+    if head is not None:
+        lines = lines[: max(0, head)]
+    elif tail is not None:
+        lines = lines[-max(0, tail) :]
+
+    for line in lines:
+        print(line)
+
+    return 0
+
+
+def _cmd_tools_grep(pattern: str, path: Path, max_matches: int) -> int:
+    try:
+        p = path.expanduser().resolve()
+    except Exception:
+        p = path.expanduser()
+
+    if not p.exists():
+        print(f"No such path: {p}", file=sys.stderr)
+        return 1
+
+    try:
+        rx = re.compile(pattern)
+    except re.error as e:
+        print(f"Invalid regex: {e}", file=sys.stderr)
+        return 2
+
+    files: list[Path] = []
+    if p.is_file():
+        files = [p]
+    else:
+        # Walk directory, but avoid hidden dirs by default (simple heuristic)
+        for root, dirs, filenames in os.walk(p):
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            for fn in filenames:
+                if fn.startswith('.'):
+                    continue
+                files.append(Path(root) / fn)
+
+    matches = 0
+    for f in files:
+        if matches >= max_matches:
+            break
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        for i, line in enumerate(text.splitlines(), start=1):
+            if rx.search(line):
+                print(f"{f}:{i}: {line}")
+                matches += 1
+                if matches >= max_matches:
+                    break
+
+    if matches == 0:
+        return 1
+
+    return 0
+
+
+def _cmd_tools(action: str, path: Path, pattern: str | None, head: int | None, tail: int | None, max_matches: int) -> int:
+    if action == "ls":
+        return _cmd_tools_ls(path)
+    if action == "cat":
+        return _cmd_tools_cat(path, head=head, tail=tail)
+    if action == "grep":
+        if not pattern:
+            print("ERROR: pattern is required for grep", file=sys.stderr)
+            return 2
+        return _cmd_tools_grep(pattern=pattern, path=path, max_matches=max_matches)
+
+    print(f"ERROR: unknown tools action: {action}", file=sys.stderr)
+    return 2
+
+
 def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="mygpt")
     parser.add_argument(
@@ -610,6 +737,32 @@ def cli(argv: list[str] | None = None) -> int:
         help="Override the sessions directory (defaults to ~/.myGPT/sessions)",
     )
 
+    tools_p = sub.add_parser("tools", help="Explicit local filesystem tools (ls/cat/grep)")
+    tools_p.add_argument(
+        "action",
+        choices=["ls", "cat", "grep"],
+        help="Tool to run",
+    )
+    tools_p.add_argument(
+        "pattern",
+        nargs="?",
+        help="Regex pattern (for grep)",
+    )
+    tools_p.add_argument(
+        "path",
+        type=Path,
+        help="File or directory path",
+    )
+    tools_p.add_argument("--head", type=int, help="Print first N lines (cat)")
+    tools_p.add_argument("--tail", type=int, help="Print last N lines (cat)")
+    tools_p.add_argument(
+        "--max",
+        dest="max_matches",
+        type=int,
+        default=50,
+        help="Max matches to print (grep)",
+    )
+
     args = parser.parse_args(argv)
 
     cmd = args.command or "info"
@@ -636,6 +789,16 @@ def cli(argv: list[str] | None = None) -> int:
             name=args.name,
             new_name=args.new_name,
             extras=args.extras,
+        )
+
+    if cmd == "tools":
+        return _cmd_tools(
+            action=args.action,
+            path=args.path,
+            pattern=args.pattern,
+            head=getattr(args, "head", None),
+            tail=getattr(args, "tail", None),
+            max_matches=getattr(args, "max_matches", 50),
         )
 
     parser.print_help()
