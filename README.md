@@ -108,6 +108,21 @@ Because sessions live outside the repo:
 - no `.gitignore` rules are required
 - generated data is never committed by accident
 
+## Architecture
+
+Core logic is intentionally split into small, reusable modules:
+
+- `cli.py` — command-line parsing and dispatch only
+- `ollama_client.py` — Ollama HTTP and chat interface
+- `sessions.py` — session storage, metadata, summaries, tagging, pinning
+- `tools_fs.py` — explicit filesystem tools (`ls`, `cat`, `grep`)
+- `app.py` — reserved for FastAPI backend (shared by TUI and web UI)
+
+This separation allows the same core logic to be reused by:
+- CLI
+- future TUI
+- local web UI (FastAPI + React/Next.js)
+
 ## Notes
 
 - Do **not** commit generated packaging metadata like `*.egg-info/`.

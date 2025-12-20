@@ -1,3 +1,3 @@
-from mygpt.main import cli
+from mygpt.cli import cli
 
 raise SystemExit(cli())
