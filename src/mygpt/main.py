@@ -31,7 +31,7 @@ def _post_json(url: str, payload: dict[str, Any], timeout_s: float = 120.0) -> d
         raise RuntimeError(f"Failed to reach Ollama at {url}: {e}") from e
 
 
-# Streaming POST helper: yields JSON objects from newline-delimited JSON HTTP response.
+# Streaming POST helper: yields JSON objects from a newline-delimited JSON HTTP response.
 def _post_json_lines(url: str, payload: dict[str, Any], timeout_s: float = 120.0):
     """Yield decoded JSON objects from a newline-delimited JSON HTTP response."""
     data = json.dumps(payload).encode("utf-8")
