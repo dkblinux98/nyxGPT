@@ -1,0 +1,21 @@
+# JetBrains / IntelliJ
+.idea/
+.idea/**
+*.iml
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Build / coverage output
+build/
+dist/
+out/
+coverage/
