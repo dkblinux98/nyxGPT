@@ -5,10 +5,48 @@ import json
 import sys
 import urllib.error
 import urllib.request
+import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from mygpt.config import load_config
+
+
+# --- Session helpers ---
+
+def _default_sessions_dir() -> Path:
+    return Path.home() / ".myGPT" / "sessions"
+
+
+def _load_session_messages(session_file: Path) -> list[dict[str, str]]:
+    if not session_file.exists():
+        return []
+    try:
+        data = json.loads(session_file.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if isinstance(data, list):
+        out: list[dict[str, str]] = []
+        for item in data:
+            if isinstance(item, dict) and isinstance(item.get("role"), str) and isinstance(item.get("content"), str):
+                out.append({"role": item["role"], "content": item["content"]})
+        return out
+    return []
+
+
+def _save_session_messages(session_file: Path, messages: list[dict[str, str]]) -> None:
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp = session_file.with_suffix(session_file.suffix + ".tmp")
+    tmp.write_text(json.dumps(messages, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, session_file)
+
+
+def _session_file_for(name: str, sessions_dir: Path) -> Path:
+    safe = "".join(ch for ch in name if ch.isalnum() or ch in "-_.").strip("._")
+    if not safe:
+        safe = "default"
+    return sessions_dir / f"{safe}.json"
 
 
 def _post_json(url: str, payload: dict[str, Any], timeout_s: float = 120.0) -> dict[str, Any]:
@@ -103,14 +141,34 @@ def _cmd_info(cfg_path: Path | None) -> int:
     return 0
 
 
-def _cmd_chat(cfg_path: Path | None, model_override: str | None, system: str | None, prompt: str | None, stream: bool) -> int:
+def _cmd_chat(
+    cfg_path: Path | None,
+    model_override: str | None,
+    system: str | None,
+    prompt: str | None,
+    stream: bool,
+    session_name: str,
+    new_session: bool,
+    sessions_dir: Path | None,
+) -> int:
     cfg = load_config(cfg_path)
     base_url = cfg.get("ollama", "base_url", fallback="http://127.0.0.1:11434")
     model = model_override or cfg.get("mygpt", "default_model", fallback="llama3.1:8b")
 
-    messages: list[dict[str, str]] = []
+    sessions_dir = sessions_dir or _default_sessions_dir()
+    session_file = _session_file_for(session_name, sessions_dir)
+
+    if new_session and session_file.exists():
+        session_file.unlink()
+
+    messages: list[dict[str, str]] = _load_session_messages(session_file)
+
+    # Apply/override the system prompt for this run (do not duplicate system messages).
     if system:
-        messages.append({"role": "system", "content": system})
+        if messages and messages[0].get("role") == "system":
+            messages[0] = {"role": "system", "content": system}
+        else:
+            messages.insert(0, {"role": "system", "content": system})
 
     def ask_once(user_text: str) -> str:
         messages.append({"role": "user", "content": user_text})
@@ -121,6 +179,7 @@ def _cmd_chat(cfg_path: Path | None, model_override: str | None, system: str | N
             reply = _ollama_chat(base_url=base_url, model=model, messages=messages)
 
         messages.append({"role": "assistant", "content": reply})
+        _save_session_messages(session_file, messages)
         return reply
 
     # Single prompt mode
@@ -132,7 +191,7 @@ def _cmd_chat(cfg_path: Path | None, model_override: str | None, system: str | N
         return 0
 
     # Interactive mode
-    print(f"myGPT chat (model: {model})")
+    print(f"myGPT chat (model: {model}, session: {session_file.name})")
     print("Type /exit to quit.")
 
     while True:
@@ -180,6 +239,22 @@ def cli(argv: list[str] | None = None) -> int:
         help="Disable streaming output",
     )
 
+    chat_p.add_argument(
+        "--session",
+        default="default",
+        help="Conversation session name (stored under ~/.myGPT/sessions)",
+    )
+    chat_p.add_argument(
+        "--new",
+        action="store_true",
+        help="Start a fresh session (delete any existing session file)",
+    )
+    chat_p.add_argument(
+        "--sessions-dir",
+        type=Path,
+        help="Override the sessions directory (defaults to ~/.myGPT/sessions)",
+    )
+
     args = parser.parse_args(argv)
 
     cmd = args.command or "info"
@@ -188,7 +263,16 @@ def cli(argv: list[str] | None = None) -> int:
         return _cmd_info(args.config)
 
     if cmd == "chat":
-        return _cmd_chat(args.config, args.model_override, args.system, args.prompt, stream=(not args.no_stream))
+        return _cmd_chat(
+            args.config,
+            args.model_override,
+            args.system,
+            args.prompt,
+            stream=(not args.no_stream),
+            session_name=args.session,
+            new_session=args.new,
+            sessions_dir=args.sessions_dir,
+        )
 
     parser.print_help()
     return 2

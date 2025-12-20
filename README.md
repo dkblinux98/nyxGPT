@@ -41,6 +41,25 @@ Or via the console script:
 mygpt
 ```
 
+## Sessions & Memory
+
+Conversation history is stored **outside the repository** so that no generated data ever lives in the project tree.
+
+- Sessions directory: `~/.myGPT/sessions/`
+- Each session is stored as a JSON file: `<session-name>.json`
+
+Examples:
+
+```bash
+mygpt chat                    # uses ~/.myGPT/sessions/default.json
+mygpt chat --session work     # uses ~/.myGPT/sessions/work.json
+mygpt chat --session work --new
+```
+
+Because sessions live outside the repo:
+- no `.gitignore` rules are required
+- generated data is never committed by accident
+
 ## Notes
 
 - Do **not** commit generated packaging metadata like `*.egg-info/`.
