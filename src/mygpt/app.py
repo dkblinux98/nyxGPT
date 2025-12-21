@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 import io
@@ -11,7 +9,12 @@ from typing import Any, Optional
 from fastapi import Body, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from mygpt.config import load_config
+from mygpt.config import (
+    load_config,
+    get_default_model,
+    get_ollama_base_url,
+    get_sessions_dir,
+)
 from mygpt.ollama_client import ollama_chat
 from mygpt import sessions
 from mygpt import tools_fs
@@ -114,18 +117,20 @@ def health() -> dict[str, str]:
 @app.get("/info", response_model=InfoResponse)
 def info() -> InfoResponse:
     cfg = _cfg(None)
-    base_url = cfg.get("ollama", "base_url", fallback="http://127.0.0.1:11434")
-    model = cfg.get("mygpt", "default_model", fallback="llama3.1:8b")
+    base_url = get_ollama_base_url(cfg)
+    model = get_default_model(cfg)
     return InfoResponse(
         ollama_base_url=base_url,
         default_model=model,
-        sessions_dir=str(sessions.default_sessions_dir()),
+        sessions_dir=str(get_sessions_dir(cfg)),
     )
 
 
 @app.get("/sessions", response_model=SessionsListResponse)
 def sessions_list(sessions_dir: Optional[str] = None) -> SessionsListResponse:
-    rows = sessions.list_sessions(_sessions_dir_from_str(sessions_dir))
+    cfg = _cfg(None)
+    effective_dir = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(cfg)
+    rows = sessions.list_sessions(effective_dir)
     # Flatten meta fields for easy UI usage.
     out: list[dict[str, Any]] = []
     for r in rows:
@@ -148,7 +153,7 @@ def sessions_list(sessions_dir: Optional[str] = None) -> SessionsListResponse:
 
 @app.get("/sessions/{name}")
 def sessions_show(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
-    sd = _sessions_dir_from_str(sessions_dir)
+    sd = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     sf = sessions.session_file_for(name, sd or sessions.default_sessions_dir())
     mf = sessions.meta_file_for(sf)
     msgs = sessions.load_session_messages(sf)
@@ -164,7 +169,7 @@ def sessions_show(name: str, sessions_dir: Optional[str] = None) -> dict[str, An
 
 @app.delete("/sessions/{name}")
 def sessions_delete(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
-    ok = sessions.delete_session(name, _sessions_dir_from_str(sessions_dir))
+    ok = sessions.delete_session(name, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
     if not ok:
         raise HTTPException(status_code=404, detail="No such session")
     return {"ok": True}
@@ -172,7 +177,7 @@ def sessions_delete(name: str, sessions_dir: Optional[str] = None) -> dict[str, 
 
 @app.post("/sessions/{name}/summarize")
 def sessions_summarize(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
-    ok, msg = sessions.summarize_session(name, _sessions_dir_from_str(sessions_dir))
+    ok, msg = sessions.summarize_session(name, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"ok": True}
@@ -180,7 +185,7 @@ def sessions_summarize(name: str, sessions_dir: Optional[str] = None) -> dict[st
 
 @app.post("/sessions/{name}/pin")
 def sessions_pin(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
-    ok, msg = sessions.set_pinned(name, True, _sessions_dir_from_str(sessions_dir))
+    ok, msg = sessions.set_pinned(name, True, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"ok": True}
@@ -188,7 +193,7 @@ def sessions_pin(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any
 
 @app.post("/sessions/{name}/unpin")
 def sessions_unpin(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
-    ok, msg = sessions.set_pinned(name, False, _sessions_dir_from_str(sessions_dir))
+    ok, msg = sessions.set_pinned(name, False, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"ok": True}
@@ -196,7 +201,7 @@ def sessions_unpin(name: str, sessions_dir: Optional[str] = None) -> dict[str, A
 
 @app.post("/sessions/{name}/title")
 def sessions_title(name: str, req: TitleRequest, sessions_dir: Optional[str] = None) -> dict[str, Any]:
-    ok, msg = sessions.set_title(name, req.title, _sessions_dir_from_str(sessions_dir))
+    ok, msg = sessions.set_title(name, req.title, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"ok": True}
@@ -206,7 +211,7 @@ def sessions_title(name: str, req: TitleRequest, sessions_dir: Optional[str] = N
 def sessions_tags_add(name: str, req: TagsRequest, sessions_dir: Optional[str] = None) -> dict[str, Any]:
     if not req.tags:
         raise HTTPException(status_code=400, detail="At least one tag is required")
-    ok, msg = sessions.add_tags(name, req.tags, _sessions_dir_from_str(sessions_dir))
+    ok, msg = sessions.add_tags(name, req.tags, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"ok": True}
@@ -216,7 +221,7 @@ def sessions_tags_add(name: str, req: TagsRequest, sessions_dir: Optional[str] =
 def sessions_tags_remove(name: str, req: TagsRequest, sessions_dir: Optional[str] = None) -> dict[str, Any]:
     if not req.tags:
         raise HTTPException(status_code=400, detail="At least one tag is required")
-    ok, msg = sessions.remove_tags(name, req.tags, _sessions_dir_from_str(sessions_dir))
+    ok, msg = sessions.remove_tags(name, req.tags, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"ok": True}
@@ -225,12 +230,12 @@ def sessions_tags_remove(name: str, req: TagsRequest, sessions_dir: Optional[str
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
     cfg = _cfg(None)
-    base_url = cfg.get("ollama", "base_url", fallback="http://127.0.0.1:11434")
-    model = req.model or cfg.get("mygpt", "default_model", fallback="llama3.1:8b")
+    base_url = get_ollama_base_url(cfg)
+    model = req.model or get_default_model(cfg)
 
     session_file, meta_file, messages, _meta = sessions.init_session(
         session_name=req.session,
-        sessions_dir=_sessions_dir_from_str(req.sessions_dir),
+        sessions_dir=_sessions_dir_from_str(req.sessions_dir) or get_sessions_dir(cfg),
         new_session=req.new,
         model=model,
         system=req.system,

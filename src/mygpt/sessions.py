@@ -8,12 +8,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from mygpt.config import load_config
+from mygpt.config import load_config, get_default_model, get_ollama_base_url, get_sessions_dir
 from mygpt.ollama_client import ollama_chat
 
 
 def default_sessions_dir() -> Path:
-    return Path.home() / ".myGPT" / "sessions"
+    cfg = load_config(None)
+    return get_sessions_dir(cfg)
 
 
 def session_file_for(name: str, sessions_dir: Path) -> Path:
@@ -304,8 +305,8 @@ def summarize_session(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
         return False, "Session has no messages"
 
     cfg = load_config(None)
-    base_url = cfg.get("ollama", "base_url", fallback="http://127.0.0.1:11434")
-    model = cfg.get("mygpt", "default_model", fallback="llama3.1:8b")
+    base_url = get_ollama_base_url(cfg)
+    model = get_default_model(cfg)
 
     prompt = (
         "You are generating metadata for a chat session.\n"

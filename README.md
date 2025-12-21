@@ -13,6 +13,7 @@ Runtime configuration is stored **outside** the repository:
 - Real config: `~/.myGPT/config.ini`
 - Template (checked in): `example.config.ini`
 
+
 Create your local config:
 
 ```bash
@@ -20,6 +21,28 @@ mkdir -p ~/.myGPT
 cp example.config.ini ~/.myGPT/config.ini
 chmod 600 ~/.myGPT/config.ini
 ```
+
+### Config keys
+
+The following sections are supported in `~/.myGPT/config.ini`:
+
+#### `[mygpt]`
+- `default_model` — default Ollama model to use for chat and summaries
+- `sessions_dir` — directory where session JSON and metadata files are stored
+- `vectorstore_dir` — directory where future RAG / vector data will be stored
+
+#### `[ollama]`
+- `base_url` — Ollama API base URL (usually `http://127.0.0.1:11434`)
+
+#### `[api]`
+- `host` — interface the FastAPI server binds to
+- `port` — port the FastAPI server listens on
+
+#### `[paths]`
+- `repo_dir` — absolute path to the myGPT repository
+- `venv_python` — absolute path to the Python executable used to run the API service
+
+The Homebrew-managed API service reads these values at startup, so moving the repository or virtual environment only requires updating `config.ini`.
 
 ## Install (dev / editable)
 
@@ -58,24 +81,102 @@ uvicorn mygpt.app:app --reload --host 127.0.0.1 --port 8000
 
 ### Run as a background service (recommended)
 
-The API can be run persistently using **Homebrew services**, similar to Ollama.
+The API can be run persistently using **Homebrew services**, similar to Ollama. This avoids keeping a terminal open.
 
-Once installed and started via Homebrew:
+#### 1) Create a local Homebrew tap
+
+This creates a local tap (a place where custom formulae live):
+
+```bash
+brew tap-new dkblinux98/mygpt-local
+```
+
+#### 2) Create the formula file
+
+```bash
+TAP_DIR="$(brew --repo dkblinux98/mygpt-local)"
+mkdir -p "$TAP_DIR/Formula"
+open "$TAP_DIR/Formula/mygpt-api.rb"
+```
+
+Because this repository is the source of truth, the Homebrew formula is versioned **inside this repo** at:
+
+```
+homebrew/mygpt-api.rb
+```
+
+Homebrew services still require the formula to live inside a tap, so we copy it into the tap directory.
+
+1) Copy the formula into the tap:
+
+```bash
+cp homebrew/mygpt-api.rb "$TAP_DIR/Formula/mygpt-api.rb"
+```
+
+2) Open the file to confirm or adjust version / SHA if needed:
+
+```bash
+open "$TAP_DIR/Formula/mygpt-api.rb"
+```
+
+#### 3) Install the service formula
+
+```bash
+brew install dkblinux98/mygpt-local/mygpt-api
+```
+
+If you edit the formula later, reinstall to apply changes:
+
+```bash
+brew reinstall --build-from-source dkblinux98/mygpt-local/mygpt-api
+```
+
+#### 4) Start the service
 
 ```bash
 brew services start mygpt-api
 brew services info mygpt-api
 ```
 
-The API will:
-- start automatically at login
-- run in the background
-- log output via Homebrew (e.g. `var/log/mygpt-api.log`)
+#### 5) Verify it is running
 
-To stop or restart:
+```bash
+curl -s http://127.0.0.1:8000/health
+```
+
+API docs (Swagger UI): http://127.0.0.1:8000/docs
+
+#### 6) Logs
+
+Homebrew writes logs under its prefix:
+
+- Stdout: `/usr/local/var/log/mygpt-api.log`
+- Stderr: `/usr/local/var/log/mygpt-api.err.log`
+
+Tail logs:
+
+```bash
+tail -n 200 /usr/local/var/log/mygpt-api.log
+tail -n 200 /usr/local/var/log/mygpt-api.err.log
+```
+
+#### 7) Stop or restart
 
 ```bash
 brew services stop mygpt-api
+brew services restart mygpt-api
+```
+
+#### 8) Important: config-driven paths
+
+The Homebrew service reads `~/.myGPT/config.ini` at startup. Ensure you have:
+
+- `[api] host` and `[api] port`
+- `[paths] repo_dir` and `[paths] venv_python`
+
+If you move the repository or rebuild the virtual environment, update `config.ini` and restart:
+
+```bash
 brew services restart mygpt-api
 ```
 

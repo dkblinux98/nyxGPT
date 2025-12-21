@@ -1,12 +1,15 @@
-
-
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
 
-from mygpt.config import load_config
+from mygpt.config import (
+    load_config,
+    get_default_model,
+    get_ollama_base_url,
+    get_sessions_dir,
+)
 from mygpt import sessions
 from mygpt import tools_fs
 from mygpt.ollama_client import ollama_chat, ollama_chat_stream
@@ -14,8 +17,8 @@ from mygpt.ollama_client import ollama_chat, ollama_chat_stream
 
 def cmd_info(cfg_path: Path | None) -> int:
     cfg = load_config(cfg_path)
-    base_url = cfg.get("ollama", "base_url", fallback="http://127.0.0.1:11434")
-    model = cfg.get("mygpt", "default_model", fallback="llama3.1:8b")
+    base_url = get_ollama_base_url(cfg)
+    model = get_default_model(cfg)
 
     print("myGPT OK")
     print(f"Ollama base_url: {base_url}")
@@ -34,12 +37,12 @@ def cmd_chat(
     sessions_dir: Path | None,
 ) -> int:
     cfg = load_config(cfg_path)
-    base_url = cfg.get("ollama", "base_url", fallback="http://127.0.0.1:11434")
-    model = model_override or cfg.get("mygpt", "default_model", fallback="llama3.1:8b")
+    base_url = get_ollama_base_url(cfg)
+    model = model_override or get_default_model(cfg)
 
     session_file, meta_file, messages, _meta = sessions.init_session(
         session_name=session_name,
-        sessions_dir=sessions_dir,
+        sessions_dir=sessions_dir or get_sessions_dir(cfg),
         new_session=new_session,
         model=model,
         system=system,
@@ -97,10 +100,13 @@ def cmd_chat(
 
 
 def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: list[str], sessions_dir: Path | None) -> int:
+    cfg = load_config(None)
+    effective_dir = sessions_dir or get_sessions_dir(cfg)
+
     if action == "list":
-        rows = sessions.list_sessions(sessions_dir)
+        rows = sessions.list_sessions(effective_dir)
         if not rows:
-            print(f"No sessions found in {sessions.default_sessions_dir()}")
+            print(f"No sessions found in {effective_dir}")
             return 0
         for r in rows:
             meta = r.get("meta") or {}
@@ -125,7 +131,7 @@ def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: li
         if not name:
             print("ERROR: session name is required", file=sys.stderr)
             return 2
-        rows = sessions.list_sessions(sessions_dir)
+        rows = sessions.list_sessions(effective_dir)
         for r in rows:
             if r["name"] == name:
                 print(f"Session: {name}")
@@ -146,7 +152,7 @@ def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: li
         if not name:
             print("ERROR: session name is required", file=sys.stderr)
             return 2
-        ok = sessions.delete_session(name, sessions_dir)
+        ok = sessions.delete_session(name, effective_dir)
         if not ok:
             print(f"No such session: {name}")
             return 1
@@ -157,7 +163,7 @@ def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: li
         if not name or not new_name:
             print("ERROR: old and new names required", file=sys.stderr)
             return 2
-        ok, msg = sessions.rename_session(name, new_name, sessions_dir)
+        ok, msg = sessions.rename_session(name, new_name, effective_dir)
         if not ok:
             print(msg)
             return 1
@@ -168,7 +174,7 @@ def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: li
         if not name:
             print("ERROR: session name is required", file=sys.stderr)
             return 2
-        ok, msg = sessions.set_pinned(name, action == "pin", sessions_dir)
+        ok, msg = sessions.set_pinned(name, action == "pin", effective_dir)
         if not ok:
             print(msg)
             return 1
@@ -183,9 +189,9 @@ def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: li
             print("ERROR: at least one tag is required", file=sys.stderr)
             return 2
         if action == "tag-add":
-            ok, msg = sessions.add_tags(name, extras, sessions_dir)
+            ok, msg = sessions.add_tags(name, extras, effective_dir)
         else:
-            ok, msg = sessions.remove_tags(name, extras, sessions_dir)
+            ok, msg = sessions.remove_tags(name, extras, effective_dir)
         if not ok:
             print(msg)
             return 1
@@ -196,7 +202,7 @@ def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: li
         if not name or not new_name:
             print("ERROR: session name and title required", file=sys.stderr)
             return 2
-        ok, msg = sessions.set_title(name, new_name, sessions_dir)
+        ok, msg = sessions.set_title(name, new_name, effective_dir)
         if not ok:
             print(msg)
             return 1
@@ -207,7 +213,7 @@ def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: li
         if not name:
             print("ERROR: session name required", file=sys.stderr)
             return 2
-        ok, msg = sessions.summarize_session(name, sessions_dir)
+        ok, msg = sessions.summarize_session(name, effective_dir)
         if not ok:
             print(msg)
             return 1
