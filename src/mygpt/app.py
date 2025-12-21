@@ -13,6 +13,7 @@ import urllib.error
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.status import HTTP_401_UNAUTHORIZED
 from pydantic import BaseModel, Field
 
 from mygpt.config import (
@@ -130,6 +131,42 @@ async def add_request_id_and_limits(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def api_key_auth(request: Request, call_next):
+    path = request.url.path
+
+    # Allow unauthenticated access to health and docs
+    if path == "/health" or path.startswith("/docs") or path.startswith("/openapi") or path.startswith("/redoc"):
+        return await call_next(request)
+
+    # Only protect versioned API
+    if not path.startswith("/api/v1"):
+        return await call_next(request)
+
+    auth = _auth_cfg()
+    if not auth.get("enabled"):
+        return await call_next(request)
+
+    header = auth.get("header", "X-API-Key")
+    expected = auth.get("api_key")
+    provided = request.headers.get(header)
+
+    if not expected or provided != expected:
+        req_id = getattr(request.state, "request_id", None)
+        return JSONResponse(
+            status_code=HTTP_401_UNAUTHORIZED,
+            content={
+                "error": {
+                    "code": "unauthorized",
+                    "message": "Invalid or missing API key",
+                    "request_id": req_id,
+                }
+            },
+        )
+
+    return await call_next(request)
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     req_id = getattr(request.state, "request_id", None)
@@ -164,66 +201,32 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 
 # ----------------------------
-# Models
-# ----------------------------
-
-
-class InfoResponse(BaseModel):
-    ollama_base_url: str
-    default_model: str
-    sessions_dir: str
-
-
-class ChatRequest(BaseModel):
-    prompt: str
-    session: str = "default"
-    new: bool = False
-    model: Optional[str] = None
-    system: Optional[str] = None
-    sessions_dir: Optional[str] = None
-
-
-class ChatResponse(BaseModel):
-    session: str
-    model: str
-    reply: str
-
-
-class SessionsListResponse(BaseModel):
-    sessions: list[dict[str, Any]]
-
-
-class TitleRequest(BaseModel):
-    title: str
-
-
-class TagsRequest(BaseModel):
-    tags: list[str] = Field(default_factory=list)
-
-
-class ToolLsRequest(BaseModel):
-    path: str
-
-
-class ToolCatRequest(BaseModel):
-    path: str
-    head: Optional[int] = None
-    tail: Optional[int] = None
-
-
-class ToolGrepRequest(BaseModel):
-    pattern: str
-    path: str
-    max: int = 50
-
-
-class ToolTextResponse(BaseModel):
-    output: str
-
-
-# ----------------------------
 # Helpers
 # ----------------------------
+
+# Cached auth config (loaded once)
+_AUTH_CFG: dict[str, Any] | None = None
+
+
+def _auth_cfg() -> dict[str, Any]:
+    global _AUTH_CFG
+    if _AUTH_CFG is None:
+        cfg = load_config(None)
+        enabled = cfg.getboolean("auth", "enabled", fallback=False)
+        api_key = cfg.get("auth", "api_key", fallback="").strip()
+        header = cfg.get("auth", "header", fallback="X-API-Key").strip() or "X-API-Key"
+        _AUTH_CFG = {
+            "enabled": enabled,
+            "api_key": api_key,
+            "header": header,
+        }
+        if enabled:
+            if not api_key:
+                log.warning("Auth enabled but no api_key configured; all /api/v1 requests will be rejected")
+            log.info("Auth enabled (header=%s)", header)
+        else:
+            log.info("Auth disabled")
+    return _AUTH_CFG
 
 
 def _cfg(cfg_path: Path | None = None):

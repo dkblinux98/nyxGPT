@@ -47,6 +47,13 @@ The log level is read at API startup from `config.ini` and controls verbosity fo
 - startup diagnostics
 - unhandled exception logging
 
+#### `[auth]`
+- `enabled` — enable API key authentication for the FastAPI backend (default: `false`)
+- `api_key` — shared secret required when auth is enabled
+- `header` — HTTP header name used to pass the API key (default: `X-API-Key`)
+
+When authentication is enabled, all requests to `/api/v1/*` must include the configured API key. The `/health` endpoint and API documentation routes remain unauthenticated.
+
 #### `[paths]`
 - `repo_dir` — absolute path to the myGPT repository
 - `venv_python` — absolute path to the Python executable used to run the API service
@@ -104,6 +111,35 @@ On startup, the FastAPI backend performs a few non-fatal diagnostics and logs th
 If Ollama is not reachable at startup, the API will still start and serve requests. Chat requests will fail until Ollama becomes available, but this avoids the API crashing or failing to start under Homebrew.
 
 Startup diagnostics and warnings are written to the Homebrew service logs.
+
+### API authentication (optional)
+
+The FastAPI backend supports optional API-key authentication, intended for cases where the API is exposed beyond localhost or used by external tools.
+
+Authentication is **disabled by default** for local-only usage. To enable it:
+
+1. Set the following in `~/.myGPT/config.ini`:
+
+```ini
+[auth]
+enabled = true
+api_key = your-secret-key
+header = X-API-Key
+```
+
+2. Restart the API service:
+
+```bash
+brew services restart mygpt-api
+```
+
+When enabled, requests to `/api/v1/*` must include the configured header:
+
+```http
+X-API-Key: your-secret-key
+```
+
+If authentication is enabled but no `api_key` is configured, all `/api/v1` requests will be rejected.
 
 #### 1) Create a local Homebrew tap
 
