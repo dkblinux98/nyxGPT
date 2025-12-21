@@ -34,9 +34,18 @@ The following sections are supported in `~/.myGPT/config.ini`:
 #### `[ollama]`
 - `base_url` — Ollama API base URL (usually `http://127.0.0.1:11434`)
 
+
 #### `[api]`
 - `host` — interface the FastAPI server binds to
 - `port` — port the FastAPI server listens on
+
+#### `[logging]`
+- `level` — log level for the FastAPI backend (`DEBUG`, `INFO`, `WARNING`, `ERROR`)
+
+The log level is read at API startup from `config.ini` and controls verbosity for:
+- FastAPI request handling
+- startup diagnostics
+- unhandled exception logging
 
 #### `[paths]`
 - `repo_dir` — absolute path to the myGPT repository
@@ -78,10 +87,23 @@ uvicorn mygpt.app:app --reload --host 127.0.0.1 --port 8000
 
 - Health check: http://127.0.0.1:8000/health
 - API docs (Swagger UI): http://127.0.0.1:8000/docs
+- Versioned API base: http://127.0.0.1:8000/api/v1
 
 ### Run as a background service (recommended)
 
 The API can be run persistently using **Homebrew services**, similar to Ollama. This avoids keeping a terminal open.
+
+### Startup diagnostics
+
+On startup, the FastAPI backend performs a few non-fatal diagnostics and logs the results:
+
+- Ensures the configured sessions directory exists (creates it if missing)
+- Reads the configured log level from `[logging] level`
+- Performs a **warn-only** connectivity check to Ollama
+
+If Ollama is not reachable at startup, the API will still start and serve requests. Chat requests will fail until Ollama becomes available, but this avoids the API crashing or failing to start under Homebrew.
+
+Startup diagnostics and warnings are written to the Homebrew service logs.
 
 #### 1) Create a local Homebrew tap
 
@@ -142,9 +164,10 @@ brew services info mygpt-api
 
 ```bash
 curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:8000/api/v1/info
 ```
 
-API docs (Swagger UI): http://127.0.0.1:8000/docs
+All functional API endpoints are versioned under `/api/v1`. The root `/health` endpoint is intentionally left unversioned so service managers (like Homebrew and launchd) can perform simple health checks without tracking API versions.
 
 #### 6) Logs
 
@@ -183,6 +206,8 @@ brew services restart mygpt-api
 ## Tools
 
 `mygpt` includes a few explicit, user-invoked local filesystem tools (no agentic behavior):
+
+These tools are exposed via the CLI only; they are not HTTP endpoints.
 
 ```bash
 mygpt tools ls PATH

@@ -1,26 +1,166 @@
 from __future__ import annotations
 
 import io
-import json
+import logging
+import os
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, Optional
+import urllib.request
+import urllib.error
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from mygpt.config import (
-    load_config,
     get_default_model,
     get_ollama_base_url,
     get_sessions_dir,
+    load_config,
 )
 from mygpt.ollama_client import ollama_chat
 from mygpt import sessions
 from mygpt import tools_fs
 
 
+log = logging.getLogger("mygpt.api")
+
+# ----------------------------
+# Startup logging configuration
+# ----------------------------
+
+_cfg_for_logging = load_config(None)
+_log_level_name = _cfg_for_logging.get("logging", "level", fallback="INFO").upper()
+_log_level = getattr(logging, _log_level_name, logging.INFO)
+
+logging.basicConfig(
+    level=_log_level,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+
+log.setLevel(_log_level)
+log.info("Logging initialized (level=%s)", _log_level_name)
+
+# ----------------------------
+# Startup diagnostics
+# ----------------------------
+
+@app.on_event("startup")
+async def startup_diagnostics() -> None:
+    cfg = load_config(None)
+
+    # Ensure sessions directory exists
+    sessions_dir = get_sessions_dir(cfg)
+    try:
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        log.info("Sessions directory ready: %s", sessions_dir)
+    except Exception as e:
+        log.error("Failed to prepare sessions directory %s: %s", sessions_dir, e)
+
+    # Warn-only Ollama reachability check
+    base_url = get_ollama_base_url(cfg).rstrip("/")
+    health_url = f"{base_url}/api/tags"
+    try:
+        req = urllib.request.Request(health_url, method="GET")
+        with urllib.request.urlopen(req, timeout=2):
+            log.info("Ollama reachable at %s", base_url)
+    except urllib.error.URLError as e:
+        log.warning(
+            "Ollama not reachable at startup (%s). API will still start; chat requests may fail until Ollama is available.",
+            e,
+        )
+
 app = FastAPI(title="myGPT", version="1.0.0")
+
+# Versioned API router
+api = APIRouter(prefix="/api/v1")
+
+# CORS: default to local-only origins (configurable via MYGPT_CORS_ORIGINS)
+# Example: export MYGPT_CORS_ORIGINS="http://127.0.0.1:3000,http://localhost:3000"
+_origins_env = os.environ.get("MYGPT_CORS_ORIGINS", "").strip()
+if _origins_env:
+    allow_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+else:
+    allow_origins = [
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allow_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+MAX_BODY_BYTES = int(os.environ.get("MYGPT_MAX_BODY_BYTES", "1048576"))  # 1 MiB default
+
+
+@app.middleware("http")
+async def add_request_id_and_limits(request: Request, call_next):
+    # Request size guard based on Content-Length when available
+    cl = request.headers.get("content-length")
+    if cl:
+        try:
+            if int(cl) > MAX_BODY_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "error": {
+                            "code": "payload_too_large",
+                            "message": "Request body too large",
+                        }
+                    },
+                )
+        except Exception:
+            # Ignore malformed content-length
+            pass
+
+    req_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    request.state.request_id = req_id
+
+    response = await call_next(request)
+    response.headers["X-Request-Id"] = req_id
+    return response
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    req_id = getattr(request.state, "request_id", None)
+    detail = exc.detail
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {
+                "code": "http_error",
+                "message": detail if isinstance(detail, str) else "Request failed",
+                "details": None if isinstance(detail, str) else detail,
+                "request_id": req_id,
+            }
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    req_id = getattr(request.state, "request_id", None)
+    log.exception("Unhandled API error (request_id=%s)", req_id)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "code": "internal_error",
+                "message": "Internal server error",
+                "request_id": req_id,
+            }
+        },
+    )
 
 
 # ----------------------------
@@ -114,7 +254,7 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/info", response_model=InfoResponse)
+@api.get("/info", response_model=InfoResponse)
 def info() -> InfoResponse:
     cfg = _cfg(None)
     base_url = get_ollama_base_url(cfg)
@@ -126,12 +266,11 @@ def info() -> InfoResponse:
     )
 
 
-@app.get("/sessions", response_model=SessionsListResponse)
+@api.get("/sessions", response_model=SessionsListResponse)
 def sessions_list(sessions_dir: Optional[str] = None) -> SessionsListResponse:
     cfg = _cfg(None)
     effective_dir = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(cfg)
     rows = sessions.list_sessions(effective_dir)
-    # Flatten meta fields for easy UI usage.
     out: list[dict[str, Any]] = []
     for r in rows:
         meta = r.get("meta") or {}
@@ -151,7 +290,7 @@ def sessions_list(sessions_dir: Optional[str] = None) -> SessionsListResponse:
     return SessionsListResponse(sessions=out)
 
 
-@app.get("/sessions/{name}")
+@api.get("/sessions/{name}")
 def sessions_show(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
     sd = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     sf = sessions.session_file_for(name, sd or sessions.default_sessions_dir())
@@ -160,14 +299,10 @@ def sessions_show(name: str, sessions_dir: Optional[str] = None) -> dict[str, An
     meta = sessions.load_session_meta(mf)
     if not sf.exists():
         raise HTTPException(status_code=404, detail="No such session")
-    return {
-        "name": name,
-        "messages": msgs,
-        "meta": meta,
-    }
+    return {"name": name, "messages": msgs, "meta": meta}
 
 
-@app.delete("/sessions/{name}")
+@api.delete("/sessions/{name}")
 def sessions_delete(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
     ok = sessions.delete_session(name, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
     if not ok:
@@ -175,7 +310,7 @@ def sessions_delete(name: str, sessions_dir: Optional[str] = None) -> dict[str, 
     return {"ok": True}
 
 
-@app.post("/sessions/{name}/summarize")
+@api.post("/sessions/{name}/summarize")
 def sessions_summarize(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
     ok, msg = sessions.summarize_session(name, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
     if not ok:
@@ -183,7 +318,7 @@ def sessions_summarize(name: str, sessions_dir: Optional[str] = None) -> dict[st
     return {"ok": True}
 
 
-@app.post("/sessions/{name}/pin")
+@api.post("/sessions/{name}/pin")
 def sessions_pin(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
     ok, msg = sessions.set_pinned(name, True, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
     if not ok:
@@ -191,7 +326,7 @@ def sessions_pin(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any
     return {"ok": True}
 
 
-@app.post("/sessions/{name}/unpin")
+@api.post("/sessions/{name}/unpin")
 def sessions_unpin(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
     ok, msg = sessions.set_pinned(name, False, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
     if not ok:
@@ -199,7 +334,7 @@ def sessions_unpin(name: str, sessions_dir: Optional[str] = None) -> dict[str, A
     return {"ok": True}
 
 
-@app.post("/sessions/{name}/title")
+@api.post("/sessions/{name}/title")
 def sessions_title(name: str, req: TitleRequest, sessions_dir: Optional[str] = None) -> dict[str, Any]:
     ok, msg = sessions.set_title(name, req.title, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
     if not ok:
@@ -207,7 +342,7 @@ def sessions_title(name: str, req: TitleRequest, sessions_dir: Optional[str] = N
     return {"ok": True}
 
 
-@app.post("/sessions/{name}/tags/add")
+@api.post("/sessions/{name}/tags/add")
 def sessions_tags_add(name: str, req: TagsRequest, sessions_dir: Optional[str] = None) -> dict[str, Any]:
     if not req.tags:
         raise HTTPException(status_code=400, detail="At least one tag is required")
@@ -217,7 +352,7 @@ def sessions_tags_add(name: str, req: TagsRequest, sessions_dir: Optional[str] =
     return {"ok": True}
 
 
-@app.post("/sessions/{name}/tags/remove")
+@api.post("/sessions/{name}/tags/remove")
 def sessions_tags_remove(name: str, req: TagsRequest, sessions_dir: Optional[str] = None) -> dict[str, Any]:
     if not req.tags:
         raise HTTPException(status_code=400, detail="At least one tag is required")
@@ -227,7 +362,7 @@ def sessions_tags_remove(name: str, req: TagsRequest, sessions_dir: Optional[str
     return {"ok": True}
 
 
-@app.post("/chat", response_model=ChatResponse)
+@api.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
     cfg = _cfg(None)
     base_url = get_ollama_base_url(cfg)
@@ -253,7 +388,7 @@ def chat(req: ChatRequest) -> ChatResponse:
     return ChatResponse(session=req.session, model=model, reply=reply)
 
 
-@app.post("/tools/ls", response_model=ToolTextResponse)
+@api.post("/tools/ls", response_model=ToolTextResponse)
 def tool_ls(req: ToolLsRequest) -> ToolTextResponse:
     rc, out, err = _capture_stdout(tools_fs.ls, Path(req.path))
     if rc != 0:
@@ -261,7 +396,7 @@ def tool_ls(req: ToolLsRequest) -> ToolTextResponse:
     return ToolTextResponse(output=out)
 
 
-@app.post("/tools/cat", response_model=ToolTextResponse)
+@api.post("/tools/cat", response_model=ToolTextResponse)
 def tool_cat(req: ToolCatRequest) -> ToolTextResponse:
     rc, out, err = _capture_stdout(tools_fs.cat, Path(req.path), head=req.head, tail=req.tail)
     if rc != 0:
@@ -269,9 +404,12 @@ def tool_cat(req: ToolCatRequest) -> ToolTextResponse:
     return ToolTextResponse(output=out)
 
 
-@app.post("/tools/grep", response_model=ToolTextResponse)
+@api.post("/tools/grep", response_model=ToolTextResponse)
 def tool_grep(req: ToolGrepRequest) -> ToolTextResponse:
     rc, out, err = _capture_stdout(tools_fs.grep, req.pattern, Path(req.path), max_matches=req.max)
     if rc != 0:
         raise HTTPException(status_code=400, detail=(err.strip() or out.strip() or "grep failed"))
     return ToolTextResponse(output=out)
+
+
+app.include_router(api)
