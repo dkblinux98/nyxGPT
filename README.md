@@ -41,6 +41,44 @@ Or via the console script:
 mygpt
 ```
 
+## FastAPI Backend (Local API)
+
+myGPT also exposes a local FastAPI backend, used by future TUIs and web UIs.
+
+### Run manually (development)
+
+With your virtual environment active:
+
+```bash
+uvicorn mygpt.app:app --reload --host 127.0.0.1 --port 8000
+```
+
+- Health check: http://127.0.0.1:8000/health
+- API docs (Swagger UI): http://127.0.0.1:8000/docs
+
+### Run as a background service (recommended)
+
+The API can be run persistently using **Homebrew services**, similar to Ollama.
+
+Once installed and started via Homebrew:
+
+```bash
+brew services start mygpt-api
+brew services info mygpt-api
+```
+
+The API will:
+- start automatically at login
+- run in the background
+- log output via Homebrew (e.g. `var/log/mygpt-api.log`)
+
+To stop or restart:
+
+```bash
+brew services stop mygpt-api
+brew services restart mygpt-api
+```
+
 ## Tools
 
 `mygpt` includes a few explicit, user-invoked local filesystem tools (no agentic behavior):
