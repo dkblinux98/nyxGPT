@@ -54,6 +54,30 @@ The log level is read at API startup from `config.ini` and controls verbosity fo
 
 When authentication is enabled, all requests to `/api/v1/*` must include the configured API key. The `/health` endpoint and API documentation routes remain unauthenticated.
 
+#### `[rag]`
+- `cassandra_hosts` — comma-separated Cassandra hosts (default: `127.0.0.1`)
+- `cassandra_port` — Cassandra native transport port (default: `9042`)
+- `cassandra_keyspace` — keyspace used for RAG data (default: `mygpt`)
+- `cassandra_table` — table used for RAG chunks (default: `rag_chunks`)
+
+- `embedding_model` — Ollama model used for embeddings (defaults to `[mygpt] default_model` if unset)
+- `embedding_dim` — embedding vector dimension (must match Cassandra `VECTOR<FLOAT,N>` schema)
+
+Example embedding configuration:
+
+```ini
+[rag]
+embedding_model = nomic-embed-text
+embedding_dim = 768
+```
+
+- `chunk_size` — maximum characters per chunk when ingesting documents
+- `chunk_overlap` — overlapping characters between adjacent chunks
+
+- `top_k` — number of similar chunks retrieved per query
+
+These settings control how documents are chunked, embedded, stored in Cassandra, and retrieved for RAG.
+
 #### `[paths]`
 - `repo_dir` — absolute path to the myGPT repository
 - `venv_python` — absolute path to the Python executable used to run the API service
@@ -238,6 +262,86 @@ If you move the repository or rebuild the virtual environment, update `config.in
 ```bash
 brew services restart mygpt-api
 ```
+
+## RAG (Retrieval-Augmented Generation)
+
+myGPT will use **Apache Cassandra 5.0** as the vector database for RAG (chunk storage + embeddings + similarity search).
+
+### Why Cassandra (vs. a lightweight local vector DB)
+
+- You already know Cassandra, and Cassandra 5.0 has **native vector search**.
+- This keeps chunks, metadata, and embeddings in one place using familiar CQL.
+- It scales cleanly later if your RAG store becomes "real infrastructure".
+
+### Run Cassandra 5.0 locally (Docker)
+
+Docker is the recommended local dev setup because it avoids installing and managing Java/Cassandra directly on macOS.
+
+1) Start Cassandra:
+
+```bash
+docker run -d --name mygpt-cassandra \
+  -p 9042:9042 \
+  -e CASSANDRA_CLUSTER_NAME=mygpt \
+  cassandra:5.0
+```
+
+2) Wait until Cassandra is ready:
+
+```bash
+docker logs -f mygpt-cassandra | tail -n 50
+```
+
+3) Open `cqlsh`:
+
+```bash
+docker exec -it mygpt-cassandra cqlsh
+```
+
+### Create keyspace, table, and vector index
+
+In `cqlsh`:
+
+```sql
+CREATE KEYSPACE IF NOT EXISTS mygpt
+WITH REPLICATION = {'class':'SimpleStrategy','replication_factor':1};
+
+USE mygpt;
+
+-- NOTE: the embedding dimension (768) must match your embedding model.
+CREATE TABLE IF NOT EXISTS rag_chunks (
+  doc_id text,
+  chunk_id int,
+  text text,
+  metadata text,
+  embedding VECTOR<FLOAT, 768>,
+  PRIMARY KEY (doc_id, chunk_id)
+);
+
+CREATE INDEX IF NOT EXISTS rag_chunks_embedding_sai
+ON rag_chunks(embedding) USING 'sai';
+```
+
+### Optional: persistent storage
+
+If you want Cassandra data to persist across container recreations, use a Docker volume:
+
+```bash
+docker volume create mygpt_cassandra_data
+
+docker rm -f mygpt-cassandra
+
+docker run -d --name mygpt-cassandra \
+  -p 9042:9042 \
+  -e CASSANDRA_CLUSTER_NAME=mygpt \
+  -v mygpt_cassandra_data:/var/lib/cassandra \
+  cassandra:5.0
+```
+
+### Notes
+
+- Similarity queries will use Cassandra's ANN syntax (vector search).
+- We will keep all RAG configuration in `~/.myGPT/config.ini` and document it as the RAG modules are added.
 
 ## Tools
 
