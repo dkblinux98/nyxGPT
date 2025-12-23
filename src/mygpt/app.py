@@ -5,6 +5,7 @@ import logging
 import os
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 import urllib.request
@@ -13,8 +14,24 @@ import urllib.error
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.status import HTTP_401_UNAUTHORIZED
-from pydantic import BaseModel, Field
+from starlette.status import HTTP_401_UNAUTHORIZED
+from mygpt.api_models import (
+    InfoResponse,
+    SessionsListResponse,
+    TitleRequest,
+    TagsRequest,
+    ChatRequest,
+    ChatResponse,
+    ToolTextResponse,
+    ToolLsRequest,
+    ToolCatRequest,
+    ToolGrepRequest,
+    RagIngestRequest,
+    RagIngestResponse,
+    RagQueryRequest,
+    RagQueryResult,
+    RagQueryResponse,
+)
 
 from mygpt.config import (
     get_default_model,
@@ -25,6 +42,8 @@ from mygpt.config import (
 from mygpt.ollama_client import ollama_chat
 from mygpt import sessions
 from mygpt import tools_fs
+
+from mygpt.rag.rag import ingest_document, retrieve_context
 
 
 log = logging.getLogger("mygpt.api")
@@ -46,11 +65,12 @@ log.setLevel(_log_level)
 log.info("Logging initialized (level=%s)", _log_level_name)
 
 # ----------------------------
-# Startup diagnostics
+# Startup diagnostics using lifespan
 # ----------------------------
 
-@app.on_event("startup")
-async def startup_diagnostics() -> None:
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Startup diagnostics
     cfg = load_config(None)
 
     # Ensure sessions directory exists
@@ -74,10 +94,13 @@ async def startup_diagnostics() -> None:
             e,
         )
 
-app = FastAPI(title="myGPT", version="1.0.0")
+    yield
+
 
 # Versioned API router
+app = FastAPI(title="myGPT", version="1.0.0", lifespan=lifespan)
 api = APIRouter(prefix="/api/v1")
+
 
 # CORS: default to local-only origins (configurable via MYGPT_CORS_ORIGINS)
 # Example: export MYGPT_CORS_ORIGINS="http://127.0.0.1:3000,http://localhost:3000"
@@ -247,6 +270,8 @@ def _capture_stdout(fn, *args, **kwargs) -> tuple[int, str, str]:
     return int(rc), out.getvalue(), err.getvalue()
 
 
+
+
 # ----------------------------
 # Routes
 # ----------------------------
@@ -413,6 +438,38 @@ def tool_grep(req: ToolGrepRequest) -> ToolTextResponse:
     if rc != 0:
         raise HTTPException(status_code=400, detail=(err.strip() or out.strip() or "grep failed"))
     return ToolTextResponse(output=out)
+
+
+@api.post("/rag/ingest", response_model=RagIngestResponse)
+def rag_ingest(req: RagIngestRequest) -> RagIngestResponse:
+    try:
+        n = ingest_document(
+            doc_id=req.doc_id,
+            text=req.text,
+            metadata=req.metadata,
+            ensure_schema=req.ensure_schema,
+        )
+        return RagIngestResponse(doc_id=req.doc_id, chunks_ingested=n)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.post("/rag/query", response_model=RagQueryResponse)
+def rag_query(req: RagQueryRequest) -> RagQueryResponse:
+    try:
+        results = retrieve_context(req.query, top_k=req.top_k)
+        out = [
+            RagQueryResult(
+                doc_id=str(r.get("doc_id", "")),
+                chunk_id=int(r.get("chunk_id", 0)),
+                text=str(r.get("text", "")),
+                score=float(r.get("score", 0.0)),
+            )
+            for r in results
+        ]
+        return RagQueryResponse(results=out)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 app.include_router(api)

@@ -147,6 +147,66 @@ uvicorn mygpt.app:app --reload --host 127.0.0.1 --port 8000
 - API docs (Swagger UI): http://127.0.0.1:8000/docs
 - Versioned API base: http://127.0.0.1:8000/api/v1
 
+### RAG API endpoints
+
+The FastAPI backend exposes RAG functionality over HTTP for use by future TUIs and web UIs.
+
+All endpoints are versioned under `/api/v1` and respect API authentication when enabled.
+
+#### POST `/api/v1/rag/ingest`
+
+Ingest a document into the RAG vector store.
+
+Request body:
+
+```json
+{
+  "doc_id": "readme-v3",
+  "text": "Full document text goes here",
+  "metadata": {"source": "README"},
+  "ensure_schema": false
+}
+```
+
+Response:
+
+```json
+{
+  "doc_id": "readme-v3",
+  "chunks_ingested": 17
+}
+```
+
+#### POST `/api/v1/rag/query`
+
+Retrieve relevant context chunks from the RAG store.
+
+Request body:
+
+```json
+{
+  "query": "How do I run Cassandra for RAG?",
+  "top_k": 3
+}
+```
+
+Response:
+
+```json
+{
+  "results": [
+    {
+      "doc_id": "readme-v3",
+      "chunk_id": 4,
+      "text": "Apache Cassandra 5.0 supports native vector search using SAI indexes...",
+      "score": 0.82
+    }
+  ]
+}
+```
+
+When API authentication is enabled, requests to these endpoints must include the configured API key header.
+
 ### Run as a background service (recommended)
 
 The API can be run persistently using **Homebrew services**, similar to Ollama. This avoids keeping a terminal open.
