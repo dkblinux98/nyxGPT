@@ -144,6 +144,51 @@ From the repo root with your venv active:
 pip install -e .
 ```
 
+## Testing
+
+myGPT uses **pytest** with explicit markers to separate fast unit tests from slower integration tests.
+
+### Test categories
+
+- **Unit tests** (`@pytest.mark.unit`)
+  - No external dependencies
+  - No network access
+  - Use mocks and temporary files
+
+- **Integration tests** (`@pytest.mark.integration`)
+  - Require running services (Ollama, Cassandra, FastAPI)
+  - Exercise real HTTP and database interactions
+
+### Running tests
+
+Run **all tests** (default):
+
+```bash
+pytest
+```
+
+Run **unit tests only**:
+
+```bash
+pytest -m unit
+```
+
+Run **integration tests only**:
+
+```bash
+pytest -m integration
+```
+
+### Test logs
+
+All test runs (unit and integration) write logs to:
+
+```
+~/.myGPT/logs/tests.log
+```
+
+The log file is **truncated at the start of each pytest run**, so it always reflects the most recent execution.
+
 ## Run
 
 ```bash

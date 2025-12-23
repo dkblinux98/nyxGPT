@@ -55,6 +55,9 @@ def _build_rag_context(query: str, top_k: int, max_chars: int) -> tuple[str, int
     """Return (context_text, chunks_used). Never raises."""
     try:
         rows = retrieve_context(query, top_k=top_k)
+        # Some callers/tests may return a raw string. Normalize to the expected row shape.
+        if isinstance(rows, str):
+            rows = [{"text": rows, "doc_id": "rag", "chunk_id": 0, "score": None}]
         parts: list[str] = []
         used = 0
         remaining = max_chars

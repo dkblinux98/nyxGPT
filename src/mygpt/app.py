@@ -44,25 +44,10 @@ from mygpt import sessions
 from mygpt import tools_fs
 
 from mygpt.rag.rag import ingest_document, retrieve_context
+from mygpt.logging import configure_logging
 
 
 log = logging.getLogger("mygpt.api")
-
-# ----------------------------
-# Startup logging configuration
-# ----------------------------
-
-_cfg_for_logging = load_config(None)
-_log_level_name = _cfg_for_logging.get("logging", "level", fallback="INFO").upper()
-_log_level = getattr(logging, _log_level_name, logging.INFO)
-
-logging.basicConfig(
-    level=_log_level,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
-
-log.setLevel(_log_level)
-log.info("Logging initialized (level=%s)", _log_level_name)
 
 # ----------------------------
 # Startup diagnostics using lifespan
@@ -70,8 +55,14 @@ log.info("Logging initialized (level=%s)", _log_level_name)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Startup diagnostics
+    # Initialize centralized logging once for the API process
     cfg = load_config(None)
+    try:
+        configure_logging(cfg, console=False)
+        log.info("Centralized logging initialized")
+    except Exception as e:
+        # Logging must never prevent API startup
+        print(f"Logging initialization failed: {e}")
 
     # Ensure sessions directory exists
     sessions_dir = get_sessions_dir(cfg)

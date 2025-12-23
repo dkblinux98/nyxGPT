@@ -11,15 +11,29 @@ from mygpt.config import load_config, get_default_model, get_ollama_base_url, ge
 from mygpt.ollama_client import ollama_chat
 
 
+def validate_session_name(name: str) -> str:
+    if not isinstance(name, str):
+        raise ValueError("session name must be a string")
+    raw = name.strip()
+    if not raw:
+        raise ValueError("session name cannot be empty")
+    if "/" in raw or "\\" in raw:
+        raise ValueError("invalid session name")
+    if ".." in raw:
+        raise ValueError("invalid session name")
+    return raw
+
+
 def default_sessions_dir() -> Path:
     cfg = load_config(None)
     return get_sessions_dir(cfg)
 
 
 def session_file_for(name: str, sessions_dir: Path) -> Path:
+    name = validate_session_name(name)
     safe = "".join(ch for ch in name if ch.isalnum() or ch in "-_.").strip("._")
     if not safe:
-        safe = "default"
+        raise ValueError("invalid session name")
     return sessions_dir / f"{safe}.json"
 
 
@@ -132,7 +146,7 @@ def init_session(
     *,
     new_session: bool,
     model: str,
-    system: str | None,
+    system: str | None = None,
 ) -> tuple[Path, Path, list[dict[str, str]], dict[str, Any]]:
     sessions_dir = sessions_dir or default_sessions_dir()
     session_file = session_file_for(session_name, sessions_dir)
@@ -145,6 +159,10 @@ def init_session(
 
     messages = load_session_messages(session_file)
     messages = apply_system_prompt(messages, system)
+
+    # Ensure files exist for new sessions
+    if new_session:
+        save_session_messages(session_file, messages)
 
     meta = load_session_meta(meta_file)
     meta = ensure_meta_defaults(meta, model=model)
@@ -216,8 +234,8 @@ def save_session(
 
 # --- Session management operations for the CLI ---
 
-def list_sessions(sessions_dir: Path | None) -> list[dict[str, Any]]:
-    sessions_dir = sessions_dir or default_sessions_dir()
+def list_sessions(cfg: Any | None) -> list[dict[str, Any]]:
+    sessions_dir = get_sessions_dir(cfg) if cfg is not None else default_sessions_dir()
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     files = [p for p in sessions_dir.glob("*.json") if not p.name.endswith(".meta.json")]

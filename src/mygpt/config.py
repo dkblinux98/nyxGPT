@@ -1,6 +1,5 @@
-
-
 from __future__ import annotations
+import os
 
 from configparser import ConfigParser
 from pathlib import Path
@@ -8,8 +7,19 @@ from pathlib import Path
 DEFAULT_CONFIG_PATH = Path.home() / ".myGPT" / "config.ini"
 
 
-def load_config(path: Path | None = None) -> ConfigParser:
-    config_path = path or DEFAULT_CONFIG_PATH
+def load_config(path: str | Path | None = None) -> ConfigParser:
+    """Load config.ini from a path.
+
+    - If `path` is None, uses DEFAULT_CONFIG_PATH.
+    - If `path` is a string, expands `~` and environment variables.
+    """
+    raw = path if path is not None else DEFAULT_CONFIG_PATH
+
+    if isinstance(raw, Path):
+        config_path = raw.expanduser()
+    else:
+        # Allow callers to pass strings (e.g., "~/.myGPT/config.ini").
+        config_path = Path(os.path.expandvars(raw)).expanduser()
 
     if not config_path.exists():
         raise FileNotFoundError(
@@ -44,6 +54,11 @@ def get_vectorstore_dir(cfg: ConfigParser) -> Path:
     return _expand_path(val)
 
 
+def get_log_dir(cfg: ConfigParser) -> Path:
+    val = cfg.get("mygpt", "log_dir", fallback=str(Path.home() / ".myGPT" / "logs"))
+    return _expand_path(val)
+
+
 def get_api_host(cfg: ConfigParser) -> str:
     return cfg.get("api", "host", fallback="127.0.0.1")
 
@@ -62,6 +77,7 @@ __all__ = [
     "get_ollama_base_url",
     "get_sessions_dir",
     "get_vectorstore_dir",
+    "get_log_dir",
     "get_api_host",
     "get_api_port",
 ]

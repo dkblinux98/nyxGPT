@@ -13,8 +13,39 @@ from mygpt.config import (
 from mygpt import sessions
 from mygpt import tools_fs
 from mygpt.chat import chat
+from mygpt.logging import configure_logging
 from mygpt.rag.rag import ingest_document, retrieve_context
 from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+
+def _list_sessions_in_dir(sessions_dir: Path) -> list[dict[str, object]]:
+    sessions_dir = Path(sessions_dir).expanduser()
+    if not sessions_dir.exists():
+        return []
+
+    rows: list[dict[str, object]] = []
+    for sf in sorted(sessions_dir.glob("*.json")):
+        # Ignore metadata files
+        if sf.name.endswith(".meta.json"):
+            continue
+        try:
+            mf = sessions.meta_file_for(sf)
+            msgs = sessions.load_session_messages(sf)
+            meta = sessions.load_session_meta(mf)
+            rows.append(
+                {
+                    "name": sf.stem,
+                    "file": str(sf),
+                    "messages": len(msgs),
+                    "modified": sf.stat().st_mtime,
+                    "meta": meta,
+                }
+            )
+        except Exception:
+            # Skip unreadable/corrupt session files
+            continue
+
+    return rows
 
 
 def cmd_info(cfg_path: Path | None) -> int:
@@ -93,7 +124,7 @@ def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: li
     effective_dir = sessions_dir or get_sessions_dir(cfg)
 
     if action == "list":
-        rows = sessions.list_sessions(effective_dir)
+        rows = _list_sessions_in_dir(effective_dir)
         if not rows:
             print(f"No sessions found in {effective_dir}")
             return 0
@@ -120,7 +151,7 @@ def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: li
         if not name:
             print("ERROR: session name is required", file=sys.stderr)
             return 2
-        rows = sessions.list_sessions(effective_dir)
+        rows = _list_sessions_in_dir(effective_dir)
         for r in rows:
             if r["name"] == name:
                 print(f"Session: {name}")
@@ -362,6 +393,14 @@ def cli(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     cmd = args.command or "info"
+
+    # Initialize centralized logging as early as possible.
+    try:
+        cfg0 = load_config(args.config)
+        configure_logging(cfg0, console=True)
+    except Exception:
+        # Logging should never prevent the CLI from running.
+        pass
 
     if cmd == "info":
         return cmd_info(args.config)
