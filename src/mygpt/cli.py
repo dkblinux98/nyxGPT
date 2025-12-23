@@ -13,6 +13,8 @@ from mygpt.config import (
 from mygpt import sessions
 from mygpt import tools_fs
 from mygpt.ollama_client import ollama_chat, ollama_chat_stream
+from mygpt.rag.rag import ingest_document, retrieve_context
+from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 
 
 def cmd_info(cfg_path: Path | None) -> int:
@@ -238,6 +240,67 @@ def cmd_tools(action: str, path: Path, pattern: str | None, head: int | None, ta
     return 2
 
 
+def cmd_rag_ingest(doc_id: str, path: Path, ensure_schema: bool) -> int:
+    text = path.read_text(encoding="utf-8")
+    n = ingest_document(doc_id, text, metadata={"path": str(path)}, ensure_schema=ensure_schema)
+    print(f"Ingested {n} chunks for doc_id={doc_id}")
+    return 0
+
+
+
+def cmd_rag_query(question: str, top_k: int) -> int:
+    results = retrieve_context(question, top_k=top_k)
+    print(f"Results: {len(results)}")
+    for i, r in enumerate(results, 1):
+        print(f"--- {i} ---")
+        print(r.get("text", ""))
+    return 0
+
+
+def cmd_rag_list() -> int:
+    store = CassandraVectorStore()
+    try:
+        rows = store.list_docs()
+    finally:
+        store.close()
+
+    if not rows:
+        print("No documents found in RAG store")
+        return 0
+
+    print(f"{'doc_id':<30} chunks")
+    print("-" * 40)
+    for r in rows:
+        print(f"{r['doc_id']:<30} {r['chunks']}")
+    return 0
+
+
+def cmd_rag_delete(doc_id: str) -> int:
+    store = CassandraVectorStore()
+    try:
+        store.delete_doc(doc_id)
+    finally:
+        store.close()
+
+    print(f"Deleted RAG document: {doc_id}")
+    return 0
+
+
+def cmd_rag_wipe(confirm: bool) -> int:
+    if not confirm:
+        print("ERROR: refusing to wipe RAG store without --yes-really", file=sys.stderr)
+        return 2
+
+    store = CassandraVectorStore()
+    try:
+        store.truncate()
+    finally:
+        store.close()
+
+    print("Wiped all RAG documents")
+    return 0
+
+
 def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="mygpt")
     parser.add_argument(
@@ -290,6 +353,26 @@ def cli(argv: list[str] | None = None) -> int:
     tools_p.add_argument("--tail", type=int, help="Print last N lines (cat)")
     tools_p.add_argument("--max", dest="max_matches", type=int, default=50, help="Max matches (grep)")
 
+    rag_p = sub.add_parser("rag", help="Retrieval-Augmented Generation commands")
+    rag_sub = rag_p.add_subparsers(dest="rag_cmd", required=True)
+
+    ingest_p = rag_sub.add_parser("ingest", help="Ingest a document into the vector store")
+    ingest_p.add_argument("doc_id", help="Document ID")
+    ingest_p.add_argument("path", type=Path, help="Path to text file")
+    ingest_p.add_argument("--ensure-schema", action="store_true", help="Create schema if missing")
+
+    query_p = rag_sub.add_parser("query", help="Query the vector store")
+    query_p.add_argument("question", help="Query text")
+    query_p.add_argument("--top-k", type=int, default=5, help="Number of results")
+
+    list_p = rag_sub.add_parser("list", help="List ingested documents")
+
+    delete_p = rag_sub.add_parser("delete", help="Delete a document by doc_id")
+    delete_p.add_argument("doc_id", help="Document ID to delete")
+
+    wipe_p = rag_sub.add_parser("wipe", help="Delete ALL documents (dangerous)")
+    wipe_p.add_argument("--yes-really", action="store_true", help="Confirm destructive wipe")
+
     args = parser.parse_args(argv)
     cmd = args.command or "info"
 
@@ -326,6 +409,18 @@ def cli(argv: list[str] | None = None) -> int:
             tail=getattr(args, "tail", None),
             max_matches=getattr(args, "max_matches", 50),
         )
+
+    if cmd == "rag":
+        if args.rag_cmd == "ingest":
+            return cmd_rag_ingest(args.doc_id, args.path, args.ensure_schema)
+        if args.rag_cmd == "query":
+            return cmd_rag_query(args.question, args.top_k)
+        if args.rag_cmd == "list":
+            return cmd_rag_list()
+        if args.rag_cmd == "delete":
+            return cmd_rag_delete(args.doc_id)
+        if args.rag_cmd == "wipe":
+            return cmd_rag_wipe(args.yes_really)
 
     parser.print_help()
     return 2

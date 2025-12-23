@@ -159,3 +159,43 @@ class CassandraVectorStore:
                 }
             )
         return out
+
+    def list_docs(self) -> list[dict]:
+        """Return a list of documents currently stored: {doc_id, chunks}."""
+        if not self._keyspace_ready:
+            self._ensure_keyspace_selected()
+
+        stmt = SimpleStatement(
+            f"""
+            SELECT doc_id, count(*) as chunks
+            FROM {self.cfg.table}
+            GROUP BY doc_id
+            """,
+        )
+
+        rows = self.session.execute(stmt)
+        out: list[dict] = []
+        for r in rows:
+            out.append({"doc_id": r.doc_id, "chunks": int(r.chunks)})
+        # Sort for stable output
+        out.sort(key=lambda x: x["doc_id"])
+        return out
+
+    def delete_doc(self, doc_id: str) -> None:
+        """Delete all chunks for the given doc_id."""
+        if not self._keyspace_ready:
+            self._ensure_keyspace_selected()
+
+        self.session.execute(
+            SimpleStatement(
+                f"DELETE FROM {self.cfg.table} WHERE doc_id = %s",
+            ),
+            (doc_id,),
+        )
+
+    def truncate(self) -> None:
+        """Remove all rows from the vector table (development convenience)."""
+        if not self._keyspace_ready:
+            self._ensure_keyspace_selected()
+
+        self.session.execute(SimpleStatement(f"TRUNCATE {self.cfg.table}"))

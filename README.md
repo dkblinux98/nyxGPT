@@ -71,12 +71,39 @@ embedding_model = nomic-embed-text
 embedding_dim = 768
 ```
 
+##### Embedding performance tuning
+
+The following settings control embedding performance and stability when ingesting large documents:
+
+- `embedding_batch_size` — number of chunks embedded per request to Ollama. Smaller values are slower but safer; larger values are faster but heavier.
+- `embedding_timeout_seconds` — timeout (in seconds) for each embedding batch request.
+
+Recommended defaults (validated locally):
+
+```ini
+[rag]
+embedding_batch_size = 16
+embedding_timeout_seconds = 120
+```
+
 - `chunk_size` — maximum characters per chunk when ingesting documents
 - `chunk_overlap` — overlapping characters between adjacent chunks
 
 - `top_k` — number of similar chunks retrieved per query
 
 These settings control how documents are chunked, embedded, stored in Cassandra, and retrieved for RAG.
+
+⚠️ **Re-ingest required**
+
+Any change to the following settings requires re-ingesting documents:
+
+- `chunk_size`
+- `chunk_overlap`
+- `embedding_model`
+- `embedding_dim`
+- `embedding_batch_size`
+
+Previously ingested chunks will not be automatically migrated.
 
 #### `[paths]`
 - `repo_dir` — absolute path to the myGPT repository
@@ -320,6 +347,34 @@ CREATE TABLE IF NOT EXISTS rag_chunks (
 
 CREATE INDEX IF NOT EXISTS rag_chunks_embedding_sai
 ON rag_chunks(embedding) USING 'sai';
+```
+
+### Cleaning up old ingests
+
+If you change chunking or embedding settings, delete old chunks before re-ingesting:
+
+```sql
+DELETE FROM mygpt.rag_chunks WHERE doc_id = 'your-doc-id';
+-- or wipe everything (early development only)
+TRUNCATE mygpt.rag_chunks;
+```
+
+### Managing ingested RAG documents (CLI)
+
+The CLI provides commands to inspect and manage documents stored in the RAG vector store.
+
+List all ingested documents and their chunk counts:
+
+```bash
+mygpt rag list
+
+doc_id                         chunks
+----------------------------------------
+readme-v3                     17
+test-doc                      3
+
+mygpt rag delete readme-v3
+mygpt rag wipe --yes-really
 ```
 
 ### Optional: persistent storage

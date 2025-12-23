@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 import json
@@ -7,6 +5,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Iterable
+from itertools import islice
 
 from mygpt.config import get_default_model, get_ollama_base_url, load_config
 
@@ -16,6 +15,8 @@ class EmbeddingConfig:
     base_url: str
     model: str
     dimension: int
+    timeout: int
+    batch_size: int
 
 
 class EmbeddingError(RuntimeError):
@@ -32,11 +33,19 @@ def _embedding_cfg() -> EmbeddingConfig:
 
     # Default dimension must match Cassandra schema; override in config if needed.
     dim = cfg.getint("rag", "embedding_dim", fallback=768)
+    timeout = cfg.getint("rag", "embedding_timeout_seconds", fallback=120)
+    batch_size = cfg.getint("rag", "embedding_batch_size", fallback=16)
 
-    return EmbeddingConfig(base_url=base_url, model=model, dimension=int(dim))
+    return EmbeddingConfig(
+        base_url=base_url,
+        model=model,
+        dimension=int(dim),
+        timeout=int(timeout),
+        batch_size=int(batch_size),
+    )
 
 
-def _post_json(url: str, payload: dict) -> dict:
+def _post_json(url: str, payload: dict, timeout: int) -> dict:
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -45,7 +54,7 @@ def _post_json(url: str, payload: dict) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
@@ -53,6 +62,15 @@ def _post_json(url: str, payload: dict) -> dict:
         raise EmbeddingError(f"HTTP error calling {url}: {e.code} {msg}")
     except urllib.error.URLError as e:
         raise EmbeddingError(f"Failed to reach Ollama at {url}: {e}")
+
+
+def _batched(iterable, size):
+    it = iter(iterable)
+    while True:
+        batch = list(islice(it, size))
+        if not batch:
+            return
+        yield batch
 
 
 def embed_texts(texts: Iterable[str]) -> list[list[float]]:
@@ -75,32 +93,32 @@ def embed_texts(texts: Iterable[str]) -> list[list[float]]:
     ecfg = _embedding_cfg()
     url = f"{ecfg.base_url}/api/embed"
 
-    data = _post_json(url, {"model": ecfg.model, "input": texts_list})
-
-    # Ollama returns either "embeddings" (batch) or "embedding" (single)
-    if "embeddings" in data:
-        vectors = data["embeddings"]
-    elif "embedding" in data:
-        vectors = [data["embedding"]]
-    else:
-        raise EmbeddingError(f"Unexpected Ollama embed response keys: {list(data.keys())}")
-
-    # Validate dimensions
     out: list[list[float]] = []
-    for i, v in enumerate(vectors):
-        if not isinstance(v, list):
-            raise EmbeddingError(f"Embedding {i} is not a list")
-        if len(v) != ecfg.dimension:
-            raise EmbeddingError(
-                f"Embedding {i} has dim {len(v)} but expected {ecfg.dimension}. "
-                f"Update Cassandra schema and/or [rag] embedding_dim to match."
-            )
-        out.append([float(x) for x in v])
-
-    if len(out) != len(texts_list):
-        raise EmbeddingError(
-            f"Embedding count mismatch: got {len(out)} vectors for {len(texts_list)} inputs"
+    for batch in _batched(texts_list, ecfg.batch_size):
+        data = _post_json(
+            url,
+            {"model": ecfg.model, "input": batch},
+            timeout=ecfg.timeout,
         )
+
+        if "embeddings" in data:
+            vectors = data["embeddings"]
+        elif "embedding" in data:
+            vectors = [data["embedding"]]
+        else:
+            raise EmbeddingError(
+                f"Unexpected Ollama embed response keys: {list(data.keys())}"
+            )
+
+        for i, v in enumerate(vectors):
+            if not isinstance(v, list):
+                raise EmbeddingError(f"Embedding is not a list")
+            if len(v) != ecfg.dimension:
+                raise EmbeddingError(
+                    f"Embedding has dim {len(v)} but expected {ecfg.dimension}. "
+                    f"Update Cassandra schema and/or [rag] embedding_dim to match."
+                )
+            out.append([float(x) for x in v])
 
     return out
 
