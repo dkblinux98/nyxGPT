@@ -12,7 +12,7 @@ from mygpt.config import (
 )
 from mygpt import sessions
 from mygpt import tools_fs
-from mygpt.ollama_client import ollama_chat, ollama_chat_stream
+from mygpt.chat import chat
 from mygpt.rag.rag import ingest_document, retrieve_context
 from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -39,44 +39,24 @@ def cmd_chat(
     sessions_dir: Path | None,
 ) -> int:
     cfg = load_config(cfg_path)
-    base_url = get_ollama_base_url(cfg)
-    model = model_override or get_default_model(cfg)
 
-    session_file, meta_file, messages, _meta = sessions.init_session(
-        session_name=session_name,
-        sessions_dir=sessions_dir or get_sessions_dir(cfg),
-        new_session=new_session,
-        model=model,
-        system=system,
-    )
-
-    def ask_once(user_text: str) -> str:
-        messages.append({"role": "user", "content": user_text})
-
-        if stream:
-            reply = ollama_chat_stream(base_url=base_url, model=model, messages=messages)
-        else:
-            reply = ollama_chat(base_url=base_url, model=model, messages=messages)
-
-        messages.append({"role": "assistant", "content": reply})
-        sessions.persist_after_exchange(
-            session_file=session_file,
-            meta_file=meta_file,
-            messages=messages,
-            model=model,
-        )
-        return reply
-
-    # Single prompt mode
+    # Single-prompt mode
     if prompt is not None:
-        if stream:
-            ask_once(prompt)
-        else:
-            print(ask_once(prompt))
+        result = chat(
+            prompt,
+            session=session_name,
+            new=new_session,
+            model=model_override,
+            system=system,
+            config_path=str(cfg_path) if cfg_path else None,
+            sessions_dir=str(sessions_dir) if sessions_dir else None,
+        )
+        print(result.reply)
         return 0
 
     # Interactive mode
-    print(f"myGPT chat (model: {model}, session: {session_file.name})")
+    model = model_override or get_default_model(cfg)
+    print(f"myGPT chat (model: {model}, session: {session_name})")
     print("Type /exit to quit.")
 
     while True:
@@ -92,13 +72,20 @@ def cmd_chat(
             return 0
 
         try:
-            reply = ask_once(user_text)
+            result = chat(
+                user_text,
+                session=session_name,
+                new=False,
+                model=model_override,
+                system=system,
+                config_path=str(cfg_path) if cfg_path else None,
+                sessions_dir=str(sessions_dir) if sessions_dir else None,
+            )
         except Exception as e:
             print(f"ERROR: {e}", file=sys.stderr)
             continue
 
-        if not stream:
-            print(reply)
+        print(result.reply)
 
 
 def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: list[str], sessions_dir: Path | None) -> int:

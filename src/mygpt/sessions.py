@@ -1,9 +1,8 @@
-
-
 from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -161,6 +160,58 @@ def persist_after_exchange(session_file: Path, meta_file: Path, messages: list[d
     meta = ensure_meta_defaults(meta, model=model)
     meta["token_estimate"] = token_estimate_from_messages(messages)
     save_session_meta(meta_file, meta)
+
+
+@dataclass
+class SessionState:
+    name: str
+    session_file: Path
+    meta_file: Path
+    messages: list[dict[str, str]]
+    meta: dict[str, Any]
+
+
+def load_session(
+    name: str,
+    cfg: Any,
+    *,
+    sessions_dir_override: str | None = None,
+    new_session: bool = False,
+    model: str | None = None,
+    system: str | None = None,
+) -> SessionState:
+    """High-level session loader used by chat + API.
+
+    Returns a SessionState with messages + meta loaded and defaults applied.
+    """
+    sessions_dir = Path(sessions_dir_override).expanduser() if sessions_dir_override else get_sessions_dir(cfg)
+    chosen_model = model or get_default_model(cfg)
+
+    sf, mf, msgs, meta = init_session(
+        name,
+        sessions_dir,
+        new_session=new_session,
+        model=chosen_model,
+        system=system,
+    )
+    return SessionState(name=name, session_file=sf, meta_file=mf, messages=msgs, meta=meta)
+
+
+def save_session(
+    state: SessionState,
+    cfg: Any,
+    *,
+    sessions_dir_override: str | None = None,
+    model: str | None = None,
+) -> None:
+    """Persist messages and meta for an existing SessionState."""
+    if sessions_dir_override:
+        sessions_dir = Path(sessions_dir_override).expanduser()
+        state.session_file = session_file_for(state.name, sessions_dir)
+        state.meta_file = meta_file_for(state.session_file)
+
+    chosen_model = model or str(state.meta.get("model") or get_default_model(cfg))
+    persist_after_exchange(state.session_file, state.meta_file, state.messages, model=chosen_model)
 
 
 # --- Session management operations for the CLI ---
@@ -357,6 +408,9 @@ __all__ = [
     "apply_system_prompt",
     "init_session",
     "persist_after_exchange",
+    "SessionState",
+    "load_session",
+    "save_session",
     "list_sessions",
     "delete_session",
     "rename_session",

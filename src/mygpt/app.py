@@ -39,7 +39,7 @@ from mygpt.config import (
     get_sessions_dir,
     load_config,
 )
-from mygpt.ollama_client import ollama_chat
+from mygpt.chat import chat as run_chat
 from mygpt import sessions
 from mygpt import tools_fs
 
@@ -392,28 +392,19 @@ def sessions_tags_remove(name: str, req: TagsRequest, sessions_dir: Optional[str
 
 @api.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
-    cfg = _cfg(None)
-    base_url = get_ollama_base_url(cfg)
-    model = req.model or get_default_model(cfg)
-
-    session_file, meta_file, messages, _meta = sessions.init_session(
-        session_name=req.session,
-        sessions_dir=_sessions_dir_from_str(req.sessions_dir) or get_sessions_dir(cfg),
-        new_session=req.new,
-        model=model,
-        system=req.system,
-    )
-
-    messages.append({"role": "user", "content": req.prompt})
     try:
-        reply = ollama_chat(base_url=base_url, model=model, messages=messages)
+        result = run_chat(
+            req.prompt,
+            session=req.session,
+            new=req.new,
+            model=req.model,
+            system=req.system,
+            config_path=None,
+            sessions_dir=req.sessions_dir,
+        )
+        return ChatResponse(session=result.session, model=result.model, reply=result.reply)
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
-
-    messages.append({"role": "assistant", "content": reply})
-    sessions.persist_after_exchange(session_file=session_file, meta_file=meta_file, messages=messages, model=model)
-
-    return ChatResponse(session=req.session, model=model, reply=reply)
 
 
 @api.post("/tools/ls", response_model=ToolTextResponse)

@@ -30,6 +30,7 @@ The following sections are supported in `~/.myGPT/config.ini`:
 - `default_model` — default Ollama model to use for chat and summaries
 - `sessions_dir` — directory where session JSON and metadata files are stored
 - `vectorstore_dir` — directory where future RAG / vector data will be stored
+- `chat_timeout_seconds` — timeout (in seconds) for a single chat generation request to Ollama
 
 #### `[ollama]`
 - `base_url` — Ollama API base URL (usually `http://127.0.0.1:11434`)
@@ -93,6 +94,30 @@ embedding_timeout_seconds = 120
 
 These settings control how documents are chunked, embedded, stored in Cassandra, and retrieved for RAG.
 
+##### RAG-assisted chat
+
+RAG can optionally inject retrieved context directly into chat prompts.
+
+When enabled, the chat pipeline will:
+- retrieve the top `chat_top_k` chunks related to the user prompt
+- truncate retrieved context to `chat_context_max_chars`
+- inject the context into the prompt as background knowledge
+
+This applies to:
+- `mygpt chat` (CLI)
+- `POST /api/v1/chat` (FastAPI)
+
+Configuration:
+
+```ini
+[rag]
+enable_chat_context = false
+chat_top_k = 3
+chat_context_max_chars = 4000
+```
+
+When disabled, chat behaves exactly as a normal non-RAG chat.
+
 ⚠️ **Re-ingest required**
 
 Any change to the following settings requires re-ingesting documents:
@@ -146,6 +171,12 @@ uvicorn mygpt.app:app --reload --host 127.0.0.1 --port 8000
 - Health check: http://127.0.0.1:8000/health
 - API docs (Swagger UI): http://127.0.0.1:8000/docs
 - Versioned API base: http://127.0.0.1:8000/api/v1
+
+### Chat API endpoint
+
+`POST /api/v1/chat` uses the same chat pipeline as the CLI.
+
+When RAG-assisted chat is enabled in `[rag]`, retrieved context is automatically injected into chat prompts.
 
 ### RAG API endpoints
 

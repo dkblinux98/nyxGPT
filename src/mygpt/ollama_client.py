@@ -50,10 +50,10 @@ def post_json_lines(url: str, payload: dict[str, Any], timeout_s: float = 120.0)
         raise RuntimeError(f"Failed to reach Ollama at {url}: {e}") from e
 
 
-def ollama_chat(base_url: str, model: str, messages: list[dict[str, str]]) -> str:
+def ollama_chat(base_url: str, model: str, messages: list[dict[str, str]], timeout_s: float = 120.0) -> str:
     url = base_url.rstrip("/") + "/api/chat"
     payload = {"model": model, "messages": messages, "stream": False}
-    data = post_json(url, payload)
+    data = post_json(url, payload, timeout_s=timeout_s)
 
     msg = (data.get("message") or {})
     content = msg.get("content")
@@ -62,13 +62,13 @@ def ollama_chat(base_url: str, model: str, messages: list[dict[str, str]]) -> st
     return content
 
 
-def ollama_chat_stream(base_url: str, model: str, messages: list[dict[str, str]]) -> str:
+def ollama_chat_stream(base_url: str, model: str, messages: list[dict[str, str]], timeout_s: float = 120.0) -> str:
     """Stream tokens from Ollama and return the final assistant message content."""
     url = base_url.rstrip("/") + "/api/chat"
     payload = {"model": model, "messages": messages, "stream": True}
 
     chunks: list[str] = []
-    for obj in post_json_lines(url, payload):
+    for obj in post_json_lines(url, payload, timeout_s=timeout_s):
         msg = (obj.get("message") or {})
         part = msg.get("content")
         if isinstance(part, str) and part:
