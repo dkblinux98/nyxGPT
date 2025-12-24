@@ -5,7 +5,7 @@ from typing import Any
 
 from mygpt.config import load_config
 from mygpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
-from mygpt.rag.rag import retrieve_context
+from mygpt.rag.rag import retrieve_context, compose_context
 from mygpt.sessions import load_session, save_session
 
 
@@ -51,42 +51,6 @@ def _get_str(cfg: Any, section: str, key: str, default: str) -> str:
         return default
 
 
-def _build_rag_context(query: str, top_k: int, max_chars: int) -> tuple[str, int]:
-    """Return (context_text, chunks_used). Never raises."""
-    try:
-        rows = retrieve_context(query, top_k=top_k)
-        # Some callers/tests may return a raw string. Normalize to the expected row shape.
-        if isinstance(rows, str):
-            rows = [{"text": rows, "doc_id": "rag", "chunk_id": 0, "score": None}]
-        parts: list[str] = []
-        used = 0
-        remaining = max_chars
-
-        for r in rows:
-            txt = str(r.get("text", "")).strip()
-            if not txt:
-                continue
-            label = f"[doc_id={r.get('doc_id')} chunk_id={r.get('chunk_id')} score={r.get('score')}]"
-            block = f"{label}\n{txt}\n"
-            if len(block) > remaining:
-                # Truncate this block if we can fit anything
-                if remaining > 0:
-                    block = block[:remaining]
-                    parts.append(block)
-                    used += 1
-                break
-            parts.append(block)
-            used += 1
-            remaining -= len(block)
-            if remaining <= 0:
-                break
-
-        context = "\n".join(parts).strip()
-        return context, used
-    except Exception:
-        return "", 0
-
-
 def chat(
     prompt: str,
     *,
@@ -120,12 +84,14 @@ def chat(
 
     # Optional RAG context injection
     rag_enabled = _get_bool(cfg, "rag", "enable_chat_context", False)
-    rag_top_k = _get_int(cfg, "rag", "chat_top_k", 3)
-    rag_max_chars = _get_int(cfg, "rag", "chat_context_max_chars", 4000)
+    rag_context = ""
+    rag_chunks = 0
 
-    rag_context, rag_chunks = ("", 0)
     if rag_enabled:
-        rag_context, rag_chunks = _build_rag_context(prompt, top_k=rag_top_k, max_chars=rag_max_chars)
+        rows = retrieve_context(prompt)
+        rag_chunks = len(rows)
+        rag_context = compose_context(rows)
+
         if rag_context:
             messages.append(
                 {
@@ -203,12 +169,14 @@ def chat_stream(
 
     # Optional RAG context injection
     rag_enabled = _get_bool(cfg, "rag", "enable_chat_context", False)
-    rag_top_k = _get_int(cfg, "rag", "chat_top_k", 3)
-    rag_max_chars = _get_int(cfg, "rag", "chat_context_max_chars", 4000)
+    rag_context = ""
+    rag_chunks = 0
 
-    rag_context, rag_chunks = ("", 0)
     if rag_enabled:
-        rag_context, rag_chunks = _build_rag_context(prompt, top_k=rag_top_k, max_chars=rag_max_chars)
+        rows = retrieve_context(prompt)
+        rag_chunks = len(rows)
+        rag_context = compose_context(rows)
+
         if rag_context:
             messages.append(
                 {

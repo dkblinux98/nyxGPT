@@ -53,7 +53,9 @@ def test_chat_with_rag_injects_context(monkeypatch: pytest.MonkeyPatch, tmp_path
     # Mock RAG retrieval
     monkeypatch.setattr(
         "mygpt.chat.retrieve_context",
-        lambda *a, **k: "RAG CONTEXT HERE",
+        lambda *a, **k: [
+            {"text": "RAG CONTEXT HERE", "score": 0.9},
+        ],
     )
 
     # Capture messages sent to ollama

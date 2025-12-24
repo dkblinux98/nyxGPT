@@ -20,6 +20,7 @@ It uses **Ollama** for local LLM inference, supports persistent **sessions**, op
 - Local LLM inference via Ollama
 - Persistent conversation sessions stored outside the repo
 - Optional RAG using Cassandra 5.0 native vector search
+- Config-driven RAG prompt and context optimization (pruning, scoring, budgets)
 - Shared core logic between CLI and FastAPI backend
 - Robust unit and integration test suite
 - Architecture designed for future TUI and React/Next.js UI
@@ -57,6 +58,8 @@ chmod 600 ~/.myGPT/config.ini
 ```
 
 Edit `~/.myGPT/config.ini` to match your environment (models, logging, RAG, etc.).
+
+When RAG-assisted chat is enabled, prompt construction is optimized via configuration knobs such as similarity score thresholds, chunk limits, and context size budgets. See `example.config.ini` and `docs/api.md` for details.
 
 ---
 

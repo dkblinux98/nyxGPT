@@ -70,6 +70,62 @@ def get_api_port(cfg: ConfigParser) -> int:
         return 8000
 
 
+def get_rag_enable_chat_context(cfg: ConfigParser) -> bool:
+    try:
+        return cfg.getboolean("rag", "enable_chat_context", fallback=False)
+    except Exception:
+        return False
+
+
+def get_rag_chat_top_k(cfg: ConfigParser) -> int:
+    try:
+        return cfg.getint("rag", "chat_top_k", fallback=3)
+    except Exception:
+        return 3
+
+
+def get_rag_min_score(cfg: ConfigParser) -> float:
+    try:
+        return cfg.getfloat("rag", "min_score", fallback=0.0)
+    except Exception:
+        return 0.0
+
+
+def get_rag_max_chunks(cfg: ConfigParser) -> int:
+    try:
+        return cfg.getint("rag", "max_chunks", fallback=6)
+    except Exception:
+        return 6
+
+
+def get_rag_chat_context_max_chars(cfg: ConfigParser) -> int:
+    try:
+        return cfg.getint("rag", "chat_context_max_chars", fallback=2400)
+    except Exception:
+        return 2400
+
+
+def get_rag_dedupe(cfg: ConfigParser) -> bool:
+    try:
+        return cfg.getboolean("rag", "dedupe", fallback=True)
+    except Exception:
+        return True
+
+
+def get_rag_include_scores(cfg: ConfigParser) -> bool:
+    try:
+        return cfg.getboolean("rag", "include_scores", fallback=False)
+    except Exception:
+        return False
+
+
+def get_rag_include_headers(cfg: ConfigParser) -> bool:
+    try:
+        return cfg.getboolean("rag", "include_headers", fallback=True)
+    except Exception:
+        return True
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "load_config",
@@ -80,4 +136,12 @@ __all__ = [
     "get_log_dir",
     "get_api_host",
     "get_api_port",
+    "get_rag_enable_chat_context",
+    "get_rag_chat_top_k",
+    "get_rag_min_score",
+    "get_rag_max_chunks",
+    "get_rag_chat_context_max_chars",
+    "get_rag_dedupe",
+    "get_rag_include_scores",
+    "get_rag_include_headers",
 ]

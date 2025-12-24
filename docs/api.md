@@ -115,8 +115,24 @@ Send a chat prompt and receive a model response.
 }
 ```
 
+
 - Sessions are persisted automatically.
 - RAG context may be injected depending on configuration.
+
+### RAG prompt & context optimization
+
+When RAG-assisted chat is enabled, retrieved context injected into the prompt is governed by configuration settings in `~/.myGPT/config.ini` under the `[rag]` section.
+
+Key controls include:
+
+- `enable_chat_context`: turn RAG injection on or off for chat
+- `chat_top_k`: number of candidate chunks retrieved from the vector store
+- `min_score`: minimum similarity score required for a chunk to be included
+- `max_chunks`: hard cap on the number of chunks injected
+- `chat_context_max_chars`: maximum total character budget for injected context
+- `dedupe`: remove duplicate or near-duplicate chunks
+
+These controls allow you to balance answer quality, latency, and prompt size. Sensible defaults are provided; see `example.config.ini` for recommended values.
 
 ---
 

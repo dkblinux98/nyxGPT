@@ -3,7 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, List
 
-from mygpt.config import load_config
+from mygpt.config import (
+    load_config,
+    get_rag_chat_top_k,
+    get_rag_min_score,
+    get_rag_max_chunks,
+    get_rag_chat_context_max_chars,
+    get_rag_dedupe,
+    get_rag_include_scores,
+    get_rag_include_headers,
+)
 from mygpt.rag.embeddings import embed_text, embed_texts
 from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -12,11 +21,6 @@ from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 class ChunkingConfig:
     chunk_size: int
     overlap: int
-
-
-@dataclass(frozen=True)
-class RAGConfig:
-    top_k: int
 
 
 class RAGError(RuntimeError):
@@ -30,12 +34,6 @@ def _chunking_cfg() -> ChunkingConfig:
     if overlap >= size:
         raise RAGError("chunk_overlap must be smaller than chunk_size")
     return ChunkingConfig(chunk_size=size, overlap=overlap)
-
-
-def _rag_cfg() -> RAGConfig:
-    cfg = load_config(None)
-    top_k = cfg.getint("rag", "top_k", fallback=5)
-    return RAGConfig(top_k=top_k)
 
 
 # ----------------------------
@@ -174,9 +172,13 @@ def ingest_document(
 
 
 def retrieve_context(query: str, top_k: int | None = None) -> list[dict]:
-    """Retrieve top-k similar chunks for a query string."""
-    cfg = _rag_cfg()
-    k = int(top_k) if top_k is not None else cfg.top_k
+    cfg = load_config(None)
+
+    k = int(top_k) if top_k is not None else get_rag_chat_top_k(cfg)
+    min_score = get_rag_min_score(cfg)
+    max_chunks = get_rag_max_chunks(cfg)
+    dedupe = get_rag_dedupe(cfg)
+
     q_emb = embed_text(query)
 
     store = CassandraVectorStore()
@@ -185,7 +187,30 @@ def retrieve_context(query: str, top_k: int | None = None) -> list[dict]:
     finally:
         store.close()
 
-    return results
+    # Filter by score
+    filtered: list[dict] = []
+    seen_texts: set[str] = set()
+
+    for r in results:
+        score = r.get("score")
+        if score is not None and score < min_score:
+            continue
+
+        text = (r.get("text") or "").strip()
+        if not text:
+            continue
+
+        if dedupe:
+            norm = " ".join(text.split())
+            if norm in seen_texts:
+                continue
+            seen_texts.add(norm)
+
+        filtered.append(r)
+        if len(filtered) >= max_chunks:
+            break
+
+    return filtered
 
 
 # ----------------------------
@@ -194,10 +219,39 @@ def retrieve_context(query: str, top_k: int | None = None) -> list[dict]:
 
 
 def compose_context(results: Iterable[dict]) -> str:
-    """Compose retrieved chunks into a single context string."""
+    cfg = load_config(None)
+    max_chars = get_rag_chat_context_max_chars(cfg)
+    include_scores = get_rag_include_scores(cfg)
+    include_headers = get_rag_include_headers(cfg)
+
     parts: List[str] = []
-    for r in results:
-        text = r.get("text", "")
-        if text:
-            parts.append(text.strip())
+    used = 0
+
+    for i, r in enumerate(results, start=1):
+        text = (r.get("text") or "").strip()
+        if not text:
+            continue
+
+        header = ""
+        if include_headers:
+            header = f"[Context {i}]"
+            if include_scores and r.get("score") is not None:
+                header += f" (score={r.get('score'):.3f})"
+            header += "\n"
+
+        block = (header + text).strip()
+
+        if max_chars > 0:
+            remaining = max_chars - used
+            if remaining <= 0:
+                break
+            if len(block) > remaining:
+                block = block[:remaining].rstrip()
+
+        parts.append(block)
+        used += len(block) + 2
+
+        if max_chars > 0 and used >= max_chars:
+            break
+
     return "\n\n".join(parts)
