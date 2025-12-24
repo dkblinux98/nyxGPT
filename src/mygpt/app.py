@@ -404,7 +404,7 @@ def chat_stream_api(req: ChatRequest):
     try:
         def _stream_with_keepalive():
             # Send an immediate keepalive to prevent client read timeouts
-            yield ""
+            yield "\n"
             for chunk in chat_stream(
                 req.prompt,
                 session=req.session,
@@ -428,7 +428,7 @@ def chat_stream_api(req: ChatRequest):
 def chat_stream_api_legacy(req: ChatRequest):
     try:
         def _stream_with_keepalive():
-            yield ""
+            yield "\n"
             for chunk in chat_stream(
                 req.prompt,
                 session=req.session,
