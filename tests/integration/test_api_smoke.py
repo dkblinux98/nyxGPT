@@ -43,3 +43,32 @@ def test_api_chat_stream(api_base_url: str) -> None:
             break
 
     assert got_any_chunk is True
+
+
+@pytest.mark.integration
+def test_api_sessions_list_and_get(api_base_url: str) -> None:
+    # create a session without invoking the model
+    r = httpx.post(
+        f"{api_base_url}/api/v1/sessions/init",
+        json={"name": "ui-test-session"},
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+
+    # list sessions
+    r = httpx.get(f"{api_base_url}/api/v1/sessions", timeout=5.0)
+    assert r.status_code == 200
+    data = r.json()
+    sessions = data.get("sessions") if isinstance(data, dict) else data
+    assert isinstance(sessions, list)
+    names = [s.get("name") for s in sessions if isinstance(s, dict)]
+    assert "ui-test-session" in names
+
+    # fetch session detail
+    r = httpx.get(f"{api_base_url}/api/v1/sessions/ui-test-session", timeout=5.0)
+    assert r.status_code == 200
+    data = r.json()
+    assert "messages" in data
+    assert isinstance(data["messages"], list)
+    assert "meta" in data
+    assert isinstance(data["meta"], dict)

@@ -309,6 +309,7 @@ def sessions_list(sessions_dir: Optional[str] = None) -> SessionsListResponse:
     return SessionsListResponse(sessions=out)
 
 
+
 @api.get("/sessions/{name}")
 def sessions_show(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
     sd = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
@@ -319,6 +320,57 @@ def sessions_show(name: str, sessions_dir: Optional[str] = None) -> dict[str, An
     if not sf.exists():
         raise HTTPException(status_code=404, detail="No such session")
     return {"name": name, "messages": msgs, "meta": meta}
+
+# Lightweight session initialization endpoint (does NOT invoke the model)
+from fastapi import Body
+from typing import Any
+
+@api.post("/sessions/init")
+def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    name = req.get("name")
+    if not name or not isinstance(name, str):
+        raise HTTPException(status_code=400, detail="Session name is required")
+
+    cfg = _cfg(None)
+    sd = get_sessions_dir(cfg)
+
+    # Ensure sessions directory exists
+    sd.mkdir(parents=True, exist_ok=True)
+
+    # Idempotent behavior: if the session already exists, succeed
+    try:
+        sf = sessions.session_file_for(name, sd)
+    except Exception as e:
+        # Name validation errors should be 400, not 500
+        log.warning("Invalid session name for init: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if sf.exists():
+        return {"ok": True, "name": name, "existed": True}
+
+    system = req.get("system")
+    if not isinstance(system, str) or not system:
+        system = "You are a helpful assistant."
+
+    model = req.get("model")
+    if not isinstance(model, str) or not model:
+        model = None
+
+    try:
+        ok, msg = sessions.init_session(
+            name=name,
+            system=system,
+            model=model,
+            sessions_dir=sd,
+        )
+    except Exception as e:
+        log.exception("sessions.init_session failed")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+
+    return {"ok": True, "name": name, "existed": False}
 
 
 @api.delete("/sessions/{name}")

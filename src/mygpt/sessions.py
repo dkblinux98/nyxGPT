@@ -235,7 +235,12 @@ def save_session(
 # --- Session management operations for the CLI ---
 
 def list_sessions(cfg: Any | None) -> list[dict[str, Any]]:
-    sessions_dir = get_sessions_dir(cfg) if cfg is not None else default_sessions_dir()
+    # Accept either a config object or a Path
+    if isinstance(cfg, Path):
+        sessions_dir = cfg
+    else:
+        sessions_dir = get_sessions_dir(cfg) if cfg is not None else default_sessions_dir()
+
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     files = [p for p in sessions_dir.glob("*.json") if not p.name.endswith(".meta.json")]

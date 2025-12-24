@@ -90,6 +90,80 @@ Returns basic runtime configuration details.
 
 ---
 
+## Sessions endpoints
+
+Sessions store conversation history and metadata and are persisted automatically on disk.
+
+### `GET /api/v1/sessions`
+
+List all known sessions.
+
+**Response:**
+
+```json
+{
+  "sessions": [
+    {
+      "name": "default",
+      "messages": 14,
+      "modified": "2025-12-23 23:35:32",
+      "pinned": false,
+      "tags": [],
+      "title": "",
+      "summary": "",
+      "token_estimate": 228,
+      "model": "llama3.1:8b"
+    }
+  ]
+}
+```
+
+---
+
+### `POST /api/v1/sessions/init`
+
+Initialize a session. This endpoint is **idempotent** and does not invoke the model.
+
+**Request:**
+
+```json
+{
+  "name": "my-session"
+}
+```
+
+**Response:**
+
+```json
+{ "status": "ok", "session": "my-session" }
+```
+
+---
+
+### `GET /api/v1/sessions/{name}`
+
+Retrieve a single session, including messages and metadata.
+
+**Response (abridged):**
+
+```json
+{
+  "name": "my-session",
+  "messages": [
+    {"role": "user", "content": "Hello"},
+    {"role": "assistant", "content": "Hi!"}
+  ],
+  "meta": {
+    "pinned": false,
+    "tags": [],
+    "title": "",
+    "summary": ""
+  }
+}
+```
+
+---
+
 ## Chat endpoint
 
 ### `POST /api/v1/chat`
@@ -142,7 +216,7 @@ These controls allow you to balance answer quality, latency, and prompt size. Se
 
 Stream a chat response token-by-token as plain text.
 
-This endpoint is functionally equivalent to `/api/v1/chat` but returns the assistant response incrementally as it is generated, which provides a much better user experience for interactive clients.
+This endpoint is functionally equivalent to `/api/v1/chat` but returns the assistant response incrementally as it is generated, providing a much better user experience for interactive clients such as a TUI or web UI.
 
 **Request:**
 
@@ -190,15 +264,30 @@ At a high level, the API supports:
 
 ---
 
-## Authentication (future)
+## Authentication (optional)
 
-Authentication scaffolding exists but is disabled by default.
+Authentication scaffolding exists and is **disabled by default**.
 
-Planned options:
-- local API tokens
-- loopback-only enforcement
+When enabled via `~/.myGPT/config.ini`:
 
-No authentication is required in the current local-only setup.
+- All API requests must include a shared API key header
+- Requests missing or providing an invalid key will return `401 Unauthorized`
+
+### Configuration
+
+```ini
+[auth]
+enabled = true
+api_key = your-secret-key
+header = X-API-Key
+```
+
+### Example
+
+```bash
+curl http://127.0.0.1:8000/api/v1/info \
+  -H "X-API-Key: your-secret-key"
+```
 
 ---
 
@@ -214,4 +303,4 @@ No authentication is required in the current local-only setup.
 
 - The API is **not intended to be exposed publicly**.
 - HTTPS termination is expected to be handled externally if ever needed.
-- Streaming responses will be added in a future phase.
+- Streaming responses are supported via `/api/v1/chat/stream`.
