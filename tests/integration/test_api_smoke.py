@@ -21,3 +21,25 @@ def test_api_info(api_base_url: str) -> None:
     assert "ollama_base_url" in data
     assert "default_model" in data
     assert "sessions_dir" in data
+
+
+@pytest.mark.integration
+def test_api_chat_stream(api_base_url: str) -> None:
+    """Verify that the streaming chat endpoint returns incremental content."""
+    url = f"{api_base_url}/api/v1/chat/stream"
+
+    with httpx.stream(
+        "POST",
+        url,
+        json={"prompt": "hello", "session": "test-stream"},
+        timeout=httpx.Timeout(60.0, connect=5.0, read=60.0, write=60.0, pool=60.0),
+    ) as r:
+        assert r.status_code == 200
+
+        got_chunk = False
+        for text in r.iter_text():
+            if text and text.strip():
+                got_chunk = True
+                break
+
+    assert got_chunk is True

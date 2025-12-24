@@ -13,7 +13,7 @@ import urllib.error
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.status import HTTP_401_UNAUTHORIZED
 from mygpt.api_models import (
     InfoResponse,
@@ -39,7 +39,7 @@ from mygpt.config import (
     get_sessions_dir,
     load_config,
 )
-from mygpt.chat import chat as run_chat
+from mygpt.chat import chat as run_chat, chat_stream
 from mygpt import sessions
 from mygpt import tools_fs
 
@@ -394,6 +394,56 @@ def chat(req: ChatRequest) -> ChatResponse:
             sessions_dir=req.sessions_dir,
         )
         return ChatResponse(session=result.session, model=result.model, reply=result.reply)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+# Streaming chat endpoint
+@api.post("/chat/stream")
+def chat_stream_api(req: ChatRequest):
+    try:
+        def _stream_with_keepalive():
+            # Send an immediate keepalive to prevent client read timeouts
+            yield ""
+            for chunk in chat_stream(
+                req.prompt,
+                session=req.session,
+                new=req.new,
+                model=req.model,
+                system=req.system,
+                config_path=None,
+                sessions_dir=req.sessions_dir,
+            ):
+                yield chunk
+
+        return StreamingResponse(
+            _stream_with_keepalive(),
+            media_type="text/plain; charset=utf-8",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+# Non-versioned alias for streaming chat endpoint
+@app.post("/api/chat/stream")
+def chat_stream_api_legacy(req: ChatRequest):
+    try:
+        def _stream_with_keepalive():
+            yield ""
+            for chunk in chat_stream(
+                req.prompt,
+                session=req.session,
+                new=req.new,
+                model=req.model,
+                system=req.system,
+                config_path=None,
+                sessions_dir=req.sessions_dir,
+            ):
+                yield chunk
+
+        return StreamingResponse(
+            _stream_with_keepalive(),
+            media_type="text/plain; charset=utf-8",
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 

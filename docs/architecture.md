@@ -92,6 +92,24 @@ Core logic lives in reusable modules and is shared by CLI and API.
 - Calls Ollama via HTTP
 - Session persistence
 
+#### Streaming responses
+
+Chat supports **token-by-token streaming** as an optional execution mode.
+
+Streaming flow:
+
+- Prompt assembly and optional RAG context injection occur **before** generation
+- Ollama is called with streaming enabled
+- Text chunks are yielded incrementally
+- The full assistant reply is assembled internally
+- Session persistence happens **after** streaming completes
+
+Streaming is exposed consistently across:
+
+- Core chat logic (`chat_stream`)
+- CLI (default behavior)
+- FastAPI (`/api/v1/chat/stream`)
+
 ### Sessions
 
 - File-based session storage

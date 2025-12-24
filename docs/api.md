@@ -120,6 +120,46 @@ Send a chat prompt and receive a model response.
 
 ---
 
+## Streaming chat endpoint
+
+### `POST /api/v1/chat/stream`
+
+Stream a chat response token-by-token as plain text.
+
+This endpoint is functionally equivalent to `/api/v1/chat` but returns the assistant response incrementally as it is generated, which provides a much better user experience for interactive clients.
+
+**Request:**
+
+```json
+{
+  "prompt": "Write a haiku about streaming",
+  "session": "default",
+  "model": "llama3.1:8b"
+}
+```
+
+**Response:**
+
+- HTTP 200
+- `Content-Type: text/plain; charset=utf-8`
+- Body is streamed incrementally as text chunks
+
+Example using `curl`:
+
+```bash
+curl -N http://127.0.0.1:8000/api/v1/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Write a haiku about streaming","session":"default"}'
+```
+
+Notes:
+
+- The connection remains open until generation completes
+- Retrieved RAG context (if enabled) is injected *before* streaming begins
+- The full response is persisted to the session once streaming completes
+
+---
+
 ## RAG endpoints
 
 RAG-related endpoints are documented in detail in:

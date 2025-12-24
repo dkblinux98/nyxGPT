@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from mygpt.config import load_config
-from mygpt.ollama_client import ollama_chat
+from mygpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
 from mygpt.rag.rag import retrieve_context
 from mygpt.sessions import load_session, save_session
 
@@ -164,3 +164,88 @@ def chat(
         rag_used=bool(rag_context),
         rag_chunks=rag_chunks,
     )
+
+
+def chat_stream(
+    prompt: str,
+    *,
+    session: str = "default",
+    new: bool = False,
+    model: str | None = None,
+    system: str | None = None,
+    config_path: str | None = None,
+    sessions_dir: str | None = None,
+):
+    """Yield assistant text chunks for a chat turn while persisting the final reply.
+
+    This function yields incremental text tokens. Callers should print or forward
+    chunks as they arrive. Session persistence occurs after streaming completes.
+    """
+
+    cfg = _cfg(config_path)
+
+    base_url = _get_str(cfg, "ollama", "base_url", "http://127.0.0.1:11434")
+    default_model = _get_str(cfg, "mygpt", "default_model", "llama3.1:8b")
+    chosen_model = model or default_model
+
+    chat_timeout_s = _get_int(cfg, "mygpt", "chat_timeout_seconds", 180)
+
+    # Load session messages
+    state = load_session(session, cfg, sessions_dir_override=sessions_dir)
+    if new:
+        state.messages = []
+
+    messages: list[dict[str, str]] = []
+
+    sys_msg = system or _get_str(cfg, "mygpt", "system_prompt", "")
+    if sys_msg.strip():
+        messages.append({"role": "system", "content": sys_msg.strip()})
+
+    # Optional RAG context injection
+    rag_enabled = _get_bool(cfg, "rag", "enable_chat_context", False)
+    rag_top_k = _get_int(cfg, "rag", "chat_top_k", 3)
+    rag_max_chars = _get_int(cfg, "rag", "chat_context_max_chars", 4000)
+
+    rag_context, rag_chunks = ("", 0)
+    if rag_enabled:
+        rag_context, rag_chunks = _build_rag_context(prompt, top_k=rag_top_k, max_chars=rag_max_chars)
+        if rag_context:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": "Use the retrieved context below when it is relevant and helpful. "
+                    "Do not mention that you were given retrieved context unless the user explicitly asks about sources. "
+                    "If the context is insufficient, say so and answer from general knowledge.\n\n"
+                    "--- BEGIN RETRIEVED CONTEXT ---\n"
+                    f"{rag_context}\n"
+                    "--- END RETRIEVED CONTEXT ---",
+                }
+            )
+
+    # Add prior conversation
+    for m in state.messages:
+        role = str(m.get("role", "user"))
+        content = str(m.get("content", ""))
+        if content:
+            messages.append({"role": role, "content": content})
+
+    # Add this turn
+    messages.append({"role": "user", "content": prompt})
+
+    # Stream tokens and assemble final reply
+    parts: list[str] = []
+    for chunk in ollama_chat_stream_tokens(
+        base_url=base_url,
+        model=chosen_model,
+        messages=messages,
+        timeout_s=chat_timeout_s,
+    ):
+        parts.append(chunk)
+        yield chunk
+
+    reply = "".join(parts)
+
+    # Persist back to session
+    state.messages.append({"role": "user", "content": prompt})
+    state.messages.append({"role": "assistant", "content": reply})
+    save_session(state, cfg, sessions_dir_override=sessions_dir)

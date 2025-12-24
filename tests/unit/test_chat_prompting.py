@@ -7,7 +7,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from mygpt.chat import chat
+from mygpt.chat import chat, chat_stream
 
 
 
@@ -96,3 +96,38 @@ def test_chat_rag_disabled_does_not_call_retrieve(monkeypatch: pytest.MonkeyPatc
     result = chat("hi", config_path=None)
     assert result.reply == "ok"
     assert called["count"] == 0
+
+
+def test_chat_stream_yields_chunks_and_persists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """chat_stream should yield incremental chunks and persist the final reply."""
+    cfg = _cfg(tmp_path, rag_enabled=False)
+
+    # Ensure chat_stream() uses our in-memory config
+    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
+
+    # Fake streaming tokens from Ollama
+    def fake_stream_tokens(*args: Any, **kwargs: Any):
+        yield "hel"
+        yield "lo"
+
+    monkeypatch.setattr(
+        "mygpt.chat.ollama_chat_stream_tokens",
+        fake_stream_tokens,
+    )
+
+    # Track what gets saved
+    saved = {}
+
+    def fake_save_session(state, *_a, **_k):
+        saved["messages"] = list(state.messages)
+
+    monkeypatch.setattr("mygpt.chat.save_session", fake_save_session)
+
+    # Run streaming chat
+    chunks = list(chat_stream("hi", config_path=None))
+
+    # Chunks should stream incrementally
+    assert chunks == ["hel", "lo"]
+
+    # Final assembled reply should be persisted
+    assert saved["messages"][-1] == {"role": "assistant", "content": "hello"}

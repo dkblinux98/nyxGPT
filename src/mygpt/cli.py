@@ -12,7 +12,7 @@ from mygpt.config import (
 )
 from mygpt import sessions
 from mygpt import tools_fs
-from mygpt.chat import chat
+from mygpt.chat import chat, chat_stream
 from mygpt.logging import configure_logging
 from mygpt.rag.rag import ingest_document, retrieve_context
 from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
@@ -73,17 +73,31 @@ def cmd_chat(
 
     # Single-prompt mode
     if prompt is not None:
-        result = chat(
-            prompt,
-            session=session_name,
-            new=new_session,
-            model=model_override,
-            system=system,
-            config_path=str(cfg_path) if cfg_path else None,
-            sessions_dir=str(sessions_dir) if sessions_dir else None,
-        )
-        print(result.reply)
-        return 0
+        if stream:
+            for chunk in chat_stream(
+                prompt,
+                session=session_name,
+                new=new_session,
+                model=model_override,
+                system=system,
+                config_path=str(cfg_path) if cfg_path else None,
+                sessions_dir=str(sessions_dir) if sessions_dir else None,
+            ):
+                print(chunk, end="", flush=True)
+            print()
+            return 0
+        else:
+            result = chat(
+                prompt,
+                session=session_name,
+                new=new_session,
+                model=model_override,
+                system=system,
+                config_path=str(cfg_path) if cfg_path else None,
+                sessions_dir=str(sessions_dir) if sessions_dir else None,
+            )
+            print(result.reply)
+            return 0
 
     # Interactive mode
     model = model_override or get_default_model(cfg)
@@ -103,20 +117,35 @@ def cmd_chat(
             return 0
 
         try:
-            result = chat(
-                user_text,
-                session=session_name,
-                new=False,
-                model=model_override,
-                system=system,
-                config_path=str(cfg_path) if cfg_path else None,
-                sessions_dir=str(sessions_dir) if sessions_dir else None,
-            )
+            if stream:
+                for chunk in chat_stream(
+                    user_text,
+                    session=session_name,
+                    new=False,
+                    model=model_override,
+                    system=system,
+                    config_path=str(cfg_path) if cfg_path else None,
+                    sessions_dir=str(sessions_dir) if sessions_dir else None,
+                ):
+                    print(chunk, end="", flush=True)
+                print()
+            else:
+                result = chat(
+                    user_text,
+                    session=session_name,
+                    new=False,
+                    model=model_override,
+                    system=system,
+                    config_path=str(cfg_path) if cfg_path else None,
+                    sessions_dir=str(sessions_dir) if sessions_dir else None,
+                )
+                print(result.reply)
+        except KeyboardInterrupt:
+            print()
+            continue
         except Exception as e:
             print(f"ERROR: {e}", file=sys.stderr)
             continue
-
-        print(result.reply)
 
 
 def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: list[str], sessions_dir: Path | None) -> int:

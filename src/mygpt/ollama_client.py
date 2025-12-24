@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 
 def post_json(url: str, payload: dict[str, Any], timeout_s: float = 120.0) -> dict[str, Any]:
@@ -62,30 +62,39 @@ def ollama_chat(base_url: str, model: str, messages: list[dict[str, str]], timeo
     return content
 
 
-def ollama_chat_stream(base_url: str, model: str, messages: list[dict[str, str]], timeout_s: float = 120.0) -> str:
-    """Stream tokens from Ollama and return the final assistant message content."""
+def ollama_chat_stream_tokens(
+    base_url: str,
+    model: str,
+    messages: list[dict[str, str]],
+    timeout_s: float = 120.0,
+) -> Iterator[str]:
+    """Yield incremental assistant text chunks from Ollama (no printing, no buffering)."""
     url = base_url.rstrip("/") + "/api/chat"
     payload = {"model": model, "messages": messages, "stream": True}
 
-    chunks: list[str] = []
     for obj in post_json_lines(url, payload, timeout_s=timeout_s):
         msg = (obj.get("message") or {})
         part = msg.get("content")
         if isinstance(part, str) and part:
-            chunks.append(part)
-            print(part, end="", flush=True)
+            yield part
         if obj.get("done") is True:
             break
 
-    if chunks:
-        print()
 
-    return "".join(chunks)
+def ollama_chat_stream(
+    base_url: str,
+    model: str,
+    messages: list[dict[str, str]],
+    timeout_s: float = 120.0,
+) -> str:
+    """Stream from Ollama and return the final assistant message content."""
+    return "".join(ollama_chat_stream_tokens(base_url, model, messages, timeout_s=timeout_s))
 
 
 __all__ = [
     "post_json",
     "post_json_lines",
     "ollama_chat",
+    "ollama_chat_stream_tokens",
     "ollama_chat_stream",
 ]
