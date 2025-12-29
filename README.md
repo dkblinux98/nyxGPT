@@ -2,28 +2,32 @@
 
 **myGPT** is a local-first, private, extensible ChatGPT-style system designed to run entirely on your own machine.
 
-It uses **Ollama** for local LLM inference, supports persistent **sessions**, optional **Retrieval-Augmented Generation (RAG)** backed by **Apache Cassandra**, a powerful **CLI**, and a **FastAPI backend** intended to support future terminal and web UIs.
+It uses **Ollama** for local LLM inference, supports persistent **conversation sessions**, optional **Retrieval‑Augmented Generation (RAG)** backed by **Apache Cassandra**, a powerful **CLI**, a **FastAPI backend**, a rich **terminal UI (TUI)**, and a lightweight **local web UI** built with Next.js.
+
+Your data stays on your machine. No cloud dependency is required.
 
 ---
 
 ## Why myGPT?
 
-- No cloud dependency by default
-- Your data never leaves your machine
-- Clear separation between CLI, API, and core logic
+- Local‑only by default (no cloud calls)
+- Your prompts, sessions, and embeddings never leave your machine
+- Clear separation between CLI, API, UI, and core logic
 - Designed for experimentation, learning, and extension
+- Production‑like ops tooling for a local system
 
 ---
 
 ## Key features
 
-- Local LLM inference via Ollama
-- Persistent conversation sessions stored outside the repo
-- Optional RAG using Cassandra 5.0 native vector search
-- Config-driven RAG prompt and context optimization (pruning, scoring, budgets)
-- Shared core logic between CLI and FastAPI backend
+- Local LLM inference via **Ollama**
+- Persistent sessions stored outside the repository
+- Optional **RAG** using Cassandra 5.0 native vector search
+- Config‑driven RAG context pruning and prompt optimization
+- Streaming responses (CLI, TUI, API, Web UI)
+- Unified core shared between CLI and FastAPI
+- Homebrew‑managed background services
 - Robust unit and integration test suite
-- Architecture designed for future TUI and React/Next.js UI
 
 ---
 
@@ -31,15 +35,17 @@ It uses **Ollama** for local LLM inference, supports persistent **sessions**, op
 
 ### Requirements
 
-- Python 3.11 or newer
-- Ollama running locally
-- (Optional) Docker for Cassandra (RAG support)
+- Python 3.11+
+- Ollama
+- Homebrew
+- Docker Desktop (required for Cassandra / RAG)
+- Node.js (for the local web UI)
 
 ---
 
 ### Install (development / editable)
 
-From the repository root, with your virtual environment active:
+From the repository root with your virtual environment active:
 
 ```bash
 pip install -e .
@@ -57,13 +63,27 @@ cp example.config.ini ~/.myGPT/config.ini
 chmod 600 ~/.myGPT/config.ini
 ```
 
-Edit `~/.myGPT/config.ini` to match your environment (models, logging, RAG, etc.).
-
-When RAG-assisted chat is enabled, prompt construction is optimized via configuration knobs such as similarity score thresholds, chunk limits, and context size budgets. See `example.config.ini` and `docs/api.md` for details.
+Edit `~/.myGPT/config.ini` to select models, logging options, RAG settings, and service paths.
 
 ---
 
 ## Running myGPT
+
+### One‑command setup (recommended)
+
+Install and configure all local services (API, web UI, logs, Cassandra helpers):
+
+```bash
+mygpt ops install
+```
+
+Check system health:
+
+```bash
+mygpt ops doctor
+```
+
+---
 
 ### CLI
 
@@ -71,54 +91,107 @@ When RAG-assisted chat is enabled, prompt construction is optimized via configur
 mygpt chat "Hello"
 ```
 
-Sessions, logs, and other runtime artifacts are stored under:
+---
 
+### Terminal UI (TUI)
+
+```bash
+mygpt tui
 ```
-~/.myGPT/
-```
+
+The TUI streams responses, persists sessions, and supports RAG‑assisted chat.
 
 ---
 
-### FastAPI backend (recommended via Homebrew)
+### FastAPI backend
 
-Start the API as a background service:
+The API is managed as a Homebrew service:
 
 ```bash
 brew services start mygpt-api
 ```
 
-Verify it is running:
+Verify:
 
 ```bash
 curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/api/v1/info
 ```
+
+Interactive API docs (local only):
+
+```bash
+open http://127.0.0.1:8000/docs
+```
+
+---
+
+### Local Web UI (Next.js)
+
+The web UI is also managed via Homebrew:
+
+```bash
+brew services start mygpt-web
+```
+
+Open in your browser:
+
+```bash
+open http://127.0.0.1:3000
+```
+
+The web UI connects to FastAPI and supports streaming chat and session browsing.
+
+---
+
+## Logs & runtime data
+
+All runtime state lives under:
+
+```text
+~/.myGPT/
+```
+
+Including:
+
+- `sessions/` – conversation sessions
+- `logs/` – API, web UI, Ollama, and Cassandra logs
+- `scripts/` – service wrapper scripts
+
+No runtime data is stored in the git repository.
 
 ---
 
 ## Documentation
 
-Detailed documentation is organized under the `docs/` directory:
+Detailed documentation is organized under `docs/`:
 
-- **Configuration** – `docs/configuration.md`
-- **API** – `docs/api.md`
-- **RAG (Cassandra + Docker)** – `docs/rag.md`
+- **API & Ops** – `docs/api.md`
+- **UI (TUI + Web)** – `docs/ui.md`
+- **RAG & Cassandra** – `docs/rag.md`
 - **Sessions & Memory** – `docs/sessions.md`
 - **Testing** – `docs/testing.md`
-- **Homebrew Service** – `docs/homebrew.md`
 - **Architecture** – `docs/architecture.md`
 
-If you are new to the project, start with **architecture** and **configuration**.
+If you are new to the project, start with **architecture**, then **api**, then **ui**.
 
 ---
 
 ## Project notes
 
-- Runtime data (sessions, logs, embeddings) never lives in the git repository
-- The distribution name is **myGPT**; the Python package name is **mygpt**
-- Build artifacts such as `*.egg-info/` should not be committed
+- Distribution name: **myGPT**
+- Python package name: **mygpt**
+- Runtime data is always externalized
+- Build artifacts such as `*.egg-info/` must not be committed
 
 ---
 
 ## Status
 
-myGPT is under active development. The architecture is stable; features such as streaming responses and user interfaces are planned next.
+The core architecture, ops tooling, streaming, TUI, web UI, and RAG foundations are complete.
+
+Future work focuses on:
+- UX refinement
+- performance tuning
+- richer session metadata and search
+- optional multi‑user and auth extensions

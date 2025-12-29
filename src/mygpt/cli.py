@@ -16,6 +16,10 @@ from mygpt.chat import chat, chat_stream
 from mygpt.logging import configure_logging
 from mygpt.rag.rag import ingest_document, retrieve_context
 from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+from mygpt.tui import MyGPTTUI
+
+# Ops implementation lives in a separate module for testability.
+from mygpt import ops as ops_mod
 
 
 def _list_sessions_in_dir(sessions_dir: Path) -> list[dict[str, object]]:
@@ -348,6 +352,8 @@ def cmd_rag_wipe(confirm: bool) -> int:
     return 0
 
 
+
+
 def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="mygpt")
     parser.add_argument(
@@ -359,6 +365,10 @@ def cli(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("info", help="Show config-derived defaults (base_url, model)")
+
+    tui_p = sub.add_parser("tui", help="Launch the terminal UI")
+    tui_p.add_argument("--session", default="default", help="Session name")
+    tui_p.add_argument("--api-url", dest="api_url", help="Override API base URL")
 
     chat_p = sub.add_parser("chat", help="Chat with the configured Ollama model")
     chat_p.add_argument("prompt", nargs="?", help="Optional single prompt (otherwise interactive)")
@@ -420,6 +430,22 @@ def cli(argv: list[str] | None = None) -> int:
     wipe_p = rag_sub.add_parser("wipe", help="Delete ALL documents (dangerous)")
     wipe_p.add_argument("--yes-really", action="store_true", help="Confirm destructive wipe")
 
+    # Add ops command
+    ops_p = sub.add_parser("ops", help="Operational helpers")
+    ops_sub = ops_p.add_subparsers(dest="ops_cmd", required=True)
+
+    ops_install = ops_sub.add_parser("install", help="Install operational helpers")
+    ops_install.add_argument("--repo-dir", help="Path to myGPT repo root")
+    ops_install.add_argument("--force", action="store_true", help="Overwrite existing files")
+
+    ops_status = ops_sub.add_parser("status", help="Show status of local services (docker/cassandra/agent/api)")
+    ops_status.add_argument("--api-url", help="Override API base URL (default: from config or http://127.0.0.1:8000)")
+    ops_status.add_argument("--timeout", type=float, default=2.0, help="Timeout seconds for checks")
+
+    ops_doctor = ops_sub.add_parser("doctor", help="Run checks and return non-zero if something is broken")
+    ops_doctor.add_argument("--api-url", help="Override API base URL (default: from config or http://127.0.0.1:8000)")
+    ops_doctor.add_argument("--timeout", type=float, default=2.0, help="Timeout seconds for checks")
+
     args = parser.parse_args(argv)
     cmd = args.command or "info"
 
@@ -433,6 +459,11 @@ def cli(argv: list[str] | None = None) -> int:
 
     if cmd == "info":
         return cmd_info(args.config)
+
+    if cmd == "tui":
+        app = MyGPTTUI(session=args.session, api_base_url=args.api_url)
+        app.run()
+        return 0
 
     if cmd == "chat":
         return cmd_chat(
@@ -476,6 +507,14 @@ def cli(argv: list[str] | None = None) -> int:
             return cmd_rag_delete(args.doc_id)
         if args.rag_cmd == "wipe":
             return cmd_rag_wipe(args.yes_really)
+
+    if cmd == "ops":
+        if args.ops_cmd == "install":
+            return ops_mod.install(args)
+        if args.ops_cmd == "status":
+            return ops_mod.status(args)
+        if args.ops_cmd == "doctor":
+            return ops_mod.doctor(args)
 
     parser.print_help()
     return 2

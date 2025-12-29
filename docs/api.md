@@ -291,6 +291,344 @@ curl http://127.0.0.1:8000/api/v1/info \
 
 ---
 
+## Operational Tasks
+
+These tasks cover keeping myGPT services and supporting infrastructure running reliably across reboots.
+
+### Docker Desktop startup (required)
+
+Cassandra runs inside Docker and requires Docker Desktop to be running.
+
+1. Open **Docker Desktop**
+2. Go to **Settings → General**
+3. Enable **Start Docker Desktop when you log in**
+4. Verify:
+   ```bash
+   docker info
+   ```
+
+Docker Desktop must be running before any Cassandra container can start.
+
+---
+
+### Cassandra container (persistent + auto-restart)
+
+The Cassandra container should be created with an auto-restart policy so it survives reboots.
+
+Verify restart policy:
+
+```bash
+docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' mygpt-cassandra
+```
+
+Expected output:
+
+```
+unless-stopped
+```
+```bash
+# verify Cassandra data is on a named volume (persistence)
+docker inspect mygpt-cassandra \
+  --format '{{ range .Mounts }}{{ .Name }} -> {{ .Destination }}{{ println }}{{ end }}'
+```
+
+Expected output should include something like:
+
+```
+mygpt_cassandra_data -> /var/lib/cassandra
+```
+
+If not set correctly, recreate the container:
+
+```bash
+docker rm -f mygpt-cassandra
+
+# create the named volume (safe if it already exists)
+docker volume create mygpt_cassandra_data
+
+docker run -d \
+  --name mygpt-cassandra \
+  --restart unless-stopped \
+  -p 9042:9042 \
+  -e CASSANDRA_CLUSTER_NAME=mygpt \
+  -v mygpt_cassandra_data:/var/lib/cassandra \
+  cassandra:5.0
+```
+
+
+Cassandra can take a minute to become ready after a fresh start. If `cqlsh` is installed on your Mac, you can verify from the host (no `docker exec` needed):
+
+```bash
+cqlsh 127.0.0.1 9042 -e "DESCRIBE KEYSPACES;"
+```
+
+---
+
+### Centralized logs
+
+myGPT consolidates logs under:
+
+```
+~/.myGPT/logs
+```
+
+This includes:
+
+- myGPT application logs
+- test logs
+- streamed Cassandra logs
+- Ollama logs (symlinked)
+
+---
+
+### Cassandra logs via Docker (LaunchAgent)
+
+Cassandra logs are streamed from Docker into `~/.myGPT/logs` using a macOS LaunchAgent.
+
+Installed files (tracked in the repo):
+
+- `follow-cassandra-logs.sh`
+- `com.mygpt.cassandra-logs.plist`
+
+Install and activate:
+
+```bash
+mygpt ops install
+# optional:
+# mygpt ops install --repo-dir /path/to/myGPT
+# mygpt ops install --force
+```
+
+Verify the agent is loaded:
+
+```bash
+launchctl list | grep com.mygpt.cassandra-logs
+```
+
+Verify logs:
+
+```bash
+tail -f ~/.myGPT/logs/cassandra-logfollower.out.log
+tail -f ~/.myGPT/logs/cassandra-logfollower.err.log
+```
+
+This survives reboots.
+
+---
+
+### mygpt ops commands
+
+`mygpt` provides built-in operational checks so you don’t have to remember Docker, LaunchAgent, and API details by hand.
+
+#### `mygpt ops install`
+Installs the Cassandra log follower LaunchAgent and prepares local log directories.
+
+```bash
+mygpt ops install
+# optional:
+# mygpt ops install --repo-dir /path/to/myGPT
+# mygpt ops install --force
+```
+
+This command is safe to re-run.
+
+- Exit code `0` → all install steps succeeded
+- Exit code `2` → one or more steps failed (details are printed)
+
+#### `mygpt ops status`
+Shows the current health of local dependencies and services:
+
+- Docker daemon reachable
+- Cassandra container running
+- Restart policy (`unless-stopped`)
+- Cassandra data mounted to `/var/lib/cassandra`
+- Cassandra log LaunchAgent loaded
+- Expected log files present under `~/.myGPT/logs`
+- FastAPI `/health` endpoint reachable
+
+```bash
+mygpt ops status
+```
+
+This command always exits `0` and is informational.
+
+#### `mygpt ops doctor`
+Runs the same checks as `status` but **fails fast** if anything is broken.
+
+```bash
+mygpt ops doctor
+echo "exit=$?"
+```
+
+- Exit code `0` → all required services are healthy
+- Exit code `2` → one or more checks failed (details are printed)
+
+---
+
+### Ollama logs
+
+Ollama is typically managed via Homebrew services and logs to a Homebrew-managed log file.
+
+Common locations:
+
+- Intel Homebrew: `/usr/local/var/log/ollama.log`
+- Apple Silicon Homebrew: `/opt/homebrew/var/log/ollama.log`
+
+You can symlink whichever exists into `~/.myGPT/logs`:
+
+```bash
+mkdir -p ~/.myGPT/logs
+for p in /usr/local/var/log/ollama.log /opt/homebrew/var/log/ollama.log; do
+  if [[ -f "$p" ]]; then
+    ln -sf "$p" ~/.myGPT/logs/ollama.log
+    echo "linked $p -> ~/.myGPT/logs/ollama.log"
+    break
+  fi
+done
+```
+
+Verify:
+
+```bash
+tail -f ~/.myGPT/logs/ollama.log
+```
+
+If you don’t see output, confirm Ollama is running:
+
+```bash
+brew services info ollama
+curl -s http://127.0.0.1:11434/api/tags | head
+```
+
+---
+
+### Local Web UI service (Next.js)
+
+The local web UI is a small Next.js application that connects to the FastAPI backend.
+
+It is intended to run:
+- locally only
+- as a background service
+- using the same configuration file as the rest of myGPT
+
+Configuration is read from `~/.myGPT/config.ini` under the `[web]` and `[paths]` sections.
+
+#### Runtime configuration keys
+
+```ini
+[web]
+host = 127.0.0.1
+port = 3000
+api_base_url =
+```
+
+- `host` — interface the web UI binds to
+- `port` — port the web UI listens on
+- `api_base_url` — optional override of FastAPI base URL; if unset, `[api] host/port` is used
+
+The web UI is launched using a small wrapper script that reads this configuration.
+
+Note: Homebrew/launchd services run with a minimal `PATH`. The web wrapper (`mygpt-web`) and `~/.myGPT/scripts/run-web.sh` ensure `node` is discoverable (via `[paths] node_bin` / `npm_bin`) so `npm` can run reliably in the background.
+
+---
+
+### Web UI background service
+
+The web UI is managed via Homebrew services, similar to the FastAPI backend.
+
+Install the service:
+
+```bash
+mygpt ops install
+```
+
+Verify status:
+
+```bash
+brew services list | grep mygpt-web
+```
+
+Start manually if needed:
+
+```bash
+brew services start mygpt-web
+```
+
+Logs are written to:
+
+```
+~/.myGPT/logs/mygpt-web.log
+~/.myGPT/logs/mygpt-web.err.log
+```
+
+---
+
+### Web UI manual startup (development)
+
+For development or debugging, you can run the web UI manually:
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+By default, the UI will be available at:
+
+```
+http://127.0.0.1:3000
+```
+
+Ollama logs are symlinked into the same directory:
+
+```bash
+ln -sf /usr/local/var/log/ollama.log ~/.myGPT/logs/ollama.log
+```
+
+Verify:
+
+```bash
+tail -f ~/.myGPT/logs/ollama.log
+```
+
+---
+
+### API background service
+
+The FastAPI backend is expected to run via Homebrew services.
+
+Verify status:
+
+```bash
+brew services list | grep mygpt-api
+```
+
+Start if needed:
+
+```bash
+brew services start mygpt-api
+```
+
+---
+
+### Health verification checklist
+
+After reboot:
+
+```bash
+docker ps | grep mygpt-cassandra
+brew services list | grep mygpt-api
+curl http://127.0.0.1:8000/health
+```
+
+Expected:
+
+```json
+{ "status": "ok" }
+```
+
+---
+
 ## Error handling
 
 - All errors return JSON
