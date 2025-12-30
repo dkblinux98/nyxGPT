@@ -11,6 +11,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
     ok_results = [ops.OpsResult(True, "ok")]
     with (
         patch.object(ops, "_install_scripts", return_value=ok_results),
+        patch.object(ops, "_ensure_web_deps", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
@@ -26,6 +27,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
     mixed = [ops.OpsResult(True, "ok"), ops.OpsResult(False, "bad", "details")]
     with (
         patch.object(ops, "_install_scripts", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_ensure_web_deps", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_cassandra_launchagent", return_value=mixed),
         patch.object(ops, "_install_homebrew_web", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
@@ -35,6 +37,68 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         out = capsys.readouterr().out
         assert "[FAIL]" in out
         assert "details" in out
+
+
+@pytest.mark.unit
+def test_ops_restart_all_ok(capsys):
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_restart_brew_service", return_value=ok) as rb,
+        patch.object(ops, "_restart_docker_container", return_value=ok) as rd,
+        patch.object(ops, "_restart_launchagent", return_value=ok) as rl,
+    ):
+        args = MagicMock()
+        args.target = "all"
+        rc = ops.restart(args)
+        assert rc == 0
+
+        # ensure we attempted expected components
+        assert rb.call_count == 3  # api, web, ollama
+        rd.assert_called_once_with("mygpt-cassandra")
+        rl.assert_called_once_with("com.mygpt.cassandra-logs")
+
+        out = capsys.readouterr().out
+        assert "[OK]" in out
+
+
+@pytest.mark.unit
+def test_ops_restart_returns_nonzero_on_failure(capsys):
+    ok = [ops.OpsResult(True, "ok")]
+    bad = [ops.OpsResult(False, "bad", "details")]
+    with (
+        patch.object(ops, "_restart_brew_service", side_effect=[ok, bad, ok]),
+        patch.object(ops, "_restart_docker_container", return_value=ok),
+        patch.object(ops, "_restart_launchagent", return_value=ok),
+    ):
+        args = MagicMock()
+        args.target = "all"
+        rc = ops.restart(args)
+        assert rc == 2
+
+        out = capsys.readouterr().out
+        assert "[FAIL]" in out
+        assert "details" in out
+
+
+@pytest.mark.unit
+def test_ops_restart_single_target_only_restarts_that_component(capsys):
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_restart_brew_service", return_value=ok) as rb,
+        patch.object(ops, "_restart_docker_container", return_value=ok) as rd,
+        patch.object(ops, "_restart_launchagent", return_value=ok) as rl,
+    ):
+        args = MagicMock()
+        args.target = "api"
+        rc = ops.restart(args)
+        assert rc == 0
+
+        rb.assert_called_once_with("mygpt-api")
+        rd.assert_not_called()
+        rl.assert_not_called()
+
+        out = capsys.readouterr().out
+        assert "Restarted" in out or "[OK]" in out
 
 
 @pytest.mark.unit
@@ -84,6 +148,28 @@ def test_ops_doctor_ok(monkeypatch, capsys, tmp_path):
     assert rc == 0
     out = capsys.readouterr().out
     assert "doctor: OK" in out
+
+
+@pytest.mark.unit
+def test_ops_doctor_warns_when_web_deps_missing(monkeypatch, capsys, tmp_path):
+    # Pretend config exists
+    cfg_dir = tmp_path / ".myGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.ini").write_text("[project]\nname=myGPT\n", encoding="utf-8")
+
+    # Fake web dir without node_modules
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+
+    rc = ops.doctor(MagicMock())
+    assert rc == 2
+
+    out = capsys.readouterr().out
+    assert "Missing web deps" in out
 
 
 @pytest.mark.unit

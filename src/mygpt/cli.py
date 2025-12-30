@@ -446,6 +446,15 @@ def cli(argv: list[str] | None = None) -> int:
     ops_doctor.add_argument("--api-url", help="Override API base URL (default: from config or http://127.0.0.1:8000)")
     ops_doctor.add_argument("--timeout", type=float, default=2.0, help="Timeout seconds for checks")
 
+    ops_restart = ops_sub.add_parser("restart", help="Restart local services")
+    ops_restart.add_argument(
+        "target",
+        nargs="?",
+        default="all",
+        choices=["all", "api", "web", "ollama", "cassandra", "cassandra-logs"],
+        help="Service to restart",
+    )
+
     args = parser.parse_args(argv)
     cmd = args.command or "info"
 
@@ -515,6 +524,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.status(args)
         if args.ops_cmd == "doctor":
             return ops_mod.doctor(args)
+        if args.ops_cmd == "restart":
+            return ops_mod.restart(args)
 
     parser.print_help()
     return 2

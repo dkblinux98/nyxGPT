@@ -72,6 +72,47 @@ def _tap_repo(tap: str) -> Path:
     return Path((cp.stdout or "").strip())
 
 
+# --- Restart helpers ---
+
+def _restart_brew_service(name: str) -> list[OpsResult]:
+    if _which("brew") is None:
+        return [OpsResult(False, f"brew not found; cannot restart {name}")]
+    try:
+        cp = _run(["brew", "services", "restart", name], check=False)
+        if cp.returncode == 0:
+            return [OpsResult(True, f"Restarted brew service: {name}")]
+        details = (cp.stdout or "").strip() + ("\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else "")
+        return [OpsResult(False, f"Failed to restart brew service: {name}", details.strip())]
+    except Exception as e:
+        return [OpsResult(False, f"Failed to restart brew service: {name}", f"{type(e).__name__}: {e}")]
+
+
+def _restart_docker_container(name: str) -> list[OpsResult]:
+    if _which("docker") is None:
+        return [OpsResult(False, f"docker not found; cannot restart {name}")]
+    try:
+        cp = _run(["docker", "restart", name], check=False)
+        if cp.returncode == 0:
+            return [OpsResult(True, f"Restarted docker container: {name}")]
+        details = (cp.stdout or "").strip() + ("\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else "")
+        return [OpsResult(False, f"Failed to restart docker container: {name}", details.strip())]
+    except Exception as e:
+        return [OpsResult(False, f"Failed to restart docker container: {name}", f"{type(e).__name__}: {e}")]
+
+
+def _restart_launchagent(label: str) -> list[OpsResult]:
+    # Prefer a kickstart (restart) in the current GUI domain.
+    domain = f"gui/{os.getuid()}/{label}"
+    try:
+        cp = _run(["launchctl", "kickstart", "-k", domain], check=False)
+        if cp.returncode == 0:
+            return [OpsResult(True, f"Restarted LaunchAgent: {label}")]
+        details = (cp.stdout or "").strip() + ("\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else "")
+        return [OpsResult(False, f"Failed to restart LaunchAgent: {label}", details.strip())]
+    except Exception as e:
+        return [OpsResult(False, f"Failed to restart LaunchAgent: {label}", f"{type(e).__name__}: {e}")]
+
+
 def _find_launchagent_template() -> tuple[Optional[Path], list[Path]]:
     """
     Locate the Cassandra log follower LaunchAgent template inside the repo.
@@ -212,10 +253,114 @@ def _install_homebrew_web(tap: str = "dkblinux98/mygpt-local") -> list[OpsResult
     return results
 
 
+def _ensure_web_deps() -> list[OpsResult]:
+    """Ensure web/node_modules is present by running npm ci/install in ./web.
+
+    This is intentionally part of ops install so users don't have to run `npm install` manually.
+    """
+    results: list[OpsResult] = []
+    web_dir = REPO_ROOT / "web"
+    if not web_dir.exists():
+        return [OpsResult(True, "Web directory not present (skipped)", str(web_dir))]
+
+    if _which("node") is None:
+        return [OpsResult(False, "node not found; cannot install web deps", "Install Node.js and ensure `node` is on PATH")]
+    if _which("npm") is None:
+        return [OpsResult(False, "npm not found; cannot install web deps", "Install Node.js/npm and ensure `npm` is on PATH")]
+
+    node_modules = web_dir / "node_modules"
+    lockfile = web_dir / "package-lock.json"
+
+    def _can_resolve(pkg: str) -> bool:
+        try:
+            cp = subprocess.run(
+                ["node", "-p", f"require.resolve('{pkg}')"],
+                cwd=str(web_dir),
+                text=True,
+                capture_output=True,
+            )
+            return cp.returncode == 0
+        except Exception:
+            return False
+
+    # Check if node_modules exists and undici can be resolved
+    if node_modules.exists() and _can_resolve("undici"):
+        results.append(OpsResult(True, "Web deps already installed (undici OK)", str(node_modules)))
+        return results
+
+    def _run_npm(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(cmd, cwd=str(web_dir), text=True, capture_output=True)
+
+    # Prefer npm ci when a lockfile exists, but if the lockfile is out of sync
+    # (common after editing package.json), fall back to npm install so the lock
+    # is updated and dependencies actually get installed.
+    try:
+        if lockfile.exists():
+            cp = _run_npm(["npm", "ci"])
+            if cp.returncode != 0:
+                stderr = (cp.stderr or "")
+                # npm uses EUSAGE + a specific message when package-lock is out of sync
+                if "can only install packages when your package.json and package-lock.json" in stderr:
+                    cp2 = _run_npm(["npm", "install"])
+                    if cp2.returncode != 0:
+                        details = (cp2.stdout or "").strip() + (
+                            "\n" + (cp2.stderr or "").strip() if (cp2.stderr or "").strip() else ""
+                        )
+                        results.append(OpsResult(False, "Failed to install web deps via npm install (after npm ci mismatch)", details.strip()))
+                        return results
+                    # npm install succeeded (and likely updated package-lock.json)
+                    if not _can_resolve("undici"):
+                        details = (cp2.stdout or "").strip() + (
+                            "\n" + (cp2.stderr or "").strip() if (cp2.stderr or "").strip() else ""
+                        )
+                        results.append(OpsResult(False, "Web deps installed but undici still missing", details.strip()))
+                        return results
+                    results.append(
+                        OpsResult(
+                            True,
+                            "Installed web deps via npm install (lockfile was out of sync; package-lock.json updated)",
+                            str(node_modules),
+                        )
+                    )
+                    return results
+
+                # Other npm ci failure
+                details = (cp.stdout or "").strip() + ("\n" + stderr.strip() if stderr.strip() else "")
+                results.append(OpsResult(False, "Failed to install web deps via npm ci", details.strip()))
+                return results
+
+            # npm ci succeeded
+            if not _can_resolve("undici"):
+                details = (cp.stdout or "").strip() + ("\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else "")
+                results.append(OpsResult(False, "Web deps installed but undici still missing", details.strip()))
+                return results
+            results.append(OpsResult(True, "Installed web deps via npm ci", str(node_modules)))
+            return results
+
+        # No lockfile: use npm install
+        cp = _run_npm(["npm", "install"])
+        if cp.returncode == 0:
+            if not _can_resolve("undici"):
+                details = (cp.stdout or "").strip() + ("\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else "")
+                results.append(OpsResult(False, "Web deps installed but undici still missing", details.strip()))
+                return results
+            results.append(OpsResult(True, "Installed web deps via npm install", str(node_modules)))
+            return results
+
+        details = (cp.stdout or "").strip() + ("\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else "")
+        results.append(OpsResult(False, "Failed to install web deps via npm install", details.strip()))
+        return results
+
+    except Exception as e:
+        results.append(OpsResult(False, "Failed to install web deps", f"{type(e).__name__}: {e}"))
+        return results
+
+
 def install(args) -> int:
     results: list[OpsResult] = []
     for step_name, fn in [
         ("scripts", _install_scripts),
+        ("web deps", _ensure_web_deps),
         ("cassandra launchagent", _install_cassandra_launchagent),
         ("homebrew web", _install_homebrew_web),
         ("log symlinks", _ensure_log_symlinks),
@@ -278,6 +423,29 @@ def doctor(args) -> int:
         if _which(tool) is None:
             issues.append(f"Missing tool in PATH: {tool}")
 
+    web_dir = REPO_ROOT / "web"
+    if web_dir.exists():
+        def _can_resolve(pkg: str) -> bool:
+            try:
+                cp = subprocess.run(
+                    ["node", "-p", f"require.resolve('{pkg}')"],
+                    cwd=str(web_dir),
+                    text=True,
+                    capture_output=True,
+                )
+                return cp.returncode == 0
+            except Exception:
+                return False
+
+        if _which("node") is None:
+            issues.append("Missing tool in PATH: node")
+        if _which("npm") is None:
+            issues.append("Missing tool in PATH: npm")
+        if not (web_dir / "node_modules").exists():
+            issues.append(f"Missing web deps: {web_dir / 'node_modules'} (run: mygpt ops install)")
+        elif not _can_resolve("undici"):
+            issues.append("Missing web dependency: undici (run: mygpt ops install)")
+
     if issues:
         print("myGPT ops doctor: FAIL")
         for i in issues:
@@ -286,3 +454,39 @@ def doctor(args) -> int:
 
     print("myGPT ops doctor: OK")
     return 0
+
+
+# --- Restart public API ---
+
+def restart(args) -> int:
+    """Restart operational components.
+
+    target: all|api|web|ollama|cassandra|cassandra-logs
+    """
+    target = getattr(args, "target", "all") or "all"
+
+    results: list[OpsResult] = []
+
+    if target in ("all", "api"):
+        results += _restart_brew_service("mygpt-api")
+
+    if target in ("all", "web"):
+        results += _restart_brew_service("mygpt-web")
+
+    if target in ("all", "ollama"):
+        results += _restart_brew_service("ollama")
+
+    if target in ("all", "cassandra"):
+        results += _restart_docker_container("mygpt-cassandra")
+
+    if target in ("all", "cassandra-logs"):
+        results += _restart_launchagent("com.mygpt.cassandra-logs")
+
+    ok = True
+    for r in results:
+        print(f"[{'OK' if r.ok else 'FAIL'}] {r.message}")
+        if r.details:
+            print(f"  {r.details}")
+        ok = ok and r.ok
+
+    return 0 if ok else 2

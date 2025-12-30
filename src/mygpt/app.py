@@ -47,7 +47,32 @@ from mygpt.rag.rag import ingest_document, retrieve_context
 from mygpt.logging import configure_logging
 
 
+
 log = logging.getLogger("mygpt.api")
+
+# Ensure all logging handlers include a timestamp in their formatter, even if previously configured without one.
+def _ensure_datetime_log_format() -> None:
+    """Ensure all existing handlers include an asctime-based formatter.
+
+    We do this defensively because brew/launchd + uvicorn can end up with handlers
+    configured without timestamps, which makes debugging painful.
+    """
+
+    fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    datefmt = "%Y-%m-%d %H:%M:%S"
+    formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
+
+    # Apply to root logger + a few common loggers used by uvicorn/FastAPI
+    for logger_name in ("", "uvicorn", "uvicorn.error", "uvicorn.access", "mygpt"):
+        lg = logging.getLogger(logger_name)
+        for h in list(getattr(lg, "handlers", []) or []):
+            # Always set; if a handler already had a formatter, we replace it to guarantee timestamps.
+            h.setFormatter(formatter)
+
+    # Also ensure root has at least INFO level unless already lower.
+    root = logging.getLogger("")
+    if root.level == logging.NOTSET:
+        root.setLevel(logging.INFO)
 
 # ----------------------------
 # Startup diagnostics using lifespan
@@ -59,6 +84,7 @@ async def lifespan(_app: FastAPI):
     cfg = load_config(None)
     try:
         configure_logging(cfg, console=False)
+        _ensure_datetime_log_format()
         log.info("Centralized logging initialized")
     except Exception as e:
         # Logging must never prevent API startup

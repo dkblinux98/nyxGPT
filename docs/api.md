@@ -464,6 +464,19 @@ echo "exit=$?"
 - Exit code `2` → one or more checks failed (details are printed)
 
 ---
+#### `mygpt ops restart`
+
+Restart one or more myGPT-managed services without calling `brew`, `docker`,
+or `launchctl` directly.
+
+This is the recommended way to apply configuration changes or recover from
+transient failures.
+
+**Usage:**
+
+```bash
+mygpt ops restart
+```
 
 ### Ollama logs
 

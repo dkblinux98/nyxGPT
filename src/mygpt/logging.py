@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 import logging
@@ -12,6 +10,8 @@ from mygpt.config import get_log_dir
 
 
 _DEFAULT_LEVEL = "INFO"
+_DEFAULT_FMT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+_DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 
 def _level_from_any(val: str) -> int:
@@ -70,8 +70,8 @@ def configure_logging(
         fh.setLevel(level)
         fh.setFormatter(
             logging.Formatter(
-                fmt="%(asctime)s %(levelname)s %(name)s %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
+                fmt=_DEFAULT_FMT,
+                datefmt=_DEFAULT_DATEFMT,
             )
         )
         logger.addHandler(fh)
@@ -80,10 +80,25 @@ def configure_logging(
     if console and logging.StreamHandler not in existing:
         ch = logging.StreamHandler()
         ch.setLevel(level)
-        ch.setFormatter(logging.Formatter(fmt="%(levelname)s %(message)s"))
+        ch.setFormatter(
+            logging.Formatter(
+                fmt=_DEFAULT_FMT,
+                datefmt=_DEFAULT_DATEFMT,
+            )
+        )
         logger.addHandler(ch)
 
     # Don't double-log via root
     logger.propagate = False
+
+    # Ensure root logger handlers (e.g. uvicorn / launchd) also use timestamps
+    root = logging.getLogger()
+    for h in root.handlers:
+        h.setFormatter(
+            logging.Formatter(
+                fmt=_DEFAULT_FMT,
+                datefmt=_DEFAULT_DATEFMT,
+            )
+        )
 
     return logger
