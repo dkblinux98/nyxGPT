@@ -195,3 +195,4 @@ Future work focuses on:
 - performance tuning
 - richer session metadata and search
 - optional multi‑user and auth extensions
+
