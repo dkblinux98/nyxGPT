@@ -30,12 +30,13 @@ def test_retrieve_context_applies_min_score_and_max_chunks(monkeypatch: pytest.M
         def query_by_embedding(self, _emb: Any, k: int):
             assert k == 10
             # Includes: below-threshold, duplicates, and valid unique
+            # Results are sorted by score descending after filtering
             return [
-                {"text": "weak", "score": 0.10},
+                {"text": "weak", "score": 0.10},       # filtered: below min_score
                 {"text": "keep one", "score": 0.90},
-                {"text": "keep one", "score": 0.91},  # dup
-                {"text": "keep two", "score": 0.70},
-                {"text": "keep three", "score": 0.80},  # should be dropped by max_chunks
+                {"text": "keep one", "score": 0.91},   # filtered: duplicate
+                {"text": "keep two", "score": 0.70},   # dropped: max_chunks=2
+                {"text": "keep three", "score": 0.80},
             ]
 
         def close(self):
@@ -47,7 +48,8 @@ def test_retrieve_context_applies_min_score_and_max_chunks(monkeypatch: pytest.M
 
     rows = retrieve_context("hello")
     assert len(rows) == 2
-    assert [r["text"] for r in rows] == ["keep one", "keep two"]
+    # Sorted by score descending: 0.90 > 0.80 > 0.70
+    assert [r["text"] for r in rows] == ["keep one", "keep three"]
 
 
 @pytest.mark.unit

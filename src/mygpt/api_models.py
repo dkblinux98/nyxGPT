@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -10,13 +10,27 @@ from pydantic import BaseModel, Field
 # ----------------------------
 
 
+class SessionInfo(TypedDict):
+    """Type-safe structure for session list items."""
+    name: str
+    file: str
+    messages: int
+    modified: str
+    meta: dict[str, Any]
+
+
 class InfoResponse(BaseModel):
+    """Response model for /info endpoint."""
     ollama_base_url: str
     default_model: str
     sessions_dir: str
 
 
 class SessionsListResponse(BaseModel):
+    """Response model for /sessions endpoint.
+
+    Returns list of sessions with their metadata.
+    """
     sessions: list[dict[str, Any]]
 
 

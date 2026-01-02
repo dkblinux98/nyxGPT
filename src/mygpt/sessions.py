@@ -1,26 +1,91 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict, NotRequired
 
 from mygpt.config import load_config, get_default_model, get_ollama_base_url, get_sessions_dir
 from mygpt.ollama_client import ollama_chat
 
 
+log = logging.getLogger(__name__)
+
+
+class SessionMetadata(TypedDict):
+    """Type-safe structure for session metadata.
+
+    This provides IDE autocomplete, type checking, and documentation
+    for all metadata fields stored in .meta.json files.
+    """
+    created_at: str  # ISO 8601 datetime
+    updated_at: str  # ISO 8601 datetime
+    pinned: bool
+    tags: list[str]
+    token_estimate: int
+
+    # Optional fields (use NotRequired for Python 3.11+)
+    title: NotRequired[str]
+    summary: NotRequired[str]
+    model: NotRequired[str]
+
+
+# For backwards compatibility, keep dict[str, Any] in function signatures
+# but document the expected structure
+SessionMetaDict = dict[str, Any]
+
+
+# Session names must be alphanumeric with underscores or hyphens, 1-64 chars
+# This prevents path traversal and ensures filesystem compatibility
+VALID_SESSION_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
+
+
 def validate_session_name(name: str) -> str:
+    """Validate and normalize a session name.
+
+    Session names are used as filenames, so validation is critical for:
+    - Security: Prevent path traversal attacks
+    - Compatibility: Ensure names work across filesystems
+    - Predictability: Avoid special character issues
+
+    **Allowed Pattern:**
+    - 1-64 characters
+    - Alphanumeric (a-z, A-Z, 0-9)
+    - Hyphens (-)
+    - Underscores (_)
+
+    **Examples:**
+
+        Valid: "my-session", "chat_2024", "ProjectX"
+        Invalid: "my session" (space), "../etc" (path), "x"*65 (too long)
+
+    Args:
+        name: The session name to validate
+
+    Returns:
+        The validated, stripped session name
+
+    Raises:
+        ValueError: If name is invalid (with descriptive error message)
+    """
     if not isinstance(name, str):
         raise ValueError("session name must be a string")
+
     raw = name.strip()
     if not raw:
         raise ValueError("session name cannot be empty")
-    if "/" in raw or "\\" in raw:
-        raise ValueError("invalid session name")
-    if ".." in raw:
-        raise ValueError("invalid session name")
+
+    if not VALID_SESSION_NAME_PATTERN.match(raw):
+        raise ValueError(
+            "Session name must be 1-64 alphanumeric characters, "
+            "underscores, or hyphens"
+        )
+
     return raw
 
 
@@ -31,10 +96,8 @@ def default_sessions_dir() -> Path:
 
 def session_file_for(name: str, sessions_dir: Path) -> Path:
     name = validate_session_name(name)
-    safe = "".join(ch for ch in name if ch.isalnum() or ch in "-_.").strip("._")
-    if not safe:
-        raise ValueError("invalid session name")
-    return sessions_dir / f"{safe}.json"
+    # name is already validated and safe to use directly
+    return sessions_dir / f"{name}.json"
 
 
 def meta_file_for(session_file: Path) -> Path:
@@ -58,10 +121,16 @@ def token_estimate_from_messages(messages: list[dict[str, str]]) -> int:
 def load_session_messages(session_file: Path) -> list[dict[str, str]]:
     if not session_file.exists():
         return []
+
     try:
         data = json.loads(session_file.read_text(encoding="utf-8"))
-    except Exception:
+    except json.JSONDecodeError as e:
+        log.warning("Invalid JSON in session file %s: %s", session_file, e)
         return []
+    except (IOError, OSError) as e:
+        log.warning("Failed to read session file %s: %s", session_file, e)
+        return []
+
     if isinstance(data, list):
         out: list[dict[str, str]] = []
         for item in data:
@@ -77,24 +146,31 @@ def load_session_messages(session_file: Path) -> list[dict[str, str]]:
 
 def save_session_messages(session_file: Path, messages: list[dict[str, str]]) -> None:
     session_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp = session_file.with_suffix(session_file.suffix + ".tmp")
+    # Use unique temp file name to avoid race conditions in concurrent writes
+    tmp = session_file.parent / f".{session_file.name}.{uuid.uuid4().hex[:8]}.tmp"
     tmp.write_text(json.dumps(messages, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, session_file)
 
 
-def load_session_meta(meta_file: Path) -> dict[str, Any]:
+def load_session_meta(meta_file: Path) -> SessionMetaDict:
     if not meta_file.exists():
         return {}
+
     try:
         data = json.loads(meta_file.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except json.JSONDecodeError as e:
+        log.warning("Invalid JSON in metadata file %s: %s", meta_file, e)
+        return {}
+    except (IOError, OSError) as e:
+        log.warning("Failed to read metadata file %s: %s", meta_file, e)
         return {}
 
 
-def save_session_meta(meta_file: Path, meta: dict[str, Any]) -> None:
+def save_session_meta(meta_file: Path, meta: SessionMetaDict) -> None:
     meta_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp = meta_file.with_suffix(meta_file.suffix + ".tmp")
+    # Use unique temp file name to avoid race conditions in concurrent writes
+    tmp = meta_file.parent / f".{meta_file.name}.{uuid.uuid4().hex[:8]}.tmp"
     tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, meta_file)
 
@@ -114,7 +190,20 @@ def normalize_tags(tags: list[str]) -> list[str]:
     return sorted(norm, key=lambda s: s.lower())
 
 
-def ensure_meta_defaults(meta: dict[str, Any], *, model: str | None = None) -> dict[str, Any]:
+def ensure_meta_defaults(
+    meta: SessionMetaDict,
+    *,
+    model: str | None = None
+) -> SessionMetaDict:
+    """Ensure metadata has all required fields with valid defaults.
+
+    Args:
+        meta: Existing metadata dictionary (may be incomplete)
+        model: Optional model name to set
+
+    Returns:
+        Metadata with all required fields populated
+    """
     now = iso_now()
     if "created_at" not in meta or not isinstance(meta.get("created_at"), str):
         meta["created_at"] = now
@@ -186,7 +275,7 @@ class SessionState:
     session_file: Path
     meta_file: Path
     messages: list[dict[str, str]]
-    meta: dict[str, Any]
+    meta: SessionMetaDict
 
 
 def load_session(

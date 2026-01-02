@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import io
-import logging
+import inspect
 import os
+import secrets
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from contextlib import asynccontextmanager
@@ -10,8 +11,9 @@ from pathlib import Path
 from typing import Any, Optional
 import urllib.request
 import urllib.error
+from configparser import ConfigParser
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.status import HTTP_401_UNAUTHORIZED
@@ -48,31 +50,15 @@ from mygpt.logging import configure_logging
 
 
 
+import logging
 log = logging.getLogger("mygpt.api")
 
-# Ensure all logging handlers include a timestamp in their formatter, even if previously configured without one.
-def _ensure_datetime_log_format() -> None:
-    """Ensure all existing handlers include an asctime-based formatter.
 
-    We do this defensively because brew/launchd + uvicorn can end up with handlers
-    configured without timestamps, which makes debugging painful.
-    """
+def log_with_context(level, message, request_id=None, **extra):
+    """Helper for structured logging with consistent context."""
+    extra_fields = {"request_id": request_id, **extra} if request_id else extra
+    log.log(level, message, extra=extra_fields)
 
-    fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
-    datefmt = "%Y-%m-%d %H:%M:%S"
-    formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
-
-    # Apply to root logger + a few common loggers used by uvicorn/FastAPI
-    for logger_name in ("", "uvicorn", "uvicorn.error", "uvicorn.access", "mygpt"):
-        lg = logging.getLogger(logger_name)
-        for h in list(getattr(lg, "handlers", []) or []):
-            # Always set; if a handler already had a formatter, we replace it to guarantee timestamps.
-            h.setFormatter(formatter)
-
-    # Also ensure root has at least INFO level unless already lower.
-    root = logging.getLogger("")
-    if root.level == logging.NOTSET:
-        root.setLevel(logging.INFO)
 
 # ----------------------------
 # Startup diagnostics using lifespan
@@ -84,17 +70,19 @@ async def lifespan(_app: FastAPI):
     cfg = load_config(None)
     try:
         configure_logging(cfg, console=False)
-        _ensure_datetime_log_format()
-        log.info("Centralized logging initialized")
+        log.info("Centralized logging initialized", extra={"component": "startup"})
     except Exception as e:
-        # Logging must never prevent API startup
+        # Logging should not prevent API startup
         print(f"Logging initialization failed: {e}")
 
     # Ensure sessions directory exists
     sessions_dir = get_sessions_dir(cfg)
     try:
         sessions_dir.mkdir(parents=True, exist_ok=True)
-        log.info("Sessions directory ready: %s", sessions_dir)
+        log.info(
+            "Sessions directory ready",
+            extra={"component": "startup", "sessions_dir": str(sessions_dir)}
+        )
     except Exception as e:
         log.error("Failed to prepare sessions directory %s: %s", sessions_dir, e)
 
@@ -104,11 +92,19 @@ async def lifespan(_app: FastAPI):
     try:
         req = urllib.request.Request(health_url, method="GET")
         with urllib.request.urlopen(req, timeout=2):
-            log.info("Ollama reachable at %s", base_url)
+            log.info(
+                "Ollama health check passed",
+                extra={"component": "startup", "ollama_url": base_url}
+            )
     except urllib.error.URLError as e:
         log.warning(
-            "Ollama not reachable at startup (%s). API will still start; chat requests may fail until Ollama is available.",
-            e,
+            "Ollama health check failed",
+            extra={
+                "component": "startup",
+                "ollama_url": base_url,
+                "error": str(e),
+                "note": "API will still start; chat requests may fail until Ollama is available"
+            }
         )
 
     yield
@@ -140,7 +136,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 MAX_BODY_BYTES = int(os.environ.get("MYGPT_MAX_BODY_BYTES", "1048576"))  # 1 MiB default
+
+
+# Middleware to load config and hot-apply logging on every request
+@app.middleware("http")
+async def load_cfg_and_refresh_logging(request: Request, call_next):
+    """Load config for this request and hot-apply logging level.
+
+    We want edits to ~/.myGPT/config.ini (model, rag enabled, log level, auth, etc.)
+    to take effect without restarting the API process.
+
+    The loaded config is stored on request.state.cfg for reuse by downstream
+    middleware/handlers.
+    """
+
+    cfg = load_config(None)
+    request.state.cfg = cfg
+
+    # Hot-apply logging config (especially level) on every request.
+    # configure_logging() is expected to be idempotent and cheap.
+    try:
+        configure_logging(cfg, console=False)
+    except Exception:
+        # Never block request handling on logging reconfiguration.
+        pass
+
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -183,7 +206,14 @@ async def api_key_auth(request: Request, call_next):
     if not path.startswith("/api/v1"):
         return await call_next(request)
 
-    auth = _auth_cfg()
+    cfg = getattr(request.state, "cfg", None)
+    auth = _auth_cfg(cfg)
+    req_id = getattr(request.state, "request_id", None)
+    log.debug(
+        "auth check (request_id=%s) enabled=%s",
+        req_id,
+        bool(auth.get("enabled")),
+    )
     if not auth.get("enabled"):
         return await call_next(request)
 
@@ -191,7 +221,14 @@ async def api_key_auth(request: Request, call_next):
     expected = auth.get("api_key")
     provided = request.headers.get(header)
 
-    if not expected or provided != expected:
+    # Use constant-time comparison to prevent timing attacks
+    # This prevents attackers from determining the correct API key
+    # by measuring response times
+    auth_valid = False
+    if expected and provided:
+        auth_valid = secrets.compare_digest(expected, provided)
+
+    if not auth_valid:
         req_id = getattr(request.state, "request_id", None)
         return JSONResponse(
             status_code=HTTP_401_UNAUTHORIZED,
@@ -244,33 +281,147 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 # Helpers
 # ----------------------------
 
-# Cached auth config (loaded once)
-_AUTH_CFG: dict[str, Any] | None = None
-
-
-def _auth_cfg() -> dict[str, Any]:
-    global _AUTH_CFG
-    if _AUTH_CFG is None:
+# Request-scoped config helper
+def _req_cfg(request: Request) -> ConfigParser:
+    cfg = getattr(request.state, "cfg", None)
+    if cfg is None:
         cfg = load_config(None)
-        enabled = cfg.getboolean("auth", "enabled", fallback=False)
-        api_key = cfg.get("auth", "api_key", fallback="").strip()
-        header = cfg.get("auth", "header", fallback="X-API-Key").strip() or "X-API-Key"
-        _AUTH_CFG = {
-            "enabled": enabled,
-            "api_key": api_key,
-            "header": header,
-        }
-        if enabled:
-            if not api_key:
-                log.warning("Auth enabled but no api_key configured; all /api/v1 requests will be rejected")
-            log.info("Auth enabled (header=%s)", header)
-        else:
-            log.info("Auth disabled")
-    return _AUTH_CFG
+        request.state.cfg = cfg
+    return cfg
+
+# Auth config is read on each request so ~/.myGPT/config.ini edits
+# take effect without restarting the API.
+def _auth_cfg(cfg: ConfigParser | None = None) -> dict[str, Any]:
+    cfg = cfg or load_config(None)
+    enabled = cfg.getboolean("auth", "enabled", fallback=False)
+    api_key = cfg.get("auth", "api_key", fallback="").strip()
+    header = cfg.get("auth", "header", fallback="X-API-Key").strip() or "X-API-Key"
+    return {
+        "enabled": enabled,
+        "api_key": api_key,
+        "header": header,
+    }
+
+
+# --- Config file helpers and hot-update endpoints ---
+
+def _config_file_path() -> Path:
+    # Canonical per-user config location
+    return Path.home() / ".myGPT" / "config.ini"
+
+
+def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
+    """Apply a small set of hot config updates to ~/.myGPT/config.ini.
+
+    Supported updates:
+    - default_model (str) -> [ollama] default_model
+    - rag_enabled (bool)  -> [rag] enabled
+    - log_level (str)     -> [logging] level
+
+    After writing, reload config and re-configure logging so log level changes apply immediately.
+    Model and RAG are read per-request by chat endpoints, so they apply immediately as well.
+    """
+
+    cfg_path = _config_file_path()
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+
+    parser = ConfigParser()
+    if cfg_path.exists():
+        parser.read(cfg_path)
+
+    def ensure_section(name: str) -> None:
+        if not parser.has_section(name):
+            parser.add_section(name)
+
+    out: dict[str, Any] = {}
+
+    if "default_model" in updates and isinstance(updates.get("default_model"), str):
+        ensure_section("ollama")
+        parser.set("ollama", "default_model", updates["default_model"].strip())
+        out["default_model"] = updates["default_model"].strip()
+
+    if "rag_enabled" in updates:
+        ensure_section("rag")
+        val = bool(updates["rag_enabled"])
+        parser.set("rag", "enabled", "true" if val else "false")
+        out["rag_enabled"] = val
+
+    if "log_level" in updates and isinstance(updates.get("log_level"), str):
+        ensure_section("logging")
+        lvl = updates["log_level"].strip().upper()
+        parser.set("logging", "level", lvl)
+        out["log_level"] = lvl
+
+    # Persist changes
+    with cfg_path.open("w", encoding="utf-8") as f:
+        parser.write(f)
+
+    # Hot-apply logging changes immediately
+    try:
+        cfg = load_config(None)
+        configure_logging(cfg, console=False)
+    except Exception:
+        # Do not fail the request if logging reconfig fails
+        pass
+
+    return out
+
+
+# Ollama model management helpers
+def _ollama_url(cfg: ConfigParser, path: str) -> str:
+    base = get_ollama_base_url(cfg).rstrip("/")
+    if not path.startswith("/"):
+        path = "/" + path
+    return base + path
+
+
+def _ollama_get_json(url: str, timeout_s: float = 10.0) -> Any:
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        data = resp.read()
+    import json
+    return json.loads(data.decode("utf-8"))
+
+
+def _ollama_post_json(url: str, payload: dict[str, Any], timeout_s: float = 60.0) -> Any:
+    import json
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        data = resp.read()
+    return json.loads(data.decode("utf-8"))
 
 
 def _cfg(cfg_path: Path | None = None):
     return load_config(cfg_path)
+
+
+def _chat_runtime_defaults(cfg: ConfigParser | None = None) -> dict[str, Any]:
+    """Read chat-related defaults from config.ini.
+
+    If a request-scoped config is available, reuse it so a single request does
+    not re-read config.ini multiple times.
+
+    Config edits (model, rag enabled, etc.) should take effect without restart.
+    """
+
+    cfg = cfg or load_config(None)
+    rag_enabled = cfg.getboolean("rag", "enabled", fallback=False)
+    return {
+        "cfg": cfg,
+        "default_model": get_default_model(cfg),
+        "rag_enabled": rag_enabled,
+    }
+
+
+def _maybe_kw(fn, name: str) -> bool:
+    """Return True if function `fn` accepts keyword argument `name`."""
+
+    try:
+        return name in inspect.signature(fn).parameters
+    except Exception:
+        return False
 
 
 def _sessions_dir_from_str(s: str | None) -> Path | None:
@@ -300,15 +451,91 @@ def health() -> dict[str, str]:
 
 
 @api.get("/info", response_model=InfoResponse)
-def info() -> InfoResponse:
-    cfg = _cfg(None)
-    base_url = get_ollama_base_url(cfg)
-    model = get_default_model(cfg)
+def info(request: Request) -> InfoResponse:
+    cfg = _req_cfg(request)
     return InfoResponse(
-        ollama_base_url=base_url,
-        default_model=model,
+        ollama_base_url=get_ollama_base_url(cfg),
+        default_model=get_default_model(cfg),
         sessions_dir=str(get_sessions_dir(cfg)),
     )
+
+
+# --- Config get/set endpoints ---
+
+@api.get("/config")
+def config_get(request: Request) -> dict[str, Any]:
+    cfg = _req_cfg(request)
+    return {
+        "ollama_base_url": get_ollama_base_url(cfg),
+        "default_model": get_default_model(cfg),
+        "rag_enabled": cfg.getboolean("rag", "enabled", fallback=False),
+        "log_level": cfg.get("logging", "level", fallback="INFO").strip().upper(),
+    }
+
+
+@api.post("/config")
+def config_update(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    # Only apply known keys; ignore the rest.
+    updates: dict[str, Any] = {}
+    if "default_model" in payload:
+        updates["default_model"] = payload.get("default_model")
+    if "rag_enabled" in payload:
+        updates["rag_enabled"] = payload.get("rag_enabled")
+    if "log_level" in payload:
+        updates["log_level"] = payload.get("log_level")
+
+    changed = _apply_hot_config_updates(updates)
+
+    # After applying, reload config and update request.state.cfg
+    request.state.cfg = load_config(None)
+    cfg = _req_cfg(request)
+    return {
+        "updated": changed,
+        "effective": {
+            "ollama_base_url": get_ollama_base_url(cfg),
+            "default_model": get_default_model(cfg),
+            "rag_enabled": cfg.getboolean("rag", "enabled", fallback=False),
+            "log_level": cfg.get("logging", "level", fallback="INFO").strip().upper(),
+        },
+    }
+
+
+# PATCH endpoint for config updates
+@api.patch("/config")
+def config_patch(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    return config_update(request, payload)
+
+
+# --- Model management endpoints ---
+@api.get("/models")
+def models_list(request: Request) -> dict[str, Any]:
+    cfg = _req_cfg(request)
+    try:
+        data = _ollama_get_json(_ollama_url(cfg, "/api/tags"), timeout_s=10.0)
+        models = data.get("models", []) if isinstance(data, dict) else []
+        # Normalize to a list of model names
+        names: list[str] = []
+        for m in models:
+            if isinstance(m, dict) and isinstance(m.get("name"), str):
+                names.append(m["name"])
+        return {"models": names}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to list models from Ollama: {e}")
+
+
+@api.post("/models/pull")
+def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    cfg = _req_cfg(request)
+    model = payload.get("model")
+    if not isinstance(model, str) or not model.strip():
+        raise HTTPException(status_code=400, detail="Missing 'model'")
+    model = model.strip()
+    try:
+        # Non-streaming pull; Ollama may take a while.
+        data = _ollama_post_json(_ollama_url(cfg, "/api/pull"), {"name": model, "stream": False}, timeout_s=600.0)
+        return {"ok": True, "model": model, "result": data}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to pull model via Ollama: {e}")
 
 
 @api.get("/sessions", response_model=SessionsListResponse)
@@ -348,8 +575,6 @@ def sessions_show(name: str, sessions_dir: Optional[str] = None) -> dict[str, An
     return {"name": name, "messages": msgs, "meta": meta}
 
 # Lightweight session initialization endpoint (does NOT invoke the model)
-from fastapi import Body
-from typing import Any
 
 @api.post("/sessions/init")
 def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
@@ -460,38 +685,85 @@ def sessions_tags_remove(name: str, req: TagsRequest, sessions_dir: Optional[str
 
 
 @api.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest) -> ChatResponse:
+def chat(request: Request, req: ChatRequest) -> ChatResponse:
+    req_id = getattr(request.state, "request_id", None)
+
     try:
-        result = run_chat(
-            req.prompt,
-            session=req.session,
-            new=req.new,
-            model=req.model,
-            system=req.system,
-            config_path=None,
-            sessions_dir=req.sessions_dir,
+        d = _chat_runtime_defaults(_req_cfg(request))
+        chosen_model = req.model or d["default_model"]
+
+        log.info(
+            "Chat request received",
+            extra={
+                "request_id": req_id,
+                "session": req.session,
+                "model": chosen_model,
+                "new_session": req.new,
+                "prompt_length": len(req.prompt),
+                "rag_enabled": d.get("rag_enabled", False),
+            }
         )
+
+        kwargs: dict[str, Any] = {
+            "session": req.session,
+            "new": req.new,
+            "model": chosen_model,
+            "system": req.system,
+            "config_path": None,
+            "sessions_dir": req.sessions_dir,
+        }
+
+        # Optional runtime override: only pass if chat implementation supports it.
+        if _maybe_kw(run_chat, "rag_enabled"):
+            rag_val = getattr(req, "rag_enabled", None)
+            kwargs["rag_enabled"] = d["rag_enabled"] if rag_val is None else bool(rag_val)
+
+        result = run_chat(req.prompt, **kwargs)
+
+        log.info(
+            "Chat request completed",
+            extra={
+                "request_id": req_id,
+                "session": result.session,
+                "model": result.model,
+                "reply_length": len(result.reply),
+            }
+        )
+
         return ChatResponse(session=result.session, model=result.model, reply=result.reply)
     except Exception as e:
+        log.error(
+            "Chat request failed",
+            extra={"request_id": req_id, "error": str(e), "error_type": type(e).__name__},
+            exc_info=True
+        )
         raise HTTPException(status_code=502, detail=str(e))
 
 
 # Streaming chat endpoint
 @api.post("/chat/stream")
-def chat_stream_api(req: ChatRequest):
+def chat_stream_api(request: Request, req: ChatRequest):
     try:
         def _stream_with_keepalive():
             # Send an immediate keepalive to prevent client read timeouts
             yield "\n"
-            for chunk in chat_stream(
-                req.prompt,
-                session=req.session,
-                new=req.new,
-                model=req.model,
-                system=req.system,
-                config_path=None,
-                sessions_dir=req.sessions_dir,
-            ):
+            d = _chat_runtime_defaults(_req_cfg(request))
+            chosen_model = req.model or d["default_model"]
+
+            kwargs: dict[str, Any] = {
+                "session": req.session,
+                "new": req.new,
+                "model": chosen_model,
+                "system": req.system,
+                "config_path": None,
+                "sessions_dir": req.sessions_dir,
+            }
+
+            if _maybe_kw(chat_stream, "rag_enabled"):
+                rag_val = getattr(req, "rag_enabled", None)
+                kwargs["rag_enabled"] = d["rag_enabled"] if rag_val is None else bool(rag_val)
+
+            for chunk in chat_stream(req.prompt, **kwargs):
                 yield chunk
 
         return StreamingResponse(
@@ -503,19 +775,27 @@ def chat_stream_api(req: ChatRequest):
 
 # Non-versioned alias for streaming chat endpoint
 @app.post("/api/chat/stream")
-def chat_stream_api_legacy(req: ChatRequest):
+def chat_stream_api_legacy(request: Request, req: ChatRequest):
     try:
         def _stream_with_keepalive():
             yield "\n"
-            for chunk in chat_stream(
-                req.prompt,
-                session=req.session,
-                new=req.new,
-                model=req.model,
-                system=req.system,
-                config_path=None,
-                sessions_dir=req.sessions_dir,
-            ):
+            d = _chat_runtime_defaults(_req_cfg(request))
+            chosen_model = req.model or d["default_model"]
+
+            kwargs: dict[str, Any] = {
+                "session": req.session,
+                "new": req.new,
+                "model": chosen_model,
+                "system": req.system,
+                "config_path": None,
+                "sessions_dir": req.sessions_dir,
+            }
+
+            if _maybe_kw(chat_stream, "rag_enabled"):
+                rag_val = getattr(req, "rag_enabled", None)
+                kwargs["rag_enabled"] = d["rag_enabled"] if rag_val is None else bool(rag_val)
+
+            for chunk in chat_stream(req.prompt, **kwargs):
                 yield chunk
 
         return StreamingResponse(
@@ -551,7 +831,7 @@ def tool_grep(req: ToolGrepRequest) -> ToolTextResponse:
 
 
 @api.post("/rag/ingest", response_model=RagIngestResponse)
-def rag_ingest(req: RagIngestRequest) -> RagIngestResponse:
+def rag_ingest(request: Request, req: RagIngestRequest) -> RagIngestResponse:
     try:
         n = ingest_document(
             doc_id=req.doc_id,
@@ -565,7 +845,7 @@ def rag_ingest(req: RagIngestRequest) -> RagIngestResponse:
 
 
 @api.post("/rag/query", response_model=RagQueryResponse)
-def rag_query(req: RagQueryRequest) -> RagQueryResponse:
+def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
     try:
         results = retrieve_context(req.query, top_k=req.top_k)
         out = [

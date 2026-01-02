@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable, List
+import logging
+import json
 
 from mygpt.config import (
     load_config,
@@ -15,6 +17,8 @@ from mygpt.config import (
 )
 from mygpt.rag.embeddings import embed_text, embed_texts
 from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -44,13 +48,55 @@ def _chunking_cfg() -> ChunkingConfig:
 def chunk_text(text: str) -> list[str]:
     """Chunk text in a word-safe, paragraph-aware way.
 
-    Strategy:
+    This function implements a sophisticated text chunking algorithm designed
+    to maximize the quality of retrieval-augmented generation (RAG) results.
+    Unlike naive character-based chunking, this approach preserves semantic
+    boundaries and ensures chunks are human-readable.
+
+    **Why This Approach?**
+
+    1. **Semantic Preservation**: Splitting on paragraph boundaries keeps
+       related ideas together, improving retrieval relevance.
+
+    2. **Readability**: Word-safe cutting means retrieved chunks don't have
+       mid-word breaks like "The quick brown f" which confuse both humans
+       and LLMs.
+
+    3. **Context Continuity**: Overlap between chunks means even if the most
+       relevant sentence is at a chunk boundary, surrounding context is
+       preserved.
+
+    **Algorithm Overview:**
+
+    Phase 1 - Paragraph-based chunking:
       - Split on blank lines (paragraph boundaries).
       - Build chunks by concatenating paragraphs until `chunk_size` would be exceeded.
       - For paragraphs longer than `chunk_size`, fall back to word-safe wrapping.
-      - Apply `chunk_overlap` as an overlap of trailing characters (word-safe) between chunks.
 
-    This avoids mid-word cuts that make retrieval results hard to read.
+    Phase 2 - Overlap application:
+      - Apply `chunk_overlap` as an overlap of trailing characters (word-safe) between chunks.
+      - Ensures overlap starts at word boundary for readability.
+
+    **Configuration:**
+
+    Controlled by `[rag]` section in config.ini:
+    - `chunk_size`: Target maximum characters per chunk (default: 800)
+    - `chunk_overlap`: Characters to overlap between chunks (default: 100)
+
+    **Common Issues:**
+
+    - If `chunk_overlap >= chunk_size`, raises RAGError
+    - Empty or whitespace-only input returns empty list
+    - Very long paragraphs are word-wrapped to fit chunk_size
+
+    Args:
+        text: The text to chunk (any length, any format)
+
+    Returns:
+        List of text chunks, each respecting semantic boundaries
+
+    Raises:
+        RAGError: If chunk configuration is invalid
     """
 
     cfg = _chunking_cfg()
@@ -136,9 +182,66 @@ def ingest_document(
     metadata: dict | None = None,
     ensure_schema: bool = False,
 ) -> int:
-    """Chunk, embed, and store a document.
+    """Chunk, embed, and store a document in the vector store.
 
-    Returns the number of chunks ingested.
+    This is the primary ingestion pipeline for adding documents to your
+    RAG knowledge base. It handles all the complexity of chunking,
+    embedding generation, and storage.
+
+    **Pipeline Steps:**
+
+    1. **Chunking**: Text is split into semantic chunks using paragraph-aware
+       chunking with configurable overlap.
+
+    2. **Embedding**: Each chunk is converted to a vector embedding using
+       the configured embedding model (typically Ollama's nomic-embed-text).
+
+    3. **Storage**: Chunks and embeddings are stored in Cassandra with
+       upsert semantics (existing doc_id is replaced).
+
+    **Usage Examples:**
+
+        # Basic document ingestion
+        >>> n = ingest_document(
+        ...     doc_id="user-guide-v2.1",
+        ...     text=documentation_text
+        ... )
+        >>> print(f"Ingested {n} chunks")
+
+        # With metadata for filtering
+        >>> n = ingest_document(
+        ...     doc_id="api-reference",
+        ...     text=api_docs,
+        ...     metadata={"type": "api", "version": "1.0"}
+        ... )
+
+        # First-time setup (creates schema)
+        >>> n = ingest_document(
+        ...     doc_id="first-doc",
+        ...     text=content,
+        ...     ensure_schema=True  # Only needed once
+        ... )
+
+    **Important Notes:**
+
+    - Documents with the same `doc_id` are replaced (upsert semantics)
+    - Empty text returns 0 without error
+    - Embedding dimension is inferred from first embedding if ensure_schema=True
+    - Cassandra connection is opened and closed within this function
+
+    Args:
+        doc_id: Unique identifier for this document (used for updates/deletes)
+        text: The text content to ingest (any length)
+        metadata: Optional metadata dict to attach to all chunks
+        ensure_schema: If True, creates vector store schema if it doesn't exist
+                      (should be True for first document, False afterwards)
+
+    Returns:
+        Number of chunks successfully ingested
+
+    Raises:
+        RAGError: If chunking configuration is invalid
+        Exception: If Cassandra connection or embedding generation fails
     """
     chunks = chunk_text(text)
     if not chunks:
@@ -167,44 +270,153 @@ def ingest_document(
 
 
 # ----------------------------
-# Retrieve
+# Query Expansion
+# ----------------------------
+
+
+def expand_query(query: str, max_expansions: int = 3) -> list[str]:
+    """Generate alternative phrasings of a query using the local LLM.
+
+    This improves retrieval quality by searching for multiple
+    formulations of the same question. Uses the local Ollama
+    instance so there's no external cost.
+
+    Args:
+        query: Original user query
+        max_expansions: Maximum number of alternative phrasings to generate
+
+    Returns:
+        List containing original query plus expansions
+
+    Example:
+        >>> expand_query("How do I install Python?")
+        [
+            "How do I install Python?",
+            "What are the steps to set up Python?",
+            "Python installation guide"
+        ]
+    """
+    cfg = load_config(None)
+
+    # Check if query expansion is enabled
+    if not cfg.getboolean("rag", "enable_query_expansion", fallback=False):
+        return [query]
+
+    try:
+        from mygpt.config import get_ollama_base_url, get_default_model
+        from mygpt.ollama_client import ollama_chat
+
+        base_url = get_ollama_base_url(cfg)
+        model = cfg.get("rag", "expansion_model", fallback=None) or get_default_model(cfg)
+
+        system_prompt = (
+            "You are a query expansion assistant. Given a search query, "
+            "generate alternative phrasings that capture the same intent. "
+            f"Return ONLY a JSON array of {max_expansions} alternative queries. "
+            "Keep alternatives concise (under 100 chars each). "
+            "Do NOT include the original query in your response."
+        )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Original query: {query}"}
+        ]
+
+        response = ollama_chat(
+            base_url=base_url,
+            model=model,
+            messages=messages,
+            timeout_s=10  # Short timeout for expansion
+        )
+
+        # Parse JSON response
+        # Strip markdown code blocks if present
+        response = response.strip()
+        if response.startswith("```json"):
+            response = response[7:]
+        if response.startswith("```"):
+            response = response[3:]
+        if response.endswith("```"):
+            response = response[:-3]
+        response = response.strip()
+
+        expansions = json.loads(response)
+
+        if isinstance(expansions, list):
+            # Return original + valid expansions (up to max)
+            valid = [str(e).strip() for e in expansions if e and len(str(e).strip()) > 0]
+            return [query] + valid[:max_expansions]
+
+    except Exception as e:
+        log.warning("Query expansion failed, using original query only: %s", e)
+
+    return [query]
+
+
+# ----------------------------
+# Retrieve with Hybrid Search
 # ----------------------------
 
 
 def retrieve_context(query: str, top_k: int | None = None) -> list[dict]:
+    """Retrieve relevant context for a query.
+
+    Optionally performs query expansion to improve recall.
+
+    Args:
+        query: User's search query
+        top_k: Number of results to return (uses config default if None)
+
+    Returns:
+        List of result dictionaries with text, score, and metadata
+    """
     cfg = load_config(None)
 
     k = int(top_k) if top_k is not None else get_rag_chat_top_k(cfg)
     min_score = get_rag_min_score(cfg)
     max_chunks = get_rag_max_chunks(cfg)
     dedupe = get_rag_dedupe(cfg)
+    use_expansion = cfg.getboolean("rag", "enable_query_expansion", fallback=False)
 
-    q_emb = embed_text(query)
+    # Generate query expansions if enabled
+    queries = expand_query(query) if use_expansion else [query]
+
+    if len(queries) > 1:
+        log.debug("Expanded query into %d variants", len(queries))
+
+    # Collect results from all query variants
+    all_results: list[dict] = []
+    seen_texts: set[str] = set()
 
     store = CassandraVectorStore()
     try:
-        results = store.query_by_embedding(q_emb, k=k)
+        for q in queries:
+            q_emb = embed_text(q)
+            results = store.query_by_embedding(q_emb, k=k)
+
+            for r in results:
+                text = (r.get("text") or "").strip()
+                if not text:
+                    continue
+
+                # Deduplicate across all queries
+                norm = " ".join(text.split())
+                if norm in seen_texts:
+                    continue
+
+                seen_texts.add(norm)
+                all_results.append(r)
     finally:
         store.close()
 
-    # Filter by score
-    filtered: list[dict] = []
-    seen_texts: set[str] = set()
+    # Sort by score (highest first) and filter
+    all_results.sort(key=lambda r: r.get("score", 0.0), reverse=True)
 
-    for r in results:
+    filtered: list[dict] = []
+    for r in all_results:
         score = r.get("score")
         if score is not None and score < min_score:
             continue
-
-        text = (r.get("text") or "").strip()
-        if not text:
-            continue
-
-        if dedupe:
-            norm = " ".join(text.split())
-            if norm in seen_texts:
-                continue
-            seen_texts.add(norm)
 
         filtered.append(r)
         if len(filtered) >= max_chunks:
@@ -219,6 +431,49 @@ def retrieve_context(query: str, top_k: int | None = None) -> list[dict]:
 
 
 def compose_context(results: Iterable[dict]) -> str:
+    """Format retrieved chunks into context for LLM injection.
+
+    Takes raw retrieval results and formats them into a readable context
+    block that can be injected into the LLM's system prompt. Handles
+    header formatting, score inclusion, and character limiting.
+
+    **Output Format:**
+
+    With headers enabled (default):
+    ```
+    [Context 1] (score=0.876)
+    First relevant chunk text here...
+
+    [Context 2] (score=0.834)
+    Second relevant chunk text here...
+    ```
+
+    Without headers:
+    ```
+    First relevant chunk text here...
+
+    Second relevant chunk text here...
+    ```
+
+    **Configuration:**
+
+    - `chat_context_max_chars`: Maximum total characters (default: 2400)
+    - `include_scores`: Show similarity scores (default: false)
+    - `include_headers`: Show [Context N] labels (default: true)
+
+    **Character Limiting:**
+
+    If total context would exceed max_chars, chunks are:
+    1. Included in order until limit reached
+    2. Last chunk truncated to fit within limit
+    3. Remaining chunks discarded
+
+    Args:
+        results: Iterable of result dicts from retrieve_context()
+
+    Returns:
+        Formatted context string ready for LLM injection
+    """
     cfg = load_config(None)
     max_chars = get_rag_chat_context_max_chars(cfg)
     include_scores = get_rag_include_scores(cfg)
