@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 import logging
 
-from mygpt.config import load_config, get_log_dir
-from mygpt.logging import configure_logging
+from mygpt.config import load_config
+from mygpt.logging import configure_logging, get_log_dir
 
 
 @pytest.fixture(scope="session", autouse=True)

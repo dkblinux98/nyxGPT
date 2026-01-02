@@ -1,5 +1,3 @@
-
-
 # Configuration
 
 myGPT is configured via an INI file, typically located at:
@@ -7,8 +5,6 @@ myGPT is configured via an INI file, typically located at:
 ```
 ~/.myGPT/config.ini
 ```
-
-An example configuration file is provided in the repository as `example.config.ini`.
 
 ---
 
@@ -34,7 +30,7 @@ General application behavior.
 
 ```ini
 [mygpt]
-default_model = llama3.1:8b
+default_model = qwen2.5:0.5b
 sessions_dir = ~/.myGPT/sessions
 chat_timeout_seconds = 60
 ```
@@ -44,6 +40,8 @@ chat_timeout_seconds = 60
 | `default_model` | Ollama model name used when none is specified |
 | `sessions_dir` | Directory for chat session storage |
 | `chat_timeout_seconds` | Timeout for a single chat request |
+
+**Note:** `default_model` is **hot-reloadable** and does not require a restart.
 
 ---
 
@@ -81,20 +79,22 @@ port = 8000
 
 ## `[logging]` section
 
-Centralized logging configuration.
+Centralized logging configuration. This is the **single source of truth** for all logging settings, managed by `src/mygpt/logging.py`.
 
 ```ini
 [logging]
-log_dir = ~/.myGPT/logs
-log_level = INFO
+level = INFO
+dir = ~/.myGPT/logs
 ```
 
 | Key | Description |
 |---|---|
-| `log_dir` | Directory where logs are written |
-| `log_level` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, etc.) |
+| `level` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, etc.) |
+| `dir` | Directory where logs are written (default: `~/.myGPT/logs`) |
 
-All components (CLI, API, tests) write logs under this directory.
+All components (CLI, API, tests) use this centralized configuration. Logs are written to `{dir}/mygpt.log` with automatic rotation.
+
+**Note:** Changes to the logging `level` are **applied at runtime without restart**.
 
 ---
 
@@ -125,17 +125,38 @@ keyspace = mygpt
 | `cassandra_port` | Cassandra port |
 | `keyspace` | Cassandra keyspace for RAG |
 
+**Note:** `enabled` is **hot-reloadable** and takes effect on the next request. Changes to embedding schema require re-ingestion of documents.
+
 ---
 
-## `[paths]` section (optional)
+## `[paths]` section
 
-Override default filesystem locations.
+Absolute paths for operational components.
 
 ```ini
 [paths]
-sessions = ~/.myGPT/sessions
-logs = ~/.myGPT/logs
+repo_dir = /path/to/myGPT
+venv_python = /path/to/myGPT/.venv/bin/python
+node_bin = /usr/local/bin/node
+npm_bin = /usr/local/bin/npm
 ```
+
+| Key | Description |
+|---|---|
+| `repo_dir` | Absolute path to the myGPT repository |
+| `venv_python` | Path to the Python executable in the project venv |
+| `node_bin` | Path to Node.js executable |
+| `npm_bin` | Path to npm executable |
+
+---
+
+## Hot-reloadable settings
+
+- `mygpt.default_model`
+- `logging.level`
+- `rag.enabled`
+
+All other settings require a service restart unless otherwise noted.
 
 ---
 

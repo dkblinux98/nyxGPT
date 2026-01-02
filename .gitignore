@@ -20,3 +20,14 @@ build/
 dist/
 out/
 coverage/
+
+# Codex/Github/Jupyter
+AGENTS.md
+chat_history.md
+notebooks/
+
+# Project Analysis
+code_review/*
+product_management/*
+project_management/*
+performance_analysis/*
