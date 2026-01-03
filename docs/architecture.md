@@ -157,6 +157,30 @@ Streaming is exposed consistently across:
 - **Integration tests** validate end-to-end behavior with real services
 - Shared logging makes failures easier to diagnose
 
+### Code coverage
+
+Code coverage is collected using `pytest-cov` (a pytest plugin for `coverage.py`).
+
+**How it works:**
+
+- `coverage.py` uses **sqlite3** as an embedded database to store coverage data
+- Coverage data is written to `.coverage` (a SQLite database file)
+- No service startup, configuration, or installation required
+
+**Key technical details:**
+
+- **sqlite3 is part of Python's standard library** — included by default with Python
+- **Embedded database** — no daemon, server process, or configuration files
+- **Direct file access** — coverage.py opens `.coverage` file directly using `sqlite3.connect()`
+- **No `mygpt ops` integration needed** — works out of the box
+
+**What is the `.coverage` file?**
+
+- SQLite 3.x database created by `coverage.py`
+- Stores line-by-line execution data for each Python file
+- Used to generate coverage reports via `pytest --cov`
+- Safe to delete (will be regenerated on next test run)
+
 ---
 
 ## Future extensions
