@@ -48,7 +48,7 @@ from mygpt import sessions
 from mygpt import tools_fs
 
 from mygpt.rag.rag import ingest_document, retrieve_context
-from mygpt.logging import configure_logging
+from mygpt.logging import configure_logging, request_id_var
 from mygpt.rate_limiter import RateLimiter
 
 
@@ -212,8 +212,12 @@ async def add_request_id_and_limits(request: Request, call_next):
             # Ignore malformed content-length
             pass
 
+    # Accept client-provided request ID or generate new one
     req_id = request.headers.get("x-request-id") or str(uuid.uuid4())
     request.state.request_id = req_id
+
+    # Set request ID in context variable for automatic logging
+    request_id_var.set(req_id)
 
     response = await call_next(request)
     response.headers["X-Request-Id"] = req_id

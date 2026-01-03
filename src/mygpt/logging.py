@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -9,8 +10,13 @@ from typing import Optional
 from configparser import ConfigParser
 
 DEFAULT_LOGGER_NAME = "mygpt"
-DEFAULT_FMT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+DEFAULT_FMT = "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"
 DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+# Context variable for request ID tracking
+request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "request_id", default=None
+)
 
 
 class StructuredFormatter(logging.Formatter):
@@ -45,6 +51,20 @@ class StructuredFormatter(logging.Formatter):
                 log_data[key] = value
 
         return json.dumps(log_data)
+
+
+class RequestIdFilter(logging.Filter):
+    """Logging filter that adds request ID from context variable to all log records.
+
+    This ensures all log entries during a request include the request ID for traceability,
+    without requiring manual addition to every log call.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Add request_id to log record if not already present."""
+        if not hasattr(record, "request_id"):
+            record.request_id = request_id_var.get() or "N/A"
+        return True
 
 
 def _coerce_cfg(cfg: Optional[ConfigParser]) -> ConfigParser:
@@ -158,6 +178,12 @@ def configure_logging(
     # Root logger is the single sink for all logs.
     root = logging.getLogger()
     root.setLevel(level)
+
+    # Create and add request ID filter to root logger
+    request_id_filter = RequestIdFilter()
+    # Remove any existing RequestIdFilter to avoid duplicates
+    root.filters = [f for f in root.filters if not isinstance(f, RequestIdFilter)]
+    root.addFilter(request_id_filter)
 
     # Ensure our handlers exist on root (so third-party loggers propagate into our files).
     _ensure_rotating_file_handler(

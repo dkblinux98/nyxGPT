@@ -72,6 +72,63 @@ All functional endpoints live under:
 
 ---
 
+## Request ID Tracking
+
+All API requests are automatically assigned a unique request ID for traceability across logs and responses. This enables correlation of log entries with specific API requests for debugging and monitoring.
+
+### Features
+
+- **Automatic generation**: Each request receives a UUID v4 request ID if not provided
+- **Client-provided IDs**: Clients can provide their own request ID via the `X-Request-ID` header
+- **Response header**: The request ID is always returned in the `X-Request-Id` response header
+- **Logging integration**: All log entries include the request ID for full request tracing
+- **Error responses**: Error responses include the request ID in the response body
+
+### Usage
+
+**Auto-generated request ID:**
+
+```bash
+curl http://127.0.0.1:8000/api/v1/info
+# Response includes: X-Request-Id: 550e8400-e29b-41d4-a716-446655440000
+```
+
+**Client-provided request ID:**
+
+```bash
+curl http://127.0.0.1:8000/api/v1/info \
+  -H "X-Request-ID: my-custom-request-id"
+# Response includes: X-Request-Id: my-custom-request-id
+```
+
+**Error response with request ID:**
+
+```json
+{
+  "error": {
+    "code": "not_found",
+    "message": "Resource not found",
+    "request_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+**Log entries with request ID:**
+
+```
+2026-01-03 12:34:56 INFO [550e8400-e29b-41d4-a716-446655440000] mygpt.api: Chat request received
+2026-01-03 12:34:57 INFO [550e8400-e29b-41d4-a716-446655440000] mygpt.api: Chat request completed
+```
+
+### Benefits
+
+- **Debugging**: Trace all log entries related to a specific request
+- **Monitoring**: Track request flow through the system
+- **Client correlation**: Clients can provide their own IDs to correlate with their logs
+- **Error investigation**: Quickly find all logs related to failed requests
+
+---
+
 ## Info endpoint
 
 ### `GET /api/v1/info`
