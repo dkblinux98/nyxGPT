@@ -11,7 +11,7 @@ class MygptWeb < Formula
   # with a real URL + sha256 for a tarball (typically the tap's dist artifact).
   url "__MYGPT_WEB_URL__"
   sha256 "__MYGPT_WEB_SHA256__"
-  version "1.0.0"
+  version "1.0.0.md"
   depends_on "node"
 
   def install

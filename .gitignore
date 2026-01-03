@@ -31,3 +31,4 @@ code_review/*
 product_management/*
 project_management/*
 performance_analysis/*
+/.coverage

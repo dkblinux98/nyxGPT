@@ -2,9 +2,9 @@ class MygptApi < Formula
   desc "myGPT FastAPI backend (uvicorn)"
   homepage "http://127.0.0.1:8000/docs"
   tap = Tap.fetch("dkblinux98", "mygpt-local")
-  url "file://#{tap.path}/dist/mygpt-api-1.0.0.tar.gz"
+  url "file://#{tap.path}/dist/mygpt-api-1.0.0.md.tar.gz"
   sha256 "5308429da6dfa18a6c76a07db9e7a69fff64b3c80f7fa231b484c2a6ceca0b14"
-  version "1.0.0"
+  version "1.0.0.md"
   license "MIT"
 
   def install

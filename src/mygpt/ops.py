@@ -35,9 +35,9 @@ def _which(prog: str) -> Optional[str]:
 def _read_project_version() -> str:
     pyproject = REPO_ROOT / "pyproject.toml"
     if not pyproject.exists():
-        return "1.0.0"
+        return "1.0.0.md"
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    return str(data.get("project", {}).get("version", "1.0.0"))
+    return str(data.get("project", {}).get("version", "1.0.0.md"))
 
 
 def _ensure_dir(p: Path) -> None:

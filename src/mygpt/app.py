@@ -111,7 +111,7 @@ async def lifespan(_app: FastAPI):
 
 
 # Versioned API router
-app = FastAPI(title="myGPT", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="myGPT", version="1.0.0.md", lifespan=lifespan)
 api = APIRouter(prefix="/api/v1")
 
 
