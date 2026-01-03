@@ -106,37 +106,190 @@ mygpt ops restart web      # Start dev server (http://localhost:3000)
 
 ## Development Workflow
 
+### Complete Autonomous Issue Workflow
+
+When working on an issue autonomously from start to finish:
+
 ```
-1. SELECT ISSUE (from GitHub)
+1. SELECT ISSUE
+   - Choose from current phase milestone
+   - Prefer lower-numbered issues first
    ↓
-2. CREATE BRANCH (from current release branch: v1.0.0)
-   git checkout v1.0.0
-   git pull origin v1.0.0
-   git checkout -b [type]/42-add-session-export (where type is Feature or Fix and assume Fix if there is no label for Feature) 
+2. UPDATE STATUS → "In Progress"
+   - Update GitHub Project status field
+   - Use GraphQL API to update project item
    ↓
-3. IMPLEMENT CODE (one file at a time)
+3. CREATE ISSUE-LINKED BRANCH
+   - Branch from current release (v1.0.0)
+   - Use GitHub's issue branch creation (shows in issue UI)
+   - Format: [type]/[issue-number]-[description]
+   - Types: fix/ or feat/ (assume fix/ if no Feature label)
+   - Example: fix/2597-increase-test-coverage
    ↓
-4. WRITE/UPDATE TESTS
-   pytest -m unit
+4. IMPLEMENT CODE
+   - Work one file at a time
+   - Follow code style guidelines
+   - Add type hints and docstrings
    ↓
-5. UPDATE DOCUMENTATION
+5. WRITE/UPDATE TESTS
+   - Add tests for new code
+   - Update existing tests if needed
+   - Ensure 80%+ coverage for new code
+   - Run: pytest -m unit
    ↓
-6. COMMIT
-   Example:
-   git commit -m "feat(api): add session export endpoint
+6. UPDATE DOCUMENTATION
+   - Update relevant docs (README, API docs, etc.)
+   - Add/update docstrings
+   - Update example.config.ini if needed
+   ↓
+7. RUN ALL CHECKS
+   - pytest -m unit (MUST pass)
+   - ruff check src/
+   - mypy src/
+   - Coverage check: pytest --cov=src/mygpt
+   ↓
+8. COMMIT & PUSH
+   - Use conventional commit format
+   - Include "Resolves #[issue-number]"
+   - Push to remote branch
+   ↓
+9. UPDATE STATUS → "Review"
+   - Update GitHub Project status
+   ↓
+10. SELF-REVIEW
+    - Check ALL acceptance criteria met
+    - Verify tests pass
+    - Verify documentation updated
+    - Check code quality
+    ↓
+11a. IF REVIEW FAILS:
+     - Create sub-issue documenting failures
+     - Link sub-issue to parent
+     - Update parent status → "In Progress"
+     - Update sub-issue status → "In Progress"
+     - Fix issues
+     - Repeat from step 4
+     ↓
+11b. IF REVIEW PASSES:
+     - Update status → "For Release"
+     - Create PR to v1.0.0
+     - Merge PR (squash and merge)
+     - Delete feature branch
+     - Verify issue auto-closed (via "Resolves #XXX")
+     - GitHub Actions will auto-check in release tracking issue
+```
 
-   Implements /api/v1/sessions/{name}/export endpoint that
-   exports sessions in markdown, JSON, or HTML format.
+### GitHub Project Status Flow
 
-   Resolves #42"
-   ↓
-7. CREATE PULL REQUEST
-   gh pr create --base v1.0.0
-   ↓
-8. MERGE & CLEANUP
+Issues move through these statuses:
+- **Backlog** → Initial state for new issues
+- **In Progress** → Actively being worked on
+- **Review** → Code complete, undergoing review
+- **For Release** → Passed review, ready to merge
+- **Done** → Merged and closed (automatic when issue closes)
+
+### Branch Creation (Issue-Linked)
+
+To create a branch that shows in the issue's "Development" section:
+
+```bash
+# Option 1: Using gh CLI with issue link (preferred)
+gh issue develop [issue-number] --checkout --base v1.0.0
+
+# Option 2: Create branch then link via GitHub API
+git checkout v1.0.0
+git pull origin v1.0.0
+git checkout -b fix/2597-description
+git push -u origin fix/2597-description
+# Link is created automatically when PR references the issue
+```
+
+### Review Criteria Checklist
+
+Before marking review as passed, verify:
+- [ ] All acceptance criteria from issue met
+- [ ] Unit tests pass (`pytest -m unit`)
+- [ ] Code coverage ≥80% for new code, ≥25% overall
+- [ ] Linters pass (ruff, mypy)
+- [ ] Documentation updated
+- [ ] No security vulnerabilities introduced
+- [ ] Code follows style guidelines
+- [ ] Commit messages follow format
+- [ ] No runtime data or secrets committed
+
+### Sub-Issue Creation (Review Failures)
+
+When review fails, create a sub-issue:
+
+```bash
+# Create sub-issue
+gh issue create \
+  --title "Fix review issues for #[parent-number]" \
+  --body "Parent issue: #[parent-number]
+
+## Review Failures
+- [ ] [Specific failure 1]
+- [ ] [Specific failure 2]
+
+## Required Actions
+[What needs to be fixed]" \
+  --milestone "[Same milestone]" \
+  --label "bug"
+
+# Link to parent by editing parent issue body
+# Add: "- [ ] #[sub-issue-number]" to parent's task list
 ```
 
 See @AGENTS.md for complete workflow details, branch naming conventions, PR templates, and failure recovery procedures.
+
+## GitHub Bulk Operations
+
+When performing bulk operations on GitHub issues/projects (updating 50+ items):
+
+**CRITICAL: Error Handling & Rate Limiting**
+
+```bash
+# ❌ BAD: Suppresses errors, no rate limiting
+for issue in {1..100}; do
+  gh project item-edit --id "$id" --field-id "$field" --option-id "$option" 2>/dev/null
+done
+
+# ✅ GOOD: Shows errors, handles rate limits, verifies success
+count=0
+for issue in {1..100}; do
+  if gh project item-edit --id "$id" --field-id "$field" --option-id "$option"; then
+    echo "✓ Updated issue #$issue"
+  else
+    echo "✗ Failed issue #$issue - check rate limits"
+  fi
+
+  # Pause every 10 items to avoid rate limiting
+  ((count++))
+  if [ $((count % 10)) -eq 0 ]; then
+    sleep 2
+  fi
+done
+```
+
+**Best Practices:**
+
+1. **Never suppress errors** - Remove `2>/dev/null` to see API failures
+2. **Add delays** - Sleep 1-2 seconds every 10-20 items to avoid rate limits
+3. **Wait for sync** - After `gh project item-add`, wait 3-5 seconds before editing
+4. **Verify updates** - Check command exit codes and log failures
+5. **Batch appropriately** - Update 20-30 items, verify, then continue
+6. **Log everything** - Keep a record of what succeeded/failed for manual cleanup
+
+**Common Failure Modes:**
+- GitHub API rate limiting (429/403 errors)
+- Project items not yet synced after adding
+- Network timeouts on large batches
+- GraphQL query complexity limits
+
+**Recovery:**
+- Check which items failed: `gh issue list --json number,title | jq '...'`
+- Manually update failed items or rerun with smaller batches
+- Use `gh api rate_limit` to check remaining API quota
 
 ## Current Context
 
