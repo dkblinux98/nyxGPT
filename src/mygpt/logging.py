@@ -165,6 +165,7 @@ def configure_logging(
     log_format = cfg.get("logging", "format", fallback="text").lower()
     use_json = log_format == "json"
 
+    formatter: logging.Formatter
     if use_json:
         formatter = StructuredFormatter(datefmt=DEFAULT_DATEFMT)
     else:

@@ -683,21 +683,19 @@ def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
     model = req.get("model")
     if not isinstance(model, str) or not model:
-        model = None
+        model = get_default_model(cfg)
 
     try:
-        ok, msg = sessions.init_session(
-            name=name,
-            system=system,
+        _sf, _mf, _msgs, _meta = sessions.init_session(
+            name,
+            sd,
+            new_session=True,
             model=model,
-            sessions_dir=sd,
+            system=system,
         )
     except Exception as e:
         log.exception("sessions.init_session failed")
         raise HTTPException(status_code=400, detail=str(e))
-
-    if not ok:
-        raise HTTPException(status_code=400, detail=msg)
 
     return {"ok": True, "name": name, "existed": False}
 
