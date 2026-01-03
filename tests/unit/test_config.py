@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from mygpt.config import load_config
+from mygpt.config import load_config, validate_config, get_api_port
 
 
 def _write(p: Path, text: str) -> None:
@@ -104,3 +105,83 @@ chat_timeout_seconds = 180
 
     cfg = load_config(str(ini))
     assert cfg.getint("mygpt", "chat_timeout_seconds") == 180
+
+
+def test_load_config_missing_file_raises_error() -> None:
+    """load_config should raise FileNotFoundError for missing config file."""
+    with pytest.raises(FileNotFoundError, match=r"Missing config file.*config\.ini"):
+        load_config("/nonexistent/path/config.ini")
+
+
+def test_validate_config_detects_invalid_port(tmp_path: Path) -> None:
+    """validate_config should detect invalid port values."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[api]
+port = not_a_number
+""".lstrip(),
+    )
+    
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+    
+    assert len(errors) > 0
+    assert any("port" in err.lower() for err in errors)
+
+
+def test_validate_config_detects_negative_port(tmp_path: Path) -> None:
+    """validate_config should detect negative port values."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[api]
+port = -1
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any("port" in err.lower() and "1024-65535" in err for err in errors)
+
+
+def test_validate_config_detects_port_too_large(tmp_path: Path) -> None:
+    """validate_config should detect port values > 65535."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[api]
+port = 99999
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any("port" in err.lower() and "1024-65535" in err for err in errors)
+
+
+def test_get_api_port_handles_invalid_type_gracefully(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """get_api_port should return default value for invalid port types."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[api]
+port = invalid
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    # Should return default port (8000) and log a warning
+    with caplog.at_level(logging.WARNING):
+        port = get_api_port(cfg)
+
+    assert port == 8000
+    assert "Invalid api.port" in caplog.text
