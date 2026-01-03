@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import json
 from pathlib import Path
 
 import pytest
@@ -121,3 +122,64 @@ def test_session_name_validation_rejects_path_traversal(tmp_path: Path, bad_name
     # If your implementation allows these, this test will fail and we can tighten validation.
     with pytest.raises(Exception):
         sessions.load_session(bad_name, cfg, new_session=True)
+
+def test_validate_session_name_rejects_non_string() -> None:
+    """validate_session_name should raise ValueError for non-string input."""
+    with pytest.raises(ValueError, match="session name must be a string"):
+        sessions.validate_session_name(123)  # type: ignore
+
+
+def test_validate_session_name_rejects_empty_string() -> None:
+    """validate_session_name should raise ValueError for empty string."""
+    with pytest.raises(ValueError, match="session name cannot be empty"):
+        sessions.validate_session_name("")
+
+
+def test_validate_session_name_rejects_too_long() -> None:
+    """validate_session_name should raise ValueError for names > 64 chars."""
+    too_long = "a" * 65
+    with pytest.raises(ValueError, match="must be 1-64 alphanumeric"):
+        sessions.validate_session_name(too_long)
+
+
+def test_validate_session_name_rejects_invalid_chars() -> None:
+    """validate_session_name should raise ValueError for invalid characters."""
+    with pytest.raises(ValueError, match="must be 1-64 alphanumeric"):
+        sessions.validate_session_name("invalid@name")
+
+
+def test_load_session_corrupted_json_file(tmp_path: Path) -> None:
+    """load_session should handle corrupted JSON gracefully."""
+    cfg = _cfg_with_sessions_dir(tmp_path / "sessions")
+    sessions_dir = sessions.get_sessions_dir(cfg)
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create a corrupted session file
+    session_file = sessions_dir / "corrupted.json"
+    session_file.write_text("{invalid json content")
+    
+    # Should handle corrupted file (may return empty or raise specific error)
+    # The exact behavior depends on implementation
+    try:
+        state = sessions.load_session("corrupted", cfg)
+        # If it succeeds, messages should be empty or default
+        assert isinstance(state.messages, list)
+    except (json.JSONDecodeError, ValueError):
+        # Also acceptable to raise an error for corrupted files
+        pass
+
+
+def test_save_session_creates_parent_directory(tmp_path: Path) -> None:
+    """save_session should create parent directory if it doesn't exist."""
+    cfg = _cfg_with_sessions_dir(tmp_path / "new_sessions" / "nested")
+    
+    # Load (which should create the session)
+    state = sessions.load_session("test", cfg, new_session=True)
+    state.messages.append({"role": "user", "content": "test"})
+    
+    # Save should work even if directory structure doesn't exist
+    sessions.save_session(state, cfg)
+    
+    # Verify the session was saved
+    assert state.session_file.exists()
+    assert state.meta_file.exists()
