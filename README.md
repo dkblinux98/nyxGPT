@@ -26,6 +26,7 @@ Your data stays on your machine. No cloud dependency is required.
 - Config‑driven RAG context pruning and prompt optimization
 - Streaming responses (CLI, TUI, API, Web UI)
 - Unified core shared between CLI and FastAPI
+- Optional **API rate limiting** (disabled by default for localhost use)
 - Homebrew‑managed background services
 - Robust unit and integration test suite
 
@@ -122,6 +123,37 @@ Interactive API docs (local only):
 
 ```bash
 open http://127.0.0.1:8000/docs
+```
+
+#### Rate limiting
+
+The FastAPI backend includes optional rate limiting to protect against abuse and DoS attacks. **Disabled by default** for localhost-only usage.
+
+To enable rate limiting, edit `~/.myGPT/config.ini`:
+
+```ini
+[rate_limit]
+enabled = true
+requests_per_second = 10
+burst_size = 20
+```
+
+Rate limiting uses a token bucket algorithm to track requests per IP address. When enabled, all API responses include rate limit headers:
+
+- `X-RateLimit-Limit` – Maximum requests allowed
+- `X-RateLimit-Remaining` – Remaining requests in current window
+- `X-RateLimit-Reset` – Unix timestamp when limit resets
+
+If the limit is exceeded, the API returns a `429 Too Many Requests` error:
+
+```json
+{
+  "error": {
+    "code": "rate_limit_exceeded",
+    "message": "Too many requests. Please try again later.",
+    "request_id": "..."
+  }
+}
 ```
 
 ---

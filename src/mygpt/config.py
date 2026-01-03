@@ -303,6 +303,51 @@ def get_rag_include_headers(cfg: ConfigParser) -> bool:
         return True
 
 
+def get_rate_limit_enabled(cfg: ConfigParser) -> bool:
+    """Get rate limiting enabled flag.
+
+    Returns whether rate limiting is enabled for the API.
+    Disabled by default (localhost-only app).
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        True if rate limiting is enabled, False otherwise
+    """
+    try:
+        return cfg.getboolean("rate_limit", "enabled", fallback=False)
+    except Exception:
+        return False
+
+
+def get_rate_limit_config(cfg: ConfigParser) -> dict:
+    """Get rate limiting configuration.
+
+    Returns all rate limiting settings as a dictionary.
+    Uses sensible defaults for localhost deployment.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Dictionary with keys: requests_per_second, burst_size
+    """
+    try:
+        return {
+            "requests_per_second": cfg.getint(
+                "rate_limit", "requests_per_second", fallback=10
+            ),
+            "burst_size": cfg.getint("rate_limit", "burst_size", fallback=20),
+        }
+    except Exception:
+        # Return defaults if any parsing errors
+        return {
+            "requests_per_second": 10,
+            "burst_size": 20,
+        }
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "load_config",
@@ -321,6 +366,8 @@ __all__ = [
     "get_rag_dedupe",
     "get_rag_include_scores",
     "get_rag_include_headers",
+    "get_rate_limit_enabled",
+    "get_rate_limit_config",
     "validate_config",
     "ConfigValidationError",
 ]
