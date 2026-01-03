@@ -163,6 +163,48 @@ app.add_middleware(
 )
 
 
+# Security headers middleware
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """Add security headers to all responses.
+
+    Headers added:
+    - Content-Security-Policy: Restrict resource loading
+    - X-Content-Type-Options: Prevent MIME sniffing
+    - X-Frame-Options: Prevent clickjacking
+    - Strict-Transport-Security: Force HTTPS (only for HTTPS requests)
+    """
+    response = await call_next(request)
+
+    # Content Security Policy: Restrict to same origin and specific trusted sources
+    # This prevents XSS by limiting where resources can be loaded from
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "  # Allow inline scripts for development
+        "style-src 'self' 'unsafe-inline'; "   # Allow inline styles
+        "img-src 'self' data:; "                # Allow data URIs for images
+        "connect-src 'self'; "                  # API calls to same origin only
+        "frame-ancestors 'none'; "              # Prevent embedding (redundant with X-Frame-Options)
+        "form-action 'self'; "                  # Forms can only submit to same origin
+        "base-uri 'self'"                       # Prevent base tag injection
+    )
+
+    # Prevent MIME type sniffing
+    response.headers["X-Content-Type-Options"] = "nosniff"
+
+    # Prevent clickjacking by disallowing framing
+    response.headers["X-Frame-Options"] = "DENY"
+
+    # Strict-Transport-Security (HSTS) - only for HTTPS
+    # Force browser to use HTTPS for 1 year
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = (
+            "max-age=31536000; includeSubDomains"
+        )
+
+    return response
+
+
 MAX_BODY_BYTES = int(os.environ.get("MYGPT_MAX_BODY_BYTES", "1048576"))  # 1 MiB default
 
 

@@ -72,6 +72,100 @@ All functional endpoints live under:
 
 ---
 
+## Security Headers
+
+All API responses include comprehensive security headers to protect against common web vulnerabilities. These headers are automatically added by middleware and apply to all endpoints.
+
+### Headers Added
+
+- **Content-Security-Policy**: Restricts resource loading to prevent XSS attacks
+- **X-Content-Type-Options**: Prevents MIME sniffing attacks
+- **X-Frame-Options**: Prevents clickjacking attacks
+- **Strict-Transport-Security**: Enforces HTTPS connections (HTTPS only)
+
+### Content Security Policy
+
+The CSP header restricts what resources the browser can load:
+
+```
+Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'
+```
+
+Key directives:
+- `default-src 'self'` - Only load resources from same origin by default
+- `script-src 'self' 'unsafe-inline'` - Allow same-origin scripts and inline scripts
+- `style-src 'self' 'unsafe-inline'` - Allow same-origin styles and inline styles
+- `img-src 'self' data:` - Allow same-origin images and data URIs
+- `connect-src 'self'` - Only connect to same origin (API calls, WebSockets)
+- `frame-ancestors 'none'` - Prevent embedding in iframes
+- `form-action 'self'` - Forms can only submit to same origin
+- `base-uri 'self'` - Restrict base element URLs
+
+### X-Content-Type-Options
+
+```
+X-Content-Type-Options: nosniff
+```
+
+Prevents browsers from MIME-sniffing responses, reducing the risk of drive-by download attacks.
+
+### X-Frame-Options
+
+```
+X-Frame-Options: DENY
+```
+
+Prevents the API responses from being embedded in iframes, protecting against clickjacking attacks.
+
+### Strict-Transport-Security (HSTS)
+
+```
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+```
+
+**Note**: This header is only added when the request uses HTTPS. For local HTTP development, this header is not present.
+
+When present, it instructs browsers to:
+- Only connect via HTTPS for the next year (`max-age=31536000`)
+- Apply this policy to all subdomains (`includeSubDomains`)
+
+### Example Response
+
+```bash
+curl -I http://127.0.0.1:8000/api/v1/info
+```
+
+```
+HTTP/1.1 200 OK
+content-security-policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'self'
+x-content-type-options: nosniff
+x-frame-options: DENY
+x-request-id: 550e8400-e29b-41d4-a716-446655440000
+content-type: application/json
+```
+
+### Benefits
+
+- **XSS Protection**: CSP prevents execution of malicious scripts
+- **Clickjacking Protection**: X-Frame-Options prevents UI redressing attacks
+- **MIME Sniffing Protection**: X-Content-Type-Options prevents MIME confusion attacks
+- **HTTPS Enforcement**: HSTS ensures secure connections (when using HTTPS)
+
+### Compatibility
+
+Security headers work alongside:
+- CORS headers (for cross-origin requests)
+- Request ID tracking
+- Authentication headers
+- Rate limiting
+
+All security headers are present on:
+- Successful responses (200, 201, etc.)
+- Error responses (400, 404, 500, etc.)
+- Streaming responses
+
+---
+
 ## Request ID Tracking
 
 All API requests are automatically assigned a unique request ID for traceability across logs and responses. This enables correlation of log entries with specific API requests for debugging and monitoring.
