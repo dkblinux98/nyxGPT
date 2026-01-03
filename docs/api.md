@@ -173,7 +173,7 @@ All API requests are automatically assigned a unique request ID for traceability
 ### Features
 
 - **Automatic generation**: Each request receives a UUID v4 request ID if not provided
-- **Client-provided IDs**: Clients can provide their own request ID via the `X-Request-ID` header
+- **Client-provided IDs**: Clients can provide their own request ID via the `X-Request-Id` header
 - **Response header**: The request ID is always returned in the `X-Request-Id` response header
 - **Logging integration**: All log entries include the request ID for full request tracing
 - **Error responses**: Error responses include the request ID in the response body
@@ -191,7 +191,7 @@ curl http://127.0.0.1:8000/api/v1/info
 
 ```bash
 curl http://127.0.0.1:8000/api/v1/info \
-  -H "X-Request-ID: my-custom-request-id"
+  -H "X-Request-Id: my-custom-request-id"
 # Response includes: X-Request-Id: my-custom-request-id
 ```
 
