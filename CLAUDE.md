@@ -150,7 +150,8 @@ When working on an issue autonomously from start to finish:
    ↓
 8. COMMIT & PUSH
    - Use conventional commit format
-   - Include "Resolves #[issue-number]"
+   - MUST include "Resolves #[parent-issue-number]" in footer
+   - If fixing sub-issues, use "Fixes #[sub-issue] / Contributes to #[parent]"
    - Push to remote branch
    ↓
 9. UPDATE STATUS → "Review"
@@ -162,18 +163,22 @@ When working on an issue autonomously from start to finish:
     - Verify documentation updated
     - Check code quality
     ↓
-11a. IF REVIEW FAILS:
-     - Create sub-issue documenting failures
-     - Link sub-issue to parent
+11a. IF REVIEW FAILS (Critical/Medium Issues Found):
+     - Create SEPARATE sub-issues for EACH critical/medium issue
+     - Link each sub-issue to parent
      - Update parent status → "In Progress"
-     - Update sub-issue status → "In Progress"
-     - Fix issues
+     - Update each sub-issue status → "In Progress"
+     - Fix each issue (commits reference both sub-issue AND parent)
+     - Re-review until NO critical/medium issues remain
      - Repeat from step 4
      ↓
-11b. IF REVIEW PASSES:
-     - Update status → "For Release"
+11b. IF REVIEW PASSES (No Critical/Medium Issues):
+     - Minor issues can be left unaddressed
      - Create PR to v1.0.0
+     - Wait for CI checks to pass
      - Merge PR (squash and merge)
+     - Update parent issue status → "For Release"
+     - Update all sub-issue statuses → "For Release"
      - Delete feature branch
      - Verify issue auto-closed (via "Resolves #XXX")
      - GitHub Actions will auto-check in release tracking issue
@@ -219,26 +224,36 @@ Before marking review as passed, verify:
 
 ### Sub-Issue Creation (Review Failures)
 
-When review fails, create a sub-issue:
+**CRITICAL**: When code review finds critical or medium issues, create a SEPARATE sub-issue for EACH issue (not one sub-issue for all).
+
+**Example**: If review finds 2 critical issues, create 2 sub-issues.
 
 ```bash
-# Create sub-issue
+# Create sub-issue for EACH critical/medium review finding
 gh issue create \
-  --title "Fix review issues for #[parent-number]" \
+  --title "[Brief description of specific issue]" \
   --body "Parent issue: #[parent-number]
 
-## Review Failures
-- [ ] [Specific failure 1]
-- [ ] [Specific failure 2]
+## Issue Description
+[Specific review finding - e.g., 'Unused cleanup_interval_seconds config parameter']
 
-## Required Actions
-[What needs to be fixed]" \
-  --milestone "[Same milestone]" \
+## Required Fix
+[What needs to be done]
+
+## Acceptance Criteria
+- [ ] [Specific fix completed]
+- [ ] Tests pass
+- [ ] No new issues introduced" \
+  --milestone "[Same milestone as parent]" \
   --label "bug"
 
 # Link to parent by editing parent issue body
-# Add: "- [ ] #[sub-issue-number]" to parent's task list
+# Add each sub-issue to parent's task list:
+# - [ ] #[sub-issue-number-1] - [Brief description]
+# - [ ] #[sub-issue-number-2] - [Brief description]
 ```
+
+**Minor/nitpick issues**: Do NOT create sub-issues. These can be left unaddressed.
 
 See @AGENTS.md for complete workflow details, branch naming conventions, PR templates, and failure recovery procedures.
 
@@ -326,12 +341,40 @@ done
 
 ## Commit Message Format
 
+**CRITICAL**: ALL commits related to an issue MUST reference the parent issue number.
+
+### Initial Implementation Commit
 ```
 <type>(<scope>): <subject>
 
 <body>
 
-Resolves #<issue-number>
+Resolves #<parent-issue-number>
+```
+
+### Sub-Issue Fix Commits
+When fixing issues found during code review:
+```
+<type>(<scope>): <subject>
+
+<body describing the specific fix>
+
+Fixes #<sub-issue-number>
+Contributes to #<parent-issue-number>
+```
+
+**Example**:
+```
+fix(api): remove unused cleanup_interval_seconds config
+
+Removed cleanup_interval_seconds from:
+- src/mygpt/config.py (get_rate_limit_config)
+- example.config.ini
+
+Cleanup intervals are hardcoded in RateLimiter class.
+
+Fixes #2625
+Contributes to #2624
 ```
 
 **Types**: `feat`, `fix`, `refactor`, `test`, `docs`, `style`, `perf`, `chore`
