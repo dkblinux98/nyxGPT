@@ -331,7 +331,7 @@ def get_rate_limit_config(cfg: ConfigParser) -> dict:
         cfg: ConfigParser instance
 
     Returns:
-        Dictionary with keys: requests_per_second, burst_size, cleanup_interval
+        Dictionary with keys: requests_per_second, burst_size
     """
     try:
         return {
@@ -339,16 +339,12 @@ def get_rate_limit_config(cfg: ConfigParser) -> dict:
                 "rate_limit", "requests_per_second", fallback=10
             ),
             "burst_size": cfg.getint("rate_limit", "burst_size", fallback=20),
-            "cleanup_interval": cfg.getint(
-                "rate_limit", "cleanup_interval_seconds", fallback=300
-            ),
         }
     except Exception:
         # Return defaults if any parsing errors
         return {
             "requests_per_second": 10,
             "burst_size": 20,
-            "cleanup_interval": 300,
         }
 
 
