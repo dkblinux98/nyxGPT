@@ -175,10 +175,13 @@ When working on an issue autonomously from start to finish:
 11b. IF REVIEW PASSES (No Critical/Medium Issues):
      - Minor issues can be left unaddressed
      - Create PR to v1.0.0
+     - Add PR to project "myGPT" with fields matching parent issue
+     - Update PR status → "In Review"
      - Wait for CI checks to pass
      - Merge PR (squash and merge)
      - Update parent issue status → "For Release"
      - Update all sub-issue statuses → "For Release"
+     - Update PR status → "For Release"
      - Delete feature branch
      - Verify issue auto-closed (via "Resolves #XXX")
      - GitHub Actions will auto-check in release tracking issue
@@ -229,7 +232,7 @@ Before marking review as passed, verify:
 **Example**: If review finds 2 critical issues, create 2 sub-issues.
 
 ```bash
-# Create sub-issue for EACH critical/medium review finding
+# 1. Create sub-issue for EACH critical/medium review finding
 gh issue create \
   --title "[Brief description of specific issue]" \
   --body "Parent issue: #[parent-number]
@@ -245,15 +248,113 @@ gh issue create \
 - [ ] Tests pass
 - [ ] No new issues introduced" \
   --milestone "[Same milestone as parent]" \
-  --label "bug"
+  --label "bug" \
+  --assignee "@me"
 
-# Link to parent by editing parent issue body
+# 2. Add sub-issue to project "myGPT" with IDENTICAL fields as parent
+# Get parent issue's project fields first
+PARENT_NUM=2624
+SUB_ISSUE_NUM=2625  # From previous command output
+
+# Get parent's project field values
+gh api graphql -f query='
+  query {
+    repository(owner: "dkblinux98", name: "myGPT") {
+      issue(number: '$PARENT_NUM') {
+        projectItems(first: 5) {
+          nodes {
+            project { number title }
+            fieldValues(first: 20) {
+              nodes {
+                ... on ProjectV2ItemFieldSingleSelectValue {
+                  field { ... on ProjectV2SingleSelectField { name } }
+                  name
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+'
+
+# Add sub-issue to project (copying ALL field values from parent)
+gh project item-add 2 --owner dkblinux98 --url "https://github.com/dkblinux98/myGPT/issues/$SUB_ISSUE_NUM"
+
+# Set Status to "In Progress" (same as parent when creating sub-issue)
+# Set Phase, Priority, etc. to match parent exactly
+# Use GraphQL mutation to update fields (see GitHub Bulk Operations section)
+
+# 3. Link to parent by editing parent issue body
 # Add each sub-issue to parent's task list:
 # - [ ] #[sub-issue-number-1] - [Brief description]
 # - [ ] #[sub-issue-number-2] - [Brief description]
 ```
 
 **Minor/nitpick issues**: Do NOT create sub-issues. These can be left unaddressed.
+
+**Field inheritance from parent**:
+- ✅ Milestone (same as parent)
+- ✅ Labels (copy from parent, add "bug" if not present)
+- ✅ Assignee (same as parent)
+- ✅ Project (myGPT)
+- ✅ Status (In Progress when created)
+- ✅ Phase (same as parent)
+- ✅ Priority (same as parent)
+- ✅ Any other custom fields (match parent)
+
+### Pull Request Creation
+
+**CRITICAL**: PRs must also be added to project "myGPT" with fields matching the parent issue.
+
+```bash
+# 1. Create PR
+gh pr create --base v1.0.0 \
+  --title "[type]([scope]): [description] (#[parent-issue])" \
+  --body "[PR description with issue reference]"
+
+# PR is created with URL like: https://github.com/dkblinux98/myGPT/pull/2720
+
+# 2. Add PR to project "myGPT"
+gh project item-add 2 --owner dkblinux98 --url "https://github.com/dkblinux98/myGPT/pull/2720"
+
+# 3. Set PR project fields to match parent issue
+# Use same Status, Phase, Priority, etc. as the parent issue
+# Get parent issue fields:
+gh api graphql -f query='
+  query {
+    repository(owner: "dkblinux98", name: "myGPT") {
+      issue(number: [parent-issue-num]) {
+        projectItems(first: 5) {
+          nodes {
+            fieldValues(first: 20) {
+              nodes {
+                ... on ProjectV2ItemFieldSingleSelectValue {
+                  field { ... on ProjectV2SingleSelectField { name id } }
+                  name
+                  optionId
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+'
+
+# Then update PR's project fields to match
+# (See GitHub Bulk Operations section for GraphQL mutation examples)
+```
+
+**PR field inheritance from parent issue**:
+- ✅ Project (myGPT)
+- ✅ Status (In Review when PR created)
+- ✅ Phase (same as parent issue)
+- ✅ Priority (same as parent issue)
+- ✅ Milestone (linked via issue reference)
+- ✅ Any other custom fields (match parent issue)
 
 See @AGENTS.md for complete workflow details, branch naming conventions, PR templates, and failure recovery procedures.
 
