@@ -214,9 +214,9 @@ def configure_logging(
         "fastapi",
         "httpx",
     ):
-        l = logging.getLogger(name)
-        l.setLevel(level)
-        l.propagate = True
+        subsystem_logger = logging.getLogger(name)
+        subsystem_logger.setLevel(level)
+        subsystem_logger.propagate = True
 
     return logger
 
