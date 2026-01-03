@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import configparser
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -148,7 +149,7 @@ def test_validate_session_name_rejects_invalid_chars() -> None:
         sessions.validate_session_name("invalid@name")
 
 
-def test_load_session_corrupted_json_file(tmp_path: Path) -> None:
+def test_load_session_corrupted_json_file(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """load_session should handle corrupted JSON gracefully by returning empty messages."""
     cfg = _cfg_with_sessions_dir(tmp_path / "sessions")
     sessions_dir = sessions.get_sessions_dir(cfg)
@@ -160,12 +161,16 @@ def test_load_session_corrupted_json_file(tmp_path: Path) -> None:
 
     # Per load_session_messages implementation (lines 121-144), corrupted JSON
     # is caught, logged as warning, and returns empty list
-    state = sessions.load_session("corrupted", cfg)
+    with caplog.at_level(logging.WARNING):
+        state = sessions.load_session("corrupted", cfg)
 
     # Should succeed with empty messages (not raise exception)
     assert isinstance(state.messages, list)
     assert state.messages == []
     assert state.name == "corrupted"
+
+    # Verify warning was logged
+    assert "Invalid JSON in session file" in caplog.text
 
 
 def test_save_session_creates_parent_directory(tmp_path: Path) -> None:

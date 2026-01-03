@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -108,7 +109,7 @@ chat_timeout_seconds = 180
 
 def test_load_config_missing_file_raises_error() -> None:
     """load_config should raise FileNotFoundError for missing config file."""
-    with pytest.raises(FileNotFoundError, match="Missing config file"):
+    with pytest.raises(FileNotFoundError, match=r"Missing config file.*config\.ini"):
         load_config("/nonexistent/path/config.ini")
 
 
@@ -166,7 +167,7 @@ port = 99999
     assert any("port" in err.lower() and "1024-65535" in err for err in errors)
 
 
-def test_get_api_port_handles_invalid_type_gracefully(tmp_path: Path) -> None:
+def test_get_api_port_handles_invalid_type_gracefully(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """get_api_port should return default value for invalid port types."""
     ini = tmp_path / "config.ini"
     _write(
@@ -176,8 +177,11 @@ def test_get_api_port_handles_invalid_type_gracefully(tmp_path: Path) -> None:
 port = invalid
 """.lstrip(),
     )
-    
+
     cfg = load_config(str(ini))
     # Should return default port (8000) and log a warning
-    port = get_api_port(cfg)
+    with caplog.at_level(logging.WARNING):
+        port = get_api_port(cfg)
+
     assert port == 8000
+    assert "Invalid api.port" in caplog.text
