@@ -5,10 +5,9 @@ import os
 import shutil
 import subprocess
 import tarfile
-import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 import tomllib
 
@@ -358,13 +357,14 @@ def _ensure_web_deps() -> list[OpsResult]:
 
 def install(args) -> int:
     results: list[OpsResult] = []
-    for step_name, fn in [
+    steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
         ("scripts", _install_scripts),
         ("web deps", _ensure_web_deps),
         ("cassandra launchagent", _install_cassandra_launchagent),
         ("homebrew web", _install_homebrew_web),
         ("log symlinks", _ensure_log_symlinks),
-    ]:
+    ]
+    for step_name, fn in steps:
         try:
             results += fn()
         except Exception as e:

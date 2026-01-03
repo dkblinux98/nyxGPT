@@ -417,7 +417,8 @@ def add_tags(name: str, tags: list[str], sessions_dir: Path | None) -> tuple[boo
         return False, "No such session"
     meta = load_session_meta(mf)
     meta = ensure_meta_defaults(meta)
-    existing = meta.get("tags") if isinstance(meta.get("tags"), list) else []
+    tags_value = meta.get("tags")
+    existing: list[Any] = tags_value if isinstance(tags_value, list) else []
     existing = [str(t) for t in existing]
     combined = normalize_tags(existing + tags)
     meta["tags"] = combined
@@ -433,7 +434,8 @@ def remove_tags(name: str, tags: list[str], sessions_dir: Path | None) -> tuple[
         return False, "No such session"
     meta = load_session_meta(mf)
     meta = ensure_meta_defaults(meta)
-    existing = meta.get("tags") if isinstance(meta.get("tags"), list) else []
+    tags_value = meta.get("tags")
+    existing: list[Any] = tags_value if isinstance(tags_value, list) else []
     existing = [str(t) for t in existing]
     remove_set = {t.strip().lower() for t in tags if t.strip()}
     kept = [t for t in existing if t.strip().lower() not in remove_set]

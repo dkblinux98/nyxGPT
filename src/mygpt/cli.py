@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 from mygpt.config import (
     load_config,
@@ -162,7 +163,8 @@ def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: li
             print(f"No sessions found in {effective_dir}")
             return 0
         for r in rows:
-            meta = r.get("meta") or {}
+            meta_value = r.get("meta")
+            meta: dict[str, Any] = meta_value if isinstance(meta_value, dict) else {}
             pinned = bool(meta.get("pinned"))
             title = meta.get("title", "")
             summary = meta.get("summary", "")
@@ -190,7 +192,8 @@ def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: li
                 print(f"Session: {name}")
                 print(f"File: {r['file']}")
                 print(f"Messages: {r['messages']}")
-                meta = r.get("meta") or {}
+                meta_val = r.get("meta")
+                meta = meta_val if isinstance(meta_val, dict) else {}
                 if meta:
                     import json
 
@@ -422,7 +425,7 @@ def cli(argv: list[str] | None = None) -> int:
     query_p.add_argument("question", help="Query text")
     query_p.add_argument("--top-k", type=int, default=5, help="Number of results")
 
-    list_p = rag_sub.add_parser("list", help="List ingested documents")
+    _list_p = rag_sub.add_parser("list", help="List ingested documents")
 
     delete_p = rag_sub.add_parser("delete", help="Delete a document by doc_id")
     delete_p.add_argument("doc_id", help="Document ID to delete")

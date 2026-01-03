@@ -24,13 +24,13 @@ def ls(path: Path) -> int:
 
     try:
         entries = sorted(p.iterdir(), key=lambda x: x.name.lower())
-    except Exception as e:
-        print(f"ERROR: cannot list {p}: {e}", file=sys.stderr)
+    except Exception as err:
+        print(f"ERROR: cannot list {p}: {err}", file=sys.stderr)
         return 1
 
-    for e in entries:
-        suffix = "/" if e.is_dir() else ""
-        print(f"{e.name}{suffix}")
+    for entry in entries:
+        suffix = "/" if entry.is_dir() else ""
+        print(f"{entry.name}{suffix}")
 
     return 0
 

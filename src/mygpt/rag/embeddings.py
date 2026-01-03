@@ -112,7 +112,7 @@ def embed_texts(texts: Iterable[str]) -> list[list[float]]:
 
         for i, v in enumerate(vectors):
             if not isinstance(v, list):
-                raise EmbeddingError(f"Embedding is not a list")
+                raise EmbeddingError("Embedding is not a list")
             if len(v) != ecfg.dimension:
                 raise EmbeddingError(
                     f"Embedding has dim {len(v)} but expected {ecfg.dimension}. "

@@ -375,7 +375,7 @@ def retrieve_context(query: str, top_k: int | None = None) -> list[dict]:
     k = int(top_k) if top_k is not None else get_rag_chat_top_k(cfg)
     min_score = get_rag_min_score(cfg)
     max_chunks = get_rag_max_chunks(cfg)
-    dedupe = get_rag_dedupe(cfg)
+    _dedupe = get_rag_dedupe(cfg)  # Reserved for future deduplication feature
     use_expansion = cfg.getboolean("rag", "enable_query_expansion", fallback=False)
 
     # Generate query expansions if enabled
