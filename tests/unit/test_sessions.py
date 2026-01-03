@@ -149,24 +149,23 @@ def test_validate_session_name_rejects_invalid_chars() -> None:
 
 
 def test_load_session_corrupted_json_file(tmp_path: Path) -> None:
-    """load_session should handle corrupted JSON gracefully."""
+    """load_session should handle corrupted JSON gracefully by returning empty messages."""
     cfg = _cfg_with_sessions_dir(tmp_path / "sessions")
     sessions_dir = sessions.get_sessions_dir(cfg)
     sessions_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Create a corrupted session file
     session_file = sessions_dir / "corrupted.json"
     session_file.write_text("{invalid json content")
-    
-    # Should handle corrupted file (may return empty or raise specific error)
-    # The exact behavior depends on implementation
-    try:
-        state = sessions.load_session("corrupted", cfg)
-        # If it succeeds, messages should be empty or default
-        assert isinstance(state.messages, list)
-    except (json.JSONDecodeError, ValueError):
-        # Also acceptable to raise an error for corrupted files
-        pass
+
+    # Per load_session_messages implementation (lines 121-144), corrupted JSON
+    # is caught, logged as warning, and returns empty list
+    state = sessions.load_session("corrupted", cfg)
+
+    # Should succeed with empty messages (not raise exception)
+    assert isinstance(state.messages, list)
+    assert state.messages == []
+    assert state.name == "corrupted"
 
 
 def test_save_session_creates_parent_directory(tmp_path: Path) -> None:
