@@ -39,6 +39,8 @@ from mygpt.config import (
     get_default_model,
     get_ollama_base_url,
     get_sessions_dir,
+    get_rate_limit_enabled,
+    get_rate_limit_config,
     load_config,
 )
 from mygpt.chat import chat as run_chat, chat_stream
@@ -47,11 +49,15 @@ from mygpt import tools_fs
 
 from mygpt.rag.rag import ingest_document, retrieve_context
 from mygpt.logging import configure_logging
+from mygpt.rate_limiter import RateLimiter
 
 
 
 import logging
 log = logging.getLogger("mygpt.api")
+
+# Global rate limiter instance (initialized at startup if enabled)
+_rate_limiter: RateLimiter | None = None
 
 
 def log_with_context(level, message, request_id=None, **extra):
@@ -66,6 +72,8 @@ def log_with_context(level, message, request_id=None, **extra):
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    global _rate_limiter
+
     # Initialize centralized logging once for the API process
     cfg = load_config(None)
     try:
@@ -106,6 +114,24 @@ async def lifespan(_app: FastAPI):
                 "note": "API will still start; chat requests may fail until Ollama is available"
             }
         )
+
+    # Initialize rate limiter if enabled
+    if get_rate_limit_enabled(cfg):
+        rate_cfg = get_rate_limit_config(cfg)
+        _rate_limiter = RateLimiter(
+            requests_per_second=rate_cfg["requests_per_second"],
+            burst_size=rate_cfg["burst_size"]
+        )
+        log.info(
+            "Rate limiting enabled",
+            extra={
+                "component": "startup",
+                "requests_per_second": rate_cfg["requests_per_second"],
+                "burst_size": rate_cfg["burst_size"],
+            }
+        )
+    else:
+        log.info("Rate limiting disabled", extra={"component": "startup"})
 
     yield
 
@@ -191,6 +217,54 @@ async def add_request_id_and_limits(request: Request, call_next):
 
     response = await call_next(request)
     response.headers["X-Request-Id"] = req_id
+    return response
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """Apply rate limiting to API endpoints.
+
+    Uses token bucket algorithm to limit requests per IP address.
+    Returns 429 Too Many Requests when limit exceeded.
+    """
+    # Skip if rate limiting not enabled
+    if _rate_limiter is None:
+        return await call_next(request)
+
+    # Get client ID (IP address)
+    client_id = _rate_limiter.get_client_ip(request)
+
+    # Check if allowed
+    allowed, headers = _rate_limiter.is_allowed(client_id)
+
+    if not allowed:
+        # Log rate limit violation
+        req_id = getattr(request.state, "request_id", None)
+        log.warning(
+            "Rate limit exceeded for %s on %s (request_id=%s)",
+            client_id,
+            request.url.path,
+            req_id
+        )
+
+        # Return 429 error with rate limit headers
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": {
+                    "code": "rate_limit_exceeded",
+                    "message": "Too many requests. Please try again later.",
+                    "request_id": req_id
+                }
+            },
+            headers=headers
+        )
+
+    # Add rate limit headers to response
+    response = await call_next(request)
+    for key, value in headers.items():
+        response.headers[key] = value
+
     return response
 
 
