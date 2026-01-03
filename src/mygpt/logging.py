@@ -14,7 +14,7 @@ DEFAULT_FMT = "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"
 DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 # Context variable for request ID tracking
-request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+request_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "request_id", default=None
 )
 
