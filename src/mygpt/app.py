@@ -880,7 +880,11 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
 
         def _stream_with_keepalive():
             # Explicitly set request ID in context for streaming generator
-            request_id_var.set(req_id)
+            try:
+                request_id_var.set(req_id)
+            except Exception as e:
+                log.warning(f"Failed to set request ID in streaming context: {e}")
+            # Continue regardless - streaming should work even if request ID fails
 
             # Send an immediate keepalive to prevent client read timeouts
             yield "\n"
