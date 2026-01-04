@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Iterator
 from configparser import ConfigParser
@@ -8,6 +9,8 @@ from mygpt.config import load_config
 from mygpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
 from mygpt.rag.rag import retrieve_context, compose_context
 from mygpt.sessions import load_session, save_session
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -237,6 +240,10 @@ def chat_stream(
         system=system,
         config_path=config_path,
         sessions_dir=sessions_dir,
+    )
+
+    logger.debug(
+        f"Starting chat stream for session={session}, model={context.chosen_model}"
     )
 
     # Stream tokens and assemble final reply
