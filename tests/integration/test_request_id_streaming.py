@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+import urllib.request
+import urllib.error
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,7 +11,30 @@ from fastapi.testclient import TestClient
 from mygpt.app import app
 from mygpt.logging import request_id_var
 
-pytestmark = pytest.mark.integration
+
+def is_ollama_available() -> bool:
+    """Check if Ollama service is available and has required model.
+
+    Returns:
+        True if Ollama is running and accessible, False otherwise
+    """
+    try:
+        # Try to connect to Ollama API
+        response = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
+        return response.status == 200
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return False
+
+
+# Skip all tests in this module if Ollama is not available
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not is_ollama_available(),
+        reason="Ollama service not available at http://localhost:11434. "
+               "Start Ollama with 'mygpt ops install' or run manually."
+    )
+]
 
 
 @pytest.mark.integration
