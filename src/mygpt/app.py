@@ -858,9 +858,22 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=502, detail=str(e))
 
 
-# Streaming chat endpoint
-@api.post("/chat/stream")
-def chat_stream_api(request: Request, req: ChatRequest):
+def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingResponse:
+    """Create a streaming chat response with request ID context propagation.
+
+    This helper consolidates the streaming logic used by both versioned and legacy endpoints.
+    It handles request ID capture and context setting for proper log traceability.
+
+    Args:
+        request: FastAPI Request object containing state and configuration
+        req: Chat request parameters
+
+    Returns:
+        StreamingResponse configured for text/plain streaming
+
+    Raises:
+        HTTPException: 502 if chat streaming fails
+    """
     try:
         # Capture request ID before entering generator (context may not propagate)
         req_id = request.state.request_id
@@ -901,47 +914,25 @@ def chat_stream_api(request: Request, req: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=502, detail=str(e))
 
+
+# Streaming chat endpoint
+@api.post("/chat/stream")
+def chat_stream_api(request: Request, req: ChatRequest):
+    """Streaming chat endpoint (API v1).
+
+    Delegates to shared streaming response helper.
+    """
+    return _create_streaming_response(request, req)
+
+
 # Non-versioned alias for streaming chat endpoint
 @app.post("/api/chat/stream")
 def chat_stream_api_legacy(request: Request, req: ChatRequest):
-    try:
-        # Capture request ID before entering generator (context may not propagate)
-        req_id = request.state.request_id
+    """Streaming chat endpoint (legacy, non-versioned).
 
-        def _stream_with_keepalive():
-            # Explicitly set request ID in context for streaming generator
-            try:
-                request_id_var.set(req_id)
-            except Exception as e:
-                log.warning(f"Failed to set request ID in streaming context: {e}")
-            # Continue regardless - streaming should work even if request ID fails
-
-            yield "\n"
-            d = _chat_runtime_defaults(_req_cfg(request))
-            chosen_model = req.model or d["default_model"]
-
-            kwargs: dict[str, Any] = {
-                "session": req.session,
-                "new": req.new,
-                "model": chosen_model,
-                "system": req.system,
-                "config_path": None,
-                "sessions_dir": req.sessions_dir,
-            }
-
-            if _maybe_kw(chat_stream, "rag_enabled"):
-                rag_val = getattr(req, "rag_enabled", None)
-                kwargs["rag_enabled"] = d["rag_enabled"] if rag_val is None else bool(rag_val)
-
-            for chunk in chat_stream(req.prompt, **kwargs):
-                yield chunk
-
-        return StreamingResponse(
-            _stream_with_keepalive(),
-            media_type="text/plain; charset=utf-8",
-        )
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    Delegates to shared streaming response helper.
+    """
+    return _create_streaming_response(request, req)
 
 
 @api.post("/tools/ls", response_model=ToolTextResponse)
