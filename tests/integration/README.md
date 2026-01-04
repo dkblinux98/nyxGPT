@@ -100,8 +100,8 @@ This allows:
 ### Service Availability Checks
 
 Each test module checks for required services before running:
-- **Ollama**: HTTP request to `http://localhost:11434/api/tags`
-- **Cassandra**: Connection attempt to `localhost:9042`
+- **Ollama**: Socket connection to `localhost:11434`
+- **Cassandra**: Socket connection to `localhost:9042`
 
 ## Troubleshooting
 

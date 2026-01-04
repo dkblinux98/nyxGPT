@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import logging
 import uuid
 
 import pytest
 from fastapi.testclient import TestClient
 
 from mygpt.app import app
-from mygpt.logging import request_id_var
 
 
 # Mark all tests in this module as integration tests
