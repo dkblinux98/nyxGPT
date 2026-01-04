@@ -3,12 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from io import BytesIO
 
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock, Mock
-from http.client import HTTPResponse
+from unittest.mock import patch
 
 from mygpt.app import app
 from mygpt.logging import request_id_var, RequestIdFilter
@@ -141,8 +139,7 @@ def test_streaming_request_id_propagates_to_logged_function(caplog):
     def mock_chat_stream(*args, **kwargs):
         # This function runs inside the generator context
         # Emit a log to verify request ID is present
-        test_logger = logging.getLogger("mygpt.test")
-        test_logger.info("Test log from within chat_stream")
+        logger.info("Test log from within chat_stream")
         yield "Test response"
 
     try:
@@ -193,13 +190,12 @@ def test_streaming_auto_generated_request_id_propagates_to_logs(caplog):
     logger.addFilter(request_id_filter)
     logger.setLevel(logging.DEBUG)
 
-    captured_request_id = None
-
     def mock_chat_stream(*args, **kwargs):
         # Emit a log from within the generator
-        test_logger = logging.getLogger("mygpt.test")
-        test_logger.info("Test log with auto-generated ID")
+        logger.info("Test log with auto-generated ID")
         yield "Test"
+
+    captured_request_id = None
 
     try:
         with patch("mygpt.app.chat_stream", side_effect=mock_chat_stream):
