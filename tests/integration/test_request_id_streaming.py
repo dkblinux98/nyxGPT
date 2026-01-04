@@ -1,52 +1,32 @@
 from __future__ import annotations
 
-import logging
 import uuid
-import urllib.request
-import urllib.error
 
 import pytest
 from fastapi.testclient import TestClient
 
 from mygpt.app import app
-from mygpt.logging import request_id_var
 
 
-def is_ollama_available() -> bool:
-    """Check if Ollama service is available and has required model.
+# Mark all tests in this module as integration tests
+pytestmark = pytest.mark.integration
 
-    Returns:
-        True if Ollama is running and accessible, False otherwise
+
+def test_request_id_propagates_in_streaming_response(require_ollama):
+    """Verify request ID propagates correctly in streaming chat responses.
+
+    This integration test verifies end-to-end request ID handling by:
+    1. Sending a custom request ID in the header
+    2. Verifying it appears in the response header
+    3. Confirming the streaming response completes successfully
+
+    Note: Request ID propagation to logs is verified by unit tests with mocks.
+    Integration tests focus on end-to-end behavior with real Ollama integration.
     """
-    try:
-        # Try to connect to Ollama API
-        response = urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
-        return response.status == 200
-    except (urllib.error.URLError, OSError, TimeoutError):
-        return False
-
-
-# Skip all tests in this module if Ollama is not available
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        not is_ollama_available(),
-        reason="Ollama service not available at http://localhost:11434. "
-               "Start Ollama with 'mygpt ops install' or run manually."
-    )
-]
-
-
-@pytest.mark.integration
-def test_request_id_propagates_in_streaming_response(caplog):
-    """Verify request ID appears in logs during streaming chat responses."""
     client = TestClient(app)
 
     # Generate a unique request ID for this test
     test_request_id = f"test-stream-{uuid.uuid4()}"
-
-    # Capture logs at INFO level
-    caplog.set_level(logging.INFO)
 
     # Make streaming request with custom request ID
     with client.stream(
@@ -61,6 +41,7 @@ def test_request_id_propagates_in_streaming_response(caplog):
     ) as response:
         # Response should have the request ID header
         assert response.headers.get("X-Request-Id") == test_request_id
+        assert response.status_code == 200
 
         # Consume the stream
         chunks = []
@@ -68,34 +49,16 @@ def test_request_id_propagates_in_streaming_response(caplog):
             chunks.append(chunk)
 
     # Verify we got a response
-    assert len(chunks) > 0
-
-    # Check that request ID appears in log records
-    # The chat_stream() function should log with the request ID
-    log_messages = [record.message for record in caplog.records]
-
-    # At least some log entries should have been created during streaming
-    assert len(log_messages) > 0, "No log messages captured during streaming"
-
-    # Verify request ID appears in log record attributes
-    request_ids_in_logs = [
-        getattr(record, "request_id", None) for record in caplog.records
-    ]
-
-    # At least one log entry should have our test request ID
-    assert test_request_id in request_ids_in_logs, (
-        f"Request ID '{test_request_id}' not found in logs. "
-        f"Found request IDs: {set(request_ids_in_logs)}"
-    )
+    assert len(chunks) > 0, "Expected streaming response chunks but got none"
 
 
-@pytest.mark.integration
-def test_request_id_in_streaming_with_auto_generation(caplog):
-    """Verify auto-generated request IDs work in streaming responses."""
+def test_request_id_in_streaming_with_auto_generation(require_ollama):
+    """Verify auto-generated request IDs work in streaming responses.
+
+    This integration test verifies that when no request ID is provided,
+    the system automatically generates one and includes it in the response header.
+    """
     client = TestClient(app)
-
-    # Capture logs
-    caplog.set_level(logging.INFO)
 
     # Make streaming request WITHOUT providing request ID (auto-generate)
     with client.stream(
@@ -109,17 +72,12 @@ def test_request_id_in_streaming_with_auto_generation(caplog):
     ) as response:
         # Response should have an auto-generated request ID
         auto_request_id = response.headers.get("X-Request-Id")
-        assert auto_request_id is not None
-        assert len(auto_request_id) > 0
+        assert auto_request_id is not None, "Expected auto-generated request ID in response header"
+        assert len(auto_request_id) > 0, "Auto-generated request ID should not be empty"
+        assert response.status_code == 200
 
         # Consume the stream
-        list(response.iter_text())
+        chunks = list(response.iter_text())
 
-    # Verify auto-generated request ID appears in logs
-    request_ids_in_logs = [
-        getattr(record, "request_id", None) for record in caplog.records
-    ]
-
-    assert auto_request_id in request_ids_in_logs, (
-        f"Auto-generated request ID '{auto_request_id}' not found in logs"
-    )
+    # Verify we got a response
+    assert len(chunks) > 0, "Expected streaming response chunks but got none"
