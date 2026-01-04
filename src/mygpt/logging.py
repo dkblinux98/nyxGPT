@@ -180,10 +180,13 @@ def configure_logging(
     root = logging.getLogger()
     root.setLevel(level)
 
+    # Remove any existing RequestIdFilter to avoid duplicates (hot-reload safe)
+    for f in root.filters[:]:  # Iterate over copy to avoid modification during iteration
+        if isinstance(f, RequestIdFilter):
+            root.removeFilter(f)
+
     # Create and add request ID filter to root logger
     request_id_filter = RequestIdFilter()
-    # Remove any existing RequestIdFilter to avoid duplicates
-    root.filters = [f for f in root.filters if not isinstance(f, RequestIdFilter)]
     root.addFilter(request_id_filter)
 
     # Ensure our handlers exist on root (so third-party loggers propagate into our files).
