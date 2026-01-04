@@ -172,3 +172,36 @@ def test_request_id_context_isolation():
     # Clear context
     request_id_var.set(None)
     assert request_id_var.get() is None
+
+
+@pytest.mark.asyncio
+async def test_request_id_async_context_propagation():
+    """Request ID should propagate through async calls (real-world usage pattern)."""
+    # FastAPI is async, so we need to verify context vars work with async/await
+
+    # Set request ID in parent context
+    parent_request_id = "parent-async-request"
+    request_id_var.set(parent_request_id)
+
+    async def child_async_task():
+        """Simulates async operation within request (e.g., DB query, API call)."""
+        # Context variable should be preserved in awaited async calls
+        return request_id_var.get()
+
+    # Awaited async tasks should preserve context
+    child_result = await child_async_task()
+    assert child_result == parent_request_id, "Request ID should propagate to awaited tasks"
+
+    # Nested async calls should also preserve context
+    async def nested_async_call():
+        inner_result = await child_async_task()
+        return inner_result
+
+    nested_result = await nested_async_call()
+    assert nested_result == parent_request_id, "Request ID should propagate through nested awaits"
+
+    # Parent context should still be intact
+    assert request_id_var.get() == parent_request_id
+
+    # Clear context
+    request_id_var.set(None)
