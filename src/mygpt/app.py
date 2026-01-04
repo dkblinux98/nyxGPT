@@ -867,7 +867,11 @@ def chat_stream_api(request: Request, req: ChatRequest):
 
         def _stream_with_keepalive():
             # Explicitly set request ID in context for streaming generator
-            request_id_var.set(req_id)
+            try:
+                request_id_var.set(req_id)
+            except Exception as e:
+                log.warning(f"Failed to set request ID in streaming context: {e}")
+            # Continue regardless - streaming should work even if request ID fails
 
             # Send an immediate keepalive to prevent client read timeouts
             yield "\n"
@@ -906,7 +910,11 @@ def chat_stream_api_legacy(request: Request, req: ChatRequest):
 
         def _stream_with_keepalive():
             # Explicitly set request ID in context for streaming generator
-            request_id_var.set(req_id)
+            try:
+                request_id_var.set(req_id)
+            except Exception as e:
+                log.warning(f"Failed to set request ID in streaming context: {e}")
+            # Continue regardless - streaming should work even if request ID fails
 
             yield "\n"
             d = _chat_runtime_defaults(_req_cfg(request))
