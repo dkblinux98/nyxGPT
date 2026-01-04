@@ -76,7 +76,7 @@ pytest -m integration --cov=src/mygpt
 pytest tests/integration/test_request_id_streaming.py -v
 
 # Run only RAG integration tests
-pytest tests/integration/test_rag.py -v
+pytest tests/integration/test_rag_api_end_to_end.py -v
 ```
 
 ## Test Behavior
@@ -187,7 +187,5 @@ When adding new integration tests:
 
 ## Additional Resources
 
-- [myGPT Operations Guide](../../docs/operations.md)
-- [Testing Guidelines](../../docs/testing.md)
 - [Ollama Documentation](https://ollama.ai/docs)
 - [Cassandra Documentation](https://cassandra.apache.org/doc/latest/)
