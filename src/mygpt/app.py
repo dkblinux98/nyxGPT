@@ -862,7 +862,13 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
 @api.post("/chat/stream")
 def chat_stream_api(request: Request, req: ChatRequest):
     try:
+        # Capture request ID before entering generator (context may not propagate)
+        req_id = request.state.request_id
+
         def _stream_with_keepalive():
+            # Explicitly set request ID in context for streaming generator
+            request_id_var.set(req_id)
+
             # Send an immediate keepalive to prevent client read timeouts
             yield "\n"
             d = _chat_runtime_defaults(_req_cfg(request))
@@ -895,7 +901,13 @@ def chat_stream_api(request: Request, req: ChatRequest):
 @app.post("/api/chat/stream")
 def chat_stream_api_legacy(request: Request, req: ChatRequest):
     try:
+        # Capture request ID before entering generator (context may not propagate)
+        req_id = request.state.request_id
+
         def _stream_with_keepalive():
+            # Explicitly set request ID in context for streaming generator
+            request_id_var.set(req_id)
+
             yield "\n"
             d = _chat_runtime_defaults(_req_cfg(request))
             chosen_model = req.model or d["default_model"]
