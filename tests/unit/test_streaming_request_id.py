@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 
@@ -133,7 +132,6 @@ def test_streaming_request_id_propagates_to_logged_function(caplog):
     # Install RequestIdFilter to add request ID to all log records
     request_id_filter = RequestIdFilter()
     logger = logging.getLogger("mygpt.test")
-    logger.addFilter(request_id_filter)
     logger.setLevel(logging.DEBUG)
 
     def mock_chat_stream(*args, **kwargs):
@@ -143,6 +141,7 @@ def test_streaming_request_id_propagates_to_logged_function(caplog):
         yield "Test response"
 
     try:
+        logger.addFilter(request_id_filter)
         with patch("mygpt.app.chat_stream", side_effect=mock_chat_stream):
             with caplog.at_level("DEBUG", logger="mygpt.test"):
                 with client.stream(
@@ -187,7 +186,6 @@ def test_streaming_auto_generated_request_id_propagates_to_logs(caplog):
     # Install RequestIdFilter
     request_id_filter = RequestIdFilter()
     logger = logging.getLogger("mygpt.test")
-    logger.addFilter(request_id_filter)
     logger.setLevel(logging.DEBUG)
 
     def mock_chat_stream(*args, **kwargs):
@@ -198,6 +196,7 @@ def test_streaming_auto_generated_request_id_propagates_to_logs(caplog):
     captured_request_id = None
 
     try:
+        logger.addFilter(request_id_filter)
         with patch("mygpt.app.chat_stream", side_effect=mock_chat_stream):
             with caplog.at_level("DEBUG", logger="mygpt.test"):
                 with client.stream(
