@@ -51,12 +51,22 @@ class MyGPTTUI(App):
         log.info("TUI initialized", extra={"session": session, "api": self.api_base_url})
 
     def _unlock_prompt(self) -> None:
+        """Re-enable the input prompt and focus it.
+
+        This is called after streaming completes to allow the user to send
+        another message. If it fails (e.g., app is shutting down), we log
+        the error but don't crash.
+        """
         try:
             self.prompt.disabled = False
             self.prompt.focus()
-        except Exception:
-            # Best effort; Textual may be shutting down
-            pass
+            log.debug("Input prompt unlocked and focused")
+        except AttributeError as e:
+            # Widget not yet composed or already destroyed
+            log.warning(f"Failed to unlock prompt (widget not available): {e}")
+        except Exception as e:
+            # Other Textual-related errors (app shutting down, etc.)
+            log.warning(f"Failed to unlock prompt: {type(e).__name__}: {e}")
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -67,6 +77,15 @@ class MyGPTTUI(App):
             yield self.prompt
         yield Footer()
 
+    async def on_mount(self) -> None:
+        """Called when the app is mounted and ready.
+
+        Ensures the input prompt is in a clean state and ready to accept input.
+        This provides a defensive reset in case the app was previously in an
+        inconsistent state.
+        """
+        self._unlock_prompt()
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         if not text:
@@ -75,6 +94,7 @@ class MyGPTTUI(App):
         # Prevent double-submits while a stream is active
         self.prompt.value = ""
         self.prompt.disabled = True
+        log.debug("Input prompt locked for streaming")
 
         self.output.clear()
         self.output.append("→ " + text + "\n\n")
