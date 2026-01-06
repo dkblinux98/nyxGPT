@@ -17,10 +17,33 @@ export default function ChatPane({ sessionName }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [status, setStatus] = useState<'idle' | 'connecting' | 'streaming' | 'error'>('idle');
   const [lastError, setLastError] = useState<string | null>(null);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('');
   const isStreamingRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const title = useMemo(() => `Session: ${sessionName}`, [sessionName]);
+
+  // Fetch available models on mount
+  useEffect(() => {
+    async function fetchModels() {
+      try {
+        const res = await fetch('/api/v1/models');
+        if (res.ok) {
+          const data = await res.json();
+          const models = data.models || [];
+          setAvailableModels(models);
+          // Set first model as default if none selected
+          if (models.length > 0 && !selectedModel) {
+            setSelectedModel(models[0]);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch models:', err);
+      }
+    }
+    fetchModels();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     // New session selected: clear local transcript UI.
@@ -53,7 +76,11 @@ export default function ChatPane({ sessionName }: Props) {
       const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session: sessionName, prompt: text }),
+        body: JSON.stringify({
+          session: sessionName,
+          prompt: text,
+          model: selectedModel || undefined,
+        }),
         signal: controller.signal,
       });
 
@@ -84,8 +111,8 @@ export default function ChatPane({ sessionName }: Props) {
           return next;
         });
       }
-    } catch (e: any) {
-      const msg = e?.message ?? String(e);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
       setLastError(msg);
       setStatus('error');
 
@@ -130,6 +157,37 @@ export default function ChatPane({ sessionName }: Props) {
             Stop
           </button>
         )}
+      </div>
+
+      {/* Model selector */}
+      <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <label htmlFor="model-select" style={{ fontSize: 14, fontWeight: 500 }}>
+          Model:
+        </label>
+        <select
+          id="model-select"
+          value={selectedModel}
+          onChange={(e) => setSelectedModel(e.target.value)}
+          disabled={isStreaming}
+          style={{
+            padding: '6px 10px',
+            borderRadius: 6,
+            border: '1px solid #ddd',
+            fontSize: 14,
+            cursor: isStreaming ? 'not-allowed' : 'pointer',
+            background: isStreaming ? '#f5f5f5' : 'white',
+          }}
+        >
+          {availableModels.length === 0 ? (
+            <option value="">Loading models...</option>
+          ) : (
+            availableModels.map((model) => (
+              <option key={model} value={model}>
+                {model}
+              </option>
+            ))
+          )}
+        </select>
       </div>
 
       <div
