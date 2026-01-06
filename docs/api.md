@@ -415,30 +415,395 @@ At a high level, the API supports:
 
 ---
 
-## Authentication (optional)
+## Authentication
 
-Authentication scaffolding exists and is **disabled by default**.
+myGPT API supports optional API key authentication. Authentication is **disabled by default** for local-only usage and can be enabled via configuration when additional security is needed.
 
-When enabled via `~/.myGPT/config.ini`:
+### Overview
 
-- All API requests must include a shared API key header
-- Requests missing or providing an invalid key will return `401 Unauthorized`
+When authentication is enabled:
+
+- All `/api/v1/*` endpoints require a valid API key
+- Health check (`/health`) and documentation endpoints (`/docs`, `/openapi.json`, `/redoc`) remain publicly accessible
+- Invalid or missing API keys return `401 Unauthorized` with a request ID for debugging
+- API keys are compared using constant-time comparison to prevent timing attacks
 
 ### Configuration
+
+Authentication is configured in `~/.myGPT/config.ini` under the `[auth]` section.
+
+#### Configuration Keys
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | boolean | `false` | Enable/disable API key authentication |
+| `api_key` | string | (empty) | Shared secret required for API access |
+| `header` | string | `X-API-Key` | HTTP header name for the API key |
+
+#### Example Configuration
+
+```ini
+[auth]
+# Enable API key authentication
+enabled = true
+
+# Shared secret (required when enabled)
+# IMPORTANT: Generate a strong, random key
+api_key = your-secret-key-here
+
+# HTTP header used to pass the API key
+# Default: X-API-Key
+header = X-API-Key
+```
+
+#### Generating a Secure API Key
+
+For production or security-sensitive environments, generate a strong random key:
+
+```bash
+# macOS/Linux: Generate 32-byte random key
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# Example output: ZqJ9X_vK2nP8mR5tL3wH7yU4sN1aB6cE9fG0dI2jK8
+```
+
+### Header Format and Usage
+
+#### Request Format
+
+Include the API key in the HTTP header specified in your configuration:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/info \
+  -H "X-API-Key: your-secret-key-here"
+```
+
+#### Custom Header Name
+
+If you configure a custom header name:
 
 ```ini
 [auth]
 enabled = true
-api_key = your-secret-key
-header = X-API-Key
+api_key = my-secret-key
+header = Authorization
 ```
 
-### Example
+Then use that header in requests:
 
 ```bash
 curl http://127.0.0.1:8000/api/v1/info \
-  -H "X-API-Key: your-secret-key"
+  -H "Authorization: my-secret-key"
 ```
+
+### Example Authenticated Requests
+
+#### Chat Request
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-secret-key-here" \
+  -d '{
+    "prompt": "Hello, how are you?",
+    "session": "my-session",
+    "model": "llama3.1:8b"
+  }'
+```
+
+#### Streaming Chat Request
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/chat/stream \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-secret-key-here" \
+  -N \
+  -d '{
+    "prompt": "Write a haiku about security",
+    "session": "my-session"
+  }'
+```
+
+#### Session List Request
+
+```bash
+curl http://127.0.0.1:8000/api/v1/sessions \
+  -H "X-API-Key: your-secret-key-here"
+```
+
+#### RAG Ingest Request
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/rag/ingest \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-secret-key-here" \
+  -d '{
+    "doc_id": "doc123",
+    "text": "This is important documentation.",
+    "ensure_schema": true
+  }'
+```
+
+### Error Responses
+
+#### Missing API Key
+
+When authentication is enabled but no API key is provided:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/info
+```
+
+**Response** (HTTP 401):
+
+```json
+{
+  "error": {
+    "code": "unauthorized",
+    "message": "Invalid or missing API key",
+    "request_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+#### Invalid API Key
+
+When an incorrect API key is provided:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/info \
+  -H "X-API-Key: wrong-key"
+```
+
+**Response** (HTTP 401):
+
+```json
+{
+  "error": {
+    "code": "unauthorized",
+    "message": "Invalid or missing API key",
+    "request_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+**Note**: The error message is intentionally identical for missing and invalid keys to prevent information leakage about whether a key was provided.
+
+### Hot-Reload Support
+
+Authentication configuration is hot-reloaded on every request. Changes to `~/.myGPT/config.ini` take effect immediately without restarting the API:
+
+```bash
+# 1. Edit config to enable auth
+vim ~/.myGPT/config.ini
+
+# 2. Save changes
+# [auth]
+# enabled = true
+# api_key = my-new-key
+
+# 3. Next request will require authentication (no restart needed)
+curl http://127.0.0.1:8000/api/v1/info \
+  -H "X-API-Key: my-new-key"
+```
+
+### Security Features
+
+#### Constant-Time Comparison
+
+API keys are compared using `secrets.compare_digest()` to prevent timing attacks. This ensures that attackers cannot determine the correct API key by measuring response times.
+
+**Implementation** (from `src/mygpt/app.py:349`):
+
+```python
+auth_valid = secrets.compare_digest(expected, provided)
+```
+
+#### Request ID Tracking
+
+All authentication failures include a request ID in the error response and logs, enabling correlation for security auditing:
+
+```json
+{
+  "error": {
+    "code": "unauthorized",
+    "message": "Invalid or missing API key",
+    "request_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+Check logs for details:
+
+```bash
+grep "550e8400-e29b-41d4-a716-446655440000" ~/.myGPT/logs/mygpt.log
+```
+
+#### Exempt Endpoints
+
+The following endpoints remain accessible without authentication even when `auth.enabled = true`:
+
+- `/health` - Health check endpoint
+- `/docs` - OpenAPI documentation UI
+- `/openapi.json` - OpenAPI schema
+- `/redoc` - ReDoc documentation UI
+
+This ensures monitoring and documentation remain accessible while protecting functional API endpoints.
+
+### Security Recommendations
+
+#### For Local Development (Default)
+
+Authentication is disabled by default and **not required** for local-only development:
+
+```ini
+[auth]
+enabled = false
+```
+
+This configuration is appropriate when:
+- The API binds to `127.0.0.1` (localhost only)
+- No external network access to the API
+- Single-user development environment
+
+#### For Shared Environments
+
+Enable authentication when:
+- The API is accessible from a network (even local network)
+- Multiple users share the same machine
+- Additional security layer is desired
+
+**Recommended configuration:**
+
+```ini
+[auth]
+enabled = true
+api_key = <generate-strong-random-key>
+header = X-API-Key
+```
+
+**Generate a strong key:**
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+#### Key Management Best Practices
+
+1. **Generate Strong Keys**
+   - Use cryptographically secure random generation
+   - Minimum 32 bytes of entropy
+   - Never reuse keys across systems
+
+2. **Store Keys Securely**
+   - Never commit `~/.myGPT/config.ini` to version control
+   - Restrict file permissions: `chmod 600 ~/.myGPT/config.ini`
+   - Never log or expose API keys
+
+3. **Rotate Keys Regularly**
+   - Change API keys periodically
+   - Rotate immediately if compromise suspected
+   - Use hot-reload feature for zero-downtime rotation
+
+4. **Transport Security**
+   - Use HTTPS if API is exposed beyond localhost
+   - Never send API keys over unencrypted HTTP on public networks
+   - Consider VPN or SSH tunnels for remote access
+
+5. **Monitor Access**
+   - Review logs regularly for unauthorized attempts
+   - Use request IDs to correlate suspicious activity
+   - Set up alerts for repeated authentication failures
+
+#### What Authentication Does NOT Protect Against
+
+API key authentication provides a basic access control layer but is **not a substitute for:**
+
+- **Network security**: Use firewalls, VPNs, or SSH tunnels for network isolation
+- **Transport encryption**: Use HTTPS/TLS for encrypted communication
+- **Rate limiting**: Configure `[rate_limit]` section to prevent abuse
+- **Input validation**: Application-level validation is always enforced
+- **User authentication**: This is a shared-secret system, not per-user authentication
+
+#### Production Deployment Considerations
+
+myGPT is designed for **local, single-user use**. For production or multi-user deployments, consider:
+
+1. **HTTPS/TLS termination** via reverse proxy (nginx, caddy)
+2. **Per-user authentication** instead of shared API keys
+3. **OAuth2 or JWT** for more sophisticated auth
+4. **Database-backed session management**
+5. **Comprehensive audit logging**
+6. **DDoS protection and rate limiting**
+
+These features are beyond the scope of myGPT's current design but can be layered on top using standard infrastructure tools.
+
+### Troubleshooting
+
+#### Authentication Not Working
+
+**Symptom**: Requests still work without API key despite `enabled = true`
+
+**Solutions**:
+
+1. Verify config file location:
+   ```bash
+   cat ~/.myGPT/config.ini
+   ```
+
+2. Check for syntax errors in config:
+   ```bash
+   python3 -c "from configparser import ConfigParser; c = ConfigParser(); c.read('$HOME/.myGPT/config.ini'); print(c.getboolean('auth', 'enabled'))"
+   ```
+
+3. Check API logs for authentication status:
+   ```bash
+   tail -f ~/.myGPT/logs/mygpt.log | grep auth
+   ```
+
+#### Can't Access API After Enabling Auth
+
+**Symptom**: All requests return 401 after enabling authentication
+
+**Solutions**:
+
+1. Verify you're including the header:
+   ```bash
+   curl -v http://127.0.0.1:8000/api/v1/info \
+     -H "X-API-Key: your-key"
+   ```
+
+2. Check header name matches config:
+   ```bash
+   grep "^header" ~/.myGPT/config.ini
+   ```
+
+3. Verify API key matches config exactly (no extra spaces):
+   ```bash
+   grep "^api_key" ~/.myGPT/config.ini
+   ```
+
+4. Temporarily disable auth to verify API is working:
+   ```bash
+   # Edit config
+   vim ~/.myGPT/config.ini
+   # Set: enabled = false
+   # Test
+   curl http://127.0.0.1:8000/api/v1/info
+   ```
+
+#### Web UI Authentication
+
+The Next.js web UI reads the same `~/.myGPT/config.ini` file and automatically includes the API key in requests to the FastAPI backend. No additional configuration is needed.
+
+**Verification**:
+
+```bash
+# Check web UI proxy configuration
+grep -A 3 "\[auth\]" ~/.myGPT/config.ini
+```
+
+The web UI will automatically detect when authentication is enabled and include the configured API key in all backend requests.
 
 ---
 
