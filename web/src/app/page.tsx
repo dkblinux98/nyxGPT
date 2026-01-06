@@ -31,6 +31,12 @@ export default function Home() {
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [selectedSession, setSelectedSession] = useState<string>('default');
 
+  // Search and filter state
+  const [searchText, setSearchText] = useState<string>('');
+  const [filterModel, setFilterModel] = useState<string>('');
+  const [filterPinned, setFilterPinned] = useState<string>('all'); // 'all', 'pinned', 'unpinned'
+  const [filterTags, setFilterTags] = useState<string>('');
+
   useEffect(() => {
     fetch('/api/info')
       .then(async (res) => {
@@ -59,6 +65,61 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Filter and search sessions
+  const filteredSessions = sessions.filter((session) => {
+    // Text search across name, title, and summary
+    const searchLower = searchText.toLowerCase();
+    const matchesSearch =
+      !searchText ||
+      session.name.toLowerCase().includes(searchLower) ||
+      session.title?.toLowerCase().includes(searchLower) ||
+      session.summary?.toLowerCase().includes(searchLower);
+
+    // Model filter
+    const matchesModel = !filterModel || session.model === filterModel;
+
+    // Pinned filter
+    const matchesPinned =
+      filterPinned === 'all' ||
+      (filterPinned === 'pinned' && session.pinned) ||
+      (filterPinned === 'unpinned' && !session.pinned);
+
+    // Tags filter
+    const matchesTags =
+      !filterTags ||
+      session.tags?.some((tag) => tag.toLowerCase().includes(filterTags.toLowerCase()));
+
+    return matchesSearch && matchesModel && matchesPinned && matchesTags;
+  });
+
+  // Get unique models for filter dropdown
+  const uniqueModels = Array.from(
+    new Set(sessions.map((s) => s.model).filter((m): m is string => !!m))
+  ).sort();
+
+  // Clear all filters
+  const clearFilters = () => {
+    setSearchText('');
+    setFilterModel('');
+    setFilterPinned('all');
+    setFilterTags('');
+  };
+
+  // Highlight search matches in text
+  const highlightText = (text: string, search: string) => {
+    if (!search) return text;
+    const parts = text.split(new RegExp(`(${search})`, 'gi'));
+    return parts.map((part, i) =>
+      part.toLowerCase() === search.toLowerCase() ? (
+        <mark key={i} style={{ background: '#ffeb3b', padding: '0 2px' }}>
+          {part}
+        </mark>
+      ) : (
+        part
+      )
+    );
+  };
+
   return (
     <main
       style={{
@@ -80,8 +141,95 @@ export default function Home() {
           Local web UI (early)
         </p>
 
+        {/* Search input */}
+        <input
+          type="text"
+          placeholder="Search sessions..."
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          style={{
+            width: '100%',
+            padding: '8px 10px',
+            marginBottom: 8,
+            border: '1px solid #ddd',
+            borderRadius: 6,
+            fontSize: 14,
+            boxSizing: 'border-box',
+          }}
+        />
+
+        {/* Filter controls */}
+        <div style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <select
+            value={filterModel}
+            onChange={(e) => setFilterModel(e.target.value)}
+            style={{
+              padding: '6px 8px',
+              border: '1px solid #ddd',
+              borderRadius: 4,
+              fontSize: 12,
+            }}
+          >
+            <option value="">All models</option>
+            {uniqueModels.map((model) => (
+              <option key={model} value={model}>
+                {model}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={filterPinned}
+            onChange={(e) => setFilterPinned(e.target.value)}
+            style={{
+              padding: '6px 8px',
+              border: '1px solid #ddd',
+              borderRadius: 4,
+              fontSize: 12,
+            }}
+          >
+            <option value="all">All sessions</option>
+            <option value="pinned">Pinned only</option>
+            <option value="unpinned">Unpinned only</option>
+          </select>
+
+          <input
+            type="text"
+            placeholder="Filter by tag..."
+            value={filterTags}
+            onChange={(e) => setFilterTags(e.target.value)}
+            style={{
+              padding: '6px 8px',
+              border: '1px solid #ddd',
+              borderRadius: 4,
+              fontSize: 12,
+            }}
+          />
+
+          {(searchText || filterModel || filterPinned !== 'all' || filterTags) && (
+            <button
+              onClick={clearFilters}
+              style={{
+                padding: '6px 8px',
+                border: '1px solid #ddd',
+                borderRadius: 4,
+                fontSize: 12,
+                background: '#f8f8f8',
+                cursor: 'pointer',
+              }}
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+
         <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
           Selected: <strong>{selectedSession}</strong>
+          {filteredSessions.length !== sessions.length && (
+            <span style={{ marginLeft: 8 }}>
+              ({filteredSessions.length} of {sessions.length})
+            </span>
+          )}
         </div>
 
         {sessionsError && (
@@ -91,8 +239,9 @@ export default function Home() {
         )}
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {sessions.map((s) => {
+          {filteredSessions.map((s) => {
             const isActive = s.name === selectedSession;
+            const displayText = s.title?.trim() ? s.title : s.name;
             return (
               <button
                 key={s.name}
@@ -107,7 +256,7 @@ export default function Home() {
                 }}
               >
                 <div style={{ fontWeight: 600, fontSize: 14 }}>
-                  {s.title?.trim() ? s.title : s.name}
+                  {searchText ? highlightText(displayText, searchText) : displayText}
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.75, marginTop: 2 }}>
                   {s.messages ?? 0} msg · {s.model ?? ''}
@@ -120,6 +269,12 @@ export default function Home() {
               </button>
             );
           })}
+
+          {filteredSessions.length === 0 && sessions.length > 0 && (
+            <div style={{ fontSize: 12, opacity: 0.75 }}>
+              No sessions match your filters.
+            </div>
+          )}
 
           {sessions.length === 0 && !sessionsError && (
             <div style={{ fontSize: 12, opacity: 0.75 }}>
