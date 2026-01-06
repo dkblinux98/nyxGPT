@@ -13,10 +13,13 @@ import logging
 from typing import Optional
 
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, Static, Input
-from textual.containers import Vertical
+from textual.widgets import Header, Footer, Static, Input, ListView, ListItem, Label
+from textual.containers import Vertical, Container
+from textual.binding import Binding
+from textual.screen import Screen
 
 from mygpt.config import load_config
+from mygpt.sessions import list_sessions
 
 log = logging.getLogger(__name__)
 
@@ -38,15 +41,145 @@ class ChatOutput(Static):
         self.update(self._buffer)
 
 
+class SessionMetadataPreview(Static):
+    """Widget to display session metadata preview."""
+
+    def update_session(self, session: dict) -> None:
+        """Update the preview with session metadata."""
+        meta = session.get("meta", {})
+        title = meta.get("title", session["name"])
+        summary = meta.get("summary", "No summary available")
+        messages_count = session.get("messages", 0)
+        modified = session.get("modified", "Unknown")
+        tags = meta.get("tags", [])
+        pinned = "📌 " if meta.get("pinned") else ""
+
+        content = f"""
+{pinned}{title}
+
+Modified: {modified}
+Messages: {messages_count}
+Tags: {', '.join(tags) if tags else 'None'}
+
+{summary}
+        """.strip()
+
+        self.update(content)
+
+
+class SessionPickerScreen(Screen):
+    """Interactive session picker with search and keyboard navigation."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "select", "Select"),
+        ("ctrl+c", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, config_path: Optional[str] = None) -> None:
+        super().__init__()
+        self.config = load_config(config_path)
+        self.all_sessions: list[dict] = []
+        self.filtered_sessions: list[dict] = []
+
+    def compose(self) -> ComposeResult:
+        """Create the session picker UI."""
+        yield Header()
+        with Container():
+            yield Label("Select a session:")
+            yield Input(placeholder="Search sessions...", id="search")
+            yield ListView(id="session-list")
+            with Container(id="preview-container"):
+                yield Label("Session Preview:")
+                yield SessionMetadataPreview(id="session-preview")
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        """Load sessions when the screen is mounted."""
+        await self.load_sessions()
+
+    async def load_sessions(self) -> None:
+        """Load all sessions and populate the list."""
+        self.all_sessions = list_sessions(self.config)
+        self.filtered_sessions = self.all_sessions
+        await self.update_session_list()
+
+    async def update_session_list(self) -> None:
+        """Update the ListView with filtered sessions."""
+        list_view = self.query_one("#session-list", ListView)
+        await list_view.clear()
+
+        for session in self.filtered_sessions:
+            meta = session.get("meta", {})
+            title = meta.get("title", session["name"])
+            pinned = "📌 " if meta.get("pinned") else ""
+            messages = session.get("messages", 0)
+
+            label = f"{pinned}{title} ({messages} messages)"
+            await list_view.append(ListItem(Label(label), name=session["name"]))
+
+        # Update preview for first session if any
+        if self.filtered_sessions:
+            preview = self.query_one("#session-preview", SessionMetadataPreview)
+            preview.update_session(self.filtered_sessions[0])
+
+    async def on_input_changed(self, event: Input.Changed) -> None:
+        """Filter sessions based on search input."""
+        if event.input.id != "search":
+            return
+
+        query = event.value.lower()
+        if not query:
+            self.filtered_sessions = self.all_sessions
+        else:
+            # Search in name, title, summary, and tags
+            self.filtered_sessions = [
+                s for s in self.all_sessions
+                if query in s["name"].lower()
+                or query in s.get("meta", {}).get("title", "").lower()
+                or query in s.get("meta", {}).get("summary", "").lower()
+                or any(query in tag.lower() for tag in s.get("meta", {}).get("tags", []))
+            ]
+
+        await self.update_session_list()
+
+    async def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        """Update preview when a session is highlighted."""
+        if event.item is None:
+            return
+
+        session_name = event.item.name
+        session = next((s for s in self.filtered_sessions if s["name"] == session_name), None)
+
+        if session:
+            preview = self.query_one("#session-preview", SessionMetadataPreview)
+            preview.update_session(session)
+
+    def action_select(self) -> None:
+        """Select the currently highlighted session."""
+        list_view = self.query_one("#session-list", ListView)
+        if list_view.highlighted_child:
+            session_name = list_view.highlighted_child.name
+            self.dismiss(session_name)
+
+    def action_cancel(self) -> None:
+        """Cancel session selection."""
+        self.dismiss(None)
+
+
 class MyGPTTUI(App):
     CSS_PATH = None
-    BINDINGS = [("ctrl+c", "quit", "Quit")]
+    BINDINGS = [
+        ("ctrl+c", "quit", "Quit"),
+        ("ctrl+s", "pick_session", "Sessions"),
+    ]
 
-    def __init__(self, session: str = "default", api_base_url: Optional[str] = None) -> None:
+    def __init__(self, session: str = "default", api_base_url: Optional[str] = None, config_path: Optional[str] = None) -> None:
         super().__init__()
-        cfg = load_config(None)
+        cfg = load_config(config_path)
         self.session = session
         self.api_base_url = api_base_url or cfg.get("api", "base_url", fallback="http://127.0.0.1:8000")
+        self.config_path = config_path
 
         log.info("TUI initialized", extra={"session": session, "api": self.api_base_url})
 
@@ -85,6 +218,19 @@ class MyGPTTUI(App):
         inconsistent state.
         """
         self._unlock_prompt()
+
+    async def action_pick_session(self) -> None:
+        """Open the session picker and switch to the selected session."""
+        session_name = await self.push_screen_wait(SessionPickerScreen(self.config_path))
+
+        if session_name:
+            # Update the current session
+            self.session = session_name
+            # Clear the chat output
+            self.output.clear()
+            # Show confirmation message
+            self.output.append(f"Switched to session: {session_name}\n\n")
+            log.info("Session switched", extra={"session": session_name})
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()

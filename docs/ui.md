@@ -129,6 +129,24 @@ The TUI:
 - defaults to the `default` session
 - supports RAG-assisted chat if enabled
 
+### TUI Keyboard Shortcuts
+
+- **Ctrl+C** — Quit the TUI
+- **Ctrl+S** — Open session picker (browse and switch sessions)
+
+### Session Picker
+
+Press **Ctrl+S** to open the interactive session picker which allows you to:
+
+- Browse all available sessions
+- Search sessions by name, title, summary, or tags
+- View session metadata (message count, last modified, tags, summary)
+- Navigate with arrow keys (Up/Down) or keyboard search
+- Press **Enter** to switch to the selected session
+- Press **Escape** or **Ctrl+C** to cancel
+
+Pinned sessions are displayed with a 📌 icon and appear at the top of the list.
+
 If the FastAPI backend is not running, the TUI will fail to connect.
 
 ---
