@@ -98,6 +98,41 @@ All components (CLI, API, tests) use this centralized configuration. Logs are wr
 
 ---
 
+## `[auth]` section
+
+Optional API key authentication for the FastAPI backend. Authentication is **disabled by default** for local-only usage.
+
+```ini
+[auth]
+enabled = false
+api_key =
+header = X-API-Key
+```
+
+| Key | Description |
+|---|---|
+| `enabled` | Enable/disable API key authentication (default: `false`) |
+| `api_key` | Shared secret required when authentication is enabled |
+| `header` | HTTP header name for the API key (default: `X-API-Key`) |
+
+**When enabled:**
+- All `/api/v1/*` endpoints require the API key
+- Health check (`/health`) and documentation endpoints remain public
+- Invalid or missing API keys return `401 Unauthorized`
+- API keys are compared using constant-time comparison to prevent timing attacks
+
+**Security best practices:**
+- Generate strong, random keys using `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`
+- Restrict file permissions: `chmod 600 ~/.myGPT/config.ini`
+- Never commit `~/.myGPT/config.ini` to version control
+- Rotate keys regularly and immediately if compromise is suspected
+
+**Note:** Authentication configuration is **hot-reloadable** and takes effect immediately without restart.
+
+For detailed usage, examples, and security recommendations, see [`docs/api.md`](api.md#authentication).
+
+---
+
 ## `[rag]` section
 
 Retrieval-Augmented Generation (RAG) settings.
@@ -155,6 +190,7 @@ npm_bin = /usr/local/bin/npm
 - `mygpt.default_model`
 - `logging.level`
 - `rag.enabled`
+- `auth.enabled`, `auth.api_key`, `auth.header`
 
 All other settings require a service restart unless otherwise noted.
 

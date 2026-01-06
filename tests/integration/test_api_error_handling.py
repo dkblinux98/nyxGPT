@@ -140,7 +140,7 @@ def test_session_init_with_invalid_name_format(api_base_url: str) -> None:
 def test_session_init_with_too_long_name(api_base_url: str) -> None:
     """POST /api/v1/sessions/init with overly long session name should return error.
 
-    Note: May return 422 (validation) or 500 (internal error during file creation).
+    Should return 422 (validation) but may return 500 if validation doesn't catch it.
     """
     with httpx.Client(base_url=api_base_url, timeout=5.0) as client:
         response = client.post(
@@ -149,8 +149,10 @@ def test_session_init_with_too_long_name(api_base_url: str) -> None:
                 "name": "a" * 1000  # Extremely long name
             },
         )
-        # Should reject excessively long session names (validation or internal error)
-        assert response.status_code in (400, 422, 500)
+        # Should reject excessively long session names
+        assert response.status_code in (422, 500)
+        # Response should have error structure
+        assert "error" in response.json()
 
 
 def test_rag_query_with_invalid_top_k(api_base_url: str, require_cassandra: None) -> None:
