@@ -202,6 +202,7 @@ Detailed documentation is organized under `docs/`:
 - **UI (TUI + Web)** – `docs/ui.md`
 - **RAG & Cassandra** – `docs/rag.md`
 - **Sessions & Memory** – `docs/sessions.md`
+- **Performance Tuning** – `docs/performance.md`
 - **Testing** – `docs/testing.md`
 - **Architecture** – `docs/architecture.md`
 - **Troubleshooting** – `docs/troubleshooting.md`
