@@ -178,6 +178,17 @@ When working on an issue autonomously from start to finish:
      - Add PR to project "myGPT" with fields matching parent issue
      - Update PR status → "In Review"
      - Wait for CI checks to pass
+     ↓
+12. READ PR FOR REVIEW FINDINGS
+    - Read PR description, comments, and review feedback
+    - Look for any critical/medium issues listed in PR
+    - If critical/medium issues found:
+      - Create SEPARATE sub-issue for EACH (use "Acceptance Failure" label)
+      - Fix each issue following steps 4-11
+      - Update sub-issue statuses to "For Release" when resolved
+    - If only minor issues or no issues: proceed to merge
+    ↓
+13. MERGE AND CLOSE
      - Merge PR (squash and merge)
      - Update parent issue status → "For Release"
      - Update all sub-issue statuses → "For Release"
@@ -224,6 +235,38 @@ Before marking review as passed, verify:
 - [ ] Code follows style guidelines
 - [ ] Commit messages follow format
 - [ ] No runtime data or secrets committed
+
+### PR Review Process
+
+**CRITICAL**: When asked to review a PR, you MUST:
+
+1. **Read the PR thoroughly**:
+   ```bash
+   gh pr view <PR-number> --json body,comments,reviews
+   ```
+
+2. **Extract all critical and medium issues** from:
+   - PR description
+   - PR comments
+   - Review feedback
+   - Any linked review documents
+
+3. **Create sub-issues for each critical/medium finding**:
+   - Use "Acceptance Failure" label (NOT "bug")
+   - One sub-issue per issue (not one for all)
+   - Link to parent issue
+   - Set status to "For Release" when resolved (even if closed as "not planned")
+
+4. **Process each sub-issue**:
+   - Fix the issue with proper commits
+   - Reference both sub-issue and parent in commit
+   - Update sub-issue status to "For Release"
+   - Do NOT use "Closed" status for acceptance failures
+
+5. **Only proceed to merge when**:
+   - ALL critical issues resolved
+   - ALL medium issues resolved
+   - Only minor/nitpick issues remain (these can be left unaddressed)
 
 ### Sub-Issue Creation (Review Failures)
 
