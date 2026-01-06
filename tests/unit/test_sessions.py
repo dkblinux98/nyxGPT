@@ -187,3 +187,201 @@ def test_save_session_creates_parent_directory(tmp_path: Path) -> None:
     # Verify the session was saved
     assert state.session_file.exists()
     assert state.meta_file.exists()
+
+
+def test_export_session_markdown(tmp_path: Path) -> None:
+    """Test session export to Markdown format."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create a test session with messages and metadata
+    session_file = sessions.session_file_for("test-session", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there!"},
+        {"role": "user", "content": "How are you?"},
+        {"role": "assistant", "content": "I'm doing well, thanks!"},
+    ]
+
+    metadata = {
+        "title": "Test Session",
+        "summary": "A test conversation",
+        "created_at": "2024-01-01T12:00:00",
+        "updated_at": "2024-01-01T12:05:00",
+        "tags": ["test", "example"],
+        "model": "llama3.1:8b",
+        "pinned": False,
+        "token_estimate": 100,
+    }
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    # Export to markdown
+    ok, content = sessions.export_session_markdown("test-session", sessions_dir)
+
+    assert ok, "Export should succeed"
+    assert "# Test Session" in content
+    assert "**Summary:** A test conversation" in content
+    assert "**Session:** test-session" in content
+    assert "**Tags:** test, example" in content
+    assert "**Model:** llama3.1:8b" in content
+    assert "## User" in content
+    assert "Hello" in content
+    assert "## Assistant" in content
+    assert "Hi there!" in content
+
+
+def test_export_session_json(tmp_path: Path) -> None:
+    """Test session export to JSON format."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create a test session
+    session_file = sessions.session_file_for("json-test", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [
+        {"role": "user", "content": "Test message"},
+        {"role": "assistant", "content": "Test response"},
+    ]
+
+    metadata = {
+        "title": "JSON Test",
+        "created_at": "2024-01-01T12:00:00",
+        "updated_at": "2024-01-01T12:05:00",
+        "tags": [],
+        "pinned": False,
+        "token_estimate": 50,
+    }
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    # Export to JSON
+    ok, content = sessions.export_session_json("json-test", sessions_dir)
+
+    assert ok, "Export should succeed"
+
+    # Parse the JSON to verify structure
+    data = json.loads(content)
+    assert data["name"] == "json-test"
+    assert "metadata" in data
+    assert "messages" in data
+    assert len(data["messages"]) == 2
+    assert data["messages"][0]["role"] == "user"
+    assert data["messages"][0]["content"] == "Test message"
+    assert data["metadata"]["title"] == "JSON Test"
+
+
+def test_export_session_html(tmp_path: Path) -> None:
+    """Test session export to HTML format."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create a test session
+    session_file = sessions.session_file_for("html-test", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [
+        {"role": "user", "content": "Test <html> escaping"},
+        {"role": "assistant", "content": "Escaping > works"},
+    ]
+
+    metadata = {
+        "title": "HTML Test",
+        "summary": "Testing HTML export",
+        "created_at": "2024-01-01T12:00:00",
+        "updated_at": "2024-01-01T12:05:00",
+        "tags": ["html", "test"],
+        "model": "llama3.1:8b",
+        "pinned": False,
+        "token_estimate": 50,
+    }
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    # Export to HTML
+    ok, content = sessions.export_session_html("html-test", sessions_dir)
+
+    assert ok, "Export should succeed"
+    assert "<!DOCTYPE html>" in content
+    assert "<title>HTML Test</title>" in content
+    assert "<h1>HTML Test</h1>" in content
+    assert "Testing HTML export" in content
+    assert "&lt;html&gt;" in content, "Should escape HTML special characters"
+    assert "&gt; works" in content, "Should escape > character"
+    assert '<div class="message user">' in content
+    assert '<div class="message assistant">' in content
+
+
+def test_export_session_nonexistent(tmp_path: Path) -> None:
+    """Test export of nonexistent session returns error."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Try to export a session that doesn't exist
+    ok, msg = sessions.export_session_markdown("nonexistent", sessions_dir)
+    assert not ok
+    assert msg == "No such session"
+
+    ok, msg = sessions.export_session_json("nonexistent", sessions_dir)
+    assert not ok
+    assert msg == "No such session"
+
+    ok, msg = sessions.export_session_html("nonexistent", sessions_dir)
+    assert not ok
+    assert msg == "No such session"
+
+
+def test_export_includes_all_metadata_fields(tmp_path: Path) -> None:
+    """Test that export includes all metadata fields."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("metadata-test", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [{"role": "user", "content": "test"}]
+
+    metadata = {
+        "title": "Complete Metadata Test",
+        "summary": "Has all fields",
+        "created_at": "2024-01-01T12:00:00",
+        "updated_at": "2024-01-01T13:00:00",
+        "tags": ["tag1", "tag2", "tag3"],
+        "model": "llama3.1:8b",
+        "pinned": True,
+        "token_estimate": 123,
+    }
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    # Test markdown export includes all fields
+    ok, content = sessions.export_session_markdown("metadata-test", sessions_dir)
+    assert ok
+    assert "Complete Metadata Test" in content
+    assert "Has all fields" in content
+    assert "2024-01-01T12:00:00" in content
+    assert "2024-01-01T13:00:00" in content
+    assert "tag1, tag2, tag3" in content
+    assert "llama3.1:8b" in content
+
+    # Test JSON export includes all fields
+    ok, json_content = sessions.export_session_json("metadata-test", sessions_dir)
+    assert ok
+    data = json.loads(json_content)
+    assert data["metadata"]["title"] == "Complete Metadata Test"
+    assert data["metadata"]["summary"] == "Has all fields"
+    assert data["metadata"]["tags"] == ["tag1", "tag2", "tag3"]
+
+    # Test HTML export includes all fields
+    ok, html_content = sessions.export_session_html("metadata-test", sessions_dir)
+    assert ok
+    assert "Complete Metadata Test" in html_content
+    assert "Has all fields" in html_content
+    assert "tag1, tag2, tag3" in html_content
