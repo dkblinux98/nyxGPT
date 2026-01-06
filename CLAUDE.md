@@ -175,7 +175,9 @@ When working on an issue autonomously from start to finish:
 11b. IF REVIEW PASSES (No Critical/Medium Issues):
      - Minor issues can be left unaddressed
      - Create PR to v1.0.0
-     - Add PR to project "myGPT" with fields matching parent issue
+     - CRITICAL: Assign PR milestone to match parent issue milestone
+     - Add PR to project "myGPT" with ALL fields matching parent issue
+       (Status, Phase, Priority, Sprint, Module, Effort)
      - Update PR status → "In Review"
      - Wait for CI checks to pass
      ↓
@@ -393,19 +395,64 @@ Resolves #[parent-issue-number]"
 
 # PR is created with URL like: https://github.com/dkblinux98/myGPT/pull/2720
 
-# 2. Add PR to project "myGPT"
-gh project item-add 2 --owner dkblinux98 --url "https://github.com/dkblinux98/myGPT/pull/2720"
+# 2. CRITICAL: Assign PR milestone to match parent issue milestone
+# Get parent issue milestone
+PARENT_ISSUE=2720
+PR_NUMBER=2720
 
-# 3. Wait 3-5 seconds for GitHub to sync the project item
+PARENT_MILESTONE=$(gh issue view $PARENT_ISSUE --json milestone --jq '.milestone.title')
+
+# Get milestone ID (needed for closed milestones)
+MILESTONE_ID=$(gh api graphql -f query="
+  query {
+    repository(owner: \"dkblinux98\", name: \"myGPT\") {
+      milestones(first: 20, states: [OPEN, CLOSED]) {
+        nodes {
+          id
+          title
+        }
+      }
+    }
+  }
+" | jq -r ".data.repository.milestones.nodes[] | select(.title == \"$PARENT_MILESTONE\") | .id")
+
+# Get PR node ID
+PR_ID=$(gh api graphql -f query="
+  query {
+    repository(owner: \"dkblinux98\", name: \"myGPT\") {
+      pullRequest(number: $PR_NUMBER) {
+        id
+      }
+    }
+  }
+" | jq -r '.data.repository.pullRequest.id')
+
+# Assign milestone to PR (works for both open and closed milestones)
+gh api graphql -f query="
+  mutation {
+    updatePullRequest(input: {pullRequestId: \"$PR_ID\", milestoneId: \"$MILESTONE_ID\"}) {
+      pullRequest {
+        number
+        milestone {
+          title
+        }
+      }
+    }
+  }
+"
+
+# 3. Add PR to project "myGPT"
+gh project item-add 2 --owner dkblinux98 --url "https://github.com/dkblinux98/myGPT/pull/$PR_NUMBER"
+
+# 4. Wait 3-5 seconds for GitHub to sync the project item
 sleep 3
 
-# 4. Set PR project fields to match parent issue
-# Use same Status, Phase, Priority, etc. as the parent issue
-# Get parent issue fields:
-gh api graphql -f query='
+# 5. Set PR project fields to match parent issue
+# Get parent issue's project fields
+gh api graphql -f query="
   query {
-    repository(owner: "dkblinux98", name: "myGPT") {
-      issue(number: [parent-issue-num]) {
+    repository(owner: \"dkblinux98\", name: \"myGPT\") {
+      issue(number: $PARENT_ISSUE) {
         projectItems(first: 5) {
           nodes {
             fieldValues(first: 20) {
@@ -415,6 +462,11 @@ gh api graphql -f query='
                   name
                   optionId
                 }
+                ... on ProjectV2ItemFieldIterationValue {
+                  field { ... on ProjectV2IterationField { name id } }
+                  title
+                  iterationId
+                }
               }
             }
           }
@@ -422,15 +474,40 @@ gh api graphql -f query='
       }
     }
   }
-'
+"
 
-# Then update PR's project fields to match
-# (See GitHub Bulk Operations section for GraphQL mutation examples)
+# Get PR's project item ID
+PR_ITEM_ID=$(gh api graphql -f query="
+  query {
+    repository(owner: \"dkblinux98\", name: \"myGPT\") {
+      pullRequest(number: $PR_NUMBER) {
+        projectItems(first: 5) {
+          nodes {
+            id
+            project { number }
+          }
+        }
+      }
+    }
+  }
+" | jq -r '.data.repository.pullRequest.projectItems.nodes[] | select(.project.number == 2) | .id')
 
-# 5. Merge PR when ready
-gh pr merge [pr-number] --squash --delete-branch
+# Update PR project fields to match parent issue
+# Example: Set Status to "In Review"
+PROJECT_ID="PVT_kwHOAEElec4BLnao"
+STATUS_FIELD_ID="PVTSSF_lAHOAEElec4BLnaozg7IvTQ"
+IN_REVIEW_OPTION_ID="f75ad846"
 
-# 6. ✅ GitHub AUTOMATICALLY:
+gh project item-edit --id "$PR_ITEM_ID" --project-id "$PROJECT_ID" \
+  --field-id "$STATUS_FIELD_ID" --single-select-option-id "$IN_REVIEW_OPTION_ID"
+
+# Copy other fields (Phase, Priority, Sprint, Module, Effort) from parent issue
+# (See GitHub Bulk Operations section for complete field IDs)
+
+# 6. Merge PR when ready
+gh pr merge $PR_NUMBER --squash --delete-branch
+
+# 7. ✅ GitHub AUTOMATICALLY:
 #    - Closes the issue (via "Resolves #XXXX")
 #    - Links the PR to the issue
 #    - Updates issue status to "Done" in project
@@ -439,13 +516,16 @@ gh pr merge [pr-number] --squash --delete-branch
 #    This breaks the automatic linking!
 ```
 
-**PR field inheritance from parent issue**:
-- ✅ Project (myGPT)
-- ✅ Status (In Review when PR created)
-- ✅ Phase (same as parent issue)
-- ✅ Priority (same as parent issue)
-- ✅ Milestone (linked via issue reference)
-- ✅ Any other custom fields (match parent issue)
+**PR field inheritance from parent issue (REQUIRED)**:
+- ✅ **Milestone** - MUST be set to match parent issue milestone (even if closed)
+- ✅ **Project** - Add PR to project "myGPT"
+- ✅ **Status** - Set to "In Review" when PR created
+- ✅ **Phase** - Same as parent issue
+- ✅ **Priority** - Same as parent issue
+- ✅ **Sprint** - Same as parent issue
+- ✅ **Module** - Same as parent issue
+- ✅ **Effort** - Same as parent issue
+- ✅ **Any other custom fields** - Match parent issue
 
 See @AGENTS.md for complete workflow details, branch naming conventions, PR templates, and failure recovery procedures.
 
