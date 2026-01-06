@@ -243,7 +243,9 @@ def chat_stream(
     )
 
     logger.debug(
-        f"Starting chat stream for session={session}, model={context.chosen_model}"
+        "Starting chat stream for session=%s, model=%s",
+        session,
+        context.chosen_model
     )
 
     # Stream tokens and assemble final reply
