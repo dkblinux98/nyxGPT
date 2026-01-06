@@ -190,11 +190,13 @@ When working on an issue autonomously from start to finish:
     ↓
 13. MERGE AND CLOSE
      - Merge PR (squash and merge)
-     - Update parent issue status → "For Release"
+     - ✅ Issue will auto-close via "Resolves #XXX" in PR description
+     - ❌ DO NOT manually close issue with `gh issue close`
+     - Update parent issue status → "For Release" (if not auto-updated)
      - Update all sub-issue statuses → "For Release"
      - Update PR status → "For Release"
-     - Delete feature branch
-     - Verify issue auto-closed (via "Resolves #XXX")
+     - Delete feature branch (auto-deleted with --delete-branch flag)
+     - Verify issue auto-closed and PR is linked
      - GitHub Actions will auto-check in release tracking issue
 ```
 
@@ -366,18 +368,38 @@ gh project item-add 2 --owner dkblinux98 --url "https://github.com/dkblinux98/my
 
 **CRITICAL**: PRs must also be added to project "myGPT" with fields matching the parent issue.
 
+**CRITICAL - PR-to-Issue Linking**: To ensure PRs properly link to issues:
+1. ✅ **MUST** include "Resolves #XXXX" or "Closes #XXXX" in the PR **description** (not just commit message)
+2. ❌ **NEVER** manually close issues with `gh issue close` - let the PR merge auto-close them
+3. ✅ When PR merges, GitHub will automatically close the issue AND create the linkage
+
+**Why this matters**: Manual issue closure breaks GitHub's automatic PR-issue linking, causing PRs to not appear in the "closedByPullRequestsReferences" field or project board views.
+
 ```bash
-# 1. Create PR
+# 1. Create PR with "Resolves #XXXX" in the DESCRIPTION
 gh pr create --base v1.0.0 \
   --title "[type]([scope]): [description] (#[parent-issue])" \
-  --body "[PR description with issue reference]"
+  --body "## Description
+[Your PR description]
+
+## Changes Made
+- [List of changes]
+
+## Testing
+- [x] Unit tests pass
+- [x] Integration tests pass
+
+Resolves #[parent-issue-number]"
 
 # PR is created with URL like: https://github.com/dkblinux98/myGPT/pull/2720
 
 # 2. Add PR to project "myGPT"
 gh project item-add 2 --owner dkblinux98 --url "https://github.com/dkblinux98/myGPT/pull/2720"
 
-# 3. Set PR project fields to match parent issue
+# 3. Wait 3-5 seconds for GitHub to sync the project item
+sleep 3
+
+# 4. Set PR project fields to match parent issue
 # Use same Status, Phase, Priority, etc. as the parent issue
 # Get parent issue fields:
 gh api graphql -f query='
@@ -404,6 +426,17 @@ gh api graphql -f query='
 
 # Then update PR's project fields to match
 # (See GitHub Bulk Operations section for GraphQL mutation examples)
+
+# 5. Merge PR when ready
+gh pr merge [pr-number] --squash --delete-branch
+
+# 6. ✅ GitHub AUTOMATICALLY:
+#    - Closes the issue (via "Resolves #XXXX")
+#    - Links the PR to the issue
+#    - Updates issue status to "Done" in project
+#
+# ❌ DO NOT run: gh issue close [issue-number]
+#    This breaks the automatic linking!
 ```
 
 **PR field inheritance from parent issue**:
