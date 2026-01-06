@@ -8,9 +8,9 @@ from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
 import pytest
 from textual.widgets import Input
 
-pytestmark = pytest.mark.unit
+from mygpt.tui import ChatOutput, MyGPTTUI, SessionMetadataPreview, SessionPickerScreen
 
-from mygpt.tui import ChatOutput, MyGPTTUI
+pytestmark = pytest.mark.unit
 
 
 # ============================================================================
@@ -433,3 +433,296 @@ async def test_stream_chat_unlock_on_exception(tmp_path: Path) -> None:
     # Verify prompt was unlocked despite exception
     assert app.prompt.disabled is False
     app.prompt.focus.assert_called()
+
+
+# ============================================================================
+# SessionMetadataPreview Widget Tests
+# ============================================================================
+
+
+def test_session_metadata_preview_update() -> None:
+    """Test that SessionMetadataPreview updates with session metadata."""
+    widget = SessionMetadataPreview()
+
+    session = {
+        "name": "test-session",
+        "messages": 5,
+        "modified": "2024-01-01 12:00:00",
+        "meta": {
+            "title": "Test Session",
+            "summary": "This is a test session",
+            "tags": ["test", "example"],
+            "pinned": True,
+        }
+    }
+
+    with patch.object(widget, "update") as mock_update:
+        widget.update_session(session)
+
+    # Verify update was called
+    mock_update.assert_called_once()
+    call_arg = mock_update.call_args[0][0]
+
+    # Check that key information is in the preview
+    assert "📌" in call_arg  # Pinned indicator
+    assert "Test Session" in call_arg
+    assert "2024-01-01 12:00:00" in call_arg
+    assert "5" in call_arg  # Message count
+    assert "test, example" in call_arg  # Tags
+    assert "This is a test session" in call_arg
+
+
+def test_session_metadata_preview_without_optional_fields() -> None:
+    """Test SessionMetadataPreview with minimal session data."""
+    widget = SessionMetadataPreview()
+
+    session = {
+        "name": "minimal-session",
+        "messages": 0,
+        "modified": "Unknown",
+        "meta": {}
+    }
+
+    with patch.object(widget, "update") as mock_update:
+        widget.update_session(session)
+
+    # Verify update was called
+    mock_update.assert_called_once()
+    call_arg = mock_update.call_args[0][0]
+
+    # Check fallback values
+    assert "minimal-session" in call_arg  # Uses name as title
+    assert "No summary available" in call_arg
+    assert "None" in call_arg  # No tags
+
+
+# ============================================================================
+# SessionPickerScreen Tests
+# ============================================================================
+
+
+def test_session_picker_initialization(tmp_path: Path) -> None:
+    """Test SessionPickerScreen initializes correctly."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        screen = SessionPickerScreen(str(config_file))
+
+    assert screen.all_sessions == []
+    assert screen.filtered_sessions == []
+
+
+@pytest.mark.asyncio
+async def test_session_picker_load_sessions(tmp_path: Path) -> None:
+    """Test SessionPickerScreen loads sessions on mount."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    mock_sessions = [
+        {
+            "name": "session1",
+            "messages": 5,
+            "modified": "2024-01-01 12:00:00",
+            "meta": {"title": "Session 1"}
+        },
+        {
+            "name": "session2",
+            "messages": 3,
+            "modified": "2024-01-02 14:00:00",
+            "meta": {"title": "Session 2"}
+        }
+    ]
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        with patch("mygpt.tui.list_sessions", return_value=mock_sessions):
+            screen = SessionPickerScreen(str(config_file))
+
+            # Mock update_session_list
+            with patch.object(screen, "update_session_list", new=AsyncMock()):
+                await screen.load_sessions()
+
+    assert screen.all_sessions == mock_sessions
+    assert screen.filtered_sessions == mock_sessions
+
+
+@pytest.mark.asyncio
+async def test_session_picker_search_filter(tmp_path: Path) -> None:
+    """Test SessionPickerScreen filters sessions based on search."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    mock_sessions = [
+        {
+            "name": "python-project",
+            "messages": 5,
+            "modified": "2024-01-01",
+            "meta": {"title": "Python Development", "tags": ["coding"]}
+        },
+        {
+            "name": "java-project",
+            "messages": 3,
+            "modified": "2024-01-02",
+            "meta": {"title": "Java Development", "tags": ["coding"]}
+        },
+        {
+            "name": "meeting-notes",
+            "messages": 2,
+            "modified": "2024-01-03",
+            "meta": {"title": "Meeting Notes", "tags": ["notes"]}
+        }
+    ]
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        with patch("mygpt.tui.list_sessions", return_value=mock_sessions):
+            screen = SessionPickerScreen(str(config_file))
+            screen.all_sessions = mock_sessions
+            screen.filtered_sessions = mock_sessions
+
+            # Mock update_session_list
+            with patch.object(screen, "update_session_list", new=AsyncMock()):
+                # Create mock input event
+                mock_input = MagicMock(spec=Input)
+                mock_input.id = "search"
+                event = MagicMock()
+                event.input = mock_input
+                event.value = "python"
+
+                await screen.on_input_changed(event)
+
+    # Should only have the Python session
+    assert len(screen.filtered_sessions) == 1
+    assert screen.filtered_sessions[0]["name"] == "python-project"
+
+
+@pytest.mark.asyncio
+async def test_session_picker_search_empty_query(tmp_path: Path) -> None:
+    """Test SessionPickerScreen shows all sessions when search is empty."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    mock_sessions = [
+        {"name": "session1", "messages": 5, "modified": "2024-01-01", "meta": {}},
+        {"name": "session2", "messages": 3, "modified": "2024-01-02", "meta": {}}
+    ]
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        screen = SessionPickerScreen(str(config_file))
+        screen.all_sessions = mock_sessions
+        screen.filtered_sessions = []
+
+        with patch.object(screen, "update_session_list", new=AsyncMock()):
+            mock_input = MagicMock(spec=Input)
+            mock_input.id = "search"
+            event = MagicMock()
+            event.input = mock_input
+            event.value = ""
+
+            await screen.on_input_changed(event)
+
+    # Should show all sessions
+    assert screen.filtered_sessions == mock_sessions
+
+
+def test_session_picker_action_cancel(tmp_path: Path) -> None:
+    """Test SessionPickerScreen cancel action."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        screen = SessionPickerScreen(str(config_file))
+
+    # Mock dismiss method
+    with patch.object(screen, "dismiss") as mock_dismiss:
+        screen.action_cancel()
+
+    # Should dismiss with None
+    mock_dismiss.assert_called_once_with(None)
+
+
+# ============================================================================
+# MyGPTTUI Session Picker Integration Tests
+# ============================================================================
+
+
+def test_tui_initialization_with_config_path(tmp_path: Path) -> None:
+    """Test TUI accepts config_path parameter."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test", config_path=str(config_file))
+
+    assert app.config_path == str(config_file)
+
+
+@pytest.mark.asyncio
+async def test_tui_action_pick_session(tmp_path: Path) -> None:
+    """Test TUI action_pick_session switches to selected session."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="original-session", config_path=str(config_file))
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock push_screen_wait to return a selected session
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value="new-session")):
+        await app.action_pick_session()
+
+    # Verify session was switched
+    assert app.session == "new-session"
+
+    # Verify output was cleared and confirmation shown
+    app.output.clear.assert_called_once()
+    app.output.append.assert_called_once()
+    assert "new-session" in app.output.append.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_tui_action_pick_session_cancel(tmp_path: Path) -> None:
+    """Test TUI action_pick_session handles cancel (None returned)."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="original-session", config_path=str(config_file))
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock push_screen_wait to return None (cancel)
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)):
+        await app.action_pick_session()
+
+    # Verify session was NOT switched
+    assert app.session == "original-session"
+
+    # Verify output was NOT modified
+    app.output.clear.assert_not_called()
+    app.output.append.assert_not_called()
