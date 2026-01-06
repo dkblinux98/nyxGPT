@@ -711,10 +711,14 @@ def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
     # Idempotent behavior: if the session already exists, succeed
     try:
         sf = sessions.session_file_for(name, sd)
-    except Exception as e:
-        # Name validation errors should be 400, not 500
+    except ValueError as e:
+        # Validation errors should return 422 (Unprocessable Entity)
         log.warning("Invalid session name for init: %s", e)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        # Other errors are internal server errors
+        log.error("Failed to get session file path: %s", e)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
     if sf.exists():
         return {"ok": True, "name": name, "existed": True}
@@ -849,13 +853,17 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
         )
 
         return ChatResponse(session=result.session, model=result.model, reply=result.reply)
+    except ValueError as e:
+        # Validation errors (e.g., invalid session name)
+        log.warning("Chat validation error", extra={"request_id": req_id, "error": str(e)})
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         log.error(
             "Chat request failed",
             extra={"request_id": req_id, "error": str(e), "error_type": type(e).__name__},
             exc_info=True
         )
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingResponse:
@@ -872,9 +880,17 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
         StreamingResponse configured for text/plain streaming
 
     Raises:
-        HTTPException: 502 if chat streaming fails
+        HTTPException: 422 for validation errors, 500 for server errors
     """
     try:
+        # Validate session name early, before creating generator
+        # This ensures validation errors are caught and return 422 instead of failing during streaming
+        from mygpt.sessions import validate_session_name
+        try:
+            validate_session_name(req.session)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
         # Capture request ID before entering generator (context may not propagate)
         req_id = request.state.request_id
 
@@ -911,8 +927,12 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
             _stream_with_keepalive(),
             media_type="text/plain; charset=utf-8",
         )
+    except HTTPException:
+        # Re-raise HTTP exceptions (e.g., 422 from validation above)
+        raise
     except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        log.error(f"Streaming setup failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # Streaming chat endpoint
