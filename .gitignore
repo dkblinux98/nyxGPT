@@ -32,3 +32,6 @@ product_management/*
 project_management/*
 performance_analysis/*
 /.coverage
+
+# Scripts
+scripts/duplicate_github_issue.py
