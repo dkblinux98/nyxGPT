@@ -231,6 +231,11 @@ Before marking review as passed, verify:
 
 **Example**: If review finds 2 critical issues, create 2 sub-issues.
 
+**IMPORTANT - Label Usage**:
+- Use **"Acceptance Failure"** label (NOT "bug") for issues found during review/acceptance testing
+- "bug" label is ONLY for issues found in production/released code
+- Issues found before code reaches production are acceptance failures, not bugs
+
 ```bash
 # 1. Create sub-issue for EACH critical/medium review finding
 gh issue create \
@@ -248,7 +253,7 @@ gh issue create \
 - [ ] Tests pass
 - [ ] No new issues introduced" \
   --milestone "[Same milestone as parent]" \
-  --label "bug" \
+  --label "Acceptance Failure" \
   --assignee "@me"
 
 # 2. Add sub-issue to project "myGPT" with IDENTICAL fields as parent
@@ -290,16 +295,26 @@ gh project item-add 2 --owner dkblinux98 --url "https://github.com/dkblinux98/my
 # Add each sub-issue to parent's task list:
 # - [ ] #[sub-issue-number-1] - [Brief description]
 # - [ ] #[sub-issue-number-2] - [Brief description]
+
+# 4. When sub-issue is resolved (fixed or closed as not planned):
+#    - Update sub-issue status to "For Release" (NOT "Closed")
+#    - This tracks it through the release cycle
 ```
 
 **Minor/nitpick issues**: Do NOT create sub-issues. These can be left unaddressed.
 
+**Status for Acceptance Failure Issues**:
+- When acceptance failure sub-issues are resolved (fixed or closed), set status to **"For Release"**
+- Do NOT use "Closed" status for acceptance failures
+- "For Release" status tracks them through the release cycle
+- This applies even if the issue is closed as "not planned"
+
 **Field inheritance from parent**:
 - ✅ Milestone (same as parent)
-- ✅ Labels (copy from parent, add "bug" if not present)
+- ✅ Labels (copy from parent, add "Acceptance Failure" - NOT "bug")
 - ✅ Assignee (same as parent)
 - ✅ Project (myGPT)
-- ✅ Status (In Progress when created)
+- ✅ Status (In Progress when created, "For Release" when resolved)
 - ✅ Phase (same as parent)
 - ✅ Priority (same as parent)
 - ✅ Any other custom fields (match parent)
