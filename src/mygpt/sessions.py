@@ -507,6 +507,136 @@ def summarize_session(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
     return True, "OK"
 
 
+def export_session_markdown(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
+    """Export session to Markdown format."""
+    sessions_dir = sessions_dir or default_sessions_dir()
+    sf = session_file_for(name, sessions_dir)
+    mf = meta_file_for(sf)
+
+    if not sf.exists():
+        return False, "No such session"
+
+    msgs = load_session_messages(sf)
+    meta = load_session_meta(mf)
+
+    lines: list[str] = []
+    title = meta.get("title", name)
+    lines.append(f"# {title}\n")
+
+    if meta.get("summary"):
+        lines.append(f"**Summary:** {meta['summary']}\n")
+
+    lines.append(f"**Session:** {name}")
+    lines.append(f"**Created:** {meta.get('created_at', 'Unknown')}")
+    lines.append(f"**Updated:** {meta.get('updated_at', 'Unknown')}")
+    lines.append(f"**Messages:** {len(msgs)}")
+
+    if meta.get("model"):
+        lines.append(f"**Model:** {meta['model']}")
+
+    if meta.get("tags"):
+        lines.append(f"**Tags:** {', '.join(meta['tags'])}")
+
+    lines.append("\n---\n")
+
+    for msg in msgs:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+        if role == "system":
+            lines.append(f"## System\n\n{content}\n")
+        elif role == "user":
+            lines.append(f"## User\n\n{content}\n")
+        elif role == "assistant":
+            lines.append(f"## Assistant\n\n{content}\n")
+        else:
+            lines.append(f"## {role.title()}\n\n{content}\n")
+
+    return True, "\n".join(lines)
+
+
+def export_session_json(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
+    """Export session to JSON format."""
+    sessions_dir = sessions_dir or default_sessions_dir()
+    sf = session_file_for(name, sessions_dir)
+    mf = meta_file_for(sf)
+
+    if not sf.exists():
+        return False, "No such session"
+
+    msgs = load_session_messages(sf)
+    meta = load_session_meta(mf)
+
+    export_data = {
+        "name": name,
+        "metadata": meta,
+        "messages": msgs,
+    }
+
+    return True, json.dumps(export_data, ensure_ascii=False, indent=2)
+
+
+def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
+    """Export session to HTML format."""
+    sessions_dir = sessions_dir or default_sessions_dir()
+    sf = session_file_for(name, sessions_dir)
+    mf = meta_file_for(sf)
+
+    if not sf.exists():
+        return False, "No such session"
+
+    msgs = load_session_messages(sf)
+    meta = load_session_meta(mf)
+
+    title = meta.get("title", name)
+    html_parts: list[str] = []
+    html_parts.append("<!DOCTYPE html>")
+    html_parts.append('<html lang="en">')
+    html_parts.append("<head>")
+    html_parts.append('  <meta charset="UTF-8">')
+    html_parts.append('  <meta name="viewport" content="width=device-width, initial-scale=1.0">')
+    html_parts.append(f"  <title>{title}</title>")
+    html_parts.append("  <style>")
+    html_parts.append("    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }")
+    html_parts.append("    h1 { color: #333; }")
+    html_parts.append("    .metadata { background: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px; }")
+    html_parts.append("    .metadata p { margin: 5px 0; }")
+    html_parts.append("    .message { margin: 20px 0; padding: 15px; border-radius: 5px; }")
+    html_parts.append("    .system { background: #fff3cd; border-left: 4px solid #ffc107; }")
+    html_parts.append("    .user { background: #e3f2fd; border-left: 4px solid #2196f3; }")
+    html_parts.append("    .assistant { background: #f1f8e9; border-left: 4px solid #4caf50; }")
+    html_parts.append("    .role { font-weight: bold; margin-bottom: 10px; text-transform: uppercase; font-size: 12px; }")
+    html_parts.append("    .content { white-space: pre-wrap; line-height: 1.6; }")
+    html_parts.append("  </style>")
+    html_parts.append("</head>")
+    html_parts.append("<body>")
+    html_parts.append(f"  <h1>{title}</h1>")
+    html_parts.append('  <div class="metadata">')
+    if meta.get("summary"):
+        html_parts.append(f"    <p><strong>Summary:</strong> {meta['summary']}</p>")
+    html_parts.append(f"    <p><strong>Session:</strong> {name}</p>")
+    html_parts.append(f"    <p><strong>Created:</strong> {meta.get('created_at', 'Unknown')}</p>")
+    html_parts.append(f"    <p><strong>Updated:</strong> {meta.get('updated_at', 'Unknown')}</p>")
+    html_parts.append(f"    <p><strong>Messages:</strong> {len(msgs)}</p>")
+    if meta.get("model"):
+        html_parts.append(f"    <p><strong>Model:</strong> {meta['model']}</p>")
+    if meta.get("tags"):
+        html_parts.append(f"    <p><strong>Tags:</strong> {', '.join(meta['tags'])}</p>")
+    html_parts.append("  </div>")
+
+    for msg in msgs:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "").replace("<", "&lt;").replace(">", "&gt;")
+        html_parts.append(f'  <div class="message {role}">')
+        html_parts.append(f'    <div class="role">{role}</div>')
+        html_parts.append(f'    <div class="content">{content}</div>')
+        html_parts.append("  </div>")
+
+    html_parts.append("</body>")
+    html_parts.append("</html>")
+
+    return True, "\n".join(html_parts)
+
+
 __all__ = [
     "default_sessions_dir",
     "session_file_for",
@@ -533,4 +663,7 @@ __all__ = [
     "remove_tags",
     "set_title",
     "summarize_session",
+    "export_session_markdown",
+    "export_session_json",
+    "export_session_html",
 ]

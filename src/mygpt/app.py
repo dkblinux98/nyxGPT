@@ -806,6 +806,35 @@ def sessions_tags_remove(name: str, req: TagsRequest, sessions_dir: Optional[str
     return {"ok": True}
 
 
+@api.get("/sessions/{name}/export")
+def sessions_export(name: str, format: str = "markdown", sessions_dir: Optional[str] = None):
+    """Export session to markdown, JSON, or HTML format."""
+    format_lower = format.lower()
+    if format_lower not in ("markdown", "json", "html"):
+        raise HTTPException(status_code=400, detail="Invalid format. Must be one of: markdown, json, html")
+
+    sd = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
+
+    if format_lower == "markdown":
+        ok, content = sessions.export_session_markdown(name, sd)
+        media_type = "text/markdown; charset=utf-8"
+        extension = "md"
+    elif format_lower == "json":
+        ok, content = sessions.export_session_json(name, sd)
+        media_type = "application/json; charset=utf-8"
+        extension = "json"
+    else:
+        ok, content = sessions.export_session_html(name, sd)
+        media_type = "text/html; charset=utf-8"
+        extension = "html"
+
+    if not ok:
+        raise HTTPException(status_code=404, detail=content)
+
+    from fastapi.responses import Response
+    return Response(content=content, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{name}.{extension}"'})
+
+
 @api.post("/chat", response_model=ChatResponse)
 def chat(request: Request, req: ChatRequest) -> ChatResponse:
     req_id = getattr(request.state, "request_id", None)
