@@ -1,0 +1,97 @@
+import { http, HttpResponse } from 'msw';
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
+
+export const handlers = [
+  // GET /api/models
+  http.get(`${API_BASE_URL}/api/v1/models`, () => {
+    return HttpResponse.json({
+      models: ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b'],
+    });
+  }),
+
+  // POST /api/chat/stream
+  http.post('/api/chat/stream', async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('Hello! '));
+        controller.enqueue(encoder.encode('How can I help you?'));
+        controller.close();
+      },
+    });
+
+    return new HttpResponse(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+      },
+    });
+  }),
+
+  // GET /api/sessions/:name/metadata
+  http.get('/api/sessions/:name/metadata', ({ params }) => {
+    return HttpResponse.json({
+      name: params.name,
+      rag_enabled: false,
+      title: `Session ${params.name}`,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    });
+  }),
+
+  // POST /api/sessions/:name/rag/enable
+  http.post('/api/sessions/:name/rag/enable', () => {
+    return HttpResponse.json({ success: true });
+  }),
+
+  // POST /api/sessions/:name/rag/disable
+  http.post('/api/sessions/:name/rag/disable', () => {
+    return HttpResponse.json({ success: true });
+  }),
+
+  // POST /api/rag/upload
+  http.post('/api/rag/upload', () => {
+    return HttpResponse.json({
+      doc_id: 'mock-doc-id-123',
+      filename: 'test.txt',
+    });
+  }),
+
+  // GET /api/v1/sessions/:name/export
+  http.get(`${API_BASE_URL}/api/v1/sessions/:name/export`, ({ params, request }) => {
+    const url = new URL(request.url);
+    const format = url.searchParams.get('format') || 'markdown';
+    const sessionName = params.name as string;
+
+    let content = '';
+    let contentType = '';
+    let filename = '';
+
+    if (format === 'markdown') {
+      content = `# ${sessionName}\n\n## User\nTest message\n\n## Assistant\nTest response`;
+      contentType = 'text/markdown';
+      filename = `${sessionName}.md`;
+    } else if (format === 'json') {
+      content = JSON.stringify({
+        name: sessionName,
+        messages: [
+          { role: 'user', content: 'Test message' },
+          { role: 'assistant', content: 'Test response' },
+        ],
+      });
+      contentType = 'application/json';
+      filename = `${sessionName}.json`;
+    } else if (format === 'html') {
+      content = `<!DOCTYPE html><html><head><title>${sessionName}</title></head><body><h1>${sessionName}</h1></body></html>`;
+      contentType = 'text/html';
+      filename = `${sessionName}.html`;
+    }
+
+    return new HttpResponse(content, {
+      headers: {
+        'Content-Type': contentType,
+        'Content-Disposition': `attachment; filename="${filename}"`,
+      },
+    });
+  }),
+];

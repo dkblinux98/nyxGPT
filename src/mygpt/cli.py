@@ -153,7 +153,7 @@ def cmd_chat(
             continue
 
 
-def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: list[str], sessions_dir: Path | None) -> int:
+def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: list[str], sessions_dir: Path | None, format: str = "markdown", output: Path | None = None) -> int:
     cfg = load_config(None)
     effective_dir = sessions_dir or get_sessions_dir(cfg)
 
@@ -274,6 +274,39 @@ def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: li
             print(msg)
             return 1
         print(f"Summarized session: {name}")
+        return 0
+
+    if action == "export":
+        if not name:
+            print("ERROR: session name required", file=sys.stderr)
+            return 2
+
+        # Call appropriate export function based on format
+        if format == "markdown":
+            ok, content = sessions.export_session_markdown(name, effective_dir)
+        elif format == "json":
+            ok, content = sessions.export_session_json(name, effective_dir)
+        elif format == "html":
+            ok, content = sessions.export_session_html(name, effective_dir)
+        else:
+            print(f"ERROR: unsupported format: {format}", file=sys.stderr)
+            return 2
+
+        if not ok:
+            print(content, file=sys.stderr)
+            return 1
+
+        # Write to file or stdout
+        if output:
+            try:
+                output.write_text(content, encoding="utf-8")
+                print(f"Exported session '{name}' to {output} ({format} format)")
+            except OSError as e:
+                print(f"ERROR: Failed to write to {output}: {e}", file=sys.stderr)
+                return 1
+        else:
+            print(content)
+
         return 0
 
     print(f"Unknown sessions action: {action}", file=sys.stderr)
@@ -398,12 +431,15 @@ def cli(argv: list[str] | None = None) -> int:
             "tag-rm",
             "title",
             "summarize",
+            "export",
         ],
     )
     sessions_p.add_argument("name", nargs="?", help="Session name")
     sessions_p.add_argument("new_name", nargs="?", help="Second argument (rename/title)")
     sessions_p.add_argument("extras", nargs="*", help="Extra args (tags)")
     sessions_p.add_argument("--sessions-dir", type=Path, help="Override sessions directory")
+    sessions_p.add_argument("--format", choices=["markdown", "json", "html"], default="markdown", help="Export format (default: markdown)")
+    sessions_p.add_argument("--output", type=Path, help="Output file (default: stdout)")
 
     tools_p = sub.add_parser("tools", help="Explicit local filesystem tools")
     tools_p.add_argument("action", choices=["ls", "cat", "grep"], help="Tool to run")
@@ -496,6 +532,8 @@ def cli(argv: list[str] | None = None) -> int:
             new_name=args.new_name,
             extras=args.extras,
             sessions_dir=args.sessions_dir,
+            format=args.format,
+            output=args.output,
         )
 
     if cmd == "tools":
