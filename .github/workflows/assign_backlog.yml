@@ -1,0 +1,27 @@
+name: Assign Backlog Issues to scrummaster-agent
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  issues: write
+
+jobs:
+  assign:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.SCRUMMASTER_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            // Assign to scrummaster-agent on creation.
+            await github.rest.issues.addAssignees({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              assignees: ['scrummaster-agent']
+            });
+            // Optional: add a label to indicate backlog ownership.
+            // await github.rest.issues.addLabels({ owner: context.repo.owner, repo: context.repo.repo, issue_number, labels: ['backlog'] });
