@@ -134,11 +134,34 @@ export default function Home() {
 
     if (!sessionName || !sessionName.trim()) return;
 
-    // Select the new session immediately
-    setSelectedSession(sessionName.trim());
+    const trimmedName = sessionName.trim();
 
-    // The session will be created implicitly when first message is sent
-    // For now, just switch to it
+    try {
+      // Create the session on the backend
+      const res = await fetch('/api/sessions/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: trimmedName,
+          system: 'You are a helpful assistant.',
+        }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ detail: 'Unknown error' }));
+        throw new Error(errorData.detail || `HTTP ${res.status}`);
+      }
+
+      // Select the new session
+      setSelectedSession(trimmedName);
+
+      // Refresh the sessions list to show it in the sidebar
+      await refreshSessions();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      alert(`Failed to create new chat: ${msg}`);
+      console.error('Failed to create new chat:', e);
+    }
   };
 
   // Delete session
