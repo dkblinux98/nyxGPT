@@ -37,6 +37,15 @@ export default function Home() {
   const [filterPinned, setFilterPinned] = useState<string>('all'); // 'all', 'pinned', 'unpinned'
   const [filterTags, setFilterTags] = useState<string>('');
 
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    sessionName: string;
+  } | null>(null);
+  const [deletingSession, setDeletingSession] = useState<string | null>(null);
+  const [exportingSession, setExportingSession] = useState<string | null>(null);
+
   useEffect(() => {
     fetch('/api/info')
       .then(async (res) => {
@@ -105,6 +114,184 @@ export default function Home() {
     setFilterTags('');
   };
 
+  // Refresh session list
+  const refreshSessions = async () => {
+    try {
+      const res = await fetch('/api/sessions');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data: SessionsResponse = await res.json();
+      setSessions(data.sessions || []);
+    } catch (e) {
+      setSessionsError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  // Create new chat
+  const createNewChat = async () => {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
+    const defaultName = `session-${timestamp}`;
+    const sessionName = prompt('Enter session name:', defaultName);
+
+    if (!sessionName || !sessionName.trim()) return;
+
+    // Select the new session immediately
+    setSelectedSession(sessionName.trim());
+
+    // The session will be created implicitly when first message is sent
+    // For now, just switch to it
+  };
+
+  // Delete session
+  const deleteSession = async (sessionName: string) => {
+    if (sessions.length <= 1) {
+      alert('Cannot delete the last session');
+      return;
+    }
+
+    if (!confirm(`Delete session "${sessionName}"? This cannot be undone.`)) {
+      return;
+    }
+
+    setDeletingSession(sessionName);
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/delete`, {
+        method: 'POST',
+      });
+
+      if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error || 'Delete failed');
+      }
+
+      // If we deleted the selected session, switch to another
+      if (sessionName === selectedSession) {
+        const remaining = sessions.filter((s) => s.name !== sessionName);
+        setSelectedSession(remaining[0]?.name || 'default');
+      }
+
+      // Refresh session list
+      await refreshSessions();
+    } catch (e) {
+      alert(`Failed to delete session: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setDeletingSession(null);
+    }
+  };
+
+  // Rename session
+  const renameSession = async (sessionName: string) => {
+    const session = sessions.find((s) => s.name === sessionName);
+    const currentTitle = session?.title || sessionName;
+    const newName = prompt('Enter new session name or title:', currentTitle);
+
+    if (!newName || newName.trim() === '' || newName === currentTitle) return;
+
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          new_name: newName.trim(),
+          sync_filename: true,
+        }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.detail || 'Rename failed');
+      }
+
+      const data = await res.json();
+
+      // If filename changed, update selected session
+      if (data.new_name !== sessionName && sessionName === selectedSession) {
+        setSelectedSession(data.new_name);
+      }
+
+      // Refresh session list
+      await refreshSessions();
+    } catch (e) {
+      alert(`Failed to rename session: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  // Export session
+  const exportSession = async (sessionName: string, format: 'markdown' | 'json' | 'html') => {
+    setExportingSession(sessionName);
+    try {
+      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
+      const url = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(sessionName)}/export?format=${format}`;
+
+      const res = await fetch(url);
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(`Export failed (${res.status} ${res.statusText}): ${errorText}`);
+      }
+
+      // Get filename from Content-Disposition header or use default
+      const contentDisposition = res.headers.get('Content-Disposition');
+      let filename = `${sessionName}.${format === 'markdown' ? 'md' : format}`;
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename="(.+?)"/);
+        if (match) filename = match[1];
+      }
+
+      // Download the file
+      const blob = await res.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      try {
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } finally {
+        setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 100);
+      }
+    } catch (e) {
+      alert(`Failed to export session: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExportingSession(null);
+    }
+  };
+
+  // Toggle pin status
+  const togglePin = async (sessionName: string) => {
+    const session = sessions.find((s) => s.name === sessionName);
+    const isPinned = session?.pinned || false;
+    const action = isPinned ? 'unpin' : 'pin';
+
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/${action}`, {
+        method: 'POST',
+      });
+
+      if (!res.ok) throw new Error(`Failed to ${action} session`);
+
+      await refreshSessions();
+    } catch (e) {
+      alert(`Failed to ${action} session: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClick = () => setContextMenu(null);
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setContextMenu(null);
+    };
+
+    if (contextMenu) {
+      document.addEventListener('click', handleClick);
+      document.addEventListener('keydown', handleEscape);
+      return () => {
+        document.removeEventListener('click', handleClick);
+        document.removeEventListener('keydown', handleEscape);
+      };
+    }
+  }, [contextMenu]);
+
   // Highlight search matches in text
   const highlightText = (text: string, search: string) => {
     if (!search) return text;
@@ -137,9 +324,51 @@ export default function Home() {
         }}
       >
         <h1 style={{ margin: 0 }}>myGPT</h1>
-        <p style={{ marginTop: 6, marginBottom: 16, opacity: 0.8 }}>
+        <p style={{ marginTop: 6, marginBottom: 8, opacity: 0.8 }}>
           Local web UI (early)
         </p>
+
+        {/* New Chat button */}
+        <button
+          onClick={() => void createNewChat()}
+          style={{
+            width: '100%',
+            padding: '10px 12px',
+            marginBottom: 12,
+            background: '#4CAF50',
+            color: 'white',
+            border: 'none',
+            borderRadius: 6,
+            fontSize: 14,
+            fontWeight: 600,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+          }}
+        >
+          <span style={{ fontSize: 16 }}>+</span> New Chat
+        </button>
+
+        <div style={{ marginBottom: 16 }}>
+          <a
+            href="/models"
+            style={{
+              display: 'inline-block',
+              padding: '6px 12px',
+              background: '#f4f4f4',
+              border: '1px solid #ddd',
+              borderRadius: 6,
+              textDecoration: 'none',
+              color: '#333',
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            Manage Models
+          </a>
+        </div>
 
         {/* Search input */}
         <input
@@ -246,6 +475,14 @@ export default function Home() {
               <button
                 key={s.name}
                 onClick={() => setSelectedSession(s.name)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setContextMenu({
+                    x: e.clientX,
+                    y: e.clientY,
+                    sessionName: s.name,
+                  });
+                }}
                 style={{
                   textAlign: 'left',
                   padding: '10px 10px',
@@ -256,6 +493,7 @@ export default function Home() {
                 }}
               >
                 <div style={{ fontWeight: 600, fontSize: 14 }}>
+                  {s.pinned && <span>📌 </span>}
                   {searchText ? highlightText(displayText, searchText) : displayText}
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.75, marginTop: 2 }}>
@@ -282,6 +520,178 @@ export default function Home() {
             </div>
           )}
         </div>
+
+        {/* Context Menu */}
+        {contextMenu && (
+          <div
+            style={{
+              position: 'fixed',
+              top: contextMenu.y,
+              left: contextMenu.x,
+              background: 'white',
+              border: '1px solid #ddd',
+              borderRadius: 6,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+              zIndex: 1000,
+              minWidth: 180,
+              padding: '6px 0',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Rename */}
+            <button
+              onClick={() => {
+                void renameSession(contextMenu.sessionName);
+                setContextMenu(null);
+              }}
+              style={{
+                width: '100%',
+                padding: '8px 16px',
+                border: 'none',
+                background: 'transparent',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: 14,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#f5f5f5')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            >
+              <span>✏️</span> Rename
+            </button>
+
+            {/* Export submenu */}
+            <div style={{ position: 'relative' }}>
+              <div
+                style={{
+                  padding: '8px 16px',
+                  fontSize: 14,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  cursor: 'pointer',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = '#f5f5f5';
+                  const submenu = e.currentTarget.nextElementSibling as HTMLElement;
+                  if (submenu) submenu.style.display = 'block';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'transparent';
+                  const submenu = e.currentTarget.nextElementSibling as HTMLElement;
+                  if (submenu) {
+                    setTimeout(() => {
+                      if (!submenu.matches(':hover')) submenu.style.display = 'none';
+                    }, 100);
+                  }
+                }}
+              >
+                <div>
+                  <span>📥</span> Export
+                </div>
+                <span style={{ fontSize: 10 }}>▶</span>
+              </div>
+              <div
+                style={{
+                  position: 'absolute',
+                  left: '100%',
+                  top: 0,
+                  background: 'white',
+                  border: '1px solid #ddd',
+                  borderRadius: 6,
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                  minWidth: 140,
+                  padding: '6px 0',
+                  display: 'none',
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLElement).style.display = 'none';
+                }}
+              >
+                {(['markdown', 'json', 'html'] as const).map((format) => (
+                  <button
+                    key={format}
+                    onClick={() => {
+                      void exportSession(contextMenu.sessionName, format);
+                      setContextMenu(null);
+                    }}
+                    disabled={exportingSession === contextMenu.sessionName}
+                    style={{
+                      width: '100%',
+                      padding: '8px 16px',
+                      border: 'none',
+                      background: 'transparent',
+                      textAlign: 'left',
+                      cursor: exportingSession === contextMenu.sessionName ? 'wait' : 'pointer',
+                      fontSize: 14,
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = '#f5f5f5')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    {format.charAt(0).toUpperCase() + format.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div style={{ height: 1, background: '#e5e5e5', margin: '6px 0' }} />
+
+            {/* Pin/Unpin */}
+            <button
+              onClick={() => {
+                void togglePin(contextMenu.sessionName);
+                setContextMenu(null);
+              }}
+              style={{
+                width: '100%',
+                padding: '8px 16px',
+                border: 'none',
+                background: 'transparent',
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontSize: 14,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#f5f5f5')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            >
+              <span>📌</span>{' '}
+              {sessions.find((s) => s.name === contextMenu.sessionName)?.pinned ? 'Unpin' : 'Pin'}
+            </button>
+
+            {/* Delete */}
+            <button
+              onClick={() => {
+                void deleteSession(contextMenu.sessionName);
+                setContextMenu(null);
+              }}
+              disabled={deletingSession === contextMenu.sessionName}
+              style={{
+                width: '100%',
+                padding: '8px 16px',
+                border: 'none',
+                background: 'transparent',
+                textAlign: 'left',
+                cursor: deletingSession === contextMenu.sessionName ? 'wait' : 'pointer',
+                fontSize: 14,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                color: '#d32f2f',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#ffebee')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            >
+              <span>🗑️</span> Delete
+            </button>
+          </div>
+        )}
       </aside>
 
       <section style={{ flex: 1, padding: '1.5rem', overflowY: 'auto' }}>

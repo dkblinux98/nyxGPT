@@ -22,6 +22,7 @@ Your data stays on your machine. No cloud dependency is required.
 
 - Local LLM inference via **Ollama**
 - Persistent sessions stored outside the repository
+- **Session management** with right-click context menus, rename, export, delete, and pin
 - Optional **RAG** using Cassandra 5.0 native vector search
 - Config‑driven RAG context pruning and prompt optimization
 - Streaming responses (CLI, TUI, API, Web UI)
