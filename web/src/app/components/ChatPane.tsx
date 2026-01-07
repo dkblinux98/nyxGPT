@@ -22,6 +22,11 @@ export default function ChatPane({ sessionName }: Props) {
   const isStreamingRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
 
+  // RAG state
+  const [ragEnabled, setRagEnabled] = useState<boolean>(false);
+  const [ragStatus, setRagStatus] = useState<'idle' | 'uploading' | 'error'>('idle');
+  const [ragError, setRagError] = useState<string | null>(null);
+
   const title = useMemo(() => `Session: ${sessionName}`, [sessionName]);
 
   // Fetch available models on mount
@@ -57,7 +62,61 @@ export default function ChatPane({ sessionName }: Props) {
     isStreamingRef.current = false;
     abortRef.current?.abort();
     abortRef.current = null;
+
+    // Fetch RAG status for the new session
+    fetch(`/api/sessions/${encodeURIComponent(sessionName)}/metadata`)
+      .then(async (res) => {
+        if (res.ok) {
+          const data = await res.json();
+          setRagEnabled(data.rag_enabled || false);
+          setRagError(null);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to fetch RAG status:', err);
+        setRagEnabled(false); // Default to disabled if fetch fails
+      });
   }, [sessionName]);
+
+  async function toggleRag() {
+    try {
+      const endpoint = ragEnabled ? 'disable' : 'enable';
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/rag/${endpoint}`, {
+        method: 'POST',
+      });
+      if (!res.ok) throw new Error(`Failed to ${endpoint} RAG`);
+      setRagEnabled(!ragEnabled);
+      setRagError(null);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setRagError(msg);
+      setRagStatus('error');
+    }
+  }
+
+  async function uploadFile(file: File) {
+    setRagStatus('uploading');
+    setRagError(null);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const res = await fetch('/api/rag/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) throw new Error('Upload failed');
+
+      const data = await res.json();
+      console.log('File uploaded:', data.doc_id);
+      setRagStatus('idle');
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setRagError(msg);
+      setRagStatus('error');
+    }
+  }
 
   async function send() {
     const text = input.trim();
@@ -82,6 +141,7 @@ export default function ChatPane({ sessionName }: Props) {
           session: sessionName,
           prompt: text,
           model: selectedModel || undefined,
+          rag_enabled: ragEnabled,
         }),
         signal: controller.signal,
       });
@@ -144,14 +204,36 @@ export default function ChatPane({ sessionName }: Props) {
     isStreamingRef.current = false;
   }
 
+  /**
+   * Export session to specified format (markdown, json, or html).
+   *
+   * @param format - Export format: 'markdown', 'json', or 'html'
+   *
+   * Behavior:
+   * - Sets status to 'connecting' during export
+   * - Fetches export data from API endpoint
+   * - Triggers browser download of exported file
+   * - Sets status to 'idle' on success, 'error' on failure
+   * - Cleans up blob URLs to prevent memory leaks
+   *
+   * Error handling:
+   * - Network errors: Shows error message with status code and details
+   * - API errors: Shows error message from server response
+   * - Blob cleanup: Always performed via try-finally
+   *
+   * TODO: Add component tests when web UI test infrastructure is set up (#2776)
+   */
   async function handleExport(format: 'markdown' | 'json' | 'html') {
+    setStatus('connecting'); // #2772: Add user feedback at start
     try {
       const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
       const url = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(sessionName)}/export?format=${format}`;
 
       const res = await fetch(url);
       if (!res.ok) {
-        throw new Error(`Export failed: ${res.status}`);
+        // #2773: Improve error messages with status text and response body
+        const errorText = await res.text();
+        throw new Error(`Export failed (${res.status} ${res.statusText}): ${errorText}`);
       }
 
       // Get filename from Content-Disposition header or use default
@@ -165,13 +247,20 @@ export default function ChatPane({ sessionName }: Props) {
       // Download the file
       const blob = await res.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = downloadUrl;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(downloadUrl);
-      document.body.removeChild(a);
+      try {
+        // #2775: Use try-finally to ensure blob URL cleanup
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } finally {
+        // #2774: Add delay before cleanup to avoid race condition
+        setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 100);
+      }
+
+      setStatus('idle'); // #2772: Set status to idle on success
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setLastError(msg);
@@ -274,6 +363,42 @@ export default function ChatPane({ sessionName }: Props) {
             </div>
           ))
         )}
+      </div>
+
+      {/* RAG Controls */}
+      <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
+        <button
+          onClick={() => void toggleRag()}
+          disabled={isStreaming}
+          style={{
+            padding: '6px 10px',
+            borderRadius: 6,
+            border: '1px solid #ddd',
+            background: ragEnabled ? '#4caf50' : '#f5f5f5',
+            color: ragEnabled ? 'white' : 'black',
+            cursor: isStreaming ? 'not-allowed' : 'pointer',
+            fontSize: 12,
+            fontWeight: 500,
+          }}
+        >
+          RAG: {ragEnabled ? 'ON' : 'OFF'}
+        </button>
+
+        <label style={{ fontSize: 12, cursor: isStreaming || ragStatus === 'uploading' ? 'not-allowed' : 'pointer' }}>
+          <input
+            type="file"
+            accept=".txt,.md,.json,.pdf"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void uploadFile(file);
+            }}
+            disabled={isStreaming || ragStatus === 'uploading'}
+            style={{ fontSize: 12 }}
+          />
+        </label>
+
+        {ragStatus === 'uploading' && <span style={{ fontSize: 12, color: '#666' }}>Uploading...</span>}
+        {ragError && <span style={{ fontSize: 12, color: 'red' }}>{ragError}</span>}
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
