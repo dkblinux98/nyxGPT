@@ -95,6 +95,34 @@ Deletes both the message and metadata files.
 
 ---
 
+### Export a session
+
+Export session conversations to various formats:
+
+```bash
+# Export to markdown (default)
+mygpt sessions export default
+
+# Export to JSON
+mygpt sessions export default --format json
+
+# Export to HTML
+mygpt sessions export default --format html
+
+# Save to file instead of stdout
+mygpt sessions export default --format markdown --output session.md
+```
+
+Supported export formats:
+
+- **markdown** — Formatted markdown with headers for each message role
+- **json** — Complete session data including messages and metadata
+- **html** — Styled HTML page with conversation and metadata
+
+All exports include full session metadata (title, timestamps, tags, model, etc.).
+
+---
+
 ## Session metadata
 
 Each session has a metadata file containing:
