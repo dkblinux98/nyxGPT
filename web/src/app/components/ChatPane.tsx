@@ -9,9 +9,10 @@ type ChatMessage = {
 
 type Props = {
   sessionName: string;
+  onSessionUpdated?: () => void;
 };
 
-export default function ChatPane({ sessionName }: Props) {
+export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -216,6 +217,9 @@ export default function ChatPane({ sessionName }: Props) {
           return next;
         });
       }
+
+      // Notify parent that session was updated (model metadata may have changed)
+      onSessionUpdated?.();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLastError(msg);

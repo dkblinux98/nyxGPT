@@ -744,7 +744,7 @@ export default function Home() {
 
         <h2>Chat</h2>
         <div style={{ height: 'calc(100vh - 220px)' }}>
-          <ChatPane sessionName={selectedSession} />
+          <ChatPane sessionName={selectedSession} onSessionUpdated={refreshSessions} />
         </div>
       </section>
     </main>
