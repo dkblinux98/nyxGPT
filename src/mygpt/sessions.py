@@ -4,7 +4,10 @@ import json
 import logging
 import os
 import re
+import sys
+import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +18,81 @@ from mygpt.ollama_client import ollama_chat
 
 
 log = logging.getLogger(__name__)
+
+
+# --- File locking utilities ---
+
+@contextmanager
+def file_lock(file_path: Path, timeout: float = 5.0):
+    """Cross-platform file locking context manager.
+
+    Acquires an exclusive lock on the specified file, waiting up to `timeout`
+    seconds if the file is already locked. Ensures the lock is released even
+    if an exception occurs.
+
+    Args:
+        file_path: Path to the file to lock
+        timeout: Maximum seconds to wait for lock acquisition (default: 5.0)
+
+    Yields:
+        File descriptor (int) of the locked file
+
+    Raises:
+        TimeoutError: If lock cannot be acquired within timeout
+        OSError: If file cannot be opened or locked
+
+    Example:
+        >>> with file_lock(Path("session.json"), timeout=10.0) as fd:
+        ...     # File is locked here
+        ...     data = Path("session.json").read_text()
+        ...     # Lock automatically released when exiting block
+    """
+    # Open file for reading (create if doesn't exist)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.touch(exist_ok=True)
+
+    fd = os.open(str(file_path), os.O_RDONLY)
+
+    try:
+        # Platform-specific locking
+        if sys.platform == "win32":
+            import msvcrt
+            start_time = time.time()
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.time() - start_time > timeout:
+                        raise TimeoutError(f"Could not acquire lock on {file_path} within {timeout}s")
+                    time.sleep(0.1)
+        else:
+            import fcntl
+            start_time = time.time()
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except (OSError, BlockingIOError):
+                    if time.time() - start_time > timeout:
+                        raise TimeoutError(f"Could not acquire lock on {file_path} within {timeout}s")
+                    time.sleep(0.1)
+
+        yield fd
+
+    finally:
+        # Release lock and close file
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        except Exception as e:
+            log.warning(f"Failed to unlock {file_path}: {e}")
+        finally:
+            os.close(fd)
 
 
 class SessionMetadata(TypedDict):
@@ -766,13 +844,21 @@ def sync_filename_with_title(
     *,
     force: bool = False
 ) -> tuple[bool, str, str]:
-    """Rename session file to match its title (atomic copy-then-delete).
+    """Rename session file to match its title (atomic copy-then-delete with locking).
 
-    Uses atomic operations to safely rename both session and metadata files
-    to match the sanitized session title. If auto_sync_filename is disabled
-    in config, does nothing unless force=True.
+    Uses atomic operations with file locking to safely rename both session and
+    metadata files to match the sanitized session title. If auto_sync_filename
+    is disabled in config, does nothing unless force=True.
 
-    **Safety:** Uses copy-then-delete pattern to prevent data loss if rename fails.
+    **Safety:**
+    - Uses copy-then-delete pattern to prevent data loss if rename fails
+    - Acquires exclusive file locks to prevent race conditions during concurrent access
+    - Locks are held for up to 10 seconds; returns "Session is busy" if unavailable
+    - Automatically releases locks even if an exception occurs
+
+    **Concurrency:** If another process is writing to the session during rename,
+    this function will wait up to 10 seconds for the lock. If the lock cannot be
+    acquired, it returns an error message asking the user to try again.
 
     Args:
         current_name: Current session name (filename without extension)
@@ -782,7 +868,8 @@ def sync_filename_with_title(
     Returns:
         Tuple of (success, message, new_name)
         - success: True if renamed or no action needed, False on error
-        - message: Status message ("renamed", "no_change", "disabled", error message)
+        - message: Status message ("renamed", "no_change", "disabled",
+                   "Session is busy, please try again", or error message)
         - new_name: New session name (equals current_name if no change)
 
     Examples:
@@ -843,24 +930,31 @@ def sync_filename_with_title(
             if counter > 100:
                 return False, "Could not find unique filename", current_name
 
-    # Atomic rename using copy-then-delete pattern
+    # Atomic rename using copy-then-delete pattern with file locking
     try:
-        # 1. Copy session file to new location
-        new_sf.parent.mkdir(parents=True, exist_ok=True)
-        msgs = load_session_messages(sf)
-        save_session_messages(new_sf, msgs)
+        # Acquire exclusive lock on source session file to prevent concurrent writes
+        with file_lock(sf, timeout=10.0):
+            # 1. Copy session file to new location
+            new_sf.parent.mkdir(parents=True, exist_ok=True)
+            msgs = load_session_messages(sf)
+            save_session_messages(new_sf, msgs)
 
-        # 2. Copy metadata file to new location
-        if mf.exists():
-            save_session_meta(new_mf, meta)
+            # 2. Copy metadata file to new location (lock metadata too if exists)
+            if mf.exists():
+                with file_lock(mf, timeout=10.0):
+                    save_session_meta(new_mf, meta)
 
-        # 3. Delete old files (only after successful copy)
-        sf.unlink()
-        if mf.exists():
-            mf.unlink()
+            # 3. Delete old files (only after successful copy)
+            sf.unlink()
+            if mf.exists():
+                mf.unlink()
 
         log.info(f"Renamed session '{current_name}' -> '{new_name}'")
         return True, "renamed", new_name
+
+    except TimeoutError as e:
+        log.error(f"Failed to acquire lock for session '{current_name}': {e}")
+        return False, "Session is busy, please try again", current_name
 
     except Exception as e:
         log.error(f"Failed to rename session '{current_name}': {e}")

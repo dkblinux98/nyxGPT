@@ -143,8 +143,10 @@ auto_sync_filename = true
 
 **How it works:**
 1. After the configured number of messages, myGPT automatically generates a title
-2. The session filename is updated to match the sanitized title
+2. The session filename is updated to match the sanitized title using atomic operations with file locking
 3. Sessions remain easily browsable in `~/.myGPT/sessions/`
+
+**Safety:** File renames use exclusive file locks to prevent race conditions during concurrent access. If a session is actively being written when a rename is triggered, the rename will wait up to 10 seconds for the lock or fail gracefully with a "Session is busy" message.
 
 ---
 
