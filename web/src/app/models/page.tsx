@@ -1,0 +1,216 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+
+type Model = {
+  name: string;
+  size?: number;
+  modified_at?: string;
+};
+
+export default function ModelsPage() {
+  const [models, setModels] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [pullModelName, setPullModelName] = useState('');
+  const [pulling, setPulling] = useState(false);
+  const [pullError, setPullError] = useState<string | null>(null);
+  const [deletingModel, setDeletingModel] = useState<string | null>(null);
+
+  async function loadModels() {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/models');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setModels(data.models || []);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadModels();
+  }, []);
+
+  async function handlePullModel(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pullModelName.trim() || pulling) return;
+
+    setPulling(true);
+    setPullError(null);
+
+    try {
+      const res = await fetch('/api/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: pullModelName.trim() }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.detail || `HTTP ${res.status}`);
+      }
+
+      setPullModelName('');
+      await loadModels();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setPullError(msg);
+    } finally {
+      setPulling(false);
+    }
+  }
+
+  async function handleDeleteModel(modelName: string) {
+    if (!confirm(`Delete model "${modelName}"?`)) return;
+
+    setDeletingModel(modelName);
+
+    try {
+      const res = await fetch(`/api/models?model=${encodeURIComponent(modelName)}`, {
+        method: 'DELETE',
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.detail || `HTTP ${res.status}`);
+      }
+
+      await loadModels();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      alert(`Failed to delete model: ${msg}`);
+    } finally {
+      setDeletingModel(null);
+    }
+  }
+
+  return (
+    <main style={{ padding: '2rem', maxWidth: 1200, margin: '0 auto' }}>
+      <div style={{ marginBottom: '2rem' }}>
+        <h1 style={{ margin: 0, marginBottom: 8 }}>Ollama Models</h1>
+        <a href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
+          ← Back to Chat
+        </a>
+      </div>
+
+      {/* Pull model form */}
+      <section style={{ marginBottom: '2rem', padding: '1rem', border: '1px solid #ddd', borderRadius: 8 }}>
+        <h2 style={{ marginTop: 0, fontSize: '1.2rem' }}>Pull Model</h2>
+        <form onSubmit={handlePullModel} style={{ display: 'flex', gap: 10 }}>
+          <input
+            type="text"
+            placeholder="Model name (e.g., llama3.1:8b)"
+            value={pullModelName}
+            onChange={(e) => setPullModelName(e.target.value)}
+            disabled={pulling}
+            style={{
+              flex: 1,
+              padding: '10px 12px',
+              border: '1px solid #ddd',
+              borderRadius: 6,
+              fontSize: 14,
+            }}
+          />
+          <button
+            type="submit"
+            disabled={!pullModelName.trim() || pulling}
+            style={{
+              padding: '10px 20px',
+              background: pulling ? '#ccc' : '#0066cc',
+              color: 'white',
+              border: 'none',
+              borderRadius: 6,
+              cursor: pulling ? 'not-allowed' : 'pointer',
+              fontSize: 14,
+              fontWeight: 600,
+            }}
+          >
+            {pulling ? 'Pulling...' : 'Pull'}
+          </button>
+        </form>
+        {pullError && (
+          <div style={{ marginTop: 10, color: 'red', fontSize: 14 }}>
+            Error: {pullError}
+          </div>
+        )}
+      </section>
+
+      {/* Models list */}
+      <section>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+          <h2 style={{ margin: 0, fontSize: '1.2rem' }}>Available Models</h2>
+          <button
+            onClick={loadModels}
+            disabled={loading}
+            style={{
+              padding: '8px 16px',
+              background: loading ? '#ccc' : '#f4f4f4',
+              border: '1px solid #ddd',
+              borderRadius: 6,
+              cursor: loading ? 'not-allowed' : 'pointer',
+              fontSize: 14,
+            }}
+          >
+            {loading ? 'Loading...' : 'Refresh'}
+          </button>
+        </div>
+
+        {error && (
+          <div style={{ color: 'red', padding: '1rem', border: '1px solid #ffcccc', borderRadius: 6, background: '#fff5f5' }}>
+            Error loading models: {error}
+          </div>
+        )}
+
+        {!error && models.length === 0 && !loading && (
+          <div style={{ padding: '2rem', textAlign: 'center', color: '#666' }}>
+            No models found. Pull a model to get started.
+          </div>
+        )}
+
+        {!error && models.length > 0 && (
+          <div style={{ display: 'grid', gap: 10 }}>
+            {models.map((model) => (
+              <div
+                key={model}
+                style={{
+                  padding: '1rem',
+                  border: '1px solid #ddd',
+                  borderRadius: 8,
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }}
+              >
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>{model}</div>
+                </div>
+                <button
+                  onClick={() => handleDeleteModel(model)}
+                  disabled={deletingModel === model}
+                  style={{
+                    padding: '6px 12px',
+                    background: deletingModel === model ? '#ccc' : '#ff4444',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: 4,
+                    cursor: deletingModel === model ? 'not-allowed' : 'pointer',
+                    fontSize: 12,
+                    fontWeight: 600,
+                  }}
+                >
+                  {deletingModel === model ? 'Deleting...' : 'Delete'}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}

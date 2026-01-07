@@ -13,6 +13,7 @@ from mygpt.config import (
 )
 from mygpt import sessions
 from mygpt import tools_fs
+from mygpt import models
 from mygpt.chat import chat, chat_stream
 from mygpt.logging import configure_logging
 from mygpt.rag.rag import ingest_document, retrieve_context
@@ -388,6 +389,108 @@ def cmd_rag_wipe(confirm: bool) -> int:
     return 0
 
 
+def cmd_models_list() -> int:
+    """List all available Ollama models."""
+    try:
+        model_list = models.list_models()
+        if not model_list:
+            print("No models found")
+            return 0
+
+        print(f"{'Model Name':<40} {'Size':<12} {'Modified'}")
+        print("-" * 80)
+        for model in model_list:
+            name = model.get("name", "")
+            size = models.format_model_size(model.get("size", 0))
+            modified = model.get("modified_at", "")
+            print(f"{name:<40} {size:<12} {modified}")
+        return 0
+    except Exception as e:
+        print(f"ERROR: Failed to list models: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_models_pull(name: str) -> int:
+    """Pull (download) a model from Ollama library."""
+    try:
+        def progress_callback(status: str, percentage: float):
+            print(f"\r{status}: {percentage:.1f}%", end="", flush=True)
+
+        print(f"Pulling model: {name}")
+        models.pull_model(name, progress_callback=progress_callback)
+        print()  # New line after progress
+        print(f"Successfully pulled model: {name}")
+        return 0
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:
+        print(f"ERROR: Failed to pull model: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_models_delete(name: str, force: bool) -> int:
+    """Delete a model from Ollama."""
+    if not force:
+        try:
+            response = input(f"Delete model '{name}'? (y/N): ").strip().lower()
+            if response != "y":
+                print("Cancelled")
+                return 0
+        except (EOFError, KeyboardInterrupt):
+            print("\nCancelled")
+            return 0
+
+    try:
+        models.delete_model(name)
+        print(f"Deleted model: {name}")
+        return 0
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:
+        print(f"ERROR: Failed to delete model: {e}", file=sys.stderr)
+        return 1
+
+
+def cmd_models_show(name: str) -> int:
+    """Show detailed information about a model."""
+    try:
+        info = models.show_model(name)
+        print(f"Model: {name}")
+        print()
+
+        # Display key fields
+        if "modelfile" in info:
+            print("Modelfile:")
+            print(info["modelfile"])
+            print()
+
+        if "parameters" in info:
+            print("Parameters:")
+            print(info["parameters"])
+            print()
+
+        if "template" in info:
+            print("Template:")
+            print(info["template"])
+            print()
+
+        # Display other fields as JSON
+        import json
+        other_fields = {k: v for k, v in info.items()
+                       if k not in ("modelfile", "parameters", "template")}
+        if other_fields:
+            print("Other info:")
+            print(json.dumps(other_fields, indent=2, ensure_ascii=False))
+
+        return 0
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:
+        print(f"ERROR: Failed to get model info: {e}", file=sys.stderr)
+        return 1
 
 
 def cli(argv: list[str] | None = None) -> int:
@@ -468,6 +571,22 @@ def cli(argv: list[str] | None = None) -> int:
 
     wipe_p = rag_sub.add_parser("wipe", help="Delete ALL documents (dangerous)")
     wipe_p.add_argument("--yes-really", action="store_true", help="Confirm destructive wipe")
+
+    # Add models command
+    models_p = sub.add_parser("models", help="Manage Ollama models")
+    models_sub = models_p.add_subparsers(dest="models_cmd", required=True)
+
+    models_sub.add_parser("list", help="List all available models")
+
+    models_pull_p = models_sub.add_parser("pull", help="Pull (download) a model")
+    models_pull_p.add_argument("model", help="Model name (e.g., llama3.1:8b)")
+
+    models_delete_p = models_sub.add_parser("delete", help="Delete a model")
+    models_delete_p.add_argument("model", help="Model name to delete")
+    models_delete_p.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+
+    models_show_p = models_sub.add_parser("show", help="Show detailed model information")
+    models_show_p.add_argument("model", help="Model name to inspect")
 
     # Add ops command
     ops_p = sub.add_parser("ops", help="Operational helpers")
@@ -557,6 +676,16 @@ def cli(argv: list[str] | None = None) -> int:
             return cmd_rag_delete(args.doc_id)
         if args.rag_cmd == "wipe":
             return cmd_rag_wipe(args.yes_really)
+
+    if cmd == "models":
+        if args.models_cmd == "list":
+            return cmd_models_list()
+        if args.models_cmd == "pull":
+            return cmd_models_pull(args.model)
+        if args.models_cmd == "delete":
+            return cmd_models_delete(args.model, args.force)
+        if args.models_cmd == "show":
+            return cmd_models_show(args.model)
 
     if cmd == "ops":
         if args.ops_cmd == "install":

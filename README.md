@@ -91,8 +91,24 @@ mygpt ops doctor
 
 ### CLI
 
+**Chat:**
 ```bash
 mygpt chat "Hello"
+```
+
+**Model Management:**
+```bash
+# List available models
+mygpt models list
+
+# Pull (download) a model
+mygpt models pull llama3.1:8b
+
+# Delete a model
+mygpt models delete mistral:7b
+
+# Show detailed model information
+mygpt models show llama3.1:8b
 ```
 
 ---
@@ -108,6 +124,7 @@ The TUI streams responses, persists sessions, and supports RAG‑assisted chat.
 **Keybindings:**
 - `Ctrl+S` - Session picker (search and switch)
 - `Ctrl+R` - Toggle RAG for current session
+- `Ctrl+M` - Manage models
 - `Ctrl+N` - Rename current session
 - `Ctrl+C` - Quit
 
@@ -224,7 +241,13 @@ Open in your browser:
 open http://127.0.0.1:3000
 ```
 
-The web UI connects to FastAPI and supports streaming chat and session browsing.
+The web UI connects to FastAPI and supports streaming chat, session browsing, and model management.
+
+**Features:**
+- Chat interface with streaming responses
+- Session picker and management
+- RAG document upload and toggle
+- Model management (pull, delete, list) at `/models`
 
 ---
 
