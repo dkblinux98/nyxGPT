@@ -236,9 +236,9 @@ class MyGPTTUI(App):
                 data = res.json()
                 self.rag_enabled = data.get("rag_enabled", False)
                 self._update_rag_status()
-        except Exception:
-            # Silently fail, default to False
-            pass
+        except Exception as e:
+            log.warning(f"Failed to fetch RAG status for session {self.session}: {e}")
+            self.rag_enabled = False
 
     def _update_rag_status(self) -> None:
         """Update RAG status label."""
