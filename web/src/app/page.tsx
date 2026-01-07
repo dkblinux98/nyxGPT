@@ -351,25 +351,6 @@ export default function Home() {
           <span style={{ fontSize: 16 }}>+</span> New Chat
         </button>
 
-        <div style={{ marginBottom: 16 }}>
-          <a
-            href="/models"
-            style={{
-              display: 'inline-block',
-              padding: '6px 12px',
-              background: '#f4f4f4',
-              border: '1px solid #ddd',
-              borderRadius: 6,
-              textDecoration: 'none',
-              color: '#333',
-              fontSize: 12,
-              fontWeight: 600,
-            }}
-          >
-            Manage Models
-          </a>
-        </div>
-
         {/* Search input */}
         <input
           type="text"
