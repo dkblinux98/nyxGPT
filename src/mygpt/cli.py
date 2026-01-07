@@ -298,8 +298,12 @@ def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: li
 
         # Write to file or stdout
         if output:
-            output.write_text(content, encoding="utf-8")
-            print(f"Exported session '{name}' to {output} ({format} format)")
+            try:
+                output.write_text(content, encoding="utf-8")
+                print(f"Exported session '{name}' to {output} ({format} format)")
+            except OSError as e:
+                print(f"ERROR: Failed to write to {output}: {e}", file=sys.stderr)
+                return 1
         else:
             print(content)
 
@@ -528,8 +532,8 @@ def cli(argv: list[str] | None = None) -> int:
             new_name=args.new_name,
             extras=args.extras,
             sessions_dir=args.sessions_dir,
-            format=getattr(args, "format", "markdown"),
-            output=getattr(args, "output", None),
+            format=args.format,
+            output=args.output,
         )
 
     if cmd == "tools":
