@@ -271,12 +271,61 @@ def init_session(
     return session_file, meta_file, messages, meta
 
 
-def persist_after_exchange(session_file: Path, meta_file: Path, messages: list[dict[str, str]], *, model: str) -> None:
+def persist_after_exchange(session_file: Path, meta_file: Path, messages: list[dict[str, str]], *, model: str) -> str:
+    """Persist session messages and metadata after a chat exchange.
+
+    Also triggers auto-summarization and filename sync if enabled in config.
+
+    Args:
+        session_file: Path to session JSON file
+        meta_file: Path to metadata JSON file
+        messages: List of chat messages
+        model: Model name to store in metadata
+
+    Returns:
+        Session name (possibly updated if filename was synced)
+    """
     save_session_messages(session_file, messages)
     meta = load_session_meta(meta_file)
     meta = ensure_meta_defaults(meta, model=model)
     meta["token_estimate"] = token_estimate_from_messages(messages)
     save_session_meta(meta_file, meta)
+
+    # Extract session name from file path
+    session_name = session_file.stem
+    sessions_dir = session_file.parent
+
+    # Auto-summarization trigger
+    cfg = load_config(None)
+    try:
+        auto_summarize_enabled = cfg.getboolean("mygpt", "auto_summarize_enabled", fallback=False)
+        auto_summarize_after = cfg.getint("mygpt", "auto_summarize_after_messages", fallback=5)
+    except Exception:
+        auto_summarize_enabled = False
+        auto_summarize_after = 5
+
+    # Trigger auto-summarization if:
+    # 1. Auto-summarization is enabled
+    # 2. Message count threshold is met
+    # 3. Session doesn't already have a title
+    if auto_summarize_enabled and auto_summarize_after > 0:
+        message_count = len(messages)
+        has_title = bool(meta.get("title"))
+
+        # Only auto-summarize once (when reaching threshold without a title)
+        if not has_title and message_count >= auto_summarize_after:
+            log.info(f"Auto-summarizing session '{session_name}' ({message_count} messages)")
+            success, msg = summarize_session(session_name, sessions_dir)
+            if not success:
+                log.warning(f"Auto-summarization failed for '{session_name}': {msg}")
+            else:
+                # After summarization, sync filename if enabled
+                success, status, new_name = sync_filename_with_title(session_name, sessions_dir)
+                if success and status == "renamed":
+                    log.info(f"Auto-synced filename '{session_name}' -> '{new_name}'")
+                    session_name = new_name
+
+    return session_name
 
 
 @dataclass
@@ -321,14 +370,26 @@ def save_session(
     sessions_dir_override: str | None = None,
     model: str | None = None,
 ) -> None:
-    """Persist messages and meta for an existing SessionState."""
+    """Persist messages and meta for an existing SessionState.
+
+    Note: If auto-summarization and filename sync are enabled, the session
+    name may change after calling this function. The SessionState object
+    will be updated to reflect the new name.
+    """
     if sessions_dir_override:
         sessions_dir = Path(sessions_dir_override).expanduser()
         state.session_file = session_file_for(state.name, sessions_dir)
         state.meta_file = meta_file_for(state.session_file)
 
     chosen_model = model or str(state.meta.get("model") or get_default_model(cfg))
-    persist_after_exchange(state.session_file, state.meta_file, state.messages, model=chosen_model)
+    new_name = persist_after_exchange(state.session_file, state.meta_file, state.messages, model=chosen_model)
+
+    # Update SessionState if name changed (due to filename sync)
+    if new_name != state.name:
+        state.name = new_name
+        sessions_dir = state.session_file.parent
+        state.session_file = session_file_for(new_name, sessions_dir)
+        state.meta_file = meta_file_for(state.session_file)
 
 
 # --- Session management operations for the CLI ---
@@ -647,6 +708,173 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
     return True, "\n".join(html_parts)
 
 
+def sanitize_title_for_filename(title: str) -> str:
+    """Convert a session title to a valid filesystem-safe session name.
+
+    Transforms a human-readable title into a valid session name by:
+    - Replacing spaces with hyphens
+    - Removing or replacing special characters
+    - Truncating to 64 characters
+    - Ensuring it matches VALID_SESSION_NAME_PATTERN
+
+    Args:
+        title: Human-readable session title
+
+    Returns:
+        Sanitized filename-safe session name (alphanumeric, hyphens, underscores only)
+
+    Examples:
+        >>> sanitize_title_for_filename("My Chat Session")
+        "my-chat-session"
+        >>> sanitize_title_for_filename("Python: Tips & Tricks!")
+        "python-tips-tricks"
+        >>> sanitize_title_for_filename("Session #42 (Important)")
+        "session-42-important"
+    """
+    # Convert to lowercase and replace spaces with hyphens
+    sanitized = title.lower().strip()
+    sanitized = sanitized.replace(" ", "-")
+
+    # Replace common special chars with hyphens
+    for char in [":", ";", ",", ".", "!", "?", "(", ")", "[", "]", "{", "}", "/", "\\", "|", "&", "@", "#", "$", "%", "^", "*", "+", "=", "~", "`", "'", '"', "<", ">"]:
+        sanitized = sanitized.replace(char, "-")
+
+    # Keep only alphanumeric, hyphens, and underscores
+    sanitized = "".join(c for c in sanitized if c.isalnum() or c in "-_")
+
+    # Collapse multiple consecutive hyphens
+    while "--" in sanitized:
+        sanitized = sanitized.replace("--", "-")
+
+    # Remove leading/trailing hyphens
+    sanitized = sanitized.strip("-_")
+
+    # Truncate to 64 characters
+    if len(sanitized) > 64:
+        sanitized = sanitized[:64].rstrip("-_")
+
+    # Fallback if empty after sanitization
+    if not sanitized:
+        return "session"
+
+    return sanitized
+
+
+def sync_filename_with_title(
+    current_name: str,
+    sessions_dir: Path | None,
+    *,
+    force: bool = False
+) -> tuple[bool, str, str]:
+    """Rename session file to match its title (atomic copy-then-delete).
+
+    Uses atomic operations to safely rename both session and metadata files
+    to match the sanitized session title. If auto_sync_filename is disabled
+    in config, does nothing unless force=True.
+
+    **Safety:** Uses copy-then-delete pattern to prevent data loss if rename fails.
+
+    Args:
+        current_name: Current session name (filename without extension)
+        sessions_dir: Session directory path (or None for default)
+        force: Force rename even if auto_sync_filename is disabled
+
+    Returns:
+        Tuple of (success, message, new_name)
+        - success: True if renamed or no action needed, False on error
+        - message: Status message ("renamed", "no_change", "disabled", error message)
+        - new_name: New session name (equals current_name if no change)
+
+    Examples:
+        >>> sync_filename_with_title("session_123", None)
+        (True, "renamed", "my-chat-session")
+
+        >>> sync_filename_with_title("my-chat-session", None)
+        (True, "no_change", "my-chat-session")
+    """
+    sessions_dir = sessions_dir or default_sessions_dir()
+    sf = session_file_for(current_name, sessions_dir)
+    mf = meta_file_for(sf)
+
+    if not sf.exists():
+        return False, "Session not found", current_name
+
+    # Check if auto-sync is enabled
+    if not force:
+        cfg = load_config(None)
+        try:
+            auto_sync = cfg.getboolean("mygpt", "auto_sync_filename", fallback=False)
+        except Exception:
+            auto_sync = False
+
+        if not auto_sync:
+            return True, "disabled", current_name
+
+    # Load metadata and get title
+    meta = load_session_meta(mf)
+    title = meta.get("title")
+
+    if not title or not isinstance(title, str):
+        return True, "no_title", current_name
+
+    # Sanitize title for filename
+    new_name = sanitize_title_for_filename(title)
+
+    # No change needed
+    if new_name == current_name:
+        return True, "no_change", current_name
+
+    # Check if target already exists
+    new_sf = session_file_for(new_name, sessions_dir)
+    new_mf = meta_file_for(new_sf)
+
+    if new_sf.exists():
+        # Target exists - append counter to make unique
+        counter = 1
+        while True:
+            candidate = f"{new_name}-{counter}"
+            candidate_sf = session_file_for(candidate, sessions_dir)
+            if not candidate_sf.exists():
+                new_name = candidate
+                new_sf = candidate_sf
+                new_mf = meta_file_for(new_sf)
+                break
+            counter += 1
+            if counter > 100:
+                return False, "Could not find unique filename", current_name
+
+    # Atomic rename using copy-then-delete pattern
+    try:
+        # 1. Copy session file to new location
+        new_sf.parent.mkdir(parents=True, exist_ok=True)
+        msgs = load_session_messages(sf)
+        save_session_messages(new_sf, msgs)
+
+        # 2. Copy metadata file to new location
+        if mf.exists():
+            save_session_meta(new_mf, meta)
+
+        # 3. Delete old files (only after successful copy)
+        sf.unlink()
+        if mf.exists():
+            mf.unlink()
+
+        log.info(f"Renamed session '{current_name}' -> '{new_name}'")
+        return True, "renamed", new_name
+
+    except Exception as e:
+        log.error(f"Failed to rename session '{current_name}': {e}")
+        # Clean up partial copy if it exists
+        try:
+            if new_sf.exists():
+                new_sf.unlink()
+            if new_mf.exists():
+                new_mf.unlink()
+        except Exception:
+            pass
+        return False, f"Rename failed: {e}", current_name
+
+
 __all__ = [
     "default_sessions_dir",
     "session_file_for",
@@ -676,4 +904,6 @@ __all__ = [
     "export_session_markdown",
     "export_session_json",
     "export_session_html",
+    "sanitize_title_for_filename",
+    "sync_filename_with_title",
 ]
