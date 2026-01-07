@@ -64,17 +64,19 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
     setStatus('idle');
     setLastError(null);
     setInput('');
+    setSelectedModel(''); // Reset model selector immediately
     isStreamingRef.current = false;
     abortRef.current?.abort();
     abortRef.current = null;
 
-    // Fetch session metadata (RAG status and title)
+    // Fetch session metadata (RAG status, title, and model)
     fetch(`/api/sessions/${encodeURIComponent(sessionName)}/metadata`)
       .then(async (res) => {
         if (res.ok) {
           const data = await res.json();
           setRagEnabled(data.rag_enabled || false);
           setSessionTitle(data.title || '');
+          setSelectedModel(data.model || '');
           setRagError(null);
         }
       })
@@ -82,6 +84,7 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
         console.error('Failed to fetch session metadata:', err);
         setRagEnabled(false); // Default to disabled if fetch fails
         setSessionTitle(''); // Default to empty title
+        setSelectedModel(''); // Default to empty (will use first available model)
       });
   }, [sessionName]);
 
