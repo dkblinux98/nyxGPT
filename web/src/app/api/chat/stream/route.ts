@@ -28,11 +28,20 @@ function nowMs(): number {
   return Date.now();
 }
 
+interface ChatStreamRequest {
+  session?: string;
+  prompt?: string;
+  model?: string;
+  system?: string;
+  rag_enabled?: boolean;
+  [key: string]: unknown;
+}
+
 export async function POST(req: NextRequest) {
   const startMs = nowMs();
   const reqId = Math.random().toString(16).slice(2, 10);
 
-  let body: any;
+  let body: ChatStreamRequest;
   try {
     body = await req.json();
   } catch (e) {

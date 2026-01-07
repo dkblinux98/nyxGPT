@@ -106,10 +106,16 @@ The TUI streams responses, persists sessions, and supports RAG‑assisted chat.
 
 ### FastAPI backend
 
-The API is managed as a Homebrew service:
+The API service is managed via the `mygpt ops` command. Start all services (including the API):
 
 ```bash
-brew services start mygpt-api
+mygpt ops install
+```
+
+Or restart just the API:
+
+```bash
+mygpt ops restart api
 ```
 
 Verify:
@@ -160,10 +166,10 @@ If the limit is exceeded, the API returns a `429 Too Many Requests` error:
 
 ### Local Web UI (Next.js)
 
-The web UI is also managed via Homebrew:
+The web UI is managed via the `mygpt ops` command:
 
 ```bash
-brew services start mygpt-web
+mygpt ops restart web
 ```
 
 Open in your browser:
@@ -173,6 +179,53 @@ open http://127.0.0.1:3000
 ```
 
 The web UI connects to FastAPI and supports streaming chat and session browsing.
+
+---
+
+### RAG (Retrieval-Augmented Generation) Controls
+
+myGPT supports per-session RAG to inject relevant context from uploaded documents into chat conversations.
+
+**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf`
+
+#### Web UI
+
+Use the RAG controls in the chat interface (left of the message input):
+- **RAG Toggle** button to enable/disable RAG for the current session
+- **File Upload** to ingest documents into the RAG database
+- RAG status displays current state (ON/OFF)
+
+#### Terminal UI (TUI)
+
+Press `Ctrl+R` to toggle RAG on/off for the current session. The RAG status is displayed in the UI.
+
+#### CLI / API
+
+Enable RAG globally via config (`~/.myGPT/config.ini`):
+
+```ini
+[rag]
+enable_chat_context = true
+```
+
+Or override per-request via the API:
+
+```json
+{
+  "session": "my-session",
+  "prompt": "Your question here",
+  "rag_enabled": true
+}
+```
+
+Upload documents via API:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
+  -F "file=@document.md"
+```
+
+**Priority chain:** Explicit API parameter > Session metadata > Global config
 
 ---
 

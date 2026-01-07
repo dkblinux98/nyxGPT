@@ -96,14 +96,16 @@ Relevant `[rag]` configuration:
 
 ```ini
 [rag]
-enabled = true
+# Global RAG setting (can be overridden per-session)
+enable_chat_context = false
 embedding_model = nomic-embed-text
 embedding_dim = 768
 chat_top_k = 3
 chat_context_max_chars = 4000
-cassandra_host = 127.0.0.1
+cassandra_hosts = 127.0.0.1
 cassandra_port = 9042
-keyspace = mygpt
+cassandra_keyspace = mygpt
+cassandra_table = rag_chunks
 ```
 
 ---
@@ -136,15 +138,99 @@ mygpt rag wipe --yes-really
 
 ---
 
+## API Endpoints
+
+### Per-Session RAG Control
+
+#### `GET /api/v1/sessions/{name}/metadata`
+
+Get session metadata including RAG status.
+
+**Response:**
+```json
+{
+  "created_at": "2026-01-06T12:00:00",
+  "updated_at": "2026-01-06T12:30:00",
+  "pinned": false,
+  "tags": [],
+  "model": "qwen2.5:0.5b",
+  "rag_enabled": false
+}
+```
+
+#### `POST /api/v1/sessions/{name}/rag/enable`
+
+Enable RAG for a specific session.
+
+**Response:**
+```json
+{
+  "session": "my-session",
+  "rag_enabled": true
+}
+```
+
+#### `POST /api/v1/sessions/{name}/rag/disable`
+
+Disable RAG for a specific session.
+
+**Response:**
+```json
+{
+  "session": "my-session",
+  "rag_enabled": false
+}
+```
+
+### Document Upload
+
+#### `POST /api/v1/rag/upload`
+
+Upload and ingest a document for RAG.
+
+**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf`
+
+**Request:**
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
+  -F "file=@document.md" \
+  -F "doc_id=my-doc"  # optional, defaults to filename
+```
+
+**Response:**
+```json
+{
+  "doc_id": "document.md",
+  "chunks_ingested": 5
+}
+```
+
+**Markdown Files:**
+- Extracts YAML frontmatter (title, author, tags, etc.)
+- Preserves headers hierarchy
+- Handles code blocks
+- Falls back to plain text if parsing libraries unavailable
+
+**Error (unsupported file type):**
+```json
+{
+  "detail": "File type .exe not supported. Allowed: {'.txt', '.md', '.json', '.pdf'}"
+}
+```
+
+---
+
 ## RAG‑assisted chat
 
-When enabled, retrieved context is injected automatically during chat:
+When enabled globally or per-session, retrieved context is injected automatically during chat:
 
 ```bash
 mygpt chat "What does Cassandra support for vector search?"
 ```
 
 The retrieved context is prepended as a system message.
+
+**Priority chain:** Explicit API `rag_enabled` parameter > Session metadata > Global config `enable_chat_context`
 
 ---
 
