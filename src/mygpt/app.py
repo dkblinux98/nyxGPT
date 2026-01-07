@@ -1061,7 +1061,12 @@ def get_session_metadata(name: str) -> dict[str, Any]:
 
 @api.post("/sessions/{name}/rag/enable")
 def enable_session_rag(name: str) -> dict[str, Any]:
-    """Enable RAG for a specific session."""
+    """Enable RAG for a specific session.
+
+    Note: This endpoint uses non-atomic read-modify-write operations.
+    For single-user applications, this is acceptable. For multi-user
+    deployments, consider file locking or database transactions.
+    """
     cfg = load_config(None)
     sessions_dir = get_sessions_dir(cfg)
     sf = sessions.session_file_for(name, sessions_dir)
@@ -1081,7 +1086,12 @@ def enable_session_rag(name: str) -> dict[str, Any]:
 
 @api.post("/sessions/{name}/rag/disable")
 def disable_session_rag(name: str) -> dict[str, Any]:
-    """Disable RAG for a specific session."""
+    """Disable RAG for a specific session.
+
+    Note: This endpoint uses non-atomic read-modify-write operations.
+    For single-user applications, this is acceptable. For multi-user
+    deployments, consider file locking or database transactions.
+    """
     cfg = load_config(None)
     sessions_dir = get_sessions_dir(cfg)
     sf = sessions.session_file_for(name, sessions_dir)
@@ -1116,6 +1126,14 @@ async def rag_upload_file(
 
     # Read file content
     content = await file.read()
+
+    # Validate file size (prevent memory exhaustion)
+    MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large ({len(content)} bytes). Maximum size: {MAX_UPLOAD_SIZE} bytes (10MB)"
+        )
 
     # Parse based on file type
     if file_ext == ".pdf":
@@ -1175,8 +1193,9 @@ async def rag_upload_file(
         except UnicodeDecodeError as e:
             raise HTTPException(status_code=400, detail=f"File encoding error: {e}")
 
-    # Use filename as doc_id if not provided
-    final_doc_id = doc_id or file.filename or f"upload_{uuid.uuid4().hex[:8]}"
+    # Use filename as doc_id if not provided (sanitize to prevent path traversal)
+    safe_filename = os.path.basename(file.filename or "").strip() if file.filename else ""
+    final_doc_id = doc_id or safe_filename or f"upload_{uuid.uuid4().hex[:8]}"
 
     # Ingest
     try:
