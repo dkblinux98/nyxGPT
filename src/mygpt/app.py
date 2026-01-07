@@ -46,6 +46,7 @@ from mygpt.config import (
 from mygpt.chat import chat as run_chat, chat_stream
 from mygpt import sessions
 from mygpt import tools_fs
+from mygpt import models
 
 from mygpt.rag.rag import ingest_document, retrieve_context
 from mygpt.logging import configure_logging, request_id_var
@@ -656,6 +657,32 @@ def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> dict[s
         return {"ok": True, "model": model, "result": data}
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to pull model via Ollama: {e}")
+
+
+@api.delete("/models/{model_name}")
+def models_delete(request: Request, model_name: str) -> dict[str, Any]:
+    """Delete a model from Ollama."""
+    cfg = _req_cfg(request)
+    try:
+        models.delete_model(model_name, base_url=get_ollama_base_url(cfg))
+        return {"ok": True, "model": model_name}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to delete model via Ollama: {e}")
+
+
+@api.get("/models/{model_name}/info")
+def models_info(request: Request, model_name: str) -> dict[str, Any]:
+    """Get detailed information about a model."""
+    cfg = _req_cfg(request)
+    try:
+        info = models.show_model(model_name, base_url=get_ollama_base_url(cfg))
+        return {"ok": True, "model": model_name, "info": info}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to get model info via Ollama: {e}")
 
 
 @api.get("/sessions", response_model=SessionsListResponse)

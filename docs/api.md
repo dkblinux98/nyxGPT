@@ -241,6 +241,100 @@ Returns basic runtime configuration details.
 
 ---
 
+## Models endpoints
+
+Manage Ollama models via the API. These endpoints allow listing, pulling, deleting, and inspecting models.
+
+### `GET /api/v1/models`
+
+List all available Ollama models.
+
+**Response:**
+
+```json
+{
+  "models": ["llama3.1:8b", "mistral:7b", "codellama:13b"]
+}
+```
+
+### `POST /api/v1/models/pull`
+
+Pull (download) a model from the Ollama library.
+
+**Request:**
+
+```json
+{
+  "model": "llama3.1:8b"
+}
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "model": "llama3.1:8b",
+  "result": { "status": "success" }
+}
+```
+
+**Notes:**
+- Downloads can take several minutes for large models
+- Non-streaming pull (no progress updates)
+- Timeout: 600 seconds
+
+### `DELETE /api/v1/models/{model_name}`
+
+Delete a model from Ollama.
+
+**Example:**
+
+```bash
+curl -X DELETE http://127.0.0.1:8000/api/v1/models/mistral:7b
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "model": "mistral:7b"
+}
+```
+
+**Error Responses:**
+- `400` - Invalid model name (empty or whitespace)
+- `502` - Ollama API error
+
+### `GET /api/v1/models/{model_name}/info`
+
+Get detailed information about a specific model.
+
+**Example:**
+
+```bash
+curl http://127.0.0.1:8000/api/v1/models/llama3.1:8b/info
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "model": "llama3.1:8b",
+  "info": {
+    "modelfile": "FROM llama3.1:8b\n...",
+    "parameters": "temperature 0.7\n...",
+    "template": "{{ .System }} {{ .Prompt }}",
+    "size": 4700000000,
+    "modified_at": "2025-01-07T12:34:56Z"
+  }
+}
+```
+
+---
+
 ## Sessions endpoints
 
 Sessions store conversation history and metadata and are persisted automatically on disk.

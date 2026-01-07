@@ -91,9 +91,43 @@ def ollama_chat_stream(
     return "".join(ollama_chat_stream_tokens(base_url, model, messages, timeout_s=timeout_s))
 
 
+def delete_json(url: str, payload: dict[str, Any], timeout_s: float = 60.0) -> dict[str, Any]:
+    """Send DELETE request with JSON payload to Ollama API.
+
+    Args:
+        url: Full URL to send DELETE request to
+        payload: Dictionary to send as JSON body
+        timeout_s: Request timeout in seconds
+
+    Returns:
+        Parsed JSON response as dictionary
+
+    Raises:
+        RuntimeError: If request fails or Ollama returns error
+    """
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url=url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="DELETE",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            body = resp.read().decode("utf-8")
+            return json.loads(body) if body else {}
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Ollama HTTP {e.code}: {body}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Failed to reach Ollama at {url}: {e}") from e
+
+
 __all__ = [
     "post_json",
     "post_json_lines",
+    "delete_json",
     "ollama_chat",
     "ollama_chat_stream_tokens",
     "ollama_chat_stream",

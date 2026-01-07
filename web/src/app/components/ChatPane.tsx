@@ -204,70 +204,6 @@ export default function ChatPane({ sessionName }: Props) {
     isStreamingRef.current = false;
   }
 
-  /**
-   * Export session to specified format (markdown, json, or html).
-   *
-   * @param format - Export format: 'markdown', 'json', or 'html'
-   *
-   * Behavior:
-   * - Sets status to 'connecting' during export
-   * - Fetches export data from API endpoint
-   * - Triggers browser download of exported file
-   * - Sets status to 'idle' on success, 'error' on failure
-   * - Cleans up blob URLs to prevent memory leaks
-   *
-   * Error handling:
-   * - Network errors: Shows error message with status code and details
-   * - API errors: Shows error message from server response
-   * - Blob cleanup: Always performed via try-finally
-   *
-   * TODO: Add component tests when web UI test infrastructure is set up (#2776)
-   */
-  async function handleExport(format: 'markdown' | 'json' | 'html') {
-    setStatus('connecting'); // #2772: Add user feedback at start
-    try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
-      const url = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(sessionName)}/export?format=${format}`;
-
-      const res = await fetch(url);
-      if (!res.ok) {
-        // #2773: Improve error messages with status text and response body
-        const errorText = await res.text();
-        throw new Error(`Export failed (${res.status} ${res.statusText}): ${errorText}`);
-      }
-
-      // Get filename from Content-Disposition header or use default
-      const contentDisposition = res.headers.get('Content-Disposition');
-      let filename = `${sessionName}.${format === 'markdown' ? 'md' : format}`;
-      if (contentDisposition) {
-        const match = contentDisposition.match(/filename="(.+?)"/);
-        if (match) filename = match[1];
-      }
-
-      // Download the file
-      const blob = await res.blob();
-      const downloadUrl = window.URL.createObjectURL(blob);
-      try {
-        // #2775: Use try-finally to ensure blob URL cleanup
-        const a = document.createElement('a');
-        a.href = downloadUrl;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      } finally {
-        // #2774: Add delay before cleanup to avoid race condition
-        setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 100);
-      }
-
-      setStatus('idle'); // #2772: Set status to idle on success
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setLastError(msg);
-      setStatus('error');
-    }
-  }
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
@@ -279,27 +215,6 @@ export default function ChatPane({ sessionName }: Props) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <select
-            onChange={(e) => {
-              if (e.target.value) {
-                void handleExport(e.target.value as 'markdown' | 'json' | 'html');
-                e.target.value = '';
-              }
-            }}
-            style={{
-              padding: '6px 10px',
-              cursor: 'pointer',
-              borderRadius: 6,
-              border: '1px solid #ddd',
-              background: 'white',
-            }}
-            defaultValue=""
-          >
-            <option value="" disabled>Export...</option>
-            <option value="markdown">Markdown</option>
-            <option value="json">JSON</option>
-            <option value="html">HTML</option>
-          </select>
           {isStreaming && (
             <button onClick={stop} style={{ padding: '6px 10px', cursor: 'pointer' }}>
               Stop

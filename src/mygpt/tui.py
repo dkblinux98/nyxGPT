@@ -167,19 +167,126 @@ class SessionPickerScreen(Screen):
         self.dismiss(None)
 
 
+class ModelsManagerScreen(Screen):
+    """Interactive models manager for listing, pulling, and deleting Ollama models."""
+
+    BINDINGS = [
+        Binding("r", "refresh", "Refresh"),
+        Binding("escape", "quit_screen", "Back"),
+        ("ctrl+c", "quit_screen", "Back"),
+    ]
+
+    def __init__(self, api_base_url: str) -> None:
+        super().__init__()
+        self.api_base_url = api_base_url
+        self.models: list[dict] = []
+
+    def compose(self) -> ComposeResult:
+        """Create the models manager UI."""
+        yield Header()
+        with Container():
+            yield Label("Ollama Models (r=refresh, esc=back)")
+            yield ListView(id="models-list")
+            yield Label("", id="status-message")
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        """Load models when the screen is mounted."""
+        await self.refresh_models()
+
+    async def refresh_models(self) -> None:
+        """Fetch and display models from API."""
+        await self.update_status("Loading models...")
+
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.get(f"{self.api_base_url}/api/v1/models", timeout=10.0)
+                res.raise_for_status()
+                data = res.json()
+                model_names = data.get("models", [])
+
+                # Fetch detailed info for each model
+                self.models = []
+                for name in model_names:
+                    try:
+                        info_res = await client.get(
+                            f"{self.api_base_url}/api/v1/models/{name}/info",
+                            timeout=10.0
+                        )
+                        info_res.raise_for_status()
+                        info_data = info_res.json()
+                        model_info = info_data.get("info", {})
+                        self.models.append({
+                            "name": name,
+                            "size": model_info.get("size", 0),
+                            "modified_at": model_info.get("modified_at", ""),
+                        })
+                    except Exception:
+                        # If info fails, just add name
+                        self.models.append({"name": name, "size": 0, "modified_at": ""})
+
+                await self.update_models_list()
+                await self.update_status(f"Loaded {len(self.models)} models")
+
+        except Exception as e:
+            log.error(f"Failed to load models: {e}")
+            await self.update_status(f"Error: {e}")
+
+    async def update_models_list(self) -> None:
+        """Update the ListView with models."""
+        list_view = self.query_one("#models-list", ListView)
+        await list_view.clear()
+
+        if not self.models:
+            await list_view.append(ListItem(Label("No models found")))
+            return
+
+        for model in self.models:
+            name = model.get("name", "")
+            size_bytes = model.get("size", 0)
+            # Format size (simple version)
+            if size_bytes > 0:
+                size_gb = size_bytes / (1024 ** 3)
+                size_str = f"{size_gb:.1f} GB"
+            else:
+                size_str = "Unknown"
+
+            label_text = f"{name} ({size_str})"
+            await list_view.append(ListItem(Label(label_text), name=name))
+
+    async def update_status(self, message: str) -> None:
+        """Update status message."""
+        try:
+            status = self.query_one("#status-message", Label)
+            status.update(message)
+        except Exception:
+            pass
+
+    async def action_refresh(self) -> None:
+        """Refresh the models list."""
+        await self.refresh_models()
+
+    def action_quit_screen(self) -> None:
+        """Close the models manager screen."""
+        self.dismiss()
+
+
 class MyGPTTUI(App):
     CSS_PATH = None
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+s", "pick_session", "Sessions"),
         ("ctrl+r", "toggle_rag", "Toggle RAG"),
+        ("ctrl+m", "models_manager", "Models"),
     ]
 
     def __init__(self, session: str = "default", api_base_url: Optional[str] = None, config_path: Optional[str] = None) -> None:
         super().__init__()
         cfg = load_config(config_path)
         self.session = session
-        self.api_base_url = api_base_url or cfg.get("api", "base_url", fallback="http://127.0.0.1:8000")
+        # api_base_url parameter or config value, guaranteed to be str due to fallback
+        base_url = api_base_url if api_base_url is not None else cfg.get("api", "base_url", fallback="http://127.0.0.1:8000")
+        self.api_base_url: str = str(base_url)  # Ensure str type for mypy
         self.config_path = config_path
         self.rag_enabled = False  # Track current session RAG state
 
@@ -279,6 +386,11 @@ class MyGPTTUI(App):
             # Fetch RAG status for new session
             await self._fetch_rag_status()
             log.info("Session switched", extra={"session": session_name})
+
+    async def action_models_manager(self) -> None:
+        """Open the models manager screen."""
+        await self.push_screen_wait(ModelsManagerScreen(self.api_base_url))
+        log.info("Models manager closed")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
