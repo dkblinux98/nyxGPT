@@ -144,6 +144,41 @@ export default function ChatPane({ sessionName }: Props) {
     isStreamingRef.current = false;
   }
 
+  async function handleExport(format: 'markdown' | 'json' | 'html') {
+    try {
+      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
+      const url = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(sessionName)}/export?format=${format}`;
+
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`Export failed: ${res.status}`);
+      }
+
+      // Get filename from Content-Disposition header or use default
+      const contentDisposition = res.headers.get('Content-Disposition');
+      let filename = `${sessionName}.${format === 'markdown' ? 'md' : format}`;
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename="(.+?)"/);
+        if (match) filename = match[1];
+      }
+
+      // Download the file
+      const blob = await res.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(downloadUrl);
+      document.body.removeChild(a);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setLastError(msg);
+      setStatus('error');
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
@@ -154,11 +189,34 @@ export default function ChatPane({ sessionName }: Props) {
             {lastError ? <span style={{ marginLeft: 8, color: 'red' }}>({lastError})</span> : null}
           </div>
         </div>
-        {isStreaming && (
-          <button onClick={stop} style={{ padding: '6px 10px', cursor: 'pointer' }}>
-            Stop
-          </button>
-        )}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <select
+            onChange={(e) => {
+              if (e.target.value) {
+                void handleExport(e.target.value as 'markdown' | 'json' | 'html');
+                e.target.value = '';
+              }
+            }}
+            style={{
+              padding: '6px 10px',
+              cursor: 'pointer',
+              borderRadius: 6,
+              border: '1px solid #ddd',
+              background: 'white',
+            }}
+            defaultValue=""
+          >
+            <option value="" disabled>Export...</option>
+            <option value="markdown">Markdown</option>
+            <option value="json">JSON</option>
+            <option value="html">HTML</option>
+          </select>
+          {isStreaming && (
+            <button onClick={stop} style={{ padding: '6px 10px', cursor: 'pointer' }}>
+              Stop
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Model selector */}
