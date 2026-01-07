@@ -161,6 +161,9 @@ def _prepare_chat_context(
     # Add this turn
     messages.append({"role": "user", "content": prompt})
 
+    # Update session metadata with chosen model
+    state.meta["model"] = chosen_model
+
     return ChatContext(
         messages=messages,
         state=state,
