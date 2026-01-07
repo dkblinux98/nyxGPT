@@ -22,7 +22,10 @@ Your data stays on your machine. No cloud dependency is required.
 
 - Local LLM inference via **Ollama**
 - Persistent sessions stored outside the repository
+- **Automatic session naming** with LLM‑generated titles and smart filename sync
+- **Session management** with right-click context menus, rename, export, delete, and pin
 - Optional **RAG** using Cassandra 5.0 native vector search
+- **Per‑session RAG controls** via WebUI, TUI, and API
 - Config‑driven RAG context pruning and prompt optimization
 - Streaming responses (CLI, TUI, API, Web UI)
 - Unified core shared between CLI and FastAPI
@@ -118,10 +121,49 @@ mygpt tui
 
 The TUI streams responses, persists sessions, and supports RAG‑assisted chat.
 
-**Keyboard shortcuts:**
-- `Ctrl+S` - Switch sessions
-- `Ctrl+R` - Toggle RAG
+**Keybindings:**
+- `Ctrl+S` - Session picker (search and switch)
+- `Ctrl+R` - Toggle RAG for current session
 - `Ctrl+M` - Manage models
+- `Ctrl+N` - Rename current session
+- `Ctrl+C` - Quit
+
+---
+
+### Session Management
+
+myGPT automatically organizes your conversations with intelligent session management:
+
+**Automatic Session Naming:**
+- After 5 messages (configurable), sessions are auto‑named using your local LLM
+- Generates concise titles, summaries, and relevant tags
+- Filenames automatically sync with titles for easy browsing
+
+**Manual Rename:**
+- **WebUI**: Click the "✏️ Rename" button in the chat interface
+- **TUI**: Press `Ctrl+N` to rename the current session
+- **API**: Use `POST /api/v1/sessions/{name}/rename`
+
+**Configuration** (in `~/.myGPT/config.ini`):
+
+```ini
+[mygpt]
+# Enable/disable automatic session naming
+auto_summarize_enabled = true
+
+# Trigger auto-summarization after N messages
+auto_summarize_after_messages = 5
+
+# Automatically sync filename with session title
+auto_sync_filename = true
+```
+
+**How it works:**
+1. After the configured number of messages, myGPT automatically generates a title
+2. The session filename is updated to match the sanitized title using atomic operations with file locking
+3. Sessions remain easily browsable in `~/.myGPT/sessions/`
+
+**Safety:** File renames use exclusive file locks to prevent race conditions during concurrent access. If a session is actively being written when a rename is triggered, the rename will wait up to 10 seconds for the lock or fail gracefully with a "Session is busy" message.
 
 ---
 

@@ -278,6 +278,7 @@ class MyGPTTUI(App):
         ("ctrl+s", "pick_session", "Sessions"),
         ("ctrl+r", "toggle_rag", "Toggle RAG"),
         ("ctrl+m", "models_manager", "Models"),
+        ("ctrl+n", "rename_session", "Rename"),
     ]
 
     def __init__(self, session: str = "default", api_base_url: Optional[str] = None, config_path: Optional[str] = None) -> None:
@@ -391,6 +392,93 @@ class MyGPTTUI(App):
         """Open the models manager screen."""
         await self.push_screen_wait(ModelsManagerScreen(self.api_base_url))
         log.info("Models manager closed")
+
+    async def action_rename_session(self) -> None:
+        """Rename the current session with automatic filename sync."""
+        from textual.widgets import Label
+        from textual.containers import Container
+        from textual.screen import ModalScreen
+        from textual.widgets import Button
+
+        class RenameScreen(ModalScreen[str | None]):
+            """Modal screen for renaming a session."""
+
+            def __init__(self, current_session: str, current_title: str = "") -> None:
+                super().__init__()
+                self.current_session = current_session
+                self.current_title = current_title
+
+            def compose(self) -> ComposeResult:
+                with Container(id="rename-dialog"):
+                    yield Label(f"Rename session: {self.current_session}")
+                    self.rename_input = Input(
+                        placeholder="Enter new session name or title",
+                        value=self.current_title,
+                        id="rename-input"
+                    )
+                    yield self.rename_input
+                    with Container(classes="rename-buttons"):
+                        yield Button("Rename", variant="primary", id="rename-btn")
+                        yield Button("Cancel", id="cancel-btn")
+
+            async def on_mount(self) -> None:
+                self.rename_input.focus()
+
+            async def on_button_pressed(self, event: Button.Pressed) -> None:
+                if event.button.id == "rename-btn":
+                    new_name = self.rename_input.value.strip()
+                    if new_name:
+                        self.dismiss(new_name)
+                    else:
+                        self.dismiss(None)
+                elif event.button.id == "cancel-btn":
+                    self.dismiss(None)
+
+        # Fetch current title from metadata
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.get(
+                    f"{self.api_base_url}/api/v1/sessions/{self.session}/metadata"
+                )
+                if res.status_code == 200:
+                    data = res.json()
+                    current_title = data.get("title", "")
+                else:
+                    current_title = ""
+        except Exception:
+            current_title = ""
+
+        # Show rename dialog
+        new_name = await self.push_screen_wait(RenameScreen(self.session, current_title))
+
+        if not new_name:
+            return
+
+        # Call rename API
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.post(
+                    f"{self.api_base_url}/api/v1/sessions/{self.session}/rename",
+                    json={"new_name": new_name, "sync_filename": True}
+                )
+                res.raise_for_status()
+                data = res.json()
+
+                old_name = self.session
+                new_session_name = data.get("new_name", self.session)
+
+                # Update session name if filename changed
+                if new_session_name != old_name:
+                    self.session = new_session_name
+                    self.output.append(f"\nSession renamed: {old_name} → {new_session_name}\n\n")
+                    log.info(f"Session renamed: {old_name} → {new_session_name}")
+                else:
+                    self.output.append(f"\nSession title updated to: {new_name}\n\n")
+                    log.info(f"Session title updated: {new_name}")
+
+        except Exception as e:
+            log.error(f"Failed to rename session: {type(e).__name__}: {e}")
+            self.output.append(f"\n[error] Failed to rename session: {e}\n\n")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()

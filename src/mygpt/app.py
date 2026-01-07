@@ -21,6 +21,7 @@ from mygpt.api_models import (
     InfoResponse,
     SessionsListResponse,
     TitleRequest,
+    RenameRequest,
     TagsRequest,
     ChatRequest,
     ChatResponse,
@@ -831,6 +832,84 @@ def sessions_tags_remove(name: str, req: TagsRequest, sessions_dir: Optional[str
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"ok": True}
+
+
+@api.post("/sessions/{name}/rename")
+def sessions_rename(name: str, req: RenameRequest, sessions_dir: Optional[str] = None) -> dict[str, Any]:
+    """Rename a session with optional title update and filename sync.
+
+    This endpoint supports two modes:
+    1. Direct rename: Provide a valid session name to rename files directly
+    2. Title-based rename: Provide a title, which will be sanitized for use as filename
+
+    If sync_filename=True (default), the session title will be updated and the
+    filename will be synced to match the sanitized title.
+    """
+    _sessions_dir = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
+
+    # Check if current session exists
+    sf = sessions.session_file_for(name, _sessions_dir)
+    if not sf.exists():
+        raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
+
+    if req.sync_filename:
+        # Mode 1: Update title and sync filename
+        # Set the title first
+        ok, msg = sessions.set_title(name, req.new_name, _sessions_dir)
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+
+        # Then sync filename based on title
+        success, status, new_name = sessions.sync_filename_with_title(name, _sessions_dir, force=True)
+        if not success:
+            raise HTTPException(status_code=500, detail=f"Title updated but filename sync failed: {status}")
+
+        return {"ok": True, "old_name": name, "new_name": new_name, "message": "Session renamed and filename synced"}
+    else:
+        # Mode 2: Direct rename (validate new name first)
+        try:
+            validated_name = sessions.validate_session_name(req.new_name)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        # Use existing rename function
+        ok, msg = sessions.rename_session(name, validated_name, _sessions_dir)
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+
+        return {"ok": True, "old_name": name, "new_name": validated_name, "message": "Session renamed"}
+
+
+@api.post("/sessions/{name}/sync-filename")
+def sessions_sync_filename(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
+    """Force filename sync for a session based on its current title.
+
+    This endpoint is useful when:
+    - A session was created before auto-sync was enabled
+    - Manual title changes were made without filename sync
+    - You want to clean up session filenames to match their titles
+    """
+    _sessions_dir = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
+
+    # Check if session exists
+    sf = sessions.session_file_for(name, _sessions_dir)
+    if not sf.exists():
+        raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
+
+    # Force filename sync
+    success, status, new_name = sessions.sync_filename_with_title(name, _sessions_dir, force=True)
+
+    if not success:
+        raise HTTPException(status_code=500, detail=f"Filename sync failed: {status}")
+
+    if status == "no_title":
+        return {"ok": True, "message": "No title set, filename unchanged", "name": name}
+    elif status == "no_change":
+        return {"ok": True, "message": "Filename already matches title", "name": name}
+    elif status == "renamed":
+        return {"ok": True, "old_name": name, "new_name": new_name, "message": "Filename synced with title"}
+    else:
+        return {"ok": True, "message": status, "name": new_name}
 
 
 @api.get("/sessions/{name}/export")
