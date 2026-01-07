@@ -47,8 +47,9 @@ def test_chat_without_rag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
 def test_chat_with_rag_injects_context(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg = _cfg(tmp_path, rag_enabled=True)
 
-    # Ensure chat() uses our in-memory config
+    # Ensure chat() and sessions use our in-memory config
     monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
 
     # Mock RAG retrieval
     monkeypatch.setattr(

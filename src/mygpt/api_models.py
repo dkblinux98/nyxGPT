@@ -49,6 +49,7 @@ class ChatRequest(BaseModel):
     model: str | None = None
     system: str | None = None
     sessions_dir: str | None = None
+    rag_enabled: bool | None = None  # Override session RAG setting
 
 
 class ChatResponse(BaseModel):

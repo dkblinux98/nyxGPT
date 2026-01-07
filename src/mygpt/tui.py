@@ -172,6 +172,7 @@ class MyGPTTUI(App):
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+s", "pick_session", "Sessions"),
+        ("ctrl+r", "toggle_rag", "Toggle RAG"),
     ]
 
     def __init__(self, session: str = "default", api_base_url: Optional[str] = None, config_path: Optional[str] = None) -> None:
@@ -180,6 +181,7 @@ class MyGPTTUI(App):
         self.session = session
         self.api_base_url = api_base_url or cfg.get("api", "base_url", fallback="http://127.0.0.1:8000")
         self.config_path = config_path
+        self.rag_enabled = False  # Track current session RAG state
 
         log.info("TUI initialized", extra={"session": session, "api": self.api_base_url})
 
@@ -206,6 +208,8 @@ class MyGPTTUI(App):
         with Vertical():
             self.output = ChatOutput()
             yield self.output
+            self.rag_status = Label("RAG: OFF", id="rag-status")
+            yield self.rag_status
             self.prompt = Input(placeholder="Type a message and press Enter")
             yield self.prompt
         yield Footer()
@@ -218,6 +222,48 @@ class MyGPTTUI(App):
         inconsistent state.
         """
         self._unlock_prompt()
+        # Fetch RAG status for current session
+        await self._fetch_rag_status()
+
+    async def _fetch_rag_status(self) -> None:
+        """Fetch RAG enabled status for current session."""
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.get(
+                    f"{self.api_base_url}/api/v1/sessions/{self.session}/metadata"
+                )
+                res.raise_for_status()
+                data = res.json()
+                self.rag_enabled = data.get("rag_enabled", False)
+                self._update_rag_status()
+        except Exception:
+            # Silently fail, default to False
+            pass
+
+    def _update_rag_status(self) -> None:
+        """Update RAG status label."""
+        try:
+            status = "RAG: ON" if self.rag_enabled else "RAG: OFF"
+            self.rag_status.update(status)
+        except Exception:
+            # Widget not yet available or app shutting down
+            pass
+
+    async def action_toggle_rag(self) -> None:
+        """Toggle RAG for current session."""
+        try:
+            endpoint = "disable" if self.rag_enabled else "enable"
+            async with httpx.AsyncClient() as client:
+                res = await client.post(
+                    f"{self.api_base_url}/api/v1/sessions/{self.session}/rag/{endpoint}"
+                )
+                res.raise_for_status()
+
+            self.rag_enabled = not self.rag_enabled
+            self._update_rag_status()
+            log.info(f"RAG {'enabled' if self.rag_enabled else 'disabled'} for session {self.session}")
+        except Exception as e:
+            log.error(f"Failed to toggle RAG: {type(e).__name__}: {e}")
 
     async def action_pick_session(self) -> None:
         """Open the session picker and switch to the selected session."""
@@ -230,6 +276,8 @@ class MyGPTTUI(App):
             self.output.clear()
             # Show confirmation message
             self.output.append(f"Switched to session: {session_name}\n\n")
+            # Fetch RAG status for new session
+            await self._fetch_rag_status()
             log.info("Session switched", extra={"session": session_name})
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -254,9 +302,10 @@ class MyGPTTUI(App):
         payload = {
             "session": self.session,
             "prompt": prompt,
+            "rag_enabled": self.rag_enabled,
         }
 
-        log.debug("Sending chat request", extra={"session": self.session})
+        log.debug("Sending chat request", extra={"session": self.session, "rag_enabled": self.rag_enabled})
 
         try:
             async with httpx.AsyncClient(timeout=None) as client:

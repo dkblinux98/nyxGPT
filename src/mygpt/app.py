@@ -13,7 +13,7 @@ import urllib.request
 import urllib.error
 from configparser import ConfigParser
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request, Body
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Body, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.status import HTTP_401_UNAUTHORIZED
@@ -527,7 +527,7 @@ def _chat_runtime_defaults(cfg: ConfigParser | None = None) -> dict[str, Any]:
     """
 
     cfg = cfg or load_config(None)
-    rag_enabled = cfg.getboolean("rag", "enabled", fallback=False)
+    rag_enabled = cfg.getboolean("rag", "enable_chat_context", fallback=False)
     return {
         "cfg": cfg,
         "default_model": get_default_model(cfg),
@@ -1038,6 +1038,152 @@ def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
         return RagQueryResponse(results=out)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.get("/sessions/{name}/metadata")
+def get_session_metadata(name: str) -> dict[str, Any]:
+    """Get metadata for a specific session."""
+    cfg = load_config(None)
+    sessions_dir = get_sessions_dir(cfg)
+    sf = sessions.session_file_for(name, sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    # Create session files if they don't exist
+    if not sf.exists():
+        sessions.save_session_messages(sf, [])
+
+    meta = sessions.load_session_meta(mf)
+    meta = sessions.ensure_meta_defaults(meta)
+    sessions.save_session_meta(mf, meta)
+
+    return meta
+
+
+@api.post("/sessions/{name}/rag/enable")
+def enable_session_rag(name: str) -> dict[str, Any]:
+    """Enable RAG for a specific session."""
+    cfg = load_config(None)
+    sessions_dir = get_sessions_dir(cfg)
+    sf = sessions.session_file_for(name, sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    # Create session files if they don't exist
+    if not sf.exists():
+        sessions.save_session_messages(sf, [])
+
+    meta = sessions.load_session_meta(mf)
+    meta = sessions.ensure_meta_defaults(meta)
+    meta["rag_enabled"] = True
+    sessions.save_session_meta(mf, meta)
+
+    return {"session": name, "rag_enabled": True}
+
+
+@api.post("/sessions/{name}/rag/disable")
+def disable_session_rag(name: str) -> dict[str, Any]:
+    """Disable RAG for a specific session."""
+    cfg = load_config(None)
+    sessions_dir = get_sessions_dir(cfg)
+    sf = sessions.session_file_for(name, sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    # Create session files if they don't exist
+    if not sf.exists():
+        sessions.save_session_messages(sf, [])
+
+    meta = sessions.load_session_meta(mf)
+    meta = sessions.ensure_meta_defaults(meta)
+    meta["rag_enabled"] = False
+    sessions.save_session_meta(mf, meta)
+
+    return {"session": name, "rag_enabled": False}
+
+
+@api.post("/rag/upload", response_model=RagIngestResponse)
+async def rag_upload_file(
+    file: UploadFile = File(...),
+    doc_id: str | None = None,
+) -> RagIngestResponse:
+    """Upload and ingest a document for RAG with proper markdown parsing."""
+    # Validate file type
+    allowed_types = {".txt", ".md", ".json", ".pdf"}
+    file_ext = Path(file.filename or "").suffix.lower()
+    if file_ext not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File type {file_ext} not supported. Allowed: {', '.join(allowed_types)}"
+        )
+
+    # Read file content
+    content = await file.read()
+
+    # Parse based on file type
+    if file_ext == ".pdf":
+        # Handle PDF (if pypdf available)
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(content))
+            text = "\n\n".join(page.extract_text() for page in reader.pages)
+        except ImportError:
+            raise HTTPException(status_code=400, detail="PDF support not available. Install pypdf: pip install pypdf")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"PDF parsing failed: {e}")
+
+    elif file_ext == ".md":
+        # Handle Markdown with proper parsing (#2667)
+        try:
+            import frontmatter
+            from markdown import markdown
+            from bs4 import BeautifulSoup
+
+            # Parse frontmatter and content
+            post = frontmatter.loads(content.decode("utf-8"))
+
+            # Extract metadata from frontmatter
+            metadata = dict(post.metadata) if post.metadata else {}
+
+            # Convert markdown to plain text (strip HTML tags)
+            # This preserves structure while making it searchable
+            html = markdown(post.content)
+            soup = BeautifulSoup(html, 'html.parser')
+            text = soup.get_text(separator='\n\n')
+
+            # Prepend frontmatter as metadata section
+            if metadata:
+                meta_str = "\n".join(f"{k}: {v}" for k, v in metadata.items())
+                text = f"[Metadata]\n{meta_str}\n\n{text}"
+
+        except ImportError:
+            # Fallback to plain text if libraries unavailable
+            text = content.decode("utf-8")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Markdown parsing failed: {e}")
+
+    elif file_ext == ".json":
+        # JSON files stored as formatted text
+        import json
+        try:
+            data = json.loads(content.decode("utf-8"))
+            text = json.dumps(data, indent=2, ensure_ascii=False)
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON file: {e}")
+
+    else:
+        # Plain text
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"File encoding error: {e}")
+
+    # Use filename as doc_id if not provided
+    final_doc_id = doc_id or file.filename or f"upload_{uuid.uuid4().hex[:8]}"
+
+    # Ingest
+    try:
+        chunks = ingest_document(doc_id=final_doc_id, text=text)
+        return RagIngestResponse(doc_id=final_doc_id, chunks_ingested=chunks)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")
 
 
 app.include_router(api)

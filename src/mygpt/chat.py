@@ -80,6 +80,7 @@ def _prepare_chat_context(
     system: str | None = None,
     config_path: str | None = None,
     sessions_dir: str | None = None,
+    rag_enabled: bool | None = None,
 ) -> ChatContext:
     """Prepare messages and context for a chat interaction.
 
@@ -119,11 +120,20 @@ def _prepare_chat_context(
         messages.append({"role": "system", "content": sys_msg.strip()})
 
     # Optional RAG context injection
-    rag_enabled = _get_bool(cfg, "rag", "enable_chat_context", False)
+    # Priority: 1) explicit rag_enabled param, 2) session metadata, 3) global config
+    if rag_enabled is not None:
+        should_use_rag = rag_enabled
+    else:
+        session_rag = state.meta.get("rag_enabled")
+        if isinstance(session_rag, bool):
+            should_use_rag = session_rag
+        else:
+            should_use_rag = _get_bool(cfg, "rag", "enable_chat_context", False)
+
     rag_context = ""
     rag_chunks = 0
 
-    if rag_enabled:
+    if should_use_rag:
         rows = retrieve_context(prompt)
         rag_chunks = len(rows)
         rag_context = compose_context(rows)
@@ -184,6 +194,7 @@ def chat(
     system: str | None = None,
     config_path: str | None = None,
     sessions_dir: str | None = None,
+    rag_enabled: bool | None = None,
 ) -> ChatResult:
     """Run a chat turn, persisting session history. Optionally inject RAG context."""
 
@@ -195,6 +206,7 @@ def chat(
         system=system,
         config_path=config_path,
         sessions_dir=sessions_dir,
+        rag_enabled=rag_enabled,
     )
 
     reply = ollama_chat(
@@ -225,6 +237,7 @@ def chat_stream(
     system: str | None = None,
     config_path: str | None = None,
     sessions_dir: str | None = None,
+    rag_enabled: bool | None = None,
 ) -> Iterator[str]:
     """Yield assistant text chunks for a chat turn while persisting the final reply.
 
@@ -240,6 +253,7 @@ def chat_stream(
         system=system,
         config_path=config_path,
         sessions_dir=sessions_dir,
+        rag_enabled=rag_enabled,
     )
 
     logger.debug(

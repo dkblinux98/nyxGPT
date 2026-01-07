@@ -33,6 +33,7 @@ class SessionMetadata(TypedDict):
     title: NotRequired[str]
     summary: NotRequired[str]
     model: NotRequired[str]
+    rag_enabled: NotRequired[bool]  # Per-session RAG enable/disable
 
 
 # For backwards compatibility, keep dict[str, Any] in function signatures
@@ -216,6 +217,15 @@ def ensure_meta_defaults(
         meta["tags"] = normalize_tags([str(x) for x in meta["tags"]])
     if model:
         meta["model"] = model
+
+    # Initialize rag_enabled from global config if not set
+    if "rag_enabled" not in meta or not isinstance(meta.get("rag_enabled"), bool):
+        cfg = load_config(None)
+        try:
+            meta["rag_enabled"] = cfg.getboolean("rag", "enable_chat_context", fallback=False)
+        except Exception:
+            meta["rag_enabled"] = False
+
     return meta
 
 
