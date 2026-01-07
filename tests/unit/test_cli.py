@@ -191,3 +191,41 @@ def test_sessions_export_default_format_is_markdown(tmp_path: Path, capsys: pyte
     # Should be markdown format by default
     assert "# Default Format" in captured.out
     assert "## User" in captured.out
+
+
+def test_sessions_export_file_write_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test export fails gracefully when file write fails."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("test-write-error", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [{"role": "user", "content": "Test"}]
+    metadata = {"title": "Write Error Test", "created_at": "2024-01-01T12:00:00"}
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    # Try to write to a read-only directory
+    readonly_dir = tmp_path / "readonly"
+    readonly_dir.mkdir()
+    readonly_dir.chmod(0o444)  # Read-only
+
+    output_file = readonly_dir / "export.md"
+
+    exit_code = cli([
+        "sessions", "export", "test-write-error",
+        "--sessions-dir", str(sessions_dir),
+        "--output", str(output_file)
+    ])
+
+    # Should return exit code 1 for write error
+    assert exit_code == 1
+
+    captured = capsys.readouterr()
+    assert "ERROR: Failed to write to" in captured.err
+    assert str(output_file) in captured.err
+
+    # Cleanup
+    readonly_dir.chmod(0o755)
