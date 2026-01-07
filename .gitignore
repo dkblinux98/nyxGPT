@@ -24,10 +24,10 @@ coverage/
 # Codex/Github/Jupyter
 AGENTS.md
 chat_history.md
-notebooks/
+jupyter-notebooks/
 
 # Project Analysis
-code_review/*
+claude-project-review/*
 product_management/*
 project_management/*
 performance_analysis/*
