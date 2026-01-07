@@ -28,7 +28,7 @@ export default function ChatPane({ sessionName }: Props) {
   useEffect(() => {
     async function fetchModels() {
       try {
-        const res = await fetch('/api/v1/models');
+        const res = await fetch('/api/models');
         if (res.ok) {
           const data = await res.json();
           const models = data.models || [];
@@ -37,6 +37,8 @@ export default function ChatPane({ sessionName }: Props) {
           if (models.length > 0 && !selectedModel) {
             setSelectedModel(models[0]);
           }
+        } else {
+          console.error('Failed to fetch models:', res.status, res.statusText);
         }
       } catch (err) {
         console.error('Failed to fetch models:', err);
