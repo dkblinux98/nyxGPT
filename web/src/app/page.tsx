@@ -117,7 +117,10 @@ export default function Home() {
   // Refresh session list
   const refreshSessions = async () => {
     try {
-      const res = await fetch('/api/sessions');
+      // Add timestamp to prevent browser caching
+      const res = await fetch(`/api/sessions?t=${Date.now()}`, {
+        cache: 'no-store',
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: SessionsResponse = await res.json();
       setSessions(data.sessions || []);
