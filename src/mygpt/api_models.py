@@ -38,6 +38,15 @@ class TitleRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
 
 
+class RenameRequest(BaseModel):
+    """Request model for renaming a session.
+
+    Allows renaming session with automatic title update and filename sync.
+    """
+    new_name: str = Field(..., min_length=1, max_length=200, description="New session name or title")
+    sync_filename: bool = Field(True, description="Automatically sync filename with sanitized title")
+
+
 class TagsRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
 

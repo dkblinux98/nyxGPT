@@ -27,7 +27,11 @@ export default function ChatPane({ sessionName }: Props) {
   const [ragStatus, setRagStatus] = useState<'idle' | 'uploading' | 'error'>('idle');
   const [ragError, setRagError] = useState<string | null>(null);
 
-  const title = useMemo(() => `Session: ${sessionName}`, [sessionName]);
+  // Rename state
+  const [sessionTitle, setSessionTitle] = useState<string>('');
+  const [renaming, setRenaming] = useState<boolean>(false);
+
+  const title = useMemo(() => sessionTitle || `Session: ${sessionName}`, [sessionTitle, sessionName]);
 
   // Fetch available models on mount
   useEffect(() => {
@@ -63,18 +67,20 @@ export default function ChatPane({ sessionName }: Props) {
     abortRef.current?.abort();
     abortRef.current = null;
 
-    // Fetch RAG status for the new session
+    // Fetch session metadata (RAG status and title)
     fetch(`/api/sessions/${encodeURIComponent(sessionName)}/metadata`)
       .then(async (res) => {
         if (res.ok) {
           const data = await res.json();
           setRagEnabled(data.rag_enabled || false);
+          setSessionTitle(data.title || '');
           setRagError(null);
         }
       })
       .catch((err) => {
-        console.error('Failed to fetch RAG status:', err);
+        console.error('Failed to fetch session metadata:', err);
         setRagEnabled(false); // Default to disabled if fetch fails
+        setSessionTitle(''); // Default to empty title
       });
   }, [sessionName]);
 
@@ -115,6 +121,43 @@ export default function ChatPane({ sessionName }: Props) {
       const msg = e instanceof Error ? e.message : String(e);
       setRagError(msg);
       setRagStatus('error');
+    }
+  }
+
+  async function renameSession() {
+    const newName = prompt('Enter new session name or title:', sessionTitle || sessionName);
+    if (!newName || newName.trim() === '') return;
+
+    setRenaming(true);
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          new_name: newName.trim(),
+          sync_filename: true,
+        }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.detail || 'Rename failed');
+      }
+
+      const data = await res.json();
+      setSessionTitle(newName.trim());
+
+      // If filename was synced, we might need to reload
+      // For now, just update the title display
+      if (data.new_name !== sessionName) {
+        // Filename changed - reload the page to update URL
+        window.location.href = `/?session=${encodeURIComponent(data.new_name)}`;
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      alert(`Failed to rename session: ${msg}`);
+    } finally {
+      setRenaming(false);
     }
   }
 
@@ -279,6 +322,21 @@ export default function ChatPane({ sessionName }: Props) {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => void renameSession()}
+            disabled={renaming}
+            style={{
+              padding: '6px 10px',
+              cursor: renaming ? 'not-allowed' : 'pointer',
+              borderRadius: 6,
+              border: '1px solid #ddd',
+              background: 'white',
+              fontSize: 14,
+            }}
+            title="Rename session"
+          >
+            {renaming ? 'Renaming...' : '✏️ Rename'}
+          </button>
           <select
             onChange={(e) => {
               if (e.target.value) {
