@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.unit
-
 from mygpt import sessions
+
+pytestmark = pytest.mark.unit
 
 
 def _cfg_with_sessions_dir(sessions_dir: Path) -> configparser.ConfigParser:
@@ -385,3 +385,123 @@ def test_export_includes_all_metadata_fields(tmp_path: Path) -> None:
     assert "Complete Metadata Test" in html_content
     assert "Has all fields" in html_content
     assert "tag1, tag2, tag3" in html_content
+
+
+# --- File Locking Tests ---
+
+
+# Helper functions for multiprocessing tests (must be module-level for pickle)
+def _hold_lock_for_duration(file_path: Path, duration: float) -> None:
+    """Helper: hold a lock for specified duration."""
+    import time
+    with sessions.file_lock(file_path, timeout=10.0):
+        time.sleep(duration)
+
+
+def _hold_lock_briefly(file_path: Path) -> None:
+    """Helper: hold a lock briefly."""
+    import time
+    with sessions.file_lock(file_path, timeout=10.0):
+        time.sleep(0.5)
+
+
+def test_file_lock_acquisition_and_release(tmp_path: Path) -> None:
+    """Test that file_lock successfully acquires and releases locks."""
+    test_file = tmp_path / "test.lock"
+    test_file.touch()
+
+    # Should be able to acquire lock
+    with sessions.file_lock(test_file, timeout=1.0) as fd:
+        assert fd >= 0  # Valid file descriptor
+
+    # Should be able to acquire lock again after release
+    with sessions.file_lock(test_file, timeout=1.0) as fd:
+        assert fd >= 0
+
+
+def test_file_lock_timeout_when_locked(tmp_path: Path) -> None:
+    """Test that file_lock raises TimeoutError when file is already locked."""
+    import multiprocessing
+    import time
+
+    test_file = tmp_path / "test.lock"
+    test_file.touch()
+
+    # Start a process that holds the lock for 2 seconds
+    p = multiprocessing.Process(target=_hold_lock_for_duration, args=(test_file, 2.0))
+    p.start()
+
+    try:
+        # Give the process time to acquire the lock
+        time.sleep(0.5)
+
+        # Try to acquire lock with 0.5s timeout (should fail since lock is held)
+        with pytest.raises(TimeoutError, match="Could not acquire lock"):
+            with sessions.file_lock(test_file, timeout=0.5):
+                pass
+
+    finally:
+        p.join(timeout=5)
+        if p.is_alive():
+            p.terminate()
+
+
+def test_file_lock_waits_and_succeeds(tmp_path: Path) -> None:
+    """Test that file_lock waits for lock to become available."""
+    import multiprocessing
+    import time
+
+    test_file = tmp_path / "test.lock"
+    test_file.touch()
+
+    # Start a process that holds the lock briefly
+    p = multiprocessing.Process(target=_hold_lock_briefly, args=(test_file,))
+    p.start()
+
+    try:
+        # Give the process time to acquire the lock
+        time.sleep(0.2)
+
+        # Try to acquire lock with 2s timeout (should succeed after waiting)
+        with sessions.file_lock(test_file, timeout=2.0) as fd:
+            assert fd >= 0
+
+    finally:
+        p.join(timeout=5)
+        if p.is_alive():
+            p.terminate()
+
+
+def test_sync_filename_with_title_uses_file_locking(tmp_path: Path) -> None:
+    """Test that sync_filename_with_title uses file locking during rename."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create a session with a title
+    sf, mf, msgs, meta = sessions.init_session(
+        session_name="old-name",
+        sessions_dir=sessions_dir,
+        new_session=True,
+        model="llama3.1:8b",
+    )
+    meta["title"] = "New Session Title"
+    sessions.save_session_meta(mf, meta)
+
+    # Rename should succeed (with file locking)
+    success, message, new_name = sessions.sync_filename_with_title(
+        "old-name", sessions_dir, force=True
+    )
+
+    assert success
+    assert message == "renamed"
+    assert new_name == "new-session-title"
+
+    # Verify new files exist
+    new_sf = sessions.session_file_for(new_name, sessions_dir)
+    new_mf = sessions.meta_file_for(new_sf)
+    assert new_sf.exists()
+    assert new_mf.exists()
+
+    # Verify old files are deleted
+    assert not sf.exists()
+    assert not mf.exists()
