@@ -34,3 +34,4 @@ performance_analysis/*
 
 # Scripts
 scripts/duplicate_github_issue.py
+scripts/delete_github_action_workflow_history.sh
