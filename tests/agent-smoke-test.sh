@@ -1,9 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# scripts/smoke_agents.sh
+# scripts/agent_smoke_test.sh
 # Full end-to-end agent smoke test (local), with pause + auto-restore by default.
 # Bash 3.2 compatible.
+#
+# This script tests the *control plane* (status/assignees/PR/merge/branch delete).
+# It does NOT test "Developer implements issue" (that happens in GitHub Actions via Claude).
+#
+# Default behavior:
+#   - Pick next backlog issue (or --issue)
+#   - Capture original issue state (assignees, open/closed, Project Status)
+#   - Scrummaster starts issue (In Progress + assign developer)
+#   - Developer creates branch
+#   - Create an EMPTY commit (no files touched)
+#   - Developer submits PR for review
+#   - Review accepts + merges
+#   - Delete remote branch
+#   - Restore original issue/project state
+#   - Pause between each step
+#
+# Options are "turn off" behaviors: --no-pr, --no-merge, --no-branch-delete, --no-restore, --no-pause
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -22,7 +39,6 @@ DO_PAUSE=1
 
 KIND="feat"
 PREFIX="smoke"
-SMOKE_DIR=".agent-smoke"
 
 usage() {
   cat <<EOF
@@ -30,7 +46,7 @@ Usage:
   $(basename "$0") [options]
 
 Defaults:
-  - Full flow: start issue -> create branch -> commit -> PR -> merge -> delete branch
+  - Full flow: start issue -> create branch -> (empty commit) -> PR -> merge -> delete branch
   - Pause between steps
   - Auto-restore issue state (assignees, open/closed, project status)
 
@@ -42,7 +58,7 @@ Options (turn off behaviors):
   --no-pr              Do NOT create PR (implies --no-merge)
   --no-merge           Do NOT merge PR
   --no-branch-delete   Do NOT delete remote branch
-  --no-restore         Do NOT restore issue state
+  --no-restore         Do NOT restore issue/project state
   --no-pause           Do NOT pause between steps
 
   -h, --help           Show help
@@ -98,34 +114,42 @@ ensure_clean_tree() {
   fi
 }
 
-# Capture current issue state for restore
+# ---------- Auto-restore state ----------
+SMOKE_TMP_DIR=""
 ORIG_STATE=""
 ORIG_ASSIGNEES_FILE=""
 ORIG_STATUS=""
 
+cleanup_tmp() {
+  [[ -n "${SMOKE_TMP_DIR:-}" && -d "$SMOKE_TMP_DIR" ]] && rm -rf "$SMOKE_TMP_DIR" || true
+  [[ -n "${ORIG_ASSIGNEES_FILE:-}" && -f "$ORIG_ASSIGNEES_FILE" ]] && rm -f "$ORIG_ASSIGNEES_FILE" || true
+}
+trap cleanup_tmp EXIT
+
 capture_issue_state() {
   local issue="$1"
+
+  SMOKE_TMP_DIR="$(mktemp -d)"
   ORIG_ASSIGNEES_FILE="$(mktemp)"
-  # state + assignees
+
   gh api "repos/$REPO_FULL/issues/$issue" \
-    --jq '{state:.state, assignees:[.assignees[].login]}' > "$SMOKE_DIR/orig_issue_${issue}.json"
+    --jq '{state:.state, assignees:[.assignees[].login]}' > "$SMOKE_TMP_DIR/orig_issue.json"
 
-  ORIG_STATE="$(jq -r '.state' "$SMOKE_DIR/orig_issue_${issue}.json")"
-  jq -r '.assignees[]?' "$SMOKE_DIR/orig_issue_${issue}.json" > "$ORIG_ASSIGNEES_FILE"
+  ORIG_STATE="$(jq -r '.state' "$SMOKE_TMP_DIR/orig_issue.json")"
+  jq -r '.assignees[]?' "$SMOKE_TMP_DIR/orig_issue.json" > "$ORIG_ASSIGNEES_FILE"
 
-  # project status (best-effort; issue should be in project after ensure_issue_in_project)
-  local item_id project_id
-  item_id="$(ensure_issue_in_project "$issue")"
+  # Capture ProjectV2 status (best-effort)
+  ensure_issue_in_project "$issue" >/dev/null
+
+  local project_id
   project_id="$(get_project_id)"
 
-  # Query a page of items until we find the issue and extract status
   local q='query($project:ID!, $after:String){
     node(id:$project){
       ... on ProjectV2{
         items(first:100, after:$after){
           pageInfo{ hasNextPage endCursor }
           nodes{
-            id
             content{ __typename ... on Issue { number } }
             fieldValues(first:50){
               nodes{
@@ -143,9 +167,11 @@ capture_issue_state() {
   }'
 
   local after="" found=""
+  ORIG_STATUS=""
   while :; do
     local resp
     resp="$(graphql "$q" -F project="$project_id" -F after="$after")"
+
     ORIG_STATUS="$(echo "$resp" | jq -r --argjson n "$issue" --arg f "$STATUS_FIELD" '
       .data.node.items.nodes[]
       | select(.content.__typename=="Issue" and .content.number==$n)
@@ -181,16 +207,13 @@ restore_issue_state() {
     gh api -X PATCH "repos/$REPO_FULL/issues/$issue" -f state=closed >/dev/null
   fi
 
-  # Restore assignees (set exact list)
+  # Restore assignees exactly
   local assignees_json
-  assignees_json="$(jq -Rn '
-    [inputs | select(length>0)]
-  ' < "$ORIG_ASSIGNEES_FILE")"
-
+  assignees_json="$(jq -Rn '[inputs | select(length>0)]' < "$ORIG_ASSIGNEES_FILE")"
   gh api -X PATCH "repos/$REPO_FULL/issues/$issue" \
     --input <(jq -n --argjson a "$assignees_json" '{assignees:$a}') >/dev/null
 
-  # Restore project status if we captured it
+  # Restore project status if captured
   if [[ -n "${ORIG_STATUS:-}" ]]; then
     set_issue_status "$issue" "$ORIG_STATUS"
   fi
@@ -198,7 +221,7 @@ restore_issue_state() {
   log "Restore complete."
 }
 
-# Track PR and branch for cleanup/restore context
+# Track PR and branch for cleanup
 PR_NUMBER=""
 CUR_BRANCH=""
 START_BRANCH=""
@@ -211,11 +234,11 @@ cleanup_branch() {
 }
 
 # ---------- Start ----------
-mkdir -p "$SMOKE_DIR"
 ensure_clean_tree
 
 START_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 log "repo=$REPO_FULL base_branch=$BASE_BRANCH start_branch=$START_BRANCH config=$MYGPT_CONFIG_FILE"
+pause
 
 # Choose issue
 if [[ -z "$ISSUE" ]]; then
@@ -233,7 +256,7 @@ if [[ "$DO_RESTORE" == "1" ]]; then
 fi
 
 # Scrummaster start issue (In Progress + assign developer)
-log "Scrummaster: start issue (In progress + assign developer)"
+log "Scrummaster: start issue (In Progress + assign developer)"
 ./scripts/agents/scrummaster_start_issue.sh "$ISSUE"
 log "OK"
 pause
@@ -245,13 +268,11 @@ CUR_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 log "now on branch: $CUR_BRANCH"
 pause
 
-# Make a harmless commit so PR has content (local smoke file)
-SMOKE_FILE="$SMOKE_DIR/issue-${ISSUE}.txt"
-date +"smoke test %Y-%m-%d %H:%M:%S %z" > "$SMOKE_FILE"
-git add "$SMOKE_FILE"
-git commit -m "chore(smoke): issue #$ISSUE"
+# Empty commit (no files touched; works with ignored directories)
+log "Creating EMPTY smoke commit (no file changes)"
+git commit --allow-empty -m "chore(smoke): issue #$ISSUE"
 git push -u origin HEAD
-log "Pushed smoke commit."
+log "Pushed empty commit."
 pause
 
 # Developer submit PR (optional)
