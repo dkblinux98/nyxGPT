@@ -233,7 +233,7 @@ if [[ "$DO_RESTORE" == "1" ]]; then
 fi
 
 # Scrummaster start issue (In Progress + assign developer)
-log "Scrummaster: start issue (In Progress + assign developer)"
+log "Scrummaster: start issue (In progress + assign developer)"
 ./scripts/agents/scrummaster_start_issue.sh "$ISSUE"
 log "OK"
 pause
