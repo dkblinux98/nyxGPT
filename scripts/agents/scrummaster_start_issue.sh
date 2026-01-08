@@ -13,21 +13,38 @@ Sets:
   - Issue Status -> In Progress
   - Assignee -> DEV_AGENT
   - Comment notifying assignment
+
+Options:
+  --dry-run   Print actions without making changes
+  -h, --help  Show this help
 EOF
 }
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then usage; exit 0; fi
-if [[ "${1:-}" == "--self-test" ]]; then
-  load_config; require_gh_auth; require_cmd jq; require_cmd gh
-  echo "OK"; exit 0
+DRY_RUN=0
+
+# --- args ---
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
 fi
 
-DRY_RUN=0
-if [[ "${1:-}" == "--dry-run" ]]; then DRY_RUN=1; shift; fi
+if [[ "${1:-}" == "--dry-run" ]]; then
+  DRY_RUN=1
+  shift
+fi
 
 ISSUE="${1:-}"
-if [[ -z "$ISSUE" ]]; then usage >&2; exit 2; fi
+if [[ -z "$ISSUE" ]]; then
+  usage >&2
+  exit 2
+fi
 
+if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+  echo "[error] issue_number must be numeric, got: '$ISSUE'" >&2
+  exit 2
+fi
+
+# --- config/auth ---
 load_config
 require_gh_auth
 

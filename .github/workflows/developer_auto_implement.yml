@@ -14,69 +14,134 @@ jobs:
       pull-requests: write
       issues: write
 
+    env:
+      GH_TOKEN: ${{ secrets.DEV_AGENT_TOKEN }}
+
+      # Write config to a TEMP location on the runner (never touches ~/.myGPT)
+      MYGPT_CONFIG_FILE: ${{ runner.temp }}/mygpt-config.ini
+
+      # Source of truth: GitHub Variables (Settings -> Secrets and variables -> Actions -> Variables)
+      REPO_OWNER: ${{ vars.REPO_OWNER }}
+      REPO_NAME: ${{ vars.REPO_NAME }}
+      PROJECT_OWNER: ${{ vars.PROJECT_OWNER }}
+      PROJECT_NUMBER: ${{ vars.PROJECT_NUMBER }}
+
+      DEV_AGENT: ${{ vars.DEV_AGENT }}
+      REVIEW_AGENT: ${{ vars.REVIEW_AGENT }}
+      SCRUM_AGENT: ${{ vars.SCRUM_AGENT }}
+      HUMAN_OWNER: ${{ vars.HUMAN_OWNER }}
+
+      STATUS_FIELD: ${{ vars.STATUS_FIELD }}
+      STATUS_BACKLOG: ${{ vars.STATUS_BACKLOG }}
+      STATUS_IN_PROGRESS: ${{ vars.STATUS_IN_PROGRESS }}
+      STATUS_IN_REVIEW: ${{ vars.STATUS_IN_REVIEW }}
+      STATUS_FOR_RELEASE: ${{ vars.STATUS_FOR_RELEASE }}
+
+      RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install gh
-        uses: cli/cli@v2
+      - name: Auth gh
+        run: gh auth status
 
-      - name: Auth gh with developer-agent token
-        env:
-          GH_TOKEN: ${{ secrets.DEV_AGENT_TOKEN }}
+      - name: Write ephemeral config.ini (from vars)
         run: |
-          gh auth status
+          cat > "$MYGPT_CONFIG_FILE" <<EOF
+          REPO_OWNER=${REPO_OWNER}
+          REPO_NAME=${REPO_NAME}
+          PROJECT_OWNER=${PROJECT_OWNER}
+          PROJECT_NUMBER=${PROJECT_NUMBER}
 
-      - name: Write ephemeral config.ini
-        run: |
-          mkdir -p "$HOME/.myGPT"
-          cat > "$HOME/.myGPT/config.ini" <<'EOF'
-          [github]
-          repo_owner = dkblinux98
-          repo_name = myGPT
-          project_owner = dkblinux98
-          project_number = 2
+          DEV_AGENT=${DEV_AGENT}
+          REVIEW_AGENT=${REVIEW_AGENT}
+          SCRUM_AGENT=${SCRUM_AGENT}
+          HUMAN_OWNER=${HUMAN_OWNER}
 
-          field_status = Status
-          status_backlog = Backlog
-          status_in_progress = In Progress
-          status_in_review = In Review
-          status_for_release = For Release
+          STATUS_FIELD=${STATUS_FIELD}
+          STATUS_BACKLOG=${STATUS_BACKLOG}
+          STATUS_IN_PROGRESS=${STATUS_IN_PROGRESS}
+          STATUS_IN_REVIEW=${STATUS_IN_REVIEW}
+          STATUS_FOR_RELEASE=${STATUS_FOR_RELEASE}
 
-          developer_agent = myGPT-developer-agent
-          review_agent = myGPT-review-agent
-          scrummaster_agent = myGPT-scrummaster-agent
-
-          release_branch = v1.0.0
+          RELEASE_BRANCH=${RELEASE_BRANCH}
           EOF
+          echo "Wrote $MYGPT_CONFIG_FILE"
 
-      - name: Verify issue is In Progress (project field)
-        env:
-          GH_TOKEN: ${{ secrets.DEV_AGENT_TOKEN }}
-          MYGPT_CONFIG_FILE: $HOME/.myGPT/config.ini
+      - name: Verify required config variables are set
+        run: |
+          bash -lc '
+            source scripts/agents/lib/gh_project.sh
+            load_config
+            echo "config ok: $REPO_OWNER/$REPO_NAME project $PROJECT_OWNER#$PROJECT_NUMBER"
+          '
+
+      - name: Verify issue is In Progress in ProjectV2
         run: |
           ISSUE="${{ github.event.issue.number }}"
-          # Fail fast unless issue is In Progress in the project
-          python3 - <<'PY'
-import os, subprocess, json, sys
-issue = int(os.environ["ISSUE"])
-cmd = ["bash","-lc", f"""
-source scripts/agents/lib/gh_project.sh
-load_config
-require_gh_auth
-# Returns 0 only if Status == In Progress
-scripts/agents/lib/gh_project.sh >/dev/null 2>&1 || true
-"""]
-PY
-        env:
-          ISSUE: ${{ github.event.issue.number }}
+          bash -lc '
+            set -euo pipefail
+            source scripts/agents/lib/gh_project.sh
+            load_config
+            require_gh_auth
+
+            issue="'"$ISSUE"'"
+            project_id="$(get_project_id)"
+
+            q='\''query($project:ID!, $after:String){
+              node(id:$project){
+                ... on ProjectV2{
+                  items(first:100, after:$after){
+                    pageInfo{ hasNextPage endCursor }
+                    nodes{
+                      content{ __typename ... on Issue { number } }
+                      fieldValues(first:50){
+                        nodes{
+                          __typename
+                          ... on ProjectV2ItemFieldSingleSelectValue {
+                            field{ ... on ProjectV2SingleSelectField { name } }
+                            name
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }'\''
+
+            after=""
+            found=0
+            while :; do
+              resp="$(graphql "$q" -F project="$project_id" -F after="$after")"
+              status="$(echo "$resp" | jq -r --argjson n "$issue" --arg f "$STATUS_FIELD" '
+                .data.node.items.nodes[]
+                | select(.content.__typename=="Issue" and .content.number==$n)
+                | (.fieldValues.nodes[]
+                    | select(.__typename=="ProjectV2ItemFieldSingleSelectValue" and .field.name==$f)
+                    | .name) // empty
+              ' | head -n 1)"
+
+              if [[ -n "$status" ]]; then
+                echo "[auto-implement] issue #$issue status=$status"
+                [[ "$status" == "$STATUS_IN_PROGRESS" ]] || { echo "[auto-implement] not in progress; exiting"; exit 0; }
+                found=1
+                break
+              fi
+
+              has_next="$(echo "$resp" | jq -r ".data.node.items.pageInfo.hasNextPage")"
+              cursor="$(echo "$resp" | jq -r ".data.node.items.pageInfo.endCursor // empty")"
+              [[ "$has_next" == "true" && -n "$cursor" ]] || break
+              after="$cursor"
+            done
+
+            [[ "$found" == "1" ]] || { echo "[auto-implement] issue not found in project; exiting"; exit 0; }
+          '
 
       - name: Create branch for issue
-        env:
-          GH_TOKEN: ${{ secrets.DEV_AGENT_TOKEN }}
-          MYGPT_CONFIG_FILE: $HOME/.myGPT/config.ini
         run: |
           ISSUE="${{ github.event.issue.number }}"
           ./scripts/agents/developer_create_branch.sh "$ISSUE" feat "auto"
@@ -97,9 +162,6 @@ PY
             Output: commit(s) pushed to the current branch.
 
       - name: Submit PR for review
-        env:
-          GH_TOKEN: ${{ secrets.DEV_AGENT_TOKEN }}
-          MYGPT_CONFIG_FILE: $HOME/.myGPT/config.ini
         run: |
           ISSUE="${{ github.event.issue.number }}"
           ./scripts/agents/developer_submit_for_review.sh "$ISSUE"
