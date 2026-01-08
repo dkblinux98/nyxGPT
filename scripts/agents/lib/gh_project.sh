@@ -14,6 +14,10 @@ _debug() { [[ "${DEBUG:-0}" == "1" ]] && echo "[debug] $*" >&2 || true; }
 
 _die() {
   echo "[error] $*" >&2
+  # If sourced, do not kill the user's terminal/shell
+  if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+    return 1
+  fi
   exit 1
 }
 
@@ -49,6 +53,17 @@ load_config() {
       export "$key=$val"
     fi
   done < "$CONFIG_FILE"
+
+  # strict requirements (fail if missing)
+  for k in \
+    REPO_OWNER REPO_NAME \
+    PROJECT_OWNER PROJECT_NUMBER \
+    DEV_AGENT REVIEW_AGENT SCRUM_AGENT \
+    STATUS_FIELD STATUS_BACKLOG STATUS_IN_PROGRESS STATUS_IN_REVIEW STATUS_FOR_RELEASE \
+    RELEASE_BRANCH
+  do
+    [[ -n "${!k:-}" ]] || _die "Missing required config key: $k (in $CONFIG_FILE)"
+  done
 }
 
 # -------------------------
@@ -243,7 +258,7 @@ ensure_issue_in_project() {
 
 # -------------------------
 # Project field updates
-# FIXED: no ProjectV2FieldValue variables anywhere
+# (already uses inline value:{...} — no ProjectV2FieldValue variables)
 # -------------------------
 set_project_field_value() {
   local item_id="$1" field_name="$2" value="$3"
@@ -298,7 +313,6 @@ set_project_field_value() {
   fi
 
   # Default: treat as text field.
-  # JSON-escape safely (includes surrounding quotes).
   local escaped
   escaped="$(jq -Rn --arg t "$value" '$t|@json')"
 
