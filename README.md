@@ -327,9 +327,36 @@ Detailed documentation is organized under `docs/`:
 - **Performance Tuning** – `docs/performance.md`
 - **Testing** – `docs/testing.md`
 - **Architecture** – `docs/architecture.md`
+- **Development** – `docs/development.md`
 - **Troubleshooting** – `docs/troubleshooting.md`
 
 If you are new to the project, start with **architecture**, then **api**, then **ui**.
+
+---
+
+## GitHub Automation
+
+### AI-Assisted Development with Claude Code
+
+This repository uses GitHub Actions to enable AI-assisted development. Mention `@claude` in issues, PR comments, or reviews to get on-demand help:
+
+**The `@claude` workflow runs only when you include `@claude` in:**
+- An issue body or title (when opened or assigned)
+- An issue comment
+- A PR review comment
+- A PR review body
+
+**Example usage:**
+```markdown
+@claude Please implement this feature according to the specifications.
+@claude Review this PR for security concerns.
+@claude Help debug the failing test in CI.
+```
+
+**Automatic code review:**
+All pull requests automatically receive AI code review feedback focusing on quality, bugs, performance, security, and test coverage.
+
+For details, see **docs/development.md**.
 
 ---
 
