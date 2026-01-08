@@ -1,47 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/gh_project.sh
 source "$DIR/lib/gh_project.sh"
 
+require_cmd jq
+require_cmd python3
+
+log() { echo "[scrum] $*" >&2; }
+
+# ---- Init ----
+load_config
 require_gh_auth
 
-# Best-effort deterministic selection:
-# 1) Lowest Phase number (if FIELD_PHASE exists), else ignore
-# 2) Lowest issue number
-# Filters: Status == Backlog, isOpen
-# If Sprint field is iteration, prefer ACTIVE sprint; otherwise no sprint filter.
-
 project_id="$(get_project_id)"
-fields_json="$(load_fields_json)"
+log "Project id: ${project_id}"
 
-phase_field_id="$(field_id_by_name "$FIELD_PHASE" || true)"
-phase_type="$(field_type_by_name "$FIELD_PHASE" || true)"
-status_field_id="$(field_id_by_name "$FIELD_STATUS")"
 status_opt_backlog="$(single_select_option_id "$FIELD_STATUS" "$STATUS_BACKLOG")"
+[[ -n "$status_opt_backlog" && "$status_opt_backlog" != "null" ]] || _die "Status option not found: ${STATUS_BACKLOG}"
+log "Status field '${FIELD_STATUS}' has Backlog option '${STATUS_BACKLOG}'."
 
-if [[ -z "$status_opt_backlog" || "$status_opt_backlog" == "null" ]]; then
-  _die "Status option not found: ${STATUS_BACKLOG}"
-fi
+MAX_PAGES="${MAX_PAGES:-200}"  # growth-safe; stops early once it finds a candidate
+log "Pagination: up to ${MAX_PAGES} pages (stop at first candidate page)"
 
-# Fetch items (limit 100)
-q='query($project:ID!){
+# ---- GraphQL query ----
+q='query($project:ID!, $after:String){
   node(id:$project){
     ... on ProjectV2{
-      items(first:100){
+      items(first:100, after:$after){
+        pageInfo { hasNextPage endCursor }
         nodes{
-          id
           content{
             __typename
-            ... on Issue { number state }
+            ... on Issue {
+              number
+              state
+              milestone { title }
+            }
           }
           fieldValues(first:50){
             nodes{
               __typename
-              ... on ProjectV2ItemFieldSingleSelectValue { field { ... on ProjectV2SingleSelectField { name } } name }
-              ... on ProjectV2ItemFieldTextValue { field { ... on ProjectV2TextField { name } } text }
-              ... on ProjectV2ItemFieldNumberValue { field { ... on ProjectV2NumberField { name } } number }
-              ... on ProjectV2ItemFieldIterationValue { field { ... on ProjectV2IterationField { name } } title }
+              ... on ProjectV2ItemFieldSingleSelectValue {
+                field { ... on ProjectV2SingleSelectField { name } }
+                name
+              }
             }
           }
         }
@@ -49,51 +52,121 @@ q='query($project:ID!){
     }
   }
 }'
-resp="$(graphql "$q" -F project="$project_id")"
 
-# Build list of backlog open issues with optional phase parsing
-python3 - <<'PY'
-import json, re, sys, os
-resp=json.load(sys.stdin)
-items=resp["data"]["node"]["items"]["nodes"]
+fetch_page() {
+  local cursor="${1:-}"
+  if [[ -n "$cursor" ]]; then
+    log "Fetching page (after cursor)..."
+    graphql "$q" -F project="$project_id" -f after="$cursor"
+  else
+    log "Fetching page (first page)..."
+    graphql "$q" -F project="$project_id"
+  fi
+}
+
+# Python: summarize a page and return the best candidate ON THIS PAGE
+# Output JSON: { total_items, issue_items, open_issues, backlog_open, best_issue }
+summarize_page_file() {
+  local json_file="${1:?json file required}"
+  python3 - "$json_file" <<'PY'
+import json, os, re, sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    d = json.load(f)
+
 FIELD_STATUS=os.getenv("FIELD_STATUS","Status")
 STATUS_BACKLOG=os.getenv("STATUS_BACKLOG","Backlog")
-FIELD_PHASE=os.getenv("FIELD_PHASE","Phase")
 
-cands=[]
+def phase_num(title):
+    if not title:
+        return 10**9
+    m = re.search(r'(\d+)', title)
+    return int(m.group(1)) if m else 10**9
+
+items = d["data"]["node"]["items"]["nodes"]
+total = len(items)
+
+issues = 0
+open_issues = 0
+backlog_open = 0
+best = None  # (phase, issue_number)
+
 for it in items:
-    c=it.get("content") or {}
-    if c.get("__typename")!="Issue": 
+    c = it.get("content") or {}
+    if c.get("__typename") != "Issue":
         continue
-    if c.get("state")!="OPEN":
+    issues += 1
+    if c.get("state") != "OPEN":
         continue
-    num=c.get("number")
-    status=None
-    phase=None
-    for fv in (it.get("fieldValues") or {}).get("nodes",[]):
-        t=fv.get("__typename","")
-        if t=="ProjectV2ItemFieldSingleSelectValue":
-            if fv.get("field",{}).get("name")==FIELD_STATUS:
-                status=fv.get("name")
-        if t in ("ProjectV2ItemFieldTextValue","ProjectV2ItemFieldSingleSelectValue"):
-            if fv.get("field",{}).get("name")==FIELD_PHASE:
-                phase = fv.get("text") if "text" in fv else fv.get("name")
-        if t=="ProjectV2ItemFieldNumberValue" and fv.get("field",{}).get("name")==FIELD_PHASE:
-            phase=str(fv.get("number"))
-    if status!=STATUS_BACKLOG:
-        continue
-    # parse phase number if like "Phase 1: ..." or "Phase 1" or "1"
-    phase_n=10**9
-    if phase:
-        m=re.search(r'(\d+)', str(phase))
-        if m:
-            phase_n=int(m.group(1))
-    cands.append((phase_n, int(num), num))
+    open_issues += 1
 
-cands.sort()
-if not cands:
-    sys.exit(1)
-print(cands[0][2])
-PY <<EOF
-$resp
-EOF
+    status = None
+    for fv in (it.get("fieldValues") or {}).get("nodes", []):
+        if fv.get("__typename") == "ProjectV2ItemFieldSingleSelectValue":
+            field = fv.get("field") or {}
+            if field.get("name") == FIELD_STATUS:
+                status = fv.get("name")
+                break
+
+    if status != STATUS_BACKLOG:
+        continue
+
+    backlog_open += 1
+    ms_title = ((c.get("milestone") or {}) or {}).get("title")
+    cand = (phase_num(ms_title), int(c["number"]))
+    if best is None or cand < best:
+        best = cand
+
+out = {
+    "total_items": total,
+    "issue_items": issues,
+    "open_issues": open_issues,
+    "backlog_open": backlog_open,
+    "best_issue": (best[1] if best else None),
+}
+print(json.dumps(out))
+PY
+}
+
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+
+cursor=""
+
+for page in $(seq 1 "$MAX_PAGES"); do
+  resp="$(fetch_page "$cursor")"
+  printf %s "$resp" >"$tmp"
+
+  if jq -e '.errors? // empty' "$tmp" >/dev/null; then
+    jq '.errors' "$tmp" >&2
+    _die "GraphQL returned errors on page ${page}."
+  fi
+
+  bytes="$(wc -c <"$tmp" | tr -d ' ')"
+  has_next="$(jq -r '.data.node.items.pageInfo.hasNextPage' "$tmp")"
+  next_cursor="$(jq -r '.data.node.items.pageInfo.endCursor' "$tmp")"
+
+  summary="$(summarize_page_file "$tmp")"
+  backlog_open="$(echo "$summary" | jq -r '.backlog_open')"
+  best_issue="$(echo "$summary" | jq -r '.best_issue // empty')"
+
+  log "Page ${page}: bytes=${bytes} hasNext=${has_next} backlog_open=${backlog_open} best_issue=${best_issue:-null}"
+
+  if [[ -n "${best_issue:-}" && "${best_issue:-}" != "null" ]]; then
+    log "Selected issue #${best_issue} (first candidate page ${page})"
+    echo "$best_issue"
+    exit 0
+  fi
+
+  if [[ "$has_next" != "true" ]]; then
+    break
+  fi
+  if [[ -z "$next_cursor" || "$next_cursor" == "null" ]]; then
+    _die "hasNextPage=true but endCursor was empty/null on page ${page}"
+  fi
+  cursor="$next_cursor"
+done
+
+log "No Backlog+OPEN issues found."
+exit 1
