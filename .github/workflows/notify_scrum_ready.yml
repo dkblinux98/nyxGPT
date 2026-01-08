@@ -9,7 +9,9 @@ permissions:
 
 jobs:
   notify:
-    if: contains(github.event.comment.body, 'READY_FOR_NEXT_ISSUE')
+    if: >
+      vars.AGENTS_ENABLED == 'true' &&
+      contains(github.event.comment.body, 'READY_FOR_NEXT_ISSUE')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7

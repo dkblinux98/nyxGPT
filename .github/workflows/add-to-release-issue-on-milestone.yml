@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   add:
+    if: vars.AGENTS_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
