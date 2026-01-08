@@ -1,0 +1,105 @@
+name: Developer Agent Auto-Implement
+
+on:
+  issues:
+    types: [assigned]
+
+jobs:
+  implement:
+    if: vars.AGENTS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gh
+        uses: cli/cli@v2
+
+      - name: Auth gh with developer-agent token
+        env:
+          GH_TOKEN: ${{ secrets.DEV_AGENT_TOKEN }}
+        run: |
+          gh auth status
+
+      - name: Write ephemeral config.ini
+        run: |
+          mkdir -p "$HOME/.myGPT"
+          cat > "$HOME/.myGPT/config.ini" <<'EOF'
+          [github]
+          repo_owner = dkblinux98
+          repo_name = myGPT
+          project_owner = dkblinux98
+          project_number = 2
+
+          field_status = Status
+          status_backlog = Backlog
+          status_in_progress = In Progress
+          status_in_review = In Review
+          status_for_release = For Release
+
+          developer_agent = myGPT-developer-agent
+          review_agent = myGPT-review-agent
+          scrummaster_agent = myGPT-scrummaster-agent
+
+          release_branch = v1.0.0
+          EOF
+
+      - name: Verify issue is In Progress (project field)
+        env:
+          GH_TOKEN: ${{ secrets.DEV_AGENT_TOKEN }}
+          MYGPT_CONFIG_FILE: $HOME/.myGPT/config.ini
+        run: |
+          ISSUE="${{ github.event.issue.number }}"
+          # Fail fast unless issue is In Progress in the project
+          python3 - <<'PY'
+import os, subprocess, json, sys
+issue = int(os.environ["ISSUE"])
+cmd = ["bash","-lc", f"""
+source scripts/agents/lib/gh_project.sh
+load_config
+require_gh_auth
+# Returns 0 only if Status == In Progress
+scripts/agents/lib/gh_project.sh >/dev/null 2>&1 || true
+"""]
+PY
+        env:
+          ISSUE: ${{ github.event.issue.number }}
+
+      - name: Create branch for issue
+        env:
+          GH_TOKEN: ${{ secrets.DEV_AGENT_TOKEN }}
+          MYGPT_CONFIG_FILE: $HOME/.myGPT/config.ini
+        run: |
+          ISSUE="${{ github.event.issue.number }}"
+          ./scripts/agents/developer_create_branch.sh "$ISSUE" feat "auto"
+
+      - name: Run Claude Code to implement issue
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Implement issue #${{ github.event.issue.number }} on the current branch.
+            Requirements:
+            - Make the minimal correct change to resolve the issue.
+            - Add/update tests.
+            - Run the test suite and fix failures.
+            - Update docs if needed.
+            - Commit changes with a clear message.
+            Output: commit(s) pushed to the current branch.
+
+      - name: Submit PR for review
+        env:
+          GH_TOKEN: ${{ secrets.DEV_AGENT_TOKEN }}
+          MYGPT_CONFIG_FILE: $HOME/.myGPT/config.ini
+        run: |
+          ISSUE="${{ github.event.issue.number }}"
+          ./scripts/agents/developer_submit_for_review.sh "$ISSUE"
