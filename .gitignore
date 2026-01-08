@@ -7,6 +7,7 @@
 .venv/
 __pycache__/
 *.py[cod]
+*.egg-info/
 
 # macOS
 .DS_Store
@@ -19,3 +20,17 @@ build/
 dist/
 out/
 coverage/
+
+# Codex/Github/Jupyter
+chat_history.md
+jupyter-notebooks/
+
+# Project Analysis
+claude-project-review/*
+product_management/*
+project_management/*
+performance_analysis/*
+/.coverage
+
+# Scripts
+scripts/duplicate_github_issue.py
