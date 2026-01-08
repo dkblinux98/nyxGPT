@@ -22,7 +22,6 @@ out/
 coverage/
 
 # Codex/Github/Jupyter
-AGENTS.md
 chat_history.md
 jupyter-notebooks/
 
