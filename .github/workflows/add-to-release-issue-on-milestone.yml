@@ -1,0 +1,52 @@
+name: Add issue to release issue on milestone assignment
+
+on:
+  issues:
+    types: [milestoned]
+
+permissions:
+  issues: write
+
+jobs:
+  add:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.RELEASE_TRACKING_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const issue = context.payload.issue;
+            if (issue.pull_request) return;
+
+            const issueNumber = issue.number;
+            const milestoneTitle = issue.milestone?.title || "(no milestone)";
+
+            const releaseIssueNumber = Number(process.env.RELEASE_ISSUE_NUMBER);
+            if (!releaseIssueNumber) {
+              core.setFailed("Missing RELEASE_ISSUE_NUMBER repo variable.");
+              return;
+            }
+
+            const rel = await github.rest.issues.get({ owner, repo, issue_number: releaseIssueNumber });
+            const body = rel.data.body || "";
+
+            // Avoid duplicates
+            if (body.includes(`#${issueNumber}`)) return;
+
+            const line = `- [ ] #${issueNumber}`;
+            const newBody = body.trimEnd() + `\n${line}\n`;
+
+            await github.rest.issues.update({
+              owner, repo, issue_number: releaseIssueNumber,
+              body: newBody
+            });
+
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: issueNumber,
+              body: `Added to release tracking issue #${releaseIssueNumber} (milestone: **${milestoneTitle}**).`
+            });
+        env:
+          RELEASE_ISSUE_NUMBER: ${{ vars.RELEASE_ISSUE_NUMBER }}
