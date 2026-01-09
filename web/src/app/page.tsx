@@ -339,13 +339,26 @@ export default function Home() {
     setSrAnnouncement(message);
     setShortcutFeedback(message);
 
-    // Clear any existing timeouts
-    if (feedbackTimeoutRef.current) clearTimeout(feedbackTimeoutRef.current);
-    if (srTimeoutRef.current) clearTimeout(srTimeoutRef.current);
+    // Clear existing timeouts first
+    if (feedbackTimeoutRef.current) {
+      clearTimeout(feedbackTimeoutRef.current);
+      feedbackTimeoutRef.current = null;
+    }
+    if (srTimeoutRef.current) {
+      clearTimeout(srTimeoutRef.current);
+      srTimeoutRef.current = null;
+    }
 
-    // Set new timeouts and store IDs
-    feedbackTimeoutRef.current = setTimeout(() => setShortcutFeedback(''), 2000);
-    srTimeoutRef.current = setTimeout(() => setSrAnnouncement(''), 1000);
+    // Then set new timeouts and null refs when they fire
+    feedbackTimeoutRef.current = setTimeout(() => {
+      setShortcutFeedback('');
+      feedbackTimeoutRef.current = null;
+    }, 2000);
+
+    srTimeoutRef.current = setTimeout(() => {
+      setSrAnnouncement('');
+      srTimeoutRef.current = null;
+    }, 1000);
   }, []);
 
   // Cleanup timeouts on unmount
@@ -373,11 +386,9 @@ export default function Home() {
       // Cmd/Ctrl + /: Toggle sidebar
       if (isMod && e.key === '/') {
         e.preventDefault();
-        setSidebarVisible((prev) => {
-          const newState = !prev;
-          announce(newState ? 'Sidebar shown' : 'Sidebar hidden');
-          return newState;
-        });
+        setSidebarVisible((prev) => !prev);
+        // Announce based on what the new state will be
+        announce(!sidebarVisible ? 'Sidebar shown' : 'Sidebar hidden');
         return;
       }
 
@@ -400,7 +411,7 @@ export default function Home() {
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [contextMenu, createNewChat, announce]);
+  }, [contextMenu, createNewChat, announce, sidebarVisible]);
 
   // Highlight search matches in text
   const highlightText = (text: string, search: string) => {
