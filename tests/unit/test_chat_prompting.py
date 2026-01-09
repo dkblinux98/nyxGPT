@@ -134,3 +134,81 @@ def test_chat_stream_yields_chunks_and_persists(monkeypatch: pytest.MonkeyPatch,
 
     # Final assembled reply should be persisted
     assert saved["messages"][-1] == {"role": "assistant", "content": "hello"}
+
+
+def test_chat_with_rag_returns_chunk_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """chat() should return RAG chunk metadata when RAG is enabled."""
+    cfg = _cfg(tmp_path, rag_enabled=True)
+
+    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+
+    # Mock RAG retrieval with full chunk structure
+    fake_chunks = [
+        {"text": "Chunk 1 text", "score": 0.95, "doc_id": "doc1", "chunk_id": 0},
+        {"text": "Chunk 2 text", "score": 0.87, "doc_id": "doc1", "chunk_id": 1},
+    ]
+    monkeypatch.setattr("mygpt.chat.retrieve_context", lambda *a, **k: fake_chunks)
+    monkeypatch.setattr("mygpt.chat.ollama_chat", lambda **_: "answer")
+
+    result = chat("question", config_path=None)
+
+    # Verify RAG context is captured
+    assert result.rag_used is True
+    assert result.rag_chunks == 2
+    assert result.rag_context is not None
+    assert len(result.rag_context) == 2
+    assert result.rag_context[0]["text"] == "Chunk 1 text"
+    assert result.rag_context[0]["score"] == 0.95
+    assert result.rag_context[0]["doc_id"] == "doc1"
+    assert result.rag_context[0]["chunk_id"] == 0
+
+
+def test_chat_stream_emits_rag_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """chat_stream should emit RAG metadata as first chunk when RAG is enabled."""
+    cfg = _cfg(tmp_path, rag_enabled=True)
+
+    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+
+    # Mock RAG retrieval
+    fake_chunks = [
+        {"text": "Context text", "score": 0.92, "doc_id": "testdoc", "chunk_id": 5},
+    ]
+    monkeypatch.setattr("mygpt.chat.retrieve_context", lambda *a, **k: fake_chunks)
+
+    # Fake streaming tokens
+    def fake_stream_tokens(*args: Any, **kwargs: Any):
+        yield "answer"
+
+    monkeypatch.setattr("mygpt.chat.ollama_chat_stream_tokens", fake_stream_tokens)
+    monkeypatch.setattr("mygpt.chat.save_session", lambda *a, **k: None)
+
+    # Run streaming chat
+    chunks = list(chat_stream("question", config_path=None))
+
+    # First chunk should be RAG metadata
+    assert len(chunks) >= 2
+    first_chunk = chunks[0]
+    assert "__RAG_START__" in first_chunk
+    assert "__RAG_END__" in first_chunk
+
+    # Extract JSON between markers
+    import json
+    start_marker = "__RAG_START__"
+    end_marker = "__RAG_END__"
+    start_idx = first_chunk.index(start_marker) + len(start_marker)
+    end_idx = first_chunk.index(end_marker)
+    rag_json = first_chunk[start_idx:end_idx]
+    rag_data = json.loads(rag_json)
+
+    # Verify structure
+    assert rag_data["type"] == "rag_metadata"
+    assert len(rag_data["chunks"]) == 1
+    assert rag_data["chunks"][0]["text"] == "Context text"
+    assert rag_data["chunks"][0]["score"] == 0.92
+    assert rag_data["chunks"][0]["doc_id"] == "testdoc"
+    assert rag_data["chunks"][0]["chunk_id"] == 5
+
+    # Subsequent chunks should be the actual response
+    assert chunks[1] == "answer"

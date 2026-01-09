@@ -263,6 +263,11 @@ Use the RAG controls in the chat interface (left of the message input):
 - **RAG Toggle** button to enable/disable RAG for the current session
 - **File Upload** to ingest documents into the RAG database
 - RAG status displays current state (ON/OFF)
+- **RAG Citations** displayed inline with responses showing:
+  - Retrieved source chunks
+  - Relevance scores
+  - Document IDs and chunk numbers
+  - Expandable/collapsible citation view
 
 #### Terminal UI (TUI)
 

@@ -61,10 +61,20 @@ class ChatRequest(BaseModel):
     rag_enabled: bool | None = None  # Override session RAG setting
 
 
+class RagChunkInfo(BaseModel):
+    """Information about a single RAG chunk retrieved for context."""
+    text: str
+    score: float
+    doc_id: str | None = None
+    chunk_id: int | None = None
+
+
 class ChatResponse(BaseModel):
     session: str
     model: str
     reply: str
+    rag_used: bool = False
+    rag_chunks: list[RagChunkInfo] = Field(default_factory=list)
 
 
 # ----------------------------
