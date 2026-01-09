@@ -945,8 +945,10 @@ def sync_filename_with_title(
     try:
         # Lock both files upfront in alphabetical order to prevent deadlock
         # (consistent ordering ensures no process can hold locks in conflicting order)
+        # Capture metadata file existence state before locking to avoid TOCTOU race
         files_to_lock = [sf]
-        if mf.exists():
+        meta_existed_initially = mf.exists()
+        if meta_existed_initially:
             files_to_lock.append(mf)
         files_to_lock.sort(key=lambda p: str(p))  # Alphabetical order by path
 
@@ -959,12 +961,13 @@ def sync_filename_with_title(
                 save_session_messages(new_sf, msgs)
 
                 # 2. Copy metadata file to new location
-                if mf.exists():
+                # Recheck existence after acquiring lock (file could have been deleted)
+                if meta_existed_initially and mf.exists():
                     save_session_meta(new_mf, meta)
 
                 # 3. Delete old files (only after successful copy)
                 sf.unlink()
-                if mf.exists():
+                if meta_existed_initially and mf.exists():
                     mf.unlink()
         else:
             # Only session file needs locking
