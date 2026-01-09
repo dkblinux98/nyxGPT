@@ -1,25 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# scripts/smoke_agents.sh
+# scripts/agent-smoke-test.sh
 # Full end-to-end agent smoke test (local), with pause + auto-restore by default.
 # Bash 3.2 compatible.
 #
-# This script tests the *control plane* (status/assignees/PR/merge/branch delete).
-# It does NOT test "Developer implements issue" (that happens in GitHub Actions via Claude).
-#
-# Default behavior:
-#   - Pick next backlog issue (or --issue)
-#   - Capture original issue state (assignees, open/closed, Project Status)
-#   - Scrummaster starts issue (In Progress + assign developer)
+# This script tests the *control plane*:
+#   - Scrummaster selects & starts issue
 #   - Developer creates branch
-#   - Create an EMPTY commit (no files touched)
-#   - Developer submits PR for review
-#   - Review accepts + merges (review script deletes PR branch)
-#   - Auto-restore issue/project state
-#   - Pause between each step
+#   - Creates an EMPTY commit (no file changes required)
+#   - Developer submits PR
+#   - Review merges + updates status/assignee and (attempts) branch delete
+#   - Ensures branch is actually deleted (deletes if it still exists)
+#   - Optionally restores issue/project state
 #
-# Options are "turn off" behaviors: --no-pr, --no-merge, --no-branch-delete, --no-restore, --no-pause
+# NOTE: This does NOT test "Claude implements the issue" (that is GitHub Actions).
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -28,7 +23,6 @@ die() { echo "[error] $*" >&2; exit 1; }
 log() { echo "[smoke] $*" >&2; }
 need() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
 
-# ---------- Defaults (as requested) ----------
 ISSUE=""
 DO_PR=1
 DO_MERGE=1
@@ -61,11 +55,6 @@ Options (turn off behaviors):
   --no-pause           Do NOT pause between steps
 
   -h, --help           Show help
-
-Examples:
-  scripts/smoke_agents.sh
-  scripts/smoke_agents.sh --issue 2602 --no-restore
-  scripts/smoke_agents.sh --no-merge --no-branch-delete
 EOF
 }
 
@@ -113,7 +102,6 @@ ensure_clean_tree() {
   fi
 }
 
-# ---------- Auto-restore state ----------
 SMOKE_TMP_DIR=""
 ORIG_STATE=""
 ORIG_ASSIGNEES_FILE=""
@@ -137,7 +125,6 @@ capture_issue_state() {
   ORIG_STATE="$(jq -r '.state' "$SMOKE_TMP_DIR/orig_issue.json")"
   jq -r '.assignees[]?' "$SMOKE_TMP_DIR/orig_issue.json" > "$ORIG_ASSIGNEES_FILE"
 
-  # Capture ProjectV2 status (best-effort)
   ensure_issue_in_project "$issue" >/dev/null
 
   local project_id
@@ -199,20 +186,17 @@ restore_issue_state() {
   local issue="$1"
   log "Restoring issue state..."
 
-  # Restore open/closed
   if [[ "$ORIG_STATE" == "OPEN" ]]; then
     gh api -X PATCH "repos/$REPO_FULL/issues/$issue" -f state=open >/dev/null
   else
     gh api -X PATCH "repos/$REPO_FULL/issues/$issue" -f state=closed >/dev/null
   fi
 
-  # Restore assignees exactly
   local assignees_json
   assignees_json="$(jq -Rn '[inputs | select(length>0)]' < "$ORIG_ASSIGNEES_FILE")"
   gh api -X PATCH "repos/$REPO_FULL/issues/$issue" \
     --input <(jq -n --argjson a "$assignees_json" '{assignees:$a}') >/dev/null
 
-  # Restore project status if captured
   if [[ -n "${ORIG_STATUS:-}" ]]; then
     set_issue_status "$issue" "$ORIG_STATUS"
   fi
@@ -220,17 +204,21 @@ restore_issue_state() {
   log "Restore complete."
 }
 
-# Track PR and branch for cleanup
-PR_NUMBER=""
-CUR_BRANCH=""
 START_BRANCH=""
+CUR_BRANCH=""
+PR_NUMBER=""
 
-# Only delete branch ourselves if merge step didn't already do it.
-cleanup_branch() {
+ensure_remote_branch_deleted() {
   local branch="$1"
   [[ "$DO_BRANCH_DELETE" == "1" ]] || return 0
-  log "Deleting remote branch: $branch"
-  git push origin --delete "$branch" >/dev/null 2>&1 || true
+  [[ -n "$branch" ]] || return 0
+
+  if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+    log "Remote branch still exists; deleting: $branch"
+    git push origin --delete "$branch" >/dev/null 2>&1 || true
+  else
+    log "Remote branch already deleted: $branch"
+  fi
 }
 
 # ---------- Start ----------
@@ -240,7 +228,6 @@ START_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 log "repo=$REPO_FULL base_branch=$BASE_BRANCH start_branch=$START_BRANCH config=$MYGPT_CONFIG_FILE"
 pause
 
-# Choose issue
 if [[ -z "$ISSUE" ]]; then
   log "Selecting next backlog issue..."
   ISSUE="$(./scripts/agents/scrummaster_next_issue.sh)"
@@ -249,33 +236,28 @@ fi
 log "ISSUE=$ISSUE"
 pause
 
-# Capture original state for restore
 if [[ "$DO_RESTORE" == "1" ]]; then
   capture_issue_state "$ISSUE"
   pause
 fi
 
-# Scrummaster start issue (In Progress + assign developer)
 log "Scrummaster: start issue (In Progress + assign developer)"
 ./scripts/agents/scrummaster_start_issue.sh "$ISSUE"
 log "OK"
 pause
 
-# Developer create branch
 log "Developer: create branch"
 ./scripts/agents/developer_create_branch.sh "$ISSUE" "$KIND" "$PREFIX"
 CUR_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 log "now on branch: $CUR_BRANCH"
 pause
 
-# Empty commit (no files touched)
 log "Creating EMPTY smoke commit (no file changes)"
 git commit --allow-empty -m "chore(smoke): issue #$ISSUE"
 git push -u origin HEAD
 log "Pushed empty commit."
 pause
 
-# Developer submit PR (optional)
 if [[ "$DO_PR" == "1" ]]; then
   log "Developer: submit PR for review"
   PR_NUMBER="$(./scripts/agents/developer_submit_for_review.sh "$ISSUE" | tail -n 1 | tr -d '[:space:]' || true)"
@@ -286,32 +268,28 @@ else
   log "--no-pr set; skipping PR/merge steps."
 fi
 
-BRANCH_ALREADY_DELETED=0
-
-# Review accept+merge (default ON) — review script deletes PR branch
 if [[ "$DO_PR" == "1" && "$DO_MERGE" == "1" ]]; then
   log "Review: accept + merge"
   ./scripts/agents/review_accept_and_merge.sh "$PR_NUMBER" "$ISSUE"
   log "Merged."
-  BRANCH_ALREADY_DELETED=1
+  pause
+
+  # review script *should* delete branch, but verify and delete if it didn't
+  ensure_remote_branch_deleted "$CUR_BRANCH"
   pause
 elif [[ "$DO_PR" == "1" ]]; then
   log "--no-merge set; leaving PR open."
-fi
 
-# Delete branch ourselves only if we DID NOT merge (since merge path already deletes it)
-if [[ -n "$CUR_BRANCH" && "$DO_BRANCH_DELETE" == "1" && "$BRANCH_ALREADY_DELETED" == "0" ]]; then
-  cleanup_branch "$CUR_BRANCH"
+  # If you want branch cleanup even without merge, keep this:
+  ensure_remote_branch_deleted "$CUR_BRANCH"
   pause
 fi
 
-# Return to original branch
 log "Returning to $START_BRANCH"
 git checkout "$START_BRANCH" >/dev/null 2>&1 || true
 log "Back on $START_BRANCH"
 pause
 
-# Restore issue/project state (default ON)
 if [[ "$DO_RESTORE" == "1" ]]; then
   restore_issue_state "$ISSUE"
   pause
