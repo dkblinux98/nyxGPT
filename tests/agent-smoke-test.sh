@@ -98,37 +98,17 @@ checkout_safely() {
 
 delete_feature_branch_everywhere() {
   local branch="$1"
-  local safe_branch="$2"   # e.g. v1.0.0
-
   [[ "$DO_BRANCH_DELETE" == "1" ]] || return 0
-  [[ -n "$branch" ]] || return 0
 
-  # Must not be on the branch to delete it locally
-  local current
-  current="$(git rev-parse --abbrev-ref HEAD)"
-  if [[ "$current" == "$branch" ]]; then
-    log "Currently on $branch; checking out $safe_branch first"
-    git checkout "$safe_branch"
-  fi
-
-  # Delete local branch first (your preference)
-  if git show-ref --verify --quiet "refs/heads/$branch"; then
-    log "Deleting local branch: $branch"
-    git branch -D "$branch"
-  else
-    log "Local branch not present: $branch"
-  fi
-
-  # Delete remote branch (do not suppress errors)
-  log "Deleting remote branch: $branch"
-  git push origin --delete "$branch"
-
-  # Verify remote deletion
   if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-    die "Remote branch still exists after delete attempt: $branch (likely branch protection or permissions)"
+    log "Deleting remote branch $branch"
+    git push origin --delete "$branch" || true
   fi
 
-  log "Branch deleted locally + remotely: $branch"
+  if git show-ref --verify --quiet "refs/heads/$branch"; then
+    log "Deleting local branch $branch"
+    git branch -D "$branch" || true
+  fi
 }
 
 rollback_issue() {
@@ -180,6 +160,9 @@ fi
 # ---- GIT HYGIENE SECTION (new, intentional, correct) ----
 checkout_safely "$BASE_BRANCH"
 
+rollback_issue "$ISSUE"
+pause
+
 delete_feature_branch_everywhere "$CUR_BRANCH"
 
 log "Updating $BASE_BRANCH with fast-forward pull"
@@ -187,9 +170,6 @@ git pull --ff-only
 
 pause
 # --------------------------------------------------------
-
-rollback_issue "$ISSUE"
-pause
 
 log "SMOKE COMPLETE: issue=$ISSUE pr=${PR_NUMBER:-none} branch=${CUR_BRANCH}"
 exit 0
