@@ -16,9 +16,9 @@ require_gh_auth
 project_id="$(get_project_id)"
 log "Project id: ${project_id}"
 
-status_opt_backlog="$(single_select_option_id "$FIELD_STATUS" "$STATUS_BACKLOG")"
+status_opt_backlog="$(single_select_option_id "$STATUS_FIELD" "$STATUS_BACKLOG")"
 [[ -n "$status_opt_backlog" && "$status_opt_backlog" != "null" ]] || _die "Status option not found: ${STATUS_BACKLOG}"
-log "Status field '${FIELD_STATUS}' has Backlog option '${STATUS_BACKLOG}'."
+log "Status field '${STATUS_FIELD}' has Backlog option '${STATUS_BACKLOG}'."
 
 MAX_PAGES="${MAX_PAGES:-200}"  # growth-safe; stops early once it finds a candidate
 log "Pagination: up to ${MAX_PAGES} pages (stop at first candidate page)"
@@ -75,7 +75,7 @@ path = sys.argv[1]
 with open(path, "r", encoding="utf-8") as f:
     d = json.load(f)
 
-FIELD_STATUS=os.getenv("FIELD_STATUS","Status")
+STATUS_FIELD=os.getenv("STATUS_FIELD","Status")
 STATUS_BACKLOG=os.getenv("STATUS_BACKLOG","Backlog")
 
 def phase_num(title):
@@ -105,7 +105,7 @@ for it in items:
     for fv in (it.get("fieldValues") or {}).get("nodes", []):
         if fv.get("__typename") == "ProjectV2ItemFieldSingleSelectValue":
             field = fv.get("field") or {}
-            if field.get("name") == FIELD_STATUS:
+            if field.get("name") == STATUS_FIELD:
                 status = fv.get("name")
                 break
 
