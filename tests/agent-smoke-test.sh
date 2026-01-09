@@ -2,19 +2,18 @@
 set -euo pipefail
 
 # scripts/agent-smoke-test.sh
-# Full end-to-end agent smoke test (local), with pause + auto-restore by default.
-# Bash 3.2 compatible.
 #
-# This script tests the *control plane*:
-#   - Scrummaster selects & starts issue
-#   - Developer creates branch
-#   - Creates an EMPTY commit (no file changes required)
-#   - Developer submits PR
-#   - Review merges + updates status/assignee and (attempts) branch delete
-#   - Ensures branch is actually deleted (deletes if it still exists)
-#   - Optionally restores issue/project state
+# Local end-to-end smoke test for the myGPT agent scripts.
 #
-# NOTE: This does NOT test "Claude implements the issue" (that is GitHub Actions).
+# Default behavior:
+#   - Full flow: pick issue -> start issue -> create branch -> empty commit -> PR -> merge -> delete branches -> rollback
+#   - Pauses between steps
+#   - Rollback resets the issue to:
+#       * Status = Backlog (ProjectV2)
+#       * Assignee = HUMAN_OWNER (config, e.g. dkblinux98)
+#       * State = open
+#
+# NOTE: This tests the agent scripts control-plane. It does NOT test Claude "implementing" code.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -27,7 +26,7 @@ ISSUE=""
 DO_PR=1
 DO_MERGE=1
 DO_BRANCH_DELETE=1
-DO_RESTORE=1
+DO_ROLLBACK=1
 DO_PAUSE=1
 
 KIND="feat"
@@ -39,19 +38,19 @@ Usage:
   $(basename "$0") [options]
 
 Defaults:
-  - Full flow: start issue -> create branch -> (empty commit) -> PR -> merge -> delete branch
+  - Full flow: start issue -> create branch -> (empty commit) -> PR -> merge -> delete branch -> rollback
   - Pause between steps
-  - Auto-restore issue state (assignees, open/closed, project status)
+  - Rollback: set issue open + Status=Backlog + Assignee=HUMAN_OWNER
 
-Options (turn off behaviors):
+Options:
   --issue N            Use specific issue number (skip scrummaster_next_issue)
   --kind feat|fix      Branch kind (default: feat)
   --prefix TEXT        Branch suffix prefix (default: smoke)
 
   --no-pr              Do NOT create PR (implies --no-merge)
   --no-merge           Do NOT merge PR
-  --no-branch-delete   Do NOT delete remote branch
-  --no-restore         Do NOT restore issue/project state
+  --no-branch-delete   Do NOT delete branch (remote/local)
+  --no-rollback        Do NOT rollback issue state
   --no-pause           Do NOT pause between steps
 
   -h, --help           Show help
@@ -66,7 +65,7 @@ while [[ $# -gt 0 ]]; do
     --no-pr) DO_PR=0; DO_MERGE=0; shift 1;;
     --no-merge) DO_MERGE=0; shift 1;;
     --no-branch-delete) DO_BRANCH_DELETE=0; shift 1;;
-    --no-restore) DO_RESTORE=0; shift 1;;
+    --no-rollback) DO_ROLLBACK=0; shift 1;;
     --no-pause) DO_PAUSE=0; shift 1;;
     -h|--help) usage; exit 0;;
     *) die "Unknown arg: $1";;
@@ -102,129 +101,49 @@ ensure_clean_tree() {
   fi
 }
 
-SMOKE_TMP_DIR=""
-ORIG_STATE=""
-ORIG_ASSIGNEES_FILE=""
-ORIG_STATUS=""
+delete_branch_everywhere() {
+  local branch="$1"
+  [[ -n "$branch" ]] || return 0
 
-cleanup_tmp() {
-  [[ -n "${SMOKE_TMP_DIR:-}" && -d "$SMOKE_TMP_DIR" ]] && rm -rf "$SMOKE_TMP_DIR" || true
-  [[ -n "${ORIG_ASSIGNEES_FILE:-}" && -f "$ORIG_ASSIGNEES_FILE" ]] && rm -f "$ORIG_ASSIGNEES_FILE" || true
-}
-trap cleanup_tmp EXIT
-
-capture_issue_state() {
-  local issue="$1"
-
-  SMOKE_TMP_DIR="$(mktemp -d)"
-  ORIG_ASSIGNEES_FILE="$(mktemp)"
-
-  gh api "repos/$REPO_FULL/issues/$issue" \
-    --jq '{state:.state, assignees:[.assignees[].login]}' > "$SMOKE_TMP_DIR/orig_issue.json"
-
-  ORIG_STATE="$(jq -r '.state' "$SMOKE_TMP_DIR/orig_issue.json")"
-  jq -r '.assignees[]?' "$SMOKE_TMP_DIR/orig_issue.json" > "$ORIG_ASSIGNEES_FILE"
-
-  ensure_issue_in_project "$issue" >/dev/null
-
-  local project_id
-  project_id="$(get_project_id)"
-
-  local q='query($project:ID!, $after:String){
-    node(id:$project){
-      ... on ProjectV2{
-        items(first:100, after:$after){
-          pageInfo{ hasNextPage endCursor }
-          nodes{
-            content{ __typename ... on Issue { number } }
-            fieldValues(first:50){
-              nodes{
-                __typename
-                ... on ProjectV2ItemFieldSingleSelectValue {
-                  field{ ... on ProjectV2SingleSelectField { name } }
-                  name
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }'
-
-  local after="" found=""
-  ORIG_STATUS=""
-  while :; do
-    local resp
-    resp="$(graphql "$q" -F project="$project_id" -F after="$after")"
-
-    ORIG_STATUS="$(echo "$resp" | jq -r --argjson n "$issue" --arg f "$STATUS_FIELD" '
-      .data.node.items.nodes[]
-      | select(.content.__typename=="Issue" and .content.number==$n)
-      | (.fieldValues.nodes[]
-          | select(.__typename=="ProjectV2ItemFieldSingleSelectValue" and .field.name==$f)
-          | .name) // empty
-    ' | head -n 1)"
-
-    found="$(echo "$resp" | jq -r --argjson n "$issue" '
-      (.data.node.items.nodes[] | select(.content.__typename=="Issue" and .content.number==$n) | "yes") // empty
-    ' | head -n 1)"
-
-    [[ "$found" == "yes" ]] && break
-
-    local has_next cursor
-    has_next="$(echo "$resp" | jq -r '.data.node.items.pageInfo.hasNextPage')"
-    cursor="$(echo "$resp" | jq -r '.data.node.items.pageInfo.endCursor // empty')"
-    [[ "$has_next" == "true" && -n "$cursor" ]] || break
-    after="$cursor"
-  done
-
-  log "Captured issue state: state=$ORIG_STATE orig_status=${ORIG_STATUS:-"(unknown)"} assignees_count=$(wc -l < "$ORIG_ASSIGNEES_FILE" | tr -d ' ')"
-}
-
-restore_issue_state() {
-  local issue="$1"
-  log "Restoring issue state..."
-
-  orig="$(echo "$ORIG_STATE" | tr '[:upper:]' '[:lower:]')"
-  if [[ "$orig" == "open" ]]; then
-    gh api -X PATCH "repos/$REPO_FULL/issues/$issue" -f state=open >/dev/null
-  elif [[ "$orig" == "closed" ]]; then
-    gh api -X PATCH "repos/$REPO_FULL/issues/$issue" -f state=closed >/dev/null
-  else
-    log "Unknown original state '$ORIG_STATE' (skipping state restore)"
+  # remote
+  if [[ "$DO_BRANCH_DELETE" == "1" ]]; then
+    if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+      log "Deleting remote branch: $branch"
+      git push origin --delete "$branch" >/dev/null 2>&1 || true
+    else
+      log "Remote branch already deleted: $branch"
+    fi
   fi
 
-  local assignees_json
-  assignees_json="$(jq -Rn '[inputs | select(length>0)]' < "$ORIG_ASSIGNEES_FILE")"
-  gh api -X PATCH "repos/$REPO_FULL/issues/$issue" \
-    --input <(jq -n --argjson a "$assignees_json" '{assignees:$a}') >/dev/null
-
-  if [[ -n "${ORIG_STATUS:-}" ]]; then
-    set_issue_status "$issue" "$ORIG_STATUS"
+  # local
+  if git show-ref --verify --quiet "refs/heads/$branch"; then
+    log "Deleting local branch: $branch"
+    git branch -D "$branch" >/dev/null 2>&1 || true
   fi
+}
 
-  log "Restore complete."
+rollback_issue() {
+  local issue="$1"
+  [[ "$DO_ROLLBACK" == "1" ]] || return 0
+
+  log "Rollback: set issue #$issue to open + Status=$STATUS_BACKLOG + assignee=$HUMAN_OWNER"
+
+  # Reopen issue (idempotent)
+  gh api -X PATCH "repos/$REPO_FULL/issues/$issue" -f state=open >/dev/null || true
+
+  # Assign to human (single assignee)
+  issue_assign_only "$issue" "$HUMAN_OWNER" || true
+
+  # Set project status to Backlog
+  set_issue_status "$issue" "$STATUS_BACKLOG" || true
+
+  log "Rollback done."
 }
 
 START_BRANCH=""
 CUR_BRANCH=""
 PR_NUMBER=""
 
-ensure_remote_branch_deleted() {
-  local branch="$1"
-  [[ "$DO_BRANCH_DELETE" == "1" ]] || return 0
-  [[ -n "$branch" ]] || return 0
-
-  if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-    log "Remote branch still exists; deleting: $branch"
-    git push origin --delete "$branch" >/dev/null 2>&1 || true
-  else
-    log "Remote branch already deleted: $branch"
-  fi
-}
-
-# ---------- Start ----------
 ensure_clean_tree
 
 START_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
@@ -238,11 +157,6 @@ fi
 [[ -n "$ISSUE" ]] || die "Could not determine issue number"
 log "ISSUE=$ISSUE"
 pause
-
-if [[ "$DO_RESTORE" == "1" ]]; then
-  capture_issue_state "$ISSUE"
-  pause
-fi
 
 log "Scrummaster: start issue (In Progress + assign developer)"
 ./scripts/agents/scrummaster_start_issue.sh "$ISSUE"
@@ -277,15 +191,11 @@ if [[ "$DO_PR" == "1" && "$DO_MERGE" == "1" ]]; then
   log "Merged."
   pause
 
-  # review script *should* delete branch, but verify and delete if it didn't
-  ensure_remote_branch_deleted "$CUR_BRANCH"
+  # Ensure branch deleted everywhere (review script may delete remote; we verify)
+  delete_branch_everywhere "$CUR_BRANCH"
   pause
 elif [[ "$DO_PR" == "1" ]]; then
   log "--no-merge set; leaving PR open."
-
-  # If you want branch cleanup even without merge, keep this:
-  ensure_remote_branch_deleted "$CUR_BRANCH"
-  pause
 fi
 
 log "Returning to $START_BRANCH"
@@ -293,12 +203,8 @@ git checkout "$START_BRANCH" >/dev/null 2>&1 || true
 log "Back on $START_BRANCH"
 pause
 
-if [[ "$DO_RESTORE" == "1" ]]; then
-  restore_issue_state "$ISSUE"
-  pause
-else
-  log "--no-restore set; leaving issue as-is."
-fi
+rollback_issue "$ISSUE"
+pause
 
 log "SMOKE COMPLETE: issue=$ISSUE pr=${PR_NUMBER:-none} branch=${CUR_BRANCH:-none}"
 exit 0
