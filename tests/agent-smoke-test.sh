@@ -1,26 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# scripts/agent_smoke_test.sh
+# scripts/smoke_agents.sh
 # Full end-to-end agent smoke test (local), with pause + auto-restore by default.
 # Bash 3.2 compatible.
 #
 # This script tests the *control plane* (status/assignees/PR/merge/branch delete).
 # It does NOT test "Developer implements issue" (that happens in GitHub Actions via Claude).
-#
-# Default behavior:
-#   - Pick next backlog issue (or --issue)
-#   - Capture original issue state (assignees, open/closed, Project Status)
-#   - Scrummaster starts issue (In Progress + assign developer)
-#   - Developer creates branch
-#   - Create an EMPTY commit (no files touched)
-#   - Developer submits PR for review
-#   - Review accepts + merges
-#   - Delete remote branch
-#   - Restore original issue/project state
-#   - Pause between each step
-#
-# Options are "turn off" behaviors: --no-pr, --no-merge, --no-branch-delete, --no-restore, --no-pause
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -268,7 +254,7 @@ CUR_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 log "now on branch: $CUR_BRANCH"
 pause
 
-# Empty commit (no files touched; works with ignored directories)
+# Empty commit (no files touched)
 log "Creating EMPTY smoke commit (no file changes)"
 git commit --allow-empty -m "chore(smoke): issue #$ISSUE"
 git push -u origin HEAD
@@ -289,7 +275,7 @@ fi
 # Review accept+merge (default ON)
 if [[ "$DO_PR" == "1" && "$DO_MERGE" == "1" ]]; then
   log "Review: accept + merge"
-  ./scripts/agents/review_accept_and_merge.sh "$ISSUE"
+  ./scripts/agents/review_accept_and_merge.sh "$PR_NUMBER" "$ISSUE"
   log "Merged."
   pause
 elif [[ "$DO_PR" == "1" ]]; then
