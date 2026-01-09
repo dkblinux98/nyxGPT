@@ -12,7 +12,7 @@ May:
 - Create Acceptance Failure sub-issues and assign them to developer-agent.
 - Merge into the active release branch when criteria met.
 - Delete short-lived branches after merge.
-- Move parent issue to For Release and notify scrummaster-agent.
+- Move parent issue to In Review and assign to human owner for final acceptance.
 
 May NOT:
 - Change phase ordering or scope.

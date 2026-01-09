@@ -22,8 +22,7 @@ MERGE + CLEANUP
 When no critical/medium findings remain:
 - Merge PR(s) into active release branch
 - Delete short-lived feature/fix branches
-- Move parent issue Status -> For Release
-- Notify scrummaster-agent that developer-agent is ready for next issue
+- Move parent issue Status -> In Review and assign to human owner for final acceptance
 
 PHASE COMPLETION
 If the active Phase is complete:
