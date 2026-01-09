@@ -6,8 +6,10 @@ on:
 
 jobs:
   implement:
-    if: ${{ vars.AGENTS_ENABLED == 'true' && vars.DEV_AUTO_IMPLEMENT_ENABLED == 'true' &&
-      github.event.assignee.login == vars.DEV_AGENT }}
+    if: >-
+      ${{ vars.AGENTS_ENABLED == 'true'
+          && vars.DEV_AUTO_IMPLEMENT_ENABLED == 'true'
+          && github.event.assignee.login == vars.DEV_AGENT }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -18,28 +20,6 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.DEV_AGENT_TOKEN }}
 
-      # Write config to a TEMP location on the runner (never touches ~/.myGPT)
-      MYGPT_CONFIG_FILE: ${{ runner.temp }}/mygpt-config.ini
-
-      # Source of truth: GitHub Variables (Settings -> Secrets and variables -> Actions -> Variables)
-      REPO_OWNER: ${{ vars.REPO_OWNER }}
-      REPO_NAME: ${{ vars.REPO_NAME }}
-      PROJECT_OWNER: ${{ vars.PROJECT_OWNER }}
-      PROJECT_NUMBER: ${{ vars.PROJECT_NUMBER }}
-
-      DEV_AGENT: ${{ vars.DEV_AGENT }}
-      REVIEW_AGENT: ${{ vars.REVIEW_AGENT }}
-      SCRUM_AGENT: ${{ vars.SCRUM_AGENT }}
-      HUMAN_OWNER: ${{ vars.HUMAN_OWNER }}
-
-      STATUS_FIELD: ${{ vars.STATUS_FIELD }}
-      STATUS_BACKLOG: ${{ vars.STATUS_BACKLOG }}
-      STATUS_IN_PROGRESS: ${{ vars.STATUS_IN_PROGRESS }}
-      STATUS_IN_REVIEW: ${{ vars.STATUS_IN_REVIEW }}
-      STATUS_FOR_RELEASE: ${{ vars.STATUS_FOR_RELEASE }}
-
-      RELEASE_BRANCH: ${{ vars.RELEASE_BRANCH }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,40 +29,52 @@ jobs:
       - name: Auth gh
         run: gh auth status
 
-      - name: Write ephemeral config.ini (from vars)
+      - name: Write ephemeral config.ini (runner temp)
+        shell: bash
         run: |
-          cat > "$MYGPT_CONFIG_FILE" <<EOF
-          REPO_OWNER=${REPO_OWNER}
-          REPO_NAME=${REPO_NAME}
-          PROJECT_OWNER=${PROJECT_OWNER}
-          PROJECT_NUMBER=${PROJECT_NUMBER}
+          set -euo pipefail
+          CFG="$RUNNER_TEMP/mygpt-config.ini"
 
-          DEV_AGENT=${DEV_AGENT}
-          REVIEW_AGENT=${REVIEW_AGENT}
-          SCRUM_AGENT=${SCRUM_AGENT}
-          HUMAN_OWNER=${HUMAN_OWNER}
+          cat > "$CFG" <<'EOF'
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
 
-          STATUS_FIELD=${STATUS_FIELD}
-          STATUS_BACKLOG=${STATUS_BACKLOG}
-          STATUS_IN_PROGRESS=${STATUS_IN_PROGRESS}
-          STATUS_IN_REVIEW=${STATUS_IN_REVIEW}
-          STATUS_FOR_RELEASE=${STATUS_FOR_RELEASE}
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
 
-          RELEASE_BRANCH=${RELEASE_BRANCH}
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
           EOF
-          echo "Wrote $MYGPT_CONFIG_FILE"
 
-      - name: Verify required config variables are set
+          echo "MYGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
+          echo "Wrote ephemeral config at $CFG"
+
+      - name: Verify config loads
+        shell: bash
         run: |
+          set -euo pipefail
           bash -lc '
             source scripts/agents/lib/gh_project.sh
             load_config
-            echo "config ok: $REPO_OWNER/$REPO_NAME project $PROJECT_OWNER#$PROJECT_NUMBER"
+            require_gh_auth
+            echo "config ok: $REPO_OWNER/$REPO_NAME project $PROJECT_OWNER#$PROJECT_NUMBER release=$RELEASE_BRANCH"
           '
 
-      - name: Verify issue is In Progress in ProjectV2
+      - name: Verify issue is In Progress in ProjectV2 (otherwise exit)
+        shell: bash
         run: |
+          set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
+
           bash -lc '
             set -euo pipefail
             source scripts/agents/lib/gh_project.sh
@@ -118,6 +110,7 @@ jobs:
             found=0
             while :; do
               resp="$(graphql "$q" -F project="$project_id" -F after="$after")"
+
               status="$(echo "$resp" | jq -r --argjson n "$issue" --arg f "$STATUS_FIELD" '
                 .data.node.items.nodes[]
                 | select(.content.__typename=="Issue" and .content.number==$n)
@@ -128,7 +121,10 @@ jobs:
 
               if [[ -n "$status" ]]; then
                 echo "[auto-implement] issue #$issue status=$status"
-                [[ "$status" == "$STATUS_IN_PROGRESS" ]] || { echo "[auto-implement] not in progress; exiting"; exit 0; }
+                if [[ "$status" != "$STATUS_IN_PROGRESS" ]]; then
+                  echo "[auto-implement] Not In Progress; exiting with success."
+                  exit 0
+                fi
                 found=1
                 break
               fi
@@ -139,13 +135,18 @@ jobs:
               after="$cursor"
             done
 
-            [[ "$found" == "1" ]] || { echo "[auto-implement] issue not found in project; exiting"; exit 0; }
+            if [[ "$found" != "1" ]]; then
+              echo "[auto-implement] Issue not found in project; exiting with success."
+              exit 0
+            fi
           '
 
       - name: Create branch for issue
+        shell: bash
         run: |
+          set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
-          ./scripts/agents/developer_create_branch.sh "$ISSUE" feat "auto"
+          ./scripts/agents/developer_create_branch.sh "$ISSUE" feat auto
 
       - name: Run Claude Code to implement issue
         id: claude
@@ -163,6 +164,8 @@ jobs:
             Output: commit(s) pushed to the current branch.
 
       - name: Submit PR for review
+        shell: bash
         run: |
+          set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
           ./scripts/agents/developer_submit_for_review.sh "$ISSUE"
