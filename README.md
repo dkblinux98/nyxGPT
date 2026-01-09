@@ -251,7 +251,7 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
 - **Keyboard shortcuts** for productivity:
   - `Cmd/Ctrl+K` - Create new chat
   - `Cmd/Ctrl+/` - Toggle sidebar visibility
-  - `Cmd/Ctrl+F` - Focus search input
+  - `/` - Focus search input
   - `Esc` - Close menus and dialogs
 
 ---

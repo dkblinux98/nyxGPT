@@ -50,6 +50,12 @@ export default function Home() {
   // Refs for keyboard shortcuts
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // Accessibility: Screen reader announcements
+  const [srAnnouncement, setSrAnnouncement] = useState<string>('');
+
+  // Accessibility: Visual feedback for shortcuts
+  const [shortcutFeedback, setShortcutFeedback] = useState<string>('');
+
   useEffect(() => {
     fetch('/api/info')
       .then(async (res) => {
@@ -119,7 +125,7 @@ export default function Home() {
   };
 
   // Refresh session list
-  const refreshSessions = async () => {
+  const refreshSessions = useCallback(async () => {
     try {
       // Add timestamp to prevent browser caching
       const res = await fetch(`/api/sessions?t=${Date.now()}`, {
@@ -131,7 +137,7 @@ export default function Home() {
     } catch (e) {
       setSessionsError(e instanceof Error ? e.message : String(e));
     }
-  };
+  }, []);
 
   // Create new chat
   const createNewChat = useCallback(async () => {
@@ -169,7 +175,7 @@ export default function Home() {
       alert(`Failed to create new chat: ${msg}`);
       console.error('Failed to create new chat:', e);
     }
-  }, []);
+  }, [refreshSessions, setSelectedSession]);
 
   // Delete session
   const deleteSession = async (sessionName: string) => {
@@ -322,6 +328,18 @@ export default function Home() {
     }
   }, [contextMenu]);
 
+  // Helper function to announce actions to screen readers
+  const announce = useCallback((message: string) => {
+    setSrAnnouncement(message);
+    setShortcutFeedback(message);
+
+    // Clear visual feedback after 2 seconds
+    setTimeout(() => setShortcutFeedback(''), 2000);
+
+    // Clear screen reader announcement after 1 second
+    setTimeout(() => setSrAnnouncement(''), 1000);
+  }, []);
+
   // Global keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -331,6 +349,7 @@ export default function Home() {
       // Cmd/Ctrl + K: New chat
       if (isMod && e.key === 'k') {
         e.preventDefault();
+        announce('Creating new chat');
         void createNewChat();
         return;
       }
@@ -338,14 +357,19 @@ export default function Home() {
       // Cmd/Ctrl + /: Toggle sidebar
       if (isMod && e.key === '/') {
         e.preventDefault();
-        setSidebarVisible((prev) => !prev);
+        setSidebarVisible((prev) => {
+          const newState = !prev;
+          announce(newState ? 'Sidebar shown' : 'Sidebar hidden');
+          return newState;
+        });
         return;
       }
 
-      // Cmd/Ctrl + F: Focus search
-      if (isMod && e.key === 'f') {
+      // / key: Focus search (when not typing in input)
+      if (e.key === '/' && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
         e.preventDefault();
         searchInputRef.current?.focus();
+        announce('Search focused');
         return;
       }
 
@@ -353,14 +377,14 @@ export default function Home() {
       if (e.key === 'Escape' && contextMenu) {
         e.preventDefault();
         setContextMenu(null);
+        announce('Menu closed');
         return;
       }
     };
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contextMenu]);
+  }, [contextMenu, createNewChat, setSidebarVisible, searchInputRef, setContextMenu, announce]);
 
   // Highlight search matches in text
   const highlightText = (text: string, search: string) => {
@@ -383,8 +407,48 @@ export default function Home() {
         display: 'flex',
         height: '100vh',
         fontFamily: 'system-ui, sans-serif',
+        position: 'relative',
       }}
     >
+      {/* Screen reader announcements */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        style={{
+          position: 'absolute',
+          left: '-10000px',
+          width: '1px',
+          height: '1px',
+          overflow: 'hidden',
+        }}
+      >
+        {srAnnouncement}
+      </div>
+
+      {/* Visual keyboard shortcut feedback */}
+      {shortcutFeedback && (
+        <div
+          role="alert"
+          style={{
+            position: 'fixed',
+            bottom: 20,
+            right: 20,
+            background: 'rgba(0, 0, 0, 0.8)',
+            color: 'white',
+            padding: '8px 16px',
+            borderRadius: 6,
+            fontSize: 14,
+            fontWeight: 500,
+            zIndex: 1000,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+            animation: 'fadeIn 0.2s ease-in',
+          }}
+        >
+          {shortcutFeedback}
+        </div>
+      )}
+
       {sidebarVisible && (
         <aside
           style={{
@@ -402,6 +466,8 @@ export default function Home() {
         {/* New Chat button */}
         <button
           onClick={() => void createNewChat()}
+          aria-label="Create new chat (Cmd+K or Ctrl+K)"
+          title="Create new chat (⌘K / Ctrl+K)"
           style={{
             width: '100%',
             padding: '10px 12px',
@@ -417,6 +483,15 @@ export default function Home() {
             alignItems: 'center',
             justifyContent: 'center',
             gap: 8,
+            outline: '2px solid transparent',
+            outlineOffset: 2,
+            transition: 'outline 0.2s ease',
+          }}
+          onFocus={(e) => {
+            e.currentTarget.style.outline = '2px solid #333';
+          }}
+          onBlur={(e) => {
+            e.currentTarget.style.outline = '2px solid transparent';
           }}
         >
           <span style={{ fontSize: 16 }}>+</span> New Chat
@@ -448,6 +523,8 @@ export default function Home() {
           placeholder="Search sessions..."
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
+          aria-label="Search sessions (press / to focus)"
+          title="Search sessions (press / to focus)"
           style={{
             width: '100%',
             padding: '8px 10px',
@@ -456,6 +533,15 @@ export default function Home() {
             borderRadius: 6,
             fontSize: 14,
             boxSizing: 'border-box',
+            outline: '2px solid transparent',
+            outlineOffset: 2,
+            transition: 'outline 0.2s ease',
+          }}
+          onFocus={(e) => {
+            e.currentTarget.style.outline = '2px solid #4CAF50';
+          }}
+          onBlur={(e) => {
+            e.currentTarget.style.outline = '2px solid transparent';
           }}
         />
 
@@ -786,7 +872,7 @@ export default function Home() {
               sidebar
             </div>
             <div>
-              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>⌘F</kbd> Search
+              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>/</kbd> Search
             </div>
             <div>
               <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>Esc</kbd> Close
@@ -801,6 +887,8 @@ export default function Home() {
         {!sidebarVisible && (
           <button
             onClick={() => setSidebarVisible(true)}
+            aria-label="Show sidebar (Cmd+/ or Ctrl+/)"
+            title="Show sidebar (⌘/ / Ctrl+/)"
             style={{
               position: 'fixed',
               top: 16,
@@ -817,8 +905,16 @@ export default function Home() {
               display: 'flex',
               alignItems: 'center',
               gap: 6,
+              outline: '2px solid transparent',
+              outlineOffset: 2,
+              transition: 'outline 0.2s ease',
             }}
-            title="Show sidebar (⌘/)"
+            onFocus={(e) => {
+              e.currentTarget.style.outline = '2px solid #fff';
+            }}
+            onBlur={(e) => {
+              e.currentTarget.style.outline = '2px solid transparent';
+            }}
           >
             ☰ Menu
           </button>
