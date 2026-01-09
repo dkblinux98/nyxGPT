@@ -49,12 +49,18 @@ export default function Home() {
 
   // Refs for keyboard shortcuts
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const feedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const srTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Accessibility: Screen reader announcements
   const [srAnnouncement, setSrAnnouncement] = useState<string>('');
 
   // Accessibility: Visual feedback for shortcuts
   const [shortcutFeedback, setShortcutFeedback] = useState<string>('');
+
+  // Platform detection for keyboard shortcuts display
+  const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+  const modKey = isMac ? '⌘' : 'Ctrl';
 
   useEffect(() => {
     fetch('/api/info')
@@ -333,11 +339,21 @@ export default function Home() {
     setSrAnnouncement(message);
     setShortcutFeedback(message);
 
-    // Clear visual feedback after 2 seconds
-    setTimeout(() => setShortcutFeedback(''), 2000);
+    // Clear any existing timeouts
+    if (feedbackTimeoutRef.current) clearTimeout(feedbackTimeoutRef.current);
+    if (srTimeoutRef.current) clearTimeout(srTimeoutRef.current);
 
-    // Clear screen reader announcement after 1 second
-    setTimeout(() => setSrAnnouncement(''), 1000);
+    // Set new timeouts and store IDs
+    feedbackTimeoutRef.current = setTimeout(() => setShortcutFeedback(''), 2000);
+    srTimeoutRef.current = setTimeout(() => setSrAnnouncement(''), 1000);
+  }, []);
+
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (feedbackTimeoutRef.current) clearTimeout(feedbackTimeoutRef.current);
+      if (srTimeoutRef.current) clearTimeout(srTimeoutRef.current);
+    };
   }, []);
 
   // Global keyboard shortcuts
@@ -384,7 +400,7 @@ export default function Home() {
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [contextMenu, createNewChat, setSidebarVisible, searchInputRef, setContextMenu, announce]);
+  }, [contextMenu, createNewChat, announce]);
 
   // Highlight search matches in text
   const highlightText = (text: string, search: string) => {
@@ -442,7 +458,9 @@ export default function Home() {
             fontWeight: 500,
             zIndex: 1000,
             boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-            animation: 'fadeIn 0.2s ease-in',
+            opacity: 1,
+            transform: 'translateY(0)',
+            transition: 'opacity 0.2s ease-in, transform 0.2s ease-in',
           }}
         >
           {shortcutFeedback}
@@ -466,8 +484,8 @@ export default function Home() {
         {/* New Chat button */}
         <button
           onClick={() => void createNewChat()}
-          aria-label="Create new chat (Cmd+K or Ctrl+K)"
-          title="Create new chat (⌘K / Ctrl+K)"
+          aria-label={`Create new chat (${modKey}+K)`}
+          title={`Create new chat (${modKey}+K)`}
           style={{
             width: '100%',
             padding: '10px 12px',
@@ -864,11 +882,11 @@ export default function Home() {
           <div style={{ fontWeight: 600, marginBottom: 6 }}>Keyboard Shortcuts</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div>
-              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>⌘K</kbd> New
+              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>{modKey}+K</kbd> New
               chat
             </div>
             <div>
-              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>⌘/</kbd> Toggle
+              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>{modKey}+/</kbd> Toggle
               sidebar
             </div>
             <div>
@@ -887,8 +905,8 @@ export default function Home() {
         {!sidebarVisible && (
           <button
             onClick={() => setSidebarVisible(true)}
-            aria-label="Show sidebar (Cmd+/ or Ctrl+/)"
-            title="Show sidebar (⌘/ / Ctrl+/)"
+            aria-label={`Show sidebar (${modKey}+/)`}
+            title={`Show sidebar (${modKey}+/)`}
             style={{
               position: 'fixed',
               top: 16,
