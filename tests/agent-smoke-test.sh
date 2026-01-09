@@ -1,20 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# scripts/agent-smoke-test.sh
-#
-# Local end-to-end smoke test for the myGPT agent scripts.
-#
-# Default behavior:
-#   - Full flow: pick issue -> start issue -> create branch -> empty commit -> PR -> merge -> delete branches -> rollback
-#   - Pauses between steps
-#   - Rollback resets the issue to:
-#       * Status = Backlog (ProjectV2)
-#       * Assignee = HUMAN_OWNER (config, e.g. dkblinux98)
-#       * State = open
-#
-# NOTE: This tests the agent scripts control-plane. It does NOT test Claude "implementing" code.
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
@@ -101,24 +87,47 @@ ensure_clean_tree() {
   fi
 }
 
-delete_branch_everywhere() {
-  local branch="$1"
-  [[ -n "$branch" ]] || return 0
+checkout_safely() {
+  local target="$1"
+  local current
+  current="$(git rev-parse --abbrev-ref HEAD)"
+  if [[ "$current" == "$target" ]]; then
+    log "Already on branch: $target"
+    return 0
+  fi
+  log "Checking out: $target (from $current)"
+  git checkout "$target" >/dev/null 2>&1 || die "Failed to checkout $target"
+  log "Now on: $(git rev-parse --abbrev-ref HEAD)"
+}
 
-  # remote
-  if [[ "$DO_BRANCH_DELETE" == "1" ]]; then
-    if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-      log "Deleting remote branch: $branch"
-      git push origin --delete "$branch" >/dev/null 2>&1 || true
-    else
-      log "Remote branch already deleted: $branch"
-    fi
+delete_feature_branch_everywhere() {
+  local feature_branch="$1"
+  local safe_branch="$2"   # branch to be on before deleting locally
+
+  [[ "$DO_BRANCH_DELETE" == "1" ]] || return 0
+  [[ -n "$feature_branch" ]] || return 0
+
+  # Ensure we are NOT on the feature branch before local delete
+  local current
+  current="$(git rev-parse --abbrev-ref HEAD)"
+  if [[ "$current" == "$feature_branch" ]]; then
+    checkout_safely "$safe_branch"
   fi
 
-  # local
-  if git show-ref --verify --quiet "refs/heads/$branch"; then
-    log "Deleting local branch: $branch"
-    git branch -D "$branch" >/dev/null 2>&1 || true
+  # Remote delete (works from any branch)
+  if git ls-remote --exit-code --heads origin "$feature_branch" >/dev/null 2>&1; then
+    log "Deleting remote branch: $feature_branch"
+    git push origin --delete "$feature_branch" >/dev/null 2>&1 || true
+  else
+    log "Remote branch already deleted: $feature_branch"
+  fi
+
+  # Local delete
+  if git show-ref --verify --quiet "refs/heads/$feature_branch"; then
+    log "Deleting local branch: $feature_branch"
+    git branch -D "$feature_branch" >/dev/null 2>&1 || true
+  else
+    log "Local branch already deleted: $feature_branch"
   fi
 }
 
@@ -128,13 +137,8 @@ rollback_issue() {
 
   log "Rollback: set issue #$issue to open + Status=$STATUS_BACKLOG + assignee=$HUMAN_OWNER"
 
-  # Reopen issue (idempotent)
   gh api -X PATCH "repos/$REPO_FULL/issues/$issue" -f state=open >/dev/null || true
-
-  # Assign to human (single assignee)
   issue_assign_only "$issue" "$HUMAN_OWNER" || true
-
-  # Set project status to Backlog
   set_issue_status "$issue" "$STATUS_BACKLOG" || true
 
   log "Rollback done."
@@ -190,17 +194,17 @@ if [[ "$DO_PR" == "1" && "$DO_MERGE" == "1" ]]; then
   ./scripts/agents/review_accept_and_merge.sh "$PR_NUMBER" "$ISSUE"
   log "Merged."
   pause
-
-  # Ensure branch deleted everywhere (review script may delete remote; we verify)
-  delete_branch_everywhere "$CUR_BRANCH"
-  pause
 elif [[ "$DO_PR" == "1" ]]; then
   log "--no-merge set; leaving PR open."
+  pause
 fi
 
-log "Returning to $START_BRANCH"
-git checkout "$START_BRANCH" >/dev/null 2>&1 || true
-log "Back on $START_BRANCH"
+# Always return to base branch BEFORE branch deletion/rollback so local delete works.
+checkout_safely "$BASE_BRANCH"
+pause
+
+# Ensure feature branch is deleted both remote and local.
+delete_feature_branch_everywhere "$CUR_BRANCH" "$BASE_BRANCH"
 pause
 
 rollback_issue "$ISSUE"
