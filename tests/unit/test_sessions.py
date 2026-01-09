@@ -405,6 +405,23 @@ def _hold_lock_briefly(file_path: Path) -> None:
         time.sleep(0.5)
 
 
+def test_file_lock_creates_file_atomically(tmp_path: Path) -> None:
+    """Test that file_lock creates lock file atomically without TOCTOU race."""
+    test_file = tmp_path / "new.lock"
+
+    # File should not exist initially
+    assert not test_file.exists()
+
+    # file_lock should create it atomically using O_CREAT (no separate touch)
+    with sessions.file_lock(test_file, timeout=1.0) as fd:
+        assert fd >= 0  # Valid file descriptor
+        assert test_file.exists()  # File was created
+
+    # Should be able to use the same file again
+    with sessions.file_lock(test_file, timeout=1.0) as fd:
+        assert fd >= 0
+
+
 def test_file_lock_acquisition_and_release(tmp_path: Path) -> None:
     """Test that file_lock successfully acquires and releases locks."""
     test_file = tmp_path / "test.lock"

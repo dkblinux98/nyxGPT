@@ -49,9 +49,9 @@ def file_lock(file_path: Path, timeout: float = 5.0):
     """
     # Open file for reading (create if doesn't exist)
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.touch(exist_ok=True)
 
-    fd = os.open(str(file_path), os.O_RDONLY)
+    # Atomically open file, creating if needed (avoids TOCTOU race)
+    fd = os.open(str(file_path), os.O_RDONLY | os.O_CREAT, 0o644)
 
     try:
         # Platform-specific locking
