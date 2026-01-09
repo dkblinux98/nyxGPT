@@ -7,6 +7,19 @@ set -euo pipefail
 #
 # This script tests the *control plane* (status/assignees/PR/merge/branch delete).
 # It does NOT test "Developer implements issue" (that happens in GitHub Actions via Claude).
+#
+# Default behavior:
+#   - Pick next backlog issue (or --issue)
+#   - Capture original issue state (assignees, open/closed, Project Status)
+#   - Scrummaster starts issue (In Progress + assign developer)
+#   - Developer creates branch
+#   - Create an EMPTY commit (no files touched)
+#   - Developer submits PR for review
+#   - Review accepts + merges (review script deletes PR branch)
+#   - Auto-restore issue/project state
+#   - Pause between each step
+#
+# Options are "turn off" behaviors: --no-pr, --no-merge, --no-branch-delete, --no-restore, --no-pause
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -212,6 +225,7 @@ PR_NUMBER=""
 CUR_BRANCH=""
 START_BRANCH=""
 
+# Only delete branch ourselves if merge step didn't already do it.
 cleanup_branch() {
   local branch="$1"
   [[ "$DO_BRANCH_DELETE" == "1" ]] || return 0
@@ -272,18 +286,21 @@ else
   log "--no-pr set; skipping PR/merge steps."
 fi
 
-# Review accept+merge (default ON)
+BRANCH_ALREADY_DELETED=0
+
+# Review accept+merge (default ON) — review script deletes PR branch
 if [[ "$DO_PR" == "1" && "$DO_MERGE" == "1" ]]; then
   log "Review: accept + merge"
   ./scripts/agents/review_accept_and_merge.sh "$PR_NUMBER" "$ISSUE"
   log "Merged."
+  BRANCH_ALREADY_DELETED=1
   pause
 elif [[ "$DO_PR" == "1" ]]; then
   log "--no-merge set; leaving PR open."
 fi
 
-# Delete branch (default ON)
-if [[ -n "$CUR_BRANCH" ]]; then
+# Delete branch ourselves only if we DID NOT merge (since merge path already deletes it)
+if [[ -n "$CUR_BRANCH" && "$DO_BRANCH_DELETE" == "1" && "$BRANCH_ALREADY_DELETED" == "0" ]]; then
   cleanup_branch "$CUR_BRANCH"
   pause
 fi

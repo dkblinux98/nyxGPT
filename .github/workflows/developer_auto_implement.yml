@@ -6,7 +6,7 @@ on:
 
 jobs:
   implement:
-    if: vars.AGENTS_ENABLED == 'true'
+    if: ${{ vars.AGENTS_ENABLED == 'true' }}
     runs-on: ubuntu-latest
 
     permissions:
