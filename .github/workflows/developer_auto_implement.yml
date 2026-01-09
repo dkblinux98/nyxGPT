@@ -6,7 +6,8 @@ on:
 
 jobs:
   implement:
-    if: ${{ vars.AGENTS_ENABLED == 'true' }}
+    if: ${{ vars.AGENTS_ENABLED == 'true' && vars.DEV_AUTO_IMPLEMENT_ENABLED == 'true' &&
+      github.event.assignee.login == vars.DEV_AGENT }}
     runs-on: ubuntu-latest
 
     permissions:
