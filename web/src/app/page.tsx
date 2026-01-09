@@ -386,9 +386,11 @@ export default function Home() {
       // Cmd/Ctrl + /: Toggle sidebar
       if (isMod && e.key === '/') {
         e.preventDefault();
-        setSidebarVisible((prev) => !prev);
-        // Announce based on what the new state will be
-        announce(!sidebarVisible ? 'Sidebar shown' : 'Sidebar hidden');
+        setSidebarVisible((prev) => {
+          const newState = !prev;
+          announce(newState ? 'Sidebar shown' : 'Sidebar hidden');
+          return newState;
+        });
         return;
       }
 
@@ -411,7 +413,7 @@ export default function Home() {
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [contextMenu, createNewChat, announce, sidebarVisible]);
+  }, [contextMenu, createNewChat, announce]);
 
   // Highlight search matches in text
   const highlightText = (text: string, search: string) => {
