@@ -430,13 +430,41 @@ Send a chat prompt and receive a model response.
 ```json
 {
   "reply": "Hello! How can I help you today?",
-  "session": "default"
+  "session": "default",
+  "model": "llama3.1:8b",
+  "rag_used": false,
+  "rag_chunks": []
 }
 ```
 
+**Response with RAG enabled:**
+
+```json
+{
+  "reply": "Based on the context, here's what I found...",
+  "session": "default",
+  "model": "llama3.1:8b",
+  "rag_used": true,
+  "rag_chunks": [
+    {
+      "text": "Relevant document content here...",
+      "score": 0.95,
+      "doc_id": "doc123",
+      "chunk_id": 5
+    },
+    {
+      "text": "Another relevant chunk...",
+      "score": 0.87,
+      "doc_id": "doc123",
+      "chunk_id": 6
+    }
+  ]
+}
+```
 
 - Sessions are persisted automatically.
 - RAG context may be injected depending on configuration.
+- When RAG is enabled, the response includes `rag_chunks` array with retrieved context metadata.
 
 ### RAG prompt & context optimization
 
@@ -487,10 +515,24 @@ curl -N http://127.0.0.1:8000/api/v1/chat/stream \
   -d '{"prompt":"Write a haiku about streaming","session":"default"}'
 ```
 
+**RAG metadata in streaming responses:**
+
+When RAG is enabled, the first chunk contains RAG metadata in the format:
+
+```
+__RAG_START__{"type":"rag_metadata","chunks":[{"text":"...","score":0.95,"doc_id":"doc123","chunk_id":5}]}__RAG_END__
+```
+
+Clients should:
+1. Parse and extract RAG metadata from the first chunk
+2. Remove the `__RAG_START__`...`__RAG_END__` section from displayed content
+3. Display RAG citations separately from the streamed response text
+
 Notes:
 
 - The connection remains open until generation completes
 - Retrieved RAG context (if enabled) is injected *before* streaming begins
+- RAG metadata is emitted as the first chunk when RAG is enabled
 - The full response is persisted to the session once streaming completes
 
 ---

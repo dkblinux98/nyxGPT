@@ -20,6 +20,7 @@ class ChatResult:
     reply: str
     rag_used: bool
     rag_chunks: int
+    rag_context: list[dict] | None = None  # List of {text, score, doc_id, chunk_id}
 
 
 @dataclass
@@ -36,6 +37,7 @@ class ChatContext:
     chat_timeout_s: int
     rag_used: bool
     rag_chunks: int
+    rag_context: list[dict] | None = None  # RAG retrieval results
 
 
 def _cfg(config_path: str | None) -> Any:
@@ -132,10 +134,12 @@ def _prepare_chat_context(
 
     rag_context = ""
     rag_chunks = 0
+    rag_rows = None  # Store raw RAG results
 
     if should_use_rag:
         rows = retrieve_context(prompt)
         rag_chunks = len(rows)
+        rag_rows = rows  # Save raw results
         rag_context = compose_context(rows)
 
         if rag_context:
@@ -172,6 +176,7 @@ def _prepare_chat_context(
         chat_timeout_s=chat_timeout_s,
         rag_used=bool(rag_context),
         rag_chunks=rag_chunks,
+        rag_context=rag_rows,
     )
 
 
@@ -228,6 +233,7 @@ def chat(
         reply=reply,
         rag_used=context.rag_used,
         rag_chunks=context.rag_chunks,
+        rag_context=context.rag_context,
     )
 
 
@@ -264,6 +270,23 @@ def chat_stream(
         session,
         context.chosen_model
     )
+
+    # Yield RAG metadata as first chunk if RAG was used
+    if context.rag_used and context.rag_context:
+        import json
+        rag_data = {
+            "type": "rag_metadata",
+            "chunks": [
+                {
+                    "text": chunk.get("text", ""),
+                    "score": chunk.get("score", 0.0),
+                    "doc_id": chunk.get("doc_id"),
+                    "chunk_id": chunk.get("chunk_id"),
+                }
+                for chunk in context.rag_context
+            ]
+        }
+        yield f"__RAG_START__{json.dumps(rag_data)}__RAG_END__\n"
 
     # Stream tokens and assemble final reply
     parts: list[str] = []

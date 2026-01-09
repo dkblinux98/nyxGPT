@@ -25,6 +25,7 @@ from mygpt.api_models import (
     TagsRequest,
     ChatRequest,
     ChatResponse,
+    RagChunkInfo,
     ToolTextResponse,
     ToolLsRequest,
     ToolCatRequest,
@@ -987,7 +988,24 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
             }
         )
 
-        return ChatResponse(session=result.session, model=result.model, reply=result.reply)
+        # Convert RAG context to RagChunkInfo objects
+        rag_chunks = []
+        if result.rag_context:
+            for chunk_data in result.rag_context:
+                rag_chunks.append(RagChunkInfo(
+                    text=chunk_data.get("text", ""),
+                    score=chunk_data.get("score", 0.0),
+                    doc_id=chunk_data.get("doc_id"),
+                    chunk_id=chunk_data.get("chunk_id"),
+                ))
+
+        return ChatResponse(
+            session=result.session,
+            model=result.model,
+            reply=result.reply,
+            rag_used=result.rag_used,
+            rag_chunks=rag_chunks,
+        )
     except ValueError as e:
         # Validation errors (e.g., invalid session name)
         log.warning("Chat validation error", extra={"request_id": req_id, "error": str(e)})

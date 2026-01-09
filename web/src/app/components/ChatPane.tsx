@@ -5,12 +5,92 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 type ChatMessage = {
   role: 'user' | 'assistant';
   content: string;
+  ragChunks?: RagChunk[];
+};
+
+type RagChunk = {
+  text: string;
+  score: number;
+  doc_id?: string | null;
+  chunk_id?: number | null;
 };
 
 type Props = {
   sessionName: string;
   onSessionUpdated?: () => void;
 };
+
+function RagCitationsCollapsible({ chunks }: { chunks: RagChunk[] }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div
+      style={{
+        marginBottom: 8,
+        padding: 8,
+        background: '#f0f9ff',
+        border: '1px solid #bae6fd',
+        borderRadius: 6,
+        fontSize: 12,
+      }}
+    >
+      <button
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          background: 'none',
+          border: 'none',
+          padding: 0,
+          cursor: 'pointer',
+          color: '#0369a1',
+          fontWeight: 500,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4,
+        }}
+      >
+        <span>{expanded ? '▼' : '▶'}</span>
+        <span>
+          {chunks.length} RAG {chunks.length === 1 ? 'source' : 'sources'} retrieved
+        </span>
+      </button>
+
+      {expanded && (
+        <div style={{ marginTop: 8 }}>
+          {chunks.map((chunk, idx) => (
+            <div
+              key={idx}
+              style={{
+                marginTop: idx > 0 ? 8 : 0,
+                padding: 8,
+                background: 'white',
+                borderRadius: 4,
+                border: '1px solid #e0f2fe',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ fontWeight: 500, color: '#0369a1' }}>
+                  Source {idx + 1}
+                </span>
+                <span style={{ color: '#64748b' }}>
+                  Score: {chunk.score.toFixed(3)}
+                </span>
+              </div>
+              {chunk.doc_id && (
+                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>
+                  Doc: {chunk.doc_id}
+                  {chunk.chunk_id !== null && chunk.chunk_id !== undefined && ` (chunk ${chunk.chunk_id})`}
+                </div>
+              )}
+              <div style={{ color: '#334155', whiteSpace: 'pre-wrap' }}>
+                {chunk.text.length > 200 ? chunk.text.substring(0, 200) + '...' : chunk.text}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
   const [input, setInput] = useState('');
@@ -204,21 +284,57 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
 
+      let accumulatedText = '';
+      let ragChunks: RagChunk[] | undefined = undefined;
+
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
+        accumulatedText += chunk;
 
-        // Append chunk to last assistant message
-        setMessages((prev) => {
-          if (prev.length === 0) return prev;
-          const next = [...prev];
-          const last = next[next.length - 1];
-          if (last?.role === 'assistant') {
-            next[next.length - 1] = { ...last, content: (last.content ?? '') + chunk };
+        // Check for RAG metadata in accumulated text
+        if (!ragChunks && accumulatedText.includes('__RAG_START__')) {
+          const ragEndIndex = accumulatedText.indexOf('__RAG_END__');
+          if (ragEndIndex !== -1) {
+            const ragStartIndex = accumulatedText.indexOf('__RAG_START__') + '__RAG_START__'.length;
+            const ragJson = accumulatedText.substring(ragStartIndex, ragEndIndex);
+            try {
+              const ragData = JSON.parse(ragJson);
+              if (ragData.type === 'rag_metadata' && Array.isArray(ragData.chunks)) {
+                ragChunks = ragData.chunks;
+              }
+            } catch (e) {
+              console.error('Failed to parse RAG metadata:', e);
+            }
+            // Remove RAG metadata from accumulated text
+            accumulatedText = accumulatedText.substring(ragEndIndex + '__RAG_END__'.length);
+            // Update message with RAG chunks
+            setMessages((prev) => {
+              if (prev.length === 0) return prev;
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last?.role === 'assistant') {
+                next[next.length - 1] = { ...last, ragChunks: ragChunks, content: accumulatedText.trimStart() };
+              }
+              return next;
+            });
+            continue;
           }
-          return next;
-        });
+        }
+
+        // Append chunk to last assistant message (if not waiting for RAG end marker)
+        if (!accumulatedText.includes('__RAG_START__') || ragChunks !== undefined) {
+          setMessages((prev) => {
+            if (prev.length === 0) return prev;
+            const next = [...prev];
+            const last = next[next.length - 1];
+            if (last?.role === 'assistant') {
+              next[next.length - 1] = { ...last, content: (last.content ?? '') + chunk };
+            }
+            return next;
+          });
+        }
       }
 
       // Notify parent that session was updated (model metadata may have changed)
@@ -324,6 +440,9 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
               <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 4 }}>
                 <strong>{m.role}</strong>
               </div>
+              {m.ragChunks && m.ragChunks.length > 0 && (
+                <RagCitationsCollapsible chunks={m.ragChunks} />
+              )}
               <div>{m.content}</div>
             </div>
           ))
