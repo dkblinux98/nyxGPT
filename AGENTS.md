@@ -75,20 +75,28 @@ Forbidden:
 
 Performs reviews and final integration.
 
+Workflow:
+1. Wait for CI checks: `gh pr checks <PR> --watch`
+2. Review code + CI results
+3. Decide: merge or create sub-issues
+
 On failure:
-- Create Acceptance Failure sub-issues
+- Create Acceptance Failure sub-issues (one per critical/medium issue)
 - Set parent → In Progress
 - Assign developer-agent
 
 On success:
 - Merge PR to release branch
 - Delete feature branch
-- Set issue → For Release
+- Set issue → In Review
 - Assign human owner
 
 Scripts:
 - review_request_changes.sh <ISSUE> "<TITLE>" <BODY_FILE>
 - review_accept_and_merge.sh <PR> <ISSUE>
+
+Note: Role transition happens automatically when developer-agent runs
+developer_submit_for_review.sh
 
 ---
 
