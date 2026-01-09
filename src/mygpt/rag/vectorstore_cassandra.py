@@ -139,7 +139,7 @@ class CassandraVectorStore:
 
         stmt = SimpleStatement(
             f"""
-            SELECT doc_id, chunk_id, text, metadata
+            SELECT doc_id, chunk_id, text, metadata, similarity_cosine(embedding, %s) AS score
             FROM {self.cfg.table}
             ORDER BY embedding ANN OF %s
             LIMIT %s
@@ -147,7 +147,7 @@ class CassandraVectorStore:
             fetch_size=k,
         )
 
-        rows = self.session.execute(stmt, (embedding, k))
+        rows = self.session.execute(stmt, (embedding, embedding, k))
         out: list[dict] = []
         for r in rows:
             out.append(
@@ -156,6 +156,7 @@ class CassandraVectorStore:
                     "chunk_id": r.chunk_id,
                     "text": r.text,
                     "metadata": json.loads(r.metadata) if r.metadata else {},
+                    "score": float(r.score) if hasattr(r, 'score') and r.score is not None else 0.0,
                 }
             )
         return out
