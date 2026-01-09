@@ -186,10 +186,13 @@ restore_issue_state() {
   local issue="$1"
   log "Restoring issue state..."
 
-  if [[ "$ORIG_STATE" == "OPEN" ]]; then
+  orig="$(echo "$ORIG_STATE" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$orig" == "open" ]]; then
     gh api -X PATCH "repos/$REPO_FULL/issues/$issue" -f state=open >/dev/null
-  else
+  elif [[ "$orig" == "closed" ]]; then
     gh api -X PATCH "repos/$REPO_FULL/issues/$issue" -f state=closed >/dev/null
+  else
+    log "Unknown original state '$ORIG_STATE' (skipping state restore)"
   fi
 
   local assignees_json
