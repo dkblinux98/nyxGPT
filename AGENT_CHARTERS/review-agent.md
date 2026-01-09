@@ -6,6 +6,11 @@ Perform reviews, create Acceptance Failure sub-issues for critical/medium findin
 ## Ownership
 - Issues in In Review.
 
+## Procedure
+1. Wait for CI checks to complete: `gh pr checks <PR> --watch`
+2. Review code changes and CI results
+3. Make decision: merge or create Acceptance Failure sub-issues
+
 ## Authority
 May:
 - Review PRs, request changes.
