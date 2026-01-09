@@ -21,6 +21,17 @@ log = logging.getLogger(__name__)
 
 
 # --- File locking utilities ---
+#
+# LOCK ORDERING REQUIREMENT (Deadlock Prevention):
+# When multiple file locks are needed, always acquire them in alphabetical
+# order by file path. This ensures consistent lock ordering across all code
+# paths and prevents deadlock scenarios.
+#
+# Example:
+#   files = [session_file, meta_file]
+#   files.sort(key=lambda p: str(p))
+#   with file_lock(files[0]), file_lock(files[1]):
+#       # ... operations ...
 
 @contextmanager
 def file_lock(file_path: Path, timeout: float = 5.0):
@@ -932,22 +943,39 @@ def sync_filename_with_title(
 
     # Atomic rename using copy-then-delete pattern with file locking
     try:
-        # Acquire exclusive lock on source session file to prevent concurrent writes
-        with file_lock(sf, timeout=10.0):
-            # 1. Copy session file to new location
-            new_sf.parent.mkdir(parents=True, exist_ok=True)
-            msgs = load_session_messages(sf)
-            save_session_messages(new_sf, msgs)
+        # Lock both files upfront in alphabetical order to prevent deadlock
+        # (consistent ordering ensures no process can hold locks in conflicting order)
+        files_to_lock = [sf]
+        if mf.exists():
+            files_to_lock.append(mf)
+        files_to_lock.sort(key=lambda p: str(p))  # Alphabetical order by path
 
-            # 2. Copy metadata file to new location (lock metadata too if exists)
-            if mf.exists():
-                with file_lock(mf, timeout=10.0):
+        # Acquire locks in consistent order
+        if len(files_to_lock) == 2:
+            with file_lock(files_to_lock[0], timeout=10.0), file_lock(files_to_lock[1], timeout=10.0):
+                # 1. Copy session file to new location
+                new_sf.parent.mkdir(parents=True, exist_ok=True)
+                msgs = load_session_messages(sf)
+                save_session_messages(new_sf, msgs)
+
+                # 2. Copy metadata file to new location
+                if mf.exists():
                     save_session_meta(new_mf, meta)
 
-            # 3. Delete old files (only after successful copy)
-            sf.unlink()
-            if mf.exists():
-                mf.unlink()
+                # 3. Delete old files (only after successful copy)
+                sf.unlink()
+                if mf.exists():
+                    mf.unlink()
+        else:
+            # Only session file needs locking
+            with file_lock(files_to_lock[0], timeout=10.0):
+                # 1. Copy session file to new location
+                new_sf.parent.mkdir(parents=True, exist_ok=True)
+                msgs = load_session_messages(sf)
+                save_session_messages(new_sf, msgs)
+
+                # 3. Delete old file
+                sf.unlink()
 
         log.info(f"Renamed session '{current_name}' -> '{new_name}'")
         return True, "renamed", new_name
