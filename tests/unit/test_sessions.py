@@ -556,3 +556,56 @@ def test_file_lock_ordering_prevents_deadlock(tmp_path: Path) -> None:
 
     # If deadlock occurred, the operation would timeout and fail
     # Success proves locks were acquired in consistent order
+
+
+def test_metadata_file_deleted_between_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that rename handles metadata file deletion between existence checks (TOCTOU race)."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create a session with metadata
+    sf, mf, msgs, meta = sessions.init_session(
+        session_name="old-session-name",
+        sessions_dir=sessions_dir,
+        new_session=True,
+        model="llama3.1:8b",
+    )
+    meta["title"] = "New TOCTOU Test Title"
+    sessions.save_session_meta(mf, meta)
+
+    # Verify both files exist
+    assert sf.exists()
+    assert mf.exists()
+
+    # Simulate metadata file being deleted between initial check and lock acquisition
+    # by monkey-patching file_lock to delete mf when called on it
+    original_file_lock = sessions.file_lock
+    lock_call_count = {"count": 0}
+
+    def patched_file_lock(file_path: Path, timeout: float = 5.0):
+        lock_call_count["count"] += 1
+        # Delete metadata file when we try to lock it (simulates race condition)
+        if file_path == mf and lock_call_count["count"] == 2:  # Second lock call is for metadata
+            if mf.exists():
+                mf.unlink()
+        return original_file_lock(file_path, timeout)
+
+    monkeypatch.setattr("mygpt.sessions.file_lock", patched_file_lock)
+
+    # Rename should succeed despite metadata file disappearing
+    success, message, new_name = sessions.sync_filename_with_title(
+        "old-session-name", sessions_dir, force=True
+    )
+
+    assert success
+    assert message == "renamed"
+    assert new_name == "new-toctou-test-title"  # Title sanitizes to this
+
+    # Session file should be renamed successfully
+    new_sf = sessions.session_file_for(new_name, sessions_dir)
+    assert new_sf.exists()
+
+    # Metadata file was deleted, so new metadata should not exist
+    new_mf = sessions.meta_file_for(new_sf)
+    # The operation should have handled the missing file gracefully
+    # (not crashed or left files in inconsistent state)
