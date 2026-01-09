@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import ChatPane from './components/ChatPane';
 
 type Info = {
@@ -30,6 +30,7 @@ export default function Home() {
   const [sessions, setSessions] = useState<SessionsResponse['sessions']>([]);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [selectedSession, setSelectedSession] = useState<string>('default');
+  const [sidebarVisible, setSidebarVisible] = useState<boolean>(true);
 
   // Search and filter state
   const [searchText, setSearchText] = useState<string>('');
@@ -45,6 +46,21 @@ export default function Home() {
   } | null>(null);
   const [deletingSession, setDeletingSession] = useState<string | null>(null);
   const [exportingSession, setExportingSession] = useState<string | null>(null);
+
+  // Refs for keyboard shortcuts
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const feedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const srTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Accessibility: Screen reader announcements
+  const [srAnnouncement, setSrAnnouncement] = useState<string>('');
+
+  // Accessibility: Visual feedback for shortcuts
+  const [shortcutFeedback, setShortcutFeedback] = useState<string>('');
+
+  // Platform detection for keyboard shortcuts display
+  const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+  const modKey = isMac ? '⌘' : 'Ctrl';
 
   useEffect(() => {
     fetch('/api/info')
@@ -115,7 +131,7 @@ export default function Home() {
   };
 
   // Refresh session list
-  const refreshSessions = async () => {
+  const refreshSessions = useCallback(async () => {
     try {
       // Add timestamp to prevent browser caching
       const res = await fetch(`/api/sessions?t=${Date.now()}`, {
@@ -127,10 +143,10 @@ export default function Home() {
     } catch (e) {
       setSessionsError(e instanceof Error ? e.message : String(e));
     }
-  };
+  }, []);
 
   // Create new chat
-  const createNewChat = async () => {
+  const createNewChat = useCallback(async () => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
     const defaultName = `session-${timestamp}`;
     const sessionName = prompt('Enter session name:', defaultName);
@@ -165,7 +181,7 @@ export default function Home() {
       alert(`Failed to create new chat: ${msg}`);
       console.error('Failed to create new chat:', e);
     }
-  };
+  }, [refreshSessions, setSelectedSession]);
 
   // Delete session
   const deleteSession = async (sessionName: string) => {
@@ -318,6 +334,87 @@ export default function Home() {
     }
   }, [contextMenu]);
 
+  // Helper function to announce actions to screen readers
+  const announce = useCallback((message: string) => {
+    setSrAnnouncement(message);
+    setShortcutFeedback(message);
+
+    // Clear existing timeouts first
+    if (feedbackTimeoutRef.current) {
+      clearTimeout(feedbackTimeoutRef.current);
+      feedbackTimeoutRef.current = null;
+    }
+    if (srTimeoutRef.current) {
+      clearTimeout(srTimeoutRef.current);
+      srTimeoutRef.current = null;
+    }
+
+    // Then set new timeouts and null refs when they fire
+    feedbackTimeoutRef.current = setTimeout(() => {
+      setShortcutFeedback('');
+      feedbackTimeoutRef.current = null;
+    }, 2000);
+
+    srTimeoutRef.current = setTimeout(() => {
+      setSrAnnouncement('');
+      srTimeoutRef.current = null;
+    }, 1000);
+  }, []);
+
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (feedbackTimeoutRef.current) clearTimeout(feedbackTimeoutRef.current);
+      if (srTimeoutRef.current) clearTimeout(srTimeoutRef.current);
+    };
+  }, []);
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check for Cmd (Mac) or Ctrl (Windows/Linux)
+      const isMod = e.metaKey || e.ctrlKey;
+
+      // Cmd/Ctrl + K: New chat
+      if (isMod && e.key === 'k') {
+        e.preventDefault();
+        announce('Creating new chat');
+        void createNewChat();
+        return;
+      }
+
+      // Cmd/Ctrl + /: Toggle sidebar
+      if (isMod && e.key === '/') {
+        e.preventDefault();
+        setSidebarVisible((prev) => {
+          const newState = !prev;
+          announce(newState ? 'Sidebar shown' : 'Sidebar hidden');
+          return newState;
+        });
+        return;
+      }
+
+      // / key: Focus search (when not typing in input)
+      if (e.key === '/' && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        announce('Search focused');
+        return;
+      }
+
+      // Esc: Close context menu (already handled above, but adding for completeness)
+      if (e.key === 'Escape' && contextMenu) {
+        e.preventDefault();
+        setContextMenu(null);
+        announce('Menu closed');
+        return;
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [contextMenu, createNewChat, announce]);
+
   // Highlight search matches in text
   const highlightText = (text: string, search: string) => {
     if (!search) return text;
@@ -339,16 +436,59 @@ export default function Home() {
         display: 'flex',
         height: '100vh',
         fontFamily: 'system-ui, sans-serif',
+        position: 'relative',
       }}
     >
-      <aside
+      {/* Screen reader announcements */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
         style={{
-          width: 320,
-          borderRight: '1px solid #ddd',
-          padding: '1rem',
-          overflowY: 'auto',
+          position: 'absolute',
+          left: '-10000px',
+          width: '1px',
+          height: '1px',
+          overflow: 'hidden',
         }}
       >
+        {srAnnouncement}
+      </div>
+
+      {/* Visual keyboard shortcut feedback */}
+      {shortcutFeedback && (
+        <div
+          role="alert"
+          style={{
+            position: 'fixed',
+            bottom: 20,
+            right: 20,
+            background: 'rgba(0, 0, 0, 0.8)',
+            color: 'white',
+            padding: '8px 16px',
+            borderRadius: 6,
+            fontSize: 14,
+            fontWeight: 500,
+            zIndex: 1000,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+            opacity: 1,
+            transform: 'translateY(0)',
+            transition: 'opacity 0.2s ease-in, transform 0.2s ease-in',
+          }}
+        >
+          {shortcutFeedback}
+        </div>
+      )}
+
+      {sidebarVisible && (
+        <aside
+          style={{
+            width: 320,
+            borderRight: '1px solid #ddd',
+            padding: '1rem',
+            overflowY: 'auto',
+          }}
+        >
         <h1 style={{ margin: 0 }}>myGPT</h1>
         <p style={{ marginTop: 6, marginBottom: 8, opacity: 0.8 }}>
           Local web UI (early)
@@ -357,6 +497,8 @@ export default function Home() {
         {/* New Chat button */}
         <button
           onClick={() => void createNewChat()}
+          aria-label={`Create new chat (${modKey}+K)`}
+          title={`Create new chat (${modKey}+K)`}
           style={{
             width: '100%',
             padding: '10px 12px',
@@ -372,6 +514,15 @@ export default function Home() {
             alignItems: 'center',
             justifyContent: 'center',
             gap: 8,
+            outline: '2px solid transparent',
+            outlineOffset: 2,
+            transition: 'outline 0.2s ease',
+          }}
+          onFocus={(e) => {
+            e.currentTarget.style.outline = '2px solid #333';
+          }}
+          onBlur={(e) => {
+            e.currentTarget.style.outline = '2px solid transparent';
           }}
         >
           <span style={{ fontSize: 16 }}>+</span> New Chat
@@ -398,10 +549,13 @@ export default function Home() {
 
         {/* Search input */}
         <input
+          ref={searchInputRef}
           type="text"
           placeholder="Search sessions..."
           value={searchText}
           onChange={(e) => setSearchText(e.target.value)}
+          aria-label="Search sessions (press / to focus)"
+          title="Search sessions (press / to focus)"
           style={{
             width: '100%',
             padding: '8px 10px',
@@ -410,6 +564,15 @@ export default function Home() {
             borderRadius: 6,
             fontSize: 14,
             boxSizing: 'border-box',
+            outline: '2px solid transparent',
+            outlineOffset: 2,
+            transition: 'outline 0.2s ease',
+          }}
+          onFocus={(e) => {
+            e.currentTarget.style.outline = '2px solid #4CAF50';
+          }}
+          onBlur={(e) => {
+            e.currentTarget.style.outline = '2px solid transparent';
           }}
         />
 
@@ -718,9 +881,76 @@ export default function Home() {
             </button>
           </div>
         )}
+
+        {/* Keyboard shortcuts help */}
+        <div
+          style={{
+            marginTop: 16,
+            paddingTop: 12,
+            borderTop: '1px solid #e5e5e5',
+            fontSize: 11,
+            opacity: 0.7,
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Keyboard Shortcuts</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div>
+              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>{modKey}+K</kbd> New
+              chat
+            </div>
+            <div>
+              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>{modKey}+/</kbd> Toggle
+              sidebar
+            </div>
+            <div>
+              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>/</kbd> Search
+            </div>
+            <div>
+              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>Esc</kbd> Close
+              menus
+            </div>
+          </div>
+        </div>
       </aside>
+      )}
 
       <section style={{ flex: 1, padding: '1.5rem', overflowY: 'auto' }}>
+        {!sidebarVisible && (
+          <button
+            onClick={() => setSidebarVisible(true)}
+            aria-label={`Show sidebar (${modKey}+/)`}
+            title={`Show sidebar (${modKey}+/)`}
+            style={{
+              position: 'fixed',
+              top: 16,
+              left: 16,
+              padding: '8px 12px',
+              background: '#4CAF50',
+              color: 'white',
+              border: 'none',
+              borderRadius: 6,
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: 'pointer',
+              zIndex: 100,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              outline: '2px solid transparent',
+              outlineOffset: 2,
+              transition: 'outline 0.2s ease',
+            }}
+            onFocus={(e) => {
+              e.currentTarget.style.outline = '2px solid #fff';
+            }}
+            onBlur={(e) => {
+              e.currentTarget.style.outline = '2px solid transparent';
+            }}
+          >
+            ☰ Menu
+          </button>
+        )}
+
         <h2 style={{ marginTop: 0 }}>Backend</h2>
 
         {error && (
