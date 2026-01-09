@@ -248,6 +248,11 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
 - Session picker and management
 - RAG document upload and toggle
 - Model management (pull, delete, list) at `/models`
+- **Keyboard shortcuts** for productivity:
+  - `Cmd/Ctrl+K` - Create new chat
+  - `Cmd/Ctrl+/` - Toggle sidebar visibility
+  - `Cmd/Ctrl+F` - Focus search input
+  - `Esc` - Close menus and dialogs
 
 ---
 

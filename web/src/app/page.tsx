@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import ChatPane from './components/ChatPane';
 
 type Info = {
@@ -30,6 +30,7 @@ export default function Home() {
   const [sessions, setSessions] = useState<SessionsResponse['sessions']>([]);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [selectedSession, setSelectedSession] = useState<string>('default');
+  const [sidebarVisible, setSidebarVisible] = useState<boolean>(true);
 
   // Search and filter state
   const [searchText, setSearchText] = useState<string>('');
@@ -45,6 +46,9 @@ export default function Home() {
   } | null>(null);
   const [deletingSession, setDeletingSession] = useState<string | null>(null);
   const [exportingSession, setExportingSession] = useState<string | null>(null);
+
+  // Refs for keyboard shortcuts
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetch('/api/info')
@@ -130,7 +134,7 @@ export default function Home() {
   };
 
   // Create new chat
-  const createNewChat = async () => {
+  const createNewChat = useCallback(async () => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
     const defaultName = `session-${timestamp}`;
     const sessionName = prompt('Enter session name:', defaultName);
@@ -165,7 +169,7 @@ export default function Home() {
       alert(`Failed to create new chat: ${msg}`);
       console.error('Failed to create new chat:', e);
     }
-  };
+  }, []);
 
   // Delete session
   const deleteSession = async (sessionName: string) => {
@@ -318,6 +322,46 @@ export default function Home() {
     }
   }, [contextMenu]);
 
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check for Cmd (Mac) or Ctrl (Windows/Linux)
+      const isMod = e.metaKey || e.ctrlKey;
+
+      // Cmd/Ctrl + K: New chat
+      if (isMod && e.key === 'k') {
+        e.preventDefault();
+        void createNewChat();
+        return;
+      }
+
+      // Cmd/Ctrl + /: Toggle sidebar
+      if (isMod && e.key === '/') {
+        e.preventDefault();
+        setSidebarVisible((prev) => !prev);
+        return;
+      }
+
+      // Cmd/Ctrl + F: Focus search
+      if (isMod && e.key === 'f') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+
+      // Esc: Close context menu (already handled above, but adding for completeness)
+      if (e.key === 'Escape' && contextMenu) {
+        e.preventDefault();
+        setContextMenu(null);
+        return;
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contextMenu]);
+
   // Highlight search matches in text
   const highlightText = (text: string, search: string) => {
     if (!search) return text;
@@ -341,14 +385,15 @@ export default function Home() {
         fontFamily: 'system-ui, sans-serif',
       }}
     >
-      <aside
-        style={{
-          width: 320,
-          borderRight: '1px solid #ddd',
-          padding: '1rem',
-          overflowY: 'auto',
-        }}
-      >
+      {sidebarVisible && (
+        <aside
+          style={{
+            width: 320,
+            borderRight: '1px solid #ddd',
+            padding: '1rem',
+            overflowY: 'auto',
+          }}
+        >
         <h1 style={{ margin: 0 }}>myGPT</h1>
         <p style={{ marginTop: 6, marginBottom: 8, opacity: 0.8 }}>
           Local web UI (early)
@@ -398,6 +443,7 @@ export default function Home() {
 
         {/* Search input */}
         <input
+          ref={searchInputRef}
           type="text"
           placeholder="Search sessions..."
           value={searchText}
@@ -718,9 +764,66 @@ export default function Home() {
             </button>
           </div>
         )}
+
+        {/* Keyboard shortcuts help */}
+        <div
+          style={{
+            marginTop: 16,
+            paddingTop: 12,
+            borderTop: '1px solid #e5e5e5',
+            fontSize: 11,
+            opacity: 0.7,
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Keyboard Shortcuts</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div>
+              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>⌘K</kbd> New
+              chat
+            </div>
+            <div>
+              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>⌘/</kbd> Toggle
+              sidebar
+            </div>
+            <div>
+              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>⌘F</kbd> Search
+            </div>
+            <div>
+              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>Esc</kbd> Close
+              menus
+            </div>
+          </div>
+        </div>
       </aside>
+      )}
 
       <section style={{ flex: 1, padding: '1.5rem', overflowY: 'auto' }}>
+        {!sidebarVisible && (
+          <button
+            onClick={() => setSidebarVisible(true)}
+            style={{
+              position: 'fixed',
+              top: 16,
+              left: 16,
+              padding: '8px 12px',
+              background: '#4CAF50',
+              color: 'white',
+              border: 'none',
+              borderRadius: 6,
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: 'pointer',
+              zIndex: 100,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+            title="Show sidebar (⌘/)"
+          >
+            ☰ Menu
+          </button>
+        )}
+
         <h2 style={{ marginTop: 0 }}>Backend</h2>
 
         {error && (
