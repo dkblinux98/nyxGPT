@@ -69,12 +69,26 @@ jobs:
             echo "config ok: $REPO_OWNER/$REPO_NAME project $PROJECT_OWNER#$PROJECT_NUMBER release=$RELEASE_BRANCH"
           '
 
+      - name: Post workflow start comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEV_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: '🤖 **Developer Agent**: Auto-implementation workflow triggered.\n\nVerifying issue status...\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})'
+            });
+
       - name: Verify issue is In Progress in ProjectV2 (otherwise exit)
         shell: bash
         run: |
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
 
+          echo "::group::Verifying issue #$ISSUE status"
           bash -lc '
             set -euo pipefail
             source scripts/agents/lib/gh_project.sh
@@ -120,9 +134,9 @@ jobs:
               ' | head -n 1)"
 
               if [[ -n "$status" ]]; then
-                echo "[auto-implement] issue #$issue status=$status"
+                echo "::notice::Issue #$issue status=$status"
                 if [[ "$status" != "$STATUS_IN_PROGRESS" ]]; then
-                  echo "[auto-implement] Not In Progress; exiting with success."
+                  echo "::warning::Not In Progress; exiting workflow."
                   exit 0
                 fi
                 found=1
@@ -136,17 +150,50 @@ jobs:
             done
 
             if [[ "$found" != "1" ]]; then
-              echo "[auto-implement] Issue not found in project; exiting with success."
+              echo "::warning::Issue not found in project; exiting workflow."
               exit 0
             fi
           '
+          echo "::endgroup::"
+
+      - name: Post branch creation comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEV_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: '🌿 **Developer Agent**: Creating feature branch...'
+            });
 
       - name: Create branch for issue
+        id: branch
         shell: bash
         run: |
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
-          ./scripts/agents/developer_create_branch.sh "$ISSUE" feat auto
+          echo "::group::Creating branch for issue #$ISSUE"
+          BRANCH=$(./scripts/agents/developer_create_branch.sh "$ISSUE" feat auto)
+          echo "::notice::Created branch: $BRANCH"
+          echo "branch_name=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+
+      - name: Post implementation start comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEV_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const branch_name = '${{ steps.branch.outputs.branch_name }}';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: `✅ **Developer Agent**: Branch created: \`${branch_name}\`\n\n🤖 Starting Claude Code implementation...\n\nThis may take several minutes. Claude will:\n- Analyze the issue requirements\n- Implement the solution\n- Add/update tests\n- Run the test suite\n- Commit changes\n\nYou can watch progress in the [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}).`
+            });
 
       - name: Run Claude Code to implement issue
         id: claude
@@ -163,9 +210,41 @@ jobs:
             - Commit changes with a clear message.
             Output: commit(s) pushed to the current branch.
 
+      - name: Post implementation complete comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEV_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: '✅ **Developer Agent**: Implementation complete. Submitting PR for review...'
+            });
+
       - name: Submit PR for review
+        id: pr
         shell: bash
         run: |
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
-          ./scripts/agents/developer_submit_for_review.sh "$ISSUE"
+          echo "::group::Submitting PR for review"
+          PR_NUMBER=$(./scripts/agents/developer_submit_for_review.sh "$ISSUE")
+          echo "::notice::Created PR #$PR_NUMBER"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+
+      - name: Post PR created comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEV_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const pr_number = '${{ steps.pr.outputs.pr_number }}';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: `🎉 **Developer Agent**: Implementation complete!\n\n📝 Pull Request: #${pr_number}\n📊 Status: **In Review**\n👤 Assigned to: @${{ vars.REVIEW_AGENT }}\n\nThe review agent will now:\n1. Wait for CI checks to complete\n2. Review the code changes\n3. Either merge or request changes\n\n[View PR](https://github.com/${{ github.repository }}/pull/${pr_number})`
+            });

@@ -1,4 +1,4 @@
-name: Notify scrummaster-agent when issue is ready for next
+name: Scrummaster Agent - Select and Start Next Issue
 
 on:
   issue_comment:
@@ -6,23 +6,149 @@ on:
 
 permissions:
   issues: write
+  contents: read
 
 jobs:
-  notify:
+  dispatch-next-issue:
     if: >
       vars.AGENTS_ENABLED == 'true' &&
       contains(github.event.comment.body, 'READY_FOR_NEXT_ISSUE')
     runs-on: ubuntu-latest
+
+    env:
+      GH_TOKEN: ${{ secrets.SCRUMMASTER_TOKEN }}
+
     steps:
-      - uses: actions/github-script@v7
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Auth gh
+        run: gh auth status
+
+      - name: Write ephemeral config.ini (runner temp)
+        shell: bash
+        run: |
+          set -euo pipefail
+          CFG="$RUNNER_TEMP/mygpt-config.ini"
+
+          cat > "$CFG" <<'EOF'
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          EOF
+
+          echo "MYGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
+          echo "Wrote ephemeral config at $CFG"
+
+      - name: Verify config loads
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -lc '
+            source scripts/agents/lib/gh_project.sh
+            load_config
+            require_gh_auth
+            echo "config ok: $REPO_OWNER/$REPO_NAME project $PROJECT_OWNER#$PROJECT_NUMBER release=$RELEASE_BRANCH"
+          '
+
+      - name: Post start comment
+        uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.SCRUMMASTER_TOKEN }}
           script: |
-            // Simple notification: mention scrummaster-agent on the issue
             const issue_number = context.payload.issue.number;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: '@scrummaster-agent next issue may be dispatched (signal received).'
+              body: '🤖 **Scrummaster Agent**: READY_FOR_NEXT_ISSUE signal received. Selecting next backlog issue...\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})'
+            });
+
+      - name: Select next issue
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::Selecting next issue from Backlog"
+          NEXT_ISSUE=$(bash -lc './scripts/agents/scrummaster_next_issue.sh' || echo "")
+
+          if [[ -z "$NEXT_ISSUE" ]]; then
+            echo "::warning::No eligible issues found in Backlog"
+            echo "next_issue=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::notice::Selected issue #$NEXT_ISSUE (lowest Phase, lowest issue number)"
+          echo "next_issue=$NEXT_ISSUE" >> "$GITHUB_OUTPUT"
+          echo "::endgroup::"
+
+      - name: Post no issues comment
+        if: steps.select.outputs.next_issue == ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.SCRUMMASTER_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: '⚠️ **Scrummaster Agent**: No eligible issues found in Backlog status.\n\nAll work may be complete, or backlog needs replenishment.'
+            });
+
+      - name: Post selection comment
+        if: steps.select.outputs.next_issue != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.SCRUMMASTER_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const next_issue = '${{ steps.select.outputs.next_issue }}';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: `✅ **Scrummaster Agent**: Selected issue #${next_issue}\n\nStarting issue now...`
+            });
+
+      - name: Start next issue
+        if: steps.select.outputs.next_issue != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          ISSUE="${{ steps.select.outputs.next_issue }}"
+          echo "::group::Starting issue #$ISSUE"
+          bash -lc "./scripts/agents/scrummaster_start_issue.sh $ISSUE"
+          echo "::notice::Started issue #$ISSUE -> In Progress, assigned to $DEV_AGENT"
+          echo "::endgroup::"
+
+      - name: Post completion comment
+        if: steps.select.outputs.next_issue != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.SCRUMMASTER_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const next_issue = '${{ steps.select.outputs.next_issue }}';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: `🚀 **Scrummaster Agent**: Issue #${next_issue} has been moved to **In Progress** and assigned to @${{ vars.DEV_AGENT }}\n\nDeveloper auto-implementation workflow will begin momentarily.\n\n[View issue](https://github.com/${{ github.repository }}/issues/${next_issue})`
             });
