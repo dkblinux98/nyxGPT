@@ -17,15 +17,25 @@ Agents are the sole authority for state transitions.
 - Do not merge to main/master
 - Do not improvise workflow
 
+### Project Hygiene (All Agents)
+
+Every agent is responsible for verifying project hygiene before reassigning issues/PRs:
+- PRs must be linked to issues via `Closes #ISSUE` in PR body
+- Issues must have required project fields populated (Status, Priority, etc.)
+- Merged PRs without linked issues must be corrected before handoff
+- Project fields must be accurate and up-to-date before state transitions
+
 ---
 
 ## Project Status Semantics
 
-Backlog      – approved, unscheduled  
-In Progress  – active development  
-In Review    – awaiting review  
-For Release  – merged, pending release  
+Backlog      – approved, unscheduled
+In Progress  – active development
+In Review    – awaiting review (agent review OR human stakeholder acceptance after merge)
+For Release  – stakeholder accepted, ready for release (human sets this)
 Closed       – released (human only)
+
+**Important**: After merge, issues remain in "In Review" status (CLOSED in GitHub, but "In Review" in project) until human stakeholder acceptance. The human owner moves accepted issues to "For Release".
 
 ---
 
@@ -80,7 +90,13 @@ Workflow:
 2. Review code + CI results
 3. Decide: merge or create sub-issues
 
-On failure:
+On CI failure:
+- Set parent issue → In Progress
+- Assign parent issue → developer-agent
+- Comment with CI failure details
+- Switch role to developer-agent and fix
+
+On code review failure:
 - Create Acceptance Failure sub-issues (one per critical/medium issue)
 - Set parent → In Progress
 - Assign developer-agent
@@ -106,5 +122,28 @@ Closes releases and advances phases.
 
 ---
 
+## Executive Assistant (Claude for ad-hoc tasks)
+
+Supports the human owner during stakeholder acceptance with ad-hoc administrative tasks.
+
+Role:
+- Executes one-off requests outside the agent workflow
+- Handles bulk operations (e.g., bulk-assign backlog issues)
+- Fixes project hygiene issues discovered during acceptance
+- Uses the most efficient means to accomplish tasks (direct gh/GraphQL is acceptable)
+
+Examples:
+- Bulk-assigning backlog issues to scrummaster-agent
+- Fixing missing project fields on PRs/issues
+- Administrative cleanup and corrections
+- Documentation updates
+
+Not an agent role:
+- Does not follow strict agent workflow rules
+- Does not participate in automated workflows
+- Announces current role when switching between executive assistant and agent roles
+
+---
+
 Final rule:
-If it’s not explicitly allowed above, it must not be done.
+If it's not explicitly allowed above, it must not be done.

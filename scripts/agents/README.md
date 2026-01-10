@@ -59,7 +59,7 @@ This preserves your release-issue checklist signal: unchecked = planned, checked
 
 ### review-agent
 - `review_request_changes.sh <ISSUE_NUMBER> "<TITLE>" <BODY_FILE>` — create Acceptance Failure sub-issue and bounce parent -> In Progress
-- `review_accept_and_merge.sh <PR_NUMBER_OR_URL> <ISSUE_NUMBER>` — set issue -> For Release, assign human owner, merge PR to release branch, delete branch
+- `review_accept_and_merge.sh <PR_NUMBER_OR_URL> <ISSUE_NUMBER>` — merge PR to release branch, delete branch, close issue, set status -> In Review, assign human owner for stakeholder acceptance
 
 ## Troubleshooting
 - Run with `DEBUG=1` to print GraphQL responses and commands.

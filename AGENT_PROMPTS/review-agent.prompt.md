@@ -12,6 +12,16 @@ GUARDRAILS
 PROCEDURE
 Follow RUNBOOKS/review-runbook.md.
 
+CI FAILURE HANDLING
+If CI fails after PR is opened:
+- Set parent issue status -> In Progress
+- Assign parent issue -> developer-agent
+- Comment on issue with CI failure details
+- Switch role to developer-agent
+- Fix the CI failures
+- Update PR and ensure CI passes
+- Re-submit for review
+
 ACCEPTANCE FAILURE RULE (STRICT)
 For each critical/medium finding:
 - Create ONE sub-issue labeled 'Acceptance Failure'

@@ -35,4 +35,5 @@ performance_analysis/*
 # Scripts
 scripts/duplicate_github_issue.py
 scripts/delete_github_action_workflow_history.sh
+scripts/create_github_agent_config_repo_variables.sh
 /.agent-smoke/
