@@ -17,8 +17,10 @@ Behavior:
   - If pr_body_file is omitted, a deterministic PR body is generated from issue data.
 
 Then:
+  - PR Assignee -> REPO_OWNER
+  - PR Reviewer -> REVIEW_AGENT
   - Issue Status -> In Review
-  - Assign -> REVIEW_AGENT
+  - Issue Assign -> REVIEW_AGENT
   - Comment with PR link
 
 Outputs:
@@ -183,6 +185,10 @@ pr_url="$(gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$CURRENT_BRA
 [[ -n "$pr_url" ]] || _die "Failed to create PR"
 
 pr_number="$(gh pr view "$pr_url" --repo "$REPO" --json number -q .number)"
+
+# Set PR hygiene: assignee and reviewer
+gh pr edit "$pr_number" --repo "$REPO" --add-assignee "$REPO_OWNER" || _warn "Failed to set PR assignee"
+gh pr edit "$pr_number" --repo "$REPO" --add-reviewer "$REVIEW_AGENT" || _warn "Failed to request review from $REVIEW_AGENT"
 
 # Update tracking
 set_issue_status "$ISSUE" "$STATUS_IN_REVIEW"
