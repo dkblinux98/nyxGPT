@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      GH_TOKEN: ${{ secrets.SCRUMMASTER_TOKEN }}
+      GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
 
     steps:
       - name: Checkout
@@ -34,7 +34,7 @@ jobs:
           set -euo pipefail
           CFG="$RUNNER_TEMP/mygpt-config.ini"
 
-          cat > "$CFG" <<'EOF'
+          cat > "$CFG" <<EOF
           REPO_OWNER=${{ vars.REPO_OWNER }}
           REPO_NAME=${{ vars.REPO_NAME }}
           PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
@@ -71,7 +71,7 @@ jobs:
       - name: Post start comment
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.SCRUMMASTER_TOKEN }}
+          github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
             await github.rest.issues.createComment({
@@ -103,7 +103,7 @@ jobs:
         if: steps.select.outputs.next_issue == ''
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.SCRUMMASTER_TOKEN }}
+          github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
             await github.rest.issues.createComment({
@@ -117,7 +117,7 @@ jobs:
         if: steps.select.outputs.next_issue != ''
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.SCRUMMASTER_TOKEN }}
+          github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
             const next_issue = '${{ steps.select.outputs.next_issue }}';
@@ -143,7 +143,7 @@ jobs:
         if: steps.select.outputs.next_issue != ''
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.SCRUMMASTER_TOKEN }}
+          github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
             const next_issue = '${{ steps.select.outputs.next_issue }}';
