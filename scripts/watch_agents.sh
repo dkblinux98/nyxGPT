@@ -17,67 +17,87 @@ fi
 
 SESSION_NAME="agent-monitor"
 
-# Function to get latest run ID for workflows
-get_latest_run() {
-    local workflows=("$@")
-    local run_id=""
-
-    for workflow in "${workflows[@]}"; do
-        run_id=$(gh run list --workflow="$workflow" --status in_progress --status queued --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")
-        if [[ -n "$run_id" ]]; then
-            echo "$run_id"
-            return 0
-        fi
-    done
-
-    echo ""
-}
-
-# Get run IDs for each agent type
-echo "Searching for active workflow runs..."
-
-SCRUM_RUN=$(get_latest_run "notify_scrum_ready.yml" "assign_backlog.yml" "auto-check-tasklist.yml" "add-to-release-issue-on-milestone.yml")
-DEV_RUN=$(get_latest_run "developer_auto_implement.yml" "claude.yml")
-REVIEW_RUN=$(get_latest_run "review_agent_auto_review.yml" "claude-code-review.yml")
-
 # Kill existing session if it exists
 tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
 
-# Create new session with first pane (Scrummaster)
-if [[ -n "$SCRUM_RUN" ]]; then
-    echo "Found Scrummaster run: $SCRUM_RUN"
-    tmux new-session -d -s "$SESSION_NAME" -n "Agents" "gh run watch $SCRUM_RUN"
-else
-    echo "No active Scrummaster runs"
-    tmux new-session -d -s "$SESSION_NAME" -n "Agents" "echo '=== SCRUMMASTER AGENT ==='; echo 'No active runs'; echo 'Waiting for runs...'; while true; do sleep 5; done"
-fi
+# Create monitoring script for each agent type
+create_monitor_script() {
+    local agent_name="$1"
+    shift
+    local workflows=("$@")
 
-# Split horizontally for Developer pane
-if [[ -n "$DEV_RUN" ]]; then
-    echo "Found Developer run: $DEV_RUN"
-    tmux split-window -h -t "$SESSION_NAME:0" "gh run watch $DEV_RUN"
-else
-    echo "No active Developer runs"
-    tmux split-window -h -t "$SESSION_NAME:0" "echo '=== DEVELOPER AGENT ==='; echo 'No active runs'; echo 'Waiting for runs...'; while true; do sleep 5; done"
-fi
+    cat <<'SCRIPT_END'
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Split the left pane vertically for Reviewer pane
-if [[ -n "$REVIEW_RUN" ]]; then
-    echo "Found Reviewer run: $REVIEW_RUN"
-    tmux split-window -v -t "$SESSION_NAME:0.0" "gh run watch $REVIEW_RUN"
-else
-    echo "No active Reviewer runs"
-    tmux split-window -v -t "$SESSION_NAME:0.0" "echo '=== REVIEWER AGENT ==='; echo 'No active runs'; echo 'Waiting for runs...'; while true; do sleep 5; done"
-fi
+AGENT_NAME="AGENT_NAME_PLACEHOLDER"
+WORKFLOWS=(WORKFLOWS_PLACEHOLDER)
+
+echo "=== $AGENT_NAME AGENT ==="
+echo "Monitoring workflows: ${WORKFLOWS[*]}"
+echo ""
+
+while true; do
+    # Find latest active run
+    RUN_ID=""
+    for workflow in "${WORKFLOWS[@]}"; do
+        RUN_ID=$(gh run list --workflow="$workflow" --status in_progress --status queued --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")
+        if [[ -n "$RUN_ID" ]]; then
+            break
+        fi
+    done
+
+    if [[ -n "$RUN_ID" ]]; then
+        echo "$(date '+%H:%M:%S') - Found active run: $RUN_ID"
+        echo "Watching..."
+        gh run watch "$RUN_ID" 2>&1 || true
+        echo ""
+        echo "Run $RUN_ID completed. Checking for new runs..."
+        sleep 2
+    else
+        echo "$(date '+%H:%M:%S') - No active runs, checking again in 5s..."
+        sleep 5
+    fi
+done
+SCRIPT_END
+}
+
+# Create temp scripts for each agent
+SCRUM_SCRIPT=$(mktemp)
+DEV_SCRIPT=$(mktemp)
+REVIEW_SCRIPT=$(mktemp)
+
+# Generate Scrummaster monitoring script
+create_monitor_script "SCRUMMASTER" "notify_scrum_ready.yml" "assign_backlog.yml" "auto-check-tasklist.yml" "add-to-release-issue-on-milestone.yml" | \
+    sed 's/AGENT_NAME_PLACEHOLDER/SCRUMMASTER/' | \
+    sed 's/WORKFLOWS_PLACEHOLDER/"notify_scrum_ready.yml" "assign_backlog.yml" "auto-check-tasklist.yml" "add-to-release-issue-on-milestone.yml"/' > "$SCRUM_SCRIPT"
+chmod +x "$SCRUM_SCRIPT"
+
+# Generate Developer monitoring script
+create_monitor_script "DEVELOPER" "developer_auto_implement.yml" "claude.yml" | \
+    sed 's/AGENT_NAME_PLACEHOLDER/DEVELOPER/' | \
+    sed 's/WORKFLOWS_PLACEHOLDER/"developer_auto_implement.yml" "claude.yml"/' > "$DEV_SCRIPT"
+chmod +x "$DEV_SCRIPT"
+
+# Generate Reviewer monitoring script
+create_monitor_script "REVIEWER" "review_agent_auto_review.yml" "claude-code-review.yml" | \
+    sed 's/AGENT_NAME_PLACEHOLDER/REVIEWER/' | \
+    sed 's/WORKFLOWS_PLACEHOLDER/"review_agent_auto_review.yml" "claude-code-review.yml"/' > "$REVIEW_SCRIPT"
+chmod +x "$REVIEW_SCRIPT"
+
+# Create tmux session with monitoring panes
+tmux new-session -d -s "$SESSION_NAME" -n "Agents" "bash $SCRUM_SCRIPT; rm -f $SCRUM_SCRIPT"
+tmux split-window -h -t "$SESSION_NAME:0" "bash $DEV_SCRIPT; rm -f $DEV_SCRIPT"
+tmux split-window -v -t "$SESSION_NAME:0.0" "bash $REVIEW_SCRIPT; rm -f $REVIEW_SCRIPT"
 
 # Adjust layout to tile evenly
 tmux select-layout -t "$SESSION_NAME:0" even-horizontal
 
+echo "✅ Agent monitoring session started"
 echo ""
-echo "✅ Monitoring session started"
-echo "   Scrummaster: ${SCRUM_RUN:-no active run}"
-echo "   Developer:   ${DEV_RUN:-no active run}"
-echo "   Reviewer:    ${REVIEW_RUN:-no active run}"
+echo "Each pane continuously polls for active runs and watches them."
+echo "Press Ctrl+b then d to detach (keeps running in background)"
+echo "Run 'tmux attach -t agent-monitor' to reattach"
 echo ""
 
 # Attach to the session
