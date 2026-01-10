@@ -49,9 +49,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
-git fetch origin "$base_branch"
-git checkout -b "$branch" "origin/$base_branch"
-git push -u origin "$branch"
+git fetch origin "$base_branch" >&2
+git checkout -b "$branch" "origin/$base_branch" >&2
+git push -u origin "$branch" >&2
 
 # Optional breadcrumb on the issue (non-fatal)
 issue_comment "$ISSUE" "Developer branch created: \`${branch}\` (base: \`${base_branch}\`)." >/dev/null 2>&1 || true
