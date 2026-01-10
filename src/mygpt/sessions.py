@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 #
 # Example:
 #   files = [session_file, meta_file]
-#   files.sort(key=lambda p: str(p))
+#   files.sort(key=lambda p: p.as_posix())
 #   with file_lock(files[0]), file_lock(files[1]):
 #       # ... operations ...
 
@@ -49,7 +49,7 @@ def verify_lock_ordering(*file_paths: Path) -> None:
 
     Example:
         >>> files = [session_file, meta_file]
-        >>> files.sort(key=lambda p: str(p))
+        >>> files.sort(key=lambda p: p.as_posix())
         >>> verify_lock_ordering(*files)  # Passes if files sorted correctly
     """
     if len(file_paths) < 2:
@@ -57,7 +57,7 @@ def verify_lock_ordering(*file_paths: Path) -> None:
 
     # Only enforce in debug mode (__debug__ is True unless -O flag used)
     if __debug__:
-        paths_str = [str(p) for p in file_paths]
+        paths_str = [p.as_posix() for p in file_paths]
         sorted_paths = sorted(paths_str)
         assert paths_str == sorted_paths, (
             f"File lock ordering violation detected! "
@@ -984,7 +984,7 @@ def sync_filename_with_title(
         meta_existed_initially = mf.exists()
         if meta_existed_initially:
             files_to_lock.append(mf)
-        files_to_lock.sort(key=lambda p: str(p))  # Alphabetical order by path
+        files_to_lock.sort(key=lambda p: p.as_posix())  # Cross-platform alphabetical order
 
         # Verify ordering in debug mode (catches violations during development)
         verify_lock_ordering(*files_to_lock)
