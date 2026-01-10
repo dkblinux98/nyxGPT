@@ -998,13 +998,13 @@ def sync_filename_with_title(
                 save_session_messages(new_sf, msgs)
 
                 # 2. Copy metadata file to new location
-                # Recheck existence after acquiring lock (file could have been deleted)
-                if meta_existed_initially and mf.exists():
+                # Only save if metadata existed before locking (not an empty lock file)
+                if meta_existed_initially:
                     save_session_meta(new_mf, meta)
 
                 # 3. Delete old files (only after successful copy)
                 sf.unlink()
-                if meta_existed_initially and mf.exists():
+                if meta_existed_initially:
                     mf.unlink()
         else:
             # Only session file needs locking
