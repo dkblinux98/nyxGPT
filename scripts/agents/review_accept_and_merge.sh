@@ -83,8 +83,12 @@ if git ls-remote --exit-code --heads origin "$pr_head_branch" >/dev/null 2>&1; t
   git push origin --delete "$pr_head_branch" >/dev/null 2>&1 || true
 fi
 
+# Close the issue (GitHub state) - required because merge to release branch doesn't auto-close
+# GitHub only auto-closes issues when PRs merge to default branch (master)
+gh issue close "$ISSUE" --repo "${REPO_OWNER}/${REPO_NAME}" --comment "Merged via review-agent. Issue closed and moved to In Review status for stakeholder acceptance."
+
 set_issue_status "$ISSUE" "$STATUS_IN_REVIEW"
 issue_assign_only "$ISSUE" "$HUMAN_OWNER"
 issue_comment "$ISSUE" "PR merged into \`${base_branch}\` and branch deleted. Status -> ${STATUS_IN_REVIEW}. Assigned -> @${HUMAN_OWNER}."
 
-echo "Merged PR ($PR). Issue #$ISSUE -> ${STATUS_IN_REVIEW}"
+echo "Merged PR ($PR). Issue #$ISSUE closed and set to ${STATUS_IN_REVIEW}"

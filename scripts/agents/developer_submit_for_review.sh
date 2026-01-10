@@ -187,8 +187,18 @@ pr_url="$(gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$CURRENT_BRA
 pr_number="$(gh pr view "$pr_url" --repo "$REPO" --json number -q .number)"
 
 # Set PR hygiene: assignee and reviewer
-gh pr edit "$pr_number" --repo "$REPO" --add-assignee "$REPO_OWNER" || _warn "Failed to set PR assignee"
-gh pr edit "$pr_number" --repo "$REPO" --add-reviewer "$REVIEW_AGENT" || _warn "Failed to request review from $REVIEW_AGENT"
+gh pr edit "$pr_number" --repo "$REPO" --add-assignee "$REPO_OWNER" || _warn "Failed to set PR assignee to $REPO_OWNER"
+
+# Request review from review-agent (critical - must succeed)
+if ! gh pr edit "$pr_number" --repo "$REPO" --add-reviewer "$REVIEW_AGENT"; then
+  _die "Failed to request review from $REVIEW_AGENT. PR created but reviewer not set. Manual intervention required for PR #${pr_number}"
+fi
+echo "[dev] Reviewer set: @$REVIEW_AGENT" >&2
+
+# Link PR to issue in Development field (GitHub auto-links via "Closes #N", but verify)
+gh issue develop "$ISSUE" --repo "$REPO" --checkout false --branch "$CURRENT_BRANCH" 2>/dev/null || {
+  _warn "Could not explicitly link PR to issue Development field (may already be linked via 'Closes #N')"
+}
 
 # Update tracking
 set_issue_status "$ISSUE" "$STATUS_IN_REVIEW"

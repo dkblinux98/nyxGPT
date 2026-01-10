@@ -98,15 +98,23 @@ jobs:
             exit 0
           }
 
-          # Get final status
-          STATUS=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup[].conclusion' | grep -v "SUCCESS" || echo "")
+          # Get final status - check if any checks exist first
+          CHECK_COUNT=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup | length')
 
-          if [[ -z "$STATUS" ]]; then
+          if [[ "$CHECK_COUNT" == "0" || "$CHECK_COUNT" == "null" ]]; then
             echo "ci_status=success" >> "$GITHUB_OUTPUT"
-            echo "::notice::All CI checks passed"
+            echo "::warning::No CI checks configured for this PR - treating as success"
           else
-            echo "ci_status=failed" >> "$GITHUB_OUTPUT"
-            echo "::warning::Some CI checks failed"
+            # Check if any checks failed (non-SUCCESS conclusions)
+            STATUS=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup[].conclusion' | grep -v "SUCCESS" || echo "")
+
+            if [[ -z "$STATUS" ]]; then
+              echo "ci_status=success" >> "$GITHUB_OUTPUT"
+              echo "::notice::All CI checks passed ($CHECK_COUNT checks)"
+            else
+              echo "ci_status=failed" >> "$GITHUB_OUTPUT"
+              echo "::warning::Some CI checks failed"
+            fi
           fi
 
           echo "::endgroup::"
@@ -148,16 +156,20 @@ jobs:
           set -euo pipefail
           PR="${{ github.event.pull_request.number }}"
 
-          # Extract issue number from PR body
+          # Extract issue number from PR body - MUST contain "Closes #N" per project hygiene rules
           ISSUE=$(gh pr view "$PR" --json body -q '.body' | grep -oP 'Closes #\K\d+' || echo "")
 
-          if [[ -n "$ISSUE" ]]; then
-            echo "::group::Moving issue #$ISSUE back to In Progress"
-            bash -lc "source scripts/agents/lib/gh_project.sh && load_config && set_issue_status $ISSUE '$STATUS_IN_PROGRESS'"
-            bash -lc "source scripts/agents/lib/gh_project.sh && load_config && issue_assign_only $ISSUE '$DEV_AGENT'"
-            echo "::notice::Issue #$ISSUE moved to In Progress and assigned to $DEV_AGENT"
-            echo "::endgroup::"
+          if [[ -z "$ISSUE" ]]; then
+            echo "::error::PR #$PR body does not contain 'Closes #N' - cannot identify parent issue for CI failure handling"
+            echo "::error::Review runbook requires all PRs link to issues via 'Closes #ISSUE' in PR body"
+            exit 1
           fi
+
+          echo "::group::Moving issue #$ISSUE back to In Progress"
+          bash -lc "source scripts/agents/lib/gh_project.sh && load_config && set_issue_status $ISSUE '\$STATUS_IN_PROGRESS'"
+          bash -lc "source scripts/agents/lib/gh_project.sh && load_config && issue_assign_only $ISSUE '\$DEV_AGENT'"
+          echo "::notice::Issue #$ISSUE moved to In Progress"
+          echo "::endgroup::"
 
       - name: Run Claude Code review
         if: steps.ci_check.outputs.ci_status == 'success'

@@ -17,12 +17,17 @@ jobs:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
+            const scrum_agent = process.env.SCRUM_AGENT;
+
             // Assign to scrummaster-agent on creation.
             await github.rest.issues.addAssignees({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              assignees: ['scrummaster-agent']
+              assignees: [scrum_agent]
             });
+
             // Optional: add a label to indicate backlog ownership.
             // await github.rest.issues.addLabels({ owner: context.repo.owner, repo: context.repo.repo, issue_number, labels: ['backlog'] });
+        env:
+          SCRUM_AGENT: ${{ vars.SCRUM_AGENT }}

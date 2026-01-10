@@ -136,7 +136,7 @@ jobs:
           ISSUE="${{ steps.select.outputs.next_issue }}"
           echo "::group::Starting issue #$ISSUE"
           bash -lc "./scripts/agents/scrummaster_start_issue.sh $ISSUE"
-          echo "::notice::Started issue #$ISSUE -> In Progress, assigned to $DEV_AGENT"
+          echo "::notice::Started issue #$ISSUE -> In Progress, assigned to @${{ vars.DEV_AGENT }}"
           echo "::endgroup::"
 
       - name: Post completion comment

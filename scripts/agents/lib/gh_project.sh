@@ -21,6 +21,10 @@ _die() {
   exit 1
 }
 
+_warn() {
+  echo "[warning] $*" >&2
+}
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || _die "Missing required command: $1"
 }
@@ -346,4 +350,33 @@ issue_assign_only() {
 issue_comment() {
   local issue="$1" body="$2"
   gh api -X POST "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/comments" -f "body=${body}" >/dev/null
+}
+
+create_sub_issue() {
+  local parent_issue="$1" title="$2" body_file="$3"
+  require_cmd gh
+  require_cmd jq
+  [[ -f "$body_file" ]] || _die "Body file not found: $body_file"
+
+  local body_content
+  body_content="$(cat "$body_file")"
+
+  # Prepend parent link to body
+  local full_body
+  full_body="Parent: #${parent_issue}"$'\n\n'"${body_content}"
+
+  # Create the issue
+  local new_issue_number
+  new_issue_number="$(gh issue create \
+    --repo "${REPO_OWNER}/${REPO_NAME}" \
+    --title "$title" \
+    --body "$full_body" \
+    --json number -q .number)"
+
+  [[ -n "$new_issue_number" ]] || _die "Failed to create sub-issue"
+
+  # Add comment to parent linking to sub-issue
+  issue_comment "$parent_issue" "Created sub-issue: #${new_issue_number}" || true
+
+  echo "$new_issue_number"
 }
