@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ChatPane from './components/ChatPane';
+import ThemeToggle from '../components/ThemeToggle';
 
 type Info = {
   ollama_base_url: string;
@@ -421,7 +422,7 @@ export default function Home() {
     const parts = text.split(new RegExp(`(${search})`, 'gi'));
     return parts.map((part, i) =>
       part.toLowerCase() === search.toLowerCase() ? (
-        <mark key={i} style={{ background: '#ffeb3b', padding: '0 2px' }}>
+        <mark key={i} style={{ background: 'var(--highlight)', padding: '0 2px' }}>
           {part}
         </mark>
       ) : (
@@ -463,8 +464,8 @@ export default function Home() {
             position: 'fixed',
             bottom: 20,
             right: 20,
-            background: 'rgba(0, 0, 0, 0.8)',
-            color: 'white',
+            background: 'var(--feedback-bg)',
+            color: 'var(--feedback-text)',
             padding: '8px 16px',
             borderRadius: 6,
             fontSize: 14,
@@ -484,15 +485,21 @@ export default function Home() {
         <aside
           style={{
             width: 320,
-            borderRight: '1px solid #ddd',
+            borderRight: '1px solid var(--border)',
             padding: '1rem',
             overflowY: 'auto',
+            background: 'var(--sidebar-bg)',
           }}
         >
         <h1 style={{ margin: 0 }}>myGPT</h1>
         <p style={{ marginTop: 6, marginBottom: 8, opacity: 0.8 }}>
           Local web UI (early)
         </p>
+
+        {/* Theme Toggle */}
+        <div style={{ marginBottom: 12 }}>
+          <ThemeToggle />
+        </div>
 
         {/* New Chat button */}
         <button
@@ -503,7 +510,7 @@ export default function Home() {
             width: '100%',
             padding: '10px 12px',
             marginBottom: 12,
-            background: '#4CAF50',
+            background: 'var(--success)',
             color: 'white',
             border: 'none',
             borderRadius: 6,
@@ -519,7 +526,7 @@ export default function Home() {
             transition: 'outline 0.2s ease',
           }}
           onFocus={(e) => {
-            e.currentTarget.style.outline = '2px solid #333';
+            e.currentTarget.style.outline = '2px solid var(--foreground)';
           }}
           onBlur={(e) => {
             e.currentTarget.style.outline = '2px solid transparent';
@@ -534,11 +541,11 @@ export default function Home() {
             style={{
               display: 'inline-block',
               padding: '6px 12px',
-              background: '#f4f4f4',
-              border: '1px solid #ddd',
+              background: 'var(--button-bg)',
+              border: '1px solid var(--border)',
               borderRadius: 6,
               textDecoration: 'none',
-              color: '#333',
+              color: 'var(--foreground)',
               fontSize: 12,
               fontWeight: 600,
             }}
@@ -560,16 +567,18 @@ export default function Home() {
             width: '100%',
             padding: '8px 10px',
             marginBottom: 8,
-            border: '1px solid #ddd',
+            border: '1px solid var(--border)',
             borderRadius: 6,
             fontSize: 14,
             boxSizing: 'border-box',
             outline: '2px solid transparent',
             outlineOffset: 2,
             transition: 'outline 0.2s ease',
+            background: 'var(--input-bg)',
+            color: 'var(--foreground)',
           }}
           onFocus={(e) => {
-            e.currentTarget.style.outline = '2px solid #4CAF50';
+            e.currentTarget.style.outline = '2px solid var(--success)';
           }}
           onBlur={(e) => {
             e.currentTarget.style.outline = '2px solid transparent';
@@ -583,9 +592,11 @@ export default function Home() {
             onChange={(e) => setFilterModel(e.target.value)}
             style={{
               padding: '6px 8px',
-              border: '1px solid #ddd',
+              border: '1px solid var(--border)',
               borderRadius: 4,
               fontSize: 12,
+              background: 'var(--input-bg)',
+              color: 'var(--foreground)',
             }}
           >
             <option value="">All models</option>
@@ -601,9 +612,11 @@ export default function Home() {
             onChange={(e) => setFilterPinned(e.target.value)}
             style={{
               padding: '6px 8px',
-              border: '1px solid #ddd',
+              border: '1px solid var(--border)',
               borderRadius: 4,
               fontSize: 12,
+              background: 'var(--input-bg)',
+              color: 'var(--foreground)',
             }}
           >
             <option value="all">All sessions</option>
@@ -618,9 +631,11 @@ export default function Home() {
             onChange={(e) => setFilterTags(e.target.value)}
             style={{
               padding: '6px 8px',
-              border: '1px solid #ddd',
+              border: '1px solid var(--border)',
               borderRadius: 4,
               fontSize: 12,
+              background: 'var(--input-bg)',
+              color: 'var(--foreground)',
             }}
           />
 
@@ -629,10 +644,11 @@ export default function Home() {
               onClick={clearFilters}
               style={{
                 padding: '6px 8px',
-                border: '1px solid #ddd',
+                border: '1px solid var(--border)',
                 borderRadius: 4,
                 fontSize: 12,
-                background: '#f8f8f8',
+                background: 'var(--button-bg)',
+                color: 'var(--foreground)',
                 cursor: 'pointer',
               }}
             >
@@ -676,9 +692,10 @@ export default function Home() {
                   textAlign: 'left',
                   padding: '10px 10px',
                   borderRadius: 8,
-                  border: '1px solid ' + (isActive ? '#999' : '#e5e5e5'),
-                  background: isActive ? '#f4f4f4' : 'white',
+                  border: '1px solid ' + (isActive ? 'var(--border)' : 'var(--border-light)'),
+                  background: isActive ? 'var(--active-bg)' : 'var(--sidebar-bg)',
                   cursor: 'pointer',
+                  color: 'var(--foreground)',
                 }}
               >
                 <div style={{ fontWeight: 600, fontSize: 14 }}>
@@ -717,8 +734,8 @@ export default function Home() {
               position: 'fixed',
               top: contextMenu.y,
               left: contextMenu.x,
-              background: 'white',
-              border: '1px solid #ddd',
+              background: 'var(--sidebar-bg)',
+              border: '1px solid var(--border)',
               borderRadius: 6,
               boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
               zIndex: 1000,
@@ -744,8 +761,9 @@ export default function Home() {
                 display: 'flex',
                 alignItems: 'center',
                 gap: 8,
+                color: 'var(--foreground)',
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = '#f5f5f5')}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
               onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
             >
               <span>✏️</span> Rename
@@ -762,9 +780,10 @@ export default function Home() {
                   justifyContent: 'space-between',
                   gap: 8,
                   cursor: 'pointer',
+                  color: 'var(--foreground)',
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.background = '#f5f5f5';
+                  e.currentTarget.style.background = 'var(--button-hover)';
                   const submenu = e.currentTarget.nextElementSibling as HTMLElement;
                   if (submenu) submenu.style.display = 'block';
                 }}
@@ -788,8 +807,8 @@ export default function Home() {
                   position: 'absolute',
                   left: '100%',
                   top: 0,
-                  background: 'white',
-                  border: '1px solid #ddd',
+                  background: 'var(--sidebar-bg)',
+                  border: '1px solid var(--border)',
                   borderRadius: 6,
                   boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
                   minWidth: 140,
@@ -816,8 +835,9 @@ export default function Home() {
                       textAlign: 'left',
                       cursor: exportingSession === contextMenu.sessionName ? 'wait' : 'pointer',
                       fontSize: 14,
+                      color: 'var(--foreground)',
                     }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = '#f5f5f5')}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
                     onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                   >
                     {format.charAt(0).toUpperCase() + format.slice(1)}
@@ -827,7 +847,7 @@ export default function Home() {
             </div>
 
             {/* Divider */}
-            <div style={{ height: 1, background: '#e5e5e5', margin: '6px 0' }} />
+            <div style={{ height: 1, background: 'var(--border-light)', margin: '6px 0' }} />
 
             {/* Pin/Unpin */}
             <button
@@ -846,8 +866,9 @@ export default function Home() {
                 display: 'flex',
                 alignItems: 'center',
                 gap: 8,
+                color: 'var(--foreground)',
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = '#f5f5f5')}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
               onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
             >
               <span>📌</span>{' '}
@@ -887,7 +908,7 @@ export default function Home() {
           style={{
             marginTop: 16,
             paddingTop: 12,
-            borderTop: '1px solid #e5e5e5',
+            borderTop: '1px solid var(--border-light)',
             fontSize: 11,
             opacity: 0.7,
           }}
@@ -895,18 +916,18 @@ export default function Home() {
           <div style={{ fontWeight: 600, marginBottom: 6 }}>Keyboard Shortcuts</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div>
-              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>{modKey}+K</kbd> New
+              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3 }}>{modKey}+K</kbd> New
               chat
             </div>
             <div>
-              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>{modKey}+/</kbd> Toggle
+              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3 }}>{modKey}+/</kbd> Toggle
               sidebar
             </div>
             <div>
-              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>/</kbd> Search
+              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3 }}>/</kbd> Search
             </div>
             <div>
-              <kbd style={{ background: '#f5f5f5', padding: '2px 4px', borderRadius: 3 }}>Esc</kbd> Close
+              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3 }}>Esc</kbd> Close
               menus
             </div>
           </div>
@@ -914,7 +935,7 @@ export default function Home() {
       </aside>
       )}
 
-      <section style={{ flex: 1, padding: '1.5rem', overflowY: 'auto' }}>
+      <section style={{ flex: 1, padding: '1.5rem', overflowY: 'auto', background: 'var(--background)', color: 'var(--foreground)' }}>
         {!sidebarVisible && (
           <button
             onClick={() => setSidebarVisible(true)}
@@ -925,7 +946,7 @@ export default function Home() {
               top: 16,
               left: 16,
               padding: '8px 12px',
-              background: '#4CAF50',
+              background: 'var(--success)',
               color: 'white',
               border: 'none',
               borderRadius: 6,
