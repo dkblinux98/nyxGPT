@@ -559,6 +559,105 @@ def test_file_lock_ordering_prevents_deadlock(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_file_lock_concurrent_access_no_deadlock(tmp_path: Path) -> None:
+    """Test that concurrent file operations don't deadlock with alphabetical lock ordering."""
+    import threading
+    import time
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create multiple sessions with metadata
+    sessions_to_test = []
+    for i in range(3):
+        session_name = f"concurrent-test-{i}"
+        sf, mf, msgs, meta = sessions.init_session(
+            session_name=session_name,
+            sessions_dir=sessions_dir,
+            new_session=True,
+            model="llama3.1:8b",
+        )
+        meta["title"] = f"Concurrent Test {i}"
+        sessions.save_session_meta(mf, meta)
+        sessions_to_test.append(session_name)
+
+    # Track successes and failures
+    results = {"successes": 0, "failures": 0, "errors": []}
+    results_lock = threading.Lock()
+
+    def rename_session(session_name: str):
+        """Rename a session (requires locking both session and metadata files)."""
+        try:
+            success, message, new_name = sessions.sync_filename_with_title(
+                session_name, sessions_dir, force=True
+            )
+            with results_lock:
+                if success:
+                    results["successes"] += 1
+                else:
+                    results["failures"] += 1
+                    results["errors"].append(f"{session_name}: {message}")
+        except Exception as e:
+            with results_lock:
+                results["failures"] += 1
+                results["errors"].append(f"{session_name}: {e}")
+
+    # Launch concurrent rename operations
+    threads = []
+    for session_name in sessions_to_test:
+        thread = threading.Thread(target=rename_session, args=(session_name,))
+        threads.append(thread)
+        thread.start()
+        time.sleep(0.01)  # Small delay to increase concurrent overlap
+
+    # Wait for all threads to complete (with timeout to catch deadlocks)
+    timeout_per_thread = 5.0
+    for thread in threads:
+        thread.join(timeout=timeout_per_thread)
+        if thread.is_alive():
+            # Thread is still running - potential deadlock
+            pytest.fail(
+                f"Thread timed out after {timeout_per_thread}s - possible deadlock detected!"
+            )
+
+    # Verify all operations succeeded
+    assert results["failures"] == 0, f"Failures: {results['errors']}"
+    assert results["successes"] == len(sessions_to_test), (
+        f"Expected {len(sessions_to_test)} successes, got {results['successes']}"
+    )
+
+
+@pytest.mark.unit
+def test_file_lock_ordering_verification(tmp_path: Path) -> None:
+    """Test that verify_lock_ordering catches violations during execution."""
+    import threading
+
+    test_file_a = tmp_path / "a.lock"
+    test_file_b = tmp_path / "b.lock"
+
+    # Track whether assertion was raised
+    assertion_raised = {"value": False}
+
+    def try_wrong_order():
+        """Try to verify locks in wrong order (should raise AssertionError)."""
+        try:
+            # Files in WRONG order (b before a)
+            sessions.verify_lock_ordering(test_file_b, test_file_a)
+        except AssertionError:
+            assertion_raised["value"] = True
+
+    # Only test in debug mode
+    if __debug__:
+        thread = threading.Thread(target=try_wrong_order)
+        thread.start()
+        thread.join(timeout=1.0)
+
+        assert assertion_raised["value"], (
+            "verify_lock_ordering should raise AssertionError for wrong order"
+        )
+
+
+@pytest.mark.unit
 def test_verify_lock_ordering_correct_order(tmp_path: Path) -> None:
     """Test that verify_lock_ordering passes when files are in alphabetical order."""
     file_a = tmp_path / "a.txt"
