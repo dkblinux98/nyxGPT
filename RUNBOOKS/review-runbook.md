@@ -13,6 +13,8 @@ Every assignee is responsible for verifying project hygiene before reassigning:
 - Project fields must be accurate before state transitions
 
 ## 1) Review checklist
+
+### Core Requirements (from project standards)
 - Correctness vs issue acceptance criteria
 - Tests added/updated and meaningful
 - No architecture boundary violations
@@ -20,10 +22,17 @@ Every assignee is responsible for verifying project hygiene before reassigning:
 - Clear docs updates for user-facing changes
 - Reasonable maintainability
 
+### Additional Quality Checks (comprehensive review)
+- Code quality and best practices (use CLAUDE.md for guidance)
+- Performance considerations and potential bottlenecks
+- Security concerns beyond secret detection
+- Potential bugs or edge cases not covered by tests
+- API contract consistency and backward compatibility
+
 ## 2) Severity model
-- Critical: correctness/security/data-loss; must block merge
-- Medium: significant bug risk, missing tests, broken contract; must block merge
-- Minor: style/nits; may proceed
+- Critical: correctness/security/data-loss/performance regression; must block merge
+- Medium: significant bug risk, missing tests, broken contract, poor maintainability; must block merge
+- Minor: style/nits, minor optimization opportunities; may proceed
 
 ## 3) CI failure handling
 If CI fails after PR is opened:

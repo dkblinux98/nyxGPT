@@ -128,9 +128,9 @@ create_monitor_script "DEVELOPER" "Developer Agent Auto-Implement" "Claude Code"
 chmod +x "$DEV_SCRIPT"
 
 # Generate Reviewer monitoring script
-create_monitor_script "REVIEWER" "Review Agent Auto-Review" "Claude Code Review" | \
+create_monitor_script "REVIEWER" "Review Agent Auto-Review" | \
     sed 's/AGENT_NAME_PLACEHOLDER/REVIEWER/' | \
-    sed 's/WORKFLOWS_PLACEHOLDER/"Review Agent Auto-Review" "Claude Code Review"/' > "$REVIEW_SCRIPT"
+    sed 's/WORKFLOWS_PLACEHOLDER/"Review Agent Auto-Review"/' > "$REVIEW_SCRIPT"
 chmod +x "$REVIEW_SCRIPT"
 
 # Create tmux session with monitoring panes
