@@ -40,9 +40,15 @@ echo ""
 
 while true; do
     # Find latest active run (in_progress or queued)
+    # NOTE: gh CLI bug - multiple --status flags with --limit returns empty, so query separately
     RUN_ID=""
     for workflow in "${WORKFLOWS[@]}"; do
-        RUN_ID=$(gh run list --workflow="$workflow" --status in_progress --status queued --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")
+        # Try in_progress first
+        RUN_ID=$(gh run list --workflow="$workflow" --status in_progress --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")
+        if [[ -z "$RUN_ID" ]]; then
+            # Try queued if no in_progress run
+            RUN_ID=$(gh run list --workflow="$workflow" --status queued --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")
+        fi
         if [[ -n "$RUN_ID" ]]; then
             break
         fi
@@ -104,21 +110,21 @@ DEV_SCRIPT=$(mktemp)
 REVIEW_SCRIPT=$(mktemp)
 
 # Generate Scrummaster monitoring script
-create_monitor_script "SCRUMMASTER" "notify_scrum_ready.yml" "assign_backlog.yml" "auto-check-tasklist.yml" "add-to-release-issue-on-milestone.yml" | \
+create_monitor_script "SCRUMMASTER" "Scrummaster Agent - Select and Start Next Issue" "Assign Backlog Issues to scrummaster-agent" "Auto-check Release Tracking Issues" "Add issue to release issue on milestone assignment" | \
     sed 's/AGENT_NAME_PLACEHOLDER/SCRUMMASTER/' | \
-    sed 's/WORKFLOWS_PLACEHOLDER/"notify_scrum_ready.yml" "assign_backlog.yml" "auto-check-tasklist.yml" "add-to-release-issue-on-milestone.yml"/' > "$SCRUM_SCRIPT"
+    sed 's/WORKFLOWS_PLACEHOLDER/"Scrummaster Agent - Select and Start Next Issue" "Assign Backlog Issues to scrummaster-agent" "Auto-check Release Tracking Issues" "Add issue to release issue on milestone assignment"/' > "$SCRUM_SCRIPT"
 chmod +x "$SCRUM_SCRIPT"
 
 # Generate Developer monitoring script
-create_monitor_script "DEVELOPER" "developer_auto_implement.yml" "claude.yml" | \
+create_monitor_script "DEVELOPER" "Developer Agent Auto-Implement" "Claude Code" | \
     sed 's/AGENT_NAME_PLACEHOLDER/DEVELOPER/' | \
-    sed 's/WORKFLOWS_PLACEHOLDER/"developer_auto_implement.yml" "claude.yml"/' > "$DEV_SCRIPT"
+    sed 's/WORKFLOWS_PLACEHOLDER/"Developer Agent Auto-Implement" "Claude Code"/' > "$DEV_SCRIPT"
 chmod +x "$DEV_SCRIPT"
 
 # Generate Reviewer monitoring script
-create_monitor_script "REVIEWER" "review_agent_auto_review.yml" "claude-code-review.yml" | \
+create_monitor_script "REVIEWER" "Review Agent Auto-Review" "Claude Code Review" | \
     sed 's/AGENT_NAME_PLACEHOLDER/REVIEWER/' | \
-    sed 's/WORKFLOWS_PLACEHOLDER/"review_agent_auto_review.yml" "claude-code-review.yml"/' > "$REVIEW_SCRIPT"
+    sed 's/WORKFLOWS_PLACEHOLDER/"Review Agent Auto-Review" "Claude Code Review"/' > "$REVIEW_SCRIPT"
 chmod +x "$REVIEW_SCRIPT"
 
 # Create tmux session with monitoring panes
