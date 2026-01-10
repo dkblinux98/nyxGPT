@@ -1,0 +1,205 @@
+name: Review Agent Auto-Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+jobs:
+  review:
+    if: >-
+      ${{ vars.AGENTS_ENABLED == 'true'
+          && github.event.pull_request.draft == false }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    env:
+      GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+          fetch-depth: 0
+
+      - name: Auth gh
+        run: gh auth status
+
+      - name: Write ephemeral config.ini (runner temp)
+        shell: bash
+        run: |
+          set -euo pipefail
+          CFG="$RUNNER_TEMP/mygpt-config.ini"
+
+          cat > "$CFG" <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          EOF
+
+          echo "MYGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
+          echo "Wrote ephemeral config at $CFG"
+
+      - name: Verify config loads
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -lc '
+            source scripts/agents/lib/gh_project.sh
+            load_config
+            require_gh_auth
+            echo "config ok: $REPO_OWNER/$REPO_NAME project $PROJECT_OWNER#$PROJECT_NUMBER release=$RELEASE_BRANCH"
+          '
+
+      - name: Post review start comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEW_AGENT_TOKEN }}
+          script: |
+            const pr_number = context.payload.pull_request.number;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr_number,
+              body: '🔍 **Review Agent**: Auto-review workflow triggered.\n\nWaiting for CI checks to complete...\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})'
+            });
+
+      - name: Wait for CI checks
+        id: ci_check
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+
+          echo "::group::Waiting for CI checks on PR #$PR"
+
+          # Wait for checks with timeout (max 30 minutes)
+          gh pr checks "$PR" --watch --interval 30 || {
+            echo "ci_status=failed" >> "$GITHUB_OUTPUT"
+            echo "::warning::CI checks failed or timed out"
+            exit 0
+          }
+
+          # Get final status
+          STATUS=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup[].conclusion' | grep -v "SUCCESS" || echo "")
+
+          if [[ -z "$STATUS" ]]; then
+            echo "ci_status=success" >> "$GITHUB_OUTPUT"
+            echo "::notice::All CI checks passed"
+          else
+            echo "ci_status=failed" >> "$GITHUB_OUTPUT"
+            echo "::warning::Some CI checks failed"
+          fi
+
+          echo "::endgroup::"
+
+      - name: Handle CI failure
+        if: steps.ci_check.outputs.ci_status == 'failed'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEW_AGENT_TOKEN }}
+          script: |
+            const pr_number = context.payload.pull_request.number;
+
+            // Get linked issue from PR body
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr_number
+            });
+
+            const body = pr.data.body || '';
+            const match = body.match(/Closes #(\d+)/i);
+
+            if (match) {
+              const issue_number = match[1];
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: parseInt(issue_number),
+                body: `❌ **Review Agent**: CI checks failed on PR #${pr_number}\n\nIssue moved back to **In Progress** and assigned to @${{ vars.DEV_AGENT }} to fix.\n\n[View PR](https://github.com/${{ github.repository }}/pull/${pr_number})\n[View CI results](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`
+              });
+            }
+
+            core.setFailed('CI checks failed - PR cannot be merged');
+
+      - name: Set issue back to In Progress on CI failure
+        if: steps.ci_check.outputs.ci_status == 'failed'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+
+          # Extract issue number from PR body
+          ISSUE=$(gh pr view "$PR" --json body -q '.body' | grep -oP 'Closes #\K\d+' || echo "")
+
+          if [[ -n "$ISSUE" ]]; then
+            echo "::group::Moving issue #$ISSUE back to In Progress"
+            bash -lc "source scripts/agents/lib/gh_project.sh && load_config && set_issue_status $ISSUE '$STATUS_IN_PROGRESS'"
+            bash -lc "source scripts/agents/lib/gh_project.sh && load_config && issue_assign_only $ISSUE '$DEV_AGENT'"
+            echo "::notice::Issue #$ISSUE moved to In Progress and assigned to $DEV_AGENT"
+            echo "::endgroup::"
+          fi
+
+      - name: Run Claude Code review
+        if: steps.ci_check.outputs.ci_status == 'success'
+        id: claude_review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Review PR #${{ github.event.pull_request.number }} according to the review-agent charter and runbook.
+
+            Use the review checklist from RUNBOOKS/review-runbook.md:
+            - Correctness vs issue acceptance criteria
+            - Tests added/updated and meaningful
+            - No architecture boundary violations
+            - No secrets committed
+            - Clear docs updates for user-facing changes
+            - Reasonable maintainability
+
+            Severity model:
+            - Critical: correctness/security/data-loss (MUST block merge)
+            - Medium: significant bug risk, missing tests, broken contract (MUST block merge)
+            - Minor: style/nits (may proceed)
+
+            If Critical or Medium issues found:
+            - Create acceptance failure sub-issues using review_request_changes.sh
+            - One sub-issue per critical/medium finding
+
+            If no blocking issues:
+            - Merge the PR using review_accept_and_merge.sh
+
+            Provide detailed reasoning for your decision.
+
+      - name: Post review complete comment
+        if: steps.ci_check.outputs.ci_status == 'success'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.REVIEW_AGENT_TOKEN }}
+          script: |
+            const pr_number = context.payload.pull_request.number;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr_number,
+              body: '✅ **Review Agent**: Code review complete.\n\nCheck comments above for merge decision or acceptance failure sub-issues.'
+            });
