@@ -22,6 +22,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ vars.RELEASE_BRANCH }}
           fetch-depth: 0
 
       - name: Auth gh
@@ -77,7 +78,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: '🤖 **Scrummaster Agent**: READY_FOR_NEXT_ISSUE signal received. Selecting next backlog issue...\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})'
+              body: '🤖 **Scrummaster Agent**: Signal received. Selecting next backlog issue...\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})'
             });
 
       - name: Select next issue

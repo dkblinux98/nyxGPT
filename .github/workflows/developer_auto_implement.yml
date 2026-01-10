@@ -24,6 +24,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ vars.RELEASE_BRANCH }}
           fetch-depth: 0
 
       - name: Auth gh
