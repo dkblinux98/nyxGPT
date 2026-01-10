@@ -20,20 +20,9 @@ SESSION_NAME="agent-monitor"
 # Kill existing session if it exists
 tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
 
-# Create new session with first pane (Scrummaster)
+# Create new session with first pane (All active runs)
 tmux new-session -d -s "$SESSION_NAME" -n "Agents" \
-  "watch -n 5 'echo \"=== SCRUMMASTER AGENT ===\"; gh run list --workflow=notify_scrum_ready.yml --workflow=assign_backlog.yml --workflow=auto-check-tasklist.yml --workflow=add-to-release-issue-on-milestone.yml --status in_progress --status queued --limit 10'"
-
-# Split horizontally for Developer pane
-tmux split-window -h -t "$SESSION_NAME:0" \
-  "watch -n 5 'echo \"=== DEVELOPER AGENT ===\"; gh run list --workflow=developer_auto_implement.yml --workflow=claude.yml --status in_progress --status queued --limit 10'"
-
-# Split the left pane vertically for Reviewer pane
-tmux split-window -v -t "$SESSION_NAME:0.0" \
-  "watch -n 5 'echo \"=== REVIEWER AGENT ===\"; gh run list --workflow=review_agent_auto_review.yml --workflow=claude-code-review.yml --status in_progress --status queued --limit 10'"
-
-# Adjust layout to tile evenly
-tmux select-layout -t "$SESSION_NAME:0" even-horizontal
+  "watch -n 5 'echo \"=== ACTIVE AGENT WORKFLOWS ===\"; echo; gh run list --limit 15 | grep -E \"in_progress|queued\" || echo \"No active runs\"; echo; echo \"To watch a specific run: gh run watch <run_id>\"'"
 
 # Attach to the session
 tmux attach-session -t "$SESSION_NAME"
