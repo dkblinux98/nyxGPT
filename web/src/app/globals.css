@@ -1,13 +1,44 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --border: #ddd;
+  --border-light: #e5e5e5;
+  --input-bg: #ffffff;
+  --button-bg: #f4f4f4;
+  --button-hover: #e5e5e5;
+  --sidebar-bg: #ffffff;
+  --chat-bg: #ffffff;
+  --active-bg: #f4f4f4;
+  --shadow: rgba(0, 0, 0, 0.1);
+  --highlight: #ffeb3b;
+  --success: #4CAF50;
+  --rag-bg: #f0f9ff;
+  --rag-border: #bae6fd;
+  --rag-text: #0369a1;
+  --feedback-bg: rgba(0, 0, 0, 0.8);
+  --feedback-text: #ffffff;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+:root[data-theme='dark'],
+:root.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  --border: #333;
+  --border-light: #2a2a2a;
+  --input-bg: #1a1a1a;
+  --button-bg: #2a2a2a;
+  --button-hover: #333;
+  --sidebar-bg: #0a0a0a;
+  --chat-bg: #1a1a1a;
+  --active-bg: #2a2a2a;
+  --shadow: rgba(0, 0, 0, 0.5);
+  --highlight: #fdd835;
+  --success: #66BB6A;
+  --rag-bg: #0d1b2a;
+  --rag-border: #1e3a5f;
+  --rag-text: #60a5fa;
+  --feedback-bg: rgba(255, 255, 255, 0.9);
+  --feedback-text: #000000;
 }
 
 html,
@@ -22,6 +53,7 @@ body {
   font-family: Arial, Helvetica, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  transition: color 0.3s ease, background 0.3s ease;
 }
 
 * {
@@ -33,6 +65,16 @@ body {
 a {
   color: inherit;
   text-decoration: none;
+}
+
+/* Theme transition for all elements */
+* {
+  transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+}
+
+/* Disable transitions on page load to prevent flash */
+html.no-transition * {
+  transition: none !important;
 }
 
 @media (prefers-color-scheme: dark) {

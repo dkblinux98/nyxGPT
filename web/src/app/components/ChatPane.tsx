@@ -28,8 +28,8 @@ function RagCitationsCollapsible({ chunks }: { chunks: RagChunk[] }) {
       style={{
         marginBottom: 8,
         padding: 8,
-        background: '#f0f9ff',
-        border: '1px solid #bae6fd',
+        background: 'var(--rag-bg)',
+        border: '1px solid var(--rag-border)',
         borderRadius: 6,
         fontSize: 12,
       }}
@@ -41,7 +41,7 @@ function RagCitationsCollapsible({ chunks }: { chunks: RagChunk[] }) {
           border: 'none',
           padding: 0,
           cursor: 'pointer',
-          color: '#0369a1',
+          color: 'var(--rag-text)',
           fontWeight: 500,
           display: 'flex',
           alignItems: 'center',
@@ -62,26 +62,26 @@ function RagCitationsCollapsible({ chunks }: { chunks: RagChunk[] }) {
               style={{
                 marginTop: idx > 0 ? 8 : 0,
                 padding: 8,
-                background: 'white',
+                background: 'var(--input-bg)',
                 borderRadius: 4,
                 border: '1px solid #e0f2fe',
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ fontWeight: 500, color: '#0369a1' }}>
+                <span style={{ fontWeight: 500, color: 'var(--rag-text)' }}>
                   Source {idx + 1}
                 </span>
-                <span style={{ color: '#64748b' }}>
+                <span style={{ color: 'var(--foreground)', opacity: 0.6 }}>
                   Score: {chunk.score.toFixed(3)}
                 </span>
               </div>
               {chunk.doc_id && (
-                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 4 }}>
+                <div style={{ fontSize: 11, color: 'var(--foreground)', opacity: 0.6, marginBottom: 4 }}>
                   Doc: {chunk.doc_id}
                   {chunk.chunk_id !== null && chunk.chunk_id !== undefined && ` (chunk ${chunk.chunk_id})`}
                 </div>
               )}
-              <div style={{ color: '#334155', whiteSpace: 'pre-wrap' }}>
+              <div style={{ color: 'var(--foreground)', whiteSpace: 'pre-wrap' }}>
                 {chunk.text.length > 200 ? chunk.text.substring(0, 200) + '...' : chunk.text}
               </div>
             </div>
@@ -402,10 +402,10 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
           style={{
             padding: '6px 10px',
             borderRadius: 6,
-            border: '1px solid #ddd',
+            border: '1px solid var(--border)',
             fontSize: 14,
             cursor: isStreaming ? 'not-allowed' : 'pointer',
-            background: isStreaming ? '#f5f5f5' : 'white',
+            background: isStreaming ? 'var(--button-hover)' : 'var(--input-bg)',
           }}
         >
           {availableModels.length === 0 ? (
@@ -425,11 +425,11 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
           flex: 1,
           marginTop: 12,
           padding: 12,
-          border: '1px solid #e5e5e5',
+          border: '1px solid var(--border-light)',
           borderRadius: 10,
           overflowY: 'auto',
           whiteSpace: 'pre-wrap',
-          background: 'white',
+          background: 'var(--chat-bg)',
         }}
       >
         {messages.length === 0 ? (
@@ -457,9 +457,9 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
           style={{
             padding: '6px 10px',
             borderRadius: 6,
-            border: '1px solid #ddd',
-            background: ragEnabled ? '#4caf50' : '#f5f5f5',
-            color: ragEnabled ? 'white' : 'black',
+            border: '1px solid var(--border)',
+            background: ragEnabled ? 'var(--success)' : 'var(--button-hover)',
+            color: ragEnabled ? 'white' : 'var(--foreground)',
             cursor: isStreaming ? 'not-allowed' : 'pointer',
             fontSize: 12,
             fontWeight: 500,
@@ -481,7 +481,7 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
           />
         </label>
 
-        {ragStatus === 'uploading' && <span style={{ fontSize: 12, color: '#666' }}>Uploading...</span>}
+        {ragStatus === 'uploading' && <span style={{ fontSize: 12, color: 'var(--foreground)', opacity: 0.6 }}>Uploading...</span>}
         {ragError && <span style={{ fontSize: 12, color: 'red' }}>{ragError}</span>}
       </div>
 
@@ -501,7 +501,7 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
             flex: 1,
             padding: '10px 12px',
             borderRadius: 10,
-            border: '1px solid #ddd',
+            border: '1px solid var(--border)',
           }}
         />
         <button
@@ -510,8 +510,8 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
           style={{
             padding: '10px 14px',
             borderRadius: 10,
-            border: '1px solid #ddd',
-            background: isStreaming ? '#f5f5f5' : 'white',
+            border: '1px solid var(--border)',
+            background: isStreaming ? 'var(--button-hover)' : 'var(--input-bg)',
             cursor: isStreaming ? 'not-allowed' : 'pointer',
           }}
         >
