@@ -32,13 +32,14 @@ set -euo pipefail
 
 AGENT_NAME="AGENT_NAME_PLACEHOLDER"
 WORKFLOWS=(WORKFLOWS_PLACEHOLDER)
+LAST_SEEN_RUN=""
 
 echo "=== $AGENT_NAME AGENT ==="
 echo "Monitoring workflows: ${WORKFLOWS[*]}"
 echo ""
 
 while true; do
-    # Find latest active run
+    # Find latest active run (in_progress or queued)
     RUN_ID=""
     for workflow in "${WORKFLOWS[@]}"; do
         RUN_ID=$(gh run list --workflow="$workflow" --status in_progress --status queued --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")
@@ -50,13 +51,34 @@ while true; do
     if [[ -n "$RUN_ID" ]]; then
         echo "$(date '+%H:%M:%S') - Found active run: $RUN_ID"
         echo "Watching..."
+        LAST_SEEN_RUN="$RUN_ID"
         gh run watch "$RUN_ID" 2>&1 || true
         echo ""
         echo "Run $RUN_ID completed. Checking for new runs..."
         sleep 2
     else
-        echo "$(date '+%H:%M:%S') - No active runs, checking again in 5s..."
-        sleep 5
+        # No active runs, check for recently completed quick runs
+        for workflow in "${WORKFLOWS[@]}"; do
+            QUICK_RUN=$(gh run list --workflow="$workflow" --status completed --limit 5 --json databaseId,conclusion,startedAt,updatedAt,createdAt --jq '.[] | select(.databaseId != '${LAST_SEEN_RUN:-0}') | select(
+                ((.updatedAt | fromdateiso8601) - (.startedAt // .createdAt | fromdateiso8601)) < 30
+            ) | .databaseId' 2>/dev/null | head -1 || echo "")
+
+            if [[ -n "$QUICK_RUN" ]]; then
+                echo "$(date '+%H:%M:%S') - Found quick completed run: $QUICK_RUN (< 30s duration)"
+                echo "Showing log..."
+                LAST_SEEN_RUN="$QUICK_RUN"
+                gh run view "$QUICK_RUN" --log 2>&1 || true
+                echo ""
+                echo "─────────────────────────────────────────────────"
+                sleep 2
+                break
+            fi
+        done
+
+        if [[ -z "$QUICK_RUN" ]]; then
+            echo "$(date '+%H:%M:%S') - No active or quick completed runs, checking again in 5s..."
+            sleep 5
+        fi
     fi
 done
 SCRIPT_END
@@ -95,7 +117,10 @@ tmux select-layout -t "$SESSION_NAME:0" even-horizontal
 
 echo "✅ Agent monitoring session started"
 echo ""
-echo "Each pane continuously polls for active runs and watches them."
+echo "Each pane continuously polls for:"
+echo "  - Active runs (in_progress/queued) → streams live with 'gh run watch'"
+echo "  - Quick completed runs (< 30s) → shows full log with 'gh run view --log'"
+echo ""
 echo "Press Ctrl+b then d to detach (keeps running in background)"
 echo "Run 'tmux attach -t agent-monitor' to reattach"
 echo ""
