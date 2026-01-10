@@ -40,9 +40,15 @@ echo ""
 
 while true; do
     # Find latest active run (in_progress or queued)
+    # NOTE: gh CLI bug - multiple --status flags with --limit returns empty, so query separately
     RUN_ID=""
     for workflow in "${WORKFLOWS[@]}"; do
-        RUN_ID=$(gh run list --workflow="$workflow" --status in_progress --status queued --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")
+        # Try in_progress first
+        RUN_ID=$(gh run list --workflow="$workflow" --status in_progress --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")
+        if [[ -z "$RUN_ID" ]]; then
+            # Try queued if no in_progress run
+            RUN_ID=$(gh run list --workflow="$workflow" --status queued --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")
+        fi
         if [[ -n "$RUN_ID" ]]; then
             break
         fi
@@ -57,17 +63,37 @@ while true; do
         echo "Run $RUN_ID completed. Checking for new runs..."
         sleep 2
     else
-        # No active runs, check for recently completed quick runs
+        # No active runs, check for recently completed quick runs (exclude skipped)
         for workflow in "${WORKFLOWS[@]}"; do
-            QUICK_RUN=$(gh run list --workflow="$workflow" --status completed --limit 5 --json databaseId,conclusion,startedAt,updatedAt,createdAt --jq '.[] | select(.databaseId != '${LAST_SEEN_RUN:-0}') | select(
+            QUICK_RUN=$(gh run list --workflow="$workflow" --status completed --limit 5 --json databaseId,conclusion,startedAt,updatedAt,createdAt --jq '.[] | select(.databaseId != '${LAST_SEEN_RUN:-0}') | select(.conclusion != "skipped") | select(
                 ((.updatedAt | fromdateiso8601) - (.startedAt // .createdAt | fromdateiso8601)) < 30
             ) | .databaseId' 2>/dev/null | head -1 || echo "")
 
             if [[ -n "$QUICK_RUN" ]]; then
                 echo "$(date '+%H:%M:%S') - Found quick completed run: $QUICK_RUN (< 30s duration)"
-                echo "Showing log..."
+
+                # Get run info first
+                RUN_INFO=$(gh run view "$QUICK_RUN" --json name,conclusion,workflowName 2>/dev/null || echo "")
+                CONCLUSION=""
+                if [[ -n "$RUN_INFO" ]]; then
+                    echo "Workflow: $(echo "$RUN_INFO" | jq -r '.workflowName // .name')"
+                    CONCLUSION=$(echo "$RUN_INFO" | jq -r '.conclusion')
+                    echo "Conclusion: $CONCLUSION"
+                fi
+
                 LAST_SEEN_RUN="$QUICK_RUN"
-                gh run view "$QUICK_RUN" --log 2>&1 || true
+
+                # Fetch log with timeout and check if empty
+                echo "Fetching log (this may take a moment)..."
+                LOG_OUTPUT=$(timeout 10 gh run view "$QUICK_RUN" --log 2>&1 | tail -100)
+
+                if [[ -n "$LOG_OUTPUT" ]]; then
+                    echo "$LOG_OUTPUT"
+                else
+                    echo "⚠️  No log output available for run $QUICK_RUN"
+                    echo "View manually: gh run view $QUICK_RUN --log"
+                fi
+
                 echo ""
                 echo "─────────────────────────────────────────────────"
                 sleep 2
@@ -90,21 +116,21 @@ DEV_SCRIPT=$(mktemp)
 REVIEW_SCRIPT=$(mktemp)
 
 # Generate Scrummaster monitoring script
-create_monitor_script "SCRUMMASTER" "notify_scrum_ready.yml" "assign_backlog.yml" "auto-check-tasklist.yml" "add-to-release-issue-on-milestone.yml" | \
+create_monitor_script "SCRUMMASTER" "Scrummaster Agent - Select and Start Next Issue" "Assign Backlog Issues to scrummaster-agent" "Auto-check Release Tracking Issues" "Add issue to release issue on milestone assignment" | \
     sed 's/AGENT_NAME_PLACEHOLDER/SCRUMMASTER/' | \
-    sed 's/WORKFLOWS_PLACEHOLDER/"notify_scrum_ready.yml" "assign_backlog.yml" "auto-check-tasklist.yml" "add-to-release-issue-on-milestone.yml"/' > "$SCRUM_SCRIPT"
+    sed 's/WORKFLOWS_PLACEHOLDER/"Scrummaster Agent - Select and Start Next Issue" "Assign Backlog Issues to scrummaster-agent" "Auto-check Release Tracking Issues" "Add issue to release issue on milestone assignment"/' > "$SCRUM_SCRIPT"
 chmod +x "$SCRUM_SCRIPT"
 
 # Generate Developer monitoring script
-create_monitor_script "DEVELOPER" "developer_auto_implement.yml" "claude.yml" | \
+create_monitor_script "DEVELOPER" "Developer Agent Auto-Implement" "Claude Code" | \
     sed 's/AGENT_NAME_PLACEHOLDER/DEVELOPER/' | \
-    sed 's/WORKFLOWS_PLACEHOLDER/"developer_auto_implement.yml" "claude.yml"/' > "$DEV_SCRIPT"
+    sed 's/WORKFLOWS_PLACEHOLDER/"Developer Agent Auto-Implement" "Claude Code"/' > "$DEV_SCRIPT"
 chmod +x "$DEV_SCRIPT"
 
 # Generate Reviewer monitoring script
-create_monitor_script "REVIEWER" "review_agent_auto_review.yml" "claude-code-review.yml" | \
+create_monitor_script "REVIEWER" "Review Agent Auto-Review" | \
     sed 's/AGENT_NAME_PLACEHOLDER/REVIEWER/' | \
-    sed 's/WORKFLOWS_PLACEHOLDER/"review_agent_auto_review.yml" "claude-code-review.yml"/' > "$REVIEW_SCRIPT"
+    sed 's/WORKFLOWS_PLACEHOLDER/"Review Agent Auto-Review"/' > "$REVIEW_SCRIPT"
 chmod +x "$REVIEW_SCRIPT"
 
 # Create tmux session with monitoring panes
@@ -119,7 +145,7 @@ echo "✅ Agent monitoring session started"
 echo ""
 echo "Each pane continuously polls for:"
 echo "  - Active runs (in_progress/queued) → streams live with 'gh run watch'"
-echo "  - Quick completed runs (< 30s) → shows full log with 'gh run view --log'"
+echo "  - Quick completed runs (< 30s) → shows last 100 lines with 'gh run view --log'"
 echo ""
 echo "Press Ctrl+b then d to detach (keeps running in background)"
 echo "Run 'tmux attach -t agent-monitor' to reattach"

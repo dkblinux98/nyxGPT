@@ -92,30 +92,48 @@ jobs:
 
           echo "::group::Waiting for CI checks on PR #$PR"
 
-          # Wait for checks with timeout (max 30 minutes)
-          gh pr checks "$PR" --watch --interval 30 || {
-            echo "ci_status=failed" >> "$GITHUB_OUTPUT"
-            echo "::warning::CI checks failed or timed out"
-            exit 0
-          }
+          # Poll for checks (excluding this review workflow) with timeout
+          MAX_WAIT_SECONDS=1800  # 30 minutes
+          POLL_INTERVAL=30
+          ELAPSED=0
 
-          # Get final status - check if any checks exist first
-          CHECK_COUNT=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup | length')
+          while [[ $ELAPSED -lt $MAX_WAIT_SECONDS ]]; do
+            # Get checks excluding this review workflow
+            CHECKS=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup[] | select(.workflowName != "Review Agent Auto-Review") | {name: .name, status: .status, conclusion: .conclusion}')
 
-          if [[ "$CHECK_COUNT" == "0" || "$CHECK_COUNT" == "null" ]]; then
-            echo "ci_status=success" >> "$GITHUB_OUTPUT"
-            echo "::warning::No CI checks configured for this PR - treating as success"
-          else
-            # Check if any checks failed (non-SUCCESS conclusions)
-            STATUS=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup[].conclusion' | grep -v "SUCCESS" || echo "")
-
-            if [[ -z "$STATUS" ]]; then
+            if [[ -z "$CHECKS" ]]; then
+              echo "::notice::No other CI checks configured for this PR - treating as success"
               echo "ci_status=success" >> "$GITHUB_OUTPUT"
-              echo "::notice::All CI checks passed ($CHECK_COUNT checks)"
-            else
-              echo "ci_status=failed" >> "$GITHUB_OUTPUT"
-              echo "::warning::Some CI checks failed"
+              break
             fi
+
+            # Count pending checks (not COMPLETED)
+            PENDING=$(echo "$CHECKS" | jq -s '[.[] | select(.status != "COMPLETED")] | length')
+
+            if [[ "$PENDING" -eq 0 ]]; then
+              echo "::notice::All CI checks completed"
+
+              # Check if any failed
+              FAILED=$(echo "$CHECKS" | jq -s '[.[] | select(.conclusion != "SUCCESS" and .conclusion != "SKIPPED" and .conclusion != null)] | length')
+
+              if [[ "$FAILED" -eq 0 ]]; then
+                echo "ci_status=success" >> "$GITHUB_OUTPUT"
+                echo "::notice::All CI checks passed"
+              else
+                echo "ci_status=failed" >> "$GITHUB_OUTPUT"
+                echo "::warning::Some CI checks failed"
+              fi
+              break
+            fi
+
+            echo "::notice::Waiting for $PENDING CI checks to complete... (${ELAPSED}s elapsed)"
+            sleep $POLL_INTERVAL
+            ELAPSED=$((ELAPSED + POLL_INTERVAL))
+          done
+
+          if [[ $ELAPSED -ge $MAX_WAIT_SECONDS ]]; then
+            echo "ci_status=failed" >> "$GITHUB_OUTPUT"
+            echo "::warning::CI checks timed out after 30 minutes"
           fi
 
           echo "::endgroup::"
@@ -184,7 +202,9 @@ jobs:
           prompt: |
             Review PR #${{ github.event.pull_request.number }} according to the review-agent charter and runbook.
 
-            Use the review checklist from RUNBOOKS/review-runbook.md:
+            Perform a comprehensive code review checking:
+
+            From RUNBOOKS/review-runbook.md checklist:
             - Correctness vs issue acceptance criteria
             - Tests added/updated and meaningful
             - No architecture boundary violations
@@ -192,19 +212,27 @@ jobs:
             - Clear docs updates for user-facing changes
             - Reasonable maintainability
 
+            Additional quality checks:
+            - Code quality and best practices (from CLAUDE.md)
+            - Performance considerations and potential bottlenecks
+            - Security concerns beyond secret detection
+            - Potential bugs or edge cases not covered by tests
+            - API contract consistency and backward compatibility
+
             Severity model:
-            - Critical: correctness/security/data-loss (MUST block merge)
-            - Medium: significant bug risk, missing tests, broken contract (MUST block merge)
-            - Minor: style/nits (may proceed)
+            - Critical: correctness/security/data-loss/performance regression (MUST block merge)
+            - Medium: significant bug risk, missing tests, broken contract, poor maintainability (MUST block merge)
+            - Minor: style/nits, minor optimization opportunities (may proceed)
 
             If Critical or Medium issues found:
             - Create acceptance failure sub-issues using review_request_changes.sh
             - One sub-issue per critical/medium finding
+            - Include specific details for reproduction and resolution
 
             If no blocking issues:
             - Merge the PR using review_accept_and_merge.sh
 
-            Provide detailed reasoning for your decision.
+            Provide detailed reasoning for your decision, including what you checked and why it's acceptable.
 
       - name: Post review complete comment
         if: steps.ci_check.outputs.ci_status == 'success'
