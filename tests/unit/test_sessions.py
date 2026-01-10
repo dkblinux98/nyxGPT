@@ -558,6 +558,60 @@ def test_file_lock_ordering_prevents_deadlock(tmp_path: Path) -> None:
     # Success proves locks were acquired in consistent order
 
 
+@pytest.mark.unit
+def test_verify_lock_ordering_correct_order(tmp_path: Path) -> None:
+    """Test that verify_lock_ordering passes when files are in alphabetical order."""
+    file_a = tmp_path / "a.txt"
+    file_b = tmp_path / "b.txt"
+    file_c = tmp_path / "c.txt"
+
+    # Should not raise - files in correct alphabetical order
+    sessions.verify_lock_ordering(file_a, file_b, file_c)
+
+
+@pytest.mark.unit
+def test_verify_lock_ordering_single_file(tmp_path: Path) -> None:
+    """Test that verify_lock_ordering passes for single file (no ordering needed)."""
+    file_a = tmp_path / "a.txt"
+
+    # Should not raise - single file has no ordering concerns
+    sessions.verify_lock_ordering(file_a)
+
+
+@pytest.mark.unit
+def test_verify_lock_ordering_violation() -> None:
+    """Test that verify_lock_ordering detects ordering violations in debug mode."""
+    from pathlib import Path
+
+    file_a = Path("/sessions/a.json")
+    file_b = Path("/sessions/b.json")
+
+    # Only test in debug mode (when __debug__ is True)
+    if __debug__:
+        # Should raise AssertionError - files in wrong order
+        with pytest.raises(AssertionError, match="File lock ordering violation detected"):
+            sessions.verify_lock_ordering(file_b, file_a)  # Wrong order!
+    else:
+        # In optimized mode (-O flag), no assertion raised
+        sessions.verify_lock_ordering(file_b, file_a)
+
+
+@pytest.mark.unit
+def test_verify_lock_ordering_mixed_paths(tmp_path: Path) -> None:
+    """Test that verify_lock_ordering works with various path formats."""
+    # Paths that should sort correctly alphabetically
+    files = [
+        tmp_path / "sessions" / "test.json.meta",
+        tmp_path / "sessions" / "test.json",
+    ]
+
+    # Sort them
+    files.sort(key=lambda p: str(p))
+
+    # Should pass - sorted correctly
+    sessions.verify_lock_ordering(*files)
+
+
 def test_metadata_file_deleted_between_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that rename handles metadata file deletion between existence checks (TOCTOU race)."""
     sessions_dir = tmp_path / "sessions"

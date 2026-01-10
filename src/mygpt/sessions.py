@@ -33,6 +33,40 @@ log = logging.getLogger(__name__)
 #   with file_lock(files[0]), file_lock(files[1]):
 #       # ... operations ...
 
+
+def verify_lock_ordering(*file_paths: Path) -> None:
+    """Verify that file paths are in alphabetical order (for deadlock prevention).
+
+    This function should be called when acquiring multiple file locks to ensure
+    locks are acquired in consistent alphabetical order. Raises AssertionError
+    in debug mode if ordering is violated.
+
+    Args:
+        *file_paths: File paths to check (in the order they will be locked)
+
+    Raises:
+        AssertionError: If paths are not in alphabetical order (only in debug mode)
+
+    Example:
+        >>> files = [session_file, meta_file]
+        >>> files.sort(key=lambda p: str(p))
+        >>> verify_lock_ordering(*files)  # Passes if files sorted correctly
+    """
+    if len(file_paths) < 2:
+        return  # No ordering concerns for single lock
+
+    # Only enforce in debug mode (__debug__ is True unless -O flag used)
+    if __debug__:
+        paths_str = [str(p) for p in file_paths]
+        sorted_paths = sorted(paths_str)
+        assert paths_str == sorted_paths, (
+            f"File lock ordering violation detected! "
+            f"Locks must be acquired in alphabetical order to prevent deadlock.\n"
+            f"Expected order: {sorted_paths}\n"
+            f"Actual order:   {paths_str}"
+        )
+
+
 @contextmanager
 def file_lock(file_path: Path, timeout: float = 5.0):
     """Cross-platform file locking context manager.
@@ -951,6 +985,9 @@ def sync_filename_with_title(
         if meta_existed_initially:
             files_to_lock.append(mf)
         files_to_lock.sort(key=lambda p: str(p))  # Alphabetical order by path
+
+        # Verify ordering in debug mode (catches violations during development)
+        verify_lock_ordering(*files_to_lock)
 
         # Acquire locks in consistent order
         if len(files_to_lock) == 2:
