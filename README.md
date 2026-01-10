@@ -366,7 +366,34 @@ This repository uses GitHub Actions to enable AI-assisted development. Mention `
 **Automatic code review:**
 All pull requests automatically receive AI code review feedback focusing on quality, bugs, performance, security, and test coverage.
 
-For details, see **docs/development.md**.
+### Automated Agent Workflows
+
+This repository includes automated agent workflows for continuous development:
+
+**Scrummaster Agent** - Selects and dispatches the next backlog issue
+**Developer Agent** - Implements issues end-to-end with Claude Code
+**Review Agent** - Reviews PRs and manages merge workflow
+
+**To trigger the workflow:**
+
+```bash
+./scripts/trigger_next_issue.sh <release_issue_number>
+```
+
+Or manually post a comment containing `READY_FOR_NEXT_ISSUE` in the **Release tracking issue**.
+
+The workflow will:
+1. Select the next backlog issue (lowest Phase, lowest issue number)
+2. Move it to In Progress and assign to developer-agent
+3. Auto-implement the issue with Claude Code
+4. Create a PR and submit for review
+
+**Monitor agent activity in real-time:**
+```bash
+./scripts/watch_agents.sh
+```
+
+For details, see **docs/development.md** and **RUNBOOKS/**.
 
 ---
 
