@@ -65,9 +65,23 @@ while true; do
 
             if [[ -n "$QUICK_RUN" ]]; then
                 echo "$(date '+%H:%M:%S') - Found quick completed run: $QUICK_RUN (< 30s duration)"
-                echo "Showing log..."
+
+                # Get run info first
+                RUN_INFO=$(gh run view "$QUICK_RUN" --json name,conclusion,workflowName 2>/dev/null || echo "")
+                if [[ -n "$RUN_INFO" ]]; then
+                    echo "Workflow: $(echo "$RUN_INFO" | jq -r '.workflowName // .name')"
+                    echo "Conclusion: $(echo "$RUN_INFO" | jq -r '.conclusion')"
+                fi
+
+                echo "Fetching log (this may take a moment)..."
                 LAST_SEEN_RUN="$QUICK_RUN"
-                gh run view "$QUICK_RUN" --log 2>&1 || true
+
+                # Show last 100 lines of log
+                gh run view "$QUICK_RUN" --log 2>&1 | tail -100 || {
+                    echo "Failed to fetch log for run $QUICK_RUN"
+                    echo "You can view it manually: gh run view $QUICK_RUN --log"
+                }
+
                 echo ""
                 echo "─────────────────────────────────────────────────"
                 sleep 2
@@ -119,7 +133,7 @@ echo "✅ Agent monitoring session started"
 echo ""
 echo "Each pane continuously polls for:"
 echo "  - Active runs (in_progress/queued) → streams live with 'gh run watch'"
-echo "  - Quick completed runs (< 30s) → shows full log with 'gh run view --log'"
+echo "  - Quick completed runs (< 30s) → shows last 100 lines with 'gh run view --log'"
 echo ""
 echo "Press Ctrl+b then d to detach (keeps running in background)"
 echo "Run 'tmux attach -t agent-monitor' to reattach"
