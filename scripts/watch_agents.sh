@@ -63,9 +63,9 @@ while true; do
         echo "Run $RUN_ID completed. Checking for new runs..."
         sleep 2
     else
-        # No active runs, check for recently completed quick runs
+        # No active runs, check for recently completed quick runs (exclude skipped)
         for workflow in "${WORKFLOWS[@]}"; do
-            QUICK_RUN=$(gh run list --workflow="$workflow" --status completed --limit 5 --json databaseId,conclusion,startedAt,updatedAt,createdAt --jq '.[] | select(.databaseId != '${LAST_SEEN_RUN:-0}') | select(
+            QUICK_RUN=$(gh run list --workflow="$workflow" --status completed --limit 5 --json databaseId,conclusion,startedAt,updatedAt,createdAt --jq '.[] | select(.databaseId != '${LAST_SEEN_RUN:-0}') | select(.conclusion != "skipped") | select(
                 ((.updatedAt | fromdateiso8601) - (.startedAt // .createdAt | fromdateiso8601)) < 30
             ) | .databaseId' 2>/dev/null | head -1 || echo "")
 
@@ -74,19 +74,25 @@ while true; do
 
                 # Get run info first
                 RUN_INFO=$(gh run view "$QUICK_RUN" --json name,conclusion,workflowName 2>/dev/null || echo "")
+                CONCLUSION=""
                 if [[ -n "$RUN_INFO" ]]; then
                     echo "Workflow: $(echo "$RUN_INFO" | jq -r '.workflowName // .name')"
-                    echo "Conclusion: $(echo "$RUN_INFO" | jq -r '.conclusion')"
+                    CONCLUSION=$(echo "$RUN_INFO" | jq -r '.conclusion')
+                    echo "Conclusion: $CONCLUSION"
                 fi
 
-                echo "Fetching log (this may take a moment)..."
                 LAST_SEEN_RUN="$QUICK_RUN"
 
-                # Show last 100 lines of log
-                gh run view "$QUICK_RUN" --log 2>&1 | tail -100 || {
-                    echo "Failed to fetch log for run $QUICK_RUN"
-                    echo "You can view it manually: gh run view $QUICK_RUN --log"
-                }
+                # Fetch log with timeout and check if empty
+                echo "Fetching log (this may take a moment)..."
+                LOG_OUTPUT=$(timeout 10 gh run view "$QUICK_RUN" --log 2>&1 | tail -100)
+
+                if [[ -n "$LOG_OUTPUT" ]]; then
+                    echo "$LOG_OUTPUT"
+                else
+                    echo "⚠️  No log output available for run $QUICK_RUN"
+                    echo "View manually: gh run view $QUICK_RUN --log"
+                fi
 
                 echo ""
                 echo "─────────────────────────────────────────────────"
