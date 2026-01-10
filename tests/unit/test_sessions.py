@@ -598,15 +598,15 @@ def test_verify_lock_ordering_violation() -> None:
 
 @pytest.mark.unit
 def test_verify_lock_ordering_mixed_paths(tmp_path: Path) -> None:
-    """Test that verify_lock_ordering works with various path formats."""
+    """Test that verify_lock_ordering accepts correctly pre-sorted paths."""
     # Paths that should sort correctly alphabetically
     files = [
         tmp_path / "sessions" / "test.json.meta",
         tmp_path / "sessions" / "test.json",
     ]
 
-    # Sort them
-    files.sort(key=lambda p: str(p))
+    # Sort them using same method as production code
+    files.sort(key=lambda p: p.as_posix())
 
     # Should pass - sorted correctly
     sessions.verify_lock_ordering(*files)
