@@ -22,15 +22,15 @@ tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
 
 # Create new session with first pane (Scrummaster)
 tmux new-session -d -s "$SESSION_NAME" -n "Agents" \
-  "watch -n 5 'echo \"=== SCRUMMASTER AGENT ===\"; gh run list --workflow=notify_scrum_ready.yml --status in_progress --status queued'"
+  "watch -n 5 'echo \"=== SCRUMMASTER AGENT ===\"; gh run list --workflow=\"Scrummaster Agent - Select and Start Next Issue\" --status in_progress --status queued'"
 
 # Split horizontally for Developer pane
 tmux split-window -h -t "$SESSION_NAME:0" \
-  "watch -n 5 'echo \"=== DEVELOPER AGENT ===\"; gh run list --workflow=auto-check-tasklist.yml --workflow=developer_auto_implement.yml --status in_progress --status queued'"
+  "watch -n 5 'echo \"=== DEVELOPER AGENT ===\"; gh run list --workflow=\"Developer Agent Auto-Implement\" --status in_progress --status queued'"
 
 # Split the left pane vertically for Reviewer pane
 tmux split-window -v -t "$SESSION_NAME:0.0" \
-  "watch -n 5 'echo \"=== REVIEWER AGENT ===\"; gh run list --workflow=add-to-release-issue-on-milestone.yml --workflow=assign_backlog.yml --workflow=claude.yml --workflow=claude-code-review.yml --status in_progress --status queued'"
+  "watch -n 5 'echo \"=== REVIEWER AGENT ===\"; gh run list --workflow=\"Review Agent Auto-Review\" --status in_progress --status queued'"
 
 # Adjust layout to tile evenly
 tmux select-layout -t "$SESSION_NAME:0" even-horizontal
