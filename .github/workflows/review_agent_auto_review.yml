@@ -180,6 +180,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.REVIEW_AGENT_TOKEN }}
           show_full_output: true
+          claude_args: '--allowed-tools "Bash(gh *),Read,Write,Edit,Glob,Grep"'
           prompt: |
             Review PR #${{ github.event.pull_request.number }} according to the review-agent charter and runbook.
 
