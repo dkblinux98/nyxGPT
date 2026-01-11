@@ -1,0 +1,97 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    # Optional: Only run on specific file changes
+    # paths:
+    #   - "src/**/*.ts"
+    #   - "src/**/*.tsx"
+    #   - "src/**/*.js"
+    #   - "src/**/*.jsx"
+
+jobs:
+  claude-review:
+    # Optional: Filter by PR author
+    # if: |
+    #   github.event.pull_request.user.login == 'external-contributor' ||
+    #   github.event.pull_request.user.login == 'new-developer' ||
+    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+    if: vars.CLAUDE_REVIEW_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Review PR #${{ github.event.pull_request.number }} according to the review-agent charter and runbook.
+
+            Perform comprehensive code review checking:
+
+            From RUNBOOKS/review-runbook.md checklist:
+            - Correctness vs issue acceptance criteria
+            - Tests added/updated and meaningful
+            - No architecture boundary violations
+            - No secrets committed
+            - Clear docs updates for user-facing changes
+            - Reasonable maintainability
+
+            Additional quality checks:
+            - Code quality and best practices (from CLAUDE.md)
+            - Performance considerations and potential bottlenecks
+            - Security concerns beyond secret detection
+            - Potential bugs or edge cases not covered by tests
+            - API contract consistency and backward compatibility
+
+            Severity model:
+            - Critical: correctness/security/data-loss/performance regression (MUST block merge)
+            - Medium: significant bug risk, missing tests, broken contract, poor maintainability (MUST block merge)
+            - Minor: style/nits, minor optimization opportunities (may proceed)
+
+            REQUIRED: Post your review as a PR comment using `gh pr comment` with this EXACT format:
+
+            ## Code Review - [APPROVE|REQUEST_CHANGES]
+
+            ### Summary
+            [Brief summary of review findings]
+
+            ### Findings
+            [Detailed findings organized by severity]
+
+            ### Critical Issues (if any)
+            - **[Title]**: [Description, file:line references, how to fix]
+
+            ### Medium Issues (if any)
+            - **[Title]**: [Description, file:line references, how to fix]
+
+            ### Minor Issues (if any)
+            - **[Title]**: [Description or note that these don't block merge]
+
+            ### Decision
+            **[APPROVE|REQUEST_CHANGES]**
+
+            ---
+
+            IMPORTANT:
+            - The first line MUST be exactly "## Code Review - APPROVE" or "## Code Review - REQUEST_CHANGES"
+            - Each Critical/Medium issue needs a clear title and description for sub-issue creation
+            - Be specific with file paths and line numbers
+            - Explain how to fix blocking issues
+
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://code.claude.com/docs/en/cli-reference for available options
+          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
+

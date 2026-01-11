@@ -1,14 +1,14 @@
 name: Review Agent Auto-Review
 
 on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review]
+  workflow_run:
+    workflows: ["Claude Code Review"]
+    types:
+      - completed
 
 jobs:
-  review:
-    if: >-
-      ${{ vars.AGENTS_ENABLED == 'true'
-          && github.event.pull_request.draft == false }}
+  execute-review-decision:
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
 
     permissions:
@@ -30,7 +30,7 @@ jobs:
       - name: Auth gh
         run: gh auth status
 
-      - name: Write ephemeral config.ini (runner temp)
+      - name: Write ephemeral config.ini
         shell: bash
         run: |
           set -euo pipefail
@@ -70,205 +70,74 @@ jobs:
             echo "config ok: $REPO_OWNER/$REPO_NAME project $PROJECT_OWNER#$PROJECT_NUMBER release=$RELEASE_BRANCH"
           '
 
-      - name: Post review start comment
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.REVIEW_AGENT_TOKEN }}
-          script: |
-            const pr_number = context.payload.pull_request.number;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: pr_number,
-              body: '🔍 **Review Agent**: Auto-review workflow triggered.\n\nWaiting for CI checks to complete...\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})'
-            });
-
-      - name: Wait for CI checks
-        id: ci_check
+      - name: Get PR number from workflow run
+        id: get_pr
         shell: bash
         run: |
           set -euo pipefail
-          PR="${{ github.event.pull_request.number }}"
 
-          echo "::group::Waiting for CI checks on PR #$PR"
+          # Get PR number from the triggering workflow
+          PR_NUMBER=$(gh run view ${{ github.event.workflow_run.id }} --json headBranch --jq '.headBranch' | grep -oP '\d+' | head -1)
 
-          # Poll for checks (excluding this review workflow) with timeout
-          MAX_WAIT_SECONDS=1800  # 30 minutes
-          POLL_INTERVAL=30
-          ELAPSED=0
-
-          while [[ $ELAPSED -lt $MAX_WAIT_SECONDS ]]; do
-            # Get checks excluding this review workflow
-            CHECKS=$(gh pr view "$PR" --json statusCheckRollup -q '.statusCheckRollup[] | select(.workflowName != "Review Agent Auto-Review") | {name: .name, status: .status, conclusion: .conclusion}')
-
-            if [[ -z "$CHECKS" ]]; then
-              echo "::notice::No other CI checks configured for this PR - treating as success"
-              echo "ci_status=success" >> "$GITHUB_OUTPUT"
-              break
-            fi
-
-            # Count pending checks (not COMPLETED)
-            PENDING=$(echo "$CHECKS" | jq -s '[.[] | select(.status != "COMPLETED")] | length')
-
-            if [[ "$PENDING" -eq 0 ]]; then
-              echo "::notice::All CI checks completed"
-
-              # Check if any failed
-              FAILED=$(echo "$CHECKS" | jq -s '[.[] | select(.conclusion != "SUCCESS" and .conclusion != "SKIPPED" and .conclusion != null)] | length')
-
-              if [[ "$FAILED" -eq 0 ]]; then
-                echo "ci_status=success" >> "$GITHUB_OUTPUT"
-                echo "::notice::All CI checks passed"
-              else
-                echo "ci_status=failed" >> "$GITHUB_OUTPUT"
-                echo "::warning::Some CI checks failed"
-              fi
-              break
-            fi
-
-            echo "::notice::Waiting for $PENDING CI checks to complete... (${ELAPSED}s elapsed)"
-            sleep $POLL_INTERVAL
-            ELAPSED=$((ELAPSED + POLL_INTERVAL))
-          done
-
-          if [[ $ELAPSED -ge $MAX_WAIT_SECONDS ]]; then
-            echo "ci_status=failed" >> "$GITHUB_OUTPUT"
-            echo "::warning::CI checks timed out after 30 minutes"
+          if [[ -z "$PR_NUMBER" ]]; then
+            # Try to find PR from branch name
+            BRANCH="${{ github.event.workflow_run.head_branch }}"
+            PR_NUMBER=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
           fi
 
-          echo "::endgroup::"
-
-      - name: Handle CI failure
-        if: steps.ci_check.outputs.ci_status == 'failed'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.REVIEW_AGENT_TOKEN }}
-          script: |
-            const pr_number = context.payload.pull_request.number;
-
-            // Get linked issue from PR body
-            const pr = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pr_number
-            });
-
-            const body = pr.data.body || '';
-            const match = body.match(/Closes #(\d+)/i);
-
-            if (match) {
-              const issue_number = match[1];
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: parseInt(issue_number),
-                body: `❌ **Review Agent**: CI checks failed on PR #${pr_number}\n\nIssue moved back to **In Progress** and assigned to @${{ vars.DEV_AGENT }} to fix.\n\n[View PR](https://github.com/${{ github.repository }}/pull/${pr_number})\n[View CI results](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`
-              });
-            }
-
-            core.setFailed('CI checks failed - PR cannot be merged');
-
-      - name: Set issue back to In Progress on CI failure
-        if: steps.ci_check.outputs.ci_status == 'failed'
-        shell: bash
-        run: |
-          set -euo pipefail
-          PR="${{ github.event.pull_request.number }}"
-
-          # Extract issue number from PR body - MUST contain "Closes #N" per project hygiene rules
-          ISSUE=$(gh pr view "$PR" --json body -q '.body' | grep -oP 'Closes #\K\d+' || echo "")
-
-          if [[ -z "$ISSUE" ]]; then
-            echo "::error::PR #$PR body does not contain 'Closes #N' - cannot identify parent issue for CI failure handling"
-            echo "::error::Review runbook requires all PRs link to issues via 'Closes #ISSUE' in PR body"
+          if [[ -z "$PR_NUMBER" ]]; then
+            echo "::error::Could not determine PR number from workflow run"
             exit 1
           fi
 
-          echo "::group::Moving issue #$ISSUE back to In Progress"
-          bash -lc "source scripts/agents/lib/gh_project.sh && load_config && set_issue_status $ISSUE '\$STATUS_IN_PROGRESS'"
-          bash -lc "source scripts/agents/lib/gh_project.sh && load_config && issue_assign_only $ISSUE '\$DEV_AGENT'"
-          echo "::notice::Issue #$ISSUE moved to In Progress"
-          echo "::endgroup::"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Found PR #$PR_NUMBER"
 
-      - name: Run Claude Code review
-        if: steps.ci_check.outputs.ci_status == 'success'
-        id: claude_review
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.REVIEW_AGENT_TOKEN }}
-          show_full_output: true
-          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
-          prompt: |
-            Review PR #${{ github.event.pull_request.number }} according to the review-agent charter and runbook.
-
-            IMPORTANT: CI checks have already been verified by the workflow. Do NOT wait for or check CI status.
-            Do NOT run "gh pr checks" or similar commands - the workflow has already confirmed all CI checks passed.
-
-            CRITICAL: You must ONLY perform the code review. DO NOT merge the PR or run review_accept_and_merge.sh.
-
-            Review workflow you must follow:
-            1. Read and understand the PR changes
-            2. Perform comprehensive code review using the checklist below
-            3. POST YOUR REVIEW FINDINGS as a PR comment using: gh pr comment ${{ github.event.pull_request.number }} --body "<your review>"
-            4. Write your decision to /tmp/review-decision.json for workflow automation
-
-            IMPORTANT: Step 3 (posting review comment) is MANDATORY. The PR must have visible review feedback.
-
-            Perform a comprehensive code review checking:
-
-            From RUNBOOKS/review-runbook.md checklist:
-            - Correctness vs issue acceptance criteria
-            - Tests added/updated and meaningful
-            - No architecture boundary violations
-            - No secrets committed
-            - Clear docs updates for user-facing changes
-            - Reasonable maintainability
-
-            Additional quality checks:
-            - Code quality and best practices (from CLAUDE.md)
-            - Performance considerations and potential bottlenecks
-            - Security concerns beyond secret detection
-            - Potential bugs or edge cases not covered by tests
-            - API contract consistency and backward compatibility
-
-            Severity model:
-            - Critical: correctness/security/data-loss/performance regression (MUST block merge)
-            - Medium: significant bug risk, missing tests, broken contract, poor maintainability (MUST block merge)
-            - Minor: style/nits, minor optimization opportunities (may proceed)
-
-            After posting your review comment to the PR, write your decision to /tmp/review-decision.json with this format:
-            {
-              "decision": "APPROVE" or "REQUEST_CHANGES",
-              "pr_number": <pr_number>,
-              "issue_number": <issue_number>,
-              "summary": "<brief summary of findings>",
-              "sub_issues": [
-                {"title": "<title>", "body_file": "<path>"}
-              ]
-            }
-
-            If Critical or Medium issues found:
-            - Set decision to "REQUEST_CHANGES"
-            - Create sub-issue body files in /tmp/sub-issue-*.md
-            - List them in the sub_issues array
-            - Include specific details for reproduction and resolution
-
-            If no blocking issues:
-            - Set decision to "APPROVE"
-            - Provide detailed reasoning in summary
-
-            The workflow will handle the actual merge or sub-issue creation based on your decision file.
-
-      - name: Execute review decision
-        if: steps.ci_check.outputs.ci_status == 'success' && (success() || failure())
-        id: execute_decision
+      - name: Read review comment and parse decision
+        id: parse_review
         shell: bash
         run: |
           set -euo pipefail
-          PR="${{ github.event.pull_request.number }}"
+          PR="${{ steps.get_pr.outputs.pr_number }}"
 
-          # Extract issue number from PR body
+          echo "::group::Finding review comment"
+
+          # Get the most recent comment that starts with "## Code Review"
+          REVIEW_COMMENT=$(gh pr view "$PR" --json comments --jq '.comments[] | select(.body | startswith("## Code Review")) | .body' | tail -1)
+
+          if [[ -z "$REVIEW_COMMENT" ]]; then
+            echo "::error::No review comment found starting with '## Code Review'"
+            exit 1
+          fi
+
+          echo "Found review comment"
+          echo "::endgroup::"
+
+          # Parse decision from first line
+          DECISION_LINE=$(echo "$REVIEW_COMMENT" | head -1)
+
+          if echo "$DECISION_LINE" | grep -q "APPROVE"; then
+            DECISION="APPROVE"
+          elif echo "$DECISION_LINE" | grep -q "REQUEST_CHANGES"; then
+            DECISION="REQUEST_CHANGES"
+          else
+            echo "::error::Could not parse decision from: $DECISION_LINE"
+            exit 1
+          fi
+
+          echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
+          echo "Decision: $DECISION"
+
+          # Save full comment to file for sub-issue parsing if needed
+          echo "$REVIEW_COMMENT" > /tmp/review-comment.txt
+
+      - name: Extract issue number from PR
+        id: get_issue
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ steps.get_pr.outputs.pr_number }}"
+
           ISSUE=$(gh pr view "$PR" --json body -q '.body' | grep -oP 'Closes #\K\d+' || echo "")
 
           if [[ -z "$ISSUE" ]]; then
@@ -276,80 +145,96 @@ jobs:
             exit 1
           fi
 
-          # Check if Claude Code produced a decision file
-          if [[ ! -f "/tmp/review-decision.json" ]]; then
-            echo "::warning::No review decision file found - Claude Code may have crashed before completing review"
-            echo "::error::Review incomplete - manual intervention required"
+          echo "issue_number=$ISSUE" >> "$GITHUB_OUTPUT"
+          echo "Found issue #$ISSUE"
+
+      - name: Execute merge (if approved)
+        if: steps.parse_review.outputs.decision == 'APPROVE'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ steps.get_pr.outputs.pr_number }}"
+          ISSUE="${{ steps.get_issue.outputs.issue_number }}"
+
+          echo "::notice::Review approved - executing merge"
+          bash -lc "cd $GITHUB_WORKSPACE && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_accept_and_merge.sh $PR $ISSUE"
+
+      - name: Create sub-issues (if changes requested)
+        if: steps.parse_review.outputs.decision == 'REQUEST_CHANGES'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ISSUE="${{ steps.get_issue.outputs.issue_number }}"
+
+          echo "::notice::Changes requested - parsing sub-issues from review comment"
+
+          # Parse Critical and Medium issues from the review comment
+          REVIEW_COMMENT=$(cat /tmp/review-comment.txt)
+
+          # Extract Critical Issues section
+          CRITICAL_SECTION=$(echo "$REVIEW_COMMENT" | sed -n '/### Critical Issues/,/### Medium Issues\|### Minor Issues\|### Decision/p' | grep '^\- \*\*' || echo "")
+
+          # Extract Medium Issues section
+          MEDIUM_SECTION=$(echo "$REVIEW_COMMENT" | sed -n '/### Medium Issues/,/### Minor Issues\|### Decision/p' | grep '^\- \*\*' || echo "")
+
+          # Combine Critical and Medium issues
+          BLOCKING_ISSUES=$(echo -e "$CRITICAL_SECTION\n$MEDIUM_SECTION" | grep '^\- \*\*' || echo "")
+
+          if [[ -z "$BLOCKING_ISSUES" ]]; then
+            echo "::error::REQUEST_CHANGES decision but no Critical/Medium issues found in review comment"
             exit 1
           fi
 
-          # Read decision
-          DECISION=$(jq -r '.decision' /tmp/review-decision.json)
-          SUMMARY=$(jq -r '.summary' /tmp/review-decision.json)
+          # Create a sub-issue for each blocking issue
+          echo "$BLOCKING_ISSUES" | while IFS= read -r line; do
+            if [[ -z "$line" ]]; then continue; fi
 
-          echo "::group::Review Decision"
-          echo "Decision: $DECISION"
-          echo "Summary: $SUMMARY"
-          echo "::endgroup::"
+            # Extract title from **Title**: format
+            TITLE=$(echo "$line" | sed -n 's/^- \*\*\(.*\)\*\*:.*/\1/p')
+            DESCRIPTION=$(echo "$line" | sed -n 's/^- \*\*.*\*\*: \(.*\)/\1/p')
 
-          # Verify that a review comment was posted (safety check)
-          REVIEW_COMMENTS=$(gh pr view "$PR" --json comments --jq '[.comments[] | select(.author.login == "myGPT-review-agent")] | length')
-          if [[ "$REVIEW_COMMENTS" -eq 0 ]]; then
-            echo "::warning::No review comment found from review-agent - Claude may not have posted review feedback"
-            echo "::notice::Proceeding with decision anyway, but review should be audited"
-          fi
+            if [[ -z "$TITLE" ]]; then
+              echo "::warning::Could not parse title from: $line"
+              continue
+            fi
 
-          if [[ "$DECISION" == "APPROVE" ]]; then
-            echo "::notice::Review approved - executing merge"
-            bash -lc "cd /home/runner/work/myGPT/myGPT && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_accept_and_merge.sh $PR $ISSUE"
-            echo "merge_executed=true" >> "$GITHUB_OUTPUT"
+            # Create body file for sub-issue
+            BODY_FILE="/tmp/sub-issue-$(echo "$TITLE" | tr ' ' '-' | tr -cd '[:alnum:]-').md"
+            cat > "$BODY_FILE" <<EOF
+## Acceptance Failure
 
-          elif [[ "$DECISION" == "REQUEST_CHANGES" ]]; then
-            echo "::notice::Changes requested - creating acceptance failure sub-issues"
+**From code review of parent issue #${ISSUE}**
 
-            # Create each sub-issue
-            SUB_ISSUE_COUNT=$(jq -r '.sub_issues | length' /tmp/review-decision.json)
-            for i in $(seq 0 $((SUB_ISSUE_COUNT - 1))); do
-              TITLE=$(jq -r ".sub_issues[$i].title" /tmp/review-decision.json)
-              BODY_FILE=$(jq -r ".sub_issues[$i].body_file" /tmp/review-decision.json)
+### Issue
+$DESCRIPTION
 
-              if [[ ! -f "$BODY_FILE" ]]; then
-                echo "::error::Sub-issue body file not found: $BODY_FILE"
-                continue
-              fi
+### How to Fix
+See code review comment for details and specific file/line references.
 
-              echo "Creating sub-issue: $TITLE"
-              bash -lc "cd /home/runner/work/myGPT/myGPT && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_request_changes.sh $ISSUE '$TITLE' '$BODY_FILE'"
-            done
+### Parent Issue
+#${ISSUE}
+EOF
 
-            echo "changes_requested=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::Unknown decision: $DECISION"
-            exit 1
-          fi
+            echo "Creating sub-issue: $TITLE"
+            bash -lc "cd $GITHUB_WORKSPACE && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_request_changes.sh $ISSUE '$TITLE' '$BODY_FILE'"
+          done
 
-      - name: Post review complete comment
-        if: steps.ci_check.outputs.ci_status == 'success' && (success() || failure())
+      - name: Post completion comment
+        if: always()
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.REVIEW_AGENT_TOKEN }}
           script: |
-            const pr_number = context.payload.pull_request.number;
-
-            // Determine outcome based on execute_decision step
-            const mergeExecuted = '${{ steps.execute_decision.outputs.merge_executed }}' === 'true';
-            const changesRequested = '${{ steps.execute_decision.outputs.changes_requested }}' === 'true';
-            const executeStepConclusion = '${{ steps.execute_decision.conclusion }}';
+            const pr_number = ${{ steps.get_pr.outputs.pr_number }};
+            const decision = '${{ steps.parse_review.outputs.decision }}';
 
             let body;
-            if (executeStepConclusion === 'failure') {
-              body = '❌ **Review Agent**: Review failed to complete properly.\n\nManual intervention required. Check workflow logs for details.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
-            } else if (mergeExecuted) {
-              body = '✅ **Review Agent**: Code review complete - PR merged.\n\nNo blocking issues found. PR has been merged to release branch.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
-            } else if (changesRequested) {
-              body = '🔄 **Review Agent**: Changes requested.\n\nAcceptance failure sub-issues have been created. Check issue comments for details.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
+            if (decision === 'APPROVE') {
+              body = '✅ **Review Agent**: PR merged successfully.\n\nNo blocking issues found. Changes have been merged to release branch.';
+            } else if (decision === 'REQUEST_CHANGES') {
+              body = '🔄 **Review Agent**: Changes requested.\n\nAcceptance failure sub-issues have been created for Critical/Medium findings. Issue assigned back to developer-agent.';
             } else {
-              body = '⚠️ **Review Agent**: Review completed with unknown outcome.\n\nCheck workflow logs for details.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
+              body = '❌ **Review Agent**: Review decision execution failed.\n\nCheck workflow logs for details.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
             }
 
             await github.rest.issues.createComment({
