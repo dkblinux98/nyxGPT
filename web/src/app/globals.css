@@ -17,6 +17,10 @@
   --rag-text: #0369a1;
   --feedback-bg: rgba(0, 0, 0, 0.8);
   --feedback-text: #ffffff;
+  --error-bg: #fff5f5;
+  --error-text: #c53030;
+  --skeleton-base: #e5e5e5;
+  --skeleton-shimmer: #f0f0f0;
 }
 
 :root[data-theme='dark'],
@@ -39,6 +43,10 @@
   --rag-text: #60a5fa;
   --feedback-bg: rgba(255, 255, 255, 0.9);
   --feedback-text: #000000;
+  --error-bg: #2a1a1a;
+  --error-text: #fc8181;
+  --skeleton-base: #2a2a2a;
+  --skeleton-shimmer: #333;
 }
 
 html,

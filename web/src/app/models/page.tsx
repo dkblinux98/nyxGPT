@@ -1,6 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import LoadingSpinner from '../../components/LoadingSpinner';
+import ErrorMessage from '../../components/ErrorMessage';
+import SkeletonLoader from '../../components/SkeletonLoader';
 
 type Model = {
   name: string;
@@ -135,8 +138,13 @@ export default function ModelsPage() {
           </button>
         </form>
         {pullError && (
-          <div style={{ marginTop: 10, color: 'red', fontSize: 14 }}>
-            Error: {pullError}
+          <div style={{ marginTop: 10 }}>
+            <ErrorMessage
+              title="Failed to pull model"
+              message={pullError}
+              onRetry={() => void handlePullModel({ preventDefault: () => {} } as React.FormEvent)}
+              retrying={pulling}
+            />
           </div>
         )}
       </section>
@@ -162,18 +170,27 @@ export default function ModelsPage() {
         </div>
 
         {error && (
-          <div style={{ color: 'red', padding: '1rem', border: '1px solid #ffcccc', borderRadius: 6, background: '#fff5f5' }}>
-            Error loading models: {error}
+          <ErrorMessage
+            title="Failed to load models"
+            message={error}
+            onRetry={loadModels}
+            retrying={loading}
+          />
+        )}
+
+        {loading && !error && (
+          <div style={{ display: 'grid', gap: 10 }}>
+            <SkeletonLoader height={60} borderRadius={8} count={3} />
           </div>
         )}
 
-        {!error && models.length === 0 && !loading && (
+        {!error && !loading && models.length === 0 && (
           <div style={{ padding: '2rem', textAlign: 'center', color: '#666' }}>
             No models found. Pull a model to get started.
           </div>
         )}
 
-        {!error && models.length > 0 && (
+        {!error && !loading && models.length > 0 && (
           <div style={{ display: 'grid', gap: 10 }}>
             {models.map((model) => (
               <div

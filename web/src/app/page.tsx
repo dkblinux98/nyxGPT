@@ -3,6 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ChatPane from './components/ChatPane';
 import ThemeToggle from '../components/ThemeToggle';
+import LoadingSpinner from '../components/LoadingSpinner';
+import ErrorMessage from '../components/ErrorMessage';
+import { SessionListSkeleton } from '../components/SkeletonLoader';
 
 type Info = {
   ollama_base_url: string;
@@ -27,9 +30,13 @@ type SessionsResponse = {
 export default function Home() {
   const [info, setInfo] = useState<Info | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadingInfo, setLoadingInfo] = useState<boolean>(true);
+  const [retryingInfo, setRetryingInfo] = useState<boolean>(false);
 
   const [sessions, setSessions] = useState<SessionsResponse['sessions']>([]);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
+  const [loadingSessions, setLoadingSessions] = useState<boolean>(true);
+  const [retryingSessions, setRetryingSessions] = useState<boolean>(false);
   const [selectedSession, setSelectedSession] = useState<string>('default');
   const [sidebarVisible, setSidebarVisible] = useState<boolean>(true);
 
@@ -63,32 +70,64 @@ export default function Home() {
   const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0;
   const modKey = isMac ? '⌘' : 'Ctrl';
 
-  useEffect(() => {
-    fetch('/api/info')
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then(setInfo)
-      .catch((e) => setError(e.message));
+  // Fetch API info with retry support
+  const fetchInfo = useCallback(async (isRetry = false) => {
+    if (isRetry) {
+      setRetryingInfo(true);
+    } else {
+      setLoadingInfo(true);
+    }
+    setError(null);
+
+    try {
+      const res = await fetch('/api/info');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setInfo(data);
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingInfo(false);
+      setRetryingInfo(false);
+    }
   }, []);
 
+  // Fetch sessions with retry support
+  const fetchSessions = useCallback(async (isRetry = false) => {
+    if (isRetry) {
+      setRetryingSessions(true);
+    } else {
+      setLoadingSessions(true);
+    }
+    setSessionsError(null);
+
+    try {
+      const res = await fetch('/api/sessions');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data: SessionsResponse = await res.json();
+      setSessions(data.sessions || []);
+      // Keep selection stable; if current selection disappears, fall back.
+      const names = new Set((data.sessions || []).map((s) => s.name));
+      if (!names.has(selectedSession)) {
+        setSelectedSession(names.has('default') ? 'default' : (data.sessions?.[0]?.name ?? 'default'));
+      }
+      setSessionsError(null);
+    } catch (e) {
+      setSessionsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingSessions(false);
+      setRetryingSessions(false);
+    }
+  }, [selectedSession]);
+
   useEffect(() => {
-    fetch('/api/sessions')
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((data: SessionsResponse) => {
-        setSessions(data.sessions || []);
-        // Keep selection stable; if current selection disappears, fall back.
-        const names = new Set((data.sessions || []).map((s) => s.name));
-        if (!names.has(selectedSession)) {
-          setSelectedSession(names.has('default') ? 'default' : (data.sessions?.[0]?.name ?? 'default'));
-        }
-      })
-      .catch((e) => setSessionsError(e.message));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    void fetchInfo();
+  }, [fetchInfo]);
+
+  useEffect(() => {
+    void fetchSessions();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Filter and search sessions
@@ -667,12 +706,22 @@ export default function Home() {
         </div>
 
         {sessionsError && (
-          <div style={{ color: 'red', fontSize: 12, marginBottom: 10 }}>
-            Error loading /api/sessions: {sessionsError}
+          <div style={{ marginBottom: 10 }}>
+            <ErrorMessage
+              title="Failed to load sessions"
+              message={sessionsError}
+              onRetry={() => void fetchSessions(true)}
+              retrying={retryingSessions}
+            />
           </div>
         )}
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {loadingSessions && !sessionsError && (
+          <SessionListSkeleton />
+        )}
+
+        {!loadingSessions && !sessionsError && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {filteredSessions.map((s) => {
             const isActive = s.name === selectedSession;
             const displayText = s.title?.trim() ? s.title : s.name;
@@ -720,12 +769,13 @@ export default function Home() {
             </div>
           )}
 
-          {sessions.length === 0 && !sessionsError && (
+          {sessions.length === 0 && !sessionsError && !loadingSessions && (
             <div style={{ fontSize: 12, opacity: 0.75 }}>
               No sessions found yet.
             </div>
           )}
         </div>
+        )}
 
         {/* Context Menu */}
         {contextMenu && (
@@ -975,12 +1025,22 @@ export default function Home() {
         <h2 style={{ marginTop: 0 }}>Backend</h2>
 
         {error && (
-          <div style={{ color: 'red' }}>Error loading /api/info: {error}</div>
+          <ErrorMessage
+            title="Failed to load backend info"
+            message={error}
+            onRetry={() => void fetchInfo(true)}
+            retrying={retryingInfo}
+          />
         )}
 
-        {!info && !error && <div>Loading API info…</div>}
+        {loadingInfo && !error && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '1rem 0' }}>
+            <LoadingSpinner size="small" />
+            <span style={{ fontSize: 14, opacity: 0.7 }}>Loading API info…</span>
+          </div>
+        )}
 
-        {info && (
+        {info && !loadingInfo && (
           <ul>
             <li>
               <strong>Ollama base URL:</strong> {info.ollama_base_url}

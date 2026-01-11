@@ -1,6 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import LoadingSpinner from '../../components/LoadingSpinner';
+import ErrorMessage from '../../components/ErrorMessage';
 
 type ChatMessage = {
   role: 'user' | 'assistant';
@@ -375,8 +377,9 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
         <div>
           <h2 style={{ margin: 0 }}>{title}</h2>
-          <div style={{ marginTop: 4, fontSize: 12, opacity: 0.7 }}>
-            Status: <strong>{status}</strong>
+          <div style={{ marginTop: 4, fontSize: 12, opacity: 0.7, display: 'flex', alignItems: 'center', gap: 8 }}>
+            {(status === 'connecting' || status === 'streaming') && <LoadingSpinner size="small" />}
+            <span>Status: <strong>{status}</strong></span>
             {lastError ? <span style={{ marginLeft: 8, color: 'red' }}>({lastError})</span> : null}
           </div>
         </div>
