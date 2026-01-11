@@ -202,6 +202,9 @@ jobs:
           prompt: |
             Review PR #${{ github.event.pull_request.number }} according to the review-agent charter and runbook.
 
+            IMPORTANT: CI checks have already been verified by the workflow. Do NOT wait for or check CI status.
+            Do NOT run "gh pr checks" or similar commands - the workflow has already confirmed all CI checks passed.
+
             Perform a comprehensive code review checking:
 
             From RUNBOOKS/review-runbook.md checklist:
