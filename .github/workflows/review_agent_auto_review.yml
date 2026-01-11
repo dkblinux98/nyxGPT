@@ -206,7 +206,14 @@ jobs:
             Do NOT run "gh pr checks" or similar commands - the workflow has already confirmed all CI checks passed.
 
             CRITICAL: You must ONLY perform the code review. DO NOT merge the PR or run review_accept_and_merge.sh.
-            Instead, write your decision to a file that the workflow will read.
+
+            Review workflow you must follow:
+            1. Read and understand the PR changes
+            2. Perform comprehensive code review using the checklist below
+            3. POST YOUR REVIEW FINDINGS as a PR comment using: gh pr comment ${{ github.event.pull_request.number }} --body "<your review>"
+            4. Write your decision to /tmp/review-decision.json for workflow automation
+
+            IMPORTANT: Step 3 (posting review comment) is MANDATORY. The PR must have visible review feedback.
 
             Perform a comprehensive code review checking:
 
@@ -230,7 +237,7 @@ jobs:
             - Medium: significant bug risk, missing tests, broken contract, poor maintainability (MUST block merge)
             - Minor: style/nits, minor optimization opportunities (may proceed)
 
-            After your review, write your decision to /tmp/review-decision.json with this format:
+            After posting your review comment to the PR, write your decision to /tmp/review-decision.json with this format:
             {
               "decision": "APPROVE" or "REQUEST_CHANGES",
               "pr_number": <pr_number>,
@@ -284,6 +291,13 @@ jobs:
           echo "Decision: $DECISION"
           echo "Summary: $SUMMARY"
           echo "::endgroup::"
+
+          # Verify that a review comment was posted (safety check)
+          REVIEW_COMMENTS=$(gh pr view "$PR" --json comments --jq '[.comments[] | select(.author.login == "myGPT-review-agent")] | length')
+          if [[ "$REVIEW_COMMENTS" -eq 0 ]]; then
+            echo "::warning::No review comment found from review-agent - Claude may not have posted review feedback"
+            echo "::notice::Proceeding with decision anyway, but review should be audited"
+          fi
 
           if [[ "$DECISION" == "APPROVE" ]]; then
             echo "::notice::Review approved - executing merge"

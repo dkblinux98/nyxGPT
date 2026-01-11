@@ -1,6 +1,8 @@
 # Review Workflow Fix - Separate Review from Merge Execution
 
-## Problem
+## Problems
+
+### Problem 1: Review and Merge Not Separated
 
 The review_agent_auto_review.yml workflow had a critical architectural flaw where Claude Code performed both code review AND merge execution in a single step. This created a dangerous failure mode:
 
@@ -11,6 +13,20 @@ The review_agent_auto_review.yml workflow had a critical architectural flaw wher
 
 This was a regression from the old architecture where claude-code-review.yml and review_agent_auto_review.yml were separate workflows. The old design was more reliable - even if it ran reviews twice, **it failed safely**.
 
+### Problem 2: No Visible Review Comments
+
+When the workflows were consolidated, we lost the explicit instruction to post review comments. The old `claude-code-review.yml` had:
+
+```
+Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
+```
+
+Without this instruction:
+- Claude Code merged PRs #2843 and #2845 **without posting any review comments**
+- No visibility into what was reviewed or why merge was approved
+- No audit trail of review decisions
+- No way to learn from review feedback over time
+
 ## Root Cause
 
 Combining review and merge into Claude Code's single execution context meant:
@@ -20,10 +36,11 @@ Combining review and merge into Claude Code's single execution context meant:
 
 ## Solution
 
-Restructured workflow to separate review from execution:
+Restructured workflow to separate review from execution AND restore visible review comments:
 
 ### Step 1: Claude Code Review Only
 - Claude performs comprehensive code review
+- **Posts review findings as PR comment** using `gh pr comment` (restored from old workflow)
 - Outputs decision to `/tmp/review-decision.json`
 - Does NOT execute merge or create sub-issues
 - If Claude crashes → workflow fails, no merge happens (safe failure)
@@ -43,6 +60,7 @@ Decision file format:
 
 ### Step 2: Execute Review Decision
 - Workflow script reads `/tmp/review-decision.json`
+- Verifies that review comment was posted (warning if missing)
 - If `APPROVE`: executes `review_accept_and_merge.sh`
 - If `REQUEST_CHANGES`: creates sub-issues via `review_request_changes.sh`
 - If no decision file exists: workflow fails cleanly (manual intervention required)
@@ -54,17 +72,23 @@ Decision file format:
 
 ## Benefits
 
-1. **Safe failure**: If Claude crashes, merge doesn't happen
-2. **Accurate status**: Workflow success/failure matches actual outcome
-3. **Clear separation**: Review logic (Claude) separate from execution (workflow script)
-4. **Debuggable**: Decision file provides audit trail of review outcome
-5. **Idempotent**: Can re-run failed workflows without re-executing successful merges
+1. **Visible review feedback**: Every PR now gets a review comment explaining findings
+2. **Audit trail**: Review comments provide permanent record of what was reviewed
+3. **Safe failure**: If Claude crashes, merge doesn't happen
+4. **Accurate status**: Workflow success/failure matches actual outcome
+5. **Clear separation**: Review logic (Claude) separate from execution (workflow script)
+6. **Debuggable**: Decision file + review comments provide complete audit trail
+7. **Idempotent**: Can re-run failed workflows without re-executing successful merges
 
 ## Migration Notes
 
-- Old behavior: Claude executed `review_accept_and_merge.sh` directly
-- New behavior: Claude writes decision, workflow executes merge
+- Old behavior: Claude executed `review_accept_and_merge.sh` directly, no review comments
+- New behavior:
+  - Claude posts review comment (restored from old claude-code-review.yml)
+  - Claude writes decision to file
+  - Workflow executes merge based on decision
 - If Claude crashes before writing decision file, workflow fails (no merge)
+- If Claude crashes before posting review comment, workflow warns but proceeds (decision file is source of truth)
 - If workflow step fails after reading decision, status accurately reflects failure
 
 ## Testing
@@ -76,6 +100,9 @@ To test:
 
 ## Related Issues
 
-- PR #2843: Merged successfully but workflow showed as cancelled
-- PR #2845: Had circular CI dependency (Claude checking for its own workflow)
-- Root cause: Combining claude-code-review.yml into review_agent_auto_review.yml created this regression
+- PR #2843: Merged successfully but workflow showed as cancelled + no review comments
+- PR #2845: Had circular CI dependency (Claude checking for its own workflow) + no review comments
+- Root causes:
+  1. Combining claude-code-review.yml into review_agent_auto_review.yml created merge-before-failure regression
+  2. Lost the explicit instruction to post review comments from old claude-code-review.yml
+- Both issues discovered when user noted "there was actually no claude code review performed"
