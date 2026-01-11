@@ -1,155 +1,166 @@
 #!/usr/bin/env bash
-# Watch agent workflow logs in separate terminal panes
+# Watch workflow runs related to a specific issue
+# Displays clickable links to GitHub Actions web UI
 
 set -euo pipefail
 
-# Check if tmux is installed
-if ! command -v tmux &> /dev/null; then
-    echo "Error: tmux is not installed. Install with: brew install tmux"
-    exit 1
-fi
+usage() {
+  cat <<'EOF'
+Usage: watch_agents.sh <issue_number>
 
-# Check if gh CLI is installed
-if ! command -v gh &> /dev/null; then
-    echo "Error: gh CLI is not installed. Install with: brew install gh"
-    exit 1
-fi
+Watch GitHub Actions workflows related to a specific issue.
+Displays status and clickable links to view logs in web UI.
 
-SESSION_NAME="agent-monitor"
+Monitors:
+- Developer Auto-Implement workflow (issue assignment trigger)
+- Review Agent workflow (PR opened/updated)
+- Claude Code workflow (comment triggers)
 
-# Kill existing session if it exists
-tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
+Press Ctrl+C to exit.
 
-# Create monitoring script for each agent type
-create_monitor_script() {
-    local agent_name="$1"
-    shift
-    local workflows=("$@")
-
-    cat <<'SCRIPT_END'
-#!/usr/bin/env bash
-set -euo pipefail
-
-AGENT_NAME="AGENT_NAME_PLACEHOLDER"
-WORKFLOWS=(WORKFLOWS_PLACEHOLDER)
-LAST_SEEN_RUN=""
-
-echo "=== $AGENT_NAME AGENT ==="
-echo "Monitoring workflows: ${WORKFLOWS[*]}"
-echo ""
-
-while true; do
-    # Find latest active run (in_progress or queued)
-    # NOTE: gh CLI bug - multiple --status flags with --limit returns empty, so query separately
-    RUN_ID=""
-    for workflow in "${WORKFLOWS[@]}"; do
-        # Try in_progress first
-        RUN_ID=$(gh run list --workflow="$workflow" --status in_progress --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")
-        if [[ -z "$RUN_ID" ]]; then
-            # Try queued if no in_progress run
-            RUN_ID=$(gh run list --workflow="$workflow" --status queued --limit 1 --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")
-        fi
-        if [[ -n "$RUN_ID" ]]; then
-            break
-        fi
-    done
-
-    if [[ -n "$RUN_ID" ]]; then
-        echo "$(date '+%H:%M:%S') - Found active run: $RUN_ID"
-        echo "Watching..."
-        LAST_SEEN_RUN="$RUN_ID"
-        gh run watch "$RUN_ID" 2>&1 || true
-        echo ""
-        echo "Run $RUN_ID completed. Checking for new runs..."
-        sleep 2
-    else
-        # No active runs, check for recently completed quick runs (exclude skipped)
-        for workflow in "${WORKFLOWS[@]}"; do
-            QUICK_RUN=$(gh run list --workflow="$workflow" --status completed --limit 5 --json databaseId,conclusion,startedAt,updatedAt,createdAt --jq '.[] | select(.databaseId != '${LAST_SEEN_RUN:-0}') | select(.conclusion != "skipped") | select(
-                ((.updatedAt | fromdateiso8601) - (.startedAt // .createdAt | fromdateiso8601)) < 30
-            ) | .databaseId' 2>/dev/null | head -1 || echo "")
-
-            if [[ -n "$QUICK_RUN" ]]; then
-                echo "$(date '+%H:%M:%S') - Found quick completed run: $QUICK_RUN (< 30s duration)"
-
-                # Get run info first
-                RUN_INFO=$(gh run view "$QUICK_RUN" --json name,conclusion,workflowName 2>/dev/null || echo "")
-                CONCLUSION=""
-                if [[ -n "$RUN_INFO" ]]; then
-                    echo "Workflow: $(echo "$RUN_INFO" | jq -r '.workflowName // .name')"
-                    CONCLUSION=$(echo "$RUN_INFO" | jq -r '.conclusion')
-                    echo "Conclusion: $CONCLUSION"
-                fi
-
-                LAST_SEEN_RUN="$QUICK_RUN"
-
-                # Fetch log with timeout and check if empty
-                echo "Fetching log (this may take a moment)..."
-                LOG_OUTPUT=$(timeout 10 gh run view "$QUICK_RUN" --log 2>&1 | tail -100)
-
-                if [[ -n "$LOG_OUTPUT" ]]; then
-                    echo "$LOG_OUTPUT"
-                else
-                    echo "⚠️  No log output available for run $QUICK_RUN"
-                    echo "View manually: gh run view $QUICK_RUN --log"
-                fi
-
-                echo ""
-                echo "─────────────────────────────────────────────────"
-                sleep 2
-                break
-            fi
-        done
-
-        if [[ -z "$QUICK_RUN" ]]; then
-            echo "$(date '+%H:%M:%S') - No active or quick completed runs, checking again in 5s..."
-            sleep 5
-        fi
-    fi
-done
-SCRIPT_END
+Example:
+  ./scripts/watch_agents.sh 2604
+EOF
+  exit 1
 }
 
-# Create temp scripts for each agent
-SCRUM_SCRIPT=$(mktemp)
-DEV_SCRIPT=$(mktemp)
-REVIEW_SCRIPT=$(mktemp)
+[[ $# -eq 0 ]] && usage
+ISSUE="$1"
 
-# Generate Scrummaster monitoring script
-create_monitor_script "SCRUMMASTER" "Scrummaster Agent - Select and Start Next Issue" "Assign Backlog Issues to scrummaster-agent" "Auto-check Release Tracking Issues" "Add issue to release issue on milestone assignment" | \
-    sed 's/AGENT_NAME_PLACEHOLDER/SCRUMMASTER/' | \
-    sed 's/WORKFLOWS_PLACEHOLDER/"Scrummaster Agent - Select and Start Next Issue" "Assign Backlog Issues to scrummaster-agent" "Auto-check Release Tracking Issues" "Add issue to release issue on milestone assignment"/' > "$SCRUM_SCRIPT"
-chmod +x "$SCRUM_SCRIPT"
+# Validate issue number
+if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
+  echo "Error: Issue number must be numeric" >&2
+  exit 1
+fi
 
-# Generate Developer monitoring script
-create_monitor_script "DEVELOPER" "Developer Agent Auto-Implement" "Claude Code" | \
-    sed 's/AGENT_NAME_PLACEHOLDER/DEVELOPER/' | \
-    sed 's/WORKFLOWS_PLACEHOLDER/"Developer Agent Auto-Implement" "Claude Code"/' > "$DEV_SCRIPT"
-chmod +x "$DEV_SCRIPT"
+REPO="dkblinux98/myGPT"
+POLL_INTERVAL=30  # Poll every 30 seconds (120 API calls/hour max)
+SEEN_RUNS=()
 
-# Generate Reviewer monitoring script
-create_monitor_script "REVIEWER" "Review Agent Auto-Review" | \
-    sed 's/AGENT_NAME_PLACEHOLDER/REVIEWER/' | \
-    sed 's/WORKFLOWS_PLACEHOLDER/"Review Agent Auto-Review"/' > "$REVIEW_SCRIPT"
-chmod +x "$REVIEW_SCRIPT"
-
-# Create tmux session with monitoring panes
-tmux new-session -d -s "$SESSION_NAME" -n "Agents" "bash $SCRUM_SCRIPT; rm -f $SCRUM_SCRIPT"
-tmux split-window -h -t "$SESSION_NAME:0" "bash $DEV_SCRIPT; rm -f $DEV_SCRIPT"
-tmux split-window -v -t "$SESSION_NAME:0.0" "bash $REVIEW_SCRIPT; rm -f $REVIEW_SCRIPT"
-
-# Adjust layout to tile evenly
-tmux select-layout -t "$SESSION_NAME:0" even-horizontal
-
-echo "✅ Agent monitoring session started"
-echo ""
-echo "Each pane continuously polls for:"
-echo "  - Active runs (in_progress/queued) → streams live with 'gh run watch'"
-echo "  - Quick completed runs (< 30s) → shows last 100 lines with 'gh run view --log'"
-echo ""
-echo "Press Ctrl+b then d to detach (keeps running in background)"
-echo "Run 'tmux attach -t agent-monitor' to reattach"
+echo "🔍 Watching workflows for issue #$ISSUE"
+echo "Repository: $REPO"
+echo "Poll interval: ${POLL_INTERVAL}s"
+echo "Press Ctrl+C to exit"
 echo ""
 
-# Attach to the session
-tmux attach-session -t "$SESSION_NAME"
+# Format duration in human readable form
+format_duration() {
+  local seconds=$1
+  if [[ $seconds -lt 60 ]]; then
+    echo "${seconds}s"
+  else
+    echo "$((seconds / 60))m $((seconds % 60))s"
+  fi
+}
+
+# Get status emoji
+status_emoji() {
+  case "$1" in
+    in_progress|IN_PROGRESS) echo "🔄" ;;
+    queued|QUEUED) echo "⏳" ;;
+    completed|COMPLETED)
+      case "$2" in
+        success|SUCCESS) echo "✅" ;;
+        failure|FAILURE) echo "❌" ;;
+        cancelled|CANCELLED) echo "🚫" ;;
+        skipped|SKIPPED) echo "⏭️" ;;
+        *) echo "❓" ;;
+      esac
+      ;;
+    *) echo "❓" ;;
+  esac
+}
+
+# Check if we've already seen this run
+is_seen() {
+  local run_id=$1
+  [[ ${#SEEN_RUNS[@]} -eq 0 ]] && return 1
+  for seen in "${SEEN_RUNS[@]}"; do
+    [[ "$seen" == "$run_id" ]] && return 0
+  done
+  return 1
+}
+
+while true; do
+  CURRENT_TIME=$(date '+%H:%M:%S')
+  NEW_RUNS_FOUND=0
+
+  # Query runs related to this issue
+  # Look for runs in the last 24 hours that might be related
+  RUNS=$(gh run list \
+    --repo "$REPO" \
+    --limit 50 \
+    --json databaseId,workflowName,status,conclusion,createdAt,updatedAt,event,url,headBranch \
+    2>/dev/null || echo "[]")
+
+  # Filter runs related to this issue
+  # - Developer workflow triggered by issue assignment
+  # - Review workflow on PRs for this issue
+  # - Claude Code on comments mentioning issue
+  # - Runs on branches matching feat/ISSUE-* or fix/ISSUE-*
+
+  RELATED_RUNS=$(echo "$RUNS" | jq -r --arg issue "$ISSUE" '
+    .[] | select(
+      (.workflowName == "Developer Agent Auto-Implement") or
+      (.workflowName == "Review Agent Auto-Review") or
+      (.workflowName == "Claude Code") or
+      (.headBranch | test("(feat|fix)/\($issue)-"))
+    ) | @json
+  ')
+
+  if [[ -n "$RELATED_RUNS" ]]; then
+    while IFS= read -r run_json; do
+      RUN_ID=$(echo "$run_json" | jq -r '.databaseId')
+
+      # Skip if already seen and completed
+      if is_seen "$RUN_ID"; then
+        STATUS=$(echo "$run_json" | jq -r '.status')
+        [[ "$STATUS" == "completed" ]] && continue
+      fi
+
+      WORKFLOW=$(echo "$run_json" | jq -r '.workflowName')
+      STATUS=$(echo "$run_json" | jq -r '.status')
+      CONCLUSION=$(echo "$run_json" | jq -r '.conclusion // ""')
+      URL=$(echo "$run_json" | jq -r '.url')
+      BRANCH=$(echo "$run_json" | jq -r '.headBranch // ""')
+      CREATED=$(echo "$run_json" | jq -r '.createdAt')
+      UPDATED=$(echo "$run_json" | jq -r '.updatedAt')
+
+      # Calculate duration
+      CREATED_TS=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$CREATED" "+%s" 2>/dev/null || echo "0")
+      UPDATED_TS=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$UPDATED" "+%s" 2>/dev/null || echo "0")
+      DURATION=$((UPDATED_TS - CREATED_TS))
+
+      # Get emoji
+      EMOJI=$(status_emoji "$STATUS" "$CONCLUSION")
+
+      # Mark as seen if completed
+      if [[ "$STATUS" == "completed" ]] && ! is_seen "$RUN_ID"; then
+        SEEN_RUNS+=("$RUN_ID")
+        NEW_RUNS_FOUND=1
+      elif [[ "$STATUS" != "completed" ]]; then
+        NEW_RUNS_FOUND=1
+      fi
+
+      # Display run info with clickable link
+      printf "%s %s [%s] %s" "$CURRENT_TIME" "$EMOJI" "$STATUS" "$WORKFLOW"
+      [[ -n "$BRANCH" ]] && printf " (%s)" "$BRANCH"
+      [[ $DURATION -gt 0 ]] && printf " - %s" "$(format_duration $DURATION)"
+      echo ""
+      echo "    🔗 $URL"
+
+      # Show conclusion if completed
+      if [[ "$STATUS" == "completed" && -n "$CONCLUSION" ]]; then
+        echo "    └─ Conclusion: $CONCLUSION"
+      fi
+      echo ""
+
+    done <<< "$RELATED_RUNS"
+  fi
+
+  if [[ $NEW_RUNS_FOUND -eq 0 ]]; then
+    echo "$CURRENT_TIME - No active or new runs for issue #$ISSUE (checking again in ${POLL_INTERVAL}s...)"
+  fi
+
+  sleep $POLL_INTERVAL
+done

@@ -68,6 +68,13 @@ Executive assistant role uses efficient means for one-off tasks outside the work
 - Use scripts in scripts/agents/
 - Do not modify Project fields directly outside scripts
 
+**IMPORTANT: Do not create project metadata without explicit user permission:**
+- Do NOT create labels (use existing labels only)
+- Do NOT create milestones
+- Do NOT create releases
+- Do NOT add options to project field dropdowns (Module, Phase, Status, etc.)
+- If a label/milestone/field option is needed, ASK the user first
+
 ## Branch Rules
 
 - **NEVER merge to master/main** - All merges go to the active release branch (e.g., v1.0.0)
