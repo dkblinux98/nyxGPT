@@ -91,7 +91,7 @@ def get_issue_info(issue: str, config: Dict[str, str]) -> Tuple[str, str]:
         return ("unknown", "unknown")
 
     query = '''
-    query($project:ID!, $issue:Int!) {
+    query($project:ID!) {
       node(id:$project) {
         ... on ProjectV2 {
           items(first:100) {
@@ -124,8 +124,7 @@ def get_issue_info(issue: str, config: Dict[str, str]) -> Tuple[str, str]:
         result = run_gh_command([
             'api', 'graphql',
             '-f', f'query={query}',
-            '-F', f'project={project_id}',
-            '-F', f'issue={issue}'
+            '-F', f'project={project_id}'
         ])
 
         if not result:
