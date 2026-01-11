@@ -205,6 +205,9 @@ jobs:
             IMPORTANT: CI checks have already been verified by the workflow. Do NOT wait for or check CI status.
             Do NOT run "gh pr checks" or similar commands - the workflow has already confirmed all CI checks passed.
 
+            CRITICAL: You must ONLY perform the code review. DO NOT merge the PR or run review_accept_and_merge.sh.
+            Instead, write your decision to a file that the workflow will read.
+
             Perform a comprehensive code review checking:
 
             From RUNBOOKS/review-runbook.md checklist:
@@ -227,26 +230,117 @@ jobs:
             - Medium: significant bug risk, missing tests, broken contract, poor maintainability (MUST block merge)
             - Minor: style/nits, minor optimization opportunities (may proceed)
 
+            After your review, write your decision to /tmp/review-decision.json with this format:
+            {
+              "decision": "APPROVE" or "REQUEST_CHANGES",
+              "pr_number": <pr_number>,
+              "issue_number": <issue_number>,
+              "summary": "<brief summary of findings>",
+              "sub_issues": [
+                {"title": "<title>", "body_file": "<path>"}
+              ]
+            }
+
             If Critical or Medium issues found:
-            - Create acceptance failure sub-issues using review_request_changes.sh
-            - One sub-issue per critical/medium finding
+            - Set decision to "REQUEST_CHANGES"
+            - Create sub-issue body files in /tmp/sub-issue-*.md
+            - List them in the sub_issues array
             - Include specific details for reproduction and resolution
 
             If no blocking issues:
-            - Merge the PR using review_accept_and_merge.sh
+            - Set decision to "APPROVE"
+            - Provide detailed reasoning in summary
 
-            Provide detailed reasoning for your decision, including what you checked and why it's acceptable.
+            The workflow will handle the actual merge or sub-issue creation based on your decision file.
+
+      - name: Execute review decision
+        if: steps.ci_check.outputs.ci_status == 'success' && (success() || failure())
+        id: execute_decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.pull_request.number }}"
+
+          # Extract issue number from PR body
+          ISSUE=$(gh pr view "$PR" --json body -q '.body' | grep -oP 'Closes #\K\d+' || echo "")
+
+          if [[ -z "$ISSUE" ]]; then
+            echo "::error::PR #$PR body does not contain 'Closes #N'"
+            exit 1
+          fi
+
+          # Check if Claude Code produced a decision file
+          if [[ ! -f "/tmp/review-decision.json" ]]; then
+            echo "::warning::No review decision file found - Claude Code may have crashed before completing review"
+            echo "::error::Review incomplete - manual intervention required"
+            exit 1
+          fi
+
+          # Read decision
+          DECISION=$(jq -r '.decision' /tmp/review-decision.json)
+          SUMMARY=$(jq -r '.summary' /tmp/review-decision.json)
+
+          echo "::group::Review Decision"
+          echo "Decision: $DECISION"
+          echo "Summary: $SUMMARY"
+          echo "::endgroup::"
+
+          if [[ "$DECISION" == "APPROVE" ]]; then
+            echo "::notice::Review approved - executing merge"
+            bash -lc "cd /home/runner/work/myGPT/myGPT && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_accept_and_merge.sh $PR $ISSUE"
+            echo "merge_executed=true" >> "$GITHUB_OUTPUT"
+
+          elif [[ "$DECISION" == "REQUEST_CHANGES" ]]; then
+            echo "::notice::Changes requested - creating acceptance failure sub-issues"
+
+            # Create each sub-issue
+            SUB_ISSUE_COUNT=$(jq -r '.sub_issues | length' /tmp/review-decision.json)
+            for i in $(seq 0 $((SUB_ISSUE_COUNT - 1))); do
+              TITLE=$(jq -r ".sub_issues[$i].title" /tmp/review-decision.json)
+              BODY_FILE=$(jq -r ".sub_issues[$i].body_file" /tmp/review-decision.json)
+
+              if [[ ! -f "$BODY_FILE" ]]; then
+                echo "::error::Sub-issue body file not found: $BODY_FILE"
+                continue
+              fi
+
+              echo "Creating sub-issue: $TITLE"
+              bash -lc "cd /home/runner/work/myGPT/myGPT && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_request_changes.sh $ISSUE '$TITLE' '$BODY_FILE'"
+            done
+
+            echo "changes_requested=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Unknown decision: $DECISION"
+            exit 1
+          fi
 
       - name: Post review complete comment
-        if: steps.ci_check.outputs.ci_status == 'success'
+        if: steps.ci_check.outputs.ci_status == 'success' && (success() || failure())
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.REVIEW_AGENT_TOKEN }}
           script: |
             const pr_number = context.payload.pull_request.number;
+
+            // Determine outcome based on execute_decision step
+            const mergeExecuted = '${{ steps.execute_decision.outputs.merge_executed }}' === 'true';
+            const changesRequested = '${{ steps.execute_decision.outputs.changes_requested }}' === 'true';
+            const executeStepConclusion = '${{ steps.execute_decision.conclusion }}';
+
+            let body;
+            if (executeStepConclusion === 'failure') {
+              body = '❌ **Review Agent**: Review failed to complete properly.\n\nManual intervention required. Check workflow logs for details.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
+            } else if (mergeExecuted) {
+              body = '✅ **Review Agent**: Code review complete - PR merged.\n\nNo blocking issues found. PR has been merged to release branch.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
+            } else if (changesRequested) {
+              body = '🔄 **Review Agent**: Changes requested.\n\nAcceptance failure sub-issues have been created. Check issue comments for details.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
+            } else {
+              body = '⚠️ **Review Agent**: Review completed with unknown outcome.\n\nCheck workflow logs for details.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
+            }
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: pr_number,
-              body: '✅ **Review Agent**: Code review complete.\n\nCheck comments above for merge decision or acceptance failure sub-issues.'
+              body: body
             });
