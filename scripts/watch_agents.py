@@ -396,6 +396,9 @@ def main():
             # Get and display workflow runs
             runs = get_workflow_runs(repo, str(args.issue) if args.issue else None)
 
+            # Filter out skipped workflows
+            runs = [r for r in runs if r.get('conclusion', '').lower() != 'skipped']
+
             if runs:
                 # Separate active and completed runs
                 active_runs = [r for r in runs if r.get('status') != 'completed']
