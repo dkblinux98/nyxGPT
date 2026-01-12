@@ -9,6 +9,12 @@ on:
     #   - "src/**/*.tsx"
     #   - "src/**/*.js"
     #   - "src/**/*.jsx"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review'
+        required: true
+        type: number
 
 jobs:
   claude-review:
@@ -17,7 +23,7 @@ jobs:
     #   github.event.pull_request.user.login == 'external-contributor' ||
     #   github.event.pull_request.user.login == 'new-developer' ||
     #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-    if: vars.CLAUDE_REVIEW_ENABLED == 'true'
+    if: vars.CLAUDE_REVIEW_ENABLED == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,13 +37,22 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Determine PR number
+        id: pr_number
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "pr=${{ inputs.pr_number }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "pr=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            Review PR #${{ github.event.pull_request.number }} according to the review-agent charter and runbook.
+            Review PR #${{ steps.pr_number.outputs.pr }} according to the review-agent charter and runbook.
 
             Perform comprehensive code review checking:
 
@@ -61,7 +76,7 @@ jobs:
             - Medium: significant bug risk, missing tests, broken contract, poor maintainability (MUST block merge)
             - Minor: style/nits, minor optimization opportunities (may proceed)
 
-            REQUIRED: Post your review as a PR comment using `gh pr comment` with this EXACT format:
+            REQUIRED: Post your review as a PR comment using `gh pr comment ${{ steps.pr_number.outputs.pr }} --body "<review>"` with this EXACT format:
 
             ## Code Review - [APPROVE|REQUEST_CHANGES]
 
