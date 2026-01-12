@@ -72,3 +72,65 @@ def test_api_sessions_list_and_get(api_base_url: str) -> None:
     assert isinstance(data["messages"], list)
     assert "meta" in data
     assert isinstance(data["meta"], dict)
+
+
+@pytest.mark.integration
+def test_api_config_get(api_base_url: str) -> None:
+    """Verify GET /api/v1/config returns expected configuration fields."""
+    r = httpx.get(f"{api_base_url}/api/v1/config", timeout=5.0)
+    assert r.status_code == 200
+    data = r.json()
+    assert isinstance(data, dict)
+    assert "ollama_base_url" in data
+    assert "default_model" in data
+    assert "rag_enabled" in data
+    assert "log_level" in data
+    assert isinstance(data["rag_enabled"], bool)
+    assert isinstance(data["log_level"], str)
+
+
+@pytest.mark.integration
+def test_api_config_post(api_base_url: str) -> None:
+    """Verify POST /api/v1/config updates configuration and returns updated values."""
+    # First get current config
+    r = httpx.get(f"{api_base_url}/api/v1/config", timeout=5.0)
+    assert r.status_code == 200
+    original_config = r.json()
+
+    # Update config with new values
+    update_payload = {
+        "log_level": "DEBUG",
+        "rag_enabled": not original_config["rag_enabled"],
+    }
+    r = httpx.post(
+        f"{api_base_url}/api/v1/config",
+        json=update_payload,
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert "updated" in data
+    assert "effective" in data
+    assert isinstance(data["updated"], list)
+    assert isinstance(data["effective"], dict)
+    assert data["effective"]["log_level"] == "DEBUG"
+    assert data["effective"]["rag_enabled"] == update_payload["rag_enabled"]
+
+    # Verify config persisted by fetching again
+    r = httpx.get(f"{api_base_url}/api/v1/config", timeout=5.0)
+    assert r.status_code == 200
+    current_config = r.json()
+    assert current_config["log_level"] == "DEBUG"
+    assert current_config["rag_enabled"] == update_payload["rag_enabled"]
+
+    # Restore original config
+    restore_payload = {
+        "log_level": original_config["log_level"],
+        "rag_enabled": original_config["rag_enabled"],
+    }
+    r = httpx.post(
+        f"{api_base_url}/api/v1/config",
+        json=restore_payload,
+        timeout=5.0,
+    )
+    assert r.status_code == 200
