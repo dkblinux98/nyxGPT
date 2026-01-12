@@ -79,6 +79,55 @@ export default function AdminPage() {
     loadModels();
   }, []);
 
+  // Keyboard navigation
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      // Ignore if user is typing in an input field
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT'
+      ) {
+        return;
+      }
+
+      switch (e.key) {
+        case 'ArrowLeft':
+          e.preventDefault();
+          goToPreviousStep();
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          // Only advance if validation passes
+          if (
+            currentStepIndex < steps.length - 1 &&
+            !(currentStep === 'model' && !formData.default_model)
+          ) {
+            goToNextStep();
+          }
+          break;
+        case 'Enter':
+          e.preventDefault();
+          // On summary page, trigger save if validation passes
+          if (currentStep === 'summary' && formData.default_model && !saving) {
+            handleSave();
+          }
+          // Otherwise advance to next step if validation passes
+          else if (
+            currentStepIndex < steps.length - 1 &&
+            !(currentStep === 'model' && !formData.default_model)
+          ) {
+            goToNextStep();
+          }
+          break;
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentStep, currentStepIndex, formData.default_model, saving]);
+
   async function testConnection() {
     setTestingConnection(true);
     setTestResult(null);
@@ -522,50 +571,55 @@ export default function AdminPage() {
       </div>
 
       {/* Navigation */}
-      <div style={{ marginTop: '2rem', display: 'flex', justifyContent: 'space-between' }}>
-        <button
-          onClick={goToPreviousStep}
-          disabled={currentStepIndex === 0}
-          style={{
-            padding: '10px 20px',
-            background: currentStepIndex === 0 ? '#ccc' : 'var(--muted)',
-            color: currentStepIndex === 0 ? '#999' : 'var(--foreground)',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            cursor: currentStepIndex === 0 ? 'not-allowed' : 'pointer',
-            fontSize: 14,
-            fontWeight: 600,
-          }}
-        >
-          ← Previous
-        </button>
-        <button
-          onClick={goToNextStep}
-          disabled={
-            currentStepIndex === steps.length - 1 ||
-            (currentStep === 'model' && !formData.default_model)
-          }
-          style={{
-            padding: '10px 20px',
-            background:
+      <div style={{ marginTop: '2rem' }}>
+        <div style={{ marginBottom: '0.5rem', textAlign: 'center', fontSize: 12, color: '#666' }}>
+          💡 Use arrow keys (← →) to navigate, Enter to advance or save
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <button
+            onClick={goToPreviousStep}
+            disabled={currentStepIndex === 0}
+            style={{
+              padding: '10px 20px',
+              background: currentStepIndex === 0 ? '#ccc' : 'var(--muted)',
+              color: currentStepIndex === 0 ? '#999' : 'var(--foreground)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              cursor: currentStepIndex === 0 ? 'not-allowed' : 'pointer',
+              fontSize: 14,
+              fontWeight: 600,
+            }}
+          >
+            ← Previous
+          </button>
+          <button
+            onClick={goToNextStep}
+            disabled={
               currentStepIndex === steps.length - 1 ||
               (currentStep === 'model' && !formData.default_model)
-                ? '#ccc'
-                : '#0066cc',
-            color: 'white',
-            border: 'none',
-            borderRadius: 6,
-            cursor:
-              currentStepIndex === steps.length - 1 ||
-              (currentStep === 'model' && !formData.default_model)
-                ? 'not-allowed'
-                : 'pointer',
-            fontSize: 14,
-            fontWeight: 600,
-          }}
-        >
-          Next →
-        </button>
+            }
+            style={{
+              padding: '10px 20px',
+              background:
+                currentStepIndex === steps.length - 1 ||
+                (currentStep === 'model' && !formData.default_model)
+                  ? '#ccc'
+                  : '#0066cc',
+              color: 'white',
+              border: 'none',
+              borderRadius: 6,
+              cursor:
+                currentStepIndex === steps.length - 1 ||
+                (currentStep === 'model' && !formData.default_model)
+                  ? 'not-allowed'
+                  : 'pointer',
+              fontSize: 14,
+              fontWeight: 600,
+            }}
+          >
+            Next →
+          </button>
+        </div>
       </div>
     </main>
   );
