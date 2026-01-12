@@ -13,6 +13,8 @@ type ConfigData = {
 
 type WizardStep = 'model' | 'rag' | 'api' | 'summary';
 
+const VALID_LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'] as const;
+
 export default function AdminPage() {
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -149,6 +151,13 @@ export default function AdminPage() {
     setSaveError(null);
     setSaveSuccess(false);
     try {
+      // Validate log_level before sending to backend
+      if (!VALID_LOG_LEVELS.includes(formData.log_level as any)) {
+        throw new Error(
+          `Invalid log level: ${formData.log_level}. Must be one of: ${VALID_LOG_LEVELS.join(', ')}`
+        );
+      }
+
       const res = await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

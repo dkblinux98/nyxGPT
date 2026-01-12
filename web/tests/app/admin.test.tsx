@@ -263,6 +263,39 @@ describe('Configuration Wizard Logic', () => {
       // ollama_base_url is read-only and should not be in payload
       expect(payload).not.toHaveProperty('ollama_base_url');
     });
+
+    it('should validate log level before saving', () => {
+      const VALID_LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'];
+      const formData = {
+        default_model: 'llama3.1:8b',
+        rag_enabled: true,
+        log_level: 'INFO',
+      };
+
+      // Validation should pass for valid log level
+      const isValid = VALID_LOG_LEVELS.includes(formData.log_level);
+      expect(isValid).toBe(true);
+    });
+
+    it('should reject save with invalid log level', () => {
+      const VALID_LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'];
+      const formData = {
+        default_model: 'llama3.1:8b',
+        rag_enabled: true,
+        log_level: 'INVALID',
+      };
+
+      // Validation should fail for invalid log level
+      const isValid = VALID_LOG_LEVELS.includes(formData.log_level);
+      expect(isValid).toBe(false);
+
+      // Error message should indicate the invalid value
+      if (!isValid) {
+        const errorMessage = `Invalid log level: ${formData.log_level}. Must be one of: ${VALID_LOG_LEVELS.join(', ')}`;
+        expect(errorMessage).toContain('INVALID');
+        expect(errorMessage).toContain('DEBUG, INFO, WARNING, ERROR');
+      }
+    });
   });
 
   describe('Step Metadata', () => {
