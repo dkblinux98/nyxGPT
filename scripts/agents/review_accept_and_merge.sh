@@ -35,11 +35,20 @@ require_cmd gh
 require_cmd jq
 require_cmd git
 
-base_branch="$(get_release_branch)"
-
 # Determine the PR head branch so we can clean it up locally too.
 pr_head_branch="$(gh pr view "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --json headRefName -q '.headRefName')"
 [[ -n "$pr_head_branch" ]] || _die "Could not determine PR head branch"
+
+# Determine base branch: parent feature branch for sub-issues, release branch for top-level issues
+# The PR's actual base branch is already set correctly, but we need this for local git hygiene
+if is_sub_issue "$ISSUE"; then
+  parent_issue="$(get_parent_issue "$ISSUE")"
+  base_branch="$(get_pr_branch_for_issue "$parent_issue")"
+  echo "[review] Sub-issue detected: merged to parent feature branch $base_branch (parent issue: #$parent_issue)" >&2
+else
+  base_branch="$(get_release_branch)"
+  echo "[review] Top-level issue: merged to release branch $base_branch" >&2
+fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "[dry-run] base_branch=$base_branch" >&2
