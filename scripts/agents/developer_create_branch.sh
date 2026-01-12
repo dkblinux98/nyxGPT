@@ -60,23 +60,37 @@ fi
 
 git fetch origin "$base_branch" >&2
 
-# Delete local branch if it exists
-if git show-ref --verify --quiet "refs/heads/${branch}"; then
-  echo "Local branch $branch already exists, deleting..." >&2
-  git branch -D "$branch" >&2 || true
-fi
-
-# Delete remote branch if it exists
+# Check if branch already exists remotely
+BRANCH_ACTION="created"
 if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-  echo "Remote branch $branch already exists, deleting..." >&2
-  git push origin --delete "$branch" >&2 || true
-fi
+  BRANCH_ACTION="reused"
+  echo "Remote branch $branch already exists, reusing it..." >&2
 
-# Create and push new branch
-git checkout -b "$branch" "origin/$base_branch" >&2
-git push -u origin "$branch" >&2
+  # Delete local branch if it exists
+  if git show-ref --verify --quiet "refs/heads/${branch}"; then
+    git branch -D "$branch" >&2 || true
+  fi
+
+  # Check out existing remote branch
+  git checkout -b "$branch" "origin/$branch" >&2
+else
+  echo "Creating new branch $branch from $base_branch..." >&2
+
+  # Delete local branch if it exists
+  if git show-ref --verify --quiet "refs/heads/${branch}"; then
+    git branch -D "$branch" >&2 || true
+  fi
+
+  # Create and push new branch
+  git checkout -b "$branch" "origin/$base_branch" >&2
+  git push -u origin "$branch" >&2
+fi
 
 # Optional breadcrumb on the issue (non-fatal)
-issue_comment "$ISSUE" "Developer branch created: \`${branch}\` (base: \`${base_branch}\`)." >/dev/null 2>&1 || true
+if [[ "$BRANCH_ACTION" == "reused" ]]; then
+  issue_comment "$ISSUE" "Developer branch reused: \`${branch}\` (existing PR will be updated)." >/dev/null 2>&1 || true
+else
+  issue_comment "$ISSUE" "Developer branch created: \`${branch}\` (base: \`${base_branch}\`)." >/dev/null 2>&1 || true
+fi
 
 echo "$branch"
