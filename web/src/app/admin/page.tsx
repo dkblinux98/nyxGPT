@@ -99,12 +99,15 @@ export default function AdminPage() {
       switch (e.key) {
         case 'ArrowLeft':
           e.preventDefault();
-          goToPreviousStep();
+          if (!saving) {
+            goToPreviousStep();
+          }
           break;
         case 'ArrowRight':
           e.preventDefault();
-          // Only advance if validation passes
+          // Only advance if validation passes and not saving
           if (
+            !saving &&
             currentStepIndex < steps.length - 1 &&
             !(currentStep === 'model' && !formData.default_model)
           ) {
@@ -117,8 +120,9 @@ export default function AdminPage() {
           if (currentStep === 'summary' && formData.default_model && !saving) {
             handleSave();
           }
-          // Otherwise advance to next step if validation passes
+          // Otherwise advance to next step if validation passes and not saving
           else if (
+            !saving &&
             currentStepIndex < steps.length - 1 &&
             !(currentStep === 'model' && !formData.default_model)
           ) {
@@ -286,7 +290,7 @@ export default function AdminPage() {
               <select
                 value={formData.default_model}
                 onChange={(e) => setFormData({ ...formData, default_model: e.target.value })}
-                disabled={loadingModels}
+                disabled={loadingModels || saving}
                 style={{
                   width: '100%',
                   padding: '10px 12px',
@@ -360,6 +364,7 @@ export default function AdminPage() {
                   type="checkbox"
                   checked={formData.rag_enabled}
                   onChange={(e) => setFormData({ ...formData, rag_enabled: e.target.checked })}
+                  disabled={saving}
                   style={{ width: 18, height: 18, cursor: 'pointer' }}
                 />
                 <div>
@@ -395,6 +400,7 @@ export default function AdminPage() {
               <select
                 value={formData.log_level}
                 onChange={(e) => setFormData({ ...formData, log_level: e.target.value })}
+                disabled={saving}
                 style={{
                   width: '100%',
                   padding: '10px 12px',
@@ -609,14 +615,14 @@ export default function AdminPage() {
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <button
             onClick={goToPreviousStep}
-            disabled={currentStepIndex === 0}
+            disabled={currentStepIndex === 0 || saving}
             style={{
               padding: '10px 20px',
-              background: currentStepIndex === 0 ? '#ccc' : 'var(--muted)',
-              color: currentStepIndex === 0 ? '#999' : 'var(--foreground)',
+              background: currentStepIndex === 0 || saving ? '#ccc' : 'var(--muted)',
+              color: currentStepIndex === 0 || saving ? '#999' : 'var(--foreground)',
               border: '1px solid var(--border)',
               borderRadius: 6,
-              cursor: currentStepIndex === 0 ? 'not-allowed' : 'pointer',
+              cursor: currentStepIndex === 0 || saving ? 'not-allowed' : 'pointer',
               fontSize: 14,
               fontWeight: 600,
             }}
@@ -627,13 +633,15 @@ export default function AdminPage() {
             onClick={goToNextStep}
             disabled={
               currentStepIndex === steps.length - 1 ||
-              (currentStep === 'model' && !formData.default_model)
+              (currentStep === 'model' && !formData.default_model) ||
+              saving
             }
             style={{
               padding: '10px 20px',
               background:
                 currentStepIndex === steps.length - 1 ||
-                (currentStep === 'model' && !formData.default_model)
+                (currentStep === 'model' && !formData.default_model) ||
+                saving
                   ? '#ccc'
                   : '#0066cc',
               color: 'white',
@@ -641,7 +649,8 @@ export default function AdminPage() {
               borderRadius: 6,
               cursor:
                 currentStepIndex === steps.length - 1 ||
-                (currentStep === 'model' && !formData.default_model)
+                (currentStep === 'model' && !formData.default_model) ||
+                saving
                   ? 'not-allowed'
                   : 'pointer',
               fontSize: 14,
