@@ -90,12 +90,10 @@ def test_api_config_get(api_base_url: str) -> None:
 
 
 @pytest.mark.integration
-def test_api_config_post(api_base_url: str) -> None:
+def test_api_config_post(api_base_url: str, restore_config: dict) -> None:
     """Verify POST /api/v1/config updates configuration and returns updated values."""
-    # First get current config
-    r = httpx.get(f"{api_base_url}/api/v1/config", timeout=5.0)
-    assert r.status_code == 200
-    original_config = r.json()
+    # restore_config fixture automatically saves and restores config state
+    original_config = restore_config
 
     # Update config with new values
     update_payload = {
@@ -123,14 +121,4 @@ def test_api_config_post(api_base_url: str) -> None:
     assert current_config["log_level"] == "DEBUG"
     assert current_config["rag_enabled"] == update_payload["rag_enabled"]
 
-    # Restore original config
-    restore_payload = {
-        "log_level": original_config["log_level"],
-        "rag_enabled": original_config["rag_enabled"],
-    }
-    r = httpx.post(
-        f"{api_base_url}/api/v1/config",
-        json=restore_payload,
-        timeout=5.0,
-    )
-    assert r.status_code == 200
+    # No manual cleanup needed - fixture handles restoration automatically
