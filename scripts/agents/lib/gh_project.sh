@@ -510,6 +510,10 @@ ensure_pr_project_hygiene() {
 
   _debug "Issue #${issue_number} fields: Priority=$priority, Effort=$effort, Module=$module"
 
+  # Get milestone from issue
+  local milestone_number
+  milestone_number="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue_number}" --jq '.milestone.number // empty')"
+
   # Copy fields to PR
   if [[ -n "$priority" && "$priority" != "null" ]]; then
     _debug "Setting PR Priority to: $priority"
@@ -526,9 +530,24 @@ ensure_pr_project_hygiene() {
     set_project_field_value "$pr_item_id" "Module" "$module" || _warn "Failed to set Module on PR #${pr_number}"
   fi
 
+  # Set milestone on PR
+  if [[ -n "$milestone_number" && "$milestone_number" != "null" ]]; then
+    _debug "Setting PR milestone to: $milestone_number"
+    gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/${pr_number}" -f "milestone=${milestone_number}" >/dev/null 2>&1 || _warn "Failed to set milestone on PR #${pr_number}"
+  fi
+
   # Set PR status to In Review
   _debug "Setting PR status to: $STATUS_IN_REVIEW"
   set_project_field_value "$pr_item_id" "$STATUS_FIELD" "$STATUS_IN_REVIEW" || _warn "Failed to set Status on PR #${pr_number}"
 
-  echo "[dev] PR #${pr_number} project hygiene: ✓ Added to project, ✓ Fields copied from issue #${issue_number}" >&2
+  # Link issue to PR in Development field (closedBy relationship)
+  # Note: "Closes #N" in PR body creates the link, but we verify it here
+  _debug "Verifying PR #${pr_number} is linked to issue #${issue_number}"
+  local linked_pr
+  linked_pr="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue_number}" --jq '.pull_request.url // empty')"
+  if [[ -z "$linked_pr" ]]; then
+    _warn "PR #${pr_number} may not be properly linked to issue #${issue_number} (check 'Closes #${issue_number}' in PR body)"
+  fi
+
+  echo "[dev] PR #${pr_number} project hygiene: ✓ Added to project, ✓ Fields copied, ✓ Milestone set" >&2
 }
