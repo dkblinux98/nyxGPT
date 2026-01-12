@@ -28,7 +28,6 @@ Each agent bot account needs a classic Personal Access Token with these scopes:
 | Secret Name | Description | Used By |
 |------------|-------------|---------|
 | `CLAUDE_CODE_OAUTH_TOKEN` | OAuth token for Claude Code action | developer_auto_implement.yml, review_agent_auto_review.yml, claude.yml, claude-code-review.yml |
-| `RELEASE_TRACKING_TOKEN` | Token for updating release tracking issue | add-to-release-issue-on-milestone.yml |
 
 ## Required Variables
 

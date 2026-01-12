@@ -366,17 +366,169 @@ create_sub_issue() {
   full_body="Parent: #${parent_issue}"$'\n\n'"${body_content}"
 
   # Create the issue
-  local new_issue_number
-  new_issue_number="$(gh issue create \
+  local issue_url new_issue_number
+  issue_url="$(gh issue create \
     --repo "${REPO_OWNER}/${REPO_NAME}" \
     --title "$title" \
-    --body "$full_body" \
-    --json number -q .number)"
+    --body "$full_body")"
 
-  [[ -n "$new_issue_number" ]] || _die "Failed to create sub-issue"
+  [[ -n "$issue_url" ]] || _die "Failed to create sub-issue"
+
+  # Extract issue number from URL (compatible with macOS grep)
+  new_issue_number="$(echo "$issue_url" | sed -n 's|.*/issues/\([0-9]*\)$|\1|p')"
+  [[ -n "$new_issue_number" ]] || _die "Failed to parse issue number from: $issue_url"
 
   # Add comment to parent linking to sub-issue
   issue_comment "$parent_issue" "Created sub-issue: #${new_issue_number}" || true
 
   echo "$new_issue_number"
+}
+
+# -------------------------
+# Sub-issue detection
+# -------------------------
+get_parent_issue() {
+  local issue="$1"
+  require_cmd gh
+
+  # Get issue body and check if it starts with "Parent: #N"
+  local body
+  body="$(gh issue view "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json body -q .body)"
+
+  # Extract parent issue number from "Parent: #N" at start of body
+  if [[ "$body" =~ ^Parent:\ \#([0-9]+) ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  return 1
+}
+
+is_sub_issue() {
+  local issue="$1"
+  get_parent_issue "$issue" >/dev/null 2>&1
+  return $?
+}
+
+get_pr_branch_for_issue() {
+  local issue="$1"
+  require_cmd gh
+  require_cmd jq
+
+  # Find PR that closes this issue
+  # Search for open PRs first, then closed PRs
+  local pr_number branch
+
+  # Try open PRs first
+  pr_number="$(gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --search "Closes #${issue}" --state open --json number -q '.[0].number // empty')"
+
+  # If no open PR, try closed/merged PRs
+  if [[ -z "$pr_number" ]]; then
+    pr_number="$(gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --search "Closes #${issue}" --state closed --json number -q '.[0].number // empty')"
+  fi
+
+  if [[ -z "$pr_number" ]]; then
+    _die "No PR found for issue #${issue}"
+  fi
+
+  # Get the branch name for this PR
+  branch="$(gh pr view "$pr_number" --repo "${REPO_OWNER}/${REPO_NAME}" --json headRefName -q .headRefName)"
+
+  if [[ -z "$branch" ]]; then
+    _die "Could not determine branch for PR #${pr_number} (issue #${issue})"
+  fi
+
+  echo "$branch"
+}
+
+# -------------------------
+# PR Project Hygiene
+# -------------------------
+ensure_pr_project_hygiene() {
+  local pr_number="$1" issue_number="$2"
+  require_cmd jq
+
+  _debug "Ensuring PR #${pr_number} project hygiene (parent issue: #${issue_number})"
+
+  # Add PR to project if not already there
+  local pr_item_id issue_item_id
+  pr_item_id="$(ensure_issue_in_project "$pr_number")"
+  [[ -n "$pr_item_id" && "$pr_item_id" != "null" ]] || _die "Failed to add PR #${pr_number} to project"
+  _debug "PR #${pr_number} project item ID: $pr_item_id"
+
+  # Get issue project item ID
+  issue_item_id="$(ensure_issue_in_project "$issue_number")"
+  [[ -n "$issue_item_id" && "$issue_item_id" != "null" ]] || _die "Issue #${issue_number} not in project"
+  _debug "Issue #${issue_number} project item ID: $issue_item_id"
+
+  # Get issue project field values
+  local project_id
+  project_id="$(get_project_id)"
+
+  local q_get_fields='query($project:ID!, $item:ID!) {
+    node(id:$project) {
+      ... on ProjectV2 {
+        item: items(first:1, after:null) {
+          nodes {
+            id
+            fieldValues(first:20) {
+              nodes {
+                __typename
+                ... on ProjectV2ItemFieldSingleSelectValue {
+                  field { ... on ProjectV2SingleSelectField { name } }
+                  name
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    projectItem: node(id:$item) {
+      ... on ProjectV2Item {
+        fieldValues(first:20) {
+          nodes {
+            __typename
+            ... on ProjectV2ItemFieldSingleSelectValue {
+              field { ... on ProjectV2SingleSelectField { name } }
+              name
+            }
+          }
+        }
+      }
+    }
+  }'
+
+  local resp
+  resp="$(graphql "$q_get_fields" -F project="$project_id" -F item="$issue_item_id")"
+
+  # Extract field values from issue
+  local priority effort module
+  priority="$(echo "$resp" | jq -r '.data.projectItem.fieldValues.nodes[] | select(.field.name == "Priority") | .name // empty')"
+  effort="$(echo "$resp" | jq -r '.data.projectItem.fieldValues.nodes[] | select(.field.name == "Effort") | .name // empty')"
+  module="$(echo "$resp" | jq -r '.data.projectItem.fieldValues.nodes[] | select(.field.name == "Module") | .name // empty')"
+
+  _debug "Issue #${issue_number} fields: Priority=$priority, Effort=$effort, Module=$module"
+
+  # Copy fields to PR
+  if [[ -n "$priority" && "$priority" != "null" ]]; then
+    _debug "Setting PR Priority to: $priority"
+    set_project_field_value "$pr_item_id" "Priority" "$priority" || _warn "Failed to set Priority on PR #${pr_number}"
+  fi
+
+  if [[ -n "$effort" && "$effort" != "null" ]]; then
+    _debug "Setting PR Effort to: $effort"
+    set_project_field_value "$pr_item_id" "Effort" "$effort" || _warn "Failed to set Effort on PR #${pr_number}"
+  fi
+
+  if [[ -n "$module" && "$module" != "null" ]]; then
+    _debug "Setting PR Module to: $module"
+    set_project_field_value "$pr_item_id" "Module" "$module" || _warn "Failed to set Module on PR #${pr_number}"
+  fi
+
+  # Set PR status to In Review
+  _debug "Setting PR status to: $STATUS_IN_REVIEW"
+  set_project_field_value "$pr_item_id" "$STATUS_FIELD" "$STATUS_IN_REVIEW" || _warn "Failed to set Status on PR #${pr_number}"
+
+  echo "[dev] PR #${pr_number} project hygiene: ✓ Added to project, ✓ Fields copied from issue #${issue_number}" >&2
 }

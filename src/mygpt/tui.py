@@ -30,11 +30,11 @@ log = logging.getLogger(__name__)
 # preventing memory issues from malformed streams.
 MARKER_BUFFER_FLUSH_THRESHOLD = 1000
 
-# Overflow threshold for when entire buffer is a potential partial marker.
-# This catches the edge case where the buffer consists entirely of characters
-# that match a marker prefix (e.g., all underscores) and prevents it from
-# growing beyond the maximum possible marker length.
-MARKER_BUFFER_OVERFLOW_THRESHOLD = 15
+# Overflow threshold for buffer safety valve. This is a conservative lower
+# threshold used when the entire buffer appears to be a potential partial
+# marker. Catching runaway buffers early (at 100 bytes) prevents excessive
+# memory buildup and output delays in edge cases with malformed streams.
+MARKER_BUFFER_OVERFLOW_THRESHOLD = 100
 
 
 class ChatOutput(Static):
@@ -559,9 +559,9 @@ class MyGPTTUI(App):
                                 )
                             except Exception as parse_err:
                                 log.warning(f"Failed to parse retry status: {parse_err}")
-
-                            # Remove the marker from buffer and continue
-                            buffer = buffer[:start_idx] + buffer[end_idx:]
+                            finally:
+                                # Always remove the marker from buffer (whether parsing succeeded or failed)
+                                buffer = buffer[:start_idx] + buffer[end_idx:]
 
                         # Check for RAG markers (existing functionality)
                         if "__RAG_START__" in buffer and "__RAG_END__" in buffer:
