@@ -283,6 +283,11 @@ The wizard updates your `~/.myGPT/config.ini` file with the following settings:
 
 Changes take effect immediately without requiring a service restart.
 
+**Prerequisites:**
+- FastAPI backend must be running (`mygpt ops install` or `mygpt ops restart api`)
+- If configuration fails to load, verify API is accessible at `http://127.0.0.1:8000/health`
+- See **Troubleshooting** section in docs/troubleshooting.md for common issues
+
 ---
 
 ### RAG (Retrieval-Augmented Generation) Controls
