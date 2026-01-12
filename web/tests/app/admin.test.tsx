@@ -1,11 +1,742 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import AdminPage from '../../src/app/admin/page';
 
 /**
  * Configuration Wizard Tests
  *
- * Tests for the admin configuration wizard logic.
- * These tests verify form validation, step navigation, and configuration updates.
+ * Tests for the admin configuration wizard component.
+ * These tests verify form validation, step navigation, component rendering,
+ * API integration, and error states.
  */
+
+describe('Configuration Wizard Component', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Mock fetch globally
+    global.fetch = vi.fn((url: string) => {
+      // Default mock responses
+      if (url === '/api/config') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            ollama_base_url: 'http://127.0.0.1:11434',
+            default_model: 'llama3.1:8b',
+            rag_enabled: false,
+            log_level: 'INFO',
+          }),
+        });
+      }
+      if (url === '/api/models') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ models: ['llama3.1:8b'] }),
+        });
+      }
+      return Promise.reject(new Error('Unknown URL'));
+    }) as any;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('Component Rendering', () => {
+    it('should render loading state initially', () => {
+      (global.fetch as any).mockImplementation(() =>
+        new Promise(() => {}) // Never resolves to keep loading state
+      );
+
+      render(<AdminPage />);
+      expect(screen.getByText('Loading configuration...')).toBeInTheDocument();
+    });
+
+    it('should render error state when config load fails', async () => {
+      (global.fetch as any).mockRejectedValue(new Error('HTTP 500'));
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Failed to load configuration')).toBeInTheDocument();
+        expect(screen.getByText('HTTP 500')).toBeInTheDocument();
+      });
+    });
+
+    it('should render wizard after successful config load', async () => {
+      (global.fetch as any).mockImplementation((url: string) => {
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ollama_base_url: 'http://127.0.0.1:11434',
+              default_model: 'llama3.1:8b',
+              rag_enabled: false,
+              log_level: 'INFO',
+            }),
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: ['llama3.1:8b', 'llama3.2:3b'] }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+        expect(screen.getByText('Model Selection')).toBeInTheDocument();
+      });
+    });
+
+    it('should render all wizard steps in progress indicator', async () => {
+      (global.fetch as any).mockImplementation((url: string) => {
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ollama_base_url: 'http://127.0.0.1:11434',
+              default_model: '',
+              rag_enabled: false,
+              log_level: 'INFO',
+            }),
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: [] }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Model Selection')).toBeInTheDocument();
+        expect(screen.getByText('Choose your default LLM model')).toBeInTheDocument();
+      });
+    });
+
+    it('should render model selection dropdown with available models', async () => {
+      const mockModels = ['llama3.1:8b', 'llama3.2:3b', 'mistral:7b'];
+      (global.fetch as any).mockImplementation((url: string) => {
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ollama_base_url: 'http://127.0.0.1:11434',
+              default_model: '',
+              rag_enabled: false,
+              log_level: 'INFO',
+            }),
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: mockModels }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        // Check that the dropdown contains the expected models
+        expect(screen.getByText('Select a model...')).toBeInTheDocument();
+        expect(screen.getByText('llama3.1:8b')).toBeInTheDocument();
+        expect(screen.getByText('llama3.2:3b')).toBeInTheDocument();
+        expect(screen.getByText('mistral:7b')).toBeInTheDocument();
+      });
+    });
+
+    it('should render Back to Chat link', async () => {
+      (global.fetch as any).mockImplementation((url: string) => {
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ollama_base_url: 'http://127.0.0.1:11434',
+              default_model: 'llama3.1:8b',
+              rag_enabled: false,
+              log_level: 'INFO',
+            }),
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: ['llama3.1:8b'] }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        const backLink = screen.getByRole('link', { name: /back to chat/i });
+        expect(backLink).toBeInTheDocument();
+        expect(backLink).toHaveAttribute('href', '/');
+      });
+    });
+  });
+
+  describe('User Interactions', () => {
+    it('should allow user to select a model', async () => {
+      (global.fetch as any).mockImplementation((url: string) => {
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ollama_base_url: 'http://127.0.0.1:11434',
+              default_model: '',
+              rag_enabled: false,
+              log_level: 'INFO',
+            }),
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: ['llama3.1:8b', 'llama3.2:3b'] }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Select Default Model')).toBeInTheDocument();
+      });
+
+      // Find the select element containing the placeholder text
+      const select = screen.getByRole('combobox');
+      fireEvent.change(select, { target: { value: 'llama3.1:8b' } });
+
+      expect(select).toHaveValue('llama3.1:8b');
+    });
+
+    it('should navigate to next step when Next button clicked', async () => {
+      (global.fetch as any).mockImplementation((url: string) => {
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ollama_base_url: 'http://127.0.0.1:11434',
+              default_model: 'llama3.1:8b',
+              rag_enabled: false,
+              log_level: 'INFO',
+            }),
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: ['llama3.1:8b'] }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Model Selection')).toBeInTheDocument();
+      });
+
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: /rag configuration/i })).toBeInTheDocument();
+      });
+    });
+
+    it('should navigate to previous step when Previous button clicked', async () => {
+      (global.fetch as any).mockImplementation((url: string) => {
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ollama_base_url: 'http://127.0.0.1:11434',
+              default_model: 'llama3.1:8b',
+              rag_enabled: false,
+              log_level: 'INFO',
+            }),
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: ['llama3.1:8b'] }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Model Selection')).toBeInTheDocument();
+      });
+
+      // Go to next step first
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: /rag configuration/i })).toBeInTheDocument();
+      });
+
+      // Go back
+      const previousButton = screen.getByRole('button', { name: /previous/i });
+      fireEvent.click(previousButton);
+
+      await waitFor(() => {
+        expect(screen.getByText('Model Selection')).toBeInTheDocument();
+      });
+    });
+
+    it('should toggle RAG checkbox', async () => {
+      (global.fetch as any).mockImplementation((url: string) => {
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ollama_base_url: 'http://127.0.0.1:11434',
+              default_model: 'llama3.1:8b',
+              rag_enabled: false,
+              log_level: 'INFO',
+            }),
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: ['llama3.1:8b'] }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Model Selection')).toBeInTheDocument();
+      });
+
+      // Navigate to RAG step
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+
+      await waitFor(() => {
+        const ragCheckbox = screen.getByRole('checkbox', { name: /enable rag/i });
+        expect(ragCheckbox).not.toBeChecked();
+        fireEvent.click(ragCheckbox);
+        expect(ragCheckbox).toBeChecked();
+      });
+    });
+
+    it('should test connection on API step', async () => {
+      (global.fetch as any).mockImplementation((url: string) => {
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ollama_base_url: 'http://127.0.0.1:11434',
+              default_model: 'llama3.1:8b',
+              rag_enabled: false,
+              log_level: 'INFO',
+            }),
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: ['llama3.1:8b'] }),
+          });
+        }
+        if (url === '/api/info') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ status: 'ok' }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Model Selection')).toBeInTheDocument();
+      });
+
+      // Navigate to API step
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton); // to RAG
+      await waitFor(() => screen.getByRole('heading', { name: /rag configuration/i }));
+      fireEvent.click(nextButton); // to API
+
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: /api settings/i })).toBeInTheDocument();
+      });
+
+      const testButton = screen.getByRole('button', { name: /test connection/i });
+      fireEvent.click(testButton);
+
+      await waitFor(() => {
+        expect(screen.getByText(/connection successful/i)).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('API Integration', () => {
+    it('should load config from API on mount', async () => {
+      const mockConfig = {
+        ollama_base_url: 'http://127.0.0.1:11434',
+        default_model: 'llama3.1:8b',
+        rag_enabled: true,
+        log_level: 'DEBUG',
+      };
+
+      (global.fetch as any).mockImplementation((url: string) => {
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => mockConfig,
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: ['llama3.1:8b'] }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith('/api/config');
+      });
+    });
+
+    it('should load models from API on mount', async () => {
+      (global.fetch as any).mockImplementation((url: string) => {
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ollama_base_url: 'http://127.0.0.1:11434',
+              default_model: '',
+              rag_enabled: false,
+              log_level: 'INFO',
+            }),
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: ['llama3.1:8b', 'mistral:7b'] }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith('/api/models');
+      });
+    });
+
+    it('should save configuration to API', async () => {
+      let savedConfig: any = null;
+
+      (global.fetch as any).mockImplementation((url: string, options?: any) => {
+        if (url === '/api/config' && options?.method === 'POST') {
+          savedConfig = JSON.parse(options.body);
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ success: true }),
+          });
+        }
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ollama_base_url: 'http://127.0.0.1:11434',
+              default_model: 'llama3.1:8b',
+              rag_enabled: false,
+              log_level: 'INFO',
+            }),
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: ['llama3.1:8b'] }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Model Selection')).toBeInTheDocument();
+      });
+
+      // Navigate to summary step
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton); // to RAG
+      await waitFor(() => screen.getByRole('heading', { name: /rag configuration/i }));
+      fireEvent.click(nextButton); // to API
+      await waitFor(() => screen.getByRole('heading', { name: /api settings/i }));
+      fireEvent.click(nextButton); // to Summary
+
+      await waitFor(() => {
+        expect(screen.getByText('Review Configuration')).toBeInTheDocument();
+      });
+
+      const saveButton = screen.getByRole('button', { name: /save configuration/i });
+      fireEvent.click(saveButton);
+
+      await waitFor(() => {
+        expect(savedConfig).toEqual({
+          default_model: 'llama3.1:8b',
+          rag_enabled: false,
+          log_level: 'INFO',
+        });
+      });
+    });
+
+    it('should show success message after saving', async () => {
+      (global.fetch as any).mockImplementation((url: string, options?: any) => {
+        if (url === '/api/config' && options?.method === 'POST') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ success: true }),
+          });
+        }
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ollama_base_url: 'http://127.0.0.1:11434',
+              default_model: 'llama3.1:8b',
+              rag_enabled: false,
+              log_level: 'INFO',
+            }),
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: ['llama3.1:8b'] }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Model Selection')).toBeInTheDocument();
+      });
+
+      // Navigate to summary and save
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+      await waitFor(() => screen.getByRole('heading', { name: /rag configuration/i }));
+      fireEvent.click(nextButton);
+      await waitFor(() => screen.getByRole('heading', { name: /api settings/i }));
+      fireEvent.click(nextButton);
+      await waitFor(() => screen.getByText('Review Configuration'));
+
+      const saveButton = screen.getByRole('button', { name: /save configuration/i });
+      fireEvent.click(saveButton);
+
+      await waitFor(() => {
+        expect(screen.getByText(/configuration saved successfully/i)).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Error Handling', () => {
+    it('should show error when config API fails', async () => {
+      (global.fetch as any).mockImplementation((url: string) => {
+        if (url === '/api/config') {
+          return Promise.reject(new Error('Network error'));
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: [] }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Failed to load configuration')).toBeInTheDocument();
+        expect(screen.getByText('Network error')).toBeInTheDocument();
+      });
+    });
+
+    it('should show error when save fails', async () => {
+      (global.fetch as any).mockImplementation((url: string, options?: any) => {
+        if (url === '/api/config' && options?.method === 'POST') {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            json: async () => ({ detail: 'Internal server error' }),
+          });
+        }
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ollama_base_url: 'http://127.0.0.1:11434',
+              default_model: 'llama3.1:8b',
+              rag_enabled: false,
+              log_level: 'INFO',
+            }),
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: ['llama3.1:8b'] }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Model Selection')).toBeInTheDocument();
+      });
+
+      // Navigate to summary and save
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+      await waitFor(() => screen.getByRole('heading', { name: /rag configuration/i }));
+      fireEvent.click(nextButton);
+      await waitFor(() => screen.getByRole('heading', { name: /api settings/i }));
+      fireEvent.click(nextButton);
+      await waitFor(() => screen.getByText('Review Configuration'));
+
+      const saveButton = screen.getByRole('button', { name: /save configuration/i });
+      fireEvent.click(saveButton);
+
+      await waitFor(() => {
+        expect(screen.getByText('Failed to save configuration')).toBeInTheDocument();
+        expect(screen.getByText('Internal server error')).toBeInTheDocument();
+      });
+    });
+
+    it('should show error when connection test fails', async () => {
+      (global.fetch as any).mockImplementation((url: string) => {
+        if (url === '/api/config') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              ollama_base_url: 'http://127.0.0.1:11434',
+              default_model: 'llama3.1:8b',
+              rag_enabled: false,
+              log_level: 'INFO',
+            }),
+          });
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: ['llama3.1:8b'] }),
+          });
+        }
+        if (url === '/api/info') {
+          return Promise.reject(new Error('Connection refused'));
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Model Selection')).toBeInTheDocument();
+      });
+
+      // Navigate to API step
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+      await waitFor(() => screen.getByRole('heading', { name: /rag configuration/i }));
+      fireEvent.click(nextButton);
+      await waitFor(() => screen.getByRole('heading', { name: /api settings/i }));
+
+      const testButton = screen.getByRole('button', { name: /test connection/i });
+      fireEvent.click(testButton);
+
+      await waitFor(() => {
+        expect(screen.getByText(/connection failed/i)).toBeInTheDocument();
+      });
+    });
+
+    it('should handle retry after config load failure', async () => {
+      let attempts = 0;
+      (global.fetch as any).mockImplementation((url: string) => {
+        attempts++;
+        if (url === '/api/config') {
+          if (attempts === 1) {
+            return Promise.reject(new Error('Network error'));
+          } else {
+            return Promise.resolve({
+              ok: true,
+              json: async () => ({
+                ollama_base_url: 'http://127.0.0.1:11434',
+                default_model: 'llama3.1:8b',
+                rag_enabled: false,
+                log_level: 'INFO',
+              }),
+            });
+          }
+        }
+        if (url === '/api/models') {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ models: ['llama3.1:8b'] }),
+          });
+        }
+        return Promise.reject(new Error('Unknown URL'));
+      });
+
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Failed to load configuration')).toBeInTheDocument();
+      });
+
+      const retryButton = screen.getByRole('button', { name: /retry/i });
+      fireEvent.click(retryButton);
+
+      await waitFor(() => {
+        expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+      });
+    });
+  });
+});
 
 describe('Configuration Wizard Logic', () => {
   beforeEach(() => {

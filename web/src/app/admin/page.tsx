@@ -79,54 +79,26 @@ export default function AdminPage() {
     loadModels();
   }, []);
 
-  // Keyboard navigation
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      // Ignore if user is typing in an input field
-      const target = e.target as HTMLElement;
-      if (
-        target.tagName === 'INPUT' ||
-        target.tagName === 'TEXTAREA' ||
-        target.tagName === 'SELECT'
-      ) {
-        return;
-      }
+  const steps: { id: WizardStep; label: string; description: string }[] = [
+    { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
+    { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
+    { id: 'api', label: 'API Settings', description: 'Configure logging and API settings' },
+    { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
+  ];
 
-      switch (e.key) {
-        case 'ArrowLeft':
-          e.preventDefault();
-          goToPreviousStep();
-          break;
-        case 'ArrowRight':
-          e.preventDefault();
-          // Only advance if validation passes
-          if (
-            currentStepIndex < steps.length - 1 &&
-            !(currentStep === 'model' && !formData.default_model)
-          ) {
-            goToNextStep();
-          }
-          break;
-        case 'Enter':
-          e.preventDefault();
-          // On summary page, trigger save if validation passes
-          if (currentStep === 'summary' && formData.default_model && !saving) {
-            handleSave();
-          }
-          // Otherwise advance to next step if validation passes
-          else if (
-            currentStepIndex < steps.length - 1 &&
-            !(currentStep === 'model' && !formData.default_model)
-          ) {
-            goToNextStep();
-          }
-          break;
-      }
+  const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
+
+  function goToNextStep() {
+    if (currentStepIndex < steps.length - 1) {
+      setCurrentStep(steps[currentStepIndex + 1].id);
     }
+  }
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentStep, currentStepIndex, formData.default_model, saving]);
+  function goToPreviousStep() {
+    if (currentStepIndex > 0) {
+      setCurrentStep(steps[currentStepIndex - 1].id);
+    }
+  }
 
   async function testConnection() {
     setTestingConnection(true);
@@ -175,26 +147,54 @@ export default function AdminPage() {
     }
   }
 
-  const steps: { id: WizardStep; label: string; description: string }[] = [
-    { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
-    { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
-    { id: 'api', label: 'API Settings', description: 'Configure logging and API settings' },
-    { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
-  ];
+  // Keyboard navigation
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      // Ignore if user is typing in an input field
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT'
+      ) {
+        return;
+      }
 
-  const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
-
-  function goToNextStep() {
-    if (currentStepIndex < steps.length - 1) {
-      setCurrentStep(steps[currentStepIndex + 1].id);
+      switch (e.key) {
+        case 'ArrowLeft':
+          e.preventDefault();
+          goToPreviousStep();
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          // Only advance if validation passes
+          if (
+            currentStepIndex < steps.length - 1 &&
+            !(currentStep === 'model' && !formData.default_model)
+          ) {
+            goToNextStep();
+          }
+          break;
+        case 'Enter':
+          e.preventDefault();
+          // On summary page, trigger save if validation passes
+          if (currentStep === 'summary' && formData.default_model && !saving) {
+            handleSave();
+          }
+          // Otherwise advance to next step if validation passes
+          else if (
+            currentStepIndex < steps.length - 1 &&
+            !(currentStep === 'model' && !formData.default_model)
+          ) {
+            goToNextStep();
+          }
+          break;
+      }
     }
-  }
 
-  function goToPreviousStep() {
-    if (currentStepIndex > 0) {
-      setCurrentStep(steps[currentStepIndex - 1].id);
-    }
-  }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentStep, currentStepIndex, formData.default_model, saving]);
 
   if (loading) {
     return (
