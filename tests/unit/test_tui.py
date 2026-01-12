@@ -1119,13 +1119,13 @@ async def test_stream_chat_malformed_marker_removed(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_stream_chat_buffer_flush_threshold_exceeded(tmp_path: Path) -> None:
-    """Test that buffers exceeding MARKER_BUFFER_FLUSH_THRESHOLD are flushed.
+    """Test that buffers exceeding MARKER_BUFFER_OVERFLOW_THRESHOLD are flushed.
 
-    Tests the scenario where buffer grows beyond the threshold (1000 chars) with
-    a potential partial marker. The implementation should flush the buffer to
+    Tests the scenario where buffer grows beyond the overflow threshold (100 chars)
+    with a potential partial marker. The implementation should flush the buffer to
     prevent unbounded memory growth, treating the content as regular text.
 
-    This tests the safeguard at tui.py:595.
+    This tests the safeguard at tui.py line 601 (safe_idx == 0 and len(buffer) > MARKER_BUFFER_OVERFLOW_THRESHOLD).
     """
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -1146,7 +1146,7 @@ async def test_stream_chat_buffer_flush_threshold_exceeded(tmp_path: Path) -> No
         # Send a very long chunk that starts with partial marker prefix
         # This simulates a malformed stream where marker never completes
         # and buffer grows beyond threshold
-        long_text = "__RETRY_" + ("x" * 1100)  # Exceeds MARKER_BUFFER_FLUSH_THRESHOLD (1000)
+        long_text = "__RETRY_" + ("x" * 1100)  # Exceeds MARKER_BUFFER_OVERFLOW_THRESHOLD (100)
         yield long_text
         yield " more text after flush"
 
@@ -1243,11 +1243,11 @@ async def test_stream_chat_mixed_partial_retry_and_rag_markers(tmp_path: Path) -
 async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
     """Test buffer overflow protection when entire buffer looks like partial marker.
 
-    Covers the buffer overflow logic in tui.py:595 where safe_idx == 0 and
-    len(buffer) > MARKER_BUFFER_FLUSH_THRESHOLD.
+    Covers the buffer overflow logic in tui.py line 601 where safe_idx == 0 and
+    len(buffer) > MARKER_BUFFER_OVERFLOW_THRESHOLD.
 
     Tests scenario where buffer contains only partial marker prefix that exceeds
-    the threshold (1000 bytes), triggering flush to prevent unbounded memory growth.
+    the overflow threshold (100 bytes), triggering flush to prevent unbounded memory growth.
     """
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -1265,10 +1265,10 @@ async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
     mock_response.raise_for_status = MagicMock()
 
     async def mock_aiter_text():
-        # Yield a partial marker prefix that exceeds MARKER_BUFFER_FLUSH_THRESHOLD
+        # Yield a partial marker prefix that exceeds MARKER_BUFFER_OVERFLOW_THRESHOLD
         # Use "__RETRY_START_" (15 chars with trailing underscore, NOT complete marker)
-        # Repeated 67 times = 1005 chars total (> 1000 threshold)
-        # This ensures safe_idx == 0 (entire buffer is partial prefix) and triggers line 595
+        # Repeated 67 times = 1005 chars total (> 100 overflow threshold)
+        # This ensures safe_idx == 0 (entire buffer is partial prefix) and triggers line 601
         yield "__RETRY_START_" * 67
         yield " done"
 
