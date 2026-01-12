@@ -112,6 +112,10 @@ def test_api_config_post(api_base_url: str) -> None:
     assert "updated" in data
     assert "effective" in data
     assert isinstance(data["updated"], list)
+    # Validate that updated field contains the names of fields that were updated
+    assert "log_level" in data["updated"], "log_level should be in updated field"
+    assert "rag_enabled" in data["updated"], "rag_enabled should be in updated field"
+    assert len(data["updated"]) == 2, "updated field should contain exactly 2 field names"
     assert isinstance(data["effective"], dict)
     assert data["effective"]["log_level"] == "DEBUG"
     assert data["effective"]["rag_enabled"] == update_payload["rag_enabled"]

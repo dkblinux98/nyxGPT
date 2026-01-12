@@ -613,7 +613,7 @@ def config_update(request: Request, payload: dict[str, Any] = Body(...)) -> dict
     request.state.cfg = load_config(None)
     cfg = _req_cfg(request)
     return {
-        "updated": changed,
+        "updated": list(changed.keys()),  # Return list of field names that were updated
         "effective": {
             "ollama_base_url": get_ollama_base_url(cfg),
             "default_model": get_default_model(cfg),
