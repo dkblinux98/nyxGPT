@@ -242,8 +242,8 @@ export default function AdminPage() {
       </div>
 
       {/* Progress Indicator */}
-      <div style={{ marginBottom: '2rem' }}>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+      <div style={{ marginBottom: '2rem' }} role="region" aria-label="Wizard progress">
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }} role="progressbar" aria-valuenow={currentStepIndex + 1} aria-valuemin={1} aria-valuemax={steps.length} aria-label={`Step ${currentStepIndex + 1} of ${steps.length}`}>
           {steps.map((step, idx) => (
             <div
               key={step.id}
@@ -253,10 +253,11 @@ export default function AdminPage() {
                 background: idx <= currentStepIndex ? '#0066cc' : '#e0e0e0',
                 borderRadius: 2,
               }}
+              aria-hidden="true"
             />
           ))}
         </div>
-        <div style={{ textAlign: 'center' }}>
+        <div style={{ textAlign: 'center' }} aria-live="polite" aria-atomic="true">
           <div style={{ fontWeight: 600, fontSize: 18, marginBottom: 4 }}>
             {steps[currentStepIndex].label}
           </div>
@@ -275,6 +276,8 @@ export default function AdminPage() {
           background: 'var(--background)',
           minHeight: 300,
         }}
+        role="region"
+        aria-label={`${steps[currentStepIndex].label} configuration`}
       >
         {currentStep === 'model' && (
           <div>
@@ -284,13 +287,17 @@ export default function AdminPage() {
             </p>
 
             <div style={{ marginBottom: '1.5rem' }}>
-              <label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14 }}>
+              <label htmlFor="default-model-select" style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14 }}>
                 Default Model
               </label>
               <select
+                id="default-model-select"
                 value={formData.default_model}
                 onChange={(e) => setFormData({ ...formData, default_model: e.target.value })}
                 disabled={loadingModels || saving}
+                aria-required="true"
+                aria-invalid={!formData.default_model}
+                aria-describedby={loadingModels ? 'models-loading' : modelsError ? 'models-error' : undefined}
                 style={{
                   width: '100%',
                   padding: '10px 12px',
@@ -309,12 +316,13 @@ export default function AdminPage() {
                 ))}
               </select>
               {loadingModels && (
-                <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+                <div id="models-loading" style={{ marginTop: 8, fontSize: 12, color: '#666' }} role="status" aria-live="polite">
                   Loading available models...
                 </div>
               )}
               {modelsError && (
                 <div
+                  id="models-error"
                   style={{
                     marginTop: 8,
                     padding: '10px 12px',
@@ -324,6 +332,7 @@ export default function AdminPage() {
                     color: 'var(--error-text)',
                     border: '1px solid #ffcccc',
                   }}
+                  role="alert"
                 >
                   ⚠️ Failed to load models: {modelsError}
                 </div>
@@ -349,6 +358,7 @@ export default function AdminPage() {
 
             <div style={{ marginBottom: '1.5rem' }}>
               <label
+                htmlFor="rag-enabled-checkbox"
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -361,15 +371,17 @@ export default function AdminPage() {
                 }}
               >
                 <input
+                  id="rag-enabled-checkbox"
                   type="checkbox"
                   checked={formData.rag_enabled}
                   onChange={(e) => setFormData({ ...formData, rag_enabled: e.target.checked })}
                   disabled={saving}
+                  aria-describedby="rag-description"
                   style={{ width: 18, height: 18, cursor: 'pointer' }}
                 />
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 14 }}>Enable RAG</div>
-                  <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+                  <div id="rag-description" style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
                     Use vector search to inject relevant context into conversations
                   </div>
                 </div>
@@ -394,13 +406,15 @@ export default function AdminPage() {
             </p>
 
             <div style={{ marginBottom: '1.5rem' }}>
-              <label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14 }}>
+              <label htmlFor="log-level-select" style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14 }}>
                 Log Level
               </label>
               <select
+                id="log-level-select"
                 value={formData.log_level}
                 onChange={(e) => setFormData({ ...formData, log_level: e.target.value })}
                 disabled={saving}
+                aria-label="Log level selection"
                 style={{
                   width: '100%',
                   padding: '10px 12px',
@@ -419,13 +433,16 @@ export default function AdminPage() {
             </div>
 
             <div style={{ marginBottom: '1.5rem' }}>
-              <label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14 }}>
+              <label htmlFor="ollama-base-url" style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14 }}>
                 Ollama Base URL
               </label>
               <input
+                id="ollama-base-url"
                 type="text"
                 value={formData.ollama_base_url}
                 readOnly
+                aria-readonly="true"
+                aria-describedby="ollama-url-hint"
                 style={{
                   width: '100%',
                   padding: '10px 12px',
@@ -437,7 +454,7 @@ export default function AdminPage() {
                   cursor: 'not-allowed',
                 }}
               />
-              <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+              <div id="ollama-url-hint" style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
                 Read-only. Edit in <code>~/.myGPT/config.ini</code> to change.
               </div>
             </div>
@@ -446,6 +463,8 @@ export default function AdminPage() {
               <button
                 onClick={testConnection}
                 disabled={testingConnection}
+                aria-busy={testingConnection}
+                aria-describedby={testResult ? 'connection-test-result' : undefined}
                 style={{
                   padding: '10px 20px',
                   background: testingConnection ? '#ccc' : '#0066cc',
@@ -461,6 +480,9 @@ export default function AdminPage() {
               </button>
               {testResult && (
                 <div
+                  id="connection-test-result"
+                  role={testResult.success ? 'status' : 'alert'}
+                  aria-live="polite"
                   style={{
                     marginTop: 10,
                     padding: '10px 12px',
@@ -534,6 +556,7 @@ export default function AdminPage() {
 
             {!formData.default_model && (
               <div
+                role="alert"
                 style={{
                   marginBottom: '1rem',
                   padding: '12px',
@@ -552,6 +575,8 @@ export default function AdminPage() {
               <button
                 onClick={handleSave}
                 disabled={saving || !formData.default_model}
+                aria-busy={saving}
+                aria-describedby={saveSuccess ? 'save-success' : saveError ? 'save-error' : undefined}
                 style={{
                   padding: '12px 24px',
                   background: saving || !formData.default_model ? '#ccc' : '#28a745',
@@ -569,6 +594,9 @@ export default function AdminPage() {
 
               {saveSuccess && (
                 <div
+                  id="save-success"
+                  role="status"
+                  aria-live="polite"
                   style={{
                     marginTop: 12,
                     padding: '12px 16px',
@@ -593,7 +621,7 @@ export default function AdminPage() {
               )}
 
               {saveError && (
-                <div style={{ marginTop: 12 }}>
+                <div id="save-error" style={{ marginTop: 12 }}>
                   <ErrorMessage
                     title="Failed to save configuration"
                     message={saveError}
@@ -608,14 +636,15 @@ export default function AdminPage() {
       </div>
 
       {/* Navigation */}
-      <div style={{ marginTop: '2rem' }}>
-        <div style={{ marginBottom: '0.5rem', textAlign: 'center', fontSize: 12, color: '#666' }}>
+      <nav style={{ marginTop: '2rem' }} aria-label="Wizard navigation">
+        <div style={{ marginBottom: '0.5rem', textAlign: 'center', fontSize: 12, color: '#666' }} role="note">
           💡 Use arrow keys (← →) to navigate, Enter to advance or save
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <button
             onClick={goToPreviousStep}
             disabled={currentStepIndex === 0 || saving}
+            aria-label={`Go to previous step: ${currentStepIndex > 0 ? steps[currentStepIndex - 1].label : ''}`}
             style={{
               padding: '10px 20px',
               background: currentStepIndex === 0 || saving ? '#ccc' : 'var(--muted)',
@@ -636,6 +665,7 @@ export default function AdminPage() {
               (currentStep === 'model' && !formData.default_model) ||
               saving
             }
+            aria-label={`Go to next step: ${currentStepIndex < steps.length - 1 ? steps[currentStepIndex + 1].label : ''}`}
             style={{
               padding: '10px 20px',
               background:
@@ -660,7 +690,7 @@ export default function AdminPage() {
             Next →
           </button>
         </div>
-      </div>
+      </nav>
     </main>
   );
 }
