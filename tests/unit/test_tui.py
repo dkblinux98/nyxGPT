@@ -1181,3 +1181,64 @@ async def test_stream_chat_mixed_partial_retry_and_rag_markers(tmp_path: Path) -
     # Verify response text was displayed
     text_calls = [c for c in append_calls if "Response text" in c]
     assert len(text_calls) > 0, "Response text should be displayed"
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_buffer_overflow_with_partial_marker(tmp_path: Path) -> None:
+    """Test buffer overflow scenario where partial marker exceeds MARKER_BUFFER_FLUSH_THRESHOLD.
+
+    Covers the buffer overflow logic in tui.py:595 where
+    safe_idx == 0 and len(buffer) > MARKER_BUFFER_FLUSH_THRESHOLD.
+
+    Tests scenario where buffer starts with a marker prefix but never completes,
+    and grows beyond the 1000-character threshold. The buffer should be flushed
+    as regular text to prevent unbounded memory growth.
+    """
+    from mygpt.tui import MARKER_BUFFER_FLUSH_THRESHOLD
+
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        # Create a chunk that starts with marker prefix but never completes
+        # and exceeds MARKER_BUFFER_FLUSH_THRESHOLD (1000 chars)
+        garbage = "X" * (MARKER_BUFFER_FLUSH_THRESHOLD + 100)
+        malformed_partial = f"__RETRY_{garbage}"
+
+        yield malformed_partial
+        yield "Normal text after overflow"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    append_calls = [str(call) for call in app.output.append.call_args_list]
+
+    # Verify the oversized buffer was flushed (not lost)
+    # The buffer should contain the malformed partial marker
+    overflow_calls = [c for c in append_calls if "__RETRY_" in c and "X" * 100 in c]
+    assert len(overflow_calls) > 0, "Oversized buffer should be flushed as regular text"
+
+    # Verify normal text after was displayed
+    text_calls = [c for c in append_calls if "Normal text after overflow" in c]
+    assert len(text_calls) > 0, "Text after overflow should be displayed"
