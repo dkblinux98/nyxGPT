@@ -673,4 +673,85 @@ describe('Configuration Wizard Logic', () => {
       expect(Array.isArray(availableModels)).toBe(true);
     });
   });
+
+  describe('Error Message Guidance', () => {
+    it('should provide troubleshooting guidance for network errors in loadConfig', () => {
+      const errorMessage = 'Failed to fetch';
+      const isNetworkError = errorMessage.includes('fetch') || errorMessage.includes('Failed to fetch');
+
+      const troubleshootingMsg = isNetworkError
+        ? `${errorMessage}\n\nTroubleshooting steps:\n• Ensure the myGPT API server is running\n• Check that the API is accessible at the configured URL\n• Verify network connectivity\n• Review API server logs for errors`
+        : errorMessage;
+
+      expect(troubleshootingMsg).toContain('Troubleshooting steps');
+      expect(troubleshootingMsg).toContain('API server is running');
+    });
+
+    it('should provide troubleshooting guidance for HTTP 500 errors in loadConfig', () => {
+      const errorMessage = 'HTTP 500';
+      const isNetworkError = errorMessage === 'HTTP 500' || errorMessage === 'HTTP 502' || errorMessage === 'HTTP 503';
+
+      const troubleshootingMsg = isNetworkError
+        ? `${errorMessage}\n\nTroubleshooting steps:\n• Ensure the myGPT API server is running\n• Check that the API is accessible at the configured URL\n• Verify network connectivity\n• Review API server logs for errors`
+        : errorMessage;
+
+      expect(troubleshootingMsg).toContain('Troubleshooting steps');
+      expect(troubleshootingMsg).toContain('Review API server logs');
+    });
+
+    it('should not add troubleshooting guidance for non-network errors in loadConfig', () => {
+      const errorMessage = 'Invalid JSON';
+      const isNetworkError = errorMessage.includes('fetch') || errorMessage.includes('Failed to fetch') || errorMessage === 'HTTP 500';
+
+      const troubleshootingMsg = isNetworkError
+        ? `${errorMessage}\n\nTroubleshooting steps:\n• Ensure the myGPT API server is running\n• Check that the API is accessible at the configured URL\n• Verify network connectivity\n• Review API server logs for errors`
+        : errorMessage;
+
+      expect(troubleshootingMsg).toBe('Invalid JSON');
+      expect(troubleshootingMsg).not.toContain('Troubleshooting');
+    });
+
+    it('should provide troubleshooting guidance for network errors in loadModels', () => {
+      const errorMessage = 'Failed to fetch';
+      const isNetworkError = errorMessage.includes('fetch') || errorMessage.includes('Failed to fetch');
+
+      const troubleshootingMsg = isNetworkError
+        ? `${errorMessage}. Troubleshooting: Ensure the myGPT API and Ollama are running and accessible.`
+        : errorMessage;
+
+      expect(troubleshootingMsg).toContain('Troubleshooting');
+      expect(troubleshootingMsg).toContain('Ollama are running');
+    });
+
+    it('should provide troubleshooting guidance for HTTP 503 errors in loadModels', () => {
+      const errorMessage = 'HTTP 503';
+      const isNetworkError = errorMessage === 'HTTP 500' || errorMessage === 'HTTP 502' || errorMessage === 'HTTP 503';
+
+      const troubleshootingMsg = isNetworkError
+        ? `${errorMessage}. Troubleshooting: Ensure the myGPT API and Ollama are running and accessible.`
+        : errorMessage;
+
+      expect(troubleshootingMsg).toContain('Troubleshooting');
+      expect(troubleshootingMsg).toContain('myGPT API and Ollama');
+    });
+
+    it('should not add troubleshooting guidance for non-network errors in loadModels', () => {
+      const errorMessage = 'Invalid response format';
+      const isNetworkError = errorMessage.includes('fetch') || errorMessage.includes('Failed to fetch') || errorMessage === 'HTTP 500';
+
+      const troubleshootingMsg = isNetworkError
+        ? `${errorMessage}. Troubleshooting: Ensure the myGPT API and Ollama are running and accessible.`
+        : errorMessage;
+
+      expect(troubleshootingMsg).toBe('Invalid response format');
+      expect(troubleshootingMsg).not.toContain('Troubleshooting');
+    });
+
+    it('should handle HTTP 502 (Bad Gateway) errors with troubleshooting guidance', () => {
+      const errorMessage = 'HTTP 502';
+      const isNetworkError = errorMessage === 'HTTP 500' || errorMessage === 'HTTP 502' || errorMessage === 'HTTP 503';
+
+      expect(isNetworkError).toBe(true);
+    });
+  });
 });

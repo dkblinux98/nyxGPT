@@ -54,7 +54,12 @@ export default function AdminPage() {
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      setConfigError(msg);
+      // Provide helpful troubleshooting guidance for API connection errors
+      const isNetworkError = msg.includes('fetch') || msg.includes('Failed to fetch') || msg === 'HTTP 500' || msg === 'HTTP 502' || msg === 'HTTP 503';
+      const troubleshootingMsg = isNetworkError
+        ? `${msg}\n\nTroubleshooting steps:\n• Ensure the myGPT API server is running\n• Check that the API is accessible at the configured URL\n• Verify network connectivity\n• Review API server logs for errors`
+        : msg;
+      setConfigError(troubleshootingMsg);
     } finally {
       setLoading(false);
     }
@@ -71,7 +76,12 @@ export default function AdminPage() {
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error('Failed to load models:', e);
-      setModelsError(msg);
+      // Provide helpful troubleshooting guidance for API connection errors
+      const isNetworkError = msg.includes('fetch') || msg.includes('Failed to fetch') || msg === 'HTTP 500' || msg === 'HTTP 502' || msg === 'HTTP 503';
+      const troubleshootingMsg = isNetworkError
+        ? `${msg}. Troubleshooting: Ensure the myGPT API and Ollama are running and accessible.`
+        : msg;
+      setModelsError(troubleshootingMsg);
       setAvailableModels([]);
     } finally {
       setLoadingModels(false);
