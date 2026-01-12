@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import socket
-from typing import Any
+from typing import Any, Generator
 from urllib.parse import urlparse
 
+import httpx
 import pytest
 
 from mygpt.config import load_config
@@ -55,3 +56,35 @@ def require_cassandra(cfg: Any) -> None:
 
     if not _can_connect(host, port, timeout=2.0):
         pytest.skip(f"Cassandra not reachable at {host}:{port}")
+
+
+@pytest.fixture
+def restore_config(api_base_url: str) -> Generator[dict[str, Any], None, None]:
+    """
+    Fixture that saves the current API config and restores it after the test.
+    Guarantees cleanup even if the test fails, preventing test state pollution.
+
+    Usage:
+        def test_something(api_base_url: str, restore_config: dict[str, Any]):
+            original = restore_config
+            # modify config...
+            # cleanup happens automatically
+    """
+    # Save original config
+    r = httpx.get(f"{api_base_url}/api/v1/config", timeout=5.0)
+    r.raise_for_status()
+    original = r.json()
+
+    yield original
+
+    # Restore original config (runs even if test fails)
+    restore_payload = {
+        "log_level": original["log_level"],
+        "rag_enabled": original["rag_enabled"],
+    }
+    r = httpx.post(
+        f"{api_base_url}/api/v1/config",
+        json=restore_payload,
+        timeout=5.0,
+    )
+    r.raise_for_status()
