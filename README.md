@@ -274,6 +274,9 @@ The web UI includes a step-by-step configuration wizard for easy system setup. A
 - Connection testing to verify API connectivity
 - Hot-reloadable settings (no service restart required)
 - Clear navigation between steps
+- **Keyboard shortcuts:**
+  - `←` / `→` - Navigate between steps
+  - `Enter` - Advance to next step or save configuration
 
 **Configuration Changes:**
 The wizard updates your `~/.myGPT/config.ini` file with the following settings:
@@ -282,6 +285,11 @@ The wizard updates your `~/.myGPT/config.ini` file with the following settings:
 - `log_level` - Logging verbosity (DEBUG, INFO, WARNING, ERROR)
 
 Changes take effect immediately without requiring a service restart.
+
+**Prerequisites:**
+- FastAPI backend must be running (`mygpt ops install` or `mygpt ops restart api`)
+- If configuration fails to load, verify API is accessible at `http://127.0.0.1:8000/health`
+- See **Troubleshooting** section in docs/troubleshooting.md for common issues
 
 ---
 
