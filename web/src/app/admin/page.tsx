@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
 
@@ -12,6 +12,13 @@ type ConfigData = {
 };
 
 type WizardStep = 'model' | 'rag' | 'api' | 'summary';
+
+const WIZARD_STEPS: { id: WizardStep; label: string; description: string }[] = [
+  { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
+  { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
+  { id: 'api', label: 'API Settings', description: 'Configure logging and API settings' },
+  { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
+];
 
 export default function AdminPage() {
   const [config, setConfig] = useState<ConfigData | null>(null);
@@ -79,55 +86,6 @@ export default function AdminPage() {
     loadModels();
   }, []);
 
-  // Keyboard navigation
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      // Ignore if user is typing in an input field
-      const target = e.target as HTMLElement;
-      if (
-        target.tagName === 'INPUT' ||
-        target.tagName === 'TEXTAREA' ||
-        target.tagName === 'SELECT'
-      ) {
-        return;
-      }
-
-      switch (e.key) {
-        case 'ArrowLeft':
-          e.preventDefault();
-          goToPreviousStep();
-          break;
-        case 'ArrowRight':
-          e.preventDefault();
-          // Only advance if validation passes
-          if (
-            currentStepIndex < steps.length - 1 &&
-            !(currentStep === 'model' && !formData.default_model)
-          ) {
-            goToNextStep();
-          }
-          break;
-        case 'Enter':
-          e.preventDefault();
-          // On summary page, trigger save if validation passes
-          if (currentStep === 'summary' && formData.default_model && !saving) {
-            handleSave();
-          }
-          // Otherwise advance to next step if validation passes
-          else if (
-            currentStepIndex < steps.length - 1 &&
-            !(currentStep === 'model' && !formData.default_model)
-          ) {
-            goToNextStep();
-          }
-          break;
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentStep, currentStepIndex, formData.default_model, saving]);
-
   async function testConnection() {
     setTestingConnection(true);
     setTestResult(null);
@@ -144,7 +102,7 @@ export default function AdminPage() {
     }
   }
 
-  async function handleSave() {
+  const handleSave = useCallback(async () => {
     setSaving(true);
     setSaveError(null);
     setSaveSuccess(false);
@@ -173,28 +131,70 @@ export default function AdminPage() {
     } finally {
       setSaving(false);
     }
-  }
+  }, [formData.default_model, formData.rag_enabled, formData.log_level]);
 
-  const steps: { id: WizardStep; label: string; description: string }[] = [
-    { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
-    { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
-    { id: 'api', label: 'API Settings', description: 'Configure logging and API settings' },
-    { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
-  ];
+  const currentStepIndex = WIZARD_STEPS.findIndex((s) => s.id === currentStep);
 
-  const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
-
-  function goToNextStep() {
-    if (currentStepIndex < steps.length - 1) {
-      setCurrentStep(steps[currentStepIndex + 1].id);
+  const goToNextStep = useCallback(() => {
+    if (currentStepIndex < WIZARD_STEPS.length - 1) {
+      setCurrentStep(WIZARD_STEPS[currentStepIndex + 1].id);
     }
-  }
+  }, [currentStepIndex]);
 
-  function goToPreviousStep() {
+  const goToPreviousStep = useCallback(() => {
     if (currentStepIndex > 0) {
-      setCurrentStep(steps[currentStepIndex - 1].id);
+      setCurrentStep(WIZARD_STEPS[currentStepIndex - 1].id);
     }
-  }
+  }, [currentStepIndex]);
+
+  // Keyboard navigation
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      // Ignore if user is typing in an input field
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT'
+      ) {
+        return;
+      }
+
+      switch (e.key) {
+        case 'ArrowLeft':
+          e.preventDefault();
+          goToPreviousStep();
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          // Only advance if validation passes
+          if (
+            currentStepIndex < WIZARD_STEPS.length - 1 &&
+            !(currentStep === 'model' && !formData.default_model)
+          ) {
+            goToNextStep();
+          }
+          break;
+        case 'Enter':
+          e.preventDefault();
+          // On summary page, trigger save if validation passes
+          if (currentStep === 'summary' && formData.default_model && !saving) {
+            handleSave();
+          }
+          // Otherwise advance to next step if validation passes
+          else if (
+            currentStepIndex < WIZARD_STEPS.length - 1 &&
+            !(currentStep === 'model' && !formData.default_model)
+          ) {
+            goToNextStep();
+          }
+          break;
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentStep, currentStepIndex, formData.default_model, saving, goToNextStep, goToPreviousStep, handleSave]);
 
   if (loading) {
     return (
@@ -232,7 +232,7 @@ export default function AdminPage() {
       {/* Progress Indicator */}
       <div style={{ marginBottom: '2rem' }}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-          {steps.map((step, idx) => (
+          {WIZARD_STEPS.map((step, idx) => (
             <div
               key={step.id}
               style={{
@@ -246,10 +246,10 @@ export default function AdminPage() {
         </div>
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontWeight: 600, fontSize: 18, marginBottom: 4 }}>
-            {steps[currentStepIndex].label}
+            {WIZARD_STEPS[currentStepIndex].label}
           </div>
           <div style={{ fontSize: 14, color: '#666' }}>
-            {steps[currentStepIndex].description}
+            {WIZARD_STEPS[currentStepIndex].description}
           </div>
         </div>
       </div>
@@ -595,13 +595,13 @@ export default function AdminPage() {
           <button
             onClick={goToNextStep}
             disabled={
-              currentStepIndex === steps.length - 1 ||
+              currentStepIndex === WIZARD_STEPS.length - 1 ||
               (currentStep === 'model' && !formData.default_model)
             }
             style={{
               padding: '10px 20px',
               background:
-                currentStepIndex === steps.length - 1 ||
+                currentStepIndex === WIZARD_STEPS.length - 1 ||
                 (currentStep === 'model' && !formData.default_model)
                   ? '#ccc'
                   : '#0066cc',
@@ -609,7 +609,7 @@ export default function AdminPage() {
               border: 'none',
               borderRadius: 6,
               cursor:
-                currentStepIndex === steps.length - 1 ||
+                currentStepIndex === WIZARD_STEPS.length - 1 ||
                 (currentStep === 'model' && !formData.default_model)
                   ? 'not-allowed'
                   : 'pointer',
