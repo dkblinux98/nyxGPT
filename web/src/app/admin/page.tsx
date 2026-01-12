@@ -13,6 +13,13 @@ type ConfigData = {
 
 type WizardStep = 'model' | 'rag' | 'api' | 'summary';
 
+const WIZARD_STEPS: { id: WizardStep; label: string; description: string }[] = [
+  { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
+  { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
+  { id: 'api', label: 'API Settings', description: 'Configure logging and API settings' },
+  { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
+];
+
 export default function AdminPage() {
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -79,6 +86,22 @@ export default function AdminPage() {
     loadModels();
   }, []);
 
+  const currentStepIndex = WIZARD_STEPS.findIndex((s) => s.id === currentStep);
+
+  function goToNextStep() {
+    const stepIndex = WIZARD_STEPS.findIndex((s) => s.id === currentStep);
+    if (stepIndex < WIZARD_STEPS.length - 1) {
+      setCurrentStep(WIZARD_STEPS[stepIndex + 1].id);
+    }
+  }
+
+  function goToPreviousStep() {
+    const stepIndex = WIZARD_STEPS.findIndex((s) => s.id === currentStep);
+    if (stepIndex > 0) {
+      setCurrentStep(WIZARD_STEPS[stepIndex - 1].id);
+    }
+  }
+
   // Keyboard navigation
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -92,6 +115,8 @@ export default function AdminPage() {
         return;
       }
 
+      const stepIndex = WIZARD_STEPS.findIndex((s) => s.id === currentStep);
+
       switch (e.key) {
         case 'ArrowLeft':
           e.preventDefault();
@@ -101,7 +126,7 @@ export default function AdminPage() {
           e.preventDefault();
           // Only advance if validation passes
           if (
-            currentStepIndex < steps.length - 1 &&
+            stepIndex < WIZARD_STEPS.length - 1 &&
             !(currentStep === 'model' && !formData.default_model)
           ) {
             goToNextStep();
@@ -115,7 +140,7 @@ export default function AdminPage() {
           }
           // Otherwise advance to next step if validation passes
           else if (
-            currentStepIndex < steps.length - 1 &&
+            stepIndex < WIZARD_STEPS.length - 1 &&
             !(currentStep === 'model' && !formData.default_model)
           ) {
             goToNextStep();
@@ -126,7 +151,7 @@ export default function AdminPage() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentStep, currentStepIndex, formData.default_model, saving]);
+  }, [currentStep, formData.default_model, saving]);
 
   async function testConnection() {
     setTestingConnection(true);
@@ -175,26 +200,6 @@ export default function AdminPage() {
     }
   }
 
-  const steps: { id: WizardStep; label: string; description: string }[] = [
-    { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
-    { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
-    { id: 'api', label: 'API Settings', description: 'Configure logging and API settings' },
-    { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
-  ];
-
-  const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
-
-  function goToNextStep() {
-    if (currentStepIndex < steps.length - 1) {
-      setCurrentStep(steps[currentStepIndex + 1].id);
-    }
-  }
-
-  function goToPreviousStep() {
-    if (currentStepIndex > 0) {
-      setCurrentStep(steps[currentStepIndex - 1].id);
-    }
-  }
 
   if (loading) {
     return (
@@ -232,7 +237,7 @@ export default function AdminPage() {
       {/* Progress Indicator */}
       <div style={{ marginBottom: '2rem' }}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-          {steps.map((step, idx) => (
+          {WIZARD_STEPS.map((step, idx) => (
             <div
               key={step.id}
               style={{
@@ -246,10 +251,10 @@ export default function AdminPage() {
         </div>
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontWeight: 600, fontSize: 18, marginBottom: 4 }}>
-            {steps[currentStepIndex].label}
+            {WIZARD_STEPS[currentStepIndex].label}
           </div>
           <div style={{ fontSize: 14, color: '#666' }}>
-            {steps[currentStepIndex].description}
+            {WIZARD_STEPS[currentStepIndex].description}
           </div>
         </div>
       </div>
@@ -595,13 +600,13 @@ export default function AdminPage() {
           <button
             onClick={goToNextStep}
             disabled={
-              currentStepIndex === steps.length - 1 ||
+              currentStepIndex === WIZARD_STEPS.length - 1 ||
               (currentStep === 'model' && !formData.default_model)
             }
             style={{
               padding: '10px 20px',
               background:
-                currentStepIndex === steps.length - 1 ||
+                currentStepIndex === WIZARD_STEPS.length - 1 ||
                 (currentStep === 'model' && !formData.default_model)
                   ? '#ccc'
                   : '#0066cc',
@@ -609,7 +614,7 @@ export default function AdminPage() {
               border: 'none',
               borderRadius: 6,
               cursor:
-                currentStepIndex === steps.length - 1 ||
+                currentStepIndex === WIZARD_STEPS.length - 1 ||
                 (currentStep === 'model' && !formData.default_model)
                   ? 'not-allowed'
                   : 'pointer',
