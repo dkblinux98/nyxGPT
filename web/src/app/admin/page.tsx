@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
 
@@ -36,6 +36,9 @@ export default function AdminPage() {
 
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
+
+  // Ref to track setTimeout ID for cleanup
+  const resetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   async function loadConfig() {
     setLoading(true);
@@ -79,6 +82,15 @@ export default function AdminPage() {
     loadModels();
   }, []);
 
+  // Cleanup timeout on component unmount
+  useEffect(() => {
+    return () => {
+      if (resetTimeoutRef.current) {
+        clearTimeout(resetTimeoutRef.current);
+      }
+    };
+  }, []);
+
   async function testConnection() {
     setTestingConnection(true);
     setTestResult(null);
@@ -118,7 +130,11 @@ export default function AdminPage() {
       setSaveSuccess(true);
       await loadConfig();
       // Reset wizard to first step after successful save
-      setTimeout(() => {
+      // Clear any existing timeout to prevent race conditions
+      if (resetTimeoutRef.current) {
+        clearTimeout(resetTimeoutRef.current);
+      }
+      resetTimeoutRef.current = setTimeout(() => {
         setSaveSuccess(false);
         setCurrentStep('model');
       }, 3000);
