@@ -89,29 +89,40 @@ fi
 gh pr merge "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --merge --delete-branch
 
 # ---- Local git hygiene ----
-# We merge via GitHub, so update the local checkout of the release branch.
-# Require a clean working tree to avoid clobbering local changes.
-if [[ -n "$(git status --porcelain)" ]]; then
-  _die "Working tree not clean; commit/stash your changes before running this script."
+# Skip in CI environments (GitHub Actions) - not needed for ephemeral runners
+if [[ "${CI:-false}" != "true" && "${GITHUB_ACTIONS:-false}" != "true" ]]; then
+  echo "[review] Performing local git cleanup..." >&2
+
+  # We merge via GitHub, so update the local checkout of the release branch.
+  # Require a clean working tree to avoid clobbering local changes.
+  if [[ -n "$(git status --porcelain)" ]]; then
+    _die "Working tree not clean; commit/stash your changes before running this script."
+  fi
+
+  # Make sure we are on the release branch and up to date with origin.
+  # Use ff-only to avoid surprise merges; if it fails, the user can resolve explicitly.
+  git fetch origin "$base_branch" >/dev/null 2>&1 || true
+
+  git checkout "$base_branch" >/dev/null 2>&1 || true
+
+  if ! git pull --ff-only origin "$base_branch"; then
+    _warn "Could not fast-forward local '$base_branch'. You may need to run: git pull --rebase origin $base_branch"
+    # Don't die - the merge already succeeded on GitHub
+  fi
+
+  # Delete the local feature branch if it exists (remote branch should already be deleted by --delete-branch).
+  if git show-ref --verify --quiet "refs/heads/${pr_head_branch}"; then
+    git branch -D "$pr_head_branch" >/dev/null 2>&1 || true
+  fi
+
+  echo "[review] Local git cleanup complete" >&2
+else
+  echo "[review] Skipping local git cleanup in CI environment" >&2
 fi
 
-# Make sure we are on the release branch and up to date with origin.
-# Use ff-only to avoid surprise merges; if it fails, the user can resolve explicitly.
-git fetch origin "$base_branch" >/dev/null 2>&1 || true
-
-git checkout "$base_branch" >/dev/null 2>&1 || true
-
-if ! git pull --ff-only origin "$base_branch"; then
-  _die "Could not fast-forward local '$base_branch'. Run: git pull --rebase origin $base_branch (or resolve divergence) and re-run local cleanup."
-fi
-
-# Delete the local feature branch if it exists (remote branch should already be deleted by --delete-branch).
-if git show-ref --verify --quiet "refs/heads/${pr_head_branch}"; then
-  git branch -D "$pr_head_branch" >/dev/null
-fi
-
-# Ensure remote branch is deleted (no-op if already deleted).
+# Ensure remote branch is deleted (no-op if already deleted by --delete-branch).
 if git ls-remote --exit-code --heads origin "$pr_head_branch" >/dev/null 2>&1; then
+  echo "[review] Remote branch $pr_head_branch still exists, deleting..." >&2
   git push origin --delete "$pr_head_branch" >/dev/null 2>&1 || true
 fi
 
