@@ -173,18 +173,45 @@ export default function AdminPage() {
     }
   }
 
+  /**
+   * Sanitizes a model name by:
+   * - Trimming whitespace
+   * - Removing any characters that are not alphanumeric, dots, colons, hyphens, or underscores
+   * - Limiting length to 200 characters
+   */
+  function sanitizeModelName(modelName: string): string {
+    return modelName
+      .trim()
+      .replace(/[^a-zA-Z0-9.:_-]/g, '')
+      .slice(0, 200);
+  }
+
+  /**
+   * Sanitizes log level by ensuring it's one of the valid values.
+   * Defaults to 'INFO' if invalid.
+   */
+  function sanitizeLogLevel(logLevel: string): string {
+    const validLevels = ['DEBUG', 'INFO', 'WARNING', 'ERROR'];
+    const sanitized = logLevel.trim().toUpperCase();
+    return validLevels.includes(sanitized) ? sanitized : 'INFO';
+  }
+
   async function handleSave() {
     setSaving(true);
     setSaveError(null);
     setSaveSuccess(false);
     try {
+      // Sanitize inputs before sending to backend
+      const sanitizedModel = sanitizeModelName(formData.default_model);
+      const sanitizedLogLevel = sanitizeLogLevel(formData.log_level);
+
       const res = await fetch('/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          default_model: formData.default_model,
+          default_model: sanitizedModel,
           rag_enabled: formData.rag_enabled,
-          log_level: formData.log_level,
+          log_level: sanitizedLogLevel,
         }),
       });
 
