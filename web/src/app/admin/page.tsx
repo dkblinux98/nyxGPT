@@ -117,7 +117,11 @@ export default function AdminPage() {
 
       setSaveSuccess(true);
       await loadConfig();
-      setTimeout(() => setSaveSuccess(false), 3000);
+      // Reset wizard to first step after successful save
+      setTimeout(() => {
+        setSaveSuccess(false);
+        setCurrentStep('model');
+      }, 3000);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setSaveError(msg);
@@ -493,16 +497,24 @@ export default function AdminPage() {
                 <div
                   style={{
                     marginTop: 12,
-                    padding: '10px 12px',
+                    padding: '12px 16px',
                     borderRadius: 6,
                     fontSize: 14,
                     background: 'var(--success-bg)',
                     color: 'var(--success-text)',
                     border: '1px solid #90ee90',
-                    textAlign: 'center',
                   }}
                 >
-                  ✓ Configuration saved successfully!
+                  <div style={{ fontWeight: 600, marginBottom: 8 }}>
+                    ✓ Configuration saved successfully!
+                  </div>
+                  <div style={{ fontSize: 13, opacity: 0.9 }}>
+                    Returning to first step... You can configure again or{' '}
+                    <a href="/" style={{ color: 'inherit', textDecoration: 'underline' }}>
+                      return to chat
+                    </a>
+                    .
+                  </div>
                 </div>
               )}
 

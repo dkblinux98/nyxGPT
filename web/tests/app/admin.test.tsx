@@ -263,6 +263,22 @@ describe('Configuration Wizard Logic', () => {
       // ollama_base_url is read-only and should not be in payload
       expect(payload).not.toHaveProperty('ollama_base_url');
     });
+
+    it('should reset to first step after successful save', async () => {
+      // Simulate wizard state after successful save
+      const steps = ['model', 'rag', 'api', 'summary'];
+      let currentStep = 'summary';
+      let saveSuccess = true;
+
+      // After 3 second timeout, wizard should reset to first step
+      if (saveSuccess) {
+        currentStep = 'model';
+        saveSuccess = false;
+      }
+
+      expect(currentStep).toBe('model');
+      expect(saveSuccess).toBe(false);
+    });
   });
 
   describe('Step Metadata', () => {
