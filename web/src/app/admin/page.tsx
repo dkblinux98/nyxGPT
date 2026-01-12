@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
 
@@ -83,59 +83,6 @@ export default function AdminPage() {
     loadModels();
   }, []);
 
-  // Keyboard navigation
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      // Ignore if user is typing in an input field
-      const target = e.target as HTMLElement;
-      if (
-        target.tagName === 'INPUT' ||
-        target.tagName === 'TEXTAREA' ||
-        target.tagName === 'SELECT'
-      ) {
-        return;
-      }
-
-      switch (e.key) {
-        case 'ArrowLeft':
-          e.preventDefault();
-          if (!saving) {
-            goToPreviousStep();
-          }
-          break;
-        case 'ArrowRight':
-          e.preventDefault();
-          // Only advance if validation passes and not saving
-          if (
-            !saving &&
-            currentStepIndex < steps.length - 1 &&
-            !(currentStep === 'model' && !formData.default_model)
-          ) {
-            goToNextStep();
-          }
-          break;
-        case 'Enter':
-          e.preventDefault();
-          // On summary page, trigger save if validation passes
-          if (currentStep === 'summary' && formData.default_model && !saving) {
-            handleSave();
-          }
-          // Otherwise advance to next step if validation passes and not saving
-          else if (
-            !saving &&
-            currentStepIndex < steps.length - 1 &&
-            !(currentStep === 'model' && !formData.default_model)
-          ) {
-            goToNextStep();
-          }
-          break;
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentStep, currentStepIndex, formData.default_model, saving]);
-
   async function testConnection() {
     setTestingConnection(true);
     setTestResult(null);
@@ -152,7 +99,7 @@ export default function AdminPage() {
     }
   }
 
-  async function handleSave() {
+  const handleSave = useCallback(async () => {
     setSaving(true);
     setSaveError(null);
     setSaveSuccess(false);
@@ -185,7 +132,7 @@ export default function AdminPage() {
     } finally {
       setSaving(false);
     }
-  }
+  }, [formData.default_model, formData.rag_enabled, formData.log_level]);
 
   const steps: { id: WizardStep; label: string; description: string }[] = [
     { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
@@ -207,6 +154,64 @@ export default function AdminPage() {
       setCurrentStep(steps[currentStepIndex - 1].id);
     }
   }
+
+  // Keyboard navigation - memoize handler to prevent multiple listener registrations
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      // Ignore if user is typing in an input field
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT'
+      ) {
+        return;
+      }
+
+      const stepIdx = steps.findIndex((s) => s.id === currentStep);
+
+      switch (e.key) {
+        case 'ArrowLeft':
+          e.preventDefault();
+          if (!saving && stepIdx > 0) {
+            setCurrentStep(steps[stepIdx - 1].id);
+          }
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          // Only advance if validation passes and not saving
+          if (
+            !saving &&
+            stepIdx < steps.length - 1 &&
+            !(currentStep === 'model' && !formData.default_model)
+          ) {
+            setCurrentStep(steps[stepIdx + 1].id);
+          }
+          break;
+        case 'Enter':
+          e.preventDefault();
+          // On summary page, trigger save if validation passes
+          if (currentStep === 'summary' && formData.default_model && !saving) {
+            handleSave();
+          }
+          // Otherwise advance to next step if validation passes and not saving
+          else if (
+            !saving &&
+            stepIdx < steps.length - 1 &&
+            !(currentStep === 'model' && !formData.default_model)
+          ) {
+            setCurrentStep(steps[stepIdx + 1].id);
+          }
+          break;
+      }
+    },
+    [currentStep, formData.default_model, saving, handleSave]
+  );
+
+  useEffect(() => {
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleKeyDown]);
 
   if (loading) {
     return (
