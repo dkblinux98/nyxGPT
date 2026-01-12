@@ -1,234 +1,362 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { http, HttpResponse } from 'msw';
+import { server } from '../mocks/server';
+import AdminPage from '../../src/app/admin/page';
 
 /**
  * Configuration Wizard Tests
  *
- * Tests for the admin configuration wizard logic.
- * These tests verify form validation, step navigation, and configuration updates.
+ * Comprehensive tests for the admin configuration wizard component.
+ * Tests cover component rendering, state management, API interactions,
+ * form validation, and complete user workflows.
  */
 
-describe('Configuration Wizard Logic', () => {
+describe('AdminPage Component', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  describe('Wizard Step Navigation', () => {
-    it('should start at model selection step', () => {
-      const steps = ['model', 'rag', 'api', 'summary'];
-      const currentStep = steps[0];
-      expect(currentStep).toBe('model');
+  describe('Component Rendering and Initial State', () => {
+    it('should render loading spinner on initial load', () => {
+      render(<AdminPage />);
+      expect(screen.getByRole('status')).toBeInTheDocument();
+      expect(screen.getByText('Loading configuration...')).toBeInTheDocument();
     });
 
-    it('should allow moving to next step', () => {
-      const steps = ['model', 'rag', 'api', 'summary'];
-      let currentStepIndex = 0;
+    it('should load and display configuration data', async () => {
+      server.use(
+        http.get('/api/config', () => {
+          return HttpResponse.json({
+            ollama_base_url: 'http://127.0.0.1:11434',
+            default_model: 'llama3.1:8b',
+            rag_enabled: false,
+            log_level: 'INFO',
+          });
+        })
+      );
 
-      currentStepIndex += 1;
+      render(<AdminPage />);
 
-      expect(steps[currentStepIndex]).toBe('rag');
+      await waitFor(() => {
+        expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+      });
+
+      expect(screen.getAllByText('Model Selection')[0]).toBeInTheDocument();
     });
 
-    it('should allow moving to previous step', () => {
-      const steps = ['model', 'rag', 'api', 'summary'];
-      let currentStepIndex = 2;
+    it('should display error message when config loading fails', async () => {
+      server.use(
+        http.get('/api/config', () => {
+          return HttpResponse.json(
+            { detail: 'Internal server error' },
+            { status: 500 }
+          );
+        })
+      );
 
-      currentStepIndex -= 1;
+      render(<AdminPage />);
 
-      expect(steps[currentStepIndex]).toBe('rag');
-    });
-
-    it('should not move before first step', () => {
-      const steps = ['model', 'rag', 'api', 'summary'];
-      let currentStepIndex = 0;
-
-      if (currentStepIndex > 0) {
-        currentStepIndex -= 1;
-      }
-
-      expect(currentStepIndex).toBe(0);
-    });
-
-    it('should not move past last step', () => {
-      const steps = ['model', 'rag', 'api', 'summary'];
-      let currentStepIndex = 3;
-
-      if (currentStepIndex < steps.length - 1) {
-        currentStepIndex += 1;
-      }
-
-      expect(currentStepIndex).toBe(3);
+      await waitFor(() => {
+        expect(screen.getByText('Failed to load configuration')).toBeInTheDocument();
+      });
     });
   });
 
-  describe('Form Validation', () => {
-    it('should validate model selection', () => {
-      const formData = {
-        default_model: 'llama3.1:8b',
-        rag_enabled: false,
-        log_level: 'INFO',
-      };
-
-      const isModelSelected = formData.default_model !== '';
-      expect(isModelSelected).toBe(true);
+  describe('Step Navigation', () => {
+    beforeEach(() => {
+      server.use(
+        http.get('/api/config', () => {
+          return HttpResponse.json({
+            ollama_base_url: 'http://127.0.0.1:11434',
+            default_model: 'llama3.1:8b',
+            rag_enabled: false,
+            log_level: 'INFO',
+          });
+        })
+      );
     });
 
-    it('should detect empty model selection', () => {
-      const formData = {
-        default_model: '',
-        rag_enabled: false,
-        log_level: 'INFO',
-      };
+    it('should start at model selection step', async () => {
+      render(<AdminPage />);
 
-      const isModelSelected = formData.default_model !== '';
-      expect(isModelSelected).toBe(false);
+      await waitFor(() => {
+        expect(screen.getAllByText('Model Selection')[0]).toBeInTheDocument();
+      });
+
+      expect(screen.getByText('Select Default Model')).toBeInTheDocument();
     });
 
-    it('should validate RAG enabled state', () => {
-      const formData = {
-        default_model: 'llama3.1:8b',
-        rag_enabled: true,
-        log_level: 'INFO',
-      };
+    it('should navigate to next step when Next button clicked', async () => {
+      const user = userEvent.setup();
+      render(<AdminPage />);
 
-      expect(typeof formData.rag_enabled).toBe('boolean');
-      expect(formData.rag_enabled).toBe(true);
+      await waitFor(() => {
+        expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+      });
+
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      await user.click(nextButton);
+
+      expect(screen.getAllByText('RAG Configuration').length).toBeGreaterThan(0);
+      expect(screen.getByText('Configure retrieval-augmented generation')).toBeInTheDocument();
     });
 
-    it('should validate log level selection', () => {
-      const validLogLevels = ['DEBUG', 'INFO', 'WARNING', 'ERROR'];
-      const formData = {
-        default_model: 'llama3.1:8b',
-        rag_enabled: false,
-        log_level: 'INFO',
-      };
+    it('should disable Previous button on first step', async () => {
+      render(<AdminPage />);
 
-      const isValidLogLevel = validLogLevels.includes(formData.log_level);
-      expect(isValidLogLevel).toBe(true);
+      await waitFor(() => {
+        expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+      });
+
+      const prevButton = screen.getByRole('button', { name: /previous/i });
+      expect(prevButton).toBeDisabled();
     });
 
-    it('should reject invalid log level', () => {
-      const validLogLevels = ['DEBUG', 'INFO', 'WARNING', 'ERROR'];
-      const invalidLogLevel = 'INVALID';
+    it('should disable Next button on last step', async () => {
+      const user = userEvent.setup();
+      render(<AdminPage />);
 
-      const isValidLogLevel = validLogLevels.includes(invalidLogLevel);
-      expect(isValidLogLevel).toBe(false);
-    });
-  });
+      await waitFor(() => {
+        expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+      });
 
-  describe('Configuration Data Structure', () => {
-    it('should have all required fields', () => {
-      const config = {
-        ollama_base_url: 'http://127.0.0.1:11434',
-        default_model: 'llama3.1:8b',
-        rag_enabled: false,
-        log_level: 'INFO',
-      };
+      // Navigate to last step (summary)
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      await user.click(nextButton); // RAG
+      await user.click(nextButton); // API
+      await user.click(nextButton); // Summary
 
-      expect(config).toHaveProperty('ollama_base_url');
-      expect(config).toHaveProperty('default_model');
-      expect(config).toHaveProperty('rag_enabled');
-      expect(config).toHaveProperty('log_level');
-    });
-
-    it('should have correct data types', () => {
-      const config = {
-        ollama_base_url: 'http://127.0.0.1:11434',
-        default_model: 'llama3.1:8b',
-        rag_enabled: false,
-        log_level: 'INFO',
-      };
-
-      expect(typeof config.ollama_base_url).toBe('string');
-      expect(typeof config.default_model).toBe('string');
-      expect(typeof config.rag_enabled).toBe('boolean');
-      expect(typeof config.log_level).toBe('string');
+      expect(screen.getAllByText('Summary')[0]).toBeInTheDocument();
+      expect(nextButton).toBeDisabled();
     });
   });
 
-  describe('Connection Testing', () => {
-    it('should return success result on successful connection', async () => {
-      // Mock successful API response
-      const mockResponse = { success: true, message: 'Connection successful!' };
+  describe('API Interactions', () => {
+    it('should handle connection test successfully', async () => {
+      server.use(
+        http.get('/api/config', () => {
+          return HttpResponse.json({
+            ollama_base_url: 'http://127.0.0.1:11434',
+            default_model: 'llama3.1:8b',
+            rag_enabled: false,
+            log_level: 'INFO',
+          });
+        }),
+        http.get('/api/info', () => {
+          return HttpResponse.json({ status: 'ok' });
+        })
+      );
 
-      expect(mockResponse.success).toBe(true);
-      expect(mockResponse.message).toContain('successful');
+      const user = userEvent.setup();
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+      });
+
+      // Navigate to API settings step
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      await user.click(nextButton); // RAG
+      await user.click(nextButton); // API
+
+      const testButton = screen.getByRole('button', { name: /test connection/i });
+      await user.click(testButton);
+
+      await waitFor(() => {
+        expect(screen.getByText(/connection successful/i)).toBeInTheDocument();
+      });
     });
 
-    it('should return failure result on failed connection', async () => {
-      // Mock failed API response
-      const mockResponse = { success: false, message: 'Connection failed: HTTP 500' };
+    it('should handle connection test failure', async () => {
+      server.use(
+        http.get('/api/config', () => {
+          return HttpResponse.json({
+            ollama_base_url: 'http://127.0.0.1:11434',
+            default_model: 'llama3.1:8b',
+            rag_enabled: false,
+            log_level: 'INFO',
+          });
+        }),
+        http.get('/api/info', () => {
+          return HttpResponse.json(
+            { detail: 'Service unavailable' },
+            { status: 503 }
+          );
+        })
+      );
 
-      expect(mockResponse.success).toBe(false);
-      expect(mockResponse.message).toContain('failed');
+      const user = userEvent.setup();
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+      });
+
+      // Navigate to API settings step
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      await user.click(nextButton); // RAG
+      await user.click(nextButton); // API
+
+      const testButton = screen.getByRole('button', { name: /test connection/i });
+      await user.click(testButton);
+
+      await waitFor(() => {
+        expect(screen.getByText(/connection failed/i)).toBeInTheDocument();
+      });
     });
   });
 
-  describe('Save Configuration', () => {
-    it('should prepare correct payload for save', () => {
-      const formData = {
-        ollama_base_url: 'http://127.0.0.1:11434',
-        default_model: 'llama3.1:8b',
-        rag_enabled: true,
-        log_level: 'DEBUG',
-      };
-
-      const payload = {
-        default_model: formData.default_model,
-        rag_enabled: formData.rag_enabled,
-        log_level: formData.log_level,
-      };
-
-      expect(payload).toHaveProperty('default_model');
-      expect(payload).toHaveProperty('rag_enabled');
-      expect(payload).toHaveProperty('log_level');
-      expect(payload).not.toHaveProperty('ollama_base_url');
+  describe('Configuration Save', () => {
+    beforeEach(() => {
+      server.use(
+        http.get('/api/config', () => {
+          return HttpResponse.json({
+            ollama_base_url: 'http://127.0.0.1:11434',
+            default_model: 'llama3.1:8b',
+            rag_enabled: false,
+            log_level: 'INFO',
+          });
+        })
+      );
     });
 
-    it('should exclude read-only fields from payload', () => {
-      const formData = {
-        ollama_base_url: 'http://127.0.0.1:11434',
-        default_model: 'llama3.1:8b',
-        rag_enabled: true,
-        log_level: 'DEBUG',
-      };
+    it('should save configuration successfully', async () => {
+      server.use(
+        http.post('/api/config', async ({ request }) => {
+          const body = await request.json();
+          expect(body).toHaveProperty('default_model');
+          expect(body).toHaveProperty('rag_enabled');
+          expect(body).toHaveProperty('log_level');
+          expect(body).not.toHaveProperty('ollama_base_url'); // Read-only field
+          return HttpResponse.json({ success: true });
+        })
+      );
 
-      const payload = {
-        default_model: formData.default_model,
-        rag_enabled: formData.rag_enabled,
-        log_level: formData.log_level,
-      };
+      const user = userEvent.setup();
+      render(<AdminPage />);
 
-      // ollama_base_url is read-only and should not be in payload
-      expect(payload).not.toHaveProperty('ollama_base_url');
+      await waitFor(() => {
+        expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+      });
+
+      // Navigate to summary step
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      await user.click(nextButton); // RAG
+      await user.click(nextButton); // API
+      await user.click(nextButton); // Summary
+
+      const saveButton = screen.getByRole('button', { name: /save configuration/i });
+      await user.click(saveButton);
+
+      await waitFor(() => {
+        expect(screen.getByText(/configuration saved successfully/i)).toBeInTheDocument();
+      });
+    });
+
+    it('should handle save failure', async () => {
+      server.use(
+        http.post('/api/config', () => {
+          return HttpResponse.json(
+            { detail: 'Validation error' },
+            { status: 400 }
+          );
+        })
+      );
+
+      const user = userEvent.setup();
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+      });
+
+      // Navigate to summary step
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      await user.click(nextButton); // RAG
+      await user.click(nextButton); // API
+      await user.click(nextButton); // Summary
+
+      const saveButton = screen.getByRole('button', { name: /save configuration/i });
+      await user.click(saveButton);
+
+      await waitFor(() => {
+        expect(screen.getByText('Failed to save configuration')).toBeInTheDocument();
+      });
     });
   });
 
-  describe('Step Metadata', () => {
-    it('should have correct step definitions', () => {
-      const steps = [
-        { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
-        { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
-        { id: 'api', label: 'API Settings', description: 'Configure logging and API settings' },
-        { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
-      ];
-
-      expect(steps).toHaveLength(4);
-      expect(steps[0].id).toBe('model');
-      expect(steps[3].id).toBe('summary');
+  describe('Form State Management', () => {
+    beforeEach(() => {
+      server.use(
+        http.get('/api/config', () => {
+          return HttpResponse.json({
+            ollama_base_url: 'http://127.0.0.1:11434',
+            default_model: 'llama3.1:8b',
+            rag_enabled: false,
+            log_level: 'INFO',
+          });
+        })
+      );
     });
 
-    it('should have progress indicator values', () => {
-      const steps = [
-        { id: 'model', label: 'Model Selection' },
-        { id: 'rag', label: 'RAG Configuration' },
-        { id: 'api', label: 'API Settings' },
-        { id: 'summary', label: 'Summary' },
-      ];
+    it('should toggle RAG enabled state', async () => {
+      const user = userEvent.setup();
+      render(<AdminPage />);
 
-      const currentStepIndex = 1;
-      const progressPercentage = ((currentStepIndex + 1) / steps.length) * 100;
+      await waitFor(() => {
+        expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+      });
 
-      expect(progressPercentage).toBe(50);
+      // Navigate to RAG step
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      await user.click(nextButton);
+
+      const ragCheckbox = screen.getByRole('checkbox', { name: /enable rag/i });
+      expect(ragCheckbox).not.toBeChecked();
+
+      await user.click(ragCheckbox);
+      expect(ragCheckbox).toBeChecked();
+    });
+  });
+
+  describe('Error Recovery', () => {
+    it('should allow retry when initial load fails', async () => {
+      let requestCount = 0;
+
+      server.use(
+        http.get('/api/config', () => {
+          requestCount++;
+          if (requestCount === 1) {
+            return HttpResponse.json(
+              { detail: 'Service unavailable' },
+              { status: 503 }
+            );
+          }
+          return HttpResponse.json({
+            ollama_base_url: 'http://127.0.0.1:11434',
+            default_model: 'llama3.1:8b',
+            rag_enabled: false,
+            log_level: 'INFO',
+          });
+        })
+      );
+
+      const user = userEvent.setup();
+      render(<AdminPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Failed to load configuration')).toBeInTheDocument();
+      });
+
+      const retryButton = screen.getByRole('button', { name: /retry/i });
+      await user.click(retryButton);
+
+      await waitFor(() => {
+        expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+        expect(screen.getAllByText('Model Selection')[0]).toBeInTheDocument();
+      });
     });
   });
 });

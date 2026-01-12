@@ -94,4 +94,34 @@ export const handlers = [
       },
     });
   }),
+
+  // GET /api/config
+  http.get('/api/config', () => {
+    return HttpResponse.json({
+      ollama_base_url: 'http://127.0.0.1:11434',
+      default_model: 'llama3.1:8b',
+      rag_enabled: false,
+      log_level: 'INFO',
+    });
+  }),
+
+  // POST /api/config
+  http.post('/api/config', () => {
+    return HttpResponse.json({ success: true });
+  }),
+
+  // GET /api/info
+  http.get('/api/info', () => {
+    return HttpResponse.json({
+      status: 'ok',
+      version: '1.0.0',
+    });
+  }),
+
+  // GET /api/models
+  http.get('/api/models', () => {
+    return HttpResponse.json({
+      models: ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b'],
+    });
+  }),
 ];
