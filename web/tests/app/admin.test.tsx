@@ -83,6 +83,68 @@ describe('Configuration Wizard Logic', () => {
       expect(isModelSelected).toBe(false);
     });
 
+    it('should disable Next button on model step when no model is selected', () => {
+      const formData = {
+        default_model: '',
+        rag_enabled: false,
+        log_level: 'INFO',
+      };
+      const currentStep = 'model';
+      const currentStepIndex = 0;
+      const totalSteps = 4;
+
+      // Next button should be disabled when on model step and no model selected
+      const isNextDisabled =
+        currentStepIndex === totalSteps - 1 ||
+        (currentStep === 'model' && !formData.default_model);
+
+      expect(isNextDisabled).toBe(true);
+    });
+
+    it('should enable Next button on model step when model is selected', () => {
+      const formData = {
+        default_model: 'llama3.1:8b',
+        rag_enabled: false,
+        log_level: 'INFO',
+      };
+      const currentStep = 'model';
+      const currentStepIndex = 0;
+      const totalSteps = 4;
+
+      // Next button should be enabled when on model step and model is selected
+      const isNextDisabled =
+        currentStepIndex === totalSteps - 1 ||
+        (currentStep === 'model' && !formData.default_model);
+
+      expect(isNextDisabled).toBe(false);
+    });
+
+    it('should disable Save button when default_model is empty', () => {
+      const formData = {
+        default_model: '',
+        rag_enabled: false,
+        log_level: 'INFO',
+      };
+      const saving = false;
+
+      const isSaveDisabled = saving || !formData.default_model;
+
+      expect(isSaveDisabled).toBe(true);
+    });
+
+    it('should enable Save button when default_model is set', () => {
+      const formData = {
+        default_model: 'llama3.1:8b',
+        rag_enabled: false,
+        log_level: 'INFO',
+      };
+      const saving = false;
+
+      const isSaveDisabled = saving || !formData.default_model;
+
+      expect(isSaveDisabled).toBe(false);
+    });
+
     it('should validate RAG enabled state', () => {
       const formData = {
         default_model: 'llama3.1:8b',
