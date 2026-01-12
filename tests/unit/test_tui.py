@@ -726,3 +726,111 @@ async def test_tui_action_pick_session_cancel(tmp_path: Path) -> None:
     # Verify output was NOT modified
     app.output.clear.assert_not_called()
     app.output.append.assert_not_called()
+
+
+# ============================================================================
+# MyGPTTUI Reconnection Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_with_retry_markers(tmp_path: Path) -> None:
+    """Test that retry markers are parsed and displayed correctly."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock prompt widget
+    app.prompt = MagicMock(spec=Input)
+
+    # Mock httpx AsyncClient with retry marker in stream
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        # Simulate retry marker followed by response
+        import json
+        retry_data = {"type": "retry_status", "attempt": 1, "delay": 1.5}
+        yield f'__RETRY_START__{json.dumps(retry_data)}__RETRY_END__'
+        yield "Hello"
+        yield " "
+        yield "World"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    # Verify reconnection message was displayed
+    append_calls = [str(call) for call in app.output.append.call_args_list]
+    reconnect_calls = [c for c in append_calls if "reconnecting" in c.lower()]
+    assert len(reconnect_calls) > 0
+
+    # Verify response text was also displayed
+    text_calls = [c for c in append_calls if "Hello" in c or "World" in c]
+    assert len(text_calls) > 0
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_with_rag_markers_ignored(tmp_path: Path) -> None:
+    """Test that RAG markers are filtered out in TUI."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock prompt widget
+    app.prompt = MagicMock(spec=Input)
+
+    # Mock httpx AsyncClient with RAG marker in stream
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        import json
+        rag_data = {"type": "rag_metadata", "chunks": []}
+        yield f'__RAG_START__{json.dumps(rag_data)}__RAG_END__'
+        yield "Response text"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    # Verify RAG marker was filtered out
+    append_calls = [str(call) for call in app.output.append.call_args_list]
+    rag_calls = [c for c in append_calls if "__RAG_START__" in c or "__RAG_END__" in c]
+    assert len(rag_calls) == 0
+
+    # Verify response text was displayed
+    text_calls = [c for c in append_calls if "Response text" in c]
+    assert len(text_calls) > 0

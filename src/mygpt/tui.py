@@ -513,9 +513,76 @@ class MyGPTTUI(App):
                     resp.raise_for_status()
                     # Optional label so it's obvious when assistant starts
                     self.output.append("Assistant: ")
+
+                    # Buffer for detecting special markers
+                    buffer = ""
                     async for chunk in resp.aiter_text():
-                        if chunk:
-                            self.output.append(chunk)
+                        if not chunk:
+                            continue
+
+                        buffer += chunk
+
+                        # Check for retry status markers
+                        while "__RETRY_START__" in buffer and "__RETRY_END__" in buffer:
+                            start_idx = buffer.index("__RETRY_START__")
+                            end_idx = buffer.index("__RETRY_END__") + len("__RETRY_END__")
+
+                            # Extract the marker content
+                            marker_content = buffer[start_idx:end_idx]
+
+                            # Parse retry status
+                            try:
+                                import json
+                                json_start = start_idx + len("__RETRY_START__")
+                                json_end = end_idx - len("__RETRY_END__")
+                                retry_json = buffer[json_start:json_end]
+                                retry_data = json.loads(retry_json)
+
+                                # Display reconnection status
+                                attempt = retry_data.get("attempt", "?")
+                                delay = retry_data.get("delay", "?")
+                                self.output.append(
+                                    f"\n[reconnecting] Connection lost. Retrying (attempt {attempt}) in {delay:.1f}s...\n"
+                                )
+                            except Exception as parse_err:
+                                log.warning(f"Failed to parse retry status: {parse_err}")
+
+                            # Remove the marker from buffer and continue
+                            buffer = buffer[:start_idx] + buffer[end_idx:]
+
+                        # Check for RAG markers (existing functionality)
+                        if "__RAG_START__" in buffer and "__RAG_END__" in buffer:
+                            start_idx = buffer.index("__RAG_START__")
+                            end_idx = buffer.index("__RAG_END__") + len("__RAG_END__")
+
+                            # Skip RAG markers in TUI (they're for WebUI)
+                            buffer = buffer[:start_idx] + buffer[end_idx:]
+
+                        # Yield any complete text that's not part of markers
+                        # Keep potential partial markers in buffer
+                        if buffer and "__RETRY_START__" not in buffer and "__RAG_START__" not in buffer:
+                            self.output.append(buffer)
+                            buffer = ""
+                        elif buffer:
+                            # Check if we might have a partial marker at the end
+                            safe_idx = len(buffer)
+                            for marker in ["__RETRY_START__", "__RAG_START__"]:
+                                for i in range(1, len(marker)):
+                                    if buffer.endswith(marker[:i]):
+                                        safe_idx = len(buffer) - i
+                                        break
+
+                            if safe_idx > 0 and safe_idx < len(buffer):
+                                self.output.append(buffer[:safe_idx])
+                                buffer = buffer[safe_idx:]
+                            elif safe_idx == len(buffer) and len(buffer) > 100:
+                                # If buffer is getting large without markers, flush it
+                                self.output.append(buffer)
+                                buffer = ""
+
+                    # Flush any remaining buffer
+                    if buffer:
+                        self.output.append(buffer)
 
             self.output.append("\n\n")
 
