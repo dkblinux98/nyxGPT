@@ -1119,13 +1119,13 @@ async def test_stream_chat_malformed_marker_removed(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_stream_chat_buffer_flush_threshold_exceeded(tmp_path: Path) -> None:
-    """Test that buffers exceeding MARKER_BUFFER_FLUSH_THRESHOLD are flushed.
+    """Test that buffers exceeding MARKER_BUFFER_OVERFLOW_THRESHOLD are flushed.
 
-    Tests the scenario where buffer grows beyond the threshold (1000 chars) with
+    Tests the scenario where buffer grows beyond the threshold (100 chars) with
     a potential partial marker. The implementation should flush the buffer to
     prevent unbounded memory growth, treating the content as regular text.
 
-    This tests the safeguard at tui.py:595.
+    This tests the safeguard at tui.py:601.
     """
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -1146,7 +1146,7 @@ async def test_stream_chat_buffer_flush_threshold_exceeded(tmp_path: Path) -> No
         # Send a very long chunk that starts with partial marker prefix
         # This simulates a malformed stream where marker never completes
         # and buffer grows beyond threshold
-        long_text = "__RETRY_" + ("x" * 1100)  # Exceeds MARKER_BUFFER_FLUSH_THRESHOLD (1000)
+        long_text = "__RETRY_" + ("x" * 110)  # Exceeds MARKER_BUFFER_OVERFLOW_THRESHOLD (100)
         yield long_text
         yield " more text after flush"
 
@@ -1265,9 +1265,9 @@ async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
     mock_response.raise_for_status = MagicMock()
 
     async def mock_aiter_text():
-        # Yield a partial marker prefix that exceeds MARKER_BUFFER_OVERFLOW_THRESHOLD (100 bytes)
+        # Yield a partial marker prefix that exceeds MARKER_BUFFER_OVERFLOW_THRESHOLD
         # Use "__RETRY_START_" (15 chars with trailing underscore, NOT complete marker)
-        # Repeated 7 times = 105 chars total (> 100 byte threshold)
+        # Repeated 7 times = 105 chars total (> 100 threshold)
         # This ensures safe_idx == 0 (entire buffer is partial prefix) and triggers line 601
         yield "__RETRY_START_" * 7
         yield " done"
