@@ -559,9 +559,9 @@ class MyGPTTUI(App):
                                 )
                             except Exception as parse_err:
                                 log.warning(f"Failed to parse retry status: {parse_err}")
-
-                            # Remove the marker from buffer and continue
-                            buffer = buffer[:start_idx] + buffer[end_idx:]
+                            finally:
+                                # Always remove the marker from buffer (whether parsing succeeded or failed)
+                                buffer = buffer[:start_idx] + buffer[end_idx:]
 
                         # Check for RAG markers (existing functionality)
                         if "__RAG_START__" in buffer and "__RAG_END__" in buffer:
