@@ -43,7 +43,25 @@ export default function AdminPage() {
     setConfigError(null);
     try {
       const res = await fetch('/api/config');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        // Try to parse error response with enhanced error info
+        try {
+          const errorData = await res.json();
+          if (errorData.error) {
+            const parts = [errorData.error.message];
+            if (errorData.error.suggestion) {
+              parts.push(errorData.error.suggestion);
+            }
+            if (errorData.error.api_url) {
+              parts.push(`API URL: ${errorData.error.api_url}`);
+            }
+            throw new Error(parts.join(' | '));
+          }
+        } catch (parseError) {
+          // If parsing fails, fall back to status code
+          throw new Error(`HTTP ${res.status}`);
+        }
+      }
       const data = await res.json();
       setConfig(data);
       setFormData({
@@ -65,7 +83,22 @@ export default function AdminPage() {
     setModelsError(null);
     try {
       const res = await fetch('/api/models');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        // Try to parse error response with enhanced error info
+        try {
+          const errorData = await res.json();
+          if (errorData.error) {
+            const parts = [errorData.error.message];
+            if (errorData.error.suggestion) {
+              parts.push(errorData.error.suggestion);
+            }
+            throw new Error(parts.join(' | '));
+          }
+        } catch (parseError) {
+          // If parsing fails, fall back to status code
+          throw new Error(`HTTP ${res.status}`);
+        }
+      }
       const data = await res.json();
       setAvailableModels(data.models || []);
     } catch (e: unknown) {
@@ -141,7 +174,22 @@ export default function AdminPage() {
     setTestResult(null);
     try {
       const res = await fetch('/api/info');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        // Try to parse error response with enhanced error info
+        try {
+          const errorData = await res.json();
+          if (errorData.error) {
+            const parts = [errorData.error.message];
+            if (errorData.error.suggestion) {
+              parts.push(errorData.error.suggestion);
+            }
+            throw new Error(parts.join(' | '));
+          }
+        } catch (parseError) {
+          // If parsing fails, fall back to status code
+          throw new Error(`HTTP ${res.status}`);
+        }
+      }
       await res.json();
       setTestResult({ success: true, message: 'Connection successful!' });
     } catch (e: unknown) {
@@ -168,8 +216,22 @@ export default function AdminPage() {
       });
 
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.detail || `HTTP ${res.status}`);
+        // Try to parse error response with enhanced error info
+        try {
+          const errorData = await res.json();
+          if (errorData.error) {
+            const parts = [errorData.error.message];
+            if (errorData.error.suggestion) {
+              parts.push(errorData.error.suggestion);
+            }
+            throw new Error(parts.join(' | '));
+          } else if (errorData.detail) {
+            throw new Error(errorData.detail);
+          }
+        } catch (parseError) {
+          // If parsing fails, fall back to status code
+          throw new Error(`HTTP ${res.status}`);
+        }
       }
 
       setSaveSuccess(true);

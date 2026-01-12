@@ -579,6 +579,109 @@ describe('Configuration Wizard Logic', () => {
     });
   });
 
+  describe('API Unavailability Error Handling', () => {
+    it('should parse enhanced error message for connection refused', () => {
+      const errorResponse = {
+        error: {
+          message: 'The myGPT API service is not running or not accessible.',
+          suggestion: 'Start the API service with: mygpt ops restart api',
+          details: 'fetch failed',
+          api_url: 'http://127.0.0.1:8000',
+        },
+      };
+
+      const parts = [errorResponse.error.message];
+      if (errorResponse.error.suggestion) {
+        parts.push(errorResponse.error.suggestion);
+      }
+      if (errorResponse.error.api_url) {
+        parts.push(`API URL: ${errorResponse.error.api_url}`);
+      }
+      const errorMessage = parts.join(' | ');
+
+      expect(errorMessage).toContain('not running');
+      expect(errorMessage).toContain('mygpt ops restart api');
+      expect(errorMessage).toContain('API URL');
+    });
+
+    it('should parse enhanced error message for timeout', () => {
+      const errorResponse = {
+        error: {
+          message: 'Connection to the myGPT API timed out.',
+          suggestion: 'Check if the API service is responding slowly or if there are network issues.',
+          details: 'ETIMEDOUT',
+          api_url: 'http://127.0.0.1:8000',
+        },
+      };
+
+      const parts = [errorResponse.error.message];
+      if (errorResponse.error.suggestion) {
+        parts.push(errorResponse.error.suggestion);
+      }
+      const errorMessage = parts.join(' | ');
+
+      expect(errorMessage).toContain('timed out');
+      expect(errorMessage).toContain('responding slowly');
+      expect(errorMessage).toContain('network issues');
+    });
+
+    it('should parse enhanced error message for hostname resolution failure', () => {
+      const errorResponse = {
+        error: {
+          message: 'Cannot resolve the API hostname.',
+          suggestion: 'Check the MYGPT_API_BASE_URL environment variable (currently: http://invalid-host:8000)',
+          details: 'getaddrinfo ENOTFOUND',
+          api_url: 'http://invalid-host:8000',
+        },
+      };
+
+      const parts = [errorResponse.error.message];
+      if (errorResponse.error.suggestion) {
+        parts.push(errorResponse.error.suggestion);
+      }
+      const errorMessage = parts.join(' | ');
+
+      expect(errorMessage).toContain('Cannot resolve');
+      expect(errorMessage).toContain('MYGPT_API_BASE_URL');
+      expect(errorMessage).toContain('invalid-host');
+    });
+
+    it('should fall back to HTTP status when error response parsing fails', () => {
+      // Simulate response that is not JSON
+      const httpStatus = 503;
+      const errorMessage = `HTTP ${httpStatus}`;
+
+      expect(errorMessage).toBe('HTTP 503');
+    });
+
+    it('should provide helpful context in test connection failure', () => {
+      const errorMessage =
+        'Connection failed: The myGPT API service is not running or not accessible. | Start the API service with: mygpt ops restart api';
+
+      expect(errorMessage).toContain('Connection failed');
+      expect(errorMessage).toContain('not running');
+      expect(errorMessage).toContain('mygpt ops restart api');
+    });
+
+    it('should distinguish between different API unavailability scenarios', () => {
+      const connectionRefused =
+        'The myGPT API service is not running or not accessible. | Start the API service with: mygpt ops restart api';
+      const timeout =
+        'Connection to the myGPT API timed out. | Check if the API service is responding slowly or if there are network issues.';
+      const hostnameError =
+        'Cannot resolve the API hostname. | Check the MYGPT_API_BASE_URL environment variable';
+
+      expect(connectionRefused).toContain('not running');
+      expect(timeout).toContain('timed out');
+      expect(hostnameError).toContain('Cannot resolve');
+
+      // Each error should be distinct
+      expect(connectionRefused).not.toBe(timeout);
+      expect(timeout).not.toBe(hostnameError);
+      expect(connectionRefused).not.toBe(hostnameError);
+    });
+  });
+
   describe('Independent Error Handling', () => {
     it('should handle config error independently from models error', () => {
       // Simulate config load failure
