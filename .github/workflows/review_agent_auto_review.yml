@@ -205,7 +205,7 @@ jobs:
             } > "$BODY_FILE"
 
             echo "Creating sub-issue: $TITLE"
-            bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_request_changes.sh '$ISSUE' \"\$TITLE\" '$BODY_FILE'"
+            bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_request_changes.sh '$ISSUE' '$TITLE' '$BODY_FILE'"
           done
 
       - name: Post completion comment
