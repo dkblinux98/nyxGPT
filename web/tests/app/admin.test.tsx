@@ -293,4 +293,165 @@ describe('Configuration Wizard Logic', () => {
       expect(progressPercentage).toBe(50);
     });
   });
+
+  describe('Input Sanitization', () => {
+    /**
+     * Sanitizes a model name by:
+     * - Trimming whitespace
+     * - Removing any characters that are not alphanumeric, dots, colons, hyphens, or underscores
+     * - Limiting length to 200 characters
+     */
+    function sanitizeModelName(modelName: string): string {
+      return modelName
+        .trim()
+        .replace(/[^a-zA-Z0-9.:_-]/g, '')
+        .slice(0, 200);
+    }
+
+    /**
+     * Sanitizes log level by ensuring it's one of the valid values.
+     * Defaults to 'INFO' if invalid.
+     */
+    function sanitizeLogLevel(logLevel: string): string {
+      const validLevels = ['DEBUG', 'INFO', 'WARNING', 'ERROR'];
+      const sanitized = logLevel.trim().toUpperCase();
+      return validLevels.includes(sanitized) ? sanitized : 'INFO';
+    }
+
+    describe('Model Name Sanitization', () => {
+      it('should trim whitespace from model name', () => {
+        expect(sanitizeModelName('  llama3.1:8b  ')).toBe('llama3.1:8b');
+      });
+
+      it('should allow valid characters (alphanumeric, dots, colons, hyphens, underscores)', () => {
+        expect(sanitizeModelName('llama3.1:8b-instruct_v2')).toBe('llama3.1:8b-instruct_v2');
+      });
+
+      it('should remove special characters and scripts', () => {
+        expect(sanitizeModelName('llama<script>alert("xss")</script>:8b')).toBe('llamascriptalertxssscript:8b');
+      });
+
+      it('should remove shell metacharacters', () => {
+        expect(sanitizeModelName('llama; rm -rf /')).toBe('llamarm-rf');
+      });
+
+      it('should remove SQL injection attempts', () => {
+        expect(sanitizeModelName("llama'; DROP TABLE users--")).toBe('llamaDROPTABLEusers--');
+      });
+
+      it('should limit model name length to 200 characters', () => {
+        const longName = 'a'.repeat(300);
+        expect(sanitizeModelName(longName)).toHaveLength(200);
+      });
+
+      it('should handle empty string', () => {
+        expect(sanitizeModelName('')).toBe('');
+      });
+
+      it('should remove newlines and tabs', () => {
+        expect(sanitizeModelName('llama\n3.1:\t8b')).toBe('llama3.1:8b');
+      });
+
+      it('should remove path traversal attempts', () => {
+        expect(sanitizeModelName('../../../etc/passwd')).toBe('......etcpasswd');
+      });
+    });
+
+    describe('Log Level Sanitization', () => {
+      it('should accept valid uppercase log levels', () => {
+        expect(sanitizeLogLevel('DEBUG')).toBe('DEBUG');
+        expect(sanitizeLogLevel('INFO')).toBe('INFO');
+        expect(sanitizeLogLevel('WARNING')).toBe('WARNING');
+        expect(sanitizeLogLevel('ERROR')).toBe('ERROR');
+      });
+
+      it('should convert lowercase to uppercase', () => {
+        expect(sanitizeLogLevel('debug')).toBe('DEBUG');
+        expect(sanitizeLogLevel('info')).toBe('INFO');
+      });
+
+      it('should convert mixed case to uppercase', () => {
+        expect(sanitizeLogLevel('DeBuG')).toBe('DEBUG');
+      });
+
+      it('should trim whitespace', () => {
+        expect(sanitizeLogLevel('  INFO  ')).toBe('INFO');
+      });
+
+      it('should default to INFO for invalid log levels', () => {
+        expect(sanitizeLogLevel('INVALID')).toBe('INFO');
+        expect(sanitizeLogLevel('TRACE')).toBe('INFO');
+        expect(sanitizeLogLevel('CRITICAL')).toBe('INFO');
+      });
+
+      it('should default to INFO for script injection attempts', () => {
+        expect(sanitizeLogLevel('<script>alert("xss")</script>')).toBe('INFO');
+      });
+
+      it('should default to INFO for empty string', () => {
+        expect(sanitizeLogLevel('')).toBe('INFO');
+      });
+
+      it('should default to INFO for SQL injection attempts', () => {
+        expect(sanitizeLogLevel("'; DROP TABLE logs--")).toBe('INFO');
+      });
+    });
+
+    describe('Sanitization in Save Flow', () => {
+      it('should sanitize model name before saving', () => {
+        const formData = {
+          default_model: '  llama3.1:8b  ',
+          rag_enabled: false,
+          log_level: 'INFO',
+        };
+
+        const sanitizedModel = sanitizeModelName(formData.default_model);
+        const payload = {
+          default_model: sanitizedModel,
+          rag_enabled: formData.rag_enabled,
+          log_level: formData.log_level,
+        };
+
+        expect(payload.default_model).toBe('llama3.1:8b');
+      });
+
+      it('should sanitize log level before saving', () => {
+        const formData = {
+          default_model: 'llama3.1:8b',
+          rag_enabled: false,
+          log_level: '  debug  ',
+        };
+
+        const sanitizedLogLevel = sanitizeLogLevel(formData.log_level);
+        const payload = {
+          default_model: formData.default_model,
+          rag_enabled: formData.rag_enabled,
+          log_level: sanitizedLogLevel,
+        };
+
+        expect(payload.log_level).toBe('DEBUG');
+      });
+
+      it('should sanitize both fields in save payload', () => {
+        const formData = {
+          default_model: '  llama<script>:8b  ',
+          rag_enabled: true,
+          log_level: 'invalid',
+        };
+
+        const sanitizedModel = sanitizeModelName(formData.default_model);
+        const sanitizedLogLevel = sanitizeLogLevel(formData.log_level);
+
+        const payload = {
+          default_model: sanitizedModel,
+          rag_enabled: formData.rag_enabled,
+          log_level: sanitizedLogLevel,
+        };
+
+        expect(payload.default_model).toBe('llamascript:8b');
+        expect(payload.log_level).toBe('INFO');
+        expect(payload.rag_enabled).toBe(true);
+      });
+    });
+  });
 });
