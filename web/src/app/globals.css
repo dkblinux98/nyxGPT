@@ -19,6 +19,12 @@
   --feedback-text: #ffffff;
   --error-bg: #fff5f5;
   --error-text: #c53030;
+  --success-bg: #f0fdf4;
+  --success-text: #15803d;
+  --info-bg: #eff6ff;
+  --code-bg: #f3f4f6;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
   --skeleton-base: #e5e5e5;
   --skeleton-shimmer: #f0f0f0;
 }
@@ -45,6 +51,12 @@
   --feedback-text: #000000;
   --error-bg: #2a1a1a;
   --error-text: #fc8181;
+  --success-bg: #1a2e1a;
+  --success-text: #86efac;
+  --info-bg: #1e293b;
+  --code-bg: #27272a;
+  --muted: #27272a;
+  --muted-foreground: #a1a1aa;
   --skeleton-base: #2a2a2a;
   --skeleton-shimmer: #333;
 }
