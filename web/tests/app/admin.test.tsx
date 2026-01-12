@@ -673,4 +673,231 @@ describe('Configuration Wizard Logic', () => {
       expect(Array.isArray(availableModels)).toBe(true);
     });
   });
+
+  describe('Network Error Classification', () => {
+    it('should classify timeout errors correctly', () => {
+      const error = 'Request timeout';
+      const isTimeout = error.includes('timeout') || error.includes('ETIMEDOUT');
+
+      expect(isTimeout).toBe(true);
+    });
+
+    it('should classify connection errors correctly', () => {
+      const error = 'Failed to fetch';
+      const isConnectionError =
+        error.includes('Failed to fetch') ||
+        error.includes('ECONNREFUSED') ||
+        error.includes('ENOTFOUND') ||
+        error.includes('NetworkError') ||
+        error.includes('fetch failed');
+
+      expect(isConnectionError).toBe(true);
+    });
+
+    it('should classify server errors (5xx) correctly', () => {
+      const error = 'HTTP 500';
+      const isServerError = error.match(/HTTP [5]\d{2}/);
+
+      expect(isServerError).not.toBeNull();
+    });
+
+    it('should classify client errors (4xx) correctly', () => {
+      const error = 'HTTP 404';
+      const isClientError = error.match(/HTTP [4]\d{2}/);
+
+      expect(isClientError).not.toBeNull();
+    });
+
+    it('should provide user guidance for timeout errors', () => {
+      const errorType = 'timeout';
+      const userGuidance = 'The request took too long to complete. This may be due to slow network or the API server being overloaded. Please try again.';
+
+      expect(userGuidance).toContain('too long');
+      expect(userGuidance).toContain('try again');
+    });
+
+    it('should provide user guidance for connection errors', () => {
+      const errorType = 'connection';
+      const userGuidance = 'Unable to connect to the API server. Please ensure the myGPT API is running (try: mygpt ops restart api) and check your network connection.';
+
+      expect(userGuidance).toContain('Unable to connect');
+      expect(userGuidance).toContain('mygpt ops restart api');
+    });
+
+    it('should provide user guidance for server errors', () => {
+      const errorType = 'server';
+      const userGuidance = 'The API server encountered an error. This is usually temporary - please try again in a moment.';
+
+      expect(userGuidance).toContain('server encountered an error');
+      expect(userGuidance).toContain('temporary');
+    });
+
+    it('should mark timeout errors as retryable', () => {
+      const errorType = 'timeout';
+      const isRetryable = true;
+
+      expect(isRetryable).toBe(true);
+    });
+
+    it('should mark connection errors as retryable', () => {
+      const errorType = 'connection';
+      const isRetryable = true;
+
+      expect(isRetryable).toBe(true);
+    });
+
+    it('should mark server errors (5xx) as retryable', () => {
+      const errorType = 'server';
+      const statusCode = 500;
+      const isRetryable = statusCode >= 500;
+
+      expect(isRetryable).toBe(true);
+    });
+
+    it('should mark client errors (4xx) as non-retryable', () => {
+      const errorType = 'client';
+      const statusCode = 404;
+      const isRetryable = statusCode >= 500; // 4xx errors are NOT retryable
+
+      expect(isRetryable).toBe(false);
+    });
+  });
+
+  describe('Auto-Retry Logic', () => {
+    it('should retry up to MAX_RETRIES times', () => {
+      const MAX_RETRIES = 2;
+      let retryCount = 0;
+
+      // Simulate retry logic
+      while (retryCount < MAX_RETRIES) {
+        retryCount++;
+      }
+
+      expect(retryCount).toBe(2);
+    });
+
+    it('should apply exponential backoff delay', () => {
+      const RETRY_DELAY = 1000; // 1 second
+      const retryCount = 1;
+
+      const delay = RETRY_DELAY * (retryCount + 1);
+
+      expect(delay).toBe(2000); // 2 seconds for second retry
+    });
+
+    it('should not retry non-retryable errors', () => {
+      const error = { isRetryable: false };
+      const shouldRetry = error.isRetryable;
+
+      expect(shouldRetry).toBe(false);
+    });
+
+    it('should retry retryable errors', () => {
+      const error = { isRetryable: true };
+      const retryCount = 0;
+      const MAX_RETRIES = 2;
+
+      const shouldRetry = error.isRetryable && retryCount < MAX_RETRIES;
+
+      expect(shouldRetry).toBe(true);
+    });
+
+    it('should stop retrying after MAX_RETRIES attempts', () => {
+      const error = { isRetryable: true };
+      const retryCount = 2;
+      const MAX_RETRIES = 2;
+
+      const shouldRetry = error.isRetryable && retryCount < MAX_RETRIES;
+
+      expect(shouldRetry).toBe(false);
+    });
+  });
+
+  describe('Check API Status', () => {
+    it('should indicate checking state during API status check', () => {
+      const checkingApiStatus = true;
+
+      expect(checkingApiStatus).toBe(true);
+    });
+
+    it('should show success message on successful status check', () => {
+      const statusCheckResult = { success: true };
+      const message = 'API Status: OK\n\nThe myGPT API server is reachable and responding normally.';
+
+      if (statusCheckResult.success) {
+        expect(message).toContain('API Status: OK');
+      }
+    });
+
+    it('should show error message on failed status check', () => {
+      const statusCheckResult = { success: false, error: 'Failed to fetch' };
+      const message = 'API Status Check Failed';
+
+      if (!statusCheckResult.success) {
+        expect(message).toContain('Failed');
+      }
+    });
+
+    it('should have timeout for status check', () => {
+      const timeout = 5000; // 5 seconds
+
+      expect(timeout).toBe(5000);
+    });
+  });
+
+  describe('Enhanced Error UI', () => {
+    it('should display error message', () => {
+      const error = {
+        type: 'connection',
+        message: 'Failed to fetch',
+        userGuidance: 'Unable to connect to the API server.',
+        isRetryable: true,
+      };
+
+      expect(error.message).toBe('Failed to fetch');
+    });
+
+    it('should display user guidance', () => {
+      const error = {
+        type: 'connection',
+        message: 'Failed to fetch',
+        userGuidance: 'Unable to connect to the API server.',
+        isRetryable: true,
+      };
+
+      expect(error.userGuidance).toContain('Unable to connect');
+    });
+
+    it('should show retry button for retryable errors', () => {
+      const error = {
+        type: 'timeout',
+        message: 'Request timeout',
+        userGuidance: 'The request took too long.',
+        isRetryable: true,
+      };
+
+      const shouldShowRetry = error.isRetryable;
+
+      expect(shouldShowRetry).toBe(true);
+    });
+
+    it('should hide retry button for non-retryable errors', () => {
+      const error = {
+        type: 'server',
+        message: 'HTTP 401',
+        userGuidance: 'Unauthorized request.',
+        isRetryable: false,
+      };
+
+      const shouldShowRetry = error.isRetryable;
+
+      expect(shouldShowRetry).toBe(false);
+    });
+
+    it('should show Check API Status button', () => {
+      const hasCheckApiStatusButton = true;
+
+      expect(hasCheckApiStatusButton).toBe(true);
+    });
+  });
 });

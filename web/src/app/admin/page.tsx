@@ -13,12 +13,21 @@ type ConfigData = {
 
 type WizardStep = 'model' | 'rag' | 'api' | 'summary';
 
+type NetworkErrorType = 'timeout' | 'connection' | 'server' | 'unknown';
+
+type NetworkError = {
+  type: NetworkErrorType;
+  message: string;
+  userGuidance: string;
+  isRetryable: boolean;
+};
+
 export default function AdminPage() {
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [configError, setConfigError] = useState<string | null>(null);
+  const [configError, setConfigError] = useState<NetworkError | null>(null);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<NetworkError | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   // Wizard state
@@ -36,13 +45,94 @@ export default function AdminPage() {
 
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
-  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [modelsError, setModelsError] = useState<NetworkError | null>(null);
+  const [checkingApiStatus, setCheckingApiStatus] = useState(false);
 
-  async function loadConfig() {
+  // Helper function to classify network errors with user-friendly guidance
+  function classifyNetworkError(error: unknown): NetworkError {
+    const errorString = error instanceof Error ? error.message : String(error);
+
+    // Check for timeout errors
+    if (errorString.includes('timeout') || errorString.includes('ETIMEDOUT')) {
+      return {
+        type: 'timeout',
+        message: errorString,
+        userGuidance: 'The request took too long to complete. This may be due to slow network or the API server being overloaded. Please try again.',
+        isRetryable: true,
+      };
+    }
+
+    // Check for connection errors
+    if (
+      errorString.includes('Failed to fetch') ||
+      errorString.includes('ECONNREFUSED') ||
+      errorString.includes('ENOTFOUND') ||
+      errorString.includes('NetworkError') ||
+      errorString.includes('fetch failed')
+    ) {
+      return {
+        type: 'connection',
+        message: errorString,
+        userGuidance: 'Unable to connect to the API server. Please ensure the myGPT API is running (try: mygpt ops restart api) and check your network connection.',
+        isRetryable: true,
+      };
+    }
+
+    // Check for HTTP server errors (5xx)
+    if (errorString.match(/HTTP [5]\d{2}/)) {
+      return {
+        type: 'server',
+        message: errorString,
+        userGuidance: 'The API server encountered an error. This is usually temporary - please try again in a moment.',
+        isRetryable: true,
+      };
+    }
+
+    // Check for HTTP client errors (4xx) - less likely to be transient
+    if (errorString.match(/HTTP [4]\d{2}/)) {
+      return {
+        type: 'server',
+        message: errorString,
+        userGuidance: 'The request was invalid or unauthorized. Please check the API configuration and try again.',
+        isRetryable: false,
+      };
+    }
+
+    // Unknown error
+    return {
+      type: 'unknown',
+      message: errorString,
+      userGuidance: 'An unexpected error occurred. Please check the browser console for details and try again.',
+      isRetryable: true,
+    };
+  }
+
+  async function checkApiStatus() {
+    setCheckingApiStatus(true);
+    try {
+      const res = await fetch('/api/info', { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) {
+        const error = classifyNetworkError(new Error(`HTTP ${res.status}`));
+        alert(`API Status Check Failed\n\nError: ${error.message}\n\nGuidance: ${error.userGuidance}`);
+      } else {
+        alert('API Status: OK\n\nThe myGPT API server is reachable and responding normally.');
+      }
+    } catch (e: unknown) {
+      const error = classifyNetworkError(e);
+      alert(`API Status Check Failed\n\nError: ${error.message}\n\nGuidance: ${error.userGuidance}`);
+    } finally {
+      setCheckingApiStatus(false);
+    }
+  }
+
+  async function loadConfig(retryCount = 0) {
+    const MAX_RETRIES = 2;
+    const RETRY_DELAY = 1000; // 1 second
+
     setLoading(true);
     setConfigError(null);
     try {
-      const res = await fetch('/api/config');
+      const res = await fetch('/api/config', { signal: AbortSignal.timeout(10000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setConfig(data);
@@ -53,25 +143,44 @@ export default function AdminPage() {
         log_level: data.log_level || 'INFO',
       });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setConfigError(msg);
+      const error = classifyNetworkError(e);
+
+      // Auto-retry for transient failures
+      if (error.isRetryable && retryCount < MAX_RETRIES) {
+        console.log(`Retrying config load (attempt ${retryCount + 1}/${MAX_RETRIES})...`);
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * (retryCount + 1)));
+        return loadConfig(retryCount + 1);
+      }
+
+      setConfigError(error);
     } finally {
       setLoading(false);
     }
   }
 
-  async function loadModels() {
+  async function loadModels(retryCount = 0) {
+    const MAX_RETRIES = 2;
+    const RETRY_DELAY = 1000; // 1 second
+
     setLoadingModels(true);
     setModelsError(null);
     try {
-      const res = await fetch('/api/models');
+      const res = await fetch('/api/models', { signal: AbortSignal.timeout(10000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setAvailableModels(data.models || []);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const error = classifyNetworkError(e);
       console.error('Failed to load models:', e);
-      setModelsError(msg);
+
+      // Auto-retry for transient failures
+      if (error.isRetryable && retryCount < MAX_RETRIES) {
+        console.log(`Retrying models load (attempt ${retryCount + 1}/${MAX_RETRIES})...`);
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * (retryCount + 1)));
+        return loadModels(retryCount + 1);
+      }
+
+      setModelsError(error);
       setAvailableModels([]);
     } finally {
       setLoadingModels(false);
@@ -152,7 +261,10 @@ export default function AdminPage() {
     }
   }
 
-  async function handleSave() {
+  async function handleSave(retryCount = 0) {
+    const MAX_RETRIES = 2;
+    const RETRY_DELAY = 1000; // 1 second
+
     setSaving(true);
     setSaveError(null);
     setSaveSuccess(false);
@@ -165,6 +277,7 @@ export default function AdminPage() {
           rag_enabled: formData.rag_enabled,
           log_level: formData.log_level,
         }),
+        signal: AbortSignal.timeout(10000),
       });
 
       if (!res.ok) {
@@ -180,8 +293,16 @@ export default function AdminPage() {
         setCurrentStep('model');
       }, 3000);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setSaveError(msg);
+      const error = classifyNetworkError(e);
+
+      // Auto-retry for transient failures
+      if (error.isRetryable && retryCount < MAX_RETRIES) {
+        console.log(`Retrying config save (attempt ${retryCount + 1}/${MAX_RETRIES})...`);
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * (retryCount + 1)));
+        return handleSave(retryCount + 1);
+      }
+
+      setSaveError(error);
     } finally {
       setSaving(false);
     }
@@ -222,12 +343,41 @@ export default function AdminPage() {
     return (
       <main style={{ padding: '2rem', maxWidth: 900, margin: '0 auto' }}>
         <h1>Configuration Wizard</h1>
-        <ErrorMessage
-          title="Failed to load configuration"
-          message={configError}
-          onRetry={loadConfig}
-          retrying={loading}
-        />
+        <div style={{ marginBottom: '1rem' }}>
+          <ErrorMessage
+            title="Failed to load configuration"
+            message={configError.message}
+            onRetry={loadConfig}
+            retrying={loading}
+          />
+        </div>
+        <div
+          style={{
+            padding: '1rem',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            background: 'var(--info-bg)',
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 8 }}>💡 User Guidance</div>
+          <div style={{ fontSize: 14, marginBottom: '1rem' }}>{configError.userGuidance}</div>
+          <button
+            onClick={checkApiStatus}
+            disabled={checkingApiStatus}
+            style={{
+              padding: '10px 20px',
+              background: checkingApiStatus ? '#ccc' : '#0066cc',
+              color: 'white',
+              border: 'none',
+              borderRadius: 6,
+              cursor: checkingApiStatus ? 'not-allowed' : 'pointer',
+              fontSize: 14,
+              fontWeight: 600,
+            }}
+          >
+            {checkingApiStatus ? 'Checking...' : '🔍 Check API Status'}
+          </button>
+        </div>
       </main>
     );
   }
@@ -235,7 +385,25 @@ export default function AdminPage() {
   return (
     <main style={{ padding: '2rem', maxWidth: 900, margin: '0 auto' }}>
       <div style={{ marginBottom: '2rem' }}>
-        <h1 style={{ margin: 0, marginBottom: 8 }}>Configuration Wizard</h1>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <h1 style={{ margin: 0 }}>Configuration Wizard</h1>
+          <button
+            onClick={checkApiStatus}
+            disabled={checkingApiStatus}
+            style={{
+              padding: '8px 16px',
+              background: checkingApiStatus ? '#ccc' : '#0066cc',
+              color: 'white',
+              border: 'none',
+              borderRadius: 6,
+              cursor: checkingApiStatus ? 'not-allowed' : 'pointer',
+              fontSize: 13,
+              fontWeight: 600,
+            }}
+          >
+            {checkingApiStatus ? 'Checking...' : '🔍 Check API Status'}
+          </button>
+        </div>
         <a href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
           ← Back to Chat
         </a>
@@ -325,7 +493,28 @@ export default function AdminPage() {
                     border: '1px solid #ffcccc',
                   }}
                 >
-                  ⚠️ Failed to load models: {modelsError}
+                  <div style={{ marginBottom: 8 }}>⚠️ Failed to load models: {modelsError.message}</div>
+                  <div style={{ fontSize: 11, opacity: 0.9 }}>
+                    {modelsError.userGuidance}
+                  </div>
+                  {modelsError.isRetryable && (
+                    <button
+                      onClick={() => loadModels()}
+                      style={{
+                        marginTop: 8,
+                        padding: '6px 12px',
+                        background: 'var(--error-text)',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                        fontSize: 11,
+                        fontWeight: 600,
+                      }}
+                    >
+                      Retry Loading Models
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -596,10 +785,23 @@ export default function AdminPage() {
                 <div style={{ marginTop: 12 }}>
                   <ErrorMessage
                     title="Failed to save configuration"
-                    message={saveError}
+                    message={saveError.message}
                     onRetry={handleSave}
                     retrying={saving}
                   />
+                  <div
+                    style={{
+                      marginTop: 8,
+                      padding: '10px 12px',
+                      borderRadius: 6,
+                      fontSize: 12,
+                      background: 'var(--info-bg)',
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>💡 User Guidance</div>
+                    <div>{saveError.userGuidance}</div>
+                  </div>
                 </div>
               )}
             </div>
