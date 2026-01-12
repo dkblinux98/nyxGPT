@@ -274,6 +274,9 @@ The web UI includes a step-by-step configuration wizard for easy system setup. A
 - Connection testing to verify API connectivity
 - Hot-reloadable settings (no service restart required)
 - Clear navigation between steps
+- **Keyboard shortcuts:**
+  - `←` / `→` - Navigate between steps
+  - `Enter` - Advance to next step or save configuration
 
 **Configuration Changes:**
 The wizard updates your `~/.myGPT/config.ini` file with the following settings:

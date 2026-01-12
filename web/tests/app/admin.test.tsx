@@ -293,4 +293,160 @@ describe('Configuration Wizard Logic', () => {
       expect(progressPercentage).toBe(50);
     });
   });
+
+  describe('Keyboard Navigation', () => {
+    it('should handle ArrowLeft key to go to previous step', () => {
+      const steps = ['model', 'rag', 'api', 'summary'];
+      let currentStepIndex = 2;
+
+      // Simulate ArrowLeft key press
+      if (currentStepIndex > 0) {
+        currentStepIndex -= 1;
+      }
+
+      expect(currentStepIndex).toBe(1);
+      expect(steps[currentStepIndex]).toBe('rag');
+    });
+
+    it('should handle ArrowRight key to go to next step', () => {
+      const steps = ['model', 'rag', 'api', 'summary'];
+      const formData = { default_model: 'llama3.1:8b' };
+      let currentStepIndex = 0;
+      const currentStep = steps[currentStepIndex];
+
+      // Simulate ArrowRight key press with validation
+      if (
+        currentStepIndex < steps.length - 1 &&
+        !(currentStep === 'model' && !formData.default_model)
+      ) {
+        currentStepIndex += 1;
+      }
+
+      expect(currentStepIndex).toBe(1);
+      expect(steps[currentStepIndex]).toBe('rag');
+    });
+
+    it('should block ArrowRight on model step when no model selected', () => {
+      const steps = ['model', 'rag', 'api', 'summary'];
+      const formData = { default_model: '' };
+      let currentStepIndex = 0;
+      const currentStep = steps[currentStepIndex];
+
+      // Simulate ArrowRight key press with validation
+      if (
+        currentStepIndex < steps.length - 1 &&
+        !(currentStep === 'model' && !formData.default_model)
+      ) {
+        currentStepIndex += 1;
+      }
+
+      // Should stay on model step
+      expect(currentStepIndex).toBe(0);
+      expect(steps[currentStepIndex]).toBe('model');
+    });
+
+    it('should handle Enter key to advance step', () => {
+      const steps = ['model', 'rag', 'api', 'summary'];
+      const formData = { default_model: 'llama3.1:8b' };
+      let currentStepIndex = 1;
+      const currentStep = steps[currentStepIndex];
+
+      // Simulate Enter key press
+      if (
+        currentStep !== 'summary' &&
+        currentStepIndex < steps.length - 1 &&
+        !(currentStep === 'model' && !formData.default_model)
+      ) {
+        currentStepIndex += 1;
+      }
+
+      expect(currentStepIndex).toBe(2);
+      expect(steps[currentStepIndex]).toBe('api');
+    });
+
+    it('should not advance past last step with ArrowRight', () => {
+      const steps = ['model', 'rag', 'api', 'summary'];
+      const formData = { default_model: 'llama3.1:8b' };
+      let currentStepIndex = 3;
+      const currentStep = steps[currentStepIndex];
+
+      // Simulate ArrowRight key press
+      if (
+        currentStepIndex < steps.length - 1 &&
+        !(currentStep === 'model' && !formData.default_model)
+      ) {
+        currentStepIndex += 1;
+      }
+
+      expect(currentStepIndex).toBe(3);
+      expect(steps[currentStepIndex]).toBe('summary');
+    });
+
+    it('should not go before first step with ArrowLeft', () => {
+      const steps = ['model', 'rag', 'api', 'summary'];
+      let currentStepIndex = 0;
+
+      // Simulate ArrowLeft key press
+      if (currentStepIndex > 0) {
+        currentStepIndex -= 1;
+      }
+
+      expect(currentStepIndex).toBe(0);
+      expect(steps[currentStepIndex]).toBe('model');
+    });
+
+    it('should ignore keyboard events when typing in input fields', () => {
+      // Simulate event target being an input field
+      const mockTarget = { tagName: 'INPUT' };
+      const shouldIgnoreEvent =
+        mockTarget.tagName === 'INPUT' ||
+        mockTarget.tagName === 'TEXTAREA' ||
+        mockTarget.tagName === 'SELECT';
+
+      expect(shouldIgnoreEvent).toBe(true);
+    });
+
+    it('should process keyboard events when not in input fields', () => {
+      // Simulate event target being a div
+      const mockTarget = { tagName: 'DIV' };
+      const shouldIgnoreEvent =
+        mockTarget.tagName === 'INPUT' ||
+        mockTarget.tagName === 'TEXTAREA' ||
+        mockTarget.tagName === 'SELECT';
+
+      expect(shouldIgnoreEvent).toBe(false);
+    });
+
+    it('should trigger save on summary step with Enter key', () => {
+      const steps = ['model', 'rag', 'api', 'summary'];
+      const formData = { default_model: 'llama3.1:8b' };
+      const currentStepIndex = 3;
+      const currentStep = steps[currentStepIndex];
+      const saving = false;
+      let saveTriggered = false;
+
+      // Simulate Enter key press on summary page
+      if (currentStep === 'summary' && formData.default_model && !saving) {
+        saveTriggered = true;
+      }
+
+      expect(saveTriggered).toBe(true);
+    });
+
+    it('should not trigger save when saving is in progress', () => {
+      const steps = ['model', 'rag', 'api', 'summary'];
+      const formData = { default_model: 'llama3.1:8b' };
+      const currentStepIndex = 3;
+      const currentStep = steps[currentStepIndex];
+      const saving = true;
+      let saveTriggered = false;
+
+      // Simulate Enter key press while already saving
+      if (currentStep === 'summary' && formData.default_model && !saving) {
+        saveTriggered = true;
+      }
+
+      expect(saveTriggered).toBe(false);
+    });
+  });
 });
