@@ -30,6 +30,12 @@ log = logging.getLogger(__name__)
 # preventing memory issues from malformed streams.
 MARKER_BUFFER_FLUSH_THRESHOLD = 1000
 
+# Overflow threshold for buffer safety valve. This is a conservative lower
+# threshold used when the entire buffer appears to be a potential partial
+# marker. Catching runaway buffers early (at 100 bytes) prevents excessive
+# memory buildup and output delays in edge cases with malformed streams.
+MARKER_BUFFER_OVERFLOW_THRESHOLD = 100
+
 
 class ChatOutput(Static):
     """Widget to display assistant output incrementally."""
@@ -592,7 +598,7 @@ class MyGPTTUI(App):
                                 # No markers at all, flush everything
                                 self.output.append(buffer)
                                 buffer = ""
-                            elif safe_idx == 0 and len(buffer) > MARKER_BUFFER_FLUSH_THRESHOLD:
+                            elif safe_idx == 0 and len(buffer) > MARKER_BUFFER_OVERFLOW_THRESHOLD:
                                 # Entire buffer is potential partial marker but too large, flush it
                                 self.output.append(buffer)
                                 buffer = ""
