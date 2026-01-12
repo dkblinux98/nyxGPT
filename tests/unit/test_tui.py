@@ -1265,12 +1265,12 @@ async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
     mock_response.raise_for_status = MagicMock()
 
     async def mock_aiter_text():
-        # Yield a large buffer that doesn't match any marker prefix
-        # This triggers the buffer overflow protection for non-marker content
-        # Use "A" * 1005 (> MARKER_BUFFER_FLUSH_THRESHOLD of 1000)
-        # This doesn't end with any prefix of "__RETRY_START__" or "__RAG_START__"
-        # so has_partial_marker = False and the buffer is flushed immediately
-        yield "A" * 1005
+        # Yield a large buffer that looks like a partial marker
+        # This triggers the buffer overflow protection for marker-like content
+        # Use "_" * 101 (> MARKER_BUFFER_OVERFLOW_THRESHOLD of 100)
+        # This matches the first character of both "__RETRY_START__" and "__RAG_START__"
+        # so has_partial_marker = True, safe_idx = 0, and the overflow path is triggered
+        yield "_" * 101
         yield " done"
 
     mock_response.aiter_text = mock_aiter_text
@@ -1287,10 +1287,10 @@ async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
 
     append_calls = [str(call) for call in app.output.append.call_args_list]
 
-    # Verify the oversized buffer was flushed (buffer overflow protection triggered)
-    # The large non-marker content should be treated as regular text and displayed
-    large_buffer_calls = [c for c in append_calls if "A" * 100 in c]
-    assert len(large_buffer_calls) > 0, "Oversized non-marker buffer should be flushed as regular text"
+    # Verify the oversized partial-marker buffer was flushed (buffer overflow protection triggered)
+    # The large buffer that looks like a partial marker should be treated as regular text and displayed
+    large_buffer_calls = [c for c in append_calls if "_" * 100 in c]
+    assert len(large_buffer_calls) > 0, "Oversized partial-marker buffer should be flushed as regular text"
 
     # Verify subsequent text was also displayed
     done_calls = [c for c in append_calls if "done" in c]
