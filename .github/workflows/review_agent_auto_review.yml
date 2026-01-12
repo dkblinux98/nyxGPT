@@ -96,8 +96,11 @@ jobs:
 
           echo "::group::Parsing review comment"
 
-          # Get review comment body from event
-          REVIEW_COMMENT='${{ github.event.comment.body }}'
+          # Get review comment body from event - use heredoc to safely handle special chars
+          REVIEW_COMMENT=$(cat <<'REVIEW_EOF'
+          ${{ github.event.comment.body }}
+          REVIEW_EOF
+          )
 
           # Parse decision from first line
           DECISION_LINE=$(echo "$REVIEW_COMMENT" | head -1)
@@ -124,7 +127,7 @@ jobs:
           set -euo pipefail
           PR="${{ steps.get_pr.outputs.pr_number }}"
 
-          ISSUE=$(gh pr view "$PR" --json body -q '.body' | grep -oP 'Closes #\K\d+' || echo "")
+          ISSUE=$(gh pr view "$PR" --json body -q '.body' | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
 
           if [[ -z "$ISSUE" ]]; then
             echo "::error::PR #$PR body does not contain 'Closes #N'"
@@ -143,7 +146,7 @@ jobs:
           ISSUE="${{ steps.get_issue.outputs.issue_number }}"
 
           echo "::notice::Review approved - executing merge"
-          bash -lc "cd $GITHUB_WORKSPACE && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_accept_and_merge.sh $PR $ISSUE"
+          bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_accept_and_merge.sh '$PR' '$ISSUE'"
 
       - name: Create sub-issues (if changes requested)
         if: steps.parse_review.outputs.decision == 'REQUEST_CHANGES'
@@ -186,23 +189,23 @@ jobs:
 
             # Create body file for sub-issue
             BODY_FILE="/tmp/sub-issue-$(echo "$TITLE" | tr ' ' '-' | tr -cd '[:alnum:]-').md"
-            cat > "$BODY_FILE" << EOFBODY
-## Acceptance Failure
+            cat > "$BODY_FILE" <<EOFBODY
+          ## Acceptance Failure
 
-**From code review of parent issue ${ISSUE}**
+          From code review of parent issue #${ISSUE}
 
-### Issue
-${DESCRIPTION}
+          ### Issue
+          ${DESCRIPTION}
 
-### How to Fix
-See code review comment for details and specific file/line references.
+          ### How to Fix
+          See code review comment for details and specific file/line references.
 
-### Parent Issue
-Issue ${ISSUE}
-EOFBODY
+          ### Parent Issue
+          Issue ${ISSUE}
+          EOFBODY
 
             echo "Creating sub-issue: $TITLE"
-            bash -lc "cd $GITHUB_WORKSPACE && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_request_changes.sh $ISSUE '$TITLE' '$BODY_FILE'"
+            bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_request_changes.sh '$ISSUE' '$TITLE' '$BODY_FILE'"
           done
 
       - name: Post completion comment
