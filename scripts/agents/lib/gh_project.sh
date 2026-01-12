@@ -417,14 +417,15 @@ get_pr_branch_for_issue() {
 
   # Find PR that closes this issue
   # Search for open PRs first, then closed PRs
+  # Filter results to ensure PR body contains "Closes #N" not just mentions "#N"
   local pr_number branch
 
-  # Try open PRs first
-  pr_number="$(gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --search "Closes #${issue}" --state open --json number -q '.[0].number // empty')"
+  # Try open PRs first - filter by body matching "Closes #${issue}"
+  pr_number="$(gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --search "#${issue}" --state open --json number,body --jq ".[] | select(.body | test(\"Closes #${issue}\\\\b\"; \"i\")) | .number" | head -n1)"
 
   # If no open PR, try closed/merged PRs
   if [[ -z "$pr_number" ]]; then
-    pr_number="$(gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --search "Closes #${issue}" --state closed --json number -q '.[0].number // empty')"
+    pr_number="$(gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --search "#${issue}" --state closed --json number,body --jq ".[] | select(.body | test(\"Closes #${issue}\\\\b\"; \"i\")) | .number" | head -n1)"
   fi
 
   if [[ -z "$pr_number" ]]; then
