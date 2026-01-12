@@ -235,15 +235,15 @@ export default function AdminPage() {
   return (
     <main style={{ padding: '2rem', maxWidth: 900, margin: '0 auto' }}>
       <div style={{ marginBottom: '2rem' }}>
-        <h1 style={{ margin: 0, marginBottom: 8 }}>Configuration Wizard</h1>
+        <h1 id="wizard-title" style={{ margin: 0, marginBottom: 8 }}>Configuration Wizard</h1>
         <a href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
           ← Back to Chat
         </a>
       </div>
 
       {/* Progress Indicator */}
-      <div style={{ marginBottom: '2rem' }}>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+      <nav aria-label="Configuration wizard progress" style={{ marginBottom: '2rem' }}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }} role="progressbar" aria-valuenow={currentStepIndex + 1} aria-valuemin={1} aria-valuemax={steps.length} aria-label={`Step ${currentStepIndex + 1} of ${steps.length}`}>
           {steps.map((step, idx) => (
             <div
               key={step.id}
@@ -253,21 +253,26 @@ export default function AdminPage() {
                 background: idx <= currentStepIndex ? '#0066cc' : '#e0e0e0',
                 borderRadius: 2,
               }}
+              aria-current={idx === currentStepIndex ? 'step' : undefined}
+              aria-label={`${step.label}${idx === currentStepIndex ? ' (current)' : idx < currentStepIndex ? ' (completed)' : ''}`}
             />
           ))}
         </div>
         <div style={{ textAlign: 'center' }}>
-          <div style={{ fontWeight: 600, fontSize: 18, marginBottom: 4 }}>
+          <div id="step-label" style={{ fontWeight: 600, fontSize: 18, marginBottom: 4 }}>
             {steps[currentStepIndex].label}
           </div>
-          <div style={{ fontSize: 14, color: '#666' }}>
+          <div id="step-description" style={{ fontSize: 14, color: '#666' }}>
             {steps[currentStepIndex].description}
           </div>
         </div>
-      </div>
+      </nav>
 
       {/* Step Content */}
       <div
+        role="region"
+        aria-labelledby="step-label"
+        aria-describedby="step-description"
         style={{
           padding: '2rem',
           border: '1px solid var(--border)',
@@ -288,9 +293,12 @@ export default function AdminPage() {
                 Default Model
               </label>
               <select
+                id="default-model-select"
                 value={formData.default_model}
                 onChange={(e) => setFormData({ ...formData, default_model: e.target.value })}
                 disabled={loadingModels || saving}
+                aria-describedby="model-help"
+                aria-required="true"
                 style={{
                   width: '100%',
                   padding: '10px 12px',
@@ -309,12 +317,13 @@ export default function AdminPage() {
                 ))}
               </select>
               {loadingModels && (
-                <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+                <div role="status" aria-live="polite" style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
                   Loading available models...
                 </div>
               )}
               {modelsError && (
                 <div
+                  role="alert"
                   style={{
                     marginTop: 8,
                     padding: '10px 12px',
@@ -330,7 +339,7 @@ export default function AdminPage() {
               )}
             </div>
 
-            <div style={{ padding: '1rem', background: 'var(--info-bg)', borderRadius: 6, fontSize: 14 }}>
+            <div id="model-help" style={{ padding: '1rem', background: 'var(--info-bg)', borderRadius: 6, fontSize: 14 }}>
               <strong>💡 Tip:</strong> If you don't see your model listed, visit the{' '}
               <a href="/models" style={{ color: '#0066cc' }}>
                 Models page
@@ -349,6 +358,7 @@ export default function AdminPage() {
 
             <div style={{ marginBottom: '1.5rem' }}>
               <label
+                htmlFor="rag-enabled-checkbox"
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -361,15 +371,17 @@ export default function AdminPage() {
                 }}
               >
                 <input
+                  id="rag-enabled-checkbox"
                   type="checkbox"
                   checked={formData.rag_enabled}
                   onChange={(e) => setFormData({ ...formData, rag_enabled: e.target.checked })}
                   disabled={saving}
+                  aria-describedby="rag-help"
                   style={{ width: 18, height: 18, cursor: 'pointer' }}
                 />
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 14 }}>Enable RAG</div>
-                  <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+                  <div id="rag-help" style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
                     Use vector search to inject relevant context into conversations
                   </div>
                 </div>
@@ -398,9 +410,11 @@ export default function AdminPage() {
                 Log Level
               </label>
               <select
+                id="log-level-select"
                 value={formData.log_level}
                 onChange={(e) => setFormData({ ...formData, log_level: e.target.value })}
                 disabled={saving}
+                aria-label="Log level selection"
                 style={{
                   width: '100%',
                   padding: '10px 12px',
@@ -423,9 +437,12 @@ export default function AdminPage() {
                 Ollama Base URL
               </label>
               <input
+                id="ollama-base-url"
                 type="text"
                 value={formData.ollama_base_url}
                 readOnly
+                aria-readonly="true"
+                aria-describedby="ollama-url-help"
                 style={{
                   width: '100%',
                   padding: '10px 12px',
@@ -437,7 +454,7 @@ export default function AdminPage() {
                   cursor: 'not-allowed',
                 }}
               />
-              <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+              <div id="ollama-url-help" style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
                 Read-only. Edit in <code>~/.myGPT/config.ini</code> to change.
               </div>
             </div>
@@ -446,6 +463,8 @@ export default function AdminPage() {
               <button
                 onClick={testConnection}
                 disabled={testingConnection}
+                aria-busy={testingConnection}
+                aria-describedby={testResult ? 'test-result' : undefined}
                 style={{
                   padding: '10px 20px',
                   background: testingConnection ? '#ccc' : '#0066cc',
@@ -461,6 +480,9 @@ export default function AdminPage() {
               </button>
               {testResult && (
                 <div
+                  id="test-result"
+                  role="status"
+                  aria-live="polite"
                   style={{
                     marginTop: 10,
                     padding: '10px 12px',
@@ -534,6 +556,7 @@ export default function AdminPage() {
 
             {!formData.default_model && (
               <div
+                role="alert"
                 style={{
                   marginBottom: '1rem',
                   padding: '12px',
@@ -552,6 +575,8 @@ export default function AdminPage() {
               <button
                 onClick={handleSave}
                 disabled={saving || !formData.default_model}
+                aria-busy={saving}
+                aria-disabled={saving || !formData.default_model}
                 style={{
                   padding: '12px 24px',
                   background: saving || !formData.default_model ? '#ccc' : '#28a745',
@@ -569,6 +594,8 @@ export default function AdminPage() {
 
               {saveSuccess && (
                 <div
+                  role="status"
+                  aria-live="polite"
                   style={{
                     marginTop: 12,
                     padding: '12px 16px',
@@ -608,7 +635,7 @@ export default function AdminPage() {
       </div>
 
       {/* Navigation */}
-      <div style={{ marginTop: '2rem' }}>
+      <nav aria-label="Wizard navigation" style={{ marginTop: '2rem' }}>
         <div style={{ marginBottom: '0.5rem', textAlign: 'center', fontSize: 12, color: '#666' }}>
           💡 Use arrow keys (← →) to navigate, Enter to advance or save
         </div>
@@ -616,6 +643,8 @@ export default function AdminPage() {
           <button
             onClick={goToPreviousStep}
             disabled={currentStepIndex === 0 || saving}
+            aria-label="Go to previous step"
+            aria-disabled={currentStepIndex === 0 || saving}
             style={{
               padding: '10px 20px',
               background: currentStepIndex === 0 || saving ? '#ccc' : 'var(--muted)',
@@ -632,6 +661,12 @@ export default function AdminPage() {
           <button
             onClick={goToNextStep}
             disabled={
+              currentStepIndex === steps.length - 1 ||
+              (currentStep === 'model' && !formData.default_model) ||
+              saving
+            }
+            aria-label="Go to next step"
+            aria-disabled={
               currentStepIndex === steps.length - 1 ||
               (currentStep === 'model' && !formData.default_model) ||
               saving
@@ -660,7 +695,7 @@ export default function AdminPage() {
             Next →
           </button>
         </div>
-      </div>
+      </nav>
     </main>
   );
 }
