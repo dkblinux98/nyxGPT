@@ -1,12 +1,15 @@
 name: Review Agent Auto-Review
 
 on:
-  repository_dispatch:
-    types:
-      - code-review-completed
+  issue_comment:
+    types: [created]
 
 jobs:
   execute-review-decision:
+    # Only run if comment is on a PR and starts with "## Code Review"
+    if: |
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '## Code Review')
     runs-on: ubuntu-latest
 
     permissions:
@@ -68,42 +71,33 @@ jobs:
             echo "config ok: $REPO_OWNER/$REPO_NAME project $PROJECT_OWNER#$PROJECT_NUMBER release=$RELEASE_BRANCH"
           '
 
-      - name: Get PR number from dispatch payload
+      - name: Get PR number from comment event
         id: get_pr
         shell: bash
         run: |
           set -euo pipefail
 
-          # Get PR number from repository_dispatch payload
-          PR_NUMBER="${{ github.event.client_payload.pr_number }}"
+          # Get PR number from issue_comment event
+          PR_NUMBER="${{ github.event.issue.number }}"
 
           if [[ -z "$PR_NUMBER" ]]; then
-            echo "::error::No PR number in dispatch payload"
+            echo "::error::No PR number in issue_comment event"
             exit 1
           fi
 
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "Processing review for PR #$PR_NUMBER"
 
-      - name: Read review comment and parse decision
+      - name: Parse review decision from comment
         id: parse_review
         shell: bash
         run: |
           set -euo pipefail
-          PR="${{ steps.get_pr.outputs.pr_number }}"
 
-          echo "::group::Finding review comment"
+          echo "::group::Parsing review comment"
 
-          # Get the most recent comment that starts with "## Code Review"
-          REVIEW_COMMENT=$(gh pr view "$PR" --json comments --jq '.comments[] | select(.body | startswith("## Code Review")) | .body' | tail -1)
-
-          if [[ -z "$REVIEW_COMMENT" ]]; then
-            echo "::error::No review comment found starting with '## Code Review'"
-            exit 1
-          fi
-
-          echo "Found review comment"
-          echo "::endgroup::"
+          # Get review comment body from event
+          REVIEW_COMMENT='${{ github.event.comment.body }}'
 
           # Parse decision from first line
           DECISION_LINE=$(echo "$REVIEW_COMMENT" | head -1)
@@ -192,20 +186,20 @@ jobs:
 
             # Create body file for sub-issue
             BODY_FILE="/tmp/sub-issue-$(echo "$TITLE" | tr ' ' '-' | tr -cd '[:alnum:]-').md"
-            cat > "$BODY_FILE" <<EOF
+            cat > "$BODY_FILE" << EOFBODY
 ## Acceptance Failure
 
-**From code review of parent issue #${ISSUE}**
+**From code review of parent issue ${ISSUE}**
 
 ### Issue
-$DESCRIPTION
+${DESCRIPTION}
 
 ### How to Fix
 See code review comment for details and specific file/line references.
 
 ### Parent Issue
-#${ISSUE}
-EOF
+Issue ${ISSUE}
+EOFBODY
 
             echo "Creating sub-issue: $TITLE"
             bash -lc "cd $GITHUB_WORKSPACE && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_request_changes.sh $ISSUE '$TITLE' '$BODY_FILE'"

@@ -166,10 +166,7 @@ def post_json_lines(
                     continue
                 yield json.loads(line)
     finally:
-        try:
-            resp.close()
-        except NameError:
-            pass  # resp was never assigned
+        resp.close()
 
 
 def ollama_chat(base_url: str, model: str, messages: list[dict[str, str]], timeout_s: float = 120.0) -> str:

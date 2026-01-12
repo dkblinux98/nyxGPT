@@ -50,6 +50,20 @@ if [[ "$DRY_RUN" == "1" ]]; then
 fi
 
 git fetch origin "$base_branch" >&2
+
+# Delete local branch if it exists
+if git show-ref --verify --quiet "refs/heads/${branch}"; then
+  echo "Local branch $branch already exists, deleting..." >&2
+  git branch -D "$branch" >&2 || true
+fi
+
+# Delete remote branch if it exists
+if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+  echo "Remote branch $branch already exists, deleting..." >&2
+  git push origin --delete "$branch" >&2 || true
+fi
+
+# Create and push new branch
 git checkout -b "$branch" "origin/$base_branch" >&2
 git push -u origin "$branch" >&2
 

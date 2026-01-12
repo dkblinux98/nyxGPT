@@ -560,23 +560,33 @@ class MyGPTTUI(App):
 
                         # Yield any complete text that's not part of markers
                         # Keep potential partial markers in buffer
-                        if buffer and "__RETRY_START__" not in buffer and "__RAG_START__" not in buffer:
-                            self.output.append(buffer)
-                            buffer = ""
-                        elif buffer:
-                            # Check if we might have a partial marker at the end
+                        if buffer:
+                            # First check if we might have a partial marker at the end
                             safe_idx = len(buffer)
+                            has_partial_marker = False
                             for marker in ["__RETRY_START__", "__RAG_START__"]:
                                 for i in range(1, len(marker)):
                                     if buffer.endswith(marker[:i]):
                                         safe_idx = len(buffer) - i
+                                        has_partial_marker = True
                                         break
+                                if has_partial_marker:
+                                    break
 
-                            if safe_idx > 0 and safe_idx < len(buffer):
+                            # If buffer has complete markers, don't flush yet (let the marker handlers above process it)
+                            if "__RETRY_START__" in buffer or "__RAG_START__" in buffer:
+                                # Complete markers present, let them be processed in next iteration
+                                pass
+                            elif has_partial_marker and safe_idx > 0:
+                                # Has partial marker at end, flush safe part and keep partial
                                 self.output.append(buffer[:safe_idx])
                                 buffer = buffer[safe_idx:]
-                            elif safe_idx == len(buffer) and len(buffer) > 100:
-                                # If buffer is getting large without markers, flush it
+                            elif not has_partial_marker:
+                                # No markers at all, flush everything
+                                self.output.append(buffer)
+                                buffer = ""
+                            elif safe_idx == 0 and len(buffer) > 100:
+                                # Entire buffer is potential partial marker but too large, flush it
                                 self.output.append(buffer)
                                 buffer = ""
 

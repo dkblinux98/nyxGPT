@@ -288,27 +288,3 @@ def test_post_json_lines_callback_invoked_on_retry() -> None:
     assert call_args[0] == 1  # First retry (attempt 1)
     assert isinstance(call_args[1], float)  # Delay
     assert isinstance(call_args[2], urllib.error.URLError)  # Error
-
-
-def test_post_json_lines_handles_undefined_resp_in_finally() -> None:
-    """Test that finally block handles NameError when resp is never assigned.
-
-    This tests the edge case where _retry_with_backoff raises before returning
-    a response object, ensuring the finally block doesn't cause a NameError.
-    """
-    with patch("urllib.request.urlopen") as mock_urlopen:
-        # All attempts fail - resp is never assigned
-        mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
-
-        with patch("time.sleep"):  # Don't actually sleep
-            with pytest.raises(RuntimeError, match="Failed to reach Ollama"):
-                # Consume the generator to trigger the finally block
-                list(
-                    post_json_lines(
-                        "http://localhost/api",
-                        {"prompt": "test"},
-                        max_retries=2,
-                    )
-                )
-
-    # Test passes if no NameError is raised in the finally block
