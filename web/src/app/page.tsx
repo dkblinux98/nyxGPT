@@ -574,40 +574,69 @@ export default function Home() {
           <span style={{ fontSize: 16 }}>+</span> New Chat
         </button>
 
-        <div style={{ marginBottom: 16, display: 'flex', gap: 8 }}>
-          <a
-            href="/admin"
+        {/* Navigation Menu */}
+        <nav style={{ marginBottom: 16 }} aria-label="Main navigation">
+          <div
             style={{
-              display: 'inline-block',
-              padding: '6px 12px',
-              background: 'var(--button-bg)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              background: 'var(--input-bg)',
               border: '1px solid var(--border)',
               borderRadius: 6,
-              textDecoration: 'none',
-              color: 'var(--foreground)',
-              fontSize: 12,
-              fontWeight: 600,
+              padding: 8,
             }}
           >
-            ⚙️ Settings
-          </a>
-          <a
-            href="/models"
-            style={{
-              display: 'inline-block',
-              padding: '6px 12px',
-              background: 'var(--button-bg)',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              textDecoration: 'none',
-              color: 'var(--foreground)',
-              fontSize: 12,
-              fontWeight: 600,
-            }}
-          >
-            Manage Models
-          </a>
-        </div>
+            <a
+              href="/admin"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '8px 12px',
+                textDecoration: 'none',
+                color: 'var(--foreground)',
+                fontSize: 13,
+                fontWeight: 500,
+                borderRadius: 4,
+                transition: 'background 0.2s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--button-hover)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent';
+              }}
+            >
+              <span>⚙️</span>
+              <span>Settings</span>
+            </a>
+            <a
+              href="/models"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '8px 12px',
+                textDecoration: 'none',
+                color: 'var(--foreground)',
+                fontSize: 13,
+                fontWeight: 500,
+                borderRadius: 4,
+                transition: 'background 0.2s ease',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'var(--button-hover)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent';
+              }}
+            >
+              <span>🤖</span>
+              <span>Manage Models</span>
+            </a>
+          </div>
+        </nav>
 
         {/* Search input */}
         <input
