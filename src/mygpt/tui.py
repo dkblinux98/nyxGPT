@@ -30,6 +30,12 @@ log = logging.getLogger(__name__)
 # preventing memory issues from malformed streams.
 MARKER_BUFFER_FLUSH_THRESHOLD = 1000
 
+# Overflow threshold for when entire buffer is a potential partial marker.
+# This catches the edge case where the buffer consists entirely of characters
+# that match a marker prefix (e.g., all underscores) and prevents it from
+# growing beyond the maximum possible marker length.
+MARKER_BUFFER_OVERFLOW_THRESHOLD = 15
+
 
 class ChatOutput(Static):
     """Widget to display assistant output incrementally."""
@@ -592,7 +598,7 @@ class MyGPTTUI(App):
                                 # No markers at all, flush everything
                                 self.output.append(buffer)
                                 buffer = ""
-                            elif safe_idx == 0 and len(buffer) > MARKER_BUFFER_FLUSH_THRESHOLD:
+                            elif safe_idx == 0 and len(buffer) > MARKER_BUFFER_OVERFLOW_THRESHOLD:
                                 # Entire buffer is potential partial marker but too large, flush it
                                 self.output.append(buffer)
                                 buffer = ""
