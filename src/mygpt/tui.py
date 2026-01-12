@@ -592,7 +592,7 @@ class MyGPTTUI(App):
                                 # No markers at all, flush everything
                                 self.output.append(buffer)
                                 buffer = ""
-                            elif safe_idx == 0 and len(buffer) > 100:
+                            elif safe_idx == 0 and len(buffer) > MARKER_BUFFER_FLUSH_THRESHOLD:
                                 # Entire buffer is potential partial marker but too large, flush it
                                 self.output.append(buffer)
                                 buffer = ""
