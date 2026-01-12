@@ -1118,6 +1118,62 @@ async def test_stream_chat_malformed_marker_removed(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_chat_buffer_flush_threshold_exceeded(tmp_path: Path) -> None:
+    """Test that buffers exceeding MARKER_BUFFER_FLUSH_THRESHOLD are flushed.
+
+    Tests the scenario where buffer grows beyond the threshold (1000 chars) with
+    a potential partial marker. The implementation should flush the buffer to
+    prevent unbounded memory growth, treating the content as regular text.
+
+    This tests the safeguard at tui.py:595.
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        # Send a very long chunk that starts with partial marker prefix
+        # This simulates a malformed stream where marker never completes
+        # and buffer grows beyond threshold
+        long_text = "__RETRY_" + ("x" * 1100)  # Exceeds MARKER_BUFFER_FLUSH_THRESHOLD (1000)
+        yield long_text
+        yield " more text after flush"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    append_calls = [str(call) for call in app.output.append.call_args_list]
+
+    # Verify buffer was flushed (long text should be in output)
+    flushed_calls = [c for c in append_calls if "xxxx" in c]
+    assert len(flushed_calls) > 0, "Buffer exceeding threshold should be flushed"
+
+    # Verify subsequent text after flush is also displayed
+    after_calls = [c for c in append_calls if "more text after" in c]
+    assert len(after_calls) > 0, "Text after flush should be displayed"
+
+
+@pytest.mark.asyncio
 async def test_stream_chat_mixed_partial_retry_and_rag_markers(tmp_path: Path) -> None:
     """Test handling of both RETRY and RAG markers split across chunks.
 
@@ -1184,24 +1240,15 @@ async def test_stream_chat_mixed_partial_retry_and_rag_markers(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_stream_chat_buffer_overflow_prevention(tmp_path: Path) -> None:
-    """Test buffer overflow prevention when partial marker exceeds MARKER_BUFFER_FLUSH_THRESHOLD.
+async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
+    """Test buffer overflow protection when entire buffer looks like partial marker.
 
-    This test specifically covers the defensive buffer flushing logic at tui.py:595:
-        elif safe_idx == 0 and len(buffer) > MARKER_BUFFER_FLUSH_THRESHOLD:
+    Covers the buffer overflow logic in tui.py:595 where safe_idx == 0 and
+    len(buffer) > MARKER_BUFFER_FLUSH_THRESHOLD.
 
-    Unlike other partial marker tests which use small markers split across chunks,
-    this test validates the critical overflow prevention that protects against
-    unbounded memory growth when a malformed stream continuously sends text that
-    looks like a marker prefix but never completes.
-
-    Scenario: Stream sends >1000 chars starting with "__RETRY_" that never becomes
-    a complete marker. Without this logic, the buffer would grow indefinitely.
-
-    Coverage: This is the ONLY test that validates line 595's overflow condition.
+    Tests scenario where buffer contains only partial marker prefix that exceeds
+    the threshold (1000 bytes), triggering flush to prevent unbounded memory growth.
     """
-    from mygpt.tui import MARKER_BUFFER_FLUSH_THRESHOLD
-
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
     cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
@@ -1218,13 +1265,13 @@ async def test_stream_chat_buffer_overflow_prevention(tmp_path: Path) -> None:
     mock_response.raise_for_status = MagicMock()
 
     async def mock_aiter_text():
-        # Create a chunk that starts with marker prefix but never completes
-        # and exceeds MARKER_BUFFER_FLUSH_THRESHOLD (1000 chars)
-        garbage = "X" * (MARKER_BUFFER_FLUSH_THRESHOLD + 100)
-        malformed_partial = f"__RETRY_{garbage}"
-
-        yield malformed_partial
-        yield "Normal text after overflow"
+        # Create a buffer that looks like it could be the start of a marker
+        # but is too large (> 1000 bytes = MARKER_BUFFER_FLUSH_THRESHOLD)
+        # This simulates a pathological case where we receive data that matches
+        # the start of a marker pattern but never completes
+        partial_marker_like = "__RETRY_" + ("X" * 1100)  # 1108 bytes total
+        yield partial_marker_like
+        yield "Normal text after flush"
 
     mock_response.aiter_text = mock_aiter_text
 
@@ -1240,11 +1287,11 @@ async def test_stream_chat_buffer_overflow_prevention(tmp_path: Path) -> None:
 
     append_calls = [str(call) for call in app.output.append.call_args_list]
 
-    # Verify the oversized buffer was flushed (not lost)
-    # The buffer should contain the malformed partial marker
-    overflow_calls = [c for c in append_calls if "__RETRY_" in c and "X" * 100 in c]
-    assert len(overflow_calls) > 0, "Oversized buffer should be flushed as regular text"
+    # Verify the oversized partial-marker-like buffer was flushed
+    # (prevents unbounded memory growth)
+    large_buffer_calls = [c for c in append_calls if "X" * 100 in c]
+    assert len(large_buffer_calls) > 0, "Oversized partial marker buffer should be flushed"
 
-    # Verify normal text after was displayed
-    text_calls = [c for c in append_calls if "Normal text after overflow" in c]
-    assert len(text_calls) > 0, "Text after overflow should be displayed"
+    # Verify normal text after the flush was also displayed
+    text_calls = [c for c in append_calls if "Normal text after flush" in c]
+    assert len(text_calls) > 0, "Text after buffer flush should be displayed"

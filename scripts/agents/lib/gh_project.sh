@@ -366,17 +366,77 @@ create_sub_issue() {
   full_body="Parent: #${parent_issue}"$'\n\n'"${body_content}"
 
   # Create the issue
-  local new_issue_number
-  new_issue_number="$(gh issue create \
+  local issue_url new_issue_number
+  issue_url="$(gh issue create \
     --repo "${REPO_OWNER}/${REPO_NAME}" \
     --title "$title" \
-    --body "$full_body" \
-    --json number -q .number)"
+    --body "$full_body")"
 
-  [[ -n "$new_issue_number" ]] || _die "Failed to create sub-issue"
+  [[ -n "$issue_url" ]] || _die "Failed to create sub-issue"
+
+  # Extract issue number from URL (compatible with macOS grep)
+  new_issue_number="$(echo "$issue_url" | sed -n 's|.*/issues/\([0-9]*\)$|\1|p')"
+  [[ -n "$new_issue_number" ]] || _die "Failed to parse issue number from: $issue_url"
 
   # Add comment to parent linking to sub-issue
   issue_comment "$parent_issue" "Created sub-issue: #${new_issue_number}" || true
 
   echo "$new_issue_number"
+}
+
+# -------------------------
+# Sub-issue detection
+# -------------------------
+get_parent_issue() {
+  local issue="$1"
+  require_cmd gh
+
+  # Get issue body and check if it starts with "Parent: #N"
+  local body
+  body="$(gh issue view "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json body -q .body)"
+
+  # Extract parent issue number from "Parent: #N" at start of body
+  if [[ "$body" =~ ^Parent:\ \#([0-9]+) ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  return 1
+}
+
+is_sub_issue() {
+  local issue="$1"
+  get_parent_issue "$issue" >/dev/null 2>&1
+  return $?
+}
+
+get_pr_branch_for_issue() {
+  local issue="$1"
+  require_cmd gh
+  require_cmd jq
+
+  # Find PR that closes this issue
+  # Search for open PRs first, then closed PRs
+  local pr_number branch
+
+  # Try open PRs first
+  pr_number="$(gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --search "Closes #${issue}" --state open --json number -q '.[0].number // empty')"
+
+  # If no open PR, try closed/merged PRs
+  if [[ -z "$pr_number" ]]; then
+    pr_number="$(gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --search "Closes #${issue}" --state closed --json number -q '.[0].number // empty')"
+  fi
+
+  if [[ -z "$pr_number" ]]; then
+    _die "No PR found for issue #${issue}"
+  fi
+
+  # Get the branch name for this PR
+  branch="$(gh pr view "$pr_number" --repo "${REPO_OWNER}/${REPO_NAME}" --json headRefName -q .headRefName)"
+
+  if [[ -z "$branch" ]]; then
+    _die "Could not determine branch for PR #${pr_number} (issue #${issue})"
+  fi
+
+  echo "$branch"
 }

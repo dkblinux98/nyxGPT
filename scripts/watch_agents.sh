@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Wrapper script for watch_agents.py
-# Watch workflow runs related to a specific issue
+# Watch workflow runs for a specific issue or all agent workflows
 
 set -euo pipefail
 
