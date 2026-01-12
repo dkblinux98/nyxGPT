@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
 
@@ -79,6 +79,74 @@ export default function AdminPage() {
     loadModels();
   }, []);
 
+  async function testConnection() {
+    setTestingConnection(true);
+    setTestResult(null);
+    try {
+      const res = await fetch('/api/info');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await res.json();
+      setTestResult({ success: true, message: 'Connection successful!' });
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setTestResult({ success: false, message: `Connection failed: ${msg}` });
+    } finally {
+      setTestingConnection(false);
+    }
+  }
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    setSaveError(null);
+    setSaveSuccess(false);
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          default_model: formData.default_model,
+          rag_enabled: formData.rag_enabled,
+          log_level: formData.log_level,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.detail || `HTTP ${res.status}`);
+      }
+
+      setSaveSuccess(true);
+      await loadConfig();
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setSaveError(msg);
+    } finally {
+      setSaving(false);
+    }
+  }, [formData.default_model, formData.rag_enabled, formData.log_level]);
+
+  const steps: { id: WizardStep; label: string; description: string }[] = [
+    { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
+    { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
+    { id: 'api', label: 'API Settings', description: 'Configure logging and API settings' },
+    { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
+  ];
+
+  const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
+
+  const goToNextStep = useCallback(() => {
+    if (currentStepIndex < steps.length - 1) {
+      setCurrentStep(steps[currentStepIndex + 1].id);
+    }
+  }, [currentStepIndex, steps]);
+
+  const goToPreviousStep = useCallback(() => {
+    if (currentStepIndex > 0) {
+      setCurrentStep(steps[currentStepIndex - 1].id);
+    }
+  }, [currentStepIndex, steps]);
+
   // Keyboard navigation
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -126,75 +194,7 @@ export default function AdminPage() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentStep, currentStepIndex, formData.default_model, saving]);
-
-  async function testConnection() {
-    setTestingConnection(true);
-    setTestResult(null);
-    try {
-      const res = await fetch('/api/info');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await res.json();
-      setTestResult({ success: true, message: 'Connection successful!' });
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setTestResult({ success: false, message: `Connection failed: ${msg}` });
-    } finally {
-      setTestingConnection(false);
-    }
-  }
-
-  async function handleSave() {
-    setSaving(true);
-    setSaveError(null);
-    setSaveSuccess(false);
-    try {
-      const res = await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          default_model: formData.default_model,
-          rag_enabled: formData.rag_enabled,
-          log_level: formData.log_level,
-        }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.detail || `HTTP ${res.status}`);
-      }
-
-      setSaveSuccess(true);
-      await loadConfig();
-      setTimeout(() => setSaveSuccess(false), 3000);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setSaveError(msg);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const steps: { id: WizardStep; label: string; description: string }[] = [
-    { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
-    { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
-    { id: 'api', label: 'API Settings', description: 'Configure logging and API settings' },
-    { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
-  ];
-
-  const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
-
-  function goToNextStep() {
-    if (currentStepIndex < steps.length - 1) {
-      setCurrentStep(steps[currentStepIndex + 1].id);
-    }
-  }
-
-  function goToPreviousStep() {
-    if (currentStepIndex > 0) {
-      setCurrentStep(steps[currentStepIndex - 1].id);
-    }
-  }
+  }, [currentStep, currentStepIndex, formData.default_model, saving, steps, goToNextStep, goToPreviousStep, handleSave]);
 
   if (loading) {
     return (
