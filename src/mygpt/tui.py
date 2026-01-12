@@ -23,6 +23,13 @@ from mygpt.sessions import list_sessions
 
 log = logging.getLogger(__name__)
 
+# Buffer size threshold for flushing partial marker detection buffers.
+# This prevents unbounded memory growth when processing streaming responses
+# that may contain partial or incomplete markers. The value is chosen to be
+# large enough to hold typical markers (which are ~100-200 chars) while
+# preventing memory issues from malformed streams.
+MARKER_BUFFER_FLUSH_THRESHOLD = 1000
+
 
 class ChatOutput(Static):
     """Widget to display assistant output incrementally."""
@@ -527,10 +534,7 @@ class MyGPTTUI(App):
                             start_idx = buffer.index("__RETRY_START__")
                             end_idx = buffer.index("__RETRY_END__") + len("__RETRY_END__")
 
-                            # Extract the marker content
-                            marker_content = buffer[start_idx:end_idx]
-
-                            # Parse retry status
+                            # Parse retry status and display reconnection message
                             try:
                                 import json
                                 json_start = start_idx + len("__RETRY_START__")
@@ -545,10 +549,13 @@ class MyGPTTUI(App):
                                     f"\n[reconnecting] Connection lost. Retrying (attempt {attempt}) in {delay:.1f}s...\n"
                                 )
                             except Exception as parse_err:
-                                log.warning(f"Failed to parse retry status: {parse_err}")
-
-                            # Remove the marker from buffer and continue
-                            buffer = buffer[:start_idx] + buffer[end_idx:]
+                                # Log parse error but still remove the malformed marker
+                                # to prevent it from being displayed as garbled text
+                                log.warning(f"Failed to parse retry marker, removing from buffer: {parse_err}")
+                            finally:
+                                # Always remove the marker from buffer, even if parsing failed.
+                                # This prevents malformed markers from appearing in user output.
+                                buffer = buffer[:start_idx] + buffer[end_idx:]
 
                         # Check for RAG markers (existing functionality)
                         if "__RAG_START__" in buffer and "__RAG_END__" in buffer:
@@ -575,8 +582,11 @@ class MyGPTTUI(App):
                             if safe_idx > 0 and safe_idx < len(buffer):
                                 self.output.append(buffer[:safe_idx])
                                 buffer = buffer[safe_idx:]
-                            elif safe_idx == len(buffer) and len(buffer) > 100:
-                                # If buffer is getting large without markers, flush it
+                            elif safe_idx == len(buffer) and len(buffer) > MARKER_BUFFER_FLUSH_THRESHOLD:
+                                # If buffer exceeds threshold without complete markers,
+                                # flush it to prevent unbounded memory growth from
+                                # malformed or missing marker end tags
+                                log.warning(f"Buffer exceeded threshold ({MARKER_BUFFER_FLUSH_THRESHOLD} chars), flushing to prevent memory issues")
                                 self.output.append(buffer)
                                 buffer = ""
 

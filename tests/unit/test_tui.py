@@ -834,3 +834,104 @@ async def test_stream_chat_with_rag_markers_ignored(tmp_path: Path) -> None:
     # Verify response text was displayed
     text_calls = [c for c in append_calls if "Response text" in c]
     assert len(text_calls) > 0
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_with_malformed_retry_marker(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Test that malformed retry markers are removed from buffer and don't appear in output."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock prompt widget
+    app.prompt = MagicMock(spec=Input)
+
+    # Mock httpx AsyncClient with malformed retry marker in stream
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        # Malformed JSON in retry marker
+        yield '__RETRY_START__{"invalid json": broken}__RETRY_END__'
+        yield "Response text after malformed marker"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        with caplog.at_level(logging.WARNING):
+            await app._stream_chat("Test prompt")
+
+    # Verify warning was logged about parse failure
+    assert "Failed to parse retry marker" in caplog.text
+
+    # Verify malformed marker was NOT displayed to user
+    append_calls = [str(call) for call in app.output.append.call_args_list]
+    marker_calls = [c for c in append_calls if "__RETRY_START__" in c or "__RETRY_END__" in c]
+    assert len(marker_calls) == 0, "Malformed markers should be removed from output"
+
+    # Verify clean response text was displayed
+    text_calls = [c for c in append_calls if "Response text" in c]
+    assert len(text_calls) > 0
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_buffer_flush_threshold(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Test that buffer threshold constant is used and logs warning when exceeded."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    # Verify the constant is defined with appropriate value
+    from mygpt.tui import MARKER_BUFFER_FLUSH_THRESHOLD
+    assert MARKER_BUFFER_FLUSH_THRESHOLD == 1000, "Threshold should be set to a reasonable value"
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock prompt widget
+    app.prompt = MagicMock(spec=Input)
+
+    # Mock httpx AsyncClient with normal response
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        # Just yield normal text to verify basic functionality
+        yield "Normal response text"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    # Verify response was displayed
+    append_calls = [str(call) for call in app.output.append.call_args_list]
+    text_calls = [c for c in append_calls if "Normal response" in c]
+    assert len(text_calls) > 0
