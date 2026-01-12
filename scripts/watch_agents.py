@@ -203,8 +203,8 @@ def get_status_icon(status: str, conclusion: Optional[str] = None) -> str:
     return "❓"
 
 
-def get_workflow_runs(repo: str, issue: str) -> List[Dict]:
-    """Get workflow runs related to an issue"""
+def get_workflow_runs(repo: str, issue: Optional[str] = None) -> List[Dict]:
+    """Get workflow runs related to an issue (or all agent workflows if issue is None)"""
     result = run_gh_command([
         'run', 'list',
         '--repo', repo,
@@ -217,16 +217,22 @@ def get_workflow_runs(repo: str, issue: str) -> List[Dict]:
 
     runs = json.loads(result)
 
-    # Filter runs related to this issue
+    # Filter runs related to this issue or all agent workflows
     related_runs = []
     for run in runs:
         workflow_name = run.get('workflowName', '')
         head_branch = run.get('headBranch', '')
 
-        # Include if it's an agent workflow or branch matches issue pattern
-        if (workflow_name in ("Developer Agent Auto-Implement", "Review Agent Auto-Review", "Claude Code")
-            or f"/{issue}-" in head_branch):
-            related_runs.append(run)
+        # If no issue specified, include all agent workflows
+        if issue is None:
+            if workflow_name in ("Developer Agent Auto-Implement", "Review Agent Auto-Review", "Claude Code Review",
+                                "Scrummaster Agent - Select and Start Next Issue", "Assign Backlog Issues to scrummaster-agent"):
+                related_runs.append(run)
+        else:
+            # Include if it's an agent workflow or branch matches issue pattern
+            if (workflow_name in ("Developer Agent Auto-Implement", "Review Agent Auto-Review", "Claude Code Review")
+                or f"/{issue}-" in head_branch):
+                related_runs.append(run)
 
     return related_runs[:20]  # Limit to 20 most recent
 
@@ -293,9 +299,14 @@ def clear_screen():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Watch GitHub Actions workflows for a specific issue"
+        description="Watch GitHub Actions workflows for a specific issue or all agent workflows"
     )
-    parser.add_argument('issue', type=int, help='Issue number to monitor')
+    parser.add_argument(
+        'issue',
+        type=int,
+        nargs='?',
+        help='Issue number to monitor (optional - if omitted, shows all agent workflows)'
+    )
     parser.add_argument(
         '--poll-interval',
         type=int,
@@ -316,7 +327,10 @@ def main():
     status_in_review = config.get('STATUS_IN_REVIEW', 'In Review')
     human_owner = config.get('HUMAN_OWNER', 'unknown')
 
-    print(f"🔍 Initializing watch for issue #{args.issue}...")
+    if args.issue:
+        print(f"🔍 Initializing watch for issue #{args.issue}...")
+    else:
+        print(f"🔍 Initializing watch for all agent workflows...")
     print(f"Repository: {repo}")
     print(f"Poll interval: {args.poll_interval}s")
     time.sleep(2)
@@ -329,37 +343,43 @@ def main():
                 clear_screen()
             first_run = False
 
-            # Get current issue status
-            issue_status, issue_assignee = get_issue_info(str(args.issue), config)
+            # Get current issue status if monitoring specific issue
+            if args.issue:
+                issue_status, issue_assignee = get_issue_info(str(args.issue), config)
 
-            # Check exit condition
-            if issue_status == status_in_review and issue_assignee == human_owner:
-                print("\n" + "═" * 80)
-                print(f"{GREEN}{BOLD}✅ Issue #{args.issue} has reached completion!{RESET}")
-                print()
-                print(f"   Status: {issue_status}")
-                print(f"   Assigned to: {issue_assignee}")
-                print()
-                print("   The issue is now ready for your stakeholder acceptance.")
-                print(f"   View at: https://github.com/{repo}/issues/{args.issue}")
-                print("═" * 80)
-                sys.exit(0)
+                # Check exit condition
+                if issue_status == status_in_review and issue_assignee == human_owner:
+                    print("\n" + "═" * 80)
+                    print(f"{GREEN}{BOLD}✅ Issue #{args.issue} has reached completion!{RESET}")
+                    print()
+                    print(f"   Status: {issue_status}")
+                    print(f"   Assigned to: {issue_assignee}")
+                    print()
+                    print("   The issue is now ready for your stakeholder acceptance.")
+                    print(f"   View at: https://github.com/{repo}/issues/{args.issue}")
+                    print("═" * 80)
+                    sys.exit(0)
 
             # Display header
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             print("\n" + "═" * 80)
-            print(f"{BOLD}🔍 Monitoring Issue #{args.issue}{RESET}")
-            print("═" * 80)
-            print(f"Last updated: {current_time}")
-            print()
-            print(f"📋 Issue Status: {YELLOW}{issue_status}{RESET}")
-            print(f"👤 Assigned to: {CYAN}{issue_assignee}{RESET}")
-            print()
-            print(f"🎯 Exit Condition: Status='{status_in_review}' AND Assignee='{human_owner}'")
+            if args.issue:
+                print(f"{BOLD}🔍 Monitoring Issue #{args.issue}{RESET}")
+                print("═" * 80)
+                print(f"Last updated: {current_time}")
+                print()
+                print(f"📋 Issue Status: {YELLOW}{issue_status}{RESET}")
+                print(f"👤 Assigned to: {CYAN}{issue_assignee}{RESET}")
+                print()
+                print(f"🎯 Exit Condition: Status='{status_in_review}' AND Assignee='{human_owner}'")
+            else:
+                print(f"{BOLD}🔍 Monitoring All Agent Workflows{RESET}")
+                print("═" * 80)
+                print(f"Last updated: {current_time}")
             print("─" * 80)
 
             # Get and display workflow runs
-            runs = get_workflow_runs(repo, str(args.issue))
+            runs = get_workflow_runs(repo, str(args.issue) if args.issue else None)
 
             if runs:
                 # Separate active and completed runs
@@ -378,7 +398,10 @@ def main():
                     for run in completed_runs[:10]:
                         print_run_row(run, config)
             else:
-                print(f"\n{GRAY}📊 No workflow runs found for this issue yet.{RESET}")
+                if args.issue:
+                    print(f"\n{GRAY}📊 No workflow runs found for this issue yet.{RESET}")
+                else:
+                    print(f"\n{GRAY}📊 No agent workflow runs found.{RESET}")
 
             print("\n" + "─" * 80)
             print(f"⏱️  Next update in {args.poll_interval}s... (Ctrl+C to exit)")
