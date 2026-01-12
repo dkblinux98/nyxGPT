@@ -43,7 +43,7 @@ export default function AdminPage() {
     setConfigError(null);
     try {
       const res = await fetch('/api/config');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(`Failed to load configuration: HTTP ${res.status}`);
       const data = await res.json();
       setConfig(data);
       setFormData({
@@ -65,7 +65,7 @@ export default function AdminPage() {
     setModelsError(null);
     try {
       const res = await fetch('/api/models');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(`Failed to load models: HTTP ${res.status}`);
       const data = await res.json();
       setAvailableModels(data.models || []);
     } catch (e: unknown) {
