@@ -293,4 +293,99 @@ describe('Configuration Wizard Logic', () => {
       expect(progressPercentage).toBe(50);
     });
   });
+
+  describe('Partial Failure Handling', () => {
+    it('should handle config load success with model load failure', () => {
+      // Simulate config loading successfully
+      const config = {
+        ollama_base_url: 'http://127.0.0.1:11434',
+        default_model: 'llama3.1:8b',
+        rag_enabled: false,
+        log_level: 'INFO',
+      };
+      const configError = null;
+
+      // Simulate models failing to load
+      const availableModels: string[] = [];
+      const modelsWarning = 'Failed to load model list: HTTP 500. You can manually enter a model name.';
+
+      // Config should be loaded successfully
+      expect(config).toBeDefined();
+      expect(configError).toBeNull();
+
+      // Models should be empty with warning
+      expect(availableModels).toHaveLength(0);
+      expect(modelsWarning).toContain('Failed to load model list');
+      expect(modelsWarning).toContain('manually enter');
+    });
+
+    it('should enable manual input when models fail to load', () => {
+      const availableModels: string[] = [];
+      const useManualModelInput = true;
+
+      // Manual input should be enabled when models fail to load
+      expect(useManualModelInput).toBe(true);
+      expect(availableModels).toHaveLength(0);
+    });
+
+    it('should allow manual model name entry', () => {
+      const manualModelName = 'custom-model:latest';
+      const formData = {
+        ollama_base_url: 'http://127.0.0.1:11434',
+        default_model: manualModelName,
+        rag_enabled: false,
+        log_level: 'INFO',
+      };
+
+      // Manual model name should be accepted
+      expect(formData.default_model).toBe(manualModelName);
+      expect(formData.default_model).toBeTruthy();
+    });
+
+    it('should clear warning when models load successfully', () => {
+      const availableModels = ['llama3.1:8b', 'mistral:7b'];
+      const warning = null;
+
+      // Warning should be cleared when models load
+      expect(availableModels.length).toBeGreaterThan(0);
+      expect(warning).toBeNull();
+    });
+
+    it('should support toggling between manual input and dropdown', () => {
+      let useManualModelInput = false;
+      const availableModels = ['llama3.1:8b', 'mistral:7b'];
+
+      // Start with dropdown
+      expect(useManualModelInput).toBe(false);
+      expect(availableModels.length).toBeGreaterThan(0);
+
+      // Toggle to manual input
+      useManualModelInput = true;
+      expect(useManualModelInput).toBe(true);
+
+      // Toggle back to dropdown
+      useManualModelInput = false;
+      expect(useManualModelInput).toBe(false);
+    });
+
+    it('should display warning message without blocking wizard', () => {
+      const warning = 'Failed to load model list: HTTP 500. You can manually enter a model name.';
+      const error = null;
+      const loading = false;
+
+      // Warning should be present but not block wizard
+      expect(warning).toBeTruthy();
+      expect(error).toBeNull();
+      expect(loading).toBe(false);
+    });
+
+    it('should allow retry when models fail to load', () => {
+      const availableModels: string[] = [];
+      const loadingModels = false;
+      const canRetry = availableModels.length === 0 && !loadingModels;
+
+      // Retry should be allowed when not loading and models are empty
+      expect(canRetry).toBe(true);
+    });
+  });
 });

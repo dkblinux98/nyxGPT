@@ -17,6 +17,7 @@ export default function AdminPage() {
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -36,6 +37,7 @@ export default function AdminPage() {
 
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
+  const [useManualModelInput, setUseManualModelInput] = useState(false);
 
   async function loadConfig() {
     setLoading(true);
@@ -66,9 +68,13 @@ export default function AdminPage() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setAvailableModels(data.models || []);
+      setWarning(null);
     } catch (e: unknown) {
       console.error('Failed to load models:', e);
+      const msg = e instanceof Error ? e.message : String(e);
       setAvailableModels([]);
+      setWarning(`Failed to load model list: ${msg}. You can manually enter a model name.`);
+      setUseManualModelInput(true);
     } finally {
       setLoadingModels(false);
     }
@@ -180,6 +186,23 @@ export default function AdminPage() {
         </a>
       </div>
 
+      {/* Warning Message */}
+      {warning && (
+        <div
+          style={{
+            marginBottom: '1.5rem',
+            padding: '12px 16px',
+            background: '#fff3cd',
+            color: '#856404',
+            border: '1px solid #ffc107',
+            borderRadius: 6,
+            fontSize: 14,
+          }}
+        >
+          <strong>⚠️ Warning:</strong> {warning}
+        </div>
+      )}
+
       {/* Progress Indicator */}
       <div style={{ marginBottom: '2rem' }}>
         <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
@@ -226,31 +249,85 @@ export default function AdminPage() {
               <label style={{ display: 'block', marginBottom: 8, fontWeight: 600, fontSize: 14 }}>
                 Default Model
               </label>
-              <select
-                value={formData.default_model}
-                onChange={(e) => setFormData({ ...formData, default_model: e.target.value })}
-                disabled={loadingModels}
-                style={{
-                  width: '100%',
-                  padding: '10px 12px',
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  fontSize: 14,
-                  background: 'var(--background)',
-                  color: 'var(--foreground)',
-                }}
-              >
-                <option value="">Select a model...</option>
-                {availableModels.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </select>
+              {useManualModelInput || availableModels.length === 0 ? (
+                <div>
+                  <input
+                    type="text"
+                    value={formData.default_model}
+                    onChange={(e) => setFormData({ ...formData, default_model: e.target.value })}
+                    placeholder="Enter model name (e.g., llama3.1:8b)"
+                    style={{
+                      width: '100%',
+                      padding: '10px 12px',
+                      border: '1px solid var(--border)',
+                      borderRadius: 6,
+                      fontSize: 14,
+                      background: 'var(--background)',
+                      color: 'var(--foreground)',
+                    }}
+                  />
+                  {!useManualModelInput && availableModels.length === 0 && !loadingModels && (
+                    <button
+                      onClick={loadModels}
+                      style={{
+                        marginTop: 8,
+                        padding: '6px 12px',
+                        background: '#0066cc',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: 4,
+                        cursor: 'pointer',
+                        fontSize: 12,
+                      }}
+                    >
+                      Retry Loading Models
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <select
+                  value={formData.default_model}
+                  onChange={(e) => setFormData({ ...formData, default_model: e.target.value })}
+                  disabled={loadingModels}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    border: '1px solid var(--border)',
+                    borderRadius: 6,
+                    fontSize: 14,
+                    background: 'var(--background)',
+                    color: 'var(--foreground)',
+                  }}
+                >
+                  <option value="">Select a model...</option>
+                  {availableModels.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              )}
               {loadingModels && (
                 <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
                   Loading available models...
                 </div>
+              )}
+              {availableModels.length > 0 && !useManualModelInput && (
+                <button
+                  onClick={() => setUseManualModelInput(true)}
+                  style={{
+                    marginTop: 8,
+                    padding: '6px 12px',
+                    background: 'transparent',
+                    color: '#0066cc',
+                    border: '1px solid #0066cc',
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                    fontSize: 12,
+                  }}
+                >
+                  Enter model name manually
+                </button>
               )}
             </div>
 
