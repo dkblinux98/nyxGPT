@@ -44,7 +44,30 @@ pr_head_branch="$(gh pr view "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --json he
 if is_sub_issue "$ISSUE"; then
   parent_issue="$(get_parent_issue "$ISSUE")"
   base_branch="$(get_pr_branch_for_issue "$parent_issue")"
-  echo "[review] Sub-issue detected: merged to parent feature branch $base_branch (parent issue: #$parent_issue)" >&2
+
+  # Check if parent branch still exists on remote (it may have been deleted after merging)
+  if ! git ls-remote --exit-code --heads origin "$base_branch" >/dev/null 2>&1; then
+    echo "[review] Parent branch $base_branch no longer exists (likely merged and deleted)" >&2
+
+    # Walk up the tree: check if parent is also a sub-issue
+    if is_sub_issue "$parent_issue"; then
+      grandparent_issue="$(get_parent_issue "$parent_issue")"
+      base_branch="$(get_pr_branch_for_issue "$grandparent_issue")"
+      echo "[review] Using grandparent branch: $base_branch (grandparent issue: #$grandparent_issue)" >&2
+
+      # If grandparent branch also doesn't exist, fall back to release branch
+      if ! git ls-remote --exit-code --heads origin "$base_branch" >/dev/null 2>&1; then
+        base_branch="$(get_release_branch)"
+        echo "[review] Grandparent branch also deleted, using release branch: $base_branch" >&2
+      fi
+    else
+      # Parent is top-level, use release branch
+      base_branch="$(get_release_branch)"
+      echo "[review] Parent was top-level, using release branch: $base_branch" >&2
+    fi
+  else
+    echo "[review] Sub-issue detected: merged to parent feature branch $base_branch (parent issue: #$parent_issue)" >&2
+  fi
 else
   base_branch="$(get_release_branch)"
   echo "[review] Top-level issue: merged to release branch $base_branch" >&2
