@@ -1,14 +1,12 @@
 name: Review Agent Auto-Review
 
 on:
-  workflow_run:
-    workflows: ["Claude Code Review"]
+  repository_dispatch:
     types:
-      - completed
+      - code-review-completed
 
 jobs:
   execute-review-decision:
-    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
 
     permissions:
@@ -70,28 +68,22 @@ jobs:
             echo "config ok: $REPO_OWNER/$REPO_NAME project $PROJECT_OWNER#$PROJECT_NUMBER release=$RELEASE_BRANCH"
           '
 
-      - name: Get PR number from workflow run
+      - name: Get PR number from dispatch payload
         id: get_pr
         shell: bash
         run: |
           set -euo pipefail
 
-          # Get PR number from the triggering workflow
-          PR_NUMBER=$(gh run view ${{ github.event.workflow_run.id }} --json headBranch --jq '.headBranch' | grep -oP '\d+' | head -1)
+          # Get PR number from repository_dispatch payload
+          PR_NUMBER="${{ github.event.client_payload.pr_number }}"
 
           if [[ -z "$PR_NUMBER" ]]; then
-            # Try to find PR from branch name
-            BRANCH="${{ github.event.workflow_run.head_branch }}"
-            PR_NUMBER=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
-          fi
-
-          if [[ -z "$PR_NUMBER" ]]; then
-            echo "::error::Could not determine PR number from workflow run"
+            echo "::error::No PR number in dispatch payload"
             exit 1
           fi
 
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-          echo "Found PR #$PR_NUMBER"
+          echo "Processing review for PR #$PR_NUMBER"
 
       - name: Read review comment and parse decision
         id: parse_review

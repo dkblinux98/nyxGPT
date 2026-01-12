@@ -110,3 +110,26 @@ jobs:
           # or https://code.claude.com/docs/en/cli-reference for available options
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
 
+      - name: Trigger review decision workflow
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.pr_number.outputs.pr }}
+        with:
+          github-token: ${{ secrets.REVIEW_AGENT_TOKEN }}
+          script: |
+            const pr_number = process.env.PR_NUMBER;
+
+            await github.rest.repos.createDispatchEvent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              event_type: 'code-review-completed',
+              client_payload: {
+                pr_number: parseInt(pr_number),
+                workflow_run_id: context.runId,
+                review_conclusion: '${{ steps.claude-review.conclusion }}'
+              }
+            });
+
+            console.log(`Dispatched code-review-completed event for PR #${pr_number}`);
+
