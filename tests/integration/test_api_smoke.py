@@ -134,3 +134,134 @@ def test_api_config_post(api_base_url: str) -> None:
         timeout=5.0,
     )
     assert r.status_code == 200
+
+
+@pytest.mark.integration
+def test_api_config_post_empty_payload(api_base_url: str) -> None:
+    """Verify POST /api/v1/config with empty payload succeeds but makes no changes."""
+    # Get current config
+    r = httpx.get(f"{api_base_url}/api/v1/config", timeout=5.0)
+    assert r.status_code == 200
+    original_config = r.json()
+
+    # Send empty payload
+    r = httpx.post(
+        f"{api_base_url}/api/v1/config",
+        json={},
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert "updated" in data
+    assert "effective" in data
+    assert isinstance(data["updated"], list)
+    assert len(data["updated"]) == 0  # No fields updated
+
+    # Verify config unchanged
+    r = httpx.get(f"{api_base_url}/api/v1/config", timeout=5.0)
+    assert r.status_code == 200
+    current_config = r.json()
+    assert current_config == original_config
+
+
+@pytest.mark.integration
+def test_api_config_post_unknown_fields(api_base_url: str) -> None:
+    """Verify POST /api/v1/config ignores unknown fields gracefully."""
+    # Get current config
+    r = httpx.get(f"{api_base_url}/api/v1/config", timeout=5.0)
+    assert r.status_code == 200
+    original_config = r.json()
+
+    # Send payload with unknown fields
+    r = httpx.post(
+        f"{api_base_url}/api/v1/config",
+        json={
+            "unknown_field": "value",
+            "another_unknown": 123,
+        },
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert "updated" in data
+    assert "effective" in data
+    assert len(data["updated"]) == 0  # Unknown fields ignored
+
+    # Verify config unchanged
+    r = httpx.get(f"{api_base_url}/api/v1/config", timeout=5.0)
+    assert r.status_code == 200
+    current_config = r.json()
+    assert current_config == original_config
+
+
+@pytest.mark.integration
+def test_api_config_post_invalid_types(api_base_url: str) -> None:
+    """Verify POST /api/v1/config rejects or ignores invalid field types."""
+    # Get current config
+    r = httpx.get(f"{api_base_url}/api/v1/config", timeout=5.0)
+    assert r.status_code == 200
+    original_config = r.json()
+
+    # Send payload with wrong types (these should be ignored due to isinstance checks)
+    r = httpx.post(
+        f"{api_base_url}/api/v1/config",
+        json={
+            "default_model": 123,  # Should be string
+            "rag_enabled": "not_a_bool",  # Should be bool
+            "log_level": ["DEBUG"],  # Should be string
+        },
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert "updated" in data
+    assert "effective" in data
+    # Invalid types should be ignored (not applied)
+    assert len(data["updated"]) == 0
+
+    # Verify config unchanged
+    r = httpx.get(f"{api_base_url}/api/v1/config", timeout=5.0)
+    assert r.status_code == 200
+    current_config = r.json()
+    assert current_config == original_config
+
+
+@pytest.mark.integration
+def test_api_config_post_partial_valid(api_base_url: str) -> None:
+    """Verify POST /api/v1/config applies only valid fields when some are invalid."""
+    # Get current config
+    r = httpx.get(f"{api_base_url}/api/v1/config", timeout=5.0)
+    assert r.status_code == 200
+    original_config = r.json()
+
+    # Send payload with mix of valid and invalid fields
+    r = httpx.post(
+        f"{api_base_url}/api/v1/config",
+        json={
+            "log_level": "WARNING",  # Valid
+            "default_model": 999,  # Invalid type (should be string)
+            "rag_enabled": True,  # Valid
+        },
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert "updated" in data
+    assert "effective" in data
+    # Only valid fields should be updated
+    assert "log_level" in data["updated"]
+    assert "rag_enabled" in data["updated"]
+    assert data["effective"]["log_level"] == "WARNING"
+    assert data["effective"]["rag_enabled"] is True
+
+    # Restore original config
+    restore_payload = {
+        "log_level": original_config["log_level"],
+        "rag_enabled": original_config["rag_enabled"],
+    }
+    r = httpx.post(
+        f"{api_base_url}/api/v1/config",
+        json=restore_payload,
+        timeout=5.0,
+    )
+    assert r.status_code == 200
