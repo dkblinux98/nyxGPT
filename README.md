@@ -247,12 +247,41 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
 - Chat interface with streaming responses
 - Session picker and management
 - RAG document upload and toggle
+- **Configuration wizard** at `/admin` for step-by-step setup
 - Model management (pull, delete, list) at `/models`
 - **Keyboard shortcuts** for productivity:
   - `Cmd/Ctrl+K` - Create new chat
   - `Cmd/Ctrl+/` - Toggle sidebar visibility
   - `/` - Focus search input
   - `Esc` - Close menus and dialogs
+
+---
+
+### Configuration Wizard
+
+The web UI includes a step-by-step configuration wizard for easy system setup. Access it via the **⚙️ Settings** button in the sidebar or navigate to `http://127.0.0.1:3000/admin`.
+
+**Wizard Steps:**
+
+1. **Model Selection** - Choose your default LLM model from available Ollama models
+2. **RAG Configuration** - Enable/disable retrieval-augmented generation
+3. **API Settings** - Configure log level and test API connectivity
+4. **Summary** - Review and save your configuration
+
+**Features:**
+- Visual progress indicator showing current step
+- Form validation for required fields
+- Connection testing to verify API connectivity
+- Hot-reloadable settings (no service restart required)
+- Clear navigation between steps
+
+**Configuration Changes:**
+The wizard updates your `~/.myGPT/config.ini` file with the following settings:
+- `default_model` - Default LLM model for new sessions
+- `rag_enabled` - Enable/disable RAG globally
+- `log_level` - Logging verbosity (DEBUG, INFO, WARNING, ERROR)
+
+Changes take effect immediately without requiring a service restart.
 
 ---
 

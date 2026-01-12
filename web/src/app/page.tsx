@@ -574,7 +574,23 @@ export default function Home() {
           <span style={{ fontSize: 16 }}>+</span> New Chat
         </button>
 
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 16, display: 'flex', gap: 8 }}>
+          <a
+            href="/admin"
+            style={{
+              display: 'inline-block',
+              padding: '6px 12px',
+              background: 'var(--button-bg)',
+              border: '1px solid var(--border)',
+              borderRadius: 6,
+              textDecoration: 'none',
+              color: 'var(--foreground)',
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            ⚙️ Settings
+          </a>
           <a
             href="/models"
             style={{
