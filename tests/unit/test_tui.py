@@ -726,3 +726,458 @@ async def test_tui_action_pick_session_cancel(tmp_path: Path) -> None:
     # Verify output was NOT modified
     app.output.clear.assert_not_called()
     app.output.append.assert_not_called()
+
+
+# ============================================================================
+# MyGPTTUI Reconnection Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_with_retry_markers(tmp_path: Path) -> None:
+    """Test that retry markers are parsed and displayed correctly."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock prompt widget
+    app.prompt = MagicMock(spec=Input)
+
+    # Mock httpx AsyncClient with retry marker in stream
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        # Simulate retry marker followed by response
+        import json
+        retry_data = {"type": "retry_status", "attempt": 1, "delay": 1.5}
+        yield f'__RETRY_START__{json.dumps(retry_data)}__RETRY_END__'
+        yield "Hello"
+        yield " "
+        yield "World"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    # Verify reconnection message was displayed
+    append_calls = [str(call) for call in app.output.append.call_args_list]
+    reconnect_calls = [c for c in append_calls if "reconnecting" in c.lower()]
+    assert len(reconnect_calls) > 0
+
+    # Verify response text was also displayed
+    text_calls = [c for c in append_calls if "Hello" in c or "World" in c]
+    assert len(text_calls) > 0
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_with_rag_markers_ignored(tmp_path: Path) -> None:
+    """Test that RAG markers are filtered out in TUI."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock prompt widget
+    app.prompt = MagicMock(spec=Input)
+
+    # Mock httpx AsyncClient with RAG marker in stream
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        import json
+        rag_data = {"type": "rag_metadata", "chunks": []}
+        yield f'__RAG_START__{json.dumps(rag_data)}__RAG_END__'
+        yield "Response text"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    # Verify RAG marker was filtered out
+    append_calls = [str(call) for call in app.output.append.call_args_list]
+    rag_calls = [c for c in append_calls if "__RAG_START__" in c or "__RAG_END__" in c]
+    assert len(rag_calls) == 0
+
+    # Verify response text was displayed
+    text_calls = [c for c in append_calls if "Response text" in c]
+    assert len(text_calls) > 0
+
+
+# ============================================================================
+# MyGPTTUI Partial Marker Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_partial_retry_marker_split_across_chunks(tmp_path: Path) -> None:
+    """Test marker split across multiple chunks is buffered correctly.
+
+    Covers the partial marker detection logic in tui.py:567-578.
+    Tests scenario where __RETRY_START__ arrives in one chunk and the rest in another.
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        import json
+        retry_data = {"type": "retry_status", "attempt": 1, "delay": 2.0}
+        full_marker = f'__RETRY_START__{json.dumps(retry_data)}__RETRY_END__'
+
+        # Split the marker at different positions
+        yield full_marker[:10]  # "__RETRY_ST"
+        yield full_marker[10:40]  # "ART__...partial JSON..."
+        yield full_marker[40:]  # "...rest of JSON...__RETRY_END__"
+        yield "Hello World"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    # Verify reconnection message was displayed (marker was reassembled correctly)
+    append_calls = [str(call) for call in app.output.append.call_args_list]
+    reconnect_calls = [c for c in append_calls if "reconnecting" in c.lower()]
+    assert len(reconnect_calls) > 0, "Partial retry marker should be reassembled and displayed"
+
+    # Verify response text was displayed
+    text_calls = [c for c in append_calls if "Hello World" in c]
+    assert len(text_calls) > 0, "Response text after marker should be displayed"
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_partial_marker_at_chunk_boundary(tmp_path: Path) -> None:
+    """Test marker at exact chunk boundary is handled correctly.
+
+    Tests scenario where chunk ends with partial marker prefix like '__RETRY_'.
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        import json
+
+        # Create the full marker first
+        retry_data = {"type": "retry_status", "attempt": 2, "delay": 3.0}
+        full_marker = f'__RETRY_START__{json.dumps(retry_data)}__RETRY_END__'
+
+        # First chunk: regular text ending with partial marker "__R"
+        yield "Some text before __R"
+
+        # Second chunk: rest of marker starting from "ETRY_START__..."
+        yield full_marker[3:]  # Start after "__R"
+
+        # Third chunk: text after marker
+        yield " and some text after"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    append_calls = [str(call) for call in app.output.append.call_args_list]
+
+    # Verify text before marker was displayed
+    before_calls = [c for c in append_calls if "Some text before" in c]
+    assert len(before_calls) > 0, "Text before partial marker should be flushed"
+
+    # Verify reconnection message was displayed
+    reconnect_calls = [c for c in append_calls if "reconnecting" in c.lower()]
+    assert len(reconnect_calls) > 0, "Reassembled marker should display reconnection message"
+
+    # Verify text after marker was displayed
+    after_calls = [c for c in append_calls if "text after" in c]
+    assert len(after_calls) > 0, "Text after marker should be displayed"
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_multiple_markers_in_single_chunk(tmp_path: Path) -> None:
+    """Test multiple complete markers in a single chunk are processed correctly."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        import json
+
+        # Two retry markers in one chunk
+        retry_data_1 = {"type": "retry_status", "attempt": 1, "delay": 1.0}
+        retry_data_2 = {"type": "retry_status", "attempt": 2, "delay": 2.0}
+        marker_1 = f'__RETRY_START__{json.dumps(retry_data_1)}__RETRY_END__'
+        marker_2 = f'__RETRY_START__{json.dumps(retry_data_2)}__RETRY_END__'
+
+        yield marker_1 + marker_2
+        yield "Final response"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    append_calls = [str(call) for call in app.output.append.call_args_list]
+
+    # Verify both reconnection messages were displayed
+    reconnect_calls = [c for c in append_calls if "reconnecting" in c.lower()]
+    assert len(reconnect_calls) >= 2, "Both retry markers should be processed"
+
+    # Verify attempt numbers
+    attempt_1_calls = [c for c in reconnect_calls if "attempt 1" in c.lower()]
+    attempt_2_calls = [c for c in reconnect_calls if "attempt 2" in c.lower()]
+    assert len(attempt_1_calls) > 0, "First retry attempt should be displayed"
+    assert len(attempt_2_calls) > 0, "Second retry attempt should be displayed"
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_partial_marker_at_end_of_stream(tmp_path: Path) -> None:
+    """Test partial marker at end of stream is flushed as regular text.
+
+    Tests that incomplete markers at stream end are treated as regular content,
+    not lost in the buffer.
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        yield "Complete response text"
+        # Incomplete marker at end (malformed or truncated)
+        yield " __RETRY_STA"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    append_calls = [str(call) for call in app.output.append.call_args_list]
+
+    # Verify complete text was displayed
+    text_calls = [c for c in append_calls if "Complete response text" in c]
+    assert len(text_calls) > 0, "Complete text should be displayed"
+
+    # Verify partial marker was flushed (buffer is flushed at stream end)
+    # The logic at line 584-585 flushes remaining buffer
+    partial_calls = [c for c in append_calls if "__RETRY_STA" in c]
+    assert len(partial_calls) > 0, "Partial marker should be flushed at stream end"
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_malformed_marker_removed(tmp_path: Path) -> None:
+    """Test malformed markers (incomplete JSON) are handled gracefully.
+
+    Tests that malformed markers trigger the exception handler and are removed
+    from output without crashing.
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        # Malformed marker with invalid JSON
+        yield '__RETRY_START__{"invalid json without closing brace__RETRY_END__'
+        yield "Normal text after malformed marker"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        # Should not raise exception
+        await app._stream_chat("Test prompt")
+
+    append_calls = [str(call) for call in app.output.append.call_args_list]
+
+    # Verify normal text was displayed (marker was removed even though malformed)
+    text_calls = [c for c in append_calls if "Normal text after" in c]
+    assert len(text_calls) > 0, "Text after malformed marker should still be displayed"
+
+    # Verify malformed marker itself was removed (not displayed to user)
+    marker_calls = [c for c in append_calls if "__RETRY_START__" in c or "invalid json" in c]
+    assert len(marker_calls) == 0, "Malformed marker should be removed from output"
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_mixed_partial_retry_and_rag_markers(tmp_path: Path) -> None:
+    """Test handling of both RETRY and RAG markers split across chunks.
+
+    Tests that partial marker detection works for both marker types.
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        import json
+
+        # First: partial RETRY marker
+        retry_data = {"type": "retry_status", "attempt": 1, "delay": 1.5}
+        retry_marker = f'__RETRY_START__{json.dumps(retry_data)}__RETRY_END__'
+        yield retry_marker[:15]  # Partial
+        yield retry_marker[15:]  # Complete
+
+        # Second: partial RAG marker
+        rag_data = {"type": "rag_metadata", "chunks": []}
+        rag_marker = f'__RAG_START__{json.dumps(rag_data)}__RAG_END__'
+        yield rag_marker[:10]  # Partial
+        yield rag_marker[10:]  # Complete
+
+        # Final text
+        yield "Response text"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    append_calls = [str(call) for call in app.output.append.call_args_list]
+
+    # Verify RETRY marker was processed
+    reconnect_calls = [c for c in append_calls if "reconnecting" in c.lower()]
+    assert len(reconnect_calls) > 0, "Partial RETRY marker should be reassembled"
+
+    # Verify RAG marker was filtered out (not displayed)
+    rag_calls = [c for c in append_calls if "__RAG_" in c]
+    assert len(rag_calls) == 0, "RAG markers should be filtered out"
+
+    # Verify response text was displayed
+    text_calls = [c for c in append_calls if "Response text" in c]
+    assert len(text_calls) > 0, "Response text should be displayed"

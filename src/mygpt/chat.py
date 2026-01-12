@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from configparser import ConfigParser
 
 from mygpt.config import load_config
@@ -247,11 +247,23 @@ def chat_stream(
     config_path: str | None = None,
     sessions_dir: str | None = None,
     rag_enabled: bool | None = None,
+    on_retry: Callable[[int, float, Exception], None] | None = None,
 ) -> Iterator[str]:
     """Yield assistant text chunks for a chat turn while persisting the final reply.
 
     This function yields incremental text tokens. Callers should print or forward
     chunks as they arrive. Session persistence occurs after streaming completes.
+
+    Args:
+        prompt: User prompt text
+        session: Session name
+        new: Whether to create a new session
+        model: Override model name
+        system: Override system prompt
+        config_path: Path to config file
+        sessions_dir: Override sessions directory
+        rag_enabled: Enable/disable RAG for this request
+        on_retry: Optional callback(attempt, delay, error) for connection retries
     """
 
     context = _prepare_chat_context(
@@ -288,16 +300,49 @@ def chat_stream(
         }
         yield f"__RAG_START__{json.dumps(rag_data)}__RAG_END__\n"
 
+    # Create retry callback that yields status messages
+    def _retry_callback(attempt: int, delay: float, error: Exception) -> None:
+        # Yield a special marker for retry status
+        import json
+        retry_data = {
+            "type": "retry_status",
+            "attempt": attempt,
+            "delay": delay,
+            "error": str(error),
+        }
+        # Store in a list that we'll check and yield
+        retry_messages.append(f"__RETRY_START__{json.dumps(retry_data)}__RETRY_END__\n")
+
+        # Call the original callback if provided
+        if on_retry:
+            on_retry(attempt, delay, error)
+
+    # Store retry messages that occur during connection
+    retry_messages: list[str] = []
+
     # Stream tokens and assemble final reply
     parts: list[str] = []
-    for chunk in ollama_chat_stream_tokens(
-        base_url=context.base_url,
-        model=context.chosen_model,
-        messages=context.messages,
-        timeout_s=context.chat_timeout_s,
-    ):
-        parts.append(chunk)
-        yield chunk
+    try:
+        for chunk in ollama_chat_stream_tokens(
+            base_url=context.base_url,
+            model=context.chosen_model,
+            messages=context.messages,
+            timeout_s=context.chat_timeout_s,
+            on_retry=_retry_callback,
+        ):
+            # Yield any queued retry messages first
+            for retry_msg in retry_messages:
+                yield retry_msg
+            retry_messages.clear()
+
+            parts.append(chunk)
+            yield chunk
+    except Exception as e:
+        # If we have retry messages but the connection ultimately failed,
+        # yield them before re-raising
+        for retry_msg in retry_messages:
+            yield retry_msg
+        raise
 
     reply = "".join(parts)
 
