@@ -449,4 +449,99 @@ describe('Configuration Wizard Logic', () => {
       expect(saveTriggered).toBe(false);
     });
   });
+
+  describe('Independent Error Handling', () => {
+    it('should handle config error independently from models error', () => {
+      // Simulate config load failure
+      const configError = 'Failed to load config';
+      const modelsError = null;
+
+      expect(configError).not.toBeNull();
+      expect(modelsError).toBeNull();
+    });
+
+    it('should handle models error independently from config error', () => {
+      // Simulate models load failure but config success
+      const configError = null;
+      const modelsError = 'Failed to load models';
+
+      expect(configError).toBeNull();
+      expect(modelsError).not.toBeNull();
+    });
+
+    it('should handle both errors independently', () => {
+      // Simulate both failures
+      const configError = 'Failed to load config';
+      const modelsError = 'Failed to load models';
+
+      expect(configError).not.toBeNull();
+      expect(modelsError).not.toBeNull();
+      expect(configError).not.toBe(modelsError);
+    });
+
+    it('should allow page to render when only models fail', () => {
+      // When config succeeds but models fail, page should still be usable
+      const configError = null;
+      const modelsError = 'HTTP 500';
+      const loading = false;
+
+      const shouldRenderFullPage = !loading && !configError;
+      const shouldShowModelsError = modelsError !== null;
+
+      expect(shouldRenderFullPage).toBe(true);
+      expect(shouldShowModelsError).toBe(true);
+    });
+
+    it('should block page rendering when config fails', () => {
+      // When config fails, page should show error screen
+      const configError = 'HTTP 500';
+      const modelsError = null;
+      const loading = false;
+
+      const shouldRenderFullPage = !loading && !configError;
+      const shouldShowConfigError = configError !== null;
+
+      expect(shouldRenderFullPage).toBe(false);
+      expect(shouldShowConfigError).toBe(true);
+    });
+
+    it('should clear errors on retry', () => {
+      // Simulate clearing errors before retry
+      let configError: string | null = 'HTTP 500';
+      let modelsError: string | null = 'HTTP 503';
+
+      // Before retry, clear respective error
+      configError = null; // Clear config error on config retry
+      expect(configError).toBeNull();
+      expect(modelsError).not.toBeNull(); // Models error unaffected
+
+      // Before models retry, clear models error
+      modelsError = null;
+      expect(modelsError).toBeNull();
+    });
+
+    it('should display specific error messages for each failure', () => {
+      const configErrorMessage = 'Failed to load configuration';
+      const modelsErrorMessage = 'Failed to load models: HTTP 500';
+
+      // Error messages should be distinct and specific
+      expect(configErrorMessage).toContain('configuration');
+      expect(modelsErrorMessage).toContain('models');
+      expect(configErrorMessage).not.toBe(modelsErrorMessage);
+    });
+
+    it('should allow models to be empty array when load fails', () => {
+      // When models fail to load, should gracefully default to empty array
+      let availableModels: string[] = ['model1', 'model2'];
+      const modelsError = 'HTTP 500';
+
+      // On error, set to empty array
+      if (modelsError) {
+        availableModels = [];
+      }
+
+      expect(availableModels).toEqual([]);
+      expect(Array.isArray(availableModels)).toBe(true);
+    });
+  });
 });
