@@ -209,6 +209,9 @@ gh issue develop "$ISSUE" --repo "$REPO" --checkout false --branch "$CURRENT_BRA
   _warn "Could not explicitly link PR to issue Development field (may already be linked via 'Closes #N')"
 }
 
+# Ensure PR project hygiene: add to project and copy fields from issue
+ensure_pr_project_hygiene "$pr_number" "$ISSUE"
+
 # Update tracking
 set_issue_status "$ISSUE" "$STATUS_IN_REVIEW"
 issue_assign_only "$ISSUE" "$REVIEW_AGENT"

@@ -440,3 +440,95 @@ get_pr_branch_for_issue() {
 
   echo "$branch"
 }
+
+# -------------------------
+# PR Project Hygiene
+# -------------------------
+ensure_pr_project_hygiene() {
+  local pr_number="$1" issue_number="$2"
+  require_cmd jq
+
+  _debug "Ensuring PR #${pr_number} project hygiene (parent issue: #${issue_number})"
+
+  # Add PR to project if not already there
+  local pr_item_id issue_item_id
+  pr_item_id="$(ensure_issue_in_project "$pr_number")"
+  [[ -n "$pr_item_id" && "$pr_item_id" != "null" ]] || _die "Failed to add PR #${pr_number} to project"
+  _debug "PR #${pr_number} project item ID: $pr_item_id"
+
+  # Get issue project item ID
+  issue_item_id="$(ensure_issue_in_project "$issue_number")"
+  [[ -n "$issue_item_id" && "$issue_item_id" != "null" ]] || _die "Issue #${issue_number} not in project"
+  _debug "Issue #${issue_number} project item ID: $issue_item_id"
+
+  # Get issue project field values
+  local project_id
+  project_id="$(get_project_id)"
+
+  local q_get_fields='query($project:ID!, $item:ID!) {
+    node(id:$project) {
+      ... on ProjectV2 {
+        item: items(first:1, after:null) {
+          nodes {
+            id
+            fieldValues(first:20) {
+              nodes {
+                __typename
+                ... on ProjectV2ItemFieldSingleSelectValue {
+                  field { ... on ProjectV2SingleSelectField { name } }
+                  name
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    projectItem: node(id:$item) {
+      ... on ProjectV2Item {
+        fieldValues(first:20) {
+          nodes {
+            __typename
+            ... on ProjectV2ItemFieldSingleSelectValue {
+              field { ... on ProjectV2SingleSelectField { name } }
+              name
+            }
+          }
+        }
+      }
+    }
+  }'
+
+  local resp
+  resp="$(graphql "$q_get_fields" -F project="$project_id" -F item="$issue_item_id")"
+
+  # Extract field values from issue
+  local priority effort module
+  priority="$(echo "$resp" | jq -r '.data.projectItem.fieldValues.nodes[] | select(.field.name == "Priority") | .name // empty')"
+  effort="$(echo "$resp" | jq -r '.data.projectItem.fieldValues.nodes[] | select(.field.name == "Effort") | .name // empty')"
+  module="$(echo "$resp" | jq -r '.data.projectItem.fieldValues.nodes[] | select(.field.name == "Module") | .name // empty')"
+
+  _debug "Issue #${issue_number} fields: Priority=$priority, Effort=$effort, Module=$module"
+
+  # Copy fields to PR
+  if [[ -n "$priority" && "$priority" != "null" ]]; then
+    _debug "Setting PR Priority to: $priority"
+    set_project_field_value "$pr_item_id" "Priority" "$priority" || _warn "Failed to set Priority on PR #${pr_number}"
+  fi
+
+  if [[ -n "$effort" && "$effort" != "null" ]]; then
+    _debug "Setting PR Effort to: $effort"
+    set_project_field_value "$pr_item_id" "Effort" "$effort" || _warn "Failed to set Effort on PR #${pr_number}"
+  fi
+
+  if [[ -n "$module" && "$module" != "null" ]]; then
+    _debug "Setting PR Module to: $module"
+    set_project_field_value "$pr_item_id" "Module" "$module" || _warn "Failed to set Module on PR #${pr_number}"
+  fi
+
+  # Set PR status to In Review
+  _debug "Setting PR status to: $STATUS_IN_REVIEW"
+  set_project_field_value "$pr_item_id" "$STATUS_FIELD" "$STATUS_IN_REVIEW" || _warn "Failed to set Status on PR #${pr_number}"
+
+  echo "[dev] PR #${pr_number} project hygiene: ✓ Added to project, ✓ Fields copied from issue #${issue_number}" >&2
+}
