@@ -76,6 +76,15 @@ jobs:
             - Medium: significant bug risk, missing tests, broken contract, poor maintainability (MUST block merge)
             - Minor: style/nits, minor optimization opportunities (may proceed)
 
+            CRITICAL: Your ONLY task is to post the review comment. DO NOT:
+            - Run review_request_changes.sh
+            - Run review_accept_and_merge.sh
+            - Create sub-issues
+            - Merge the PR
+            - Execute any scripts in scripts/agents/
+
+            A separate automated workflow will read your comment and execute the appropriate actions.
+
             REQUIRED: Post your review as a PR comment using `gh pr comment ${{ steps.pr_number.outputs.pr }} --body "<review>"` with this EXACT format:
 
             ## Code Review - [APPROVE|REQUEST_CHANGES]
@@ -110,26 +119,5 @@ jobs:
           # or https://code.claude.com/docs/en/cli-reference for available options
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
 
-      - name: Trigger review decision workflow
-        if: always()
-        uses: actions/github-script@v7
-        env:
-          PR_NUMBER: ${{ steps.pr_number.outputs.pr }}
-        with:
-          github-token: ${{ secrets.REVIEW_AGENT_TOKEN }}
-          script: |
-            const pr_number = process.env.PR_NUMBER;
-
-            await github.rest.repos.createDispatchEvent({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              event_type: 'code-review-completed',
-              client_payload: {
-                pr_number: parseInt(pr_number),
-                workflow_run_id: context.runId,
-                review_conclusion: '${{ steps.claude-review.conclusion }}'
-              }
-            });
-
-            console.log(`Dispatched code-review-completed event for PR #${pr_number}`);
+      # Note: review_agent_auto_review.yml triggers automatically on the comment via issue_comment event
 

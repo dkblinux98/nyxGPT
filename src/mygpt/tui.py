@@ -534,7 +534,10 @@ class MyGPTTUI(App):
                             start_idx = buffer.index("__RETRY_START__")
                             end_idx = buffer.index("__RETRY_END__") + len("__RETRY_END__")
 
-                            # Parse retry status and display reconnection message
+                            # Extract the marker content
+                            marker_content = buffer[start_idx:end_idx]
+
+                            # Parse retry status
                             try:
                                 import json
                                 json_start = start_idx + len("__RETRY_START__")
@@ -549,13 +552,10 @@ class MyGPTTUI(App):
                                     f"\n[reconnecting] Connection lost. Retrying (attempt {attempt}) in {delay:.1f}s...\n"
                                 )
                             except Exception as parse_err:
-                                # Log parse error but still remove the malformed marker
-                                # to prevent it from being displayed as garbled text
-                                log.warning(f"Failed to parse retry marker, removing from buffer: {parse_err}")
-                            finally:
-                                # Always remove the marker from buffer, even if parsing failed.
-                                # This prevents malformed markers from appearing in user output.
-                                buffer = buffer[:start_idx] + buffer[end_idx:]
+                                log.warning(f"Failed to parse retry status: {parse_err}")
+
+                            # Remove the marker from buffer and continue
+                            buffer = buffer[:start_idx] + buffer[end_idx:]
 
                         # Check for RAG markers (existing functionality)
                         if "__RAG_START__" in buffer and "__RAG_END__" in buffer:
@@ -567,26 +567,33 @@ class MyGPTTUI(App):
 
                         # Yield any complete text that's not part of markers
                         # Keep potential partial markers in buffer
-                        if buffer and "__RETRY_START__" not in buffer and "__RAG_START__" not in buffer:
-                            self.output.append(buffer)
-                            buffer = ""
-                        elif buffer:
-                            # Check if we might have a partial marker at the end
+                        if buffer:
+                            # First check if we might have a partial marker at the end
                             safe_idx = len(buffer)
+                            has_partial_marker = False
                             for marker in ["__RETRY_START__", "__RAG_START__"]:
                                 for i in range(1, len(marker)):
                                     if buffer.endswith(marker[:i]):
                                         safe_idx = len(buffer) - i
+                                        has_partial_marker = True
                                         break
+                                if has_partial_marker:
+                                    break
 
-                            if safe_idx > 0 and safe_idx < len(buffer):
+                            # If buffer has complete markers, don't flush yet (let the marker handlers above process it)
+                            if "__RETRY_START__" in buffer or "__RAG_START__" in buffer:
+                                # Complete markers present, let them be processed in next iteration
+                                pass
+                            elif has_partial_marker and safe_idx > 0:
+                                # Has partial marker at end, flush safe part and keep partial
                                 self.output.append(buffer[:safe_idx])
                                 buffer = buffer[safe_idx:]
-                            elif safe_idx == len(buffer) and len(buffer) > MARKER_BUFFER_FLUSH_THRESHOLD:
-                                # If buffer exceeds threshold without complete markers,
-                                # flush it to prevent unbounded memory growth from
-                                # malformed or missing marker end tags
-                                log.warning(f"Buffer exceeded threshold ({MARKER_BUFFER_FLUSH_THRESHOLD} chars), flushing to prevent memory issues")
+                            elif not has_partial_marker:
+                                # No markers at all, flush everything
+                                self.output.append(buffer)
+                                buffer = ""
+                            elif safe_idx == 0 and len(buffer) > 100:
+                                # Entire buffer is potential partial marker but too large, flush it
                                 self.output.append(buffer)
                                 buffer = ""
 
