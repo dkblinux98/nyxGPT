@@ -23,13 +23,6 @@ from mygpt.sessions import list_sessions
 
 log = logging.getLogger(__name__)
 
-# Buffer size threshold for flushing partial marker detection buffers.
-# This prevents unbounded memory growth when processing streaming responses
-# that may contain partial or incomplete markers. The value is chosen to be
-# large enough to hold typical markers (which are ~100-200 chars) while
-# preventing memory issues from malformed streams.
-MARKER_BUFFER_FLUSH_THRESHOLD = 1000
-
 # Overflow threshold for buffer safety valve. This is a conservative lower
 # threshold used when the entire buffer appears to be a potential partial
 # marker. Catching runaway buffers early (at 100 bytes) prevents excessive
