@@ -189,20 +189,20 @@ jobs:
 
             # Create body file for sub-issue
             BODY_FILE="/tmp/sub-issue-$(echo "$TITLE" | tr ' ' '-' | tr -cd '[:alnum:]-').md"
-            {
-              echo "## Acceptance Failure"
-              echo ""
-              echo "From code review of parent issue #${ISSUE}"
-              echo ""
-              echo "### Issue"
-              echo "${DESCRIPTION}"
-              echo ""
-              echo "### How to Fix"
-              echo "See code review comment for details and specific file/line references."
-              echo ""
-              echo "### Parent Issue"
-              echo "Issue ${ISSUE}"
-            } > "$BODY_FILE"
+            cat > "$BODY_FILE" <<EOF
+          ## Acceptance Failure
+
+          From code review of parent issue #${ISSUE}
+
+          ### Issue
+          ${DESCRIPTION}
+
+          ### How to Fix
+          See code review comment for details and specific file/line references.
+
+          ### Parent Issue
+          Issue ${ISSUE}
+          EOF
 
             echo "Creating sub-issue: $TITLE"
             bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_request_changes.sh '$ISSUE' '$TITLE' '$BODY_FILE'"
