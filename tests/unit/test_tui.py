@@ -1266,10 +1266,10 @@ async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
 
     async def mock_aiter_text():
         # Yield a partial marker prefix that exceeds MARKER_BUFFER_OVERFLOW_THRESHOLD (100 bytes)
-        # Use "__RETRY_START_" (15 chars with trailing underscore, NOT complete marker)
-        # Repeated 7 times = 105 chars total (> 100 byte threshold)
+        # Use "__RETRY_START_" (14 chars, NOT complete marker)
+        # Repeated 8 times = 112 chars total (> 100 byte threshold)
         # This ensures safe_idx == 0 (entire buffer is partial prefix) and triggers line 601
-        yield "__RETRY_START_" * 7
+        yield "__RETRY_START_" * 8
         yield " done"
 
     mock_response.aiter_text = mock_aiter_text
