@@ -175,6 +175,7 @@ jobs:
           fi
 
           # Create a sub-issue for each blocking issue
+          COUNTER=0
           echo "$BLOCKING_ISSUES" | while IFS= read -r line; do
             if [[ -z "$line" ]]; then continue; fi
 
@@ -187,8 +188,9 @@ jobs:
               continue
             fi
 
-            # Create body file for sub-issue
-            BODY_FILE="/tmp/sub-issue-$(echo "$TITLE" | tr ' ' '-' | tr -cd '[:alnum:]-').md"
+            # Create body file for sub-issue - use counter to avoid filename length issues
+            COUNTER=$((COUNTER + 1))
+            BODY_FILE="/tmp/sub-issue-${ISSUE}-${COUNTER}.md"
             cat > "$BODY_FILE" <<EOFBODY
           ## Acceptance Failure
 
