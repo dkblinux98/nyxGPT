@@ -210,7 +210,7 @@ def get_workflow_runs(repo: str, issue: Optional[str] = None) -> List[Dict]:
     result = run_gh_command([
         'run', 'list',
         '--repo', repo,
-        '--limit', '50',
+        '--limit', '100',
         '--json', 'databaseId,workflowName,status,conclusion,createdAt,updatedAt,url,headBranch'
     ])
 
