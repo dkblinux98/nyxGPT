@@ -25,6 +25,7 @@
   --code-bg: #f3f4f6;
   --muted: #f4f4f5;
   --muted-foreground: #71717a;
+  --primary: #0066cc;
   --skeleton-base: #e5e5e5;
   --skeleton-shimmer: #f0f0f0;
 }
@@ -57,6 +58,7 @@
   --code-bg: #27272a;
   --muted: #27272a;
   --muted-foreground: #a1a1aa;
+  --primary: #4a9eff;
   --skeleton-base: #2a2a2a;
   --skeleton-shimmer: #333;
 }
