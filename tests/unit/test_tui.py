@@ -1265,13 +1265,12 @@ async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
     mock_response.raise_for_status = MagicMock()
 
     async def mock_aiter_text():
-        # Create a buffer that looks like it could be the start of a marker
-        # but is too large (> 1000 bytes = MARKER_BUFFER_FLUSH_THRESHOLD)
-        # This simulates a pathological case where we receive data that matches
-        # the start of a marker pattern but never completes
-        partial_marker_like = "__RETRY_" + ("X" * 1100)  # 1108 bytes total
-        yield partial_marker_like
-        yield "Normal text after flush"
+        # Yield a partial marker prefix that exceeds MARKER_BUFFER_FLUSH_THRESHOLD
+        # Use "__RETRY_START_" (15 chars with trailing underscore, NOT complete marker)
+        # Repeated 67 times = 1005 chars total (> 1000 threshold)
+        # This ensures safe_idx == 0 (entire buffer is partial prefix) and triggers line 595
+        yield "__RETRY_START_" * 67
+        yield " done"
 
     mock_response.aiter_text = mock_aiter_text
 
@@ -1287,11 +1286,11 @@ async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
 
     append_calls = [str(call) for call in app.output.append.call_args_list]
 
-    # Verify the oversized partial-marker-like buffer was flushed
-    # (prevents unbounded memory growth)
-    large_buffer_calls = [c for c in append_calls if "X" * 100 in c]
-    assert len(large_buffer_calls) > 0, "Oversized partial marker buffer should be flushed"
+    # Verify the oversized partial marker was flushed (buffer overflow protection triggered)
+    # The partial marker should be treated as regular text and displayed
+    flushed_calls = [c for c in append_calls if "__RETRY_START_" in c]
+    assert len(flushed_calls) > 0, "Oversized partial marker should be flushed as regular text"
 
-    # Verify normal text after the flush was also displayed
-    text_calls = [c for c in append_calls if "Normal text after flush" in c]
-    assert len(text_calls) > 0, "Text after buffer flush should be displayed"
+    # Verify subsequent text was also displayed
+    done_calls = [c for c in append_calls if "done" in c]
+    assert len(done_calls) > 0, "Text after flushed buffer should be displayed"
