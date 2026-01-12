@@ -189,7 +189,7 @@ jobs:
 
             # Create body file for sub-issue
             BODY_FILE="/tmp/sub-issue-$(echo "$TITLE" | tr ' ' '-' | tr -cd '[:alnum:]-').md"
-            cat > "$BODY_FILE" <<EOF
+            cat > "$BODY_FILE" <<EOFBODY
           ## Acceptance Failure
 
           From code review of parent issue #${ISSUE}
@@ -202,7 +202,7 @@ jobs:
 
           ### Parent Issue
           Issue ${ISSUE}
-          EOF
+          EOFBODY
 
             echo "Creating sub-issue: $TITLE"
             bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_request_changes.sh '$ISSUE' '$TITLE' '$BODY_FILE'"
