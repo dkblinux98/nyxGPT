@@ -1,11 +1,444 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import AdminPage from '../../src/app/admin/page';
 
 /**
  * Configuration Wizard Tests
  *
- * Tests for the admin configuration wizard logic.
- * These tests verify form validation, step navigation, and configuration updates.
+ * Tests for the admin configuration wizard component rendering and logic.
+ * These tests verify form validation, step navigation, configuration updates, and UI behaviors.
  */
+
+describe('AdminPage Component', () => {
+  it('renders loading state initially', () => {
+    render(<AdminPage />);
+    expect(screen.getByText('Loading configuration...')).toBeInTheDocument();
+  });
+
+  it('renders the configuration wizard after loading', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+    });
+  });
+
+  it('renders back to chat link', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const link = screen.getByRole('link', { name: /back to chat/i });
+      expect(link).toBeInTheDocument();
+      expect(link).toHaveAttribute('href', '/');
+    });
+  });
+
+  it('renders progress indicator with all steps', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      expect(screen.getByText('Model Selection')).toBeInTheDocument();
+    });
+  });
+
+  it('starts at model selection step', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      expect(screen.getByText('Model Selection')).toBeInTheDocument();
+      expect(screen.getByText('Choose your default LLM model')).toBeInTheDocument();
+    });
+  });
+
+  it('renders model selection dropdown with available models', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      expect(screen.getByText('Default Model')).toBeInTheDocument();
+      const selects = screen.getAllByRole('combobox');
+      expect(selects[0]).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'llama3.1:8b' })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'llama3.1:70b' })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'mistral:7b' })).toBeInTheDocument();
+    });
+  });
+
+  it('disables Next button when no model is selected', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      expect(nextButton).toBeDisabled();
+    });
+  });
+
+  it('enables Next button when model is selected', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'mistral:7b' } });
+    });
+
+    await waitFor(() => {
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      expect(nextButton).not.toBeDisabled();
+    });
+  });
+
+  it('navigates to RAG configuration step when Next is clicked', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+    });
+
+    await waitFor(() => {
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Configure retrieval-augmented generation')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'RAG Configuration' })).toBeInTheDocument();
+    });
+  });
+
+  it('renders RAG enable checkbox on RAG step', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+    });
+
+    await waitFor(() => {
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      const checkbox = screen.getByRole('checkbox');
+      expect(checkbox).toBeInTheDocument();
+      expect(checkbox).not.toBeChecked();
+    });
+  });
+
+  it('allows toggling RAG enabled state', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+    });
+
+    await waitFor(() => {
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      const checkbox = screen.getByRole('checkbox');
+      expect(checkbox).not.toBeChecked();
+      fireEvent.click(checkbox);
+    });
+
+    await waitFor(() => {
+      const checkbox = screen.getByRole('checkbox');
+      expect(checkbox).toBeChecked();
+    });
+  });
+
+  it('navigates to API settings step', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'RAG Configuration' })).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'API Settings' })).toBeInTheDocument();
+      expect(screen.getByText('Configure logging level and other API settings.')).toBeInTheDocument();
+    });
+  });
+
+  it('renders log level dropdown on API settings step', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Log Level')).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: /INFO - Standard operational messages/i })).toBeInTheDocument();
+    });
+  });
+
+  it('renders test connection button on API settings step', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      const testButton = screen.getByRole('button', { name: /test connection/i });
+      expect(testButton).toBeInTheDocument();
+    });
+  });
+
+  it('shows connection success message when test is successful', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      const testButton = screen.getByRole('button', { name: /test connection/i });
+      fireEvent.click(testButton);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/connection successful/i)).toBeInTheDocument();
+    });
+  });
+
+  it('navigates to summary step', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Summary')).toBeInTheDocument();
+      expect(screen.getByText('Review and save your configuration')).toBeInTheDocument();
+    });
+  });
+
+  it('renders configuration review on summary step', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      const summaryTitles = screen.getAllByText('Model Selection');
+      expect(summaryTitles.length).toBeGreaterThan(0);
+      expect(screen.getByText('RAG Configuration')).toBeInTheDocument();
+      expect(screen.getByText('API Settings')).toBeInTheDocument();
+    });
+  });
+
+  it('renders save configuration button on summary step', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      const saveButton = screen.getByRole('button', { name: /save configuration/i });
+      expect(saveButton).toBeInTheDocument();
+      expect(saveButton).not.toBeDisabled();
+    });
+  });
+
+  it('shows success message after saving configuration', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      const saveButton = screen.getByRole('button', { name: /save configuration/i });
+      fireEvent.click(saveButton);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/configuration saved successfully/i)).toBeInTheDocument();
+    });
+  });
+
+  it('allows navigation back to previous steps', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+    });
+
+    await waitFor(() => {
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'RAG Configuration' })).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      const prevButton = screen.getByRole('button', { name: /previous/i });
+      fireEvent.click(prevButton);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Model Selection')).toBeInTheDocument();
+      expect(screen.getByText('Choose your default LLM model')).toBeInTheDocument();
+    });
+  });
+
+  it('disables Previous button on first step', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const prevButton = screen.getByRole('button', { name: /previous/i });
+      expect(prevButton).toBeDisabled();
+    });
+  });
+
+  it('disables Next button on last step', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Summary')).toBeInTheDocument();
+      const nextButtonOnLastStep = screen.getByRole('button', { name: /next/i });
+      expect(nextButtonOnLastStep).toBeDisabled();
+    });
+  });
+
+  it('renders error state when config loading fails', async () => {
+    const { server } = await import('../mocks/server');
+    const { http, HttpResponse } = await import('msw');
+
+    server.use(
+      http.get('/api/config', () => {
+        return new HttpResponse(null, { status: 500 });
+      })
+    );
+
+    render(<AdminPage />);
+    await waitFor(() => {
+      expect(screen.getByText('Failed to load configuration')).toBeInTheDocument();
+    });
+  });
+});
 
 describe('Configuration Wizard Logic', () => {
   beforeEach(() => {

@@ -94,4 +94,35 @@ export const handlers = [
       },
     });
   }),
+
+  // GET /api/config
+  http.get('/api/config', () => {
+    return HttpResponse.json({
+      ollama_base_url: 'http://127.0.0.1:11434',
+      default_model: '',
+      rag_enabled: false,
+      log_level: 'INFO',
+    });
+  }),
+
+  // POST /api/config
+  http.post('/api/config', async ({ request }) => {
+    const body = await request.json();
+    return HttpResponse.json(body);
+  }),
+
+  // GET /api/info
+  http.get('/api/info', () => {
+    return HttpResponse.json({
+      version: '1.0.0',
+      status: 'ok',
+    });
+  }),
+
+  // GET /api/models (relative URL for admin page)
+  http.get('/api/models', () => {
+    return HttpResponse.json({
+      models: ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b'],
+    });
+  }),
 ];

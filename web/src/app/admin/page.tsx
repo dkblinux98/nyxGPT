@@ -83,6 +83,27 @@ export default function AdminPage() {
     loadModels();
   }, []);
 
+  const steps: { id: WizardStep; label: string; description: string }[] = [
+    { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
+    { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
+    { id: 'api', label: 'API Settings', description: 'Configure logging and API settings' },
+    { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
+  ];
+
+  const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
+
+  function goToNextStep() {
+    if (currentStepIndex < steps.length - 1) {
+      setCurrentStep(steps[currentStepIndex + 1].id);
+    }
+  }
+
+  function goToPreviousStep() {
+    if (currentStepIndex > 0) {
+      setCurrentStep(steps[currentStepIndex - 1].id);
+    }
+  }
+
   // Keyboard navigation
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -184,27 +205,6 @@ export default function AdminPage() {
       setSaveError(msg);
     } finally {
       setSaving(false);
-    }
-  }
-
-  const steps: { id: WizardStep; label: string; description: string }[] = [
-    { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
-    { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
-    { id: 'api', label: 'API Settings', description: 'Configure logging and API settings' },
-    { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
-  ];
-
-  const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
-
-  function goToNextStep() {
-    if (currentStepIndex < steps.length - 1) {
-      setCurrentStep(steps[currentStepIndex + 1].id);
-    }
-  }
-
-  function goToPreviousStep() {
-    if (currentStepIndex > 0) {
-      setCurrentStep(steps[currentStepIndex - 1].id);
     }
   }
 
