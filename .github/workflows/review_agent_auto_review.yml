@@ -96,8 +96,11 @@ jobs:
 
           echo "::group::Parsing review comment"
 
-          # Get review comment body from event
-          REVIEW_COMMENT='${{ github.event.comment.body }}'
+          # Get review comment body from event - use heredoc to safely handle special chars
+          REVIEW_COMMENT=$(cat <<'REVIEW_EOF'
+          ${{ github.event.comment.body }}
+          REVIEW_EOF
+          )
 
           # Parse decision from first line
           DECISION_LINE=$(echo "$REVIEW_COMMENT" | head -1)
@@ -143,7 +146,7 @@ jobs:
           ISSUE="${{ steps.get_issue.outputs.issue_number }}"
 
           echo "::notice::Review approved - executing merge"
-          bash -lc "cd $GITHUB_WORKSPACE && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_accept_and_merge.sh $PR $ISSUE"
+          bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_accept_and_merge.sh '$PR' '$ISSUE'"
 
       - name: Create sub-issues (if changes requested)
         if: steps.parse_review.outputs.decision == 'REQUEST_CHANGES'
@@ -202,7 +205,7 @@ jobs:
             } > "$BODY_FILE"
 
             echo "Creating sub-issue: $TITLE"
-            bash -lc "cd $GITHUB_WORKSPACE && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_request_changes.sh $ISSUE '$TITLE' '$BODY_FILE'"
+            bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_request_changes.sh '$ISSUE' \"\$TITLE\" '$BODY_FILE'"
           done
 
       - name: Post completion comment
