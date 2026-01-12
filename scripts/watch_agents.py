@@ -166,10 +166,12 @@ def get_workflow_agent(workflow_name: str, config: Dict[str, str]) -> str:
     agent_map = {
         "Developer Agent Auto-Implement": config.get('DEV_AGENT', 'developer-agent'),
         "Review Agent Auto-Review": config.get('REVIEW_AGENT', 'review-agent'),
+        "Claude Code Review": config.get('REVIEW_AGENT', 'review-agent'),
         "Claude Code": "varies",  # Can be triggered by any agent or human
         "Scrummaster Agent - Select and Start Next Issue": config.get('SCRUM_AGENT', 'scrummaster-agent'),
         "Assign Backlog Issues to scrummaster-agent": config.get('SCRUM_AGENT', 'scrummaster-agent'),
         "Auto-check Release Tracking Issues": config.get('SCRUM_AGENT', 'scrummaster-agent'),
+        "Add issue to release issue on milestone assignment": "github",  # Automatic on milestone assignment
     }
 
     return agent_map.get(workflow_name, "unknown")
@@ -225,12 +227,25 @@ def get_workflow_runs(repo: str, issue: Optional[str] = None) -> List[Dict]:
 
         # If no issue specified, include all agent workflows
         if issue is None:
-            if workflow_name in ("Developer Agent Auto-Implement", "Review Agent Auto-Review", "Claude Code Review",
-                                "Scrummaster Agent - Select and Start Next Issue", "Assign Backlog Issues to scrummaster-agent"):
+            if workflow_name in ("Developer Agent Auto-Implement",
+                                "Review Agent Auto-Review",
+                                "Claude Code Review",
+                                "Claude Code",
+                                "Scrummaster Agent - Select and Start Next Issue",
+                                "Assign Backlog Issues to scrummaster-agent",
+                                "Auto-check Release Tracking Issues",
+                                "Add issue to release issue on milestone assignment"):
                 related_runs.append(run)
         else:
             # Include if it's an agent workflow or branch matches issue pattern
-            if (workflow_name in ("Developer Agent Auto-Implement", "Review Agent Auto-Review", "Claude Code Review")
+            if (workflow_name in ("Developer Agent Auto-Implement",
+                                "Review Agent Auto-Review",
+                                "Claude Code Review",
+                                "Claude Code",
+                                "Scrummaster Agent - Select and Start Next Issue",
+                                "Assign Backlog Issues to scrummaster-agent",
+                                "Auto-check Release Tracking Issues",
+                                "Add issue to release issue on milestone assignment")
                 or f"/{issue}-" in head_branch):
                 related_runs.append(run)
 
