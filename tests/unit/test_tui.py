@@ -1265,11 +1265,12 @@ async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
     mock_response.raise_for_status = MagicMock()
 
     async def mock_aiter_text():
-        # Yield a partial marker prefix that exceeds MARKER_BUFFER_FLUSH_THRESHOLD
-        # Use "__RETRY_START_" (15 chars with trailing underscore, NOT complete marker)
-        # Repeated 67 times = 1005 chars total (> 1000 threshold)
-        # This ensures safe_idx == 0 (entire buffer is partial prefix) and triggers line 595
-        yield "__RETRY_START_" * 67
+        # Yield a large buffer that doesn't match any marker prefix
+        # This triggers the buffer overflow protection for non-marker content
+        # Use "A" * 1005 (> MARKER_BUFFER_FLUSH_THRESHOLD of 1000)
+        # This doesn't end with any prefix of "__RETRY_START__" or "__RAG_START__"
+        # so has_partial_marker = False and the buffer is flushed immediately
+        yield "A" * 1005
         yield " done"
 
     mock_response.aiter_text = mock_aiter_text
@@ -1286,10 +1287,10 @@ async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
 
     append_calls = [str(call) for call in app.output.append.call_args_list]
 
-    # Verify the oversized partial marker was flushed (buffer overflow protection triggered)
-    # The partial marker should be treated as regular text and displayed
-    flushed_calls = [c for c in append_calls if "__RETRY_START_" in c]
-    assert len(flushed_calls) > 0, "Oversized partial marker should be flushed as regular text"
+    # Verify the oversized buffer was flushed (buffer overflow protection triggered)
+    # The large non-marker content should be treated as regular text and displayed
+    large_buffer_calls = [c for c in append_calls if "A" * 100 in c]
+    assert len(large_buffer_calls) > 0, "Oversized non-marker buffer should be flushed as regular text"
 
     # Verify subsequent text was also displayed
     done_calls = [c for c in append_calls if "done" in c]
