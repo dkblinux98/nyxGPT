@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
 
@@ -83,9 +83,30 @@ export default function AdminPage() {
     loadModels();
   }, []);
 
+  const steps: { id: WizardStep; label: string; description: string }[] = [
+    { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
+    { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
+    { id: 'api', label: 'API Settings', description: 'Configure logging and API settings' },
+    { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
+  ];
+
+  const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
+
+  const goToNextStep = useCallback(() => {
+    if (currentStepIndex < steps.length - 1) {
+      setCurrentStep(steps[currentStepIndex + 1].id);
+    }
+  }, [currentStepIndex, steps]);
+
+  const goToPreviousStep = useCallback(() => {
+    if (currentStepIndex > 0) {
+      setCurrentStep(steps[currentStepIndex - 1].id);
+    }
+  }, [currentStepIndex, steps]);
+
   // Keyboard navigation
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
       // Ignore if user is typing in an input field
       const target = e.target as HTMLElement;
       if (
@@ -130,11 +151,14 @@ export default function AdminPage() {
           }
           break;
       }
-    }
+    },
+    [currentStep, currentStepIndex, formData.default_model, saving, goToNextStep, goToPreviousStep]
+  );
 
+  useEffect(() => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentStep, currentStepIndex, formData.default_model, saving]);
+  }, [handleKeyDown]);
 
   async function testConnection() {
     setTestingConnection(true);
@@ -184,27 +208,6 @@ export default function AdminPage() {
       setSaveError(msg);
     } finally {
       setSaving(false);
-    }
-  }
-
-  const steps: { id: WizardStep; label: string; description: string }[] = [
-    { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
-    { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
-    { id: 'api', label: 'API Settings', description: 'Configure logging and API settings' },
-    { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
-  ];
-
-  const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
-
-  function goToNextStep() {
-    if (currentStepIndex < steps.length - 1) {
-      setCurrentStep(steps[currentStepIndex + 1].id);
-    }
-  }
-
-  function goToPreviousStep() {
-    if (currentStepIndex > 0) {
-      setCurrentStep(steps[currentStepIndex - 1].id);
     }
   }
 
