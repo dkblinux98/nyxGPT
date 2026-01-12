@@ -27,6 +27,14 @@
   --muted-foreground: #71717a;
   --skeleton-base: #e5e5e5;
   --skeleton-shimmer: #f0f0f0;
+  --primary: #0066cc;
+  --primary-disabled: #ccc;
+  --text-muted: #666;
+  --text-disabled: #999;
+  --border-inactive: #e0e0e0;
+  --border-error: #ffcccc;
+  --border-success: #90ee90;
+  --button-success: #28a745;
 }
 
 :root[data-theme='dark'],
@@ -59,6 +67,14 @@
   --muted-foreground: #a1a1aa;
   --skeleton-base: #2a2a2a;
   --skeleton-shimmer: #333;
+  --primary: #3b82f6;
+  --primary-disabled: #404040;
+  --text-muted: #a1a1aa;
+  --text-disabled: #666;
+  --border-inactive: #404040;
+  --border-error: #7f1d1d;
+  --border-success: #15803d;
+  --button-success: #22c55e;
 }
 
 html,
