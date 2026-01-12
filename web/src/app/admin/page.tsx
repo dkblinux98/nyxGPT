@@ -232,7 +232,7 @@ export default function AdminPage() {
     <main style={{ padding: '2rem', maxWidth: 900, margin: '0 auto' }}>
       <div style={{ marginBottom: '2rem' }}>
         <h1 style={{ margin: 0, marginBottom: 8 }}>Configuration Wizard</h1>
-        <a href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
+        <a href="/" style={{ color: 'var(--rag-text)', textDecoration: 'none' }}>
           ← Back to Chat
         </a>
       </div>
@@ -246,7 +246,7 @@ export default function AdminPage() {
               style={{
                 flex: 1,
                 height: 4,
-                background: idx <= currentStepIndex ? '#0066cc' : '#e0e0e0',
+                background: idx <= currentStepIndex ? 'var(--rag-text)' : 'var(--border)',
                 borderRadius: 2,
               }}
             />
@@ -256,7 +256,7 @@ export default function AdminPage() {
           <div style={{ fontWeight: 600, fontSize: 18, marginBottom: 4 }}>
             {steps[currentStepIndex].label}
           </div>
-          <div style={{ fontSize: 14, color: '#666' }}>
+          <div style={{ fontSize: 14, color: 'var(--muted-foreground)' }}>
             {steps[currentStepIndex].description}
           </div>
         </div>
@@ -275,7 +275,7 @@ export default function AdminPage() {
         {currentStep === 'model' && (
           <div>
             <h2 style={{ marginTop: 0, fontSize: '1.2rem' }}>Select Default Model</h2>
-            <p style={{ color: '#666', fontSize: 14, marginBottom: '1.5rem' }}>
+            <p style={{ color: 'var(--muted-foreground)', fontSize: 14, marginBottom: '1.5rem' }}>
               Choose the LLM model that will be used by default for new conversations.
             </p>
 
@@ -305,7 +305,7 @@ export default function AdminPage() {
                 ))}
               </select>
               {loadingModels && (
-                <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+                <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted-foreground)' }}>
                   Loading available models...
                 </div>
               )}
@@ -318,7 +318,7 @@ export default function AdminPage() {
                     fontSize: 12,
                     background: 'var(--error-bg)',
                     color: 'var(--error-text)',
-                    border: '1px solid #ffcccc',
+                    border: '1px solid var(--error-text)',
                   }}
                 >
                   ⚠️ Failed to load models: {modelsError}
@@ -328,7 +328,7 @@ export default function AdminPage() {
 
             <div style={{ padding: '1rem', background: 'var(--info-bg)', borderRadius: 6, fontSize: 14 }}>
               <strong>💡 Tip:</strong> If you don't see your model listed, visit the{' '}
-              <a href="/models" style={{ color: '#0066cc' }}>
+              <a href="/models" style={{ color: 'var(--rag-text)' }}>
                 Models page
               </a>{' '}
               to pull a new model from Ollama.
@@ -339,7 +339,7 @@ export default function AdminPage() {
         {currentStep === 'rag' && (
           <div>
             <h2 style={{ marginTop: 0, fontSize: '1.2rem' }}>RAG Configuration</h2>
-            <p style={{ color: '#666', fontSize: 14, marginBottom: '1.5rem' }}>
+            <p style={{ color: 'var(--muted-foreground)', fontSize: 14, marginBottom: '1.5rem' }}>
               Enable Retrieval-Augmented Generation to enhance responses with context from your documents.
             </p>
 
@@ -364,7 +364,7 @@ export default function AdminPage() {
                 />
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 14 }}>Enable RAG</div>
-                  <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+                  <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginTop: 4 }}>
                     Use vector search to inject relevant context into conversations
                   </div>
                 </div>
@@ -384,7 +384,7 @@ export default function AdminPage() {
         {currentStep === 'api' && (
           <div>
             <h2 style={{ marginTop: 0, fontSize: '1.2rem' }}>API Settings</h2>
-            <p style={{ color: '#666', fontSize: 14, marginBottom: '1.5rem' }}>
+            <p style={{ color: 'var(--muted-foreground)', fontSize: 14, marginBottom: '1.5rem' }}>
               Configure logging level and other API settings.
             </p>
 
@@ -431,7 +431,7 @@ export default function AdminPage() {
                   cursor: 'not-allowed',
                 }}
               />
-              <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
+              <div style={{ fontSize: 12, color: 'var(--muted-foreground)', marginTop: 4 }}>
                 Read-only. Edit in <code>~/.myGPT/config.ini</code> to change.
               </div>
             </div>
@@ -442,7 +442,7 @@ export default function AdminPage() {
                 disabled={testingConnection}
                 style={{
                   padding: '10px 20px',
-                  background: testingConnection ? '#ccc' : '#0066cc',
+                  background: testingConnection ? 'var(--muted)' : 'var(--rag-text)',
                   color: 'white',
                   border: 'none',
                   borderRadius: 6,
@@ -462,7 +462,7 @@ export default function AdminPage() {
                     fontSize: 14,
                     background: testResult.success ? 'var(--success-bg)' : 'var(--error-bg)',
                     color: testResult.success ? 'var(--success-text)' : 'var(--error-text)',
-                    border: `1px solid ${testResult.success ? '#90ee90' : '#ffcccc'}`,
+                    border: `1px solid ${testResult.success ? 'var(--success-text)' : 'var(--error-text)'}`,
                   }}
                 >
                   {testResult.success ? '✓' : '✗'} {testResult.message}
@@ -475,7 +475,7 @@ export default function AdminPage() {
         {currentStep === 'summary' && (
           <div>
             <h2 style={{ marginTop: 0, fontSize: '1.2rem' }}>Review Configuration</h2>
-            <p style={{ color: '#666', fontSize: 14, marginBottom: '1.5rem' }}>
+            <p style={{ color: 'var(--muted-foreground)', fontSize: 14, marginBottom: '1.5rem' }}>
               Review your settings below and click "Save Configuration" to apply changes.
             </p>
 
@@ -489,7 +489,7 @@ export default function AdminPage() {
                 }}
               >
                 <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Model Selection</div>
-                <div style={{ fontSize: 14, color: '#666' }}>
+                <div style={{ fontSize: 14, color: 'var(--muted-foreground)' }}>
                   Default Model: <strong>{formData.default_model || 'Not set'}</strong>
                 </div>
               </div>
@@ -503,7 +503,7 @@ export default function AdminPage() {
                 }}
               >
                 <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>RAG Configuration</div>
-                <div style={{ fontSize: 14, color: '#666' }}>
+                <div style={{ fontSize: 14, color: 'var(--muted-foreground)' }}>
                   Status: <strong>{formData.rag_enabled ? 'Enabled' : 'Disabled'}</strong>
                 </div>
               </div>
@@ -517,10 +517,10 @@ export default function AdminPage() {
                 }}
               >
                 <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>API Settings</div>
-                <div style={{ fontSize: 14, color: '#666', marginBottom: 4 }}>
+                <div style={{ fontSize: 14, color: 'var(--muted-foreground)', marginBottom: 4 }}>
                   Log Level: <strong>{formData.log_level}</strong>
                 </div>
-                <div style={{ fontSize: 14, color: '#666' }}>
+                <div style={{ fontSize: 14, color: 'var(--muted-foreground)' }}>
                   Ollama URL: <strong>{formData.ollama_base_url}</strong>
                 </div>
               </div>
@@ -535,7 +535,7 @@ export default function AdminPage() {
                   fontSize: 14,
                   background: 'var(--error-bg)',
                   color: 'var(--error-text)',
-                  border: '1px solid #ffcccc',
+                  border: '1px solid var(--error-text)',
                 }}
               >
                 ⚠️ <strong>Required:</strong> Please select a default model in step 1 before saving.
@@ -548,7 +548,7 @@ export default function AdminPage() {
                 disabled={saving || !formData.default_model}
                 style={{
                   padding: '12px 24px',
-                  background: saving || !formData.default_model ? '#ccc' : '#28a745',
+                  background: saving || !formData.default_model ? 'var(--muted)' : 'var(--success)',
                   color: 'white',
                   border: 'none',
                   borderRadius: 6,
@@ -570,7 +570,7 @@ export default function AdminPage() {
                     fontSize: 14,
                     background: 'var(--success-bg)',
                     color: 'var(--success-text)',
-                    border: '1px solid #90ee90',
+                    border: '1px solid var(--success-text)',
                   }}
                 >
                   <div style={{ fontWeight: 600, marginBottom: 8 }}>
@@ -603,7 +603,7 @@ export default function AdminPage() {
 
       {/* Navigation */}
       <div style={{ marginTop: '2rem' }}>
-        <div style={{ marginBottom: '0.5rem', textAlign: 'center', fontSize: 12, color: '#666' }}>
+        <div style={{ marginBottom: '0.5rem', textAlign: 'center', fontSize: 12, color: 'var(--muted-foreground)' }}>
           💡 Use arrow keys (← →) to navigate, Enter to advance or save
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -612,8 +612,8 @@ export default function AdminPage() {
             disabled={currentStepIndex === 0}
             style={{
               padding: '10px 20px',
-              background: currentStepIndex === 0 ? '#ccc' : 'var(--muted)',
-              color: currentStepIndex === 0 ? '#999' : 'var(--foreground)',
+              background: currentStepIndex === 0 ? 'var(--muted)' : 'var(--button-bg)',
+              color: currentStepIndex === 0 ? 'var(--muted-foreground)' : 'var(--foreground)',
               border: '1px solid var(--border)',
               borderRadius: 6,
               cursor: currentStepIndex === 0 ? 'not-allowed' : 'pointer',
@@ -634,8 +634,8 @@ export default function AdminPage() {
               background:
                 currentStepIndex === steps.length - 1 ||
                 (currentStep === 'model' && !formData.default_model)
-                  ? '#ccc'
-                  : '#0066cc',
+                  ? 'var(--muted)'
+                  : 'var(--rag-text)',
               color: 'white',
               border: 'none',
               borderRadius: 6,
