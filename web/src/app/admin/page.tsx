@@ -42,7 +42,32 @@ export default function AdminPage() {
     setError(null);
     try {
       const res = await fetch('/api/config');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        // Handle specific HTTP errors with helpful messages
+        if (res.status === 404) {
+          throw new Error(
+            'Configuration file not found. This is normal on first run. ' +
+            'The wizard will help you create your configuration.'
+          );
+        } else if (res.status === 500) {
+          const errorData = await res.json().catch(() => ({}));
+          const detail = errorData.detail || 'Internal server error';
+          throw new Error(
+            `Failed to load configuration: ${detail}. ` +
+            'Please check that the API service is running properly.'
+          );
+        } else if (res.status === 503) {
+          throw new Error(
+            'API service is unavailable. Please check that myGPT services are running. ' +
+            'Try running: mygpt ops doctor'
+          );
+        } else {
+          throw new Error(
+            `Failed to load configuration (HTTP ${res.status}). ` +
+            'Please ensure the API service is running at http://127.0.0.1:8000'
+          );
+        }
+      }
       const data = await res.json();
       setConfig(data);
       setFormData({
@@ -52,8 +77,16 @@ export default function AdminPage() {
         log_level: data.log_level || 'INFO',
       });
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
+      // Handle network errors separately
+      if (e instanceof TypeError && e.message.includes('fetch')) {
+        setError(
+          'Cannot connect to API service. Please ensure myGPT API is running. ' +
+          'Try: mygpt ops install or mygpt ops restart api'
+        );
+      } else {
+        const msg = e instanceof Error ? e.message : String(e);
+        setError(msg);
+      }
     } finally {
       setLoading(false);
     }

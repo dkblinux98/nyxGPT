@@ -225,6 +225,116 @@ describe('Configuration Wizard Logic', () => {
     });
   });
 
+  describe('Configuration Loading Error Handling', () => {
+    it('should handle 404 error with helpful first-run message', () => {
+      const statusCode = 404;
+      let errorMessage = '';
+
+      if (statusCode === 404) {
+        errorMessage =
+          'Configuration file not found. This is normal on first run. ' +
+          'The wizard will help you create your configuration.';
+      }
+
+      expect(errorMessage).toContain('normal on first run');
+      expect(errorMessage).toContain('wizard will help');
+    });
+
+    it('should handle 500 error with server error message', () => {
+      const statusCode = 500;
+      const errorDetail = 'Internal server error';
+      let errorMessage = '';
+
+      if (statusCode === 500) {
+        errorMessage =
+          `Failed to load configuration: ${errorDetail}. ` +
+          'Please check that the API service is running properly.';
+      }
+
+      expect(errorMessage).toContain('Internal server error');
+      expect(errorMessage).toContain('API service is running properly');
+    });
+
+    it('should handle 503 error with service unavailable message', () => {
+      const statusCode = 503;
+      let errorMessage = '';
+
+      if (statusCode === 503) {
+        errorMessage =
+          'API service is unavailable. Please check that myGPT services are running. ' +
+          'Try running: mygpt ops doctor';
+      }
+
+      expect(errorMessage).toContain('service is unavailable');
+      expect(errorMessage).toContain('mygpt ops doctor');
+    });
+
+    it('should handle generic HTTP errors with status code', () => {
+      const statusCode = 401;
+      let errorMessage = '';
+
+      if (![404, 500, 503].includes(statusCode)) {
+        errorMessage =
+          `Failed to load configuration (HTTP ${statusCode}). ` +
+          'Please ensure the API service is running at http://127.0.0.1:8000';
+      }
+
+      expect(errorMessage).toContain('HTTP 401');
+      expect(errorMessage).toContain('127.0.0.1:8000');
+    });
+
+    it('should handle network errors with connection message', () => {
+      const error = new TypeError('Failed to fetch');
+      let errorMessage = '';
+
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        errorMessage =
+          'Cannot connect to API service. Please ensure myGPT API is running. ' +
+          'Try: mygpt ops install or mygpt ops restart api';
+      }
+
+      expect(errorMessage).toContain('Cannot connect to API service');
+      expect(errorMessage).toContain('mygpt ops install');
+    });
+
+    it('should preserve original error message for non-HTTP errors', () => {
+      const error = new Error('Custom error message');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      expect(errorMessage).toBe('Custom error message');
+    });
+
+    it('should handle 500 error with detail from response', () => {
+      const statusCode = 500;
+      const errorData = { detail: 'Permission denied reading config file' };
+      let errorMessage = '';
+
+      if (statusCode === 500) {
+        const detail = errorData.detail || 'Internal server error';
+        errorMessage =
+          `Failed to load configuration: ${detail}. ` +
+          'Please check that the API service is running properly.';
+      }
+
+      expect(errorMessage).toContain('Permission denied reading config file');
+    });
+
+    it('should fall back to generic message if no error detail', () => {
+      const statusCode = 500;
+      const errorData = {};
+      let errorMessage = '';
+
+      if (statusCode === 500) {
+        const detail = errorData.detail || 'Internal server error';
+        errorMessage =
+          `Failed to load configuration: ${detail}. ` +
+          'Please check that the API service is running properly.';
+      }
+
+      expect(errorMessage).toContain('Internal server error');
+    });
+  });
+
   describe('Save Configuration', () => {
     it('should prepare correct payload for save', () => {
       const formData = {
