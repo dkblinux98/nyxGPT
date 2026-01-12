@@ -16,7 +16,7 @@ type WizardStep = 'model' | 'rag' | 'api' | 'summary';
 export default function AdminPage() {
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -36,10 +36,11 @@ export default function AdminPage() {
 
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
+  const [modelsError, setModelsError] = useState<string | null>(null);
 
   async function loadConfig() {
     setLoading(true);
-    setError(null);
+    setConfigError(null);
     try {
       const res = await fetch('/api/config');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -53,7 +54,7 @@ export default function AdminPage() {
       });
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
+      setConfigError(msg);
     } finally {
       setLoading(false);
     }
@@ -61,13 +62,16 @@ export default function AdminPage() {
 
   async function loadModels() {
     setLoadingModels(true);
+    setModelsError(null);
     try {
       const res = await fetch('/api/models');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setAvailableModels(data.models || []);
     } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
       console.error('Failed to load models:', e);
+      setModelsError(msg);
       setAvailableModels([]);
     } finally {
       setLoadingModels(false);
@@ -210,13 +214,13 @@ export default function AdminPage() {
     );
   }
 
-  if (error) {
+  if (configError) {
     return (
       <main style={{ padding: '2rem', maxWidth: 900, margin: '0 auto' }}>
         <h1>Configuration Wizard</h1>
         <ErrorMessage
           title="Failed to load configuration"
-          message={error}
+          message={configError}
           onRetry={loadConfig}
           retrying={loading}
         />
@@ -303,6 +307,21 @@ export default function AdminPage() {
               {loadingModels && (
                 <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
                   Loading available models...
+                </div>
+              )}
+              {modelsError && (
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: '10px 12px',
+                    borderRadius: 6,
+                    fontSize: 12,
+                    background: 'var(--error-bg)',
+                    color: 'var(--error-text)',
+                    border: '1px solid #ffcccc',
+                  }}
+                >
+                  ⚠️ Failed to load models: {modelsError}
                 </div>
               )}
             </div>
