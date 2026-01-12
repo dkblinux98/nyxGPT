@@ -35,7 +35,16 @@ load_config
 require_gh_auth
 require_cmd git
 
-base_branch="$(get_release_branch)"
+# Determine base branch: parent feature branch for sub-issues, release branch for top-level issues
+if is_sub_issue "$ISSUE"; then
+  parent_issue="$(get_parent_issue "$ISSUE")"
+  base_branch="$(get_pr_branch_for_issue "$parent_issue")"
+  echo "Sub-issue detected: branching off parent feature branch $base_branch (parent issue: #$parent_issue)" >&2
+else
+  base_branch="$(get_release_branch)"
+  echo "Top-level issue: branching off release branch $base_branch" >&2
+fi
+
 branch="${KIND}/${ISSUE}-${SLUG}"
 branch="$(echo "$branch" | tr ' ' '-' | tr -cd '[:alnum:]/._-')"
 

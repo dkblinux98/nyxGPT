@@ -124,7 +124,7 @@ jobs:
           set -euo pipefail
           PR="${{ steps.get_pr.outputs.pr_number }}"
 
-          ISSUE=$(gh pr view "$PR" --json body -q '.body' | grep -oP 'Closes #\K\d+' || echo "")
+          ISSUE=$(gh pr view "$PR" --json body -q '.body' | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
 
           if [[ -z "$ISSUE" ]]; then
             echo "::error::PR #$PR body does not contain 'Closes #N'"
@@ -186,20 +186,20 @@ jobs:
 
             # Create body file for sub-issue
             BODY_FILE="/tmp/sub-issue-$(echo "$TITLE" | tr ' ' '-' | tr -cd '[:alnum:]-').md"
-            cat > "$BODY_FILE" << EOFBODY
-## Acceptance Failure
-
-**From code review of parent issue ${ISSUE}**
-
-### Issue
-${DESCRIPTION}
-
-### How to Fix
-See code review comment for details and specific file/line references.
-
-### Parent Issue
-Issue ${ISSUE}
-EOFBODY
+            {
+              echo "## Acceptance Failure"
+              echo ""
+              echo "From code review of parent issue #${ISSUE}"
+              echo ""
+              echo "### Issue"
+              echo "${DESCRIPTION}"
+              echo ""
+              echo "### How to Fix"
+              echo "See code review comment for details and specific file/line references."
+              echo ""
+              echo "### Parent Issue"
+              echo "Issue ${ISSUE}"
+            } > "$BODY_FILE"
 
             echo "Creating sub-issue: $TITLE"
             bash -lc "cd $GITHUB_WORKSPACE && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_request_changes.sh $ISSUE '$TITLE' '$BODY_FILE'"
