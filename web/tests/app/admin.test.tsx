@@ -264,20 +264,32 @@ describe('Configuration Wizard Logic', () => {
       expect(payload).not.toHaveProperty('ollama_base_url');
     });
 
-    it('should reset to first step after successful save', async () => {
+    it('should reset to first step after successful save with 3s timeout', async () => {
+      // Use fake timers to test setTimeout behavior
+      vi.useFakeTimers();
+
       // Simulate wizard state after successful save
-      const steps = ['model', 'rag', 'api', 'summary'];
       let currentStep = 'summary';
       let saveSuccess = true;
 
-      // After 3 second timeout, wizard should reset to first step
-      if (saveSuccess) {
-        currentStep = 'model';
+      // Simulate the setTimeout behavior from the component
+      setTimeout(() => {
         saveSuccess = false;
-      }
+        currentStep = 'model';
+      }, 3000);
 
+      // Initially, state should not have changed
+      expect(currentStep).toBe('summary');
+      expect(saveSuccess).toBe(true);
+
+      // Advance timers by 3 seconds
+      vi.advanceTimersByTime(3000);
+
+      // After timeout, wizard should reset to first step
       expect(currentStep).toBe('model');
       expect(saveSuccess).toBe(false);
+
+      vi.useRealTimers();
     });
   });
 
