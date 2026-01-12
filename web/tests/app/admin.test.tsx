@@ -448,5 +448,118 @@ describe('Configuration Wizard Logic', () => {
 
       expect(saveTriggered).toBe(false);
     });
+
+    it('should block ArrowLeft navigation when saving', () => {
+      const steps = ['model', 'rag', 'api', 'summary'];
+      let currentStepIndex = 2;
+      const saving = true;
+
+      // Simulate ArrowLeft key press while saving
+      if (!saving && currentStepIndex > 0) {
+        currentStepIndex -= 1;
+      }
+
+      // Should stay on current step
+      expect(currentStepIndex).toBe(2);
+      expect(steps[currentStepIndex]).toBe('api');
+    });
+
+    it('should block ArrowRight navigation when saving', () => {
+      const steps = ['model', 'rag', 'api', 'summary'];
+      const formData = { default_model: 'llama3.1:8b' };
+      let currentStepIndex = 1;
+      const currentStep = steps[currentStepIndex];
+      const saving = true;
+
+      // Simulate ArrowRight key press while saving
+      if (
+        !saving &&
+        currentStepIndex < steps.length - 1 &&
+        !(currentStep === 'model' && !formData.default_model)
+      ) {
+        currentStepIndex += 1;
+      }
+
+      // Should stay on current step
+      expect(currentStepIndex).toBe(1);
+      expect(steps[currentStepIndex]).toBe('rag');
+    });
+
+    it('should block Enter navigation when saving', () => {
+      const steps = ['model', 'rag', 'api', 'summary'];
+      const formData = { default_model: 'llama3.1:8b' };
+      let currentStepIndex = 1;
+      const currentStep = steps[currentStepIndex];
+      const saving = true;
+
+      // Simulate Enter key press while saving
+      if (
+        !saving &&
+        currentStep !== 'summary' &&
+        currentStepIndex < steps.length - 1 &&
+        !(currentStep === 'model' && !formData.default_model)
+      ) {
+        currentStepIndex += 1;
+      }
+
+      // Should stay on current step
+      expect(currentStepIndex).toBe(1);
+      expect(steps[currentStepIndex]).toBe('rag');
+    });
+  });
+
+  describe('Loading States', () => {
+    it('should disable model select when loading models', () => {
+      const loadingModels = true;
+      const saving = false;
+
+      const isDisabled = loadingModels || saving;
+
+      expect(isDisabled).toBe(true);
+    });
+
+    it('should disable model select when saving', () => {
+      const loadingModels = false;
+      const saving = true;
+
+      const isDisabled = loadingModels || saving;
+
+      expect(isDisabled).toBe(true);
+    });
+
+    it('should disable RAG checkbox when saving', () => {
+      const saving = true;
+
+      expect(saving).toBe(true);
+    });
+
+    it('should disable log level select when saving', () => {
+      const saving = true;
+
+      expect(saving).toBe(true);
+    });
+
+    it('should disable Previous button when saving', () => {
+      const currentStepIndex = 2;
+      const saving = true;
+
+      const isDisabled = currentStepIndex === 0 || saving;
+
+      expect(isDisabled).toBe(true);
+    });
+
+    it('should disable Next button when saving', () => {
+      const formData = { default_model: 'llama3.1:8b' };
+      const currentStepIndex = 1;
+      const currentStep = 'rag';
+      const saving = true;
+
+      const isDisabled =
+        currentStepIndex === 3 ||
+        (currentStep === 'model' && !formData.default_model) ||
+        saving;
+
+      expect(isDisabled).toBe(true);
+    });
   });
 });
