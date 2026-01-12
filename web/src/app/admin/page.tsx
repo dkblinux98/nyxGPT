@@ -454,17 +454,33 @@ export default function AdminPage() {
               </div>
             </div>
 
+            {!formData.default_model && (
+              <div
+                style={{
+                  marginBottom: '1rem',
+                  padding: '12px',
+                  borderRadius: 6,
+                  fontSize: 14,
+                  background: 'var(--error-bg)',
+                  color: 'var(--error-text)',
+                  border: '1px solid #ffcccc',
+                }}
+              >
+                ⚠️ <strong>Required:</strong> Please select a default model in step 1 before saving.
+              </div>
+            )}
+
             <div style={{ marginTop: '2rem' }}>
               <button
                 onClick={handleSave}
-                disabled={saving}
+                disabled={saving || !formData.default_model}
                 style={{
                   padding: '12px 24px',
-                  background: saving ? '#ccc' : '#28a745',
+                  background: saving || !formData.default_model ? '#ccc' : '#28a745',
                   color: 'white',
                   border: 'none',
                   borderRadius: 6,
-                  cursor: saving ? 'not-allowed' : 'pointer',
+                  cursor: saving || !formData.default_model ? 'not-allowed' : 'pointer',
                   fontSize: 16,
                   fontWeight: 600,
                   width: '100%',
@@ -525,14 +541,25 @@ export default function AdminPage() {
         </button>
         <button
           onClick={goToNextStep}
-          disabled={currentStepIndex === steps.length - 1}
+          disabled={
+            currentStepIndex === steps.length - 1 ||
+            (currentStep === 'model' && !formData.default_model)
+          }
           style={{
             padding: '10px 20px',
-            background: currentStepIndex === steps.length - 1 ? '#ccc' : '#0066cc',
+            background:
+              currentStepIndex === steps.length - 1 ||
+              (currentStep === 'model' && !formData.default_model)
+                ? '#ccc'
+                : '#0066cc',
             color: 'white',
             border: 'none',
             borderRadius: 6,
-            cursor: currentStepIndex === steps.length - 1 ? 'not-allowed' : 'pointer',
+            cursor:
+              currentStepIndex === steps.length - 1 ||
+              (currentStep === 'model' && !formData.default_model)
+                ? 'not-allowed'
+                : 'pointer',
             fontSize: 14,
             fontWeight: 600,
           }}
