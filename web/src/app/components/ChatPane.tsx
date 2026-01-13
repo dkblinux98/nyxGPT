@@ -9,6 +9,10 @@ type ChatMessage = {
   role: 'user' | 'assistant';
   content: string;
   ragChunks?: RagChunk[];
+  id?: string;
+  timestamp?: string;
+  edited_at?: string;
+  original_content?: string;
 };
 
 type RagChunk = {
@@ -115,6 +119,10 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
   // Rename state
   const [sessionTitle, setSessionTitle] = useState<string>('');
   const [renaming, setRenaming] = useState<boolean>(false);
+
+  // Edit/Regenerate state
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editContent, setEditContent] = useState<string>('');
 
   const title = useMemo(() => sessionTitle || `Session: ${sessionName}`, [sessionTitle, sessionName]);
 
@@ -374,6 +382,85 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
     isStreamingRef.current = false;
   }
 
+  async function handleEditMessage(index: number) {
+    const message = messages[index];
+    setEditingIndex(index);
+    setEditContent(message.content);
+  }
+
+  async function saveEdit(index: number) {
+    if (!editContent.trim()) {
+      toast.error('Edit content cannot be empty');
+      return;
+    }
+
+    try {
+      const res = await fetch(`/api/v1/sessions/${sessionName}/messages/${index}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: editContent, fork: true }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ detail: 'Edit failed' }));
+        throw new Error(errData.detail || 'Edit failed');
+      }
+
+      // Reload session to get updated messages
+      await loadSession();
+      setEditingIndex(null);
+      setEditContent('');
+      toast.success('Message edited');
+      onSessionUpdated?.();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(`Failed to edit message: ${msg}`);
+    }
+  }
+
+  function cancelEdit() {
+    setEditingIndex(null);
+    setEditContent('');
+  }
+
+  async function handleRegenerateResponse(index: number) {
+    const message = messages[index];
+    if (message.role !== 'user') {
+      toast.error('Can only regenerate from user messages');
+      return;
+    }
+
+    try {
+      setIsStreaming(true);
+      setStatus('connecting');
+
+      const res = await fetch(`/api/v1/sessions/${sessionName}/messages/${index}/regenerate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: selectedModel }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ detail: 'Regenerate failed' }));
+        throw new Error(errData.detail || 'Regenerate failed');
+      }
+
+      const data = await res.json();
+
+      // Reload session to get the new response
+      await loadSession();
+      toast.success('Response regenerated');
+      onSessionUpdated?.();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(`Failed to regenerate: ${msg}`);
+      setStatus('error');
+    } finally {
+      setIsStreaming(false);
+      setStatus('idle');
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
@@ -442,19 +529,111 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
         ) : (
           messages.map((m, idx) => (
             <div key={idx} style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 4 }}>
+              <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
                 <strong>{m.role}</strong>
+                {m.edited_at && <span style={{ fontSize: 10, opacity: 0.6 }}>(edited)</span>}
               </div>
               {m.ragChunks && m.ragChunks.length > 0 && (
                 <RagCitationsCollapsible chunks={m.ragChunks} />
               )}
-              <div>
-                {m.role === 'assistant' && !m.content && status === 'connecting' ? (
-                  <span style={{ opacity: 0.5 }}>⋯</span>
-                ) : (
-                  m.content
-                )}
-              </div>
+              {editingIndex === idx ? (
+                <div>
+                  <textarea
+                    value={editContent}
+                    onChange={(e) => setEditContent(e.target.value)}
+                    style={{
+                      width: '100%',
+                      minHeight: 80,
+                      padding: 8,
+                      borderRadius: 6,
+                      border: '1px solid var(--border)',
+                      background: 'var(--input-bg)',
+                      color: 'var(--foreground)',
+                      fontFamily: 'inherit',
+                      fontSize: 14,
+                      resize: 'vertical',
+                    }}
+                  />
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button
+                      onClick={() => saveEdit(idx)}
+                      style={{
+                        padding: '4px 8px',
+                        fontSize: 12,
+                        borderRadius: 4,
+                        border: '1px solid var(--border)',
+                        background: 'var(--success)',
+                        color: 'white',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={cancelEdit}
+                      style={{
+                        padding: '4px 8px',
+                        fontSize: 12,
+                        borderRadius: 4,
+                        border: '1px solid var(--border)',
+                        background: 'var(--button-hover)',
+                        color: 'var(--foreground)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <div>
+                    {m.role === 'assistant' && !m.content && status === 'connecting' ? (
+                      <span style={{ opacity: 0.5 }}>⋯</span>
+                    ) : (
+                      m.content
+                    )}
+                  </div>
+                  {!isStreaming && (
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                      <button
+                        onClick={() => handleEditMessage(idx)}
+                        style={{
+                          padding: '4px 8px',
+                          fontSize: 11,
+                          borderRadius: 4,
+                          border: '1px solid var(--border)',
+                          background: 'transparent',
+                          color: 'var(--foreground)',
+                          cursor: 'pointer',
+                          opacity: 0.7,
+                        }}
+                        title="Edit message"
+                      >
+                        ✏️ Edit
+                      </button>
+                      {m.role === 'user' && (
+                        <button
+                          onClick={() => handleRegenerateResponse(idx)}
+                          style={{
+                            padding: '4px 8px',
+                            fontSize: 11,
+                            borderRadius: 4,
+                            border: '1px solid var(--border)',
+                            background: 'transparent',
+                            color: 'var(--foreground)',
+                            cursor: 'pointer',
+                            opacity: 0.7,
+                          }}
+                          title="Regenerate response from this message"
+                        >
+                          🔄 Regenerate
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ))
         )}

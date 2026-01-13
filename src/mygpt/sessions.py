@@ -263,7 +263,8 @@ def load_session_messages(session_file: Path) -> list[dict[str, str]]:
                 and isinstance(item.get("role"), str)
                 and isinstance(item.get("content"), str)
             ):
-                out.append({"role": item["role"], "content": item["content"]})
+                # Preserve all fields from storage (id, timestamp, edited_at, etc.)
+                out.append(item)
         return out
     return []
 
@@ -1037,6 +1038,104 @@ def sync_filename_with_title(
         return False, f"Rename failed: {e}", current_name
 
 
+def edit_message(
+    session_name: str,
+    message_index: int,
+    new_content: str,
+    sessions_dir: Path | None = None,
+    fork: bool = True,
+) -> tuple[bool, str]:
+    """Edit a message in a session.
+
+    Args:
+        session_name: Name of the session
+        message_index: Index of message to edit (0-based)
+        new_content: New content for the message
+        sessions_dir: Optional sessions directory override
+        fork: If True, truncate conversation after edited message (default behavior)
+
+    Returns:
+        Tuple of (success, message)
+    """
+    sessions_dir = sessions_dir or default_sessions_dir()
+    sf = session_file_for(session_name, sessions_dir)
+    mf = meta_file_for(sf)
+
+    if not sf.exists():
+        return False, "No such session"
+
+    with file_lock(sf, timeout=5.0), file_lock(mf, timeout=5.0):
+        messages = load_session_messages(sf)
+
+        if message_index < 0 or message_index >= len(messages):
+            return False, f"Invalid message index: {message_index}"
+
+        message = messages[message_index]
+
+        # Store original content if not already edited
+        if "original_content" not in message:
+            message["original_content"] = message["content"]
+
+        # Update content and metadata
+        message["content"] = new_content
+        message["edited_at"] = iso_now()
+
+        # Fork conversation: truncate all messages after the edited one
+        if fork:
+            messages = messages[:message_index + 1]
+
+        save_session_messages(sf, messages)
+
+        # Update metadata timestamp
+        meta = load_session_meta(mf)
+        meta["updated_at"] = iso_now()
+        save_session_meta(mf, meta)
+
+    return True, "Message edited"
+
+
+def truncate_after_message(
+    session_name: str,
+    message_index: int,
+    sessions_dir: Path | None = None,
+) -> tuple[bool, str]:
+    """Truncate conversation after a specific message.
+
+    Useful for regenerating responses from a specific point.
+
+    Args:
+        session_name: Name of the session
+        message_index: Index of message to keep as the last message (0-based)
+        sessions_dir: Optional sessions directory override
+
+    Returns:
+        Tuple of (success, message)
+    """
+    sessions_dir = sessions_dir or default_sessions_dir()
+    sf = session_file_for(session_name, sessions_dir)
+    mf = meta_file_for(sf)
+
+    if not sf.exists():
+        return False, "No such session"
+
+    with file_lock(sf, timeout=5.0), file_lock(mf, timeout=5.0):
+        messages = load_session_messages(sf)
+
+        if message_index < 0 or message_index >= len(messages):
+            return False, f"Invalid message index: {message_index}"
+
+        # Keep messages up to and including the specified index
+        messages = messages[:message_index + 1]
+        save_session_messages(sf, messages)
+
+        # Update metadata timestamp
+        meta = load_session_meta(mf)
+        meta["updated_at"] = iso_now()
+        save_session_meta(mf, meta)
+
+    return True, "Conversation truncated"
+
+
 __all__ = [
     "default_sessions_dir",
     "session_file_for",
@@ -1068,4 +1167,6 @@ __all__ = [
     "export_session_html",
     "sanitize_title_for_filename",
     "sync_filename_with_title",
+    "edit_message",
+    "truncate_after_message",
 ]
