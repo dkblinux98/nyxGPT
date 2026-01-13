@@ -122,6 +122,27 @@ describe('Toast', () => {
     expect(dismissButton).toBeInTheDocument();
   });
 
+  it('calls onDismiss when dismiss button is clicked', async () => {
+    const user = userEvent.setup({ delay: null });
+    render(
+      <Toast
+        id="test-manual-dismiss"
+        type="success"
+        message="Manual dismiss test"
+        onDismiss={mockOnDismiss}
+      />
+    );
+
+    const dismissButton = screen.getByLabelText('Dismiss notification');
+    await user.click(dismissButton);
+
+    // Wait for exit animation (200ms)
+    vi.advanceTimersByTime(200);
+
+    expect(mockOnDismiss).toHaveBeenCalledWith('test-manual-dismiss');
+    expect(mockOnDismiss).toHaveBeenCalledTimes(1);
+  });
+
   it('has correct accessibility attributes', () => {
     render(
       <Toast
