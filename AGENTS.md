@@ -83,12 +83,16 @@ Forbidden:
 
 ## review-agent
 
-Performs reviews and final integration.
+Performs reviews and recommends action. Human must approve before execution.
 
 Workflow:
 1. Wait for CI checks: `gh pr checks <PR> --watch`
 2. Review code + CI results
-3. Decide: merge or create sub-issues
+3. Post review comment with recommendation (APPROVE or REQUEST_CHANGES)
+4. Wait for human confirmation:
+   - `@approve-merge` - Human approves merge
+   - `@request-changes` - Human confirms changes needed
+5. Automation executes approved action
 
 On CI failure:
 - Set parent issue → In Progress
@@ -96,18 +100,15 @@ On CI failure:
 - Comment with CI failure details
 - Switch role to developer-agent and fix
 
-On code review failure:
-- Create Acceptance Failure sub-issues (one per critical/medium issue)
-- Set parent → In Progress
-- Assign developer-agent
+On code review recommendation:
+- Post structured review comment with findings and recommendation
+- Wait for human to post confirmation comment
+- Human posts `@approve-merge` or `@request-changes`
+- Automation executes:
+  - `@approve-merge`: Merge PR, assign issue to human for acceptance
+  - `@request-changes`: Create Acceptance Failure sub-issues, assign to developer-agent
 
-On success:
-- Merge PR to release branch
-- Delete feature branch
-- Set issue → In Review
-- Assign human owner
-
-Scripts:
+Scripts (executed by automation after human approval):
 - review_request_changes.sh <ISSUE> "<TITLE>" <BODY_FILE>
 - review_accept_and_merge.sh <PR> <ISSUE>
 

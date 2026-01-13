@@ -1,4 +1,4 @@
-name: Review Agent Auto-Review
+name: Review Agent Execute Decision
 
 on:
   issue_comment:
@@ -6,10 +6,10 @@ on:
 
 jobs:
   execute-review-decision:
-    # Only run if comment is on a PR and starts with "## Code Review"
+    # Only run if comment is on a PR and contains human approval trigger
     if: |
       github.event.issue.pull_request &&
-      startsWith(github.event.comment.body, '## Code Review')
+      (contains(github.event.comment.body, '@approve-merge') || contains(github.event.comment.body, '@request-changes'))
     runs-on: ubuntu-latest
 
     permissions:
@@ -88,37 +88,36 @@ jobs:
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "Processing review for PR #$PR_NUMBER"
 
-      - name: Parse review decision from comment
-        id: parse_review
+      - name: Parse human decision from comment
+        id: parse_decision
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "::group::Parsing review comment"
+          echo "::group::Parsing human decision"
 
-          # Get review comment body from event - use heredoc to safely handle special chars
-          REVIEW_COMMENT=$(cat <<'REVIEW_EOF'
+          # Get comment body from event - use heredoc to safely handle special chars
+          COMMENT=$(cat <<'COMMENT_EOF'
           ${{ github.event.comment.body }}
-          REVIEW_EOF
+          COMMENT_EOF
           )
 
-          # Parse decision from first line
-          DECISION_LINE=$(echo "$REVIEW_COMMENT" | head -1)
-
-          if echo "$DECISION_LINE" | grep -q "APPROVE"; then
+          # Parse decision from human trigger phrase
+          if echo "$COMMENT" | grep -q "@approve-merge"; then
             DECISION="APPROVE"
-          elif echo "$DECISION_LINE" | grep -q "REQUEST_CHANGES"; then
+            echo "::notice::Human approved merge"
+          elif echo "$COMMENT" | grep -q "@request-changes"; then
             DECISION="REQUEST_CHANGES"
+            echo "::notice::Human requested changes"
           else
-            echo "::error::Could not parse decision from: $DECISION_LINE"
+            echo "::error::No valid trigger phrase found (@approve-merge or @request-changes)"
             exit 1
           fi
 
           echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
           echo "Decision: $DECISION"
 
-          # Save full comment to file for sub-issue parsing if needed
-          echo "$REVIEW_COMMENT" > /tmp/review-comment.txt
+          echo "::endgroup::"
 
       - name: Extract issue number from PR
         id: get_issue
@@ -138,24 +137,47 @@ jobs:
           echo "Found issue #$ISSUE"
 
       - name: Execute merge (if approved)
-        if: steps.parse_review.outputs.decision == 'APPROVE'
+        if: steps.parse_decision.outputs.decision == 'APPROVE'
         shell: bash
         run: |
           set -euo pipefail
           PR="${{ steps.get_pr.outputs.pr_number }}"
           ISSUE="${{ steps.get_issue.outputs.issue_number }}"
 
-          echo "::notice::Review approved - executing merge"
+          echo "::notice::Human approved merge - executing merge"
           bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_accept_and_merge.sh '$PR' '$ISSUE'"
 
+      - name: Find review-agent's review comment (if changes requested)
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES'
+        id: find_review
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ steps.get_pr.outputs.pr_number }}"
+
+          echo "::notice::Finding review-agent's review comment on PR #$PR"
+
+          # Get all comments on this PR, find most recent from REVIEW_AGENT starting with "## Code Review"
+          REVIEW_COMMENT=$(gh pr view "$PR" --json comments --jq '.comments[] | select(.author.login == "${{ vars.REVIEW_AGENT }}" and (.body | startswith("## Code Review"))) | .body' | tail -1)
+
+          if [[ -z "$REVIEW_COMMENT" ]]; then
+            echo "::error::Could not find review comment from @${{ vars.REVIEW_AGENT }}"
+            echo "::error::Human requested changes, but no review comment found to parse issues from"
+            exit 1
+          fi
+
+          # Save review comment to file for parsing
+          echo "$REVIEW_COMMENT" > /tmp/review-comment.txt
+          echo "::notice::Found review comment from @${{ vars.REVIEW_AGENT }}"
+
       - name: Create sub-issues (if changes requested)
-        if: steps.parse_review.outputs.decision == 'REQUEST_CHANGES'
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES'
         shell: bash
         run: |
           set -euo pipefail
           ISSUE="${{ steps.get_issue.outputs.issue_number }}"
 
-          echo "::notice::Changes requested - parsing sub-issues from review comment"
+          echo "::notice::Human confirmed changes requested - parsing sub-issues from review comment"
 
           # Parse Critical and Medium issues from the review comment
           REVIEW_COMMENT=$(cat /tmp/review-comment.txt)
@@ -215,15 +237,15 @@ jobs:
           github-token: ${{ secrets.REVIEW_AGENT_TOKEN }}
           script: |
             const pr_number = ${{ steps.get_pr.outputs.pr_number }};
-            const decision = '${{ steps.parse_review.outputs.decision }}';
+            const decision = '${{ steps.parse_decision.outputs.decision }}';
 
             let body;
             if (decision === 'APPROVE') {
-              body = '✅ **Review Agent**: PR merged successfully.\n\nNo blocking issues found. Changes have been merged to release branch.';
+              body = '✅ **Review Agent**: PR merged successfully.\n\nHuman approved merge. Changes have been merged to release branch.';
             } else if (decision === 'REQUEST_CHANGES') {
-              body = '🔄 **Review Agent**: Changes requested.\n\nAcceptance failure sub-issues have been created for Critical/Medium findings. Issue assigned back to developer-agent.';
+              body = '🔄 **Review Agent**: Changes requested.\n\nHuman confirmed changes needed. Acceptance failure sub-issues have been created for Critical/Medium findings. Issue assigned back to developer-agent.';
             } else {
-              body = '❌ **Review Agent**: Review decision execution failed.\n\nCheck workflow logs for details.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
+              body = '❌ **Review Agent**: Execution failed.\n\nCheck workflow logs for details.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
             }
 
             await github.rest.issues.createComment({
