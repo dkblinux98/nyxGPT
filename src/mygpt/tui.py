@@ -46,6 +46,12 @@ class ChatOutput(Static):
         self._buffer += text
         self.update(self._buffer)
 
+    def remove_typing_indicator(self) -> None:
+        """Remove the typing indicator (⋯) from the end of the buffer if present."""
+        if self._buffer.endswith("⋯"):
+            self._buffer = self._buffer[:-1]
+            self.update(self._buffer)
+
 
 class SessionMetadataPreview(Static):
     """Widget to display session metadata preview."""
@@ -517,8 +523,9 @@ class MyGPTTUI(App):
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream("POST", url, json=payload) as resp:
                     resp.raise_for_status()
-                    # Optional label so it's obvious when assistant starts
-                    self.output.append("Assistant: ")
+                    # Show typing indicator before first token
+                    self.output.append("Assistant: ⋯")
+                    first_content = True
 
                     # Buffer for detecting special markers
                     buffer = ""
@@ -547,6 +554,9 @@ class MyGPTTUI(App):
                                 # Display reconnection status
                                 attempt = retry_data.get("attempt", "?")
                                 delay = retry_data.get("delay", "?")
+                                if first_content:
+                                    self.output.remove_typing_indicator()
+                                    first_content = False
                                 self.output.append(
                                     f"\n[reconnecting] Connection lost. Retrying (attempt {attempt}) in {delay:.1f}s...\n"
                                 )
@@ -585,14 +595,23 @@ class MyGPTTUI(App):
                                 pass
                             elif has_partial_marker and safe_idx > 0:
                                 # Has partial marker at end, flush safe part and keep partial
+                                if first_content and buffer[:safe_idx].strip():
+                                    self.output.remove_typing_indicator()
+                                    first_content = False
                                 self.output.append(buffer[:safe_idx])
                                 buffer = buffer[safe_idx:]
                             elif not has_partial_marker:
                                 # No markers at all, flush everything
+                                if first_content and buffer.strip():
+                                    self.output.remove_typing_indicator()
+                                    first_content = False
                                 self.output.append(buffer)
                                 buffer = ""
                             elif safe_idx == 0 and len(buffer) > MARKER_BUFFER_OVERFLOW_THRESHOLD:
                                 # Entire buffer is potential partial marker but too large, flush it
+                                if first_content and buffer.strip():
+                                    self.output.remove_typing_indicator()
+                                    first_content = False
                                 self.output.append(buffer)
                                 buffer = ""
 

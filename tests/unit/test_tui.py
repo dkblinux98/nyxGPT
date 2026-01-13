@@ -60,6 +60,38 @@ def test_chat_output_append_accumulates() -> None:
     mock_update.assert_called_with("Hello World")
 
 
+def test_chat_output_remove_typing_indicator() -> None:
+    """Test that remove_typing_indicator() removes the typing indicator."""
+    widget = ChatOutput()
+
+    with patch.object(widget, "update") as mock_update:
+        # Add typing indicator
+        widget.append("Assistant: ⋯")
+
+        # Remove it
+        widget.remove_typing_indicator()
+
+    assert widget._buffer == "Assistant: "
+    assert mock_update.call_count == 2
+    mock_update.assert_called_with("Assistant: ")
+
+
+def test_chat_output_remove_typing_indicator_no_indicator() -> None:
+    """Test that remove_typing_indicator() does nothing if no indicator present."""
+    widget = ChatOutput()
+
+    with patch.object(widget, "update") as mock_update:
+        widget.append("Assistant: Hello")
+
+        # Try to remove indicator when there isn't one
+        widget.remove_typing_indicator()
+
+    # Buffer should remain unchanged
+    assert widget._buffer == "Assistant: Hello"
+    # update should only be called once (from append)
+    assert mock_update.call_count == 1
+
+
 # ============================================================================
 # MyGPTTUI Initialization Tests
 # ============================================================================
@@ -363,8 +395,17 @@ async def test_stream_chat_success(tmp_path: Path) -> None:
     with patch("httpx.AsyncClient", return_value=mock_client):
         await app._stream_chat("Test prompt")
 
+    # Verify typing indicator was shown
+    typing_indicator_calls = [call for call in app.output.append.call_args_list if "⋯" in str(call)]
+    assert len(typing_indicator_calls) > 0, "Typing indicator should be shown"
+
+    # Verify typing indicator was removed on first content
+    remove_calls = app.output.remove_typing_indicator.call_count
+    assert remove_calls == 1, "Typing indicator should be removed on first content"
+
     # Verify output was updated with chunks
-    assert app.output.append.call_count == 5  # "Assistant: ", "Hello", " ", "World", "\n\n"
+    # "Assistant: ⋯", remove_typing_indicator(), "Hello", " ", "World", "\n\n"
+    assert app.output.append.call_count >= 5
 
     # Verify prompt was unlocked (called in finally block)
     assert app.prompt.disabled is False
