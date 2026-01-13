@@ -2,13 +2,13 @@ import { NextRequest } from 'next/server';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { filename: string } }
+  { params }: { params: Promise<{ filename: string }> }
 ) {
+  const { filename } = await params;
+
   const base =
     process.env.MYGPT_API_BASE_URL ??
     "http://127.0.0.1:8000";
-
-  const { filename } = params;
   const searchParams = request.nextUrl.searchParams;
 
   // Forward query parameters (tail, level, search)
