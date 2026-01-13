@@ -246,6 +246,7 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
 **Features:**
 - Chat interface with streaming responses
 - Session picker and management
+- **Optimistic UI updates** for instant feedback on session operations (pin, rename, delete, create)
 - RAG document upload and toggle
 - **Configuration wizard** at `/admin` for step-by-step setup
 - **Log viewer** at `/admin/logs` for debugging and monitoring

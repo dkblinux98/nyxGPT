@@ -55,6 +55,9 @@ export default function Home() {
   const [deletingSession, setDeletingSession] = useState<string | null>(null);
   const [exportingSession, setExportingSession] = useState<string | null>(null);
 
+  // Pending operations state for visual feedback
+  const [pendingSessions, setPendingSessions] = useState<Set<string>>(new Set());
+
   // Refs for keyboard shortcuts
   const searchInputRef = useRef<HTMLInputElement>(null);
   const feedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -185,7 +188,7 @@ export default function Home() {
     }
   }, []);
 
-  // Create new chat
+  // Create new chat with optimistic update
   const createNewChat = useCallback(async () => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
     const defaultName = `session-${timestamp}`;
@@ -194,6 +197,21 @@ export default function Home() {
     if (!sessionName || !sessionName.trim()) return;
 
     const trimmedName = sessionName.trim();
+
+    // Optimistic update: add new session to local state immediately
+    const previousSessions = [...sessions];
+    const previousSelection = selectedSession;
+    const newSession = {
+      name: trimmedName,
+      messages: 0,
+      pinned: false,
+      tags: [],
+      title: trimmedName,
+      modified: new Date().toISOString(),
+    };
+
+    setSessions([newSession, ...sessions]);
+    setSelectedSession(trimmedName);
 
     try {
       // Create the session on the backend
@@ -211,19 +229,19 @@ export default function Home() {
         throw new Error(errorData.detail || `HTTP ${res.status}`);
       }
 
-      // Select the new session
-      setSelectedSession(trimmedName);
-
-      // Refresh the sessions list to show it in the sidebar
+      // Refresh the sessions list to get actual server state
       await refreshSessions();
     } catch (e) {
+      // Rollback on failure: restore previous state
+      setSessions(previousSessions);
+      setSelectedSession(previousSelection);
       const msg = e instanceof Error ? e.message : String(e);
       alert(`Failed to create new chat: ${msg}`);
       console.error('Failed to create new chat:', e);
     }
-  }, [refreshSessions, setSelectedSession]);
+  }, [refreshSessions, setSelectedSession, sessions, selectedSession]);
 
-  // Delete session
+  // Delete session with optimistic update
   const deleteSession = async (sessionName: string) => {
     if (sessions.length <= 1) {
       alert('Cannot delete the last session');
@@ -235,6 +253,19 @@ export default function Home() {
     }
 
     setDeletingSession(sessionName);
+
+    // Optimistic update: remove session immediately from local state
+    const previousSessions = [...sessions];
+    const previousSelection = selectedSession;
+    const remainingSessions = sessions.filter((s) => s.name !== sessionName);
+
+    setSessions(remainingSessions);
+
+    // If deleting the selected session, switch to another immediately
+    if (sessionName === selectedSession) {
+      setSelectedSession(remainingSessions[0]?.name || 'default');
+    }
+
     try {
       const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/delete`, {
         method: 'POST',
@@ -245,28 +276,36 @@ export default function Home() {
         throw new Error(error || 'Delete failed');
       }
 
-      // If we deleted the selected session, switch to another
-      if (sessionName === selectedSession) {
-        const remaining = sessions.filter((s) => s.name !== sessionName);
-        setSelectedSession(remaining[0]?.name || 'default');
-      }
-
-      // Refresh session list
+      // Refresh to ensure consistency with server state
       await refreshSessions();
     } catch (e) {
+      // Rollback on failure: restore previous state
+      setSessions(previousSessions);
+      setSelectedSession(previousSelection);
       alert(`Failed to delete session: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setDeletingSession(null);
     }
   };
 
-  // Rename session
+  // Rename session with optimistic update
   const renameSession = async (sessionName: string) => {
     const session = sessions.find((s) => s.name === sessionName);
     const currentTitle = session?.title || sessionName;
     const newName = prompt('Enter new session name or title:', currentTitle);
 
     if (!newName || newName.trim() === '' || newName === currentTitle) return;
+
+    // Mark as pending for visual feedback
+    setPendingSessions((prev) => new Set(prev).add(sessionName));
+
+    // Optimistic update: update session title immediately
+    const previousSessions = [...sessions];
+    const previousSelection = selectedSession;
+    const optimisticSessions = sessions.map((s) =>
+      s.name === sessionName ? { ...s, title: newName.trim() } : s
+    );
+    setSessions(optimisticSessions);
 
     try {
       const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/rename`, {
@@ -290,10 +329,20 @@ export default function Home() {
         setSelectedSession(data.new_name);
       }
 
-      // Refresh session list
+      // Refresh session list to get server state
       await refreshSessions();
     } catch (e) {
+      // Rollback on failure: restore previous state
+      setSessions(previousSessions);
+      setSelectedSession(previousSelection);
       alert(`Failed to rename session: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      // Remove pending state
+      setPendingSessions((prev) => {
+        const next = new Set(prev);
+        next.delete(sessionName);
+        return next;
+      });
     }
   };
 
@@ -338,11 +387,21 @@ export default function Home() {
     }
   };
 
-  // Toggle pin status
+  // Toggle pin status with optimistic update
   const togglePin = async (sessionName: string) => {
     const session = sessions.find((s) => s.name === sessionName);
     const isPinned = session?.pinned || false;
     const action = isPinned ? 'unpin' : 'pin';
+
+    // Mark as pending for visual feedback
+    setPendingSessions((prev) => new Set(prev).add(sessionName));
+
+    // Optimistic update: toggle pin status immediately in local state
+    const previousSessions = [...sessions];
+    const optimisticSessions = sessions.map((s) =>
+      s.name === sessionName ? { ...s, pinned: !isPinned } : s
+    );
+    setSessions(optimisticSessions);
 
     try {
       const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/${action}`, {
@@ -351,9 +410,19 @@ export default function Home() {
 
       if (!res.ok) throw new Error(`Failed to ${action} session`);
 
+      // Refresh to get server state (includes any reordering or additional changes)
       await refreshSessions();
     } catch (e) {
+      // Rollback on failure: restore previous state
+      setSessions(previousSessions);
       alert(`Failed to ${action} session: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      // Remove pending state
+      setPendingSessions((prev) => {
+        const next = new Set(prev);
+        next.delete(sessionName);
+        return next;
+      });
     }
   };
 
@@ -770,6 +839,7 @@ export default function Home() {
           {filteredSessions.map((s) => {
             const isActive = s.name === selectedSession;
             const displayText = s.title?.trim() ? s.title : s.name;
+            const isPending = pendingSessions.has(s.name);
             return (
               <button
                 key={s.name}
@@ -790,11 +860,26 @@ export default function Home() {
                   background: isActive ? 'var(--active-bg)' : 'var(--sidebar-bg)',
                   cursor: 'pointer',
                   color: 'var(--foreground)',
+                  opacity: isPending ? 0.6 : 1,
+                  transition: 'opacity 0.2s ease',
+                  position: 'relative',
                 }}
               >
-                <div style={{ fontWeight: 600, fontSize: 14 }}>
+                <div style={{ fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
                   {s.pinned && <span>📌 </span>}
                   {searchText ? highlightText(displayText, searchText) : displayText}
+                  {isPending && (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        opacity: 0.5,
+                        animation: 'pulse 1.5s ease-in-out infinite'
+                      }}
+                      title="Syncing..."
+                    >
+                      ⟳
+                    </span>
+                  )}
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.75, marginTop: 2 }}>
                   {s.messages ?? 0} msg · {s.model ?? ''}
