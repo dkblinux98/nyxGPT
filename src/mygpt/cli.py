@@ -80,6 +80,9 @@ def cmd_chat(
     # Single-prompt mode
     if prompt is not None:
         if stream:
+            # Show typing indicator before first token
+            print("⋯", end="", flush=True)
+            first_chunk = True
             for chunk in chat_stream(
                 prompt,
                 session=session_name,
@@ -89,6 +92,10 @@ def cmd_chat(
                 config_path=str(cfg_path) if cfg_path else None,
                 sessions_dir=str(sessions_dir) if sessions_dir else None,
             ):
+                if first_chunk:
+                    # Clear typing indicator on first token
+                    print("\r\033[K", end="", flush=True)
+                    first_chunk = False
                 print(chunk, end="", flush=True)
             print()
             return 0
@@ -124,6 +131,9 @@ def cmd_chat(
 
         try:
             if stream:
+                # Show typing indicator before first token
+                print("⋯", end="", flush=True)
+                first_chunk = True
                 for chunk in chat_stream(
                     user_text,
                     session=session_name,
@@ -133,6 +143,10 @@ def cmd_chat(
                     config_path=str(cfg_path) if cfg_path else None,
                     sessions_dir=str(sessions_dir) if sessions_dir else None,
                 ):
+                    if first_chunk:
+                        # Clear typing indicator on first token
+                        print("\r\033[K", end="", flush=True)
+                        first_chunk = False
                     print(chunk, end="", flush=True)
                 print()
             else:

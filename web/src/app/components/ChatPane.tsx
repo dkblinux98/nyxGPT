@@ -448,7 +448,13 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
               {m.ragChunks && m.ragChunks.length > 0 && (
                 <RagCitationsCollapsible chunks={m.ragChunks} />
               )}
-              <div>{m.content}</div>
+              <div>
+                {m.role === 'assistant' && !m.content && status === 'connecting' ? (
+                  <span style={{ opacity: 0.5 }}>⋯</span>
+                ) : (
+                  m.content
+                )}
+              </div>
             </div>
           ))
         )}
