@@ -33,9 +33,10 @@ def load_config() -> Dict[str, str]:
     with open(config_path, 'r') as f:
         for line in f:
             line = line.strip()
-            if '=' in line and not line.startswith('#'):
+            if '=' in line and not line.startswith('#') and not line.startswith('['):
                 key, value = line.split('=', 1)
-                config[key.strip()] = value.strip()
+                # Normalize keys to uppercase for consistency with bash scripts
+                config[key.strip().upper()] = value.strip()
 
     return config
 

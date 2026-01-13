@@ -43,6 +43,7 @@ load_config() {
   [[ -f "$CONFIG_FILE" ]] || _die "Config file not found: $CONFIG_FILE"
 
   # naive INI-ish parser: key=value lines, ignores [sections] and comments
+  # Normalizes keys to uppercase for consistency
   while IFS= read -r line; do
     line="${line%%#*}"
     line="${line%%;*}"
@@ -54,7 +55,9 @@ load_config() {
       val="${val%\"}"
       val="${val#\"}"
       val="$(echo "$val" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-      export "$key=$val"
+      # Normalize key to uppercase
+      key_upper="$(echo "$key" | tr '[:lower:]' '[:upper:]')"
+      export "$key_upper=$val"
     fi
   done < "$CONFIG_FILE"
 
