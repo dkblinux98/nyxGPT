@@ -12,6 +12,7 @@ dependencies = [
   "beautifulsoup4>=4.12",
   "pypdf>=3.17",
   "python-multipart>=0.0.6",
+  "tiktoken>=0.5.0",
 ]
 
 [project.optional-dependencies]

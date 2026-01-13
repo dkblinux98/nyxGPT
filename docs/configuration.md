@@ -133,6 +133,39 @@ For detailed usage, examples, and security recommendations, see [`docs/api.md`](
 
 ---
 
+## `[context]` section
+
+Context window budget enforcement to prevent exceeding model token limits.
+
+```ini
+[context]
+default_window_size = 8192
+warning_threshold = 0.8
+# Model-specific overrides (optional)
+context_window_llama3_1_8b = 131072
+context_window_qwen2_5_0_5b = 32768
+```
+
+| Key | Description |
+|---|---|
+| `default_window_size` | Maximum context window in tokens (default: 8192) |
+| `warning_threshold` | Warn when usage exceeds this fraction (0.0-1.0, default: 0.8) |
+| `context_window_<model>` | Model-specific override (replace `:` `.` `/` with `_` in model name) |
+
+**Behavior:**
+- Token counting uses tiktoken (cl100k_base encoding) for estimation
+- When context exceeds the budget, oldest messages are automatically removed
+- System messages and current prompt are always preserved
+- Warnings are logged when approaching the threshold (default: 80% capacity)
+
+**Common context window sizes:**
+- `llama3.1` (8b/70b): 128k tokens
+- `llama2`: 4k tokens
+- `mistral`: 8k tokens
+- `qwen2.5`: 32k tokens
+
+---
+
 ## `[rag]` section
 
 Retrieval-Augmented Generation (RAG) settings.

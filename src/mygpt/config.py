@@ -348,6 +348,60 @@ def get_rate_limit_config(cfg: ConfigParser) -> dict:
         }
 
 
+def get_context_window_size(cfg: ConfigParser, model: str | None = None) -> int:
+    """Get maximum context window size for a model.
+
+    Checks model-specific override first, then falls back to default.
+    Common context window sizes:
+    - llama3.1:8b, llama3.1:70b: 128k tokens
+    - llama2: 4k tokens
+    - mistral: 8k tokens
+    - qwen2.5: 32k tokens
+
+    Args:
+        cfg: ConfigParser instance
+        model: Optional model name to look up specific limit
+
+    Returns:
+        Maximum context window size in tokens
+    """
+    # Try model-specific setting first
+    if model:
+        # Sanitize model name for config key (replace : and . with _)
+        safe_model = model.replace(":", "_").replace(".", "_").replace("/", "_")
+        option = f"context_window_{safe_model}"
+        if cfg.has_option("context", option):
+            try:
+                return cfg.getint("context", option)
+            except Exception:
+                pass
+
+    # Fall back to default
+    try:
+        return cfg.getint("context", "default_window_size", fallback=8192)
+    except Exception:
+        return 8192
+
+
+def get_context_warning_threshold(cfg: ConfigParser) -> float:
+    """Get threshold for warning when approaching context limit.
+
+    Returns fraction of context window (0.0-1.0) at which to log warnings.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Warning threshold as fraction (default 0.8 = 80%)
+    """
+    try:
+        threshold = cfg.getfloat("context", "warning_threshold", fallback=0.8)
+        # Clamp to valid range
+        return max(0.0, min(1.0, threshold))
+    except Exception:
+        return 0.8
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "load_config",
@@ -368,6 +422,8 @@ __all__ = [
     "get_rag_include_headers",
     "get_rate_limit_enabled",
     "get_rate_limit_config",
+    "get_context_window_size",
+    "get_context_warning_threshold",
     "validate_config",
     "ConfigValidationError",
 ]
