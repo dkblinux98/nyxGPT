@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 export type ToastType = 'success' | 'error' | 'warning' | 'info';
 
@@ -15,6 +15,13 @@ export interface ToastProps {
 export function Toast({ id, type, message, duration = 5000, onDismiss }: ToastProps) {
   const [isExiting, setIsExiting] = useState(false);
 
+  const handleDismiss = useCallback(() => {
+    setIsExiting(true);
+    setTimeout(() => {
+      onDismiss(id);
+    }, 200); // Match animation duration
+  }, [id, onDismiss]);
+
   useEffect(() => {
     if (duration > 0) {
       const timer = setTimeout(() => {
@@ -23,14 +30,7 @@ export function Toast({ id, type, message, duration = 5000, onDismiss }: ToastPr
 
       return () => clearTimeout(timer);
     }
-  }, [duration]);
-
-  const handleDismiss = () => {
-    setIsExiting(true);
-    setTimeout(() => {
-      onDismiss(id);
-    }, 200); // Match animation duration
-  };
+  }, [duration, handleDismiss]);
 
   const getIcon = () => {
     switch (type) {
