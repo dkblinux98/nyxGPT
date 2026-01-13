@@ -56,4 +56,12 @@ if [[ -n "${API_OVERRIDE:-}" ]]; then
 fi
 
 cd "$REPO_DIR/web"
+
+# Clear Next.js cache to ensure fresh routes are recognized
+# This prevents 404 errors when new routes are added
+if [[ -d ".next" ]]; then
+  echo "Clearing Next.js cache (.next directory)..."
+  rm -rf .next
+fi
+
 exec "$NPM_BIN" run dev
