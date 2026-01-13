@@ -256,7 +256,7 @@ export default function Home() {
       });
 
       if (!canDelete) {
-        alert('Cannot delete the last session');
+        toast.warning('Cannot delete the last session');
         return;
       }
 
