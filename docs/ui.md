@@ -240,6 +240,29 @@ To ensure reliability:
 - `run-web.sh` explicitly ensures `node` and `npm` are discoverable using
   `[paths] node_bin` and `npm_bin` from `~/.myGPT/config.ini`
 
+### Web UI Features
+
+The web UI includes:
+
+- **Chat interface** with streaming responses and session management
+- **Model management** page (`/models`) for pulling, deleting, and viewing Ollama models
+- **Configuration wizard** (`/admin`) for step-by-step system setup
+- **Log viewer** (`/admin/logs`) for viewing and searching application logs
+
+#### Log Viewer
+
+Access the log viewer at `http://127.0.0.1:3000/admin/logs` to:
+
+- **View log files** — Browse all available log files (main log and rotated backups)
+- **Real-time filtering** — Filter by log level (DEBUG, INFO, WARNING, ERROR)
+- **Search** — Search for specific text across log entries (case-insensitive)
+- **Tail mode** — View the last N lines of a log file
+- **Auto-refresh** — Automatically reload logs at configurable intervals (1-60 seconds)
+- **Download** — Download log files for offline analysis
+- **Auto-scroll** — Automatically scroll to the newest log entries
+
+The log viewer provides a dark-themed, monospaced display optimized for reading structured log files.
+
 ---
 
 ## Operational dependencies

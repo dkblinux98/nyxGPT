@@ -248,6 +248,7 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
 - Session picker and management
 - RAG document upload and toggle
 - **Configuration wizard** at `/admin` for step-by-step setup
+- **Log viewer** at `/admin/logs` for debugging and monitoring
 - Model management (pull, delete, list) at `/models`
 - **Keyboard shortcuts** for productivity:
   - `Cmd/Ctrl+K` - Create new chat
