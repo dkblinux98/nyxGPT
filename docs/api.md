@@ -551,6 +551,96 @@ At a high level, the API supports:
 
 ---
 
+## Log viewing endpoints
+
+The API provides endpoints for viewing and streaming log files, useful for debugging and monitoring.
+
+### `GET /api/v1/logs/files`
+
+List available log files with metadata.
+
+**Response:**
+
+```json
+{
+  "files": [
+    {
+      "name": "mygpt.log",
+      "path": "/home/user/.myGPT/logs/mygpt.log",
+      "size": 1024000,
+      "modified": 1704067200.0
+    }
+  ],
+  "log_dir": "/home/user/.myGPT/logs"
+}
+```
+
+### `GET /api/v1/logs/view/{filename}`
+
+View log file contents with optional filtering.
+
+**Query Parameters:**
+
+- `tail` (optional): Number of lines to return from the end (default: all lines)
+- `level` (optional): Filter by log level (DEBUG, INFO, WARNING, ERROR)
+- `search` (optional): Search string to filter lines (case-insensitive)
+
+**Example:**
+
+```bash
+# Get last 100 lines
+curl "http://127.0.0.1:8000/api/v1/logs/view/mygpt.log?tail=100"
+
+# Filter by log level
+curl "http://127.0.0.1:8000/api/v1/logs/view/mygpt.log?level=ERROR"
+
+# Search for specific text
+curl "http://127.0.0.1:8000/api/v1/logs/view/mygpt.log?search=session"
+
+# Combine filters
+curl "http://127.0.0.1:8000/api/v1/logs/view/mygpt.log?tail=50&level=INFO&search=chat"
+```
+
+**Response:**
+
+```json
+{
+  "filename": "mygpt.log",
+  "lines": ["2024-01-01 12:00:00 INFO ...", "..."],
+  "total_lines": 1000,
+  "filtered_lines": 50
+}
+```
+
+### `GET /api/v1/logs/stream/{filename}`
+
+Stream log file contents with optional filtering. Useful for real-time log viewing.
+
+**Query Parameters:**
+
+- `level` (optional): Filter by log level (DEBUG, INFO, WARNING, ERROR)
+- `search` (optional): Search string to filter lines (case-insensitive)
+
+**Example:**
+
+```bash
+# Stream all logs
+curl "http://127.0.0.1:8000/api/v1/logs/stream/mygpt.log"
+
+# Stream only ERROR logs
+curl "http://127.0.0.1:8000/api/v1/logs/stream/mygpt.log?level=ERROR"
+```
+
+**Response:** Text stream (Content-Type: text/plain)
+
+**Security Notes:**
+
+- File paths are sanitized to prevent path traversal attacks
+- Access is restricted to files within the configured log directory
+- Attempting to access files outside the log directory returns 403 Forbidden
+
+---
+
 ## Authentication
 
 myGPT API supports optional API key authentication. Authentication is **disabled by default** for local-only usage and can be enabled via configuration when additional security is needed.
