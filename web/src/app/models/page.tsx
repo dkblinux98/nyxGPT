@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
 import SkeletonLoader from '../../components/SkeletonLoader';
+import { useToast } from '../../contexts/ToastContext';
 
 type Model = {
   name: string;
@@ -12,6 +13,7 @@ type Model = {
 };
 
 export default function ModelsPage() {
+  const toast = useToast();
   const [models, setModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -61,9 +63,11 @@ export default function ModelsPage() {
 
       setPullModelName('');
       await loadModels();
+      toast.success('Model pulled successfully');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setPullError(msg);
+      toast.error(`Failed to pull model: ${msg}`);
     } finally {
       setPulling(false);
     }
@@ -85,9 +89,10 @@ export default function ModelsPage() {
       }
 
       await loadModels();
+      toast.success('Model deleted successfully');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      alert(`Failed to delete model: ${msg}`);
+      toast.error(`Failed to delete model: ${msg}`);
     } finally {
       setDeletingModel(null);
     }

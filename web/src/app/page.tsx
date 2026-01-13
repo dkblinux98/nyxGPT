@@ -7,6 +7,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
 import { SessionListSkeleton } from '../components/SkeletonLoader';
 import { SessionListErrorBoundary } from '../components/SessionListErrorBoundary';
+import { useToast } from '../contexts/ToastContext';
 
 type Info = {
   ollama_base_url: string;
@@ -29,6 +30,7 @@ type SessionsResponse = {
 };
 
 export default function Home() {
+  const toast = useToast();
   const [info, setInfo] = useState<Info | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingInfo, setLoadingInfo] = useState<boolean>(true);
@@ -232,12 +234,13 @@ export default function Home() {
 
       // Refresh the sessions list to get actual server state
       await refreshSessions();
+      toast.success('New chat created successfully');
     } catch (e) {
       // Rollback on failure: restore previous state
       setSessions(previousSessions);
       setSelectedSession(previousSelection);
       const msg = e instanceof Error ? e.message : String(e);
-      alert(`Failed to create new chat: ${msg}`);
+      toast.error(`Failed to create new chat: ${msg}`);
       console.error('Failed to create new chat:', e);
     }
   }, [refreshSessions, setSelectedSession, sessions, selectedSession]);
@@ -253,7 +256,7 @@ export default function Home() {
       });
 
       if (!canDelete) {
-        alert('Cannot delete the last session');
+        toast.warning('Cannot delete the last session');
         return;
       }
 
@@ -296,12 +299,13 @@ export default function Home() {
           throw new Error(error || 'Delete failed');
         }
         announce(`Session ${sessionName} deleted successfully`);
+        toast.success(`Session deleted successfully`);
       } catch (e) {
         // Rollback on failure: restore previous state
         setSessions(previousSessions);
         setSelectedSession(previousSelection);
         const errorMsg = `Failed to delete session: ${e instanceof Error ? e.message : String(e)}`;
-        alert(errorMsg);
+        toast.error(errorMsg);
         announce(errorMsg);
       } finally {
         setDeletingSession(null);
@@ -312,7 +316,7 @@ export default function Home() {
       // Catch any unexpected errors in state updates or operations
       console.error('Unexpected error in deleteSession:', error);
       const unexpectedErrorMsg = 'An unexpected error occurred while deleting the session. Please refresh the page.';
-      alert(unexpectedErrorMsg);
+      toast.error(unexpectedErrorMsg);
       announce(unexpectedErrorMsg);
       // Attempt to refresh sessions to restore consistent state
       try {
@@ -390,12 +394,13 @@ export default function Home() {
         return prevSelected;
       });
       announce(`Session renamed successfully to ${newName.trim()}`);
+      toast.success('Session renamed successfully');
       } catch (e) {
         // Rollback on failure: restore previous state
         setSessions(previousSessions);
         setSelectedSession(previousSelection);
         const errorMsg = `Failed to rename session: ${e instanceof Error ? e.message : String(e)}`;
-        alert(errorMsg);
+        toast.error(errorMsg);
         announce(errorMsg);
       } finally {
         // Remove pending state
@@ -411,7 +416,7 @@ export default function Home() {
       // Catch any unexpected errors in state updates or operations
       console.error('Unexpected error in renameSession:', error);
       const unexpectedErrorMsg = 'An unexpected error occurred while renaming the session. Please refresh the page.';
-      alert(unexpectedErrorMsg);
+      toast.error(unexpectedErrorMsg);
       announce(unexpectedErrorMsg);
       // Attempt to refresh sessions to restore consistent state
       try {
@@ -456,8 +461,9 @@ export default function Home() {
       } finally {
         setTimeout(() => window.URL.revokeObjectURL(downloadUrl), 100);
       }
+      toast.success('Session exported successfully');
     } catch (e) {
-      alert(`Failed to export session: ${e instanceof Error ? e.message : String(e)}`);
+      toast.error(`Failed to export session: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setExportingSession(null);
     }
@@ -508,11 +514,12 @@ export default function Home() {
 
         if (!res.ok) throw new Error(`Failed to ${action} session`);
         announce(`Session ${sessionName} ${action === 'pin' ? 'pinned' : 'unpinned'} successfully`);
+        toast.success(`Session ${action === 'pin' ? 'pinned' : 'unpinned'} successfully`);
       } catch (e) {
         // Rollback on failure: restore previous state
         setSessions(previousSessions);
         const errorMsg = `Failed to ${action} session: ${e instanceof Error ? e.message : String(e)}`;
-        alert(errorMsg);
+        toast.error(errorMsg);
         announce(errorMsg);
       } finally {
         // Remove pending state
@@ -528,7 +535,7 @@ export default function Home() {
       // Catch any unexpected errors in state updates or operations
       console.error('Unexpected error in togglePin:', error);
       const unexpectedErrorMsg = 'An unexpected error occurred while toggling pin status. Please refresh the page.';
-      alert(unexpectedErrorMsg);
+      toast.error(unexpectedErrorMsg);
       announce(unexpectedErrorMsg);
       // Attempt to refresh sessions to restore consistent state
       try {

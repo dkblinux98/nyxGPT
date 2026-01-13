@@ -17,6 +17,20 @@ global.fetch = vi.fn();
 global.confirm = vi.fn();
 global.prompt = vi.fn();
 
+// Mock ToastContext
+const mockToastContext = {
+  success: vi.fn(),
+  error: vi.fn(),
+  warning: vi.fn(),
+  info: vi.fn(),
+  showToast: vi.fn(),
+};
+
+vi.mock('@/contexts/ToastContext', () => ({
+  useToast: () => mockToastContext,
+  ToastProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
 describe('Optimistic Updates Logic', () => {
   beforeEach(() => {
     // Clear any state before each test
@@ -804,6 +818,283 @@ describe('Optimistic Updates Integration Tests', () => {
       await waitFor(() => {
         expect(session1Card).toHaveAttribute('data-pinned', 'true');
         expect(screen.queryByText('Test Session 3')).not.toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Toast Notification Integration', () => {
+    beforeEach(() => {
+      // Clear mock calls before each test
+      vi.clearAllMocks();
+    });
+
+    it('should show success toast when session is created', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        'POST /api/v1/sessions': { name: 'new-session', messages: 0, pinned: false },
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      // Create new session
+      const newButton = screen.getByText(/new/i);
+      const user = userEvent.setup();
+      await user.click(newButton);
+
+      await waitFor(() => {
+        expect(mockToastContext.success).toHaveBeenCalledWith('New chat created successfully');
+      });
+    });
+
+    it('should show success toast when session is deleted', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/delete': { success: true },
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+
+      const deleteButton = await screen.findByText(/delete/i);
+      await user.click(deleteButton);
+
+      await waitFor(() => {
+        expect(mockToastContext.success).toHaveBeenCalledWith('Session deleted successfully');
+      });
+    });
+
+    it('should show error toast when session deletion fails', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/delete': { error: 'Delete failed', status: 500 },
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+
+      const deleteButton = await screen.findByText(/delete/i);
+      await user.click(deleteButton);
+
+      await waitFor(() => {
+        expect(mockToastContext.error).toHaveBeenCalledWith(expect.stringContaining('Failed to delete session'));
+      });
+    });
+
+    it('should show success toast when session is renamed', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/rename': { success: true, new_name: 'new-title' },
+      });
+
+      (global.prompt as any).mockReturnValue('New Title');
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+
+      const renameButton = await screen.findByText(/rename/i);
+      await user.click(renameButton);
+
+      await waitFor(() => {
+        expect(mockToastContext.success).toHaveBeenCalledWith('Session renamed successfully');
+      });
+    });
+
+    it('should show error toast when session rename fails', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/rename': { error: 'Rename failed', status: 500 },
+      });
+
+      (global.prompt as any).mockReturnValue('New Title');
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+
+      const renameButton = await screen.findByText(/rename/i);
+      await user.click(renameButton);
+
+      await waitFor(() => {
+        expect(mockToastContext.error).toHaveBeenCalledWith(expect.stringContaining('Failed to rename session'));
+      });
+    });
+
+    it('should show success toast when session is pinned', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/pin': { success: true },
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+
+      const pinButton = await screen.findByText(/pin/i);
+      await user.click(pinButton);
+
+      await waitFor(() => {
+        expect(mockToastContext.success).toHaveBeenCalledWith('Session pinned successfully');
+      });
+    });
+
+    it('should show success toast when session is unpinned', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/unpin': { success: true },
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 2')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session2Card = screen.getByText('Test Session 2').closest('[data-session]');
+      await user.pointer({ target: session2Card!, keys: '[MouseRight]' });
+
+      const unpinButton = await screen.findByText(/unpin/i);
+      await user.click(unpinButton);
+
+      await waitFor(() => {
+        expect(mockToastContext.success).toHaveBeenCalledWith('Session unpinned successfully');
+      });
+    });
+
+    it('should show error toast when pin toggle fails', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/pin': { error: 'Pin failed', status: 500 },
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+
+      const pinButton = await screen.findByText(/pin/i);
+      await user.click(pinButton);
+
+      await waitFor(() => {
+        expect(mockToastContext.error).toHaveBeenCalledWith(expect.stringContaining('Failed to pin session'));
+      });
+    });
+
+    it('should show success toast when session is exported', async () => {
+      // Mock URL.createObjectURL
+      global.URL.createObjectURL = vi.fn(() => 'blob:mock-url');
+      global.URL.revokeObjectURL = vi.fn();
+
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/export': new Blob(['export data'], { type: 'application/json' }),
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+
+      const exportButton = await screen.findByText(/export/i);
+      await user.click(exportButton);
+
+      await waitFor(() => {
+        expect(mockToastContext.success).toHaveBeenCalledWith('Session exported successfully');
+      });
+    });
+
+    it('should show error toast when session export fails', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/export': { error: 'Export failed', status: 500 },
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+
+      const exportButton = await screen.findByText(/export/i);
+      await user.click(exportButton);
+
+      await waitFor(() => {
+        expect(mockToastContext.error).toHaveBeenCalledWith(expect.stringContaining('Failed to export session'));
+      });
+    });
+
+    it('should show warning toast when trying to delete the last session', async () => {
+      const singleSessionList = [mockSessions[0]];
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: singleSessionList },
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+
+      const deleteButton = await screen.findByText(/delete/i);
+      await user.click(deleteButton);
+
+      await waitFor(() => {
+        expect(mockToastContext.warning).toHaveBeenCalledWith('Cannot delete the last session');
       });
     });
   });

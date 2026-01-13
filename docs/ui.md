@@ -185,6 +185,17 @@ The web UI includes:
 - **Configuration wizard** (`/admin`) for step-by-step system setup
 - **Log viewer** (`/admin/logs`) for viewing and searching application logs
 
+#### Toast Notifications
+
+The web UI includes a toast notification system for user feedback:
+
+- **Success notifications** — Confirm successful operations (session creation, model pull, etc.)
+- **Error notifications** — Display error messages with context
+- **Warning notifications** — Show warnings and non-critical issues
+- **Info notifications** — Provide informational messages
+
+Toasts appear in the bottom-right corner, auto-dismiss after 5 seconds (configurable), and can be manually dismissed by clicking the × button. Multiple toasts stack vertically.
+
 #### Configuration Wizard
 
 Access the wizard at `http://127.0.0.1:3000/admin` to configure:

@@ -27,6 +27,10 @@
   --muted-foreground: #71717a;
   --skeleton-base: #e5e5e5;
   --skeleton-shimmer: #f0f0f0;
+  --toast-success-bg: #10b981;
+  --toast-error-bg: #ef4444;
+  --toast-warning-bg: #f59e0b;
+  --toast-info-bg: #3b82f6;
 }
 
 :root[data-theme='dark'],
@@ -59,6 +63,10 @@
   --muted-foreground: #a1a1aa;
   --skeleton-base: #2a2a2a;
   --skeleton-shimmer: #333;
+  --toast-success-bg: #059669;
+  --toast-error-bg: #dc2626;
+  --toast-warning-bg: #d97706;
+  --toast-info-bg: #2563eb;
 }
 
 html,
@@ -112,5 +120,28 @@ html.no-transition * {
   50% {
     opacity: 0.8;
     transform: rotate(180deg);
+  }
+}
+
+/* Toast animations */
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toast-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(20px);
   }
 }
