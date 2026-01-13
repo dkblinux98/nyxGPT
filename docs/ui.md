@@ -1,85 +1,5 @@
 # UI
 
-This document describes the local UI surfaces provided by myGPT:
-- a terminal-based UI (TUI)
-- a local web UI backed by FastAPI
-
-Both UIs depend on the FastAPI backend and its streaming chat endpoints.
-
-## Run the backend (FastAPI)
-
-The backend is normally run as a background service via Homebrew:
-
-```bash
-brew services start mygpt-api
-```
-
-Verify it is running before starting any UI.
-
-### Verify
-
-```bash
-curl -s http://127.0.0.1:8000/health
-curl -s http://127.0.0.1:8000/api/v1/info
-```
-
-Interactive docs (local only):
-
-```bash
-open http://127.0.0.1:8000/docs
-```
-
-## Terminal UI (TUI)
-
-Start the terminal UI:
-
-```bash
-mygpt tui
-```
-
-The TUI:
-- streams assistant responses token-by-token
-- uses the Sessions API to persist history
-- defaults to the `default` session
-
-If no backend is running, the TUI will fail to connect.
-
-## Sessions API (UI-critical)
-
-- List sessions (returns `{ "sessions": [...] }`):
-
-```bash
-curl -s http://127.0.0.1:8000/api/v1/sessions
-```
-
-- Initialize a session (no model call; safe for UI bootstrapping; idempotent):
-
-## Streaming chat (UI critical)
-
-Both the TUI and web UI rely on the streaming endpoint:
-
-POST `/api/v1/chat/stream`
-
-This endpoint:
-- yields text chunks incrementally
-- persists messages to the active session
-- optionally injects RAG context before streaming
-
-UI implementations must treat the response as a stream, not a single JSON payload.
-
-## Operational dependencies
-
-For reliable UI operation:
-
-- Docker Desktop must be running at login
-- the Cassandra container must be running
-- the FastAPI service must be active
-- logs should be available under `~/.myGPT/logs`
-
-See `docs/api.md → Operational Tasks` for setup details.
-
-# UI
-
 This document describes the local UI surfaces provided by **myGPT**:
 
 - **Terminal UI (TUI)** — a rich terminal-based chat interface
@@ -93,13 +13,20 @@ Both UIs depend on the FastAPI backend and its streaming chat endpoints.
 
 Both UIs require the FastAPI backend to be running.
 
-The backend is normally managed as a Homebrew service:
+The backend is normally managed via the `mygpt ops` command:
 
 ```bash
-brew services start mygpt-api
+# Install and start all services (including API)
+mygpt ops install
+
+# Restart just the API service
+mygpt ops restart api
+
+# Check system health
+mygpt ops doctor
 ```
 
-Verify it is running before starting any UI:
+Verify the API is running:
 
 ```bash
 curl -s http://127.0.0.1:8000/health
@@ -133,6 +60,9 @@ The TUI:
 
 - **Ctrl+C** — Quit the TUI
 - **Ctrl+S** — Open session picker (browse and switch sessions)
+- **Ctrl+R** — Toggle RAG for current session
+- **Ctrl+M** — Manage models
+- **Ctrl+N** — Rename current session
 
 ### Session Picker
 
@@ -164,12 +94,27 @@ curl -s http://127.0.0.1:8000/api/v1/sessions
 Response shape:
 
 ```json
-{ "sessions": [ ... ] }
+{
+  "sessions": [
+    {
+      "name": "session-name",
+      "title": "Session Title",
+      "message_count": 10,
+      "last_modified": "2026-01-12T12:00:00Z"
+    }
+  ]
+}
 ```
 
 - **Initialize a session**
 
 Session creation is idempotent and does **not** trigger a model call. This allows UI bootstrapping without side effects.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-session"}'
+```
 
 ---
 
@@ -187,27 +132,28 @@ This endpoint:
 - persists assistant and user messages to the active session
 - optionally injects RAG context before streaming begins
 
-**Important:**  
+**Important:**
 UI clients must treat this response as a stream, not as a single JSON payload.
 
 ---
 
 ## Local Web UI (Next.js)
 
-The local web UI is a small Next.js application located in `web/`.
+The local web UI is a Next.js application located in `web/`.
 
-### Running via Homebrew (recommended)
+### Running via mygpt ops (recommended)
 
-The web UI can be launched as a background service using Homebrew:
-
-```bash
-brew services start mygpt-web
-```
-
-This uses a wrapper script that ultimately runs:
+The web UI can be launched via the `mygpt ops` command:
 
 ```bash
-~/.myGPT/scripts/run-web.sh
+# Install and start all services (including web UI)
+mygpt ops install
+
+# Restart just the web UI
+mygpt ops restart web
+
+# Check system health
+mygpt ops doctor
 ```
 
 Once running, open:
@@ -230,16 +176,6 @@ Typical values:
 NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 ```
 
-### PATH and Node resolution
-
-Homebrew / launchd services run with a minimal `PATH`.
-
-To ensure reliability:
-
-- `mygpt-web` sets a safe PATH in its launch wrapper
-- `run-web.sh` explicitly ensures `node` and `npm` are discoverable using
-  `[paths] node_bin` and `npm_bin` from `~/.myGPT/config.ini`
-
 ### Web UI Features
 
 The web UI includes:
@@ -248,6 +184,19 @@ The web UI includes:
 - **Model management** page (`/models`) for pulling, deleting, and viewing Ollama models
 - **Configuration wizard** (`/admin`) for step-by-step system setup
 - **Log viewer** (`/admin/logs`) for viewing and searching application logs
+
+#### Configuration Wizard
+
+Access the wizard at `http://127.0.0.1:3000/admin` to configure:
+
+1. **Model Selection** — Choose your default LLM model
+2. **RAG Configuration** — Enable/disable retrieval-augmented generation
+3. **API Settings** — Configure log level and test connectivity
+4. **Summary** — Review and save your configuration
+
+Keyboard shortcuts:
+- `←` / `→` — Navigate between steps
+- `Enter` — Advance to next step or save configuration
 
 #### Log Viewer
 
@@ -267,14 +216,14 @@ The log viewer provides a dark-themed, monospaced display optimized for reading 
 
 ## Operational dependencies
 
-For reliable UI operation, ensure the following are active at login:
+For reliable UI operation, ensure the following are active:
 
 - **Docker Desktop** (required for Cassandra)
 - **Cassandra container** (`mygpt-cassandra`)
 - **FastAPI backend** (`mygpt-api`)
 - **Web UI service** (`mygpt-web`)
 
-Logs from all components should be available under:
+Logs from all components are available under:
 
 ```text
 ~/.myGPT/logs
