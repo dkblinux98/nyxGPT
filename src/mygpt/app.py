@@ -1379,16 +1379,26 @@ def logs_view_file(
     safe_filename = os.path.basename(filename)
     log_file = log_dir / safe_filename
 
-    # Validate file exists and is within log directory
+    # Validate file exists and is within log directory (or is a valid symlink from log directory)
     try:
-        log_file = log_file.resolve()
-        log_dir = log_dir.resolve()
-        if not log_file.is_relative_to(log_dir):
-            raise HTTPException(status_code=403, detail="Access denied")
-    except (ValueError, OSError):
-        raise HTTPException(status_code=404, detail="Log file not found")
+        # First check that the file (or symlink) exists in the log directory
+        if not log_file.exists():
+            raise HTTPException(status_code=404, detail="Log file not found")
 
-    if not log_file.exists() or not log_file.is_file():
+        if not log_file.is_file():
+            raise HTTPException(status_code=404, detail="Log file not found")
+
+        # Security check: Ensure the file path (before resolving symlinks) is in log_dir
+        # This prevents path traversal while allowing symlinks that exist in the log directory
+        log_dir_resolved = log_dir.resolve()
+        log_file_parent = log_file.parent.resolve()
+
+        if log_file_parent != log_dir_resolved:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    except HTTPException:
+        raise
+    except (ValueError, OSError) as e:
         raise HTTPException(status_code=404, detail="Log file not found")
 
     try:
@@ -1449,16 +1459,26 @@ async def logs_stream_file(
     safe_filename = os.path.basename(filename)
     log_file = log_dir / safe_filename
 
-    # Validate file exists and is within log directory
+    # Validate file exists and is within log directory (or is a valid symlink from log directory)
     try:
-        log_file = log_file.resolve()
-        log_dir = log_dir.resolve()
-        if not log_file.is_relative_to(log_dir):
-            raise HTTPException(status_code=403, detail="Access denied")
-    except (ValueError, OSError):
-        raise HTTPException(status_code=404, detail="Log file not found")
+        # First check that the file (or symlink) exists in the log directory
+        if not log_file.exists():
+            raise HTTPException(status_code=404, detail="Log file not found")
 
-    if not log_file.exists() or not log_file.is_file():
+        if not log_file.is_file():
+            raise HTTPException(status_code=404, detail="Log file not found")
+
+        # Security check: Ensure the file path (before resolving symlinks) is in log_dir
+        # This prevents path traversal while allowing symlinks that exist in the log directory
+        log_dir_resolved = log_dir.resolve()
+        log_file_parent = log_file.parent.resolve()
+
+        if log_file_parent != log_dir_resolved:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    except HTTPException:
+        raise
+    except (ValueError, OSError) as e:
         raise HTTPException(status_code=404, detail="Log file not found")
 
     async def stream_lines():
