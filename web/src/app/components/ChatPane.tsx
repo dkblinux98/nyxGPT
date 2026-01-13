@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
+import { useToast } from '../../contexts/ToastContext';
 
 type ChatMessage = {
   role: 'user' | 'assistant';
@@ -95,6 +96,7 @@ function RagCitationsCollapsible({ chunks }: { chunks: RagChunk[] }) {
 }
 
 export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
+  const toast = useToast();
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -241,7 +243,7 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      alert(`Failed to rename session: ${msg}`);
+      toast.error(`Failed to rename session: ${msg}`);
     } finally {
       setRenaming(false);
     }
