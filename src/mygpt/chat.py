@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
 from configparser import ConfigParser
@@ -293,8 +295,19 @@ def _persist_chat_turn(
     sessions_dir: str | None = None,
 ) -> None:
     """Persist a completed chat turn to session storage."""
-    context.state.messages.append({"role": "user", "content": prompt})
-    context.state.messages.append({"role": "assistant", "content": reply})
+    timestamp = datetime.now(timezone.utc).isoformat()
+    context.state.messages.append({
+        "role": "user",
+        "content": prompt,
+        "id": str(uuid.uuid4()),
+        "timestamp": timestamp
+    })
+    context.state.messages.append({
+        "role": "assistant",
+        "content": reply,
+        "id": str(uuid.uuid4()),
+        "timestamp": timestamp
+    })
     save_session(context.state, cfg, sessions_dir_override=sessions_dir)
 
 

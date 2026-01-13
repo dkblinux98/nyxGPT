@@ -17,6 +17,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request, Body, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.status import HTTP_401_UNAUTHORIZED
+from mygpt import api_models
 from mygpt.api_models import (
     InfoResponse,
     SessionsListResponse,
@@ -45,6 +46,7 @@ from mygpt.config import (
     get_rate_limit_config,
     load_config,
 )
+from mygpt import chat as chat_module
 from mygpt.chat import chat as run_chat, chat_stream
 from mygpt import sessions
 from mygpt import tools_fs
@@ -911,6 +913,115 @@ def sessions_sync_filename(name: str, sessions_dir: Optional[str] = None) -> dic
         return {"ok": True, "old_name": name, "new_name": new_name, "message": "Filename synced with title"}
     else:
         return {"ok": True, "message": status, "name": new_name}
+
+
+@api.patch("/sessions/{name}/messages/{message_index}")
+def edit_message(
+    name: str,
+    message_index: int,
+    req: api_models.EditMessageRequest,
+    sessions_dir: Optional[str] = None
+) -> dict[str, Any]:
+    """Edit a message in a session.
+
+    By default, forks the conversation (truncates messages after the edited one).
+    Set fork=false to edit without truncating.
+    """
+    _sessions_dir = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
+
+    ok, msg = sessions.edit_message(
+        session_name=name,
+        message_index=message_index,
+        new_content=req.content,
+        sessions_dir=_sessions_dir,
+        fork=req.fork,
+    )
+
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+
+    return {"ok": True, "message": msg}
+
+
+@api.post("/sessions/{name}/messages/{message_index}/regenerate")
+def regenerate_response(
+    name: str,
+    message_index: int,
+    req: api_models.RegenerateRequest,
+    sessions_dir: Optional[str] = None,
+) -> dict[str, Any]:
+    """Regenerate response from a specific message.
+
+    The message at message_index should be a user message.
+    This will:
+    1. Optionally replace the user message with new prompt (if provided)
+    2. Truncate conversation after that message
+    3. Generate a new response using the chat endpoint
+
+    Returns the new response.
+    """
+    _sessions_dir = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
+
+    # Load session to validate message index
+    sf = sessions.session_file_for(name, _sessions_dir)
+    if not sf.exists():
+        raise HTTPException(status_code=404, detail="No such session")
+
+    msgs = sessions.load_session_messages(sf)
+    if message_index < 0 or message_index >= len(msgs):
+        raise HTTPException(status_code=400, detail=f"Invalid message index: {message_index}")
+
+    message = msgs[message_index]
+    if message.get("role") != "user":
+        raise HTTPException(
+            status_code=400,
+            detail="Can only regenerate from user messages"
+        )
+
+    # If new prompt provided, edit the message first
+    prompt = req.prompt if req.prompt else message.get("content", "")
+    if req.prompt:
+        ok, msg = sessions.edit_message(
+            session_name=name,
+            message_index=message_index,
+            new_content=req.prompt,
+            sessions_dir=_sessions_dir,
+            fork=True,  # Always fork when regenerating
+        )
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+    else:
+        # Just truncate after this message
+        ok, msg = sessions.truncate_after_message(
+            session_name=name,
+            message_index=message_index,
+            sessions_dir=_sessions_dir,
+        )
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+
+    # Generate new response using existing chat endpoint logic
+    cfg = _cfg(None)
+    try:
+        result = chat_module.chat(
+            prompt=prompt,
+            session=name,
+            new=False,
+            model=req.model,
+            config_path=None,
+            sessions_dir=str(_sessions_dir) if _sessions_dir else None,
+            rag_enabled=req.rag_enabled,
+        )
+        return {
+            "ok": True,
+            "session": result.session,
+            "model": result.model,
+            "reply": result.reply,
+            "rag_used": result.rag_used,
+        }
+    except Exception as e:
+        log.error(f"Failed to regenerate response: {e}")
+        raise HTTPException(status_code=500, detail=f"Regeneration failed: {e}")
 
 
 @api.get("/sessions/{name}/export")

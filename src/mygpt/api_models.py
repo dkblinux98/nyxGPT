@@ -47,6 +47,22 @@ class RenameRequest(BaseModel):
     sync_filename: bool = Field(True, description="Automatically sync filename with sanitized title")
 
 
+class EditMessageRequest(BaseModel):
+    """Request model for editing a message in a session."""
+    content: str = Field(..., min_length=1, description="New content for the message")
+    fork: bool = Field(True, description="Fork conversation after this message (truncate following messages)")
+
+
+class RegenerateRequest(BaseModel):
+    """Request model for regenerating a response.
+
+    Can optionally include new prompt text or model override.
+    """
+    prompt: str | None = Field(None, description="Optional new prompt to replace user message before regenerating")
+    model: str | None = Field(None, description="Optional model override for regeneration")
+    rag_enabled: bool | None = Field(None, description="Optional RAG override for regeneration")
+
+
 class TagsRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
 

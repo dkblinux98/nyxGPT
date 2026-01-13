@@ -22,6 +22,7 @@ Your data stays on your machine. No cloud dependency is required.
 
 - Local LLM inference via **Ollama**
 - Persistent sessions stored outside the repository
+- **Message editing and regeneration** - Edit messages and fork conversations, regenerate responses
 - **Automatic session naming** with LLM‑generated titles and smart filename sync
 - **Session management** with right-click context menus, rename, export, delete, and pin
 - Optional **RAG** using Cassandra 5.0 native vector search
@@ -245,6 +246,7 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
 
 **Features:**
 - Chat interface with streaming responses
+- **Message editing and regeneration** - Edit any message and fork the conversation from that point, or regenerate assistant responses
 - Session picker and management
 - **Optimistic UI updates** for instant feedback on session operations (pin, rename, delete, create)
 - RAG document upload and toggle
@@ -292,6 +294,52 @@ Changes take effect immediately without requiring a service restart.
 - FastAPI backend must be running (`mygpt ops install` or `mygpt ops restart api`)
 - If configuration fails to load, verify API is accessible at `http://127.0.0.1:8000/health`
 - See **Troubleshooting** section in docs/troubleshooting.md for common issues
+
+---
+
+### Message Editing and Regeneration
+
+myGPT allows you to edit messages and regenerate responses, enabling you to explore different conversation paths.
+
+#### Web UI
+
+Each message in the chat interface has edit and regenerate controls:
+
+- **✏️ Edit** - Edit any message (user or assistant)
+  - Click the Edit button on any message
+  - Modify the content in the textarea
+  - Save to update the message
+  - By default, editing **forks the conversation** (truncates messages after the edited one)
+  - Edited messages are marked with an "(edited)" indicator
+  - Original content is preserved in the message metadata
+
+- **🔄 Regenerate** (user messages only) - Generate a new response from a specific point
+  - Click the Regenerate button on a user message
+  - The conversation is truncated after that message
+  - A new assistant response is generated using the current model
+  - Useful for exploring different response variations
+
+#### API Endpoints
+
+Edit message:
+```bash
+curl -X PATCH http://127.0.0.1:8000/api/v1/sessions/{session_name}/messages/{index} \
+  -H "Content-Type: application/json" \
+  -d '{"content": "New message content", "fork": true}'
+```
+
+Regenerate response:
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/sessions/{session_name}/messages/{index}/regenerate \
+  -H "Content-Type: application/json" \
+  -d '{"model": "llama3.1:8b"}'
+```
+
+**Conversation Forking:**
+- When you edit a message with `fork: true` (default), all messages after the edited one are removed
+- This creates a new conversation branch from that point
+- The original conversation is lost, so edit carefully
+- Set `fork: false` to edit without truncating (preserves following messages)
 
 ---
 
