@@ -6,6 +6,7 @@ import ThemeToggle from '../components/ThemeToggle';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
 import { SessionListSkeleton } from '../components/SkeletonLoader';
+import { SessionListErrorBoundary } from '../components/SessionListErrorBoundary';
 
 type Info = {
   ollama_base_url: string;
@@ -54,6 +55,9 @@ export default function Home() {
   } | null>(null);
   const [deletingSession, setDeletingSession] = useState<string | null>(null);
   const [exportingSession, setExportingSession] = useState<string | null>(null);
+
+  // Pending operations state for visual feedback
+  const [pendingSessions, setPendingSessions] = useState<Set<string>>(new Set());
 
   // Refs for keyboard shortcuts
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -185,7 +189,7 @@ export default function Home() {
     }
   }, []);
 
-  // Create new chat
+  // Create new chat with optimistic update
   const createNewChat = useCallback(async () => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
     const defaultName = `session-${timestamp}`;
@@ -194,6 +198,21 @@ export default function Home() {
     if (!sessionName || !sessionName.trim()) return;
 
     const trimmedName = sessionName.trim();
+
+    // Optimistic update: add new session to local state immediately
+    const previousSessions = [...sessions];
+    const previousSelection = selectedSession;
+    const newSession = {
+      name: trimmedName,
+      messages: 0,
+      pinned: false,
+      tags: [],
+      title: trimmedName,
+      modified: new Date().toISOString(),
+    };
+
+    setSessions([newSession, ...sessions]);
+    setSelectedSession(trimmedName);
 
     try {
       // Create the session on the backend
@@ -211,62 +230,139 @@ export default function Home() {
         throw new Error(errorData.detail || `HTTP ${res.status}`);
       }
 
-      // Select the new session
-      setSelectedSession(trimmedName);
-
-      // Refresh the sessions list to show it in the sidebar
+      // Refresh the sessions list to get actual server state
       await refreshSessions();
     } catch (e) {
+      // Rollback on failure: restore previous state
+      setSessions(previousSessions);
+      setSelectedSession(previousSelection);
       const msg = e instanceof Error ? e.message : String(e);
       alert(`Failed to create new chat: ${msg}`);
       console.error('Failed to create new chat:', e);
     }
-  }, [refreshSessions, setSelectedSession]);
+  }, [refreshSessions, setSelectedSession, sessions, selectedSession]);
 
-  // Delete session
+  // Delete session with optimistic update
   const deleteSession = async (sessionName: string) => {
-    if (sessions.length <= 1) {
-      alert('Cannot delete the last session');
-      return;
-    }
-
-    if (!confirm(`Delete session "${sessionName}"? This cannot be undone.`)) {
-      return;
-    }
-
-    setDeletingSession(sessionName);
     try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/delete`, {
-        method: 'POST',
+      // Use functional update to check current sessions count
+      let canDelete = false;
+      setSessions(prevSessions => {
+        canDelete = prevSessions.length > 1;
+        return prevSessions;
       });
 
-      if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error || 'Delete failed');
+      if (!canDelete) {
+        alert('Cannot delete the last session');
+        return;
       }
 
-      // If we deleted the selected session, switch to another
-      if (sessionName === selectedSession) {
-        const remaining = sessions.filter((s) => s.name !== sessionName);
-        setSelectedSession(remaining[0]?.name || 'default');
+      if (!confirm(`Delete session "${sessionName}"? This cannot be undone.`)) {
+        return;
       }
 
-      // Refresh session list
-      await refreshSessions();
-    } catch (e) {
-      alert(`Failed to delete session: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setDeletingSession(null);
+      setDeletingSession(sessionName);
+      announce(`Deleting session ${sessionName}`);
+
+      // Capture previous state for rollback
+      let previousSessions: typeof sessions = [];
+      let previousSelection = '';
+
+      // Optimistic update: remove session immediately from local state using functional update
+      setSessions(prevSessions => {
+        previousSessions = [...prevSessions];
+        const remainingSessions = prevSessions.filter((s) => s.name !== sessionName);
+        return remainingSessions;
+      });
+
+      // If deleting the selected session, switch to another immediately using functional update
+      setSelectedSession(prevSelected => {
+        previousSelection = prevSelected;
+        if (sessionName === prevSelected) {
+          // Access the updated sessions from the closure
+          const remainingSessions = previousSessions.filter((s) => s.name !== sessionName);
+          return remainingSessions[0]?.name || 'default';
+        }
+        return prevSelected;
+      });
+
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/delete`, {
+          method: 'POST',
+        });
+
+        if (!res.ok) {
+          const error = await res.text();
+          throw new Error(error || 'Delete failed');
+        }
+        announce(`Session ${sessionName} deleted successfully`);
+      } catch (e) {
+        // Rollback on failure: restore previous state
+        setSessions(previousSessions);
+        setSelectedSession(previousSelection);
+        const errorMsg = `Failed to delete session: ${e instanceof Error ? e.message : String(e)}`;
+        alert(errorMsg);
+        announce(errorMsg);
+      } finally {
+        setDeletingSession(null);
+        // Always refresh to ensure consistency regardless of success/failure
+        await refreshSessions();
+      }
+    } catch (error) {
+      // Catch any unexpected errors in state updates or operations
+      console.error('Unexpected error in deleteSession:', error);
+      const unexpectedErrorMsg = 'An unexpected error occurred while deleting the session. Please refresh the page.';
+      alert(unexpectedErrorMsg);
+      announce(unexpectedErrorMsg);
+      // Attempt to refresh sessions to restore consistent state
+      try {
+        await refreshSessions();
+      } catch (refreshError) {
+        console.error('Failed to refresh after error:', refreshError);
+      }
     }
   };
 
-  // Rename session
+  // Rename session with optimistic update
   const renameSession = async (sessionName: string) => {
-    const session = sessions.find((s) => s.name === sessionName);
-    const currentTitle = session?.title || sessionName;
-    const newName = prompt('Enter new session name or title:', currentTitle);
+    try {
+      // Use functional update to get current session
+      let currentTitle = '';
+      setSessions(prevSessions => {
+        const session = prevSessions.find((s) => s.name === sessionName);
+        currentTitle = session?.title || sessionName;
+        return prevSessions;
+      });
 
-    if (!newName || newName.trim() === '' || newName === currentTitle) return;
+      const newName = prompt('Enter new session name or title:', currentTitle);
+
+      if (!newName || newName.trim() === '' || newName === currentTitle) return;
+
+      // Check if operation is already in progress
+      if (pendingSessions.has(sessionName)) {
+        console.warn('Operation already in progress for session:', sessionName);
+        return;
+      }
+
+      // Mark as pending for visual feedback
+      setPendingSessions((prev) => {
+        const next = new Set(prev).add(sessionName);
+        announce(`Renaming session ${sessionName} to ${newName.trim()}`);
+        return next;
+      });
+
+      // Capture previous state for rollback
+      let previousSessions: typeof sessions = [];
+      let previousSelection = '';
+
+      // Optimistic update: update session title immediately using functional update
+      setSessions(prevSessions => {
+        previousSessions = [...prevSessions];
+        const optimisticSessions = prevSessions.map((s) =>
+          s.name === sessionName ? { ...s, title: newName.trim() } : s
+        );
+        return optimisticSessions;
+      });
 
     try {
       const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/rename`, {
@@ -285,15 +381,44 @@ export default function Home() {
 
       const data = await res.json();
 
-      // If filename changed, update selected session
-      if (data.new_name !== sessionName && sessionName === selectedSession) {
-        setSelectedSession(data.new_name);
+      // If filename changed, update selected session using functional update
+      setSelectedSession(prevSelected => {
+        previousSelection = prevSelected;
+        if (data.new_name !== sessionName && sessionName === prevSelected) {
+          return data.new_name;
+        }
+        return prevSelected;
+      });
+      announce(`Session renamed successfully to ${newName.trim()}`);
+      } catch (e) {
+        // Rollback on failure: restore previous state
+        setSessions(previousSessions);
+        setSelectedSession(previousSelection);
+        const errorMsg = `Failed to rename session: ${e instanceof Error ? e.message : String(e)}`;
+        alert(errorMsg);
+        announce(errorMsg);
+      } finally {
+        // Remove pending state
+        setPendingSessions((prev) => {
+          const next = new Set(prev);
+          next.delete(sessionName);
+          return next;
+        });
+        // Always refresh to ensure consistency regardless of success/failure
+        await refreshSessions();
       }
-
-      // Refresh session list
-      await refreshSessions();
-    } catch (e) {
-      alert(`Failed to rename session: ${e instanceof Error ? e.message : String(e)}`);
+    } catch (error) {
+      // Catch any unexpected errors in state updates or operations
+      console.error('Unexpected error in renameSession:', error);
+      const unexpectedErrorMsg = 'An unexpected error occurred while renaming the session. Please refresh the page.';
+      alert(unexpectedErrorMsg);
+      announce(unexpectedErrorMsg);
+      // Attempt to refresh sessions to restore consistent state
+      try {
+        await refreshSessions();
+      } catch (refreshError) {
+        console.error('Failed to refresh after error:', refreshError);
+      }
     }
   };
 
@@ -338,22 +463,79 @@ export default function Home() {
     }
   };
 
-  // Toggle pin status
+  // Toggle pin status with optimistic update
   const togglePin = async (sessionName: string) => {
-    const session = sessions.find((s) => s.name === sessionName);
-    const isPinned = session?.pinned || false;
-    const action = isPinned ? 'unpin' : 'pin';
-
     try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/${action}`, {
-        method: 'POST',
+      // Check if operation is already in progress
+      if (pendingSessions.has(sessionName)) {
+        console.warn('Operation already in progress for session:', sessionName);
+        return;
+      }
+
+      // Use functional update to get current session state
+      let isPinned = false;
+      let action = '';
+      setSessions(prevSessions => {
+        const session = prevSessions.find((s) => s.name === sessionName);
+        isPinned = session?.pinned || false;
+        action = isPinned ? 'unpin' : 'pin';
+        return prevSessions;
       });
 
-      if (!res.ok) throw new Error(`Failed to ${action} session`);
+      // Mark as pending for visual feedback
+      setPendingSessions((prev) => {
+        const next = new Set(prev).add(sessionName);
+        announce(`${action === 'pin' ? 'Pinning' : 'Unpinning'} session ${sessionName}`);
+        return next;
+      });
 
-      await refreshSessions();
-    } catch (e) {
-      alert(`Failed to ${action} session: ${e instanceof Error ? e.message : String(e)}`);
+      // Capture previous state for rollback
+      let previousSessions: typeof sessions = [];
+
+      // Optimistic update: toggle pin status immediately in local state using functional update
+      setSessions(prevSessions => {
+        previousSessions = [...prevSessions];
+        const optimisticSessions = prevSessions.map((s) =>
+          s.name === sessionName ? { ...s, pinned: !isPinned } : s
+        );
+        return optimisticSessions;
+      });
+
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/${action}`, {
+          method: 'POST',
+        });
+
+        if (!res.ok) throw new Error(`Failed to ${action} session`);
+        announce(`Session ${sessionName} ${action === 'pin' ? 'pinned' : 'unpinned'} successfully`);
+      } catch (e) {
+        // Rollback on failure: restore previous state
+        setSessions(previousSessions);
+        const errorMsg = `Failed to ${action} session: ${e instanceof Error ? e.message : String(e)}`;
+        alert(errorMsg);
+        announce(errorMsg);
+      } finally {
+        // Remove pending state
+        setPendingSessions((prev) => {
+          const next = new Set(prev);
+          next.delete(sessionName);
+          return next;
+        });
+        // Always refresh to ensure consistency regardless of success/failure
+        await refreshSessions();
+      }
+    } catch (error) {
+      // Catch any unexpected errors in state updates or operations
+      console.error('Unexpected error in togglePin:', error);
+      const unexpectedErrorMsg = 'An unexpected error occurred while toggling pin status. Please refresh the page.';
+      alert(unexpectedErrorMsg);
+      announce(unexpectedErrorMsg);
+      // Attempt to refresh sessions to restore consistent state
+      try {
+        await refreshSessions();
+      } catch (refreshError) {
+        console.error('Failed to refresh after error:', refreshError);
+      }
     }
   };
 
@@ -520,6 +702,7 @@ export default function Home() {
         </div>
       )}
 
+      <SessionListErrorBoundary>
       {sidebarVisible && (
         <aside
           style={{
@@ -770,6 +953,7 @@ export default function Home() {
           {filteredSessions.map((s) => {
             const isActive = s.name === selectedSession;
             const displayText = s.title?.trim() ? s.title : s.name;
+            const isPending = pendingSessions.has(s.name);
             return (
               <button
                 key={s.name}
@@ -790,11 +974,27 @@ export default function Home() {
                   background: isActive ? 'var(--active-bg)' : 'var(--sidebar-bg)',
                   cursor: 'pointer',
                   color: 'var(--foreground)',
+                  opacity: isPending ? 0.6 : 1,
+                  transition: 'opacity 0.2s ease',
+                  position: 'relative',
                 }}
               >
-                <div style={{ fontWeight: 600, fontSize: 14 }}>
+                <div style={{ fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
                   {s.pinned && <span>📌 </span>}
                   {searchText ? highlightText(displayText, searchText) : displayText}
+                  {isPending && (
+                    <span
+                      style={{
+                        fontSize: 10,
+                        opacity: 0.5,
+                        animation: 'pulse 1.5s ease-in-out infinite',
+                        willChange: 'transform, opacity'
+                      }}
+                      title="Syncing..."
+                    >
+                      ⟳
+                    </span>
+                  )}
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.75, marginTop: 2 }}>
                   {s.messages ?? 0} msg · {s.model ?? ''}
@@ -1029,6 +1229,7 @@ export default function Home() {
         </div>
       </aside>
       )}
+      </SessionListErrorBoundary>
 
       <section style={{ flex: 1, padding: '1.5rem', overflowY: 'auto', background: 'var(--background)', color: 'var(--foreground)' }}>
         {!sidebarVisible && (
