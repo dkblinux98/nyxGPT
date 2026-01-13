@@ -150,6 +150,12 @@ if ! issue_assign_only "$ISSUE" "$HUMAN_OWNER" 2>&1; then
   _warn "Failed to assign issue to ${HUMAN_OWNER}. PR is merged but assignee may be incorrect. Continuing..."
 fi
 
+# Assign PR to human owner
+echo "[review] Assigning PR #${PR} to @${HUMAN_OWNER}..." >&2
+if ! gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR}" -f "assignees[]=${HUMAN_OWNER}" >/dev/null 2>&1; then
+  _warn "Failed to assign PR to ${HUMAN_OWNER}. PR is merged but PR assignee may be incorrect. Continuing..."
+fi
+
 # Post final comment
 echo "[review] Posting completion comment..." >&2
 if ! issue_comment "$ISSUE" "PR #${PR} merged into \`${pr_base_branch}\` and branch deleted. Status -> ${STATUS_IN_REVIEW}. Assigned -> @${HUMAN_OWNER}." 2>&1; then
