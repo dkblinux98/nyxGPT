@@ -1,4 +1,7 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import Home from '@/app/page';
 
 /**
  * Optimistic Updates Tests
@@ -6,6 +9,13 @@ import { describe, it, expect, beforeEach } from 'vitest';
  * Tests for optimistic UI update logic in session operations.
  * These tests verify that UI updates occur immediately and rollback on failure.
  */
+
+// Mock global fetch
+global.fetch = vi.fn();
+
+// Mock window.confirm and window.prompt
+global.confirm = vi.fn();
+global.prompt = vi.fn();
 
 describe('Optimistic Updates Logic', () => {
   beforeEach(() => {
@@ -318,6 +328,483 @@ describe('Optimistic Updates Logic', () => {
       expect(optimisticSessions[0].messages).toBe(5);
       expect(optimisticSessions[0].model).toBe('llama3');
       expect(optimisticSessions[0].tags).toEqual(['test']);
+    });
+  });
+});
+
+describe('Optimistic Updates Integration Tests', () => {
+  const mockSessions = [
+    {
+      name: 'session1',
+      title: 'Test Session 1',
+      messages: 5,
+      pinned: false,
+      tags: ['test'],
+      modified: '2024-01-01T12:00:00Z',
+    },
+    {
+      name: 'session2',
+      title: 'Test Session 2',
+      messages: 3,
+      pinned: true,
+      tags: [],
+      modified: '2024-01-02T12:00:00Z',
+    },
+    {
+      name: 'session3',
+      title: 'Test Session 3',
+      messages: 0,
+      pinned: false,
+      tags: [],
+      modified: '2024-01-03T12:00:00Z',
+    },
+  ];
+
+  const mockFetchResponses = (responses: Record<string, any>) => {
+    (global.fetch as any).mockImplementation((url: string, options?: any) => {
+      const method = options?.method || 'GET';
+      const key = `${method} ${url}`;
+
+      // Match patterns for dynamic URLs
+      for (const [pattern, response] of Object.entries(responses)) {
+        if (url.includes(pattern) || key.includes(pattern)) {
+          if (response.error) {
+            return Promise.resolve({
+              ok: false,
+              status: response.status || 500,
+              text: () => Promise.resolve(response.error),
+              json: () => Promise.resolve({ detail: response.error }),
+            });
+          }
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve(response),
+            text: () => Promise.resolve(JSON.stringify(response)),
+          });
+        }
+      }
+
+      // Default response
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({}),
+      });
+    });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (global.confirm as any).mockReturnValue(true);
+    (global.prompt as any).mockReturnValue('New Title');
+  });
+
+  describe('Pin Toggle Integration', () => {
+    it('should show optimistic update immediately when pinning session', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/pin': { success: true },
+      });
+
+      render(<Home />);
+
+      // Wait for sessions to load
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      // Find and click pin button for session1
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+      expect(session1Card).toBeInTheDocument();
+
+      // Simulate right-click to open context menu
+      const user = userEvent.setup();
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+
+      // Find pin option in context menu
+      const pinButton = await screen.findByText(/pin/i);
+      await user.click(pinButton);
+
+      // Verify optimistic update appears immediately (before API completes)
+      await waitFor(() => {
+        // Session should show pinned state immediately
+        expect(session1Card).toHaveAttribute('data-pinned', 'true');
+      }, { timeout: 100 }); // Very short timeout to verify it's optimistic
+    });
+
+    it('should rollback pin state when API fails', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/pin': { error: 'Failed to pin session', status: 500 },
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+      const user = userEvent.setup();
+
+      // Trigger pin
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+      const pinButton = await screen.findByText(/pin/i);
+      await user.click(pinButton);
+
+      // Wait for error alert and rollback
+      await waitFor(() => {
+        // Should rollback to original unpinned state
+        expect(session1Card).toHaveAttribute('data-pinned', 'false');
+      });
+    });
+
+    it('should prevent concurrent pin operations on same session', async () => {
+      let callCount = 0;
+      (global.fetch as any).mockImplementation(() => {
+        callCount++;
+        return new Promise((resolve) => {
+          setTimeout(() => {
+            resolve({
+              ok: true,
+              status: 200,
+              json: () => Promise.resolve({ sessions: mockSessions }),
+            });
+          }, 100);
+        });
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+      const user = userEvent.setup();
+
+      // Attempt rapid clicks
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+      const pinButton = await screen.findByText(/pin/i);
+
+      // Click multiple times rapidly
+      await user.click(pinButton);
+      await user.click(pinButton);
+      await user.click(pinButton);
+
+      // Wait for operations to settle
+      await waitFor(() => expect(callCount).toBeGreaterThan(0));
+
+      // Should only have one pin operation (second and third blocked by pending check)
+      expect(callCount).toBeLessThan(3);
+    });
+  });
+
+  describe('Delete Session Integration', () => {
+    it('should show optimistic update immediately when deleting session', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/delete': { success: true },
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 3')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session3Card = screen.getByText('Test Session 3').closest('[data-session]');
+
+      // Open context menu and delete
+      await user.pointer({ target: session3Card!, keys: '[MouseRight]' });
+      const deleteButton = await screen.findByText(/delete/i);
+      await user.click(deleteButton);
+
+      // Session should disappear immediately (optimistic update)
+      await waitFor(() => {
+        expect(screen.queryByText('Test Session 3')).not.toBeInTheDocument();
+      }, { timeout: 100 });
+    });
+
+    it('should rollback delete when API fails', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/delete': { error: 'Failed to delete session', status: 500 },
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 3')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session3Card = screen.getByText('Test Session 3').closest('[data-session]');
+
+      await user.pointer({ target: session3Card!, keys: '[MouseRight]' });
+      const deleteButton = await screen.findByText(/delete/i);
+      await user.click(deleteButton);
+
+      // Session should reappear after rollback
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 3')).toBeInTheDocument();
+      });
+    });
+
+    it('should switch selection when deleting selected session', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/delete': { success: true },
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      // Assume session1 is selected
+      const user = userEvent.setup();
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+
+      // Delete selected session
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+      const deleteButton = await screen.findByText(/delete/i);
+      await user.click(deleteButton);
+
+      // Should switch to next available session immediately
+      await waitFor(() => {
+        // First remaining session should become selected
+        expect(screen.queryByText('Test Session 1')).not.toBeInTheDocument();
+        // Session 2 or 3 should be visible and selected
+        const remainingSession = screen.getByText(/Test Session [23]/);
+        expect(remainingSession).toBeInTheDocument();
+      }, { timeout: 100 });
+    });
+  });
+
+  describe('Rename Session Integration', () => {
+    it('should show optimistic update immediately when renaming session', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/rename': { success: true, new_name: 'session1' },
+      });
+
+      (global.prompt as any).mockReturnValue('Updated Title');
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+
+      // Open context menu and rename
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+      const renameButton = await screen.findByText(/rename/i);
+      await user.click(renameButton);
+
+      // Title should update immediately
+      await waitFor(() => {
+        expect(screen.getByText('Updated Title')).toBeInTheDocument();
+      }, { timeout: 100 });
+    });
+
+    it('should rollback rename when API fails', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/rename': { error: 'Failed to rename session', status: 500 },
+      });
+
+      (global.prompt as any).mockReturnValue('Failed Title');
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+      const renameButton = await screen.findByText(/rename/i);
+      await user.click(renameButton);
+
+      // Title should rollback to original
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+        expect(screen.queryByText('Failed Title')).not.toBeInTheDocument();
+      });
+    });
+
+    it('should prevent concurrent rename operations on same session', async () => {
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/rename': { success: true, new_name: 'session1' },
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+
+      // Trigger first rename
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+      const renameButton1 = await screen.findByText(/rename/i);
+      await user.click(renameButton1);
+
+      // Immediately try another rename (should be blocked)
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+      const renameButton2 = await screen.findByText(/rename/i);
+      await user.click(renameButton2);
+
+      // Should log warning about operation in progress
+      await waitFor(() => {
+        expect(consoleSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Operation already in progress'),
+          'session1'
+        );
+      });
+
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe('State Consistency After Operations', () => {
+    it('should refresh state from server after successful operation', async () => {
+      const refreshedSessions = [
+        ...mockSessions,
+        { name: 'session4', title: 'Server Added', messages: 0, pinned: false, tags: [], modified: '2024-01-04T12:00:00Z' },
+      ];
+
+      let callCount = 0;
+      (global.fetch as any).mockImplementation((url: string) => {
+        callCount++;
+        // First call: initial load
+        // Second call: operation
+        // Third call: refresh after operation
+        if (callCount === 1 || callCount >= 3) {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ sessions: callCount === 1 ? mockSessions : refreshedSessions }),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ success: true }),
+        });
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+
+      // Perform pin operation
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+      const pinButton = await screen.findByText(/pin/i);
+      await user.click(pinButton);
+
+      // After operation, should show server-added session
+      await waitFor(() => {
+        expect(screen.getByText('Server Added')).toBeInTheDocument();
+      });
+    });
+
+    it('should refresh state from server after failed operation', async () => {
+      const serverSessions = [
+        ...mockSessions.slice(0, 2), // Server only has 2 sessions
+      ];
+
+      let callCount = 0;
+      (global.fetch as any).mockImplementation((url: string, options?: any) => {
+        callCount++;
+        if (options?.method === 'POST' && url.includes('/delete')) {
+          // Delete fails
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            text: () => Promise.resolve('Delete failed'),
+          });
+        }
+        // Refreshes return actual server state
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ sessions: serverSessions }),
+        });
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+      const session3Card = screen.getByText('Test Session 3')?.closest('[data-session]');
+
+      if (session3Card) {
+        // Try to delete session3
+        await user.pointer({ target: session3Card, keys: '[MouseRight]' });
+        const deleteButton = await screen.findByText(/delete/i);
+        await user.click(deleteButton);
+      }
+
+      // After failed delete, should sync with server state (only 2 sessions)
+      await waitFor(() => {
+        expect(screen.queryByText('Test Session 3')).not.toBeInTheDocument();
+      });
+    });
+  });
+
+  describe('Multiple Concurrent Operations', () => {
+    it('should handle operations on different sessions concurrently', async () => {
+      mockFetchResponses({
+        '/api/v1/sessions': { sessions: mockSessions },
+        '/pin': { success: true },
+        '/delete': { success: true },
+      });
+
+      render(<Home />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Test Session 1')).toBeInTheDocument();
+      });
+
+      const user = userEvent.setup();
+
+      // Start pin on session1
+      const session1Card = screen.getByText('Test Session 1').closest('[data-session]');
+      await user.pointer({ target: session1Card!, keys: '[MouseRight]' });
+      const pinButton = await screen.findByText(/pin/i);
+      await user.click(pinButton);
+
+      // Immediately start delete on session3 (different session)
+      const session3Card = screen.getByText('Test Session 3').closest('[data-session]');
+      await user.pointer({ target: session3Card!, keys: '[MouseRight]' });
+      const deleteButton = await screen.findByText(/delete/i);
+      await user.click(deleteButton);
+
+      // Both operations should succeed
+      await waitFor(() => {
+        expect(session1Card).toHaveAttribute('data-pinned', 'true');
+        expect(screen.queryByText('Test Session 3')).not.toBeInTheDocument();
+      });
     });
   });
 });
