@@ -5,10 +5,15 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterator
 from configparser import ConfigParser
 
-from mygpt.config import load_config
+from mygpt.config import (
+    load_config,
+    get_context_window_size,
+    get_context_warning_threshold,
+)
 from mygpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
 from mygpt.rag.rag import retrieve_context, compose_context
 from mygpt.sessions import load_session, save_session
+from mygpt.token_counter import count_message_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +76,102 @@ def _get_str(cfg: Any, section: str, key: str, default: str) -> str:
         return cfg.get(section, key, fallback=default)
     except Exception:
         return default
+
+
+def _truncate_messages_to_budget(
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    cfg: Any,
+    model: str,
+) -> list[dict[str, str]]:
+    """Truncate message history to fit within token budget.
+
+    Preserves system messages and recent history. Removes oldest user/assistant
+    turns until the context fits within the budget.
+
+    Args:
+        messages: List of message dicts to truncate
+        max_tokens: Maximum token budget
+        cfg: Config instance for threshold lookup
+        model: Model name for logging
+
+    Returns:
+        Truncated message list that fits within budget
+    """
+    # Try to count tokens, fall back gracefully if tiktoken not available
+    try:
+        token_count = count_message_tokens(messages)
+    except ImportError:
+        logger.warning(
+            "tiktoken not installed, cannot enforce context budget. "
+            "Install with: pip install tiktoken"
+        )
+        return messages
+
+    # If we're within budget, no truncation needed
+    if token_count <= max_tokens:
+        # Check if we're approaching the warning threshold
+        warning_threshold = get_context_warning_threshold(cfg)
+        warning_tokens = int(max_tokens * warning_threshold)
+        if token_count >= warning_tokens:
+            pct = (token_count / max_tokens) * 100
+            logger.warning(
+                f"Context approaching limit: {token_count}/{max_tokens} tokens ({pct:.1f}%) "
+                f"for model {model}"
+            )
+        return messages
+
+    logger.warning(
+        f"Context exceeds budget: {token_count}/{max_tokens} tokens "
+        f"for model {model}. Truncating conversation history."
+    )
+
+    # Separate system messages from conversation
+    system_messages = [m for m in messages if m.get("role") == "system"]
+    conversation_messages = [m for m in messages if m.get("role") != "system"]
+
+    # Always preserve system messages and the current user prompt (last message)
+    if not conversation_messages:
+        # Edge case: only system messages, shouldn't exceed budget but handle gracefully
+        return messages
+
+    # Keep the last message (current prompt) and work backwards
+    preserved = conversation_messages[-1:]
+    remaining = conversation_messages[:-1]
+
+    # Try progressively smaller history until we fit
+    while remaining:
+        # Try keeping system + remaining + current prompt
+        candidate = system_messages + remaining + preserved
+
+        try:
+            candidate_tokens = count_message_tokens(candidate)
+        except ImportError:
+            # If tiktoken fails mid-truncation, return what we have
+            break
+
+        if candidate_tokens <= max_tokens:
+            logger.info(
+                f"Truncated to {len(candidate)} messages "
+                f"({candidate_tokens} tokens, removed {len(messages) - len(candidate)} messages)"
+            )
+            return candidate
+
+        # Remove the oldest conversation message
+        remaining = remaining[1:]
+
+    # If we still don't fit, try just system + current prompt
+    minimal = system_messages + preserved
+    try:
+        minimal_tokens = count_message_tokens(minimal)
+        logger.warning(
+            f"Truncated to minimal context: {len(minimal)} messages "
+            f"({minimal_tokens} tokens). All history removed."
+        )
+    except ImportError:
+        pass
+
+    return minimal
 
 
 def _prepare_chat_context(
@@ -164,6 +265,10 @@ def _prepare_chat_context(
 
     # Add this turn
     messages.append({"role": "user", "content": prompt})
+
+    # Enforce context window budget
+    max_tokens = get_context_window_size(cfg, chosen_model)
+    messages = _truncate_messages_to_budget(messages, max_tokens, cfg, chosen_model)
 
     # Update session metadata with chosen model
     state.meta["model"] = chosen_model
