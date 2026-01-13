@@ -263,9 +263,15 @@ export default function AdminPage() {
     <main style={{ padding: '2rem', maxWidth: 900, margin: '0 auto' }}>
       <div style={{ marginBottom: '2rem' }}>
         <h1 style={{ margin: 0, marginBottom: 8 }}>Configuration Wizard</h1>
-        <a href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
-          ← Back to Chat
-        </a>
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+          <a href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
+            ← Back to Chat
+          </a>
+          <span style={{ color: '#999' }}>•</span>
+          <a href="/admin/logs" style={{ color: '#0066cc', textDecoration: 'none' }}>
+            📋 View Logs
+          </a>
+        </div>
       </div>
 
       {/* Progress Indicator */}

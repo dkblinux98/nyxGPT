@@ -51,7 +51,7 @@ from mygpt import tools_fs
 from mygpt import models
 
 from mygpt.rag.rag import ingest_document, retrieve_context
-from mygpt.logging import configure_logging, request_id_var
+from mygpt.logging import configure_logging, request_id_var, get_log_dir
 from mygpt.rate_limiter import RateLimiter
 
 
@@ -1327,6 +1327,164 @@ async def rag_upload_file(
         return RagIngestResponse(doc_id=final_doc_id, chunks_ingested=chunks)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")
+
+
+# --- Log viewing endpoints ---
+
+
+@api.get("/logs/files")
+def logs_list_files(request: Request) -> dict[str, Any]:
+    """List available log files with metadata."""
+    cfg = _req_cfg(request)
+    log_dir = get_log_dir(cfg)
+
+    if not log_dir.exists():
+        return {"files": []}
+
+    files = []
+    for log_file in sorted(log_dir.glob("*.log*"), reverse=True):
+        if log_file.is_file():
+            stat = log_file.stat()
+            files.append({
+                "name": log_file.name,
+                "path": str(log_file),
+                "size": stat.st_size,
+                "modified": stat.st_mtime,
+            })
+
+    return {"files": files, "log_dir": str(log_dir)}
+
+
+@api.get("/logs/view/{filename}")
+def logs_view_file(
+    request: Request,
+    filename: str,
+    tail: Optional[int] = None,
+    level: Optional[str] = None,
+    search: Optional[str] = None,
+) -> dict[str, Any]:
+    """
+    View log file contents with optional filtering.
+
+    Args:
+        filename: Name of the log file (e.g., "mygpt.log")
+        tail: Number of lines to return from the end (default: all)
+        level: Filter by log level (DEBUG, INFO, WARNING, ERROR)
+        search: Search string to filter lines
+    """
+    cfg = _req_cfg(request)
+    log_dir = get_log_dir(cfg)
+
+    # Sanitize filename to prevent path traversal
+    safe_filename = os.path.basename(filename)
+    log_file = log_dir / safe_filename
+
+    # Validate file exists and is within log directory
+    try:
+        log_file = log_file.resolve()
+        log_dir = log_dir.resolve()
+        if not log_file.is_relative_to(log_dir):
+            raise HTTPException(status_code=403, detail="Access denied")
+    except (ValueError, OSError):
+        raise HTTPException(status_code=404, detail="Log file not found")
+
+    if not log_file.exists() or not log_file.is_file():
+        raise HTTPException(status_code=404, detail="Log file not found")
+
+    try:
+        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+
+        # Apply filters
+        filtered_lines = lines
+
+        # Filter by log level
+        if level:
+            level_upper = level.upper()
+            filtered_lines = [
+                line for line in filtered_lines
+                if level_upper in line
+            ]
+
+        # Filter by search string
+        if search:
+            search_lower = search.lower()
+            filtered_lines = [
+                line for line in filtered_lines
+                if search_lower in line.lower()
+            ]
+
+        # Apply tail limit
+        if tail and tail > 0:
+            filtered_lines = filtered_lines[-tail:]
+
+        return {
+            "filename": safe_filename,
+            "lines": filtered_lines,
+            "total_lines": len(lines),
+            "filtered_lines": len(filtered_lines),
+        }
+
+    except Exception as e:
+        log.error(f"Failed to read log file {log_file}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to read log file: {e}")
+
+
+@api.get("/logs/stream/{filename}")
+async def logs_stream_file(
+    request: Request,
+    filename: str,
+    level: Optional[str] = None,
+    search: Optional[str] = None,
+) -> StreamingResponse:
+    """
+    Stream log file contents with optional filtering.
+
+    Useful for real-time log viewing.
+    """
+    cfg = _req_cfg(request)
+    log_dir = get_log_dir(cfg)
+
+    # Sanitize filename to prevent path traversal
+    safe_filename = os.path.basename(filename)
+    log_file = log_dir / safe_filename
+
+    # Validate file exists and is within log directory
+    try:
+        log_file = log_file.resolve()
+        log_dir = log_dir.resolve()
+        if not log_file.is_relative_to(log_dir):
+            raise HTTPException(status_code=403, detail="Access denied")
+    except (ValueError, OSError):
+        raise HTTPException(status_code=404, detail="Log file not found")
+
+    if not log_file.exists() or not log_file.is_file():
+        raise HTTPException(status_code=404, detail="Log file not found")
+
+    async def stream_lines():
+        """Generator that streams filtered log lines."""
+        try:
+            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    # Apply filters
+                    if level and level.upper() not in line:
+                        continue
+                    if search and search.lower() not in line.lower():
+                        continue
+
+                    yield line
+        except Exception as e:
+            log.error(f"Failed to stream log file {log_file}: {e}")
+            yield f"Error: {e}\n"
+
+    return StreamingResponse(
+        stream_lines(),
+        media_type="text/plain",
+        headers={
+            "Content-Disposition": f'inline; filename="{safe_filename}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 app.include_router(api)
