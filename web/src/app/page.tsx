@@ -7,6 +7,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
 import { SessionListSkeleton } from '../components/SkeletonLoader';
 import { SessionListErrorBoundary } from '../components/SessionListErrorBoundary';
+import { SearchModal } from '../components/SearchModal';
 import { useToast } from '../contexts/ToastContext';
 
 type Info = {
@@ -42,6 +43,10 @@ export default function Home() {
   const [retryingSessions, setRetryingSessions] = useState<boolean>(false);
   const [selectedSession, setSelectedSession] = useState<string>('default');
   const [sidebarVisible, setSidebarVisible] = useState<boolean>(true);
+
+  // Message search state
+  const [showSearchModal, setShowSearchModal] = useState<boolean>(false);
+  const [scrollToMessageIndex, setScrollToMessageIndex] = useState<number | null>(null);
 
   // Search and filter state
   const [searchText, setSearchText] = useState<string>('');
@@ -248,14 +253,8 @@ export default function Home() {
   // Delete session with optimistic update
   const deleteSession = async (sessionName: string) => {
     try {
-      // Use functional update to check current sessions count
-      let canDelete = false;
-      setSessions(prevSessions => {
-        canDelete = prevSessions.length > 1;
-        return prevSessions;
-      });
-
-      if (!canDelete) {
+      // Check if we can delete (must have more than 1 session)
+      if (sessions.length <= 1) {
         toast.warning('Cannot delete the last session');
         return;
       }
@@ -598,6 +597,22 @@ export default function Home() {
     };
   }, []);
 
+  // Handle search result selection
+  const handleSearchResultClick = useCallback((sessionName: string, messageIndex: number) => {
+    // Switch to the selected session
+    setSelectedSession(sessionName);
+
+    // Set the message index to scroll to
+    setScrollToMessageIndex(messageIndex);
+
+    // Clear the scroll target after a short delay to allow for future scrolls
+    setTimeout(() => {
+      setScrollToMessageIndex(null);
+    }, 1000);
+
+    announce(`Navigating to message ${messageIndex + 1} in session ${sessionName}`);
+  }, [announce]);
+
   // Global keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -609,6 +624,14 @@ export default function Home() {
         e.preventDefault();
         announce('Creating new chat');
         void createNewChat();
+        return;
+      }
+
+      // Cmd/Ctrl + F: Open search modal
+      if (isMod && e.key === 'f') {
+        e.preventDefault();
+        setShowSearchModal(true);
+        announce('Search modal opened');
         return;
       }
 
@@ -762,6 +785,49 @@ export default function Home() {
           }}
         >
           <span style={{ fontSize: 16 }}>+</span> New Chat
+        </button>
+
+        {/* Search Messages button */}
+        <button
+          onClick={() => setShowSearchModal(true)}
+          aria-label={`Search messages (${modKey}+F)`}
+          title={`Search messages (${modKey}+F)`}
+          style={{
+            width: '100%',
+            padding: '10px 12px',
+            marginBottom: 12,
+            background: 'var(--background)',
+            color: 'var(--foreground)',
+            border: '1px solid var(--border)',
+            borderRadius: 6,
+            fontSize: 14,
+            fontWeight: 500,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+            outline: '2px solid transparent',
+            outlineOffset: 2,
+            transition: 'outline 0.2s ease, background 0.2s ease',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = 'var(--hover-bg)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'var(--background)';
+          }}
+          onFocus={(e) => {
+            e.currentTarget.style.outline = '2px solid var(--foreground)';
+          }}
+          onBlur={(e) => {
+            e.currentTarget.style.outline = '2px solid transparent';
+          }}
+        >
+          <span style={{ fontSize: 16 }}>🔍</span> Search Messages
+          <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 'auto' }}>
+            {modKey}+F
+          </span>
         </button>
 
         {/* Navigation Menu */}
@@ -1226,7 +1292,12 @@ export default function Home() {
               sidebar
             </div>
             <div>
-              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3 }}>/</kbd> Search
+              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3 }}>{modKey}+F</kbd> Search
+              messages
+            </div>
+            <div>
+              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3 }}>/</kbd> Filter
+              sessions
             </div>
             <div>
               <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3 }}>Esc</kbd> Close
@@ -1311,9 +1382,20 @@ export default function Home() {
 
         <h2>Chat</h2>
         <div style={{ height: 'calc(100vh - 220px)' }}>
-          <ChatPane sessionName={selectedSession} onSessionUpdated={refreshSessions} />
+          <ChatPane
+            sessionName={selectedSession}
+            onSessionUpdated={refreshSessions}
+            scrollToMessageIndex={scrollToMessageIndex}
+          />
         </div>
       </section>
+
+      {/* Search Modal */}
+      <SearchModal
+        isOpen={showSearchModal}
+        onClose={() => setShowSearchModal(false)}
+        onResultClick={handleSearchResultClick}
+      />
     </main>
   );
 }

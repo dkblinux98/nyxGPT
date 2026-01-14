@@ -180,8 +180,8 @@ port = invalid
 
     cfg = load_config(str(ini))
     # Should return default port (8000) and log a warning
-    with caplog.at_level(logging.WARNING):
-        port = get_api_port(cfg)
+    caplog.set_level(logging.WARNING, logger="mygpt.config")
+    port = get_api_port(cfg)
 
     assert port == 8000
     assert "Invalid api.port" in caplog.text

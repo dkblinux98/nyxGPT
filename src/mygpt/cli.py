@@ -359,19 +359,41 @@ def cmd_sessions(
             return 0
 
         print(f"Found {len(results)} result(s) for '{search_query}':\n")
-        for i, result in enumerate(results, 1):
-            session_name = result["session_name"]
-            session_title = result.get("session_title")
-            msg_idx = result["message_index"]
-            role_str = result["role"]
-            preview = result["content_preview"]
-            matches = result["matches"]
 
-            # Display session info
-            session_display = session_title if session_title else session_name
-            print(f"{i}. [{session_display}] Message #{msg_idx} ({role_str}) - {matches} match(es)")
-            print(f"   {preview}")
-            print()
+        # Paginate results (10 per page)
+        PAGE_SIZE = 10
+        total_results = len(results)
+
+        for page_start in range(0, total_results, PAGE_SIZE):
+            page_end = min(page_start + PAGE_SIZE, total_results)
+
+            # Display results for this page
+            for i in range(page_start, page_end):
+                result = results[i]
+                session_name = result["session_name"]
+                session_title = result.get("session_title")
+                msg_idx = result["message_index"]
+                role_str = result["role"]
+                preview = result["content_preview"]
+                matches = result["matches"]
+
+                # Display session info
+                session_display = session_title if session_title else session_name
+                print(f"{i + 1}. [{session_display}] Message #{msg_idx} ({role_str}) - {matches} match(es)")
+                print(f"   {preview}")
+                print()
+
+            # Show pagination prompt if there are more results
+            if page_end < total_results:
+                remaining = total_results - page_end
+                try:
+                    response = input(f"Showing {page_end}/{total_results} results. Press Enter for more ({remaining} remaining), or 'q' to quit: ")
+                    if response.lower().strip() == 'q':
+                        print(f"Stopped. {remaining} result(s) not shown.")
+                        break
+                except (KeyboardInterrupt, EOFError):
+                    print("\nStopped.")
+                    break
 
         return 0
 
@@ -611,7 +633,7 @@ def cli(argv: list[str] | None = None) -> int:
     sessions_p.add_argument("--output", type=Path, help="Output file (default: stdout)")
     sessions_p.add_argument("--case-sensitive", action="store_true", help="Case-sensitive search (search only)")
     sessions_p.add_argument("--role", choices=["user", "assistant", "system"], help="Filter by message role (search only)")
-    sessions_p.add_argument("--limit", type=int, default=50, help="Maximum number of search results (search only)")
+    sessions_p.add_argument("--limit", type=int, default=20, help="Maximum number of search results (default: 20, search only)")
 
     tools_p = sub.add_parser("tools", help="Explicit local filesystem tools")
     tools_p.add_argument("action", choices=["ls", "cat", "grep"], help="Tool to run")

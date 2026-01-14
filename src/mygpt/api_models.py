@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any, TypedDict
 
 from pydantic import BaseModel, Field
@@ -156,11 +157,18 @@ class RagQueryResponse(BaseModel):
 # ----------------------------
 
 
+class MessageRole(str, Enum):
+    """Valid message roles for filtering."""
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
 class SearchRequest(BaseModel):
     """Request model for message search."""
     query: str = Field(..., min_length=1, description="Text to search for in messages")
     case_sensitive: bool = Field(False, description="Whether to perform case-sensitive search")
-    role_filter: str | None = Field(None, description="Filter by message role (user, assistant, system)")
+    role_filter: MessageRole | None = Field(None, description="Filter by message role (user, assistant, system)")
     session_filter: str | None = Field(None, description="Filter to specific session name")
     limit: int = Field(50, ge=1, le=500, description="Maximum number of results to return")
 

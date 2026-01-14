@@ -170,6 +170,7 @@ The TUI streams responses, persists sessions, and supports RAG‑assisted chat.
 
 **Keybindings:**
 - `Ctrl+S` - Session picker (search and switch)
+- `Ctrl+F` - Search messages across sessions
 - `Ctrl+R` - Toggle RAG for current session
 - `Ctrl+M` - Manage models
 - `Ctrl+N` - Rename current session

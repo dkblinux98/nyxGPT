@@ -187,14 +187,13 @@ def test_api_search_limit(api_base_url: str) -> None:
 
 @pytest.mark.integration
 def test_api_search_empty_query_returns_empty(api_base_url: str) -> None:
-    """Test that empty query returns no results."""
+    """Test that empty query returns validation error."""
     r = httpx.get(
         f"{api_base_url}/api/v1/sessions/search",
         params={"query": ""},
         timeout=5.0,
     )
-    # Should still return 200 but with empty results
-    assert r.status_code == 200
+    # Should return 422 validation error due to min_length=1 constraint
+    assert r.status_code == 422
     data = r.json()
-    assert data["total_results"] == 0
-    assert len(data["results"]) == 0
+    assert "detail" in data

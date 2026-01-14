@@ -161,7 +161,7 @@ def test_load_session_corrupted_json_file(tmp_path: Path, caplog: pytest.LogCapt
 
     # Per load_session_messages implementation (lines 121-144), corrupted JSON
     # is caught, logged as warning, and returns empty list
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="mygpt.sessions"):
         state = sessions.load_session("corrupted", cfg)
 
     # Should succeed with empty messages (not raise exception)

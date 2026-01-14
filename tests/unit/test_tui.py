@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
 import pytest
 from textual.widgets import Input
 
-from mygpt.tui import ChatOutput, MyGPTTUI, SessionMetadataPreview, SessionPickerScreen
+from mygpt.tui import ChatOutput, MyGPTTUI, SessionMetadataPreview, SessionPickerScreen, SearchResultsScreen
 
 pytestmark = pytest.mark.unit
 
@@ -164,7 +164,7 @@ def test_unlock_prompt_success(tmp_path: Path, caplog: pytest.LogCaptureFixture)
     app.prompt = MagicMock(spec=Input)
     app.prompt.disabled = True
 
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG, logger="mygpt.tui"):
         app._unlock_prompt()
 
     # Verify prompt was enabled and focused
@@ -188,7 +188,7 @@ def test_unlock_prompt_attribute_error(tmp_path: Path, caplog: pytest.LogCapture
 
     # Don't set app.prompt - will cause AttributeError
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="mygpt.tui"):
         # Should not raise exception
         app._unlock_prompt()
 
@@ -211,7 +211,7 @@ def test_unlock_prompt_other_exception(tmp_path: Path, caplog: pytest.LogCapture
     app.prompt = MagicMock(spec=Input)
     type(app.prompt).disabled = PropertyMock(side_effect=RuntimeError("Textual shutdown"))
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.WARNING, logger="mygpt.tui"):
         # Should not raise exception
         app._unlock_prompt()
 
@@ -334,7 +334,7 @@ async def test_input_submitted_locks_prompt(tmp_path: Path, caplog: pytest.LogCa
     event.value = "Hello"
 
     with patch("asyncio.create_task") as mock_create_task:
-        with caplog.at_level(logging.DEBUG):
+        with caplog.at_level(logging.DEBUG, logger="mygpt.tui"):
             await app.on_input_submitted(event)
 
     # Verify prompt was cleared and locked
@@ -435,7 +435,7 @@ async def test_stream_chat_error_handling(tmp_path: Path, caplog: pytest.LogCapt
     mock_client.__aenter__ = AsyncMock(side_effect=Exception("Connection error"))
 
     with patch("httpx.AsyncClient", return_value=mock_client):
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.ERROR, logger="mygpt.tui"):
             await app._stream_chat("Test prompt")
 
     # Verify error was logged
@@ -1336,3 +1336,288 @@ async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
     # Verify subsequent text was also displayed
     done_calls = [c for c in append_calls if "done" in c]
     assert len(done_calls) > 0, "Text after flushed buffer should be displayed"
+
+
+# ============================================================================
+# Search Functionality Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_tui_action_search_messages_opens_screen(tmp_path: Path) -> None:
+    """Test that action_search_messages opens SearchResultsScreen."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test-session", config_path=str(config_file))
+
+    # Mock push_screen_wait to return None (user cancelled)
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)) as mock_push:
+        await app.action_search_messages()
+
+    # Verify SearchResultsScreen was shown
+    mock_push.assert_called_once()
+    # Verify the screen is a SearchResultsScreen instance
+    from mygpt.tui import SearchResultsScreen
+    assert isinstance(mock_push.call_args[0][0], SearchResultsScreen)
+
+
+@pytest.mark.asyncio
+async def test_tui_action_search_messages_switches_session(tmp_path: Path) -> None:
+    """Test that selecting a search result switches to that session."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="original-session", config_path=str(config_file))
+
+    # Mock output widget
+    mock_output = MagicMock(spec=ChatOutput)
+
+    # Mock push_screen_wait to return a search result
+    search_result = {
+        "session_name": "target-session",
+        "message_index": 5,
+    }
+
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=search_result)):
+        with patch.object(app, "query_one", return_value=mock_output):
+            with patch.object(app, "notify") as mock_notify:
+                await app.action_search_messages()
+
+    # Verify session was switched
+    assert app.session == "target-session"
+
+    # Verify output was cleared
+    mock_output.clear.assert_called_once()
+
+    # Verify notification was shown
+    mock_notify.assert_called_once()
+    assert "target-session" in mock_notify.call_args[0][0]
+    assert "message 6" in mock_notify.call_args[0][0]  # message_index 5 = message 6 (1-indexed)
+
+
+@pytest.mark.asyncio
+async def test_tui_action_search_messages_same_session(tmp_path: Path) -> None:
+    """Test that selecting a result in the current session doesn't clear output."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="current-session", config_path=str(config_file))
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock push_screen_wait to return a search result in the same session
+    search_result = {
+        "session_name": "current-session",
+        "message_index": 3,
+    }
+
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=search_result)):
+        with patch.object(app, "notify") as mock_notify:
+            await app.action_search_messages()
+
+    # Verify session stayed the same
+    assert app.session == "current-session"
+
+    # Verify output was NOT cleared (same session)
+    app.output.clear.assert_not_called()
+
+    # Verify notification was shown
+    mock_notify.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_perform_search_success() -> None:
+    """Test SearchResultsScreen perform_search with successful API response."""
+    from mygpt.tui import SearchResultsScreen
+    import httpx
+
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+
+    # Mock the results list
+    screen.results_list = MagicMock()
+    screen.results_list.clear = AsyncMock()
+    screen.results_list.append = AsyncMock()
+
+    # Mock notify
+    screen.notify = MagicMock()
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "query": "test query",
+        "total_results": 2,
+        "results": [
+            {
+                "session_name": "session1",
+                "session_title": "Session 1",
+                "message_index": 0,
+                "role": "user",
+                "content": "test message",
+                "content_preview": "test message",
+                "timestamp": None,
+                "matches": 1,
+            },
+            {
+                "session_name": "session2",
+                "session_title": None,
+                "message_index": 5,
+                "role": "assistant",
+                "content": "another test",
+                "content_preview": "another test",
+                "timestamp": None,
+                "matches": 2,
+            },
+        ],
+    }
+    mock_response.raise_for_status = MagicMock()
+
+    # Mock httpx client
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.get = AsyncMock(return_value=mock_response)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await screen.perform_search("test query")
+
+    # Verify API was called correctly
+    mock_client.get.assert_called_once()
+    call_args = mock_client.get.call_args
+    assert "/api/v1/sessions/search" in call_args[0][0]
+    assert call_args[1]["params"]["query"] == "test query"
+
+    # Verify results were stored
+    assert len(screen.results) == 2
+    assert screen.results[0]["session_name"] == "session1"
+    assert screen.results[1]["session_name"] == "session2"
+
+    # Verify success notification
+    screen.notify.assert_called_once()
+    assert "Found 2 result(s)" in screen.notify.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_perform_search_no_results() -> None:
+    """Test SearchResultsScreen perform_search with no results."""
+    from mygpt.tui import SearchResultsScreen
+
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+
+    # Mock the results list
+    screen.results_list = MagicMock()
+    screen.results_list.clear = AsyncMock()
+    screen.results_list.append = AsyncMock()
+
+    # Mock notify
+    screen.notify = MagicMock()
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "query": "nonexistent",
+        "total_results": 0,
+        "results": [],
+    }
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.get = AsyncMock(return_value=mock_response)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await screen.perform_search("nonexistent")
+
+    # Verify results are empty
+    assert len(screen.results) == 0
+
+    # Verify warning notification
+    screen.notify.assert_called_once()
+    assert "No results found" in screen.notify.call_args[0][0]
+    assert screen.notify.call_args[1]["severity"] == "warning"
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_perform_search_api_error() -> None:
+    """Test SearchResultsScreen perform_search handles API errors."""
+    from mygpt.tui import SearchResultsScreen
+
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+
+    # Mock the results list
+    screen.results_list = MagicMock()
+    screen.results_list.clear = AsyncMock()
+
+    # Mock notify
+    screen.notify = MagicMock()
+
+    # Mock httpx client to raise an exception
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.get = AsyncMock(side_effect=Exception("Connection failed"))
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await screen.perform_search("test")
+
+    # Verify results are empty
+    assert len(screen.results) == 0
+
+    # Verify error notification
+    screen.notify.assert_called_once()
+    assert "Search failed" in screen.notify.call_args[0][0]
+    assert screen.notify.call_args[1]["severity"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_case_sensitive_filter() -> None:
+    """Test SearchResultsScreen applies case_sensitive filter."""
+    from mygpt.tui import SearchResultsScreen
+
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+
+    # Set case_sensitive to True
+    screen.case_sensitive = True
+
+    # Mock the results list
+    screen.results_list = MagicMock()
+    screen.results_list.clear = AsyncMock()
+    screen.results_list.append = AsyncMock()
+
+    # Mock notify
+    screen.notify = MagicMock()
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "query": "Test",
+        "total_results": 0,
+        "results": [],
+    }
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.get = AsyncMock(return_value=mock_response)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await screen.perform_search("Test")
+
+    # Verify case_sensitive parameter was sent
+    call_args = mock_client.get.call_args
+    assert call_args[1]["params"]["case_sensitive"] == "true"

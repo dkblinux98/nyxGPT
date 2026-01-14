@@ -133,7 +133,9 @@ def test_chat_stream_yields_chunks_and_persists(monkeypatch: pytest.MonkeyPatch,
     assert chunks == ["hel", "lo"]
 
     # Final assembled reply should be persisted
-    assert saved["messages"][-1] == {"role": "assistant", "content": "hello"}
+    last_msg = saved["messages"][-1]
+    assert last_msg["role"] == "assistant"
+    assert last_msg["content"] == "hello"
 
 
 def test_chat_with_rag_returns_chunk_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

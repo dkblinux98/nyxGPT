@@ -13,10 +13,10 @@ import logging
 from typing import Optional
 
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, Static, Input, ListView, ListItem, Label
+from textual.widgets import Header, Footer, Static, Input, ListView, ListItem, Label, Button, Checkbox
 from textual.containers import Vertical, Container
 from textual.binding import Binding
-from textual.screen import Screen
+from textual.screen import Screen, ModalScreen
 
 from mygpt.config import load_config
 from mygpt.sessions import list_sessions
@@ -283,11 +283,142 @@ class ModelsManagerScreen(Screen):
         self.dismiss()
 
 
+class SearchResultsScreen(ModalScreen[dict | None]):
+    """Modal screen for searching messages across sessions."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("enter", "select_result", "Jump to Message"),
+    ]
+
+    def __init__(self, api_base_url: str, current_session: str):
+        super().__init__()
+        self.api_base_url = api_base_url
+        self.current_session = current_session
+        self.results = []
+        self.case_sensitive = False
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(id="search-dialog"):
+            yield Label("Search Messages")
+            self.search_input = Input(
+                placeholder="Enter search query...",
+                id="search-input"
+            )
+            yield self.search_input
+
+            # Filters
+            with Container(id="filters"):
+                self.case_checkbox = Checkbox("Case sensitive", id="case-sensitive")
+                yield self.case_checkbox
+
+            yield Button("Search", id="search-btn", variant="primary")
+
+            yield Label("Results:", id="results-label")
+            self.results_list = ListView(id="results-list")
+            yield self.results_list
+
+            # Preview panel
+            with Container(id="preview-panel"):
+                yield Label("Message Preview:")
+                self.preview = Static(id="preview-content")
+                yield self.preview
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        """Focus search input when screen appears."""
+        self.search_input.focus()
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle search button press."""
+        if event.button.id == "search-btn":
+            query = self.search_input.value.strip()
+            if query:
+                self.case_sensitive = self.case_checkbox.value
+                await self.perform_search(query)
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter key in search input."""
+        if event.input.id == "search-input":
+            query = event.value.strip()
+            if query:
+                self.case_sensitive = self.case_checkbox.value
+                await self.perform_search(query)
+
+    async def perform_search(self, query: str) -> None:
+        """Call backend search API and populate results."""
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.get(
+                    f"{self.api_base_url}/api/v1/sessions/search",
+                    params={
+                        "query": query,
+                        "case_sensitive": str(self.case_sensitive).lower(),
+                        "limit": 50
+                    }
+                )
+                res.raise_for_status()
+                data = res.json()
+                self.results = data.get("results", [])
+                await self._populate_list()
+
+                if len(self.results) == 0:
+                    self.notify(f"No results found for '{query}'", severity="warning")
+                else:
+                    self.notify(f"Found {len(self.results)} result(s)", severity="information")
+        except Exception as e:
+            self.notify(f"Search failed: {str(e)}", severity="error")
+            self.results = []
+            await self._populate_list()
+
+    async def _populate_list(self) -> None:
+        """Populate results list with search results."""
+        await self.results_list.clear()
+
+        if not self.results:
+            return
+
+        for idx, result in enumerate(self.results):
+            session_title = result.get("session_title") or result.get("session_name")
+            role_icon = "👤" if result.get("role") == "user" else "🤖"
+            matches_text = f" ({result.get('matches')} matches)" if result.get("matches", 0) > 1 else ""
+            label_text = f"{role_icon} {session_title}{matches_text}"
+
+            item = ListItem(Label(label_text))
+            await self.results_list.append(item)
+
+    async def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        """Update preview when result is selected."""
+        if event.item is None or not self.results:
+            return
+
+        try:
+            result = self.results[self.results_list.index]
+            preview_text = result.get("content_preview", "")
+            self.preview.update(preview_text)
+        except (IndexError, AttributeError):
+            pass
+
+    async def action_select_result(self) -> None:
+        """Return selected result to caller."""
+        if self.results_list.index is not None and self.results_list.index < len(self.results):
+            result = self.results[self.results_list.index]
+            self.dismiss(result)
+        else:
+            self.notify("No result selected", severity="warning")
+
+    async def action_close(self) -> None:
+        """Close the search screen."""
+        self.dismiss(None)
+
+
 class MyGPTTUI(App):
     CSS_PATH = None
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+s", "pick_session", "Sessions"),
+        ("ctrl+f", "search_messages", "Search"),
         ("ctrl+r", "toggle_rag", "Toggle RAG"),
         ("ctrl+m", "models_manager", "Models"),
         ("ctrl+n", "rename_session", "Rename"),
@@ -404,6 +535,35 @@ class MyGPTTUI(App):
         """Open the models manager screen."""
         await self.push_screen_wait(ModelsManagerScreen(self.api_base_url))
         log.info("Models manager closed")
+
+    async def action_search_messages(self) -> None:
+        """Open message search modal."""
+        result = await self.push_screen_wait(
+            SearchResultsScreen(self.api_base_url, self.session)
+        )
+
+        if result:
+            # User selected a search result
+            session_name = result.get("session_name")
+            message_index = result.get("message_index")
+
+            if session_name and message_index is not None:
+                # Switch to the session if different
+                if session_name != self.session:
+                    self.session = session_name
+                    self.title = f"myGPT TUI - {session_name}"
+                    # Clear current chat output
+                    try:
+                        output = self.query_one("#output", ChatOutput)
+                        output.clear()
+                    except Exception:
+                        pass
+
+                # Notify user about navigation
+                self.notify(
+                    f"Switched to session '{session_name}', message {message_index + 1}",
+                    severity="information"
+                )
 
     async def action_rename_session(self) -> None:
         """Rename the current session with automatic filename sync."""

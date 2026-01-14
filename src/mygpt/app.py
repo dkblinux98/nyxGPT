@@ -13,7 +13,7 @@ import urllib.request
 import urllib.error
 from configparser import ConfigParser
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request, Body, UploadFile, File
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Body, UploadFile, File, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.status import HTTP_401_UNAUTHORIZED
@@ -46,6 +46,7 @@ from mygpt.config import (
     get_rate_limit_config,
     load_config,
 )
+import mygpt.config
 from mygpt import chat as chat_module
 from mygpt.chat import chat as run_chat, chat_stream
 from mygpt import sessions
@@ -461,8 +462,8 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
 
     if "default_model" in updates and isinstance(updates.get("default_model"), str):
-        ensure_section("ollama")
-        parser.set("ollama", "default_model", updates["default_model"].strip())
+        ensure_section("mygpt")
+        parser.set("mygpt", "default_model", updates["default_model"].strip())
         out["default_model"] = updates["default_model"].strip()
 
     if "rag_enabled" in updates:
@@ -480,6 +481,12 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     # Persist changes
     with cfg_path.open("w", encoding="utf-8") as f:
         parser.write(f)
+
+    # Invalidate config cache to force reload on next access
+    # This ensures mtime-based caching works even for rapid writes/reads
+    mygpt.config._CACHED_CFG = None
+    mygpt.config._CACHED_PATH = None
+    mygpt.config._CACHED_MTIME_NS = None
 
     # Hot-apply logging changes immediately
     try:
@@ -713,23 +720,36 @@ def sessions_list(sessions_dir: Optional[str] = None) -> SessionsListResponse:
     return SessionsListResponse(sessions=out)
 
 
+def search_params(
+    query: str = Query(..., min_length=1, description="Text to search for in messages"),
+    case_sensitive: bool = Query(False, description="Whether to perform case-sensitive search"),
+    role_filter: Optional[api_models.MessageRole] = Query(None, description="Filter by message role (user, assistant, system)"),
+    session_filter: Optional[str] = Query(None, description="Filter to specific session name"),
+    limit: int = Query(50, ge=1, le=500, description="Maximum number of results to return"),
+) -> api_models.SearchRequest:
+    """Dependency function to validate search parameters using SearchRequest model.
+
+    This ensures proper validation of all search parameters according to the
+    SearchRequest Pydantic model definition, including enum validation for role_filter.
+    """
+    return api_models.SearchRequest(
+        query=query,
+        case_sensitive=case_sensitive,
+        role_filter=role_filter,
+        session_filter=session_filter,
+        limit=limit,
+    )
+
+
 @api.get("/sessions/search", response_model=api_models.SearchResponse)
 def sessions_search(
-    query: str,
-    case_sensitive: bool = False,
-    role_filter: Optional[str] = None,
-    session_filter: Optional[str] = None,
-    limit: int = 50,
+    params: api_models.SearchRequest = Depends(search_params),
     sessions_dir: Optional[str] = None,
 ) -> api_models.SearchResponse:
     """Search for messages across all sessions or within a specific session.
 
     Args:
-        query: Text to search for in message content
-        case_sensitive: Whether to perform case-sensitive search
-        role_filter: Filter by message role (user, assistant, system)
-        session_filter: Filter to specific session name
-        limit: Maximum number of results to return (1-500)
+        params: Validated search parameters (query, filters, limit)
         sessions_dir: Optional sessions directory override
 
     Returns:
@@ -739,13 +759,15 @@ def sessions_search(
     effective_dir = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(cfg)
 
     # Perform search
+    # Convert enum to string for sessions module
+    role_filter_str = params.role_filter.value if params.role_filter else None
     results = sessions.search_messages(
-        query=query,
+        query=params.query,
         sessions_dir=effective_dir,
-        case_sensitive=case_sensitive,
-        role_filter=role_filter,
-        session_filter=session_filter,
-        limit=limit,
+        case_sensitive=params.case_sensitive,
+        role_filter=role_filter_str,
+        session_filter=params.session_filter,
+        limit=params.limit,
     )
 
     # Convert to API models
@@ -764,7 +786,7 @@ def sessions_search(
     ]
 
     return api_models.SearchResponse(
-        query=query,
+        query=params.query,
         total_results=len(result_items),
         results=result_items,
     )

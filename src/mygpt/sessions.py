@@ -1147,13 +1147,24 @@ def search_messages(
 ) -> list[dict[str, Any]]:
     """Search for messages across all sessions or within a specific session.
 
+    Performance characteristics:
+        - Processes sessions sequentially, one at a time (memory-efficient)
+        - Terminates early when limit is reached
+        - Sessions are processed in reverse chronological order (newest first)
+        - For best performance with large session directories:
+            * Use session_filter to search specific sessions
+            * Use lower limit values (default: 50, max recommended: 500)
+            * Consider role_filter to reduce search space
+        - Time complexity: O(sessions × messages_per_session) in worst case
+        - Memory usage: O(1 session at a time + results up to limit)
+
     Args:
         query: Text to search for in message content
         sessions_dir: Optional sessions directory override
         case_sensitive: Whether to perform case-sensitive search (default: False)
         role_filter: Filter by message role ("user", "assistant", "system")
         session_filter: Filter to specific session name (None for all sessions)
-        limit: Maximum number of results to return
+        limit: Maximum number of results to return (recommended: 50-500)
 
     Returns:
         List of matching results with structure:
@@ -1176,6 +1187,13 @@ def search_messages(
     if not query:
         return []
 
+    # Validate role_filter
+    VALID_ROLES = {"user", "assistant", "system"}
+    if role_filter and role_filter not in VALID_ROLES:
+        raise ValueError(
+            f"Invalid role_filter '{role_filter}'. Must be one of: {', '.join(sorted(VALID_ROLES))}"
+        )
+
     # Prepare search query
     search_query = query if case_sensitive else query.lower()
 
@@ -1186,14 +1204,21 @@ def search_messages(
     if session_filter:
         session_files = [sf for sf in session_files if sf.stem == session_filter]
 
+    # Sort sessions by modification time (newest first) for better UX
+    # Users are more likely to search for content in recent sessions
+    session_files = sorted(session_files, key=lambda p: p.stat().st_mtime, reverse=True)
+
     for session_file in session_files:
         session_name = session_file.stem
 
         try:
-            # Load session messages and metadata
+            # Load session messages
             messages = load_session_messages(session_file)
-            meta = load_session_meta(meta_file_for(session_file))
-            session_title = meta.get("title")
+
+            # Lazy load metadata - only load if we find matches
+            # This avoids loading metadata for sessions with no matches
+            session_title: str | None = None
+            meta_loaded = False
 
             # Search through messages
             for idx, msg in enumerate(messages):
@@ -1209,6 +1234,12 @@ def search_messages(
                 search_content = content if case_sensitive else content.lower()
                 if search_query not in search_content:
                     continue
+
+                # Found a match - load metadata if not already loaded
+                if not meta_loaded:
+                    meta = load_session_meta(meta_file_for(session_file))
+                    session_title = meta.get("title")
+                    meta_loaded = True
 
                 # Count matches
                 match_count = search_content.count(search_query)

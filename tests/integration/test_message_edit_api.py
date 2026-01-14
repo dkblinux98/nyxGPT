@@ -161,7 +161,7 @@ def test_regenerate_endpoint_requires_user_message(api_base_url: str) -> None:
     )
     assert regen_resp.status_code == 400
     data = regen_resp.json()
-    assert "user messages" in data["detail"].lower()
+    assert "user messages" in data["error"]["message"].lower()
 
 
 @pytest.mark.integration

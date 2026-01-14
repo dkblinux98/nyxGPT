@@ -203,5 +203,5 @@ def test_rag_upload_invalid_file_type(api_base_url: str, tmp_path) -> None:
         # Should reject with 400
         assert upload_resp.status_code == 400
         error_data = upload_resp.json()
-        assert "detail" in error_data
-        assert "not supported" in error_data["detail"].lower()
+        assert "error" in error_data
+        assert "not supported" in error_data["error"]["message"].lower()
