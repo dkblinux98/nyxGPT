@@ -748,6 +748,7 @@ export default function Home() {
         <aside
           style={{
             width: 320,
+            height: '100vh',
             borderRight: '1px solid var(--border)',
             padding: '1rem',
             background: 'var(--sidebar-bg)',
