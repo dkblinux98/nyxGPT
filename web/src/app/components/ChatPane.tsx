@@ -9,6 +9,7 @@ type ChatMessage = {
   role: 'user' | 'assistant';
   content: string;
   ragChunks?: RagChunk[];
+  rag_chunks?: RagChunk[]; // Backend uses snake_case
   id?: string;
   timestamp?: string;
   edited_at?: string;
@@ -28,8 +29,60 @@ type Props = {
   scrollToMessageIndex?: number | null;
 };
 
-function RagCitationsCollapsible({ chunks }: { chunks: RagChunk[] }) {
+function RagCitationsCollapsible({
+  sessionName,
+  messageIndex,
+  initialChunks,
+  onChunksLoaded,
+}: {
+  sessionName: string;
+  messageIndex: number;
+  initialChunks?: RagChunk[];
+  onChunksLoaded?: (chunks: RagChunk[]) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
+  const [chunks, setChunks] = useState<RagChunk[] | null>(initialChunks || null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleToggle = async () => {
+    const newExpanded = !expanded;
+    setExpanded(newExpanded);
+
+    // Lazy load chunks on first expand if not already loaded
+    if (newExpanded && !chunks && !loading) {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const res = await fetch(
+          `/api/sessions/${encodeURIComponent(sessionName)}/messages/${messageIndex}/rag`
+        );
+
+        if (!res.ok) {
+          throw new Error(`Failed to load RAG chunks: ${res.status}`);
+        }
+
+        const data = await res.json();
+        const loadedChunks = data.chunks || [];
+        setChunks(loadedChunks);
+
+        // Notify parent to cache the loaded chunks
+        if (onChunksLoaded) {
+          onChunksLoaded(loadedChunks);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setError(msg);
+        console.error('Failed to load RAG chunks:', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  const chunkCount = chunks?.length || 0;
+  const hasChunks = chunkCount > 0 || initialChunks === undefined; // Show indicator if chunks unknown
 
   return (
     <div
@@ -43,7 +96,7 @@ function RagCitationsCollapsible({ chunks }: { chunks: RagChunk[] }) {
       }}
     >
       <button
-        onClick={() => setExpanded(!expanded)}
+        onClick={handleToggle}
         style={{
           background: 'none',
           border: 'none',
@@ -58,11 +111,15 @@ function RagCitationsCollapsible({ chunks }: { chunks: RagChunk[] }) {
       >
         <span>{expanded ? '▼' : '▶'}</span>
         <span>
-          {chunks.length} RAG {chunks.length === 1 ? 'source' : 'sources'} retrieved
+          {loading
+            ? 'Loading RAG sources...'
+            : chunks
+            ? `${chunkCount} RAG ${chunkCount === 1 ? 'source' : 'sources'} retrieved`
+            : 'RAG sources available'}
         </span>
       </button>
 
-      {expanded && (
+      {expanded && !loading && !error && chunks && (
         <div style={{ marginTop: 8 }}>
           {chunks.map((chunk, idx) => (
             <div
@@ -96,6 +153,18 @@ function RagCitationsCollapsible({ chunks }: { chunks: RagChunk[] }) {
           ))}
         </div>
       )}
+
+      {expanded && loading && (
+        <div style={{ marginTop: 8, opacity: 0.6, textAlign: 'center' }}>
+          Loading...
+        </div>
+      )}
+
+      {expanded && error && (
+        <div style={{ marginTop: 8, color: 'var(--error)', fontSize: 11 }}>
+          Error: {error}
+        </div>
+      )}
     </div>
   );
 }
@@ -118,6 +187,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   const [ragEnabled, setRagEnabled] = useState<boolean>(false);
   const [ragStatus, setRagStatus] = useState<'idle' | 'uploading' | 'error'>('idle');
   const [ragError, setRagError] = useState<string | null>(null);
+  const [ragChunksCache, setRagChunksCache] = useState<Map<number, RagChunk[]>>(new Map());
 
   // Rename state
   const [sessionTitle, setSessionTitle] = useState<string>('');
@@ -577,8 +647,20 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 <strong>{m.role}</strong>
                 {m.edited_at && <span style={{ fontSize: 10, opacity: 0.6 }}>(edited)</span>}
               </div>
-              {m.ragChunks && m.ragChunks.length > 0 && (
-                <RagCitationsCollapsible chunks={m.ragChunks} />
+              {/* Show RAG citations if available (streaming) or persisted (loaded from session) */}
+              {((m.ragChunks && m.ragChunks.length > 0) || (m.rag_chunks && m.rag_chunks.length > 0)) && (
+                <RagCitationsCollapsible
+                  sessionName={sessionName}
+                  messageIndex={idx}
+                  initialChunks={m.ragChunks || m.rag_chunks || ragChunksCache.get(idx)}
+                  onChunksLoaded={(chunks) => {
+                    setRagChunksCache((prev) => {
+                      const next = new Map(prev);
+                      next.set(idx, chunks);
+                      return next;
+                    });
+                  }}
+                />
               )}
               {editingIndex === idx ? (
                 <div>

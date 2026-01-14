@@ -1021,6 +1021,45 @@ def edit_message(
     return {"ok": True, "message": msg}
 
 
+@api.get("/sessions/{name}/messages/{message_index}/rag")
+def get_message_rag_chunks(
+    name: str,
+    message_index: int,
+    sessions_dir: Optional[str] = None
+) -> dict[str, Any]:
+    """Get RAG chunks for a specific message.
+
+    Returns the RAG chunks associated with a message if available.
+    This endpoint enables lazy loading of RAG citation data.
+    """
+    _sessions_dir = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
+
+    # Load session messages
+    sf = sessions.session_file_for(name, _sessions_dir)
+    if not sf.exists():
+        raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
+
+    msgs = sessions.load_session_messages(sf)
+
+    # Validate message index
+    if message_index < 0 or message_index >= len(msgs):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid message_index: {message_index} (session has {len(msgs)} messages)"
+        )
+
+    message = msgs[message_index]
+
+    # Extract RAG chunks if present
+    rag_chunks = message.get("rag_chunks", [])
+
+    return {
+        "message_index": message_index,
+        "has_rag": len(rag_chunks) > 0,
+        "chunks": rag_chunks
+    }
+
+
 @api.post("/sessions/{name}/messages/{message_index}/regenerate")
 def regenerate_response(
     name: str,
