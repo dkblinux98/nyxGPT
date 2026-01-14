@@ -19,6 +19,7 @@ from mygpt.logging import configure_logging
 from mygpt.rag.rag import ingest_document, retrieve_context
 from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 from mygpt.tui import MyGPTTUI
+from mygpt.wizard import run_wizard
 
 # Ops implementation lives in a separate module for testability.
 from mygpt import ops as ops_mod
@@ -602,6 +603,10 @@ def cli(argv: list[str] | None = None) -> int:
     models_show_p = models_sub.add_parser("show", help="Show detailed model information")
     models_show_p.add_argument("model", help="Model name to inspect")
 
+    # Add wizard command
+    wizard_p = sub.add_parser("wizard", help="Run interactive configuration wizard")
+    wizard_p.add_argument("--output", type=Path, help="Output path for config.ini (default: ~/.myGPT/config.ini)")
+
     # Add ops command
     ops_p = sub.add_parser("ops", help="Operational helpers")
     ops_sub = ops_p.add_subparsers(dest="ops_cmd", required=True)
@@ -700,6 +705,9 @@ def cli(argv: list[str] | None = None) -> int:
             return cmd_models_delete(args.model, args.force)
         if args.models_cmd == "show":
             return cmd_models_show(args.model)
+
+    if cmd == "wizard":
+        return run_wizard(output_path=args.output)
 
     if cmd == "ops":
         if args.ops_cmd == "install":

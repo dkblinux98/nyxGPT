@@ -60,7 +60,25 @@ pip install -e .
 
 ### Configuration
 
-All runtime configuration lives **outside the repository**:
+All runtime configuration lives **outside the repository**.
+
+#### Option 1: Interactive Wizard (Recommended)
+
+Run the interactive configuration wizard for guided setup:
+
+```bash
+mygpt wizard
+```
+
+The wizard will:
+- Test your Ollama connection and detect available models
+- Help you select a default model
+- Configure RAG settings (optional)
+- Generate a production-ready `~/.myGPT/config.ini`
+
+#### Option 2: Manual Configuration
+
+Manually create the config file from the example template:
 
 ```bash
 mkdir -p ~/.myGPT
@@ -74,19 +92,22 @@ Edit `~/.myGPT/config.ini` to select models, logging options, RAG settings, and 
 
 ## Running myGPT
 
-### One‑command setup (recommended)
+### First-time Setup
 
-Install and configure all local services (API, web UI, logs, Cassandra helpers):
+1. **Run the configuration wizard** (interactive setup):
+   ```bash
+   mygpt wizard
+   ```
 
-```bash
-mygpt ops install
-```
+2. **Install services** (API, web UI, logs, Cassandra helpers):
+   ```bash
+   mygpt ops install
+   ```
 
-Check system health:
-
-```bash
-mygpt ops doctor
-```
+3. **Check system health**:
+   ```bash
+   mygpt ops doctor
+   ```
 
 ---
 
