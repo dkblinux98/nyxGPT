@@ -281,7 +281,7 @@ def _prepare_chat_context(
         chosen_model=chosen_model,
         base_url=base_url,
         chat_timeout_s=chat_timeout_s,
-        rag_used=bool(rag_context),
+        rag_used=should_use_rag,
         rag_chunks=rag_chunks,
         rag_context=rag_rows,
     )
@@ -302,12 +302,28 @@ def _persist_chat_turn(
         "id": str(uuid.uuid4()),
         "timestamp": timestamp
     })
-    context.state.messages.append({
+
+    # Build assistant message with optional RAG chunks
+    assistant_msg: dict[str, Any] = {
         "role": "assistant",
         "content": reply,
         "id": str(uuid.uuid4()),
         "timestamp": timestamp
-    })
+    }
+
+    # Include RAG chunks if RAG was used
+    if context.rag_used:
+        assistant_msg["rag_chunks"] = [
+            {
+                "text": chunk.get("text", ""),
+                "score": chunk.get("score", 0.0),
+                "doc_id": chunk.get("doc_id"),
+                "chunk_id": chunk.get("chunk_id"),
+            }
+            for chunk in (context.rag_context or [])
+        ]
+
+    context.state.messages.append(assistant_msg)
     save_session(context.state, cfg, sessions_dir_override=sessions_dir)
 
 
