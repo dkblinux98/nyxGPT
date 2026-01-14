@@ -51,14 +51,51 @@ After completing the review:
 - Provide clear recommendation with rationale
 - **WAIT for human confirmation** - Do NOT proceed automatically
 
-## 5) Human confirmation (required)
+## 5) Post-review workflow
+
+### Automated Fix Loop (REVIEW_AUTO_FIX_ENABLED=true)
+
+When automated fix loop is enabled, the system handles REQUEST_CHANGES automatically:
+
+**Loop Detection:**
+- Counts "## Code Review - " comments from github-actions bot on the PR
+- Each review = 1 iteration
+- Maximum 3 iterations before human escalation
+
+**Fix Execution:**
+1. On REQUEST_CHANGES comment:
+   - Workflow automatically triggers (no human confirmation needed)
+   - Checks out PR's feature branch
+   - Parses Critical/Medium issues from review comment
+   - Invokes developer-agent to fix all issues in a single commit
+   - Pushes fixes back to PR branch
+   - Re-review triggers automatically via `pull_request.synchronize`
+2. Loops up to 3 times
+3. After 3rd iteration with persistent issues:
+   - Posts: "@HUMAN_OWNER claude bot has reviewed and fixed this PR 3 times. It now requires human intervention."
+   - Assigns PR to HUMAN_OWNER
+   - Stops automation
+4. On APPROVE within 3 loops:
+   - Proceeds to merge (section 7)
+
+**Manual Override:**
+- Human can post `@approve-merge` at any time to skip auto-fix and force merge
+- Disable feature by setting REVIEW_AUTO_FIX_ENABLED=false
+
+### Manual Workflow (REVIEW_AUTO_FIX_ENABLED=false)
+
+When automated fix is disabled, human confirmation is required:
+
+**Human Confirmation:**
 The human owner must review the recommendation and post one of:
 - `@approve-merge` - Confirms merge should proceed
 - `@request-changes` - Confirms changes are needed
 
 The GitHub workflow will then execute the approved action.
 
-## 6) Acceptance Failure loop (blocking findings)
+## 6) Acceptance Failure loop (manual workflow only)
+**Note:** This section applies only when REVIEW_AUTO_FIX_ENABLED=false.
+
 When human posts `@request-changes`:
 - Automation creates ONE sub-issue per Critical/Medium finding
 - Sub-issues labeled `Acceptance Failure`
