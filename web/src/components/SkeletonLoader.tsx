@@ -48,10 +48,10 @@ export default function SkeletonLoader({ width, height, borderRadius, count = 1 
   );
 }
 
-export function SessionListSkeleton() {
+export function SessionListSkeleton({ count = 8 }: { count?: number }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }} aria-label="Loading sessions">
-      {Array.from({ length: 5 }).map((_, i) => (
+      {Array.from({ length: count }).map((_, i) => (
         <div
           key={i}
           style={{
@@ -59,6 +59,7 @@ export function SessionListSkeleton() {
             borderRadius: 8,
             border: '1px solid var(--border-light)',
             background: 'var(--sidebar-bg)',
+            minHeight: 70,
           }}
         >
           <SkeletonItem height={16} width="80%" borderRadius={4} />
