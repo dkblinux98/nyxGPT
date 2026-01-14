@@ -25,6 +25,7 @@ type RagChunk = {
 type Props = {
   sessionName: string;
   onSessionUpdated?: () => void;
+  scrollToMessageIndex?: number | null;
 };
 
 function RagCitationsCollapsible({ chunks }: { chunks: RagChunk[] }) {
@@ -99,7 +100,7 @@ function RagCitationsCollapsible({ chunks }: { chunks: RagChunk[] }) {
   );
 }
 
-export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
+export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessageIndex }: Props) {
   const toast = useToast();
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -110,6 +111,8 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
   const [selectedModel, setSelectedModel] = useState<string>('');
   const isStreamingRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
+  const messageRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const [highlightedMessageIndex, setHighlightedMessageIndex] = useState<number | null>(null);
 
   // RAG state
   const [ragEnabled, setRagEnabled] = useState<boolean>(false);
@@ -150,8 +153,7 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    // New session selected: clear local transcript UI.
-    // (Server-side transcript will be surfaced later via a session load endpoint.)
+    // New session selected: clear local transcript UI and load historical messages
     setMessages([]);
     setStatus('idle');
     setLastError(null);
@@ -178,7 +180,40 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
         setSessionTitle(''); // Default to empty title
         setSelectedModel(''); // Default to empty (will use first available model)
       });
+
+    // Load historical messages for the session
+    fetch(`/api/v1/sessions/${encodeURIComponent(sessionName)}`)
+      .then(async (res) => {
+        if (res.ok) {
+          const data = await res.json();
+          if (data.messages && Array.isArray(data.messages)) {
+            setMessages(data.messages);
+          }
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to load session messages:', err);
+      });
   }, [sessionName]);
+
+  // Scroll to message when scrollToMessageIndex changes
+  useEffect(() => {
+    if (scrollToMessageIndex !== null && scrollToMessageIndex !== undefined) {
+      // Wait a bit for messages to render
+      setTimeout(() => {
+        const targetRef = messageRefs.current[scrollToMessageIndex];
+        if (targetRef) {
+          targetRef.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          // Highlight the message
+          setHighlightedMessageIndex(scrollToMessageIndex);
+          // Remove highlight after 2 seconds
+          setTimeout(() => {
+            setHighlightedMessageIndex(null);
+          }, 2000);
+        }
+      }, 100);
+    }
+  }, [scrollToMessageIndex]);
 
   async function toggleRag() {
     try {
@@ -407,7 +442,6 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
       }
 
       // Reload session to get updated messages
-      await loadSession();
       setEditingIndex(null);
       setEditContent('');
       toast.success('Message edited');
@@ -448,7 +482,6 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
       const data = await res.json();
 
       // Reload session to get the new response
-      await loadSession();
       toast.success('Response regenerated');
       onSessionUpdated?.();
     } catch (e) {
@@ -528,7 +561,18 @@ export default function ChatPane({ sessionName, onSessionUpdated }: Props) {
           <div style={{ opacity: 0.7 }}>Send a message to start…</div>
         ) : (
           messages.map((m, idx) => (
-            <div key={idx} style={{ marginBottom: 12 }}>
+            <div
+              key={idx}
+              ref={(el) => { messageRefs.current[idx] = el; }}
+              data-message-index={idx}
+              style={{
+                marginBottom: 12,
+                padding: highlightedMessageIndex === idx ? 12 : 0,
+                background: highlightedMessageIndex === idx ? 'var(--highlight)' : 'transparent',
+                borderRadius: highlightedMessageIndex === idx ? 8 : 0,
+                transition: 'all 0.3s ease',
+              }}
+            >
               <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
                 <strong>{m.role}</strong>
                 {m.edited_at && <span style={{ fontSize: 10, opacity: 0.6 }}>(edited)</span>}

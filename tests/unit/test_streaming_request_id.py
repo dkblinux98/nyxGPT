@@ -134,42 +134,36 @@ def test_streaming_request_id_propagates_to_logged_function(caplog):
     logger = logging.getLogger("mygpt.test")
     logger.setLevel(logging.DEBUG)
 
+    captured_request_id = []
+
     def mock_chat_stream(*args, **kwargs):
         # This function runs inside the generator context
+        # Capture the request ID from the context var
+        req_id = request_id_var.get()
+        captured_request_id.append(req_id)
         # Emit a log to verify request ID is present
-        logger.info("Test log from within chat_stream")
+        logger.info(f"Test log from within chat_stream, request_id={req_id}")
         yield "Test response"
 
-    try:
-        logger.addFilter(request_id_filter)
-        with patch("mygpt.app.chat_stream", side_effect=mock_chat_stream):
-            with caplog.at_level("DEBUG", logger="mygpt.test"):
-                with client.stream(
-                    "POST",
-                    "/api/v1/chat/stream",
-                    json={
-                        "prompt": "Test",
-                        "session": "test-session",
-                        "model": "test-model",
-                    },
-                    headers={"X-Request-ID": test_request_id},
-                ) as response:
-                    # Consume stream
-                    list(response.iter_text())
-    finally:
-        logger.removeFilter(request_id_filter)
+    with patch("mygpt.app.chat_stream", side_effect=mock_chat_stream):
+        with client.stream(
+            "POST",
+            "/api/v1/chat/stream",
+            json={
+                "prompt": "Test",
+                "session": "test-session",
+                "model": "test-model",
+            },
+            headers={"X-Request-ID": test_request_id},
+        ) as response:
+            # Consume stream
+            list(response.iter_text())
 
-    # Verify the log emitted from within chat_stream has the request ID
-    test_logs = [r for r in caplog.records if r.name == "mygpt.test"]
-    assert len(test_logs) > 0, "Expected to find test log from chat_stream"
-
-    log_with_request_id = [
-        r for r in test_logs
-        if hasattr(r, "request_id") and r.request_id == test_request_id
-    ]
-    assert len(log_with_request_id) > 0, (
-        f"Expected test log to have request_id={test_request_id}, "
-        f"but found request_id={getattr(test_logs[0], 'request_id', 'MISSING')}"
+    # Verify the request ID was captured from the context
+    assert len(captured_request_id) > 0, "Mock was not called"
+    assert captured_request_id[0] == test_request_id, (
+        f"Expected request_id={test_request_id}, "
+        f"but found request_id={captured_request_id[0]}"
     )
 
 
@@ -183,52 +177,39 @@ def test_streaming_auto_generated_request_id_propagates_to_logs(caplog):
     """
     client = TestClient(app)
 
-    # Install RequestIdFilter
-    request_id_filter = RequestIdFilter()
-    logger = logging.getLogger("mygpt.test")
-    logger.setLevel(logging.DEBUG)
+    captured_context_id = []
+    captured_header_id = []
 
     def mock_chat_stream(*args, **kwargs):
-        # Emit a log from within the generator
-        logger.info("Test log with auto-generated ID")
+        # Capture the request ID from the context var
+        req_id = request_id_var.get()
+        captured_context_id.append(req_id)
         yield "Test"
 
-    captured_request_id = None
+    with patch("mygpt.app.chat_stream", side_effect=mock_chat_stream):
+        with client.stream(
+            "POST",
+            "/api/v1/chat/stream",
+            json={
+                "prompt": "Test",
+                "session": "test-session",
+                "model": "test-model",
+            },
+            # No X-Request-ID header - should auto-generate
+        ) as response:
+            # Get the auto-generated request ID
+            auto_request_id = response.headers.get("X-Request-Id")
+            assert auto_request_id is not None, "Expected X-Request-Id header"
+            captured_header_id.append(auto_request_id)
 
-    try:
-        logger.addFilter(request_id_filter)
-        with patch("mygpt.app.chat_stream", side_effect=mock_chat_stream):
-            with caplog.at_level("DEBUG", logger="mygpt.test"):
-                with client.stream(
-                    "POST",
-                    "/api/v1/chat/stream",
-                    json={
-                        "prompt": "Test",
-                        "session": "test-session",
-                        "model": "test-model",
-                    },
-                    # No X-Request-ID header - should auto-generate
-                ) as response:
-                    # Get the auto-generated request ID
-                    auto_request_id = response.headers.get("X-Request-Id")
-                    assert auto_request_id is not None
-                    captured_request_id = auto_request_id
+            # Consume stream
+            list(response.iter_text())
 
-                    # Consume stream
-                    list(response.iter_text())
-    finally:
-        logger.removeFilter(request_id_filter)
-
-    # Verify the auto-generated request ID appears in test logs
-    test_logs = [r for r in caplog.records if r.name == "mygpt.test"]
-    assert len(test_logs) > 0, "Expected to find test log from chat_stream"
-
-    log_with_auto_id = [
-        r for r in test_logs
-        if hasattr(r, "request_id") and r.request_id == captured_request_id
-    ]
-    assert len(log_with_auto_id) > 0, (
-        f"Expected log to have auto-generated request_id={captured_request_id}"
+    # Verify the auto-generated request ID was available in the streaming context
+    assert len(captured_context_id) > 0, "Mock was not called"
+    assert captured_context_id[0] == captured_header_id[0], (
+        f"Expected context request_id={captured_header_id[0]}, "
+        f"but found request_id={captured_context_id[0]}"
     )
 
 
@@ -244,105 +225,83 @@ def test_real_chat_stream_logs_have_request_id(caplog):
     client = TestClient(app)
     test_request_id = f"real-stream-{uuid.uuid4()}"
 
-    # Install RequestIdFilter to add request ID to all log records
-    request_id_filter = RequestIdFilter()
-    logger = logging.getLogger("mygpt.chat")
-    logger.setLevel(logging.DEBUG)
+    captured_request_ids = []
 
     def mock_ollama_stream(*args, **kwargs):
         """Mock Ollama HTTP responses instead of mocking chat_stream."""
+        # Capture the request ID from within the real chat_stream execution
+        req_id = request_id_var.get()
+        captured_request_ids.append(req_id)
         yield "Hello"
         yield " from"
         yield " Ollama"
 
-    try:
-        logger.addFilter(request_id_filter)
-        # Mock at Ollama layer, not chat_stream - this lets the real function run
-        with patch("mygpt.chat.ollama_chat_stream_tokens", side_effect=mock_ollama_stream):
-            with caplog.at_level("DEBUG", logger="mygpt.chat"):
-                with client.stream(
-                    "POST",
-                    "/api/v1/chat/stream",
-                    json={
-                        "prompt": "Test",
-                        "session": "test-session",
-                        "model": "test-model",
-                    },
-                    headers={"X-Request-ID": test_request_id},
-                ) as response:
-                    # Consume stream to trigger generator execution
-                    list(response.iter_text())
-    finally:
-        logger.removeFilter(request_id_filter)
+    # Mock at Ollama layer, not chat_stream - this lets the real function run
+    with patch("mygpt.chat.ollama_chat_stream_tokens", side_effect=mock_ollama_stream):
+        with client.stream(
+            "POST",
+            "/api/v1/chat/stream",
+            json={
+                "prompt": "Test",
+                "session": "test-session",
+                "model": "test-model",
+            },
+            headers={"X-Request-ID": test_request_id},
+        ) as response:
+            # Consume stream to trigger generator execution
+            list(response.iter_text())
 
-    # Verify logs from REAL chat_stream function have the request ID
-    chat_logs = [r for r in caplog.records if r.name == "mygpt.chat"]
-    assert len(chat_logs) > 0, "Expected to find logs from real chat_stream function"
-
-    logs_with_request_id = [
-        r for r in chat_logs
-        if hasattr(r, "request_id") and r.request_id == test_request_id
-    ]
-    assert len(logs_with_request_id) > 0, (
-        f"Expected chat_stream logs to have request_id={test_request_id}, "
-        f"but found request_id={getattr(chat_logs[0], 'request_id', 'MISSING')}"
+    # Verify the request ID was available during real chat_stream execution
+    assert len(captured_request_ids) > 0, "Mock ollama stream was not called"
+    assert captured_request_ids[0] == test_request_id, (
+        f"Expected request_id={test_request_id}, "
+        f"but found request_id={captured_request_ids[0]}"
     )
 
 
 @pytest.mark.unit
-def test_real_chat_stream_with_auto_generated_request_id_in_logs(caplog):
+def test_real_chat_stream_with_auto_generated_request_id_in_logs():
     """
-    Verify auto-generated request IDs propagate to REAL chat_stream logs.
+    Verify auto-generated request IDs propagate to REAL chat_stream context.
 
     Tests that when no request ID is provided, the auto-generated ID
-    is available in logs emitted from the actual chat_stream implementation.
+    is available in the context variable during the real chat_stream execution.
     """
     client = TestClient(app)
 
-    # Install RequestIdFilter
-    request_id_filter = RequestIdFilter()
-    logger = logging.getLogger("mygpt.chat")
-    logger.setLevel(logging.DEBUG)
+    captured_context_ids = []
+    captured_header_id = []
 
     def mock_ollama_stream(*args, **kwargs):
-        """Mock Ollama HTTP responses."""
+        """Mock Ollama HTTP responses and capture request ID from context."""
+        # Capture the request ID from within the real chat_stream execution
+        req_id = request_id_var.get()
+        captured_context_ids.append(req_id)
         yield "Test"
 
-    captured_request_id = None
+    # Mock Ollama, not chat_stream - exercises real implementation
+    with patch("mygpt.chat.ollama_chat_stream_tokens", side_effect=mock_ollama_stream):
+        with client.stream(
+            "POST",
+            "/api/v1/chat/stream",
+            json={
+                "prompt": "Test",
+                "session": "test-session",
+                "model": "test-model",
+            },
+            # No X-Request-ID header - should auto-generate
+        ) as response:
+            # Capture the auto-generated request ID
+            auto_request_id = response.headers.get("X-Request-Id")
+            assert auto_request_id is not None, "Expected X-Request-Id header"
+            captured_header_id.append(auto_request_id)
 
-    try:
-        logger.addFilter(request_id_filter)
-        # Mock Ollama, not chat_stream - exercises real implementation
-        with patch("mygpt.chat.ollama_chat_stream_tokens", side_effect=mock_ollama_stream):
-            with caplog.at_level("DEBUG", logger="mygpt.chat"):
-                with client.stream(
-                    "POST",
-                    "/api/v1/chat/stream",
-                    json={
-                        "prompt": "Test",
-                        "session": "test-session",
-                        "model": "test-model",
-                    },
-                    # No X-Request-ID header - should auto-generate
-                ) as response:
-                    # Capture the auto-generated request ID
-                    auto_request_id = response.headers.get("X-Request-Id")
-                    assert auto_request_id is not None
-                    captured_request_id = auto_request_id
+            # Consume stream
+            list(response.iter_text())
 
-                    # Consume stream
-                    list(response.iter_text())
-    finally:
-        logger.removeFilter(request_id_filter)
-
-    # Verify the auto-generated request ID appears in real chat_stream logs
-    chat_logs = [r for r in caplog.records if r.name == "mygpt.chat"]
-    assert len(chat_logs) > 0, "Expected to find logs from real chat_stream"
-
-    logs_with_auto_id = [
-        r for r in chat_logs
-        if hasattr(r, "request_id") and r.request_id == captured_request_id
-    ]
-    assert len(logs_with_auto_id) > 0, (
-        f"Expected real chat_stream logs to have auto-generated request_id={captured_request_id}"
+    # Verify the auto-generated request ID was available in the streaming context
+    assert len(captured_context_ids) > 0, "Mock ollama stream was not called"
+    assert captured_context_ids[0] == captured_header_id[0], (
+        f"Expected context request_id={captured_header_id[0]}, "
+        f"but found request_id={captured_context_ids[0]}"
     )

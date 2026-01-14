@@ -72,3 +72,128 @@ def test_api_sessions_list_and_get(api_base_url: str) -> None:
     assert isinstance(data["messages"], list)
     assert "meta" in data
     assert isinstance(data["meta"], dict)
+
+
+@pytest.mark.integration
+def test_api_search_endpoint(api_base_url: str) -> None:
+    """Test message search API endpoint."""
+    # First, create a test session with messages
+    r = httpx.post(
+        f"{api_base_url}/api/v1/sessions/init",
+        json={"name": "search-test-session", "system": "You are helpful"},
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+
+    # Search for "helpful" (should find system message)
+    r = httpx.get(
+        f"{api_base_url}/api/v1/sessions/search",
+        params={"query": "helpful"},
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+    data = r.json()
+
+    # Verify response structure
+    assert "query" in data
+    assert data["query"] == "helpful"
+    assert "total_results" in data
+    assert "results" in data
+    assert isinstance(data["results"], list)
+
+    # Should find at least one result (the system message)
+    if data["total_results"] > 0:
+        result = data["results"][0]
+        assert "session_name" in result
+        assert "message_index" in result
+        assert "role" in result
+        assert "content" in result
+        assert "content_preview" in result
+        assert "matches" in result
+
+
+@pytest.mark.integration
+def test_api_search_with_filters(api_base_url: str) -> None:
+    """Test search with role and session filters."""
+    # Create a test session
+    r = httpx.post(
+        f"{api_base_url}/api/v1/sessions/init",
+        json={"name": "filter-test-session"},
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+
+    # Search with role filter
+    r = httpx.get(
+        f"{api_base_url}/api/v1/sessions/search",
+        params={"query": "test", "role_filter": "user"},
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert "results" in data
+
+    # Search with session filter
+    r = httpx.get(
+        f"{api_base_url}/api/v1/sessions/search",
+        params={"query": "test", "session_filter": "filter-test-session"},
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert "results" in data
+
+
+@pytest.mark.integration
+def test_api_search_case_sensitive(api_base_url: str) -> None:
+    """Test case-sensitive search parameter."""
+    # Search case-insensitive (default)
+    r = httpx.get(
+        f"{api_base_url}/api/v1/sessions/search",
+        params={"query": "TEST", "case_sensitive": False},
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+    data_insensitive = r.json()
+
+    # Search case-sensitive
+    r = httpx.get(
+        f"{api_base_url}/api/v1/sessions/search",
+        params={"query": "TEST", "case_sensitive": True},
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+    data_sensitive = r.json()
+
+    # Both should be valid responses
+    assert "total_results" in data_insensitive
+    assert "total_results" in data_sensitive
+
+
+@pytest.mark.integration
+def test_api_search_limit(api_base_url: str) -> None:
+    """Test search limit parameter."""
+    r = httpx.get(
+        f"{api_base_url}/api/v1/sessions/search",
+        params={"query": "test", "limit": 5},
+        timeout=5.0,
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert "results" in data
+    # Results should not exceed limit
+    assert len(data["results"]) <= 5
+
+
+@pytest.mark.integration
+def test_api_search_empty_query_returns_empty(api_base_url: str) -> None:
+    """Test that empty query returns validation error."""
+    r = httpx.get(
+        f"{api_base_url}/api/v1/sessions/search",
+        params={"query": ""},
+        timeout=5.0,
+    )
+    # Should return 422 validation error due to min_length=1 constraint
+    assert r.status_code == 422
+    data = r.json()
+    assert "detail" in data

@@ -23,6 +23,7 @@ Your data stays on your machine. No cloud dependency is required.
 - Local LLM inference via **Ollama**
 - Persistent sessions stored outside the repository
 - **Message editing and regeneration** - Edit messages and fork conversations, regenerate responses
+- **Message search** - Full-text search across all sessions with filters for role, session, and case-sensitivity
 - **Automatic session naming** with LLM‑generated titles and smart filename sync
 - **Session management** with right-click context menus, rename, export, delete, and pin
 - Optional **RAG** using Cassandra 5.0 native vector search
@@ -133,6 +134,30 @@ mygpt models delete mistral:7b
 mygpt models show llama3.1:8b
 ```
 
+**Message Search:**
+```bash
+# Search across all sessions for message content
+mygpt sessions search "Python programming"
+
+# Case-sensitive search
+mygpt sessions search "Python" --case-sensitive
+
+# Filter by role (user, assistant, or system)
+mygpt sessions search "error" --role user
+
+# Search within a specific session
+mygpt sessions search "database" specific-session-name
+
+# Limit number of results
+mygpt sessions search "test" --limit 10
+```
+
+The search command finds messages containing the query text and displays:
+- Session name and title
+- Message index and role
+- Number of matches per message
+- Content preview with surrounding context
+
 ---
 
 ### Terminal UI (TUI)
@@ -145,6 +170,7 @@ The TUI streams responses, persists sessions, and supports RAG‑assisted chat.
 
 **Keybindings:**
 - `Ctrl+S` - Session picker (search and switch)
+- `Ctrl+F` - Search messages across sessions
 - `Ctrl+R` - Toggle RAG for current session
 - `Ctrl+M` - Manage models
 - `Ctrl+N` - Rename current session
@@ -361,6 +387,25 @@ curl -X POST http://127.0.0.1:8000/api/v1/sessions/{session_name}/messages/{inde
 - This creates a new conversation branch from that point
 - The original conversation is lost, so edit carefully
 - Set `fork: false` to edit without truncating (preserves following messages)
+
+**Message Search:**
+```bash
+# Search across all sessions
+curl -X GET "http://127.0.0.1:8000/api/v1/sessions/search?query=Python&limit=50"
+
+# Case-sensitive search
+curl -X GET "http://127.0.0.1:8000/api/v1/sessions/search?query=Python&case_sensitive=true"
+
+# Filter by role
+curl -X GET "http://127.0.0.1:8000/api/v1/sessions/search?query=error&role_filter=user"
+
+# Search within specific session
+curl -X GET "http://127.0.0.1:8000/api/v1/sessions/search?query=test&session_filter=my-session"
+```
+
+Search API response includes:
+- Query string and total result count
+- For each match: session name/title, message index, role, full content, preview snippet, match count
 
 ---
 

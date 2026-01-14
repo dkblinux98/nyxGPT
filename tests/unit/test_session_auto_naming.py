@@ -176,11 +176,20 @@ def test_sync_filename_with_title_disabled_by_config(tmp_path, monkeypatch):
     save_session_meta(mf, {"title": "Python Tips"})
 
     # Create config with auto_sync disabled
-    config_content = "[mygpt]\nauto_sync_filename = false\n"
-    config_file = tmp_path / "config.ini"
+    config_content = "[mygpt]\nauto_sync_filename = no\n"
+    config_dir = tmp_path / ".myGPT"
+    config_dir.mkdir()
+    config_file = config_dir / "config.ini"
     config_file.write_text(config_content)
 
-    monkeypatch.setenv("HOME", str(tmp_path))
+    # Monkeypatch DEFAULT_CONFIG_PATH to use temp directory
+    import mygpt.config
+    monkeypatch.setattr(mygpt.config, "DEFAULT_CONFIG_PATH", config_file)
+
+    # Clear config cache to force reload
+    mygpt.config._CACHED_CFG = None
+    mygpt.config._CACHED_PATH = None
+    mygpt.config._CACHED_MTIME_NS = None
 
     # Should not rename (disabled)
     success, message, new_name = sync_filename_with_title(session_name, sessions_dir, force=False)
@@ -204,11 +213,20 @@ def test_sync_filename_with_title_force_override_config(tmp_path, monkeypatch):
     save_session_meta(mf, {"title": "Python Tips"})
 
     # Create config with auto_sync disabled
-    config_content = "[mygpt]\nauto_sync_filename = false\n"
-    config_file = tmp_path / "config.ini"
+    config_content = "[mygpt]\nauto_sync_filename = no\n"
+    config_dir = tmp_path / ".myGPT"
+    config_dir.mkdir()
+    config_file = config_dir / "config.ini"
     config_file.write_text(config_content)
 
-    monkeypatch.setenv("HOME", str(tmp_path))
+    # Monkeypatch DEFAULT_CONFIG_PATH to use temp directory
+    import mygpt.config
+    monkeypatch.setattr(mygpt.config, "DEFAULT_CONFIG_PATH", config_file)
+
+    # Clear config cache to force reload
+    mygpt.config._CACHED_CFG = None
+    mygpt.config._CACHED_PATH = None
+    mygpt.config._CACHED_MTIME_NS = None
 
     # Should rename anyway (force=True)
     success, message, new_name = sync_filename_with_title(session_name, sessions_dir, force=True)

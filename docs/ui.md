@@ -196,6 +196,19 @@ The web UI includes a toast notification system for user feedback:
 
 Toasts appear in the bottom-right corner, auto-dismiss after 5 seconds (configurable), and can be manually dismissed by clicking the × button. Multiple toasts stack vertically.
 
+#### Message Search
+
+Search across all chat sessions with Ctrl+F (Cmd+F on Mac):
+
+- **Full-text search** — Search message content across all sessions
+- **Filters** — Filter by message role (user/assistant/system)
+- **Case-sensitive** — Toggle case-sensitive matching
+- **Jump to context** — Click results to navigate to exact message in session
+- **Match highlighting** — Visual highlighting of search terms in results
+- **Historical messages** — Automatically loads and displays past conversations
+
+The search interface appears as a modal overlay. Press Escape to close. Selecting a result switches to that session and scrolls to the matching message with a temporary highlight.
+
 #### Configuration Wizard
 
 Access the wizard at `http://127.0.0.1:3000/admin` to configure:

@@ -169,7 +169,18 @@ def cmd_chat(
             continue
 
 
-def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: list[str], sessions_dir: Path | None, format: str = "markdown", output: Path | None = None) -> int:
+def cmd_sessions(
+    action: str,
+    name: str | None,
+    new_name: str | None,
+    extras: list[str],
+    sessions_dir: Path | None,
+    format: str = "markdown",
+    output: Path | None = None,
+    case_sensitive: bool = False,
+    role: str | None = None,
+    limit: int = 50,
+) -> int:
     cfg = load_config(None)
     effective_dir = sessions_dir or get_sessions_dir(cfg)
 
@@ -322,6 +333,67 @@ def cmd_sessions(action: str, name: str | None, new_name: str | None, extras: li
                 return 1
         else:
             print(content)
+
+        return 0
+
+    if action == "search":
+        # For search, 'name' is the search query
+        if not name:
+            print("ERROR: search query is required", file=sys.stderr)
+            return 2
+
+        search_query = name
+        session_filter = new_name  # Optional: search within specific session
+
+        results = sessions.search_messages(
+            query=search_query,
+            sessions_dir=effective_dir,
+            case_sensitive=case_sensitive,
+            role_filter=role,
+            session_filter=session_filter,
+            limit=limit,
+        )
+
+        if not results:
+            print(f"No results found for '{search_query}'")
+            return 0
+
+        print(f"Found {len(results)} result(s) for '{search_query}':\n")
+
+        # Paginate results (10 per page)
+        PAGE_SIZE = 10
+        total_results = len(results)
+
+        for page_start in range(0, total_results, PAGE_SIZE):
+            page_end = min(page_start + PAGE_SIZE, total_results)
+
+            # Display results for this page
+            for i in range(page_start, page_end):
+                result = results[i]
+                session_name = result["session_name"]
+                session_title = result.get("session_title")
+                msg_idx = result["message_index"]
+                role_str = result["role"]
+                preview = result["content_preview"]
+                matches = result["matches"]
+
+                # Display session info
+                session_display = session_title if session_title else session_name
+                print(f"{i + 1}. [{session_display}] Message #{msg_idx} ({role_str}) - {matches} match(es)")
+                print(f"   {preview}")
+                print()
+
+            # Show pagination prompt if there are more results
+            if page_end < total_results:
+                remaining = total_results - page_end
+                try:
+                    response = input(f"Showing {page_end}/{total_results} results. Press Enter for more ({remaining} remaining), or 'q' to quit: ")
+                    if response.lower().strip() == 'q':
+                        print(f"Stopped. {remaining} result(s) not shown.")
+                        break
+                except (KeyboardInterrupt, EOFError):
+                    print("\nStopped.")
+                    break
 
         return 0
 
@@ -550,6 +622,7 @@ def cli(argv: list[str] | None = None) -> int:
             "title",
             "summarize",
             "export",
+            "search",
         ],
     )
     sessions_p.add_argument("name", nargs="?", help="Session name")
@@ -558,6 +631,9 @@ def cli(argv: list[str] | None = None) -> int:
     sessions_p.add_argument("--sessions-dir", type=Path, help="Override sessions directory")
     sessions_p.add_argument("--format", choices=["markdown", "json", "html"], default="markdown", help="Export format (default: markdown)")
     sessions_p.add_argument("--output", type=Path, help="Output file (default: stdout)")
+    sessions_p.add_argument("--case-sensitive", action="store_true", help="Case-sensitive search (search only)")
+    sessions_p.add_argument("--role", choices=["user", "assistant", "system"], help="Filter by message role (search only)")
+    sessions_p.add_argument("--limit", type=int, default=20, help="Maximum number of search results (default: 20, search only)")
 
     tools_p = sub.add_parser("tools", help="Explicit local filesystem tools")
     tools_p.add_argument("action", choices=["ls", "cat", "grep"], help="Tool to run")
@@ -672,6 +748,9 @@ def cli(argv: list[str] | None = None) -> int:
             sessions_dir=args.sessions_dir,
             format=args.format,
             output=args.output,
+            case_sensitive=getattr(args, "case_sensitive", False),
+            role=getattr(args, "role", None),
+            limit=getattr(args, "limit", 50),
         )
 
     if cmd == "tools":
