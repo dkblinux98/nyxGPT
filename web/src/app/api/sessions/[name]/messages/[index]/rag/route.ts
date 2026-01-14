@@ -8,7 +8,7 @@ export async function GET(
   const messageIndex = decodeURIComponent(index);
 
   const res = await fetch(
-    `${base}/api/sessions/${encodeURIComponent(sessionName)}/messages/${messageIndex}/rag`,
+    `${base}/api/v1/sessions/${encodeURIComponent(sessionName)}/messages/${messageIndex}/rag`,
     {
       cache: "no-store",
     }

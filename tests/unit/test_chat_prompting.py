@@ -214,3 +214,44 @@ def test_chat_stream_emits_rag_metadata(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
     # Subsequent chunks should be the actual response
     assert chunks[1] == "answer"
+
+
+def test_chat_with_rag_enabled_but_no_chunks_found(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """When RAG is enabled but no chunks are found, rag_chunks should be empty array (not absent)."""
+    cfg = _cfg(tmp_path, rag_enabled=True)
+
+    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+
+    # Mock RAG retrieval returning empty list
+    monkeypatch.setattr("mygpt.chat.retrieve_context", lambda *a, **k: [])
+
+    # Mock ollama response
+    monkeypatch.setattr("mygpt.chat.ollama_chat", lambda **_: "answer without RAG context")
+
+    # Track what gets saved
+    saved = {}
+
+    def fake_save_session(state, *_a, **_k):
+        saved["messages"] = list(state.messages)
+
+    monkeypatch.setattr("mygpt.chat.save_session", fake_save_session)
+
+    # Run chat with RAG enabled but no results
+    result = chat("question", config_path=None)
+
+    # Verify response
+    assert result.reply == "answer without RAG context"
+    assert result.rag_used is True  # RAG was enabled and attempted
+    assert result.rag_chunks == 0  # But found no chunks
+
+    # Verify the saved message has rag_chunks field (even though empty)
+    last_msg = saved["messages"][-1]
+    assert last_msg["role"] == "assistant"
+    assert "rag_chunks" in last_msg, "rag_chunks field should exist when RAG is enabled"
+    assert last_msg["rag_chunks"] == [], "rag_chunks should be empty array when no chunks found"
+
+    # This distinguishes "RAG was enabled but found nothing" from "RAG was disabled"
+    # - Message WITHOUT rag_chunks field = RAG was disabled
+    # - Message WITH rag_chunks: [] = RAG was enabled but found nothing
+    # - Message WITH rag_chunks: [...] = RAG was enabled and found chunks
