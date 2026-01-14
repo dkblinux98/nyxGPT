@@ -713,6 +713,62 @@ def sessions_list(sessions_dir: Optional[str] = None) -> SessionsListResponse:
     return SessionsListResponse(sessions=out)
 
 
+@api.get("/sessions/search", response_model=api_models.SearchResponse)
+def sessions_search(
+    query: str,
+    case_sensitive: bool = False,
+    role_filter: Optional[str] = None,
+    session_filter: Optional[str] = None,
+    limit: int = 50,
+    sessions_dir: Optional[str] = None,
+) -> api_models.SearchResponse:
+    """Search for messages across all sessions or within a specific session.
+
+    Args:
+        query: Text to search for in message content
+        case_sensitive: Whether to perform case-sensitive search
+        role_filter: Filter by message role (user, assistant, system)
+        session_filter: Filter to specific session name
+        limit: Maximum number of results to return (1-500)
+        sessions_dir: Optional sessions directory override
+
+    Returns:
+        SearchResponse containing matching messages with context
+    """
+    cfg = _cfg(None)
+    effective_dir = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(cfg)
+
+    # Perform search
+    results = sessions.search_messages(
+        query=query,
+        sessions_dir=effective_dir,
+        case_sensitive=case_sensitive,
+        role_filter=role_filter,
+        session_filter=session_filter,
+        limit=limit,
+    )
+
+    # Convert to API models
+    result_items = [
+        api_models.SearchResultItem(
+            session_name=r["session_name"],
+            session_title=r.get("session_title"),
+            message_index=r["message_index"],
+            role=r["role"],
+            content=r["content"],
+            content_preview=r["content_preview"],
+            timestamp=r.get("timestamp"),
+            matches=r["matches"],
+        )
+        for r in results
+    ]
+
+    return api_models.SearchResponse(
+        query=query,
+        total_results=len(result_items),
+        results=result_items,
+    )
+
 
 @api.get("/sessions/{name}")
 def sessions_show(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:

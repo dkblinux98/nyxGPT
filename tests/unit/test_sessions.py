@@ -762,3 +762,245 @@ def test_metadata_file_deleted_between_checks(tmp_path: Path, monkeypatch: pytes
     new_mf = sessions.meta_file_for(new_sf)
     # The operation should have handled the missing file gracefully
     # (not crashed or left files in inconsistent state)
+
+
+# --- Message Search Tests ---
+
+
+@pytest.mark.unit
+def test_search_messages_finds_exact_match(tmp_path: Path) -> None:
+    """Test that search_messages finds exact string matches in message content."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create a test session with known content
+    sf = sessions.session_file_for("test-search", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    messages = [
+        {"role": "user", "content": "Hello, how are you?"},
+        {"role": "assistant", "content": "I'm doing well, thanks for asking!"},
+        {"role": "user", "content": "What is Python programming?"},
+        {"role": "assistant", "content": "Python is a high-level programming language."},
+    ]
+
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, {"title": "Test Session", "created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+
+    # Search for "Python"
+    results = sessions.search_messages("Python", sessions_dir)
+
+    assert len(results) == 2  # Found in 2 messages
+    assert results[0]["session_name"] == "test-search"
+    assert results[0]["message_index"] == 2
+    assert "Python" in results[0]["content"]
+    assert results[1]["message_index"] == 3
+
+
+@pytest.mark.unit
+def test_search_messages_case_insensitive_by_default(tmp_path: Path) -> None:
+    """Test that search is case-insensitive by default."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("case-test", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    messages = [
+        {"role": "user", "content": "HELLO World"},
+        {"role": "assistant", "content": "hello world"},
+    ]
+
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+
+    # Search with lowercase should find both
+    results = sessions.search_messages("hello", sessions_dir, case_sensitive=False)
+    assert len(results) == 2
+
+
+@pytest.mark.unit
+def test_search_messages_case_sensitive(tmp_path: Path) -> None:
+    """Test case-sensitive search mode."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("case-sensitive-test", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    messages = [
+        {"role": "user", "content": "HELLO World"},
+        {"role": "assistant", "content": "hello world"},
+    ]
+
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+
+    # Case-sensitive search for "hello" should only find lowercase
+    results = sessions.search_messages("hello", sessions_dir, case_sensitive=True)
+    assert len(results) == 1
+    assert results[0]["message_index"] == 1
+
+
+@pytest.mark.unit
+def test_search_messages_filters_by_role(tmp_path: Path) -> None:
+    """Test filtering search results by message role."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("role-filter-test", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    messages = [
+        {"role": "user", "content": "Tell me about cats"},
+        {"role": "assistant", "content": "Cats are amazing animals"},
+        {"role": "user", "content": "What about dogs?"},
+        {"role": "assistant", "content": "Dogs are also great"},
+    ]
+
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+
+    # Search for "about" with role filter
+    user_results = sessions.search_messages("about", sessions_dir, role_filter="user")
+    assistant_results = sessions.search_messages("about", sessions_dir, role_filter="assistant")
+
+    assert len(user_results) == 2  # Both user messages contain "about"
+    assert len(assistant_results) == 0  # No assistant messages contain "about"
+
+
+@pytest.mark.unit
+def test_search_messages_filters_by_session(tmp_path: Path) -> None:
+    """Test filtering search to a specific session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create two sessions
+    sf1 = sessions.session_file_for("session-1", sessions_dir)
+    mf1 = sessions.meta_file_for(sf1)
+    messages1 = [{"role": "user", "content": "Python is great"}]
+    sessions.save_session_messages(sf1, messages1)
+    sessions.save_session_meta(mf1, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+
+    sf2 = sessions.session_file_for("session-2", sessions_dir)
+    mf2 = sessions.meta_file_for(sf2)
+    messages2 = [{"role": "user", "content": "Python is awesome"}]
+    sessions.save_session_messages(sf2, messages2)
+    sessions.save_session_meta(mf2, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+
+    # Search across all sessions
+    all_results = sessions.search_messages("Python", sessions_dir)
+    assert len(all_results) == 2
+
+    # Search only in session-1
+    filtered_results = sessions.search_messages("Python", sessions_dir, session_filter="session-1")
+    assert len(filtered_results) == 1
+    assert filtered_results[0]["session_name"] == "session-1"
+
+
+@pytest.mark.unit
+def test_search_messages_respects_limit(tmp_path: Path) -> None:
+    """Test that search respects the limit parameter."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("limit-test", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    # Create 10 messages all containing "test"
+    messages = [{"role": "user", "content": f"test message {i}"} for i in range(10)]
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+
+    # Search with limit=5
+    results = sessions.search_messages("test", sessions_dir, limit=5)
+    assert len(results) == 5
+
+
+@pytest.mark.unit
+def test_search_messages_generates_preview(tmp_path: Path) -> None:
+    """Test that search generates content preview with context."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("preview-test", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    long_content = "A" * 150 + "SEARCHTERM" + "B" * 150
+    messages = [{"role": "user", "content": long_content}]
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+
+    results = sessions.search_messages("SEARCHTERM", sessions_dir)
+    assert len(results) == 1
+
+    preview = results[0]["content_preview"]
+    # Preview should contain the search term
+    assert "SEARCHTERM" in preview
+    # Preview should be truncated (not full content)
+    assert len(preview) < len(long_content)
+    # Preview should have ellipsis indicating truncation
+    assert "..." in preview
+
+
+@pytest.mark.unit
+def test_search_messages_empty_query(tmp_path: Path) -> None:
+    """Test that empty query returns no results."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    results = sessions.search_messages("", sessions_dir)
+    assert len(results) == 0
+
+
+@pytest.mark.unit
+def test_search_messages_no_matches(tmp_path: Path) -> None:
+    """Test that search returns empty list when no matches found."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("no-match-test", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    messages = [{"role": "user", "content": "Hello world"}]
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+
+    results = sessions.search_messages("nonexistent", sessions_dir)
+    assert len(results) == 0
+
+
+@pytest.mark.unit
+def test_search_messages_includes_session_title(tmp_path: Path) -> None:
+    """Test that search results include session title when available."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("titled-session", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    messages = [{"role": "user", "content": "Test message"}]
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, {"title": "My Titled Session", "created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+
+    results = sessions.search_messages("Test", sessions_dir)
+    assert len(results) == 1
+    assert results[0]["session_title"] == "My Titled Session"
+
+
+@pytest.mark.unit
+def test_search_messages_counts_matches(tmp_path: Path) -> None:
+    """Test that search correctly counts multiple matches in same message."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("match-count-test", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    messages = [{"role": "user", "content": "Python Python Python"}]
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+
+    results = sessions.search_messages("Python", sessions_dir)
+    assert len(results) == 1
+    assert results[0]["matches"] == 3

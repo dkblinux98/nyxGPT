@@ -1136,6 +1136,144 @@ def truncate_after_message(
     return True, "Conversation truncated"
 
 
+def search_messages(
+    query: str,
+    sessions_dir: Path | None = None,
+    *,
+    case_sensitive: bool = False,
+    role_filter: str | None = None,
+    session_filter: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Search for messages across all sessions or within a specific session.
+
+    Args:
+        query: Text to search for in message content
+        sessions_dir: Optional sessions directory override
+        case_sensitive: Whether to perform case-sensitive search (default: False)
+        role_filter: Filter by message role ("user", "assistant", "system")
+        session_filter: Filter to specific session name (None for all sessions)
+        limit: Maximum number of results to return
+
+    Returns:
+        List of matching results with structure:
+        [
+            {
+                "session_name": str,
+                "session_title": str | None,
+                "message_index": int,
+                "role": str,
+                "content": str,
+                "content_preview": str,  # Snippet with match context
+                "timestamp": str | None,
+                "matches": int  # Number of times query appears in this message
+            }
+        ]
+    """
+    sessions_dir = sessions_dir or default_sessions_dir()
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    if not query:
+        return []
+
+    # Prepare search query
+    search_query = query if case_sensitive else query.lower()
+
+    results: list[dict[str, Any]] = []
+    session_files = [p for p in sessions_dir.glob("*.json") if not p.name.endswith(".meta.json")]
+
+    # Filter to specific session if requested
+    if session_filter:
+        session_files = [sf for sf in session_files if sf.stem == session_filter]
+
+    for session_file in session_files:
+        session_name = session_file.stem
+
+        try:
+            # Load session messages and metadata
+            messages = load_session_messages(session_file)
+            meta = load_session_meta(meta_file_for(session_file))
+            session_title = meta.get("title")
+
+            # Search through messages
+            for idx, msg in enumerate(messages):
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                timestamp = msg.get("timestamp")
+
+                # Apply role filter
+                if role_filter and role != role_filter:
+                    continue
+
+                # Perform search
+                search_content = content if case_sensitive else content.lower()
+                if search_query not in search_content:
+                    continue
+
+                # Count matches
+                match_count = search_content.count(search_query)
+
+                # Generate content preview with match context
+                preview = _generate_preview(content, query, case_sensitive)
+
+                results.append({
+                    "session_name": session_name,
+                    "session_title": session_title,
+                    "message_index": idx,
+                    "role": role,
+                    "content": content,
+                    "content_preview": preview,
+                    "timestamp": timestamp,
+                    "matches": match_count,
+                })
+
+                # Check limit
+                if len(results) >= limit:
+                    return results
+
+        except Exception as e:
+            log.warning(f"Error searching session {session_name}: {e}")
+            continue
+
+    return results
+
+
+def _generate_preview(content: str, query: str, case_sensitive: bool, context_chars: int = 100) -> str:
+    """Generate a content preview showing the match in context.
+
+    Args:
+        content: Full message content
+        query: Search query
+        case_sensitive: Whether search was case-sensitive
+        context_chars: Number of characters to show before/after match
+
+    Returns:
+        Preview string with "..." if truncated, highlighting match context
+    """
+    # Find first match
+    search_content = content if case_sensitive else content.lower()
+    search_query = query if case_sensitive else query.lower()
+
+    match_pos = search_content.find(search_query)
+    if match_pos == -1:
+        # Fallback if no match found (shouldn't happen)
+        return content[:200] + ("..." if len(content) > 200 else "")
+
+    # Calculate preview window
+    start = max(0, match_pos - context_chars)
+    end = min(len(content), match_pos + len(query) + context_chars)
+
+    preview = content[start:end]
+
+    # Add ellipsis if truncated
+    if start > 0:
+        preview = "..." + preview
+    if end < len(content):
+        preview = preview + "..."
+
+    return preview
+
+
 __all__ = [
     "default_sessions_dir",
     "session_file_for",
@@ -1169,4 +1307,5 @@ __all__ = [
     "sync_filename_with_title",
     "edit_message",
     "truncate_after_message",
+    "search_messages",
 ]

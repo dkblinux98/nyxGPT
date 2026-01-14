@@ -149,3 +149,36 @@ class RagQueryResult(BaseModel):
 
 class RagQueryResponse(BaseModel):
     results: list[RagQueryResult]
+
+
+# ----------------------------
+# Search API models
+# ----------------------------
+
+
+class SearchRequest(BaseModel):
+    """Request model for message search."""
+    query: str = Field(..., min_length=1, description="Text to search for in messages")
+    case_sensitive: bool = Field(False, description="Whether to perform case-sensitive search")
+    role_filter: str | None = Field(None, description="Filter by message role (user, assistant, system)")
+    session_filter: str | None = Field(None, description="Filter to specific session name")
+    limit: int = Field(50, ge=1, le=500, description="Maximum number of results to return")
+
+
+class SearchResultItem(BaseModel):
+    """Single search result item."""
+    session_name: str = Field(..., description="Name of the session containing the match")
+    session_title: str | None = Field(None, description="Title of the session if available")
+    message_index: int = Field(..., description="Index of the message in the session (0-based)")
+    role: str = Field(..., description="Role of the message author (user, assistant, system)")
+    content: str = Field(..., description="Full content of the matching message")
+    content_preview: str = Field(..., description="Preview snippet showing match in context")
+    timestamp: str | None = Field(None, description="Timestamp of the message if available")
+    matches: int = Field(..., description="Number of times the query appears in this message")
+
+
+class SearchResponse(BaseModel):
+    """Response model for message search."""
+    query: str = Field(..., description="The search query that was executed")
+    total_results: int = Field(..., description="Total number of results found")
+    results: list[SearchResultItem] = Field(..., description="List of matching messages")
