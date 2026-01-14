@@ -102,32 +102,34 @@ export const VirtualizedSessionList = memo(function VirtualizedSessionList({
   pendingSessions,
   highlightText,
 }: VirtualizedSessionListProps) {
+  // Stable callbacks to prevent renderItem from being recreated on every render
+  const handleSelect = useCallback((sessionName: string) => {
+    onSelectSession(sessionName);
+  }, [onSelectSession]);
+
+  const handleContextMenuClick = useCallback((e: React.MouseEvent, sessionName: string) => {
+    onContextMenu(e, sessionName);
+  }, [onContextMenu]);
+
   // Row renderer for virtualized list
+  // Now uses stable callbacks, only recreated when sessions/selectedSession/pendingSessions change
   const renderItem = useCallback((index: number) => {
     const session = sessions[index];
     const isActive = session.name === selectedSession;
     const isPending = pendingSessions.has(session.name);
 
-    const handleSelect = () => {
-      onSelectSession(session.name);
-    };
-
-    const handleContextMenu = (e: React.MouseEvent) => {
-      onContextMenu(e, session.name);
-    };
-
     return (
       <SessionItem
         session={session}
         isActive={isActive}
-        onSelect={handleSelect}
-        onContextMenu={handleContextMenu}
+        onSelect={() => handleSelect(session.name)}
+        onContextMenu={(e) => handleContextMenuClick(e, session.name)}
         searchText={searchText}
         isPending={isPending}
         highlightText={highlightText}
       />
     );
-  }, [sessions, selectedSession, onSelectSession, onContextMenu, searchText, pendingSessions, highlightText]);
+  }, [sessions, selectedSession, handleSelect, handleContextMenuClick, searchText, pendingSessions, highlightText]);
 
   if (sessions.length === 0) {
     return (
@@ -139,10 +141,13 @@ export const VirtualizedSessionList = memo(function VirtualizedSessionList({
 
   return (
     <Virtuoso
-      style={{ height: '600px' }}
+      style={{ flex: 1, minHeight: 0 }}
       totalCount={sessions.length}
       itemContent={renderItem}
-      overscan={3}
+      overscan={5}
+      aria-label="Session list"
+      role="list"
+      data-total-sessions={sessions.length}
     />
   );
 });

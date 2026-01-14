@@ -750,8 +750,10 @@ export default function Home() {
             width: 320,
             borderRight: '1px solid var(--border)',
             padding: '1rem',
-            overflowY: 'auto',
             background: 'var(--sidebar-bg)',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
           }}
         >
         <h1 style={{ margin: 0 }}>myGPT</h1>
@@ -1008,55 +1010,64 @@ export default function Home() {
           )}
         </div>
 
-        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
-          Selected: <strong>{selectedSession}</strong>
-          {filteredSessions.length !== sessions.length && (
-            <span style={{ marginLeft: 8 }}>
-              ({filteredSessions.length} of {sessions.length})
-            </span>
+        {/* Session list container - uses flex to fill remaining space */}
+        <div style={{
+          flex: 1,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden'
+        }}>
+          <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10, flexShrink: 0 }}>
+            Selected: <strong>{selectedSession}</strong>
+            {filteredSessions.length !== sessions.length && (
+              <span style={{ marginLeft: 8 }}>
+                ({filteredSessions.length} of {sessions.length})
+              </span>
+            )}
+          </div>
+
+          {sessionsError && (
+            <div style={{ marginBottom: 10, flexShrink: 0 }}>
+              <ErrorMessage
+                title="Failed to load sessions"
+                message={sessionsError}
+                onRetry={() => void fetchSessions(true)}
+                retrying={retryingSessions}
+              />
+            </div>
+          )}
+
+          {loadingSessions && !sessionsError && (
+            <SessionListSkeleton />
+          )}
+
+          {!loadingSessions && !sessionsError && (
+            <>
+              {filteredSessions.length === 0 && sessions.length > 0 && (
+                <div style={{ fontSize: 12, opacity: 0.75 }}>
+                  No sessions match your filters.
+                </div>
+              )}
+              {filteredSessions.length > 0 && (
+                <VirtualizedSessionList
+                  sessions={filteredSessions}
+                  selectedSession={selectedSession}
+                  onSelectSession={setSelectedSession}
+                  onContextMenu={handleContextMenu}
+                  searchText={searchText}
+                  pendingSessions={pendingSessions}
+                  highlightText={highlightText}
+                />
+              )}
+              {sessions.length === 0 && !sessionsError && !loadingSessions && (
+                <div style={{ fontSize: 12, opacity: 0.75 }}>
+                  No sessions found yet.
+                </div>
+              )}
+            </>
           )}
         </div>
-
-        {sessionsError && (
-          <div style={{ marginBottom: 10 }}>
-            <ErrorMessage
-              title="Failed to load sessions"
-              message={sessionsError}
-              onRetry={() => void fetchSessions(true)}
-              retrying={retryingSessions}
-            />
-          </div>
-        )}
-
-        {loadingSessions && !sessionsError && (
-          <SessionListSkeleton />
-        )}
-
-        {!loadingSessions && !sessionsError && (
-          <>
-            {filteredSessions.length === 0 && sessions.length > 0 && (
-              <div style={{ fontSize: 12, opacity: 0.75 }}>
-                No sessions match your filters.
-              </div>
-            )}
-            {filteredSessions.length > 0 && (
-              <VirtualizedSessionList
-                sessions={filteredSessions}
-                selectedSession={selectedSession}
-                onSelectSession={setSelectedSession}
-                onContextMenu={handleContextMenu}
-                searchText={searchText}
-                pendingSessions={pendingSessions}
-                highlightText={highlightText}
-              />
-            )}
-            {sessions.length === 0 && !sessionsError && !loadingSessions && (
-              <div style={{ fontSize: 12, opacity: 0.75 }}>
-                No sessions found yet.
-              </div>
-            )}
-          </>
-        )}
 
         {/* Context Menu */}
         {contextMenu && (
