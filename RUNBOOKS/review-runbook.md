@@ -126,3 +126,39 @@ When human posts `@approve-merge`:
 ## 9) Phase completion
 When the human owner moves the last issue in the active Phase to "For Release" (human stakeholder acceptance):
 - Notify human owner that phase is complete and ready for release
+
+## 10) Configuration
+
+### REVIEW_AUTO_FIX_ENABLED
+Controls whether the automated fix loop is active.
+
+**Location:** GitHub Repository Settings
+- Navigate to: Settings → Secrets and variables → Actions → Variables
+- Variable name: `REVIEW_AUTO_FIX_ENABLED`
+- Valid values: `true` (enabled) or `false` (disabled)
+- Default: `false`
+
+**When to enable:**
+- After confirming the review workflow is stable
+- When you want to reduce manual intervention in the review-fix cycle
+- For repos with high PR velocity and responsive test suites
+
+**When to disable:**
+- During initial setup and testing
+- If auto-fix loops are not converging (too many escalations)
+- When manual review and sub-issue tracking is preferred
+
+**How to change:**
+```bash
+# Enable auto-fix loop
+gh variable set REVIEW_AUTO_FIX_ENABLED --body "true" --repo OWNER/REPO
+
+# Disable auto-fix loop (revert to manual workflow)
+gh variable set REVIEW_AUTO_FIX_ENABLED --body "false" --repo OWNER/REPO
+
+# Check current value
+gh variable list --repo OWNER/REPO | grep REVIEW_AUTO_FIX
+```
+
+### Branch Cleanup
+**Note on branch deletion:** The auto-fix workflow does NOT delete branches. Branch deletion happens in `review_accept_and_merge.sh` via the `--delete-branch` flag when the PR is merged. If auto-fix escalates to human or fails, branches remain until the PR is manually closed or merged.
