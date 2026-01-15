@@ -158,6 +158,21 @@ The search command finds messages containing the query text and displays:
 - Number of matches per message
 - Content preview with surrounding context
 
+**Session Statistics:**
+```bash
+# View detailed statistics for a session
+mygpt sessions stats my-session-name
+```
+
+The stats command displays comprehensive session information:
+- Message counts (total, by role: user/assistant/system)
+- Token estimates (approximate token usage)
+- Session age (time since creation)
+- Last activity (time since last update)
+- RAG status (enabled/disabled)
+- Model used
+- Additional metadata (title, summary, tags, pinned status)
+
 ---
 
 ### Terminal UI (TUI)

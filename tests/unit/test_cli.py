@@ -229,3 +229,159 @@ def test_sessions_export_file_write_error(tmp_path: Path, capsys: pytest.Capture
 
     # Cleanup
     readonly_dir.chmod(0o755)
+
+
+def test_sessions_stats_displays_message_counts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test stats command displays message counts."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("test-stats", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there!"},
+        {"role": "user", "content": "How are you?"},
+        {"role": "assistant", "content": "I'm good!"},
+    ]
+    metadata = {
+        "title": "Stats Test Session",
+        "summary": "A test session for statistics",
+        "created_at": "2024-01-01T12:00:00",
+        "updated_at": "2024-01-01T13:00:00",
+        "model": "llama3.1:8b",
+        "rag_enabled": True,
+        "pinned": True,
+        "tags": ["test", "stats"],
+        "token_estimate": 100,
+    }
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    exit_code = cli(["sessions", "stats", "test-stats", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+
+    captured = capsys.readouterr()
+    # Check header
+    assert "Session Statistics: test-stats" in captured.out
+
+    # Check title and summary
+    assert "Title: Stats Test Session" in captured.out
+    assert "Summary: A test session for statistics" in captured.out
+
+    # Check message counts
+    assert "Message Counts:" in captured.out
+    assert "Total messages: 5" in captured.out
+    assert "User messages: 2" in captured.out
+    assert "Assistant messages: 2" in captured.out
+    assert "System messages: 1" in captured.out
+
+    # Check token estimate
+    assert "Token Estimate:" in captured.out
+    assert "Approximate tokens: 100" in captured.out
+
+    # Check timestamps
+    assert "Session Age & Activity:" in captured.out
+    assert "Created: 2024-01-01T12:00:00" in captured.out
+    assert "Last updated: 2024-01-01T13:00:00" in captured.out
+
+    # Check configuration
+    assert "Configuration:" in captured.out
+    assert "Model: llama3.1:8b" in captured.out
+    assert "RAG: Enabled" in captured.out
+    assert "Pinned: Yes" in captured.out
+    assert "Tags: test, stats" in captured.out
+
+
+def test_sessions_stats_handles_minimal_metadata(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test stats command with minimal metadata."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("minimal-stats", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [
+        {"role": "user", "content": "Test"},
+    ]
+    # Minimal metadata
+    metadata = {
+        "created_at": "2024-01-01T12:00:00",
+        "updated_at": "2024-01-01T12:00:00",
+    }
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    exit_code = cli(["sessions", "stats", "minimal-stats", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+
+    captured = capsys.readouterr()
+    # Should display even with minimal metadata
+    assert "Session Statistics: minimal-stats" in captured.out
+    assert "Total messages: 1" in captured.out
+    assert "User messages: 1" in captured.out
+    assert "Model: Unknown" in captured.out
+    assert "RAG: Disabled" in captured.out
+    assert "Pinned: No" in captured.out
+
+
+def test_sessions_stats_nonexistent_session(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test stats fails gracefully for nonexistent session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    exit_code = cli(["sessions", "stats", "nonexistent", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 1
+
+    captured = capsys.readouterr()
+    assert "No such session: nonexistent" in captured.err
+
+
+def test_sessions_stats_missing_name(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test stats fails when session name is not provided."""
+    exit_code = cli(["sessions", "stats"])
+
+    assert exit_code == 2
+
+    captured = capsys.readouterr()
+    assert "session name is required" in captured.err
+
+
+def test_sessions_stats_calculates_token_estimate(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test stats calculates token estimate if not in metadata."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("token-test", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [
+        {"role": "user", "content": "This is a test message with some content"},
+        {"role": "assistant", "content": "This is another message with more content"},
+    ]
+    # No token_estimate in metadata
+    metadata = {
+        "created_at": "2024-01-01T12:00:00",
+        "updated_at": "2024-01-01T12:00:00",
+    }
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    exit_code = cli(["sessions", "stats", "token-test", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+
+    captured = capsys.readouterr()
+    # Should calculate and display token estimate
+    assert "Token Estimate:" in captured.out
+    assert "Approximate tokens:" in captured.out
+    # Token count should be greater than 0
+    assert not "Approximate tokens: 0" in captured.out
