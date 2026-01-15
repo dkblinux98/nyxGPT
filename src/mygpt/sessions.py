@@ -1479,6 +1479,192 @@ def merge_sessions(
     return True, f"Merged {session_count} session{'s' if session_count != 1 else ''} into '{output_name}' ({message_count} message{'s' if message_count != 1 else ''})"
 
 
+# --- Batch operations ---
+
+def batch_delete_sessions(
+    session_names: list[str],
+    sessions_dir: Path | None = None,
+) -> tuple[int, int, list[str]]:
+    """Delete multiple sessions at once.
+
+    Args:
+        session_names: List of session names to delete
+        sessions_dir: Optional sessions directory override
+
+    Returns:
+        Tuple of (success_count, failure_count, failed_names)
+        - success_count: Number of sessions successfully deleted
+        - failure_count: Number of sessions that failed to delete
+        - failed_names: List of session names that failed to delete
+    """
+    sessions_dir = sessions_dir or default_sessions_dir()
+    success_count = 0
+    failed_names: list[str] = []
+
+    for name in session_names:
+        if delete_session(name, sessions_dir):
+            success_count += 1
+        else:
+            failed_names.append(name)
+
+    failure_count = len(failed_names)
+    return success_count, failure_count, failed_names
+
+
+def batch_tag_sessions(
+    session_names: list[str],
+    tags: list[str],
+    sessions_dir: Path | None = None,
+    *,
+    remove: bool = False,
+) -> tuple[int, int, list[str]]:
+    """Add or remove tags from multiple sessions at once.
+
+    Args:
+        session_names: List of session names to update
+        tags: List of tags to add or remove
+        sessions_dir: Optional sessions directory override
+        remove: If True, remove tags; if False, add tags (default: False)
+
+    Returns:
+        Tuple of (success_count, failure_count, failed_names)
+        - success_count: Number of sessions successfully updated
+        - failure_count: Number of sessions that failed to update
+        - failed_names: List of session names that failed to update
+    """
+    sessions_dir = sessions_dir or default_sessions_dir()
+    success_count = 0
+    failed_names: list[str] = []
+
+    for name in session_names:
+        if remove:
+            ok, _msg = remove_tags(name, tags, sessions_dir)
+        else:
+            ok, _msg = add_tags(name, tags, sessions_dir)
+
+        if ok:
+            success_count += 1
+        else:
+            failed_names.append(name)
+
+    failure_count = len(failed_names)
+    return success_count, failure_count, failed_names
+
+
+def batch_export_sessions(
+    session_names: list[str],
+    output_dir: Path,
+    sessions_dir: Path | None = None,
+    *,
+    format: str = "markdown",
+) -> tuple[int, int, list[str]]:
+    """Export multiple sessions to files at once.
+
+    Args:
+        session_names: List of session names to export
+        output_dir: Directory to write exported files to
+        sessions_dir: Optional sessions directory override
+        format: Export format - "markdown", "json", or "html" (default: "markdown")
+
+    Returns:
+        Tuple of (success_count, failure_count, failed_names)
+        - success_count: Number of sessions successfully exported
+        - failure_count: Number of sessions that failed to export
+        - failed_names: List of session names that failed to export
+    """
+    sessions_dir = sessions_dir or default_sessions_dir()
+    success_count = 0
+    failed_names: list[str] = []
+
+    # Ensure output directory exists
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Choose export function based on format
+    if format == "markdown":
+        export_fn = export_session_markdown
+        extension = ".md"
+    elif format == "json":
+        export_fn = export_session_json
+        extension = ".json"
+    elif format == "html":
+        export_fn = export_session_html
+        extension = ".html"
+    else:
+        raise ValueError(f"Invalid format: {format}")
+
+    for name in session_names:
+        ok, content = export_fn(name, sessions_dir)
+        if ok:
+            try:
+                output_file = output_dir / f"{name}{extension}"
+                output_file.write_text(content, encoding="utf-8")
+                success_count += 1
+            except OSError:
+                failed_names.append(name)
+        else:
+            failed_names.append(name)
+
+    failure_count = len(failed_names)
+    return success_count, failure_count, failed_names
+
+
+def batch_update_metadata(
+    session_names: list[str],
+    sessions_dir: Path | None = None,
+    *,
+    pinned: bool | None = None,
+    model: str | None = None,
+    rag_enabled: bool | None = None,
+) -> tuple[int, int, list[str]]:
+    """Update metadata fields for multiple sessions at once.
+
+    Args:
+        session_names: List of session names to update
+        sessions_dir: Optional sessions directory override
+        pinned: Set pinned status (None = no change)
+        model: Set model name (None = no change)
+        rag_enabled: Set RAG enabled status (None = no change)
+
+    Returns:
+        Tuple of (success_count, failure_count, failed_names)
+        - success_count: Number of sessions successfully updated
+        - failure_count: Number of sessions that failed to update
+        - failed_names: List of session names that failed to update
+    """
+    sessions_dir = sessions_dir or default_sessions_dir()
+    success_count = 0
+    failed_names: list[str] = []
+
+    for name in session_names:
+        try:
+            sf = session_file_for(name, sessions_dir)
+            mf = meta_file_for(sf)
+
+            if not sf.exists():
+                failed_names.append(name)
+                continue
+
+            meta = load_session_meta(mf)
+            meta = ensure_meta_defaults(meta)
+
+            # Apply updates
+            if pinned is not None:
+                meta["pinned"] = pinned
+            if model is not None:
+                meta["model"] = model
+            if rag_enabled is not None:
+                meta["rag_enabled"] = rag_enabled
+
+            save_session_meta(mf, meta)
+            success_count += 1
+
+        except Exception:
+            failed_names.append(name)
+
+    failure_count = len(failed_names)
+    return success_count, failure_count, failed_names
+
+
 __all__ = [
     "default_sessions_dir",
     "session_file_for",
@@ -1514,4 +1700,8 @@ __all__ = [
     "truncate_after_message",
     "search_messages",
     "merge_sessions",
+    "batch_delete_sessions",
+    "batch_tag_sessions",
+    "batch_export_sessions",
+    "batch_update_metadata",
 ]

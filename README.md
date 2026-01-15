@@ -192,6 +192,15 @@ myGPT automatically organizes your conversations with intelligent session manage
 - **TUI**: Press `Ctrl+N` to rename the current session
 - **API**: Use `POST /api/v1/sessions/{name}/rename`
 
+**Batch Operations:**
+- **Batch Delete**: `mygpt sessions batch-delete session1 session2 session3`
+- **Batch Tag**: `mygpt sessions batch-tag-add "tag1 tag2" session1 session2`
+- **Batch Tag Remove**: `mygpt sessions batch-tag-rm "tag1" session1 session2`
+- **Batch Export**: `mygpt sessions batch-export --output /path/to/dir --format markdown session1 session2`
+- **Batch Pin**: `mygpt sessions batch-pin session1 session2`
+- **Batch Unpin**: `mygpt sessions batch-unpin session1 session2`
+- **Batch Update Metadata**: `mygpt sessions batch-update-meta --model mistral:7b --rag-enabled true session1 session2`
+
 **Configuration** (in `~/.myGPT/config.ini`):
 
 ```ini
