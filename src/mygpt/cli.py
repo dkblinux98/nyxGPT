@@ -417,6 +417,96 @@ def cmd_sessions(
         print(msg)
         return 0
 
+    if action == "batch-delete":
+        # extras contains the list of session names to delete
+        if not extras or len(extras) < 1:
+            print("ERROR: at least one session name is required", file=sys.stderr)
+            return 2
+
+        success, failure, failed = sessions.batch_delete_sessions(extras, effective_dir)
+        print(f"Deleted {success} session(s)")
+        if failure > 0:
+            print(f"Failed to delete {failure} session(s): {', '.join(failed)}", file=sys.stderr)
+            return 1
+        return 0
+
+    if action in {"batch-tag-add", "batch-tag-rm"}:
+        # name contains tags (space-separated), extras contains session names
+        if not name:
+            print("ERROR: at least one tag is required", file=sys.stderr)
+            return 2
+        if not extras or len(extras) < 1:
+            print("ERROR: at least one session name is required", file=sys.stderr)
+            return 2
+
+        tags = name.split()
+        session_names = extras
+        is_remove = action == "batch-tag-rm"
+
+        success, failure, failed = sessions.batch_tag_sessions(
+            session_names, tags, effective_dir, remove=is_remove
+        )
+        op = "Removed tags from" if is_remove else "Added tags to"
+        print(f"{op} {success} session(s)")
+        if failure > 0:
+            print(f"Failed to update {failure} session(s): {', '.join(failed)}", file=sys.stderr)
+            return 1
+        return 0
+
+    if action == "batch-export":
+        # extras contains the list of session names to export
+        if not extras or len(extras) < 1:
+            print("ERROR: at least one session name is required", file=sys.stderr)
+            return 2
+        if not output:
+            print("ERROR: --output directory is required for batch export", file=sys.stderr)
+            return 2
+
+        success, failure, failed = sessions.batch_export_sessions(
+            extras, output, effective_dir, format=format
+        )
+        print(f"Exported {success} session(s) to {output}")
+        if failure > 0:
+            print(f"Failed to export {failure} session(s): {', '.join(failed)}", file=sys.stderr)
+            return 1
+        return 0
+
+    if action in {"batch-pin", "batch-unpin"}:
+        # extras contains the list of session names
+        if not extras or len(extras) < 1:
+            print("ERROR: at least one session name is required", file=sys.stderr)
+            return 2
+
+        is_pinned = action == "batch-pin"
+        success, failure, failed = sessions.batch_update_metadata(
+            extras, effective_dir, pinned=is_pinned
+        )
+        op = "Pinned" if is_pinned else "Unpinned"
+        print(f"{op} {success} session(s)")
+        if failure > 0:
+            print(f"Failed to update {failure} session(s): {', '.join(failed)}", file=sys.stderr)
+            return 1
+        return 0
+
+    if action == "batch-update-meta":
+        # extras contains the list of session names
+        if not extras or len(extras) < 1:
+            print("ERROR: at least one session name is required", file=sys.stderr)
+            return 2
+
+        if model is None and rag_enabled is None:
+            print("ERROR: at least one metadata field is required (--model, --rag-enabled)", file=sys.stderr)
+            return 2
+
+        success, failure, failed = sessions.batch_update_metadata(
+            extras, effective_dir, model=model, rag_enabled=rag_enabled
+        )
+        print(f"Updated metadata for {success} session(s)")
+        if failure > 0:
+            print(f"Failed to update {failure} session(s): {', '.join(failed)}", file=sys.stderr)
+            return 1
+        return 0
+
     if action == "stats":
         if not name:
             print("ERROR: session name is required", file=sys.stderr)
@@ -756,6 +846,13 @@ def cli(argv: list[str] | None = None) -> int:
             "export",
             "search",
             "merge",
+            "batch-delete",
+            "batch-tag-add",
+            "batch-tag-rm",
+            "batch-export",
+            "batch-pin",
+            "batch-unpin",
+            "batch-update-meta",
             "stats",
         ],
     )
