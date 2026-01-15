@@ -89,3 +89,54 @@ When human posts `@approve-merge`:
 ## 9) Phase completion
 When the human owner moves the last issue in the active Phase to "For Release" (human stakeholder acceptance):
 - Notify human owner that phase is complete and ready for release
+
+## 10) Configuration
+
+### REVIEW_AUTO_FIX_ENABLED
+Controls whether the automated fix loop is active.
+
+**Location:** GitHub Repository Settings
+- Navigate to: Settings → Secrets and variables → Actions → Variables
+- Variable name: `REVIEW_AUTO_FIX_ENABLED`
+- Valid values: `true` (enabled) or `false` (disabled)
+- Default: `false`
+
+**Behavior when enabled (true):**
+- On REQUEST_CHANGES review: Auto-fix workflow triggers automatically
+- Developer-agent checks out PR branch and fixes all Critical/Medium issues
+- Commits fixes and pushes to PR branch (triggers re-review via CI)
+- Loops up to 3 times maximum
+- After 3 loops with persistent issues: Escalates to @dkblinux98
+- No sub-issues created during auto-fix loop
+- Manual `@request-changes` trigger disabled (auto-fix takes over)
+
+**Behavior when disabled (false):**
+- Manual workflow active (wait for human `@approve-merge` or `@request-changes`)
+- On `@request-changes`: Creates Acceptance Failure sub-issues as documented in section 6
+- Developer-agent fixes sub-issues on separate branches
+- Standard manual review-fix cycle
+
+**How to change:**
+```bash
+# Enable auto-fix loop
+gh variable set REVIEW_AUTO_FIX_ENABLED --body "true" --repo dkblinux98/myGPT
+
+# Disable auto-fix loop (revert to manual workflow)
+gh variable set REVIEW_AUTO_FIX_ENABLED --body "false" --repo dkblinux98/myGPT
+
+# Check current value
+gh variable list --repo dkblinux98/myGPT | grep REVIEW_AUTO_FIX_ENABLED
+```
+
+### Required Secrets
+The auto-fix workflow requires these secrets to be configured:
+- `CLAUDE_CODE_OAUTH_TOKEN` - OAuth token for Claude Code agent
+- `DEVELOPER_AGENT_TOKEN` - GitHub token with repo/project permissions
+
+**How to configure secrets:**
+- Navigate to: Settings → Secrets and variables → Actions → Secrets
+- Click "New repository secret"
+- Add both secrets if not already present
+
+### Branch Cleanup
+Branch deletion happens in `review_accept_and_merge.sh` via `--delete-branch`, not in auto-fix workflow.
