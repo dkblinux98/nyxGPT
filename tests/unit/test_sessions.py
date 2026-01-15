@@ -1189,3 +1189,150 @@ def test_merge_sessions_single_session(tmp_path: Path) -> None:
     assert len(copy_messages) == 2
     assert copy_messages[0]["content"] == "Test message"
     assert copy_messages[1]["content"] == "Test response"
+
+
+def test_batch_delete_sessions(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create test sessions
+    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("session3", sessions_dir, new_session=True, model="llama3.1:8b")
+
+    # Batch delete two sessions
+    success, failure, failed = sessions.batch_delete_sessions(["session1", "session2"], sessions_dir)
+    assert success == 2
+    assert failure == 0
+    assert failed == []
+
+    # Verify deletion
+    assert not sessions.session_file_for("session1", sessions_dir).exists()
+    assert not sessions.session_file_for("session2", sessions_dir).exists()
+    assert sessions.session_file_for("session3", sessions_dir).exists()
+
+    # Delete non-existent session
+    success, failure, failed = sessions.batch_delete_sessions(["nonexistent"], sessions_dir)
+    assert success == 0
+    assert failure == 1
+    assert failed == ["nonexistent"]
+
+
+def test_batch_tag_sessions(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create test sessions
+    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
+
+    # Batch add tags
+    success, failure, failed = sessions.batch_tag_sessions(
+        ["session1", "session2"], ["tag1", "tag2"], sessions_dir, remove=False
+    )
+    assert success == 2
+    assert failure == 0
+    assert failed == []
+
+    # Verify tags added
+    meta1 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir)))
+    meta2 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session2", sessions_dir)))
+    assert set(meta1.get("tags", [])) == {"tag1", "tag2"}
+    assert set(meta2.get("tags", [])) == {"tag1", "tag2"}
+
+    # Batch remove tags
+    success, failure, failed = sessions.batch_tag_sessions(
+        ["session1", "session2"], ["tag1"], sessions_dir, remove=True
+    )
+    assert success == 2
+    assert failure == 0
+
+    # Verify tags removed
+    meta1 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir)))
+    meta2 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session2", sessions_dir)))
+    assert meta1.get("tags", []) == ["tag2"]
+    assert meta2.get("tags", []) == ["tag2"]
+
+
+def test_batch_export_sessions(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = tmp_path / "exports"
+
+    # Create test sessions with messages
+    sf1, mf1, msgs1, meta1 = sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
+    msgs1.append({"role": "user", "content": "Test message 1"})
+    sessions.save_session_messages(sf1, msgs1)
+
+    sf2, mf2, msgs2, meta2 = sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
+    msgs2.append({"role": "user", "content": "Test message 2"})
+    sessions.save_session_messages(sf2, msgs2)
+
+    # Batch export as markdown
+    success, failure, failed = sessions.batch_export_sessions(
+        ["session1", "session2"], output_dir, sessions_dir, format="markdown"
+    )
+    assert success == 2
+    assert failure == 0
+    assert failed == []
+
+    # Verify export files exist
+    assert (output_dir / "session1.md").exists()
+    assert (output_dir / "session2.md").exists()
+
+    # Verify content
+    content1 = (output_dir / "session1.md").read_text()
+    assert "Test message 1" in content1
+
+    # Test JSON export
+    output_dir_json = tmp_path / "exports_json"
+    success, failure, failed = sessions.batch_export_sessions(
+        ["session1"], output_dir_json, sessions_dir, format="json"
+    )
+    assert success == 1
+    assert (output_dir_json / "session1.json").exists()
+
+
+def test_batch_update_metadata(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create test sessions
+    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
+
+    # Batch update pinned status
+    success, failure, failed = sessions.batch_update_metadata(
+        ["session1", "session2"], sessions_dir, pinned=True
+    )
+    assert success == 2
+    assert failure == 0
+    assert failed == []
+
+    # Verify pinned status
+    meta1 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir)))
+    meta2 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session2", sessions_dir)))
+    assert meta1.get("pinned") is True
+    assert meta2.get("pinned") is True
+
+    # Batch update model
+    success, failure, failed = sessions.batch_update_metadata(
+        ["session1", "session2"], sessions_dir, model="mistral:7b"
+    )
+    assert success == 2
+
+    # Verify model updated
+    meta1 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir)))
+    meta2 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session2", sessions_dir)))
+    assert meta1.get("model") == "mistral:7b"
+    assert meta2.get("model") == "mistral:7b"
+
+    # Batch update RAG enabled
+    success, failure, failed = sessions.batch_update_metadata(
+        ["session1"], sessions_dir, rag_enabled=True
+    )
+    assert success == 1
+
+    # Verify RAG enabled updated
+    meta1 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir)))
+    assert meta1.get("rag_enabled") is True
