@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -180,8 +181,6 @@ def cmd_sessions(
     case_sensitive: bool = False,
     role: str | None = None,
     limit: int = 50,
-    model: str | None = None,
-    rag_enabled: bool | None = None,
 ) -> int:
     cfg = load_config(None)
     effective_dir = sessions_dir or get_sessions_dir(cfg)
@@ -418,94 +417,116 @@ def cmd_sessions(
         print(msg)
         return 0
 
-    if action == "batch-delete":
-        # extras contains the list of session names to delete
-        if not extras or len(extras) < 1:
-            print("ERROR: at least one session name is required", file=sys.stderr)
-            return 2
-
-        success, failure, failed = sessions.batch_delete_sessions(extras, effective_dir)
-        print(f"Deleted {success} session(s)")
-        if failure > 0:
-            print(f"Failed to delete {failure} session(s): {', '.join(failed)}", file=sys.stderr)
-            return 1
-        return 0
-
-    if action in {"batch-tag-add", "batch-tag-rm"}:
-        # name contains tags (space-separated), extras contains session names
+    if action == "stats":
         if not name:
-            print("ERROR: at least one tag is required", file=sys.stderr)
-            return 2
-        if not extras or len(extras) < 1:
-            print("ERROR: at least one session name is required", file=sys.stderr)
+            print("ERROR: session name is required", file=sys.stderr)
             return 2
 
-        tags = name.split()
-        session_names = extras
-        is_remove = action == "batch-tag-rm"
+        # Load session data
+        rows = _list_sessions_in_dir(effective_dir)
+        session_data = None
+        for r in rows:
+            if r["name"] == name:
+                session_data = r
+                break
 
-        success, failure, failed = sessions.batch_tag_sessions(
-            session_names, tags, effective_dir, remove=is_remove
-        )
-        op = "Removed tags from" if is_remove else "Added tags to"
-        print(f"{op} {success} session(s)")
-        if failure > 0:
-            print(f"Failed to update {failure} session(s): {', '.join(failed)}", file=sys.stderr)
+        if not session_data:
+            print(f"No such session: {name}", file=sys.stderr)
             return 1
-        return 0
 
-    if action == "batch-export":
-        # extras contains the list of session names to export
-        if not extras or len(extras) < 1:
-            print("ERROR: at least one session name is required", file=sys.stderr)
-            return 2
-        if not output:
-            print("ERROR: --output directory is required for batch export", file=sys.stderr)
-            return 2
+        # Extract data
+        messages = sessions.load_session_messages(Path(session_data["file"]))
+        meta_value = session_data.get("meta")
+        meta: dict[str, Any] = meta_value if isinstance(meta_value, dict) else {}
 
-        success, failure, failed = sessions.batch_export_sessions(
-            extras, output, effective_dir, format=format
-        )
-        print(f"Exported {success} session(s) to {output}")
-        if failure > 0:
-            print(f"Failed to export {failure} session(s): {', '.join(failed)}", file=sys.stderr)
-            return 1
-        return 0
+        # Calculate statistics
+        total_messages = len(messages)
+        user_messages = sum(1 for m in messages if m.get("role") == "user")
+        assistant_messages = sum(1 for m in messages if m.get("role") == "assistant")
+        system_messages = sum(1 for m in messages if m.get("role") == "system")
 
-    if action in {"batch-pin", "batch-unpin"}:
-        # extras contains the list of session names
-        if not extras or len(extras) < 1:
-            print("ERROR: at least one session name is required", file=sys.stderr)
-            return 2
+        # Token estimate
+        token_estimate = meta.get("token_estimate", 0)
+        if not token_estimate and messages:
+            token_estimate = sessions.token_estimate_from_messages(messages)
 
-        is_pinned = action == "batch-pin"
-        success, failure, failed = sessions.batch_update_metadata(
-            extras, effective_dir, pinned=is_pinned
-        )
-        op = "Pinned" if is_pinned else "Unpinned"
-        print(f"{op} {success} session(s)")
-        if failure > 0:
-            print(f"Failed to update {failure} session(s): {', '.join(failed)}", file=sys.stderr)
-            return 1
-        return 0
+        # Age and activity calculations
+        created_at = meta.get("created_at", "Unknown")
+        updated_at = meta.get("updated_at", "Unknown")
 
-    if action == "batch-update-meta":
-        # extras contains the list of session names
-        if not extras or len(extras) < 1:
-            print("ERROR: at least one session name is required", file=sys.stderr)
-            return 2
+        def format_age(timestamp_str: str) -> str:
+            """Format age from ISO timestamp to human-readable string."""
+            if timestamp_str == "Unknown":
+                return "Unknown"
+            try:
+                ts = datetime.fromisoformat(timestamp_str)
+                # Make timezone-aware if naive to prevent comparison errors
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                delta = now - ts
 
-        if model is None and rag_enabled is None:
-            print("ERROR: at least one metadata field is required (--model, --rag-enabled)", file=sys.stderr)
-            return 2
+                days = delta.days
+                hours = delta.seconds // 3600
+                minutes = (delta.seconds % 3600) // 60
 
-        success, failure, failed = sessions.batch_update_metadata(
-            extras, effective_dir, model=model, rag_enabled=rag_enabled
-        )
-        print(f"Updated metadata for {success} session(s)")
-        if failure > 0:
-            print(f"Failed to update {failure} session(s): {', '.join(failed)}", file=sys.stderr)
-            return 1
+                if days > 0:
+                    return f"{days} day(s), {hours} hour(s)"
+                elif hours > 0:
+                    return f"{hours} hour(s), {minutes} minute(s)"
+                elif minutes > 0:
+                    return f"{minutes} minute(s)"
+                else:
+                    return "< 1 minute"
+            except (ValueError, TypeError):
+                return timestamp_str
+
+        session_age = format_age(created_at)
+        last_activity = format_age(updated_at)
+
+        # RAG status
+        rag_enabled = meta.get("rag_enabled", False)
+        rag_status = "Enabled" if rag_enabled else "Disabled"
+
+        # Other metadata
+        model = meta.get("model", "Unknown")
+        title = meta.get("title", "")
+        summary = meta.get("summary", "")
+        tags = meta.get("tags", [])
+        pinned = meta.get("pinned", False)
+
+        # Display statistics
+        print(f"Session Statistics: {name}")
+        print("=" * 60)
+
+        if title:
+            print(f"Title: {title}")
+        if summary:
+            print(f"Summary: {summary}")
+
+        print(f"\nMessage Counts:")
+        print(f"  Total messages: {total_messages}")
+        print(f"  User messages: {user_messages}")
+        print(f"  Assistant messages: {assistant_messages}")
+        print(f"  System messages: {system_messages}")
+
+        print(f"\nToken Estimate:")
+        print(f"  Approximate tokens: {token_estimate:,}")
+
+        print(f"\nSession Age & Activity:")
+        print(f"  Created: {created_at}")
+        print(f"  Age: {session_age}")
+        print(f"  Last updated: {updated_at}")
+        print(f"  Time since last activity: {last_activity}")
+
+        print(f"\nConfiguration:")
+        print(f"  Model: {model}")
+        print(f"  RAG: {rag_status}")
+        print(f"  Pinned: {'Yes' if pinned else 'No'}")
+
+        if tags:
+            print(f"  Tags: {', '.join(tags)}")
+
         return 0
 
     print(f"Unknown sessions action: {action}", file=sys.stderr)
@@ -735,13 +756,7 @@ def cli(argv: list[str] | None = None) -> int:
             "export",
             "search",
             "merge",
-            "batch-delete",
-            "batch-tag-add",
-            "batch-tag-rm",
-            "batch-export",
-            "batch-pin",
-            "batch-unpin",
-            "batch-update-meta",
+            "stats",
         ],
     )
     sessions_p.add_argument("name", nargs="?", help="Session name")
@@ -749,12 +764,10 @@ def cli(argv: list[str] | None = None) -> int:
     sessions_p.add_argument("extras", nargs="*", help="Extra args (tags)")
     sessions_p.add_argument("--sessions-dir", type=Path, help="Override sessions directory")
     sessions_p.add_argument("--format", choices=["markdown", "json", "html"], default="markdown", help="Export format (default: markdown)")
-    sessions_p.add_argument("--output", type=Path, help="Output file (default: stdout) or directory (batch-export)")
+    sessions_p.add_argument("--output", type=Path, help="Output file (default: stdout)")
     sessions_p.add_argument("--case-sensitive", action="store_true", help="Case-sensitive search (search only)")
     sessions_p.add_argument("--role", choices=["user", "assistant", "system"], help="Filter by message role (search only)")
     sessions_p.add_argument("--limit", type=int, default=20, help="Maximum number of search results (default: 20, search only)")
-    sessions_p.add_argument("--model", help="Set model name (batch-update-meta only)")
-    sessions_p.add_argument("--rag-enabled", type=lambda x: x.lower() == "true", help="Set RAG enabled status: true or false (batch-update-meta only)")
 
     tools_p = sub.add_parser("tools", help="Explicit local filesystem tools")
     tools_p.add_argument("action", choices=["ls", "cat", "grep"], help="Tool to run")
@@ -872,8 +885,6 @@ def cli(argv: list[str] | None = None) -> int:
             case_sensitive=getattr(args, "case_sensitive", False),
             role=getattr(args, "role", None),
             limit=getattr(args, "limit", 50),
-            model=getattr(args, "model", None),
-            rag_enabled=getattr(args, "rag_enabled", None),
         )
 
     if cmd == "tools":
