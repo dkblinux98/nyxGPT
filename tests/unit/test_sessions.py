@@ -1004,3 +1004,188 @@ def test_search_messages_counts_matches(tmp_path: Path) -> None:
     results = sessions.search_messages("Python", sessions_dir)
     assert len(results) == 1
     assert results[0]["matches"] == 3
+
+
+@pytest.mark.unit
+def test_merge_sessions_basic(tmp_path: Path) -> None:
+    """Test basic session merge functionality."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create two sessions with messages
+    sf1 = sessions.session_file_for("session1", sessions_dir)
+    mf1 = sessions.meta_file_for(sf1)
+    messages1 = [
+        {"role": "user", "content": "Hello from session 1"},
+        {"role": "assistant", "content": "Hi from session 1"},
+    ]
+    sessions.save_session_messages(sf1, messages1)
+    sessions.save_session_meta(mf1, {
+        "created_at": "2025-01-01T10:00:00",
+        "updated_at": "2025-01-01T10:05:00",
+        "pinned": False,
+        "tags": ["tag1", "tag2"],
+        "title": "First Session",
+    })
+
+    sf2 = sessions.session_file_for("session2", sessions_dir)
+    mf2 = sessions.meta_file_for(sf2)
+    messages2 = [
+        {"role": "user", "content": "Hello from session 2"},
+        {"role": "assistant", "content": "Hi from session 2"},
+    ]
+    sessions.save_session_messages(sf2, messages2)
+    sessions.save_session_meta(mf2, {
+        "created_at": "2025-01-02T10:00:00",
+        "updated_at": "2025-01-02T10:05:00",
+        "pinned": False,
+        "tags": ["tag2", "tag3"],
+    })
+
+    # Merge sessions
+    ok, msg = sessions.merge_sessions(["session1", "session2"], "merged", sessions_dir)
+    assert ok, f"Merge should succeed: {msg}"
+    assert "2 sessions" in msg
+    assert "4 messages" in msg
+
+    # Verify merged session exists
+    merged_file = sessions.session_file_for("merged", sessions_dir)
+    merged_meta_file = sessions.meta_file_for(merged_file)
+    assert merged_file.exists()
+    assert merged_meta_file.exists()
+
+    # Verify merged messages
+    merged_messages = sessions.load_session_messages(merged_file)
+    assert len(merged_messages) == 4
+    assert merged_messages[0]["content"] == "Hello from session 1"
+    assert merged_messages[1]["content"] == "Hi from session 1"
+    assert merged_messages[2]["content"] == "Hello from session 2"
+    assert merged_messages[3]["content"] == "Hi from session 2"
+
+    # Verify all messages have timestamps and IDs
+    for msg in merged_messages:
+        assert "timestamp" in msg
+        assert "id" in msg
+
+    # Verify merged metadata
+    merged_meta = sessions.load_session_meta(merged_meta_file)
+    assert merged_meta["created_at"] == "2025-01-01T10:00:00"  # Earliest
+    assert merged_meta["pinned"] is False
+    assert set(merged_meta["tags"]) == {"tag1", "tag2", "tag3"}
+    assert merged_meta["title"] == "First Session"  # From first session
+    assert "token_estimate" in merged_meta
+
+
+@pytest.mark.unit
+def test_merge_sessions_output_exists(tmp_path: Path) -> None:
+    """Test that merge fails if output session already exists."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create sessions
+    sf1 = sessions.session_file_for("session1", sessions_dir)
+    sessions.save_session_messages(sf1, [{"role": "user", "content": "Test"}])
+
+    sf_output = sessions.session_file_for("output", sessions_dir)
+    sessions.save_session_messages(sf_output, [{"role": "user", "content": "Existing"}])
+
+    # Try to merge - should fail because output exists
+    ok, msg = sessions.merge_sessions(["session1"], "output", sessions_dir)
+    assert not ok
+    assert "already exists" in msg
+
+
+@pytest.mark.unit
+def test_merge_sessions_input_not_found(tmp_path: Path) -> None:
+    """Test that merge fails if input session doesn't exist."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.merge_sessions(["nonexistent"], "output", sessions_dir)
+    assert not ok
+    assert "not found" in msg
+
+
+@pytest.mark.unit
+def test_merge_sessions_no_inputs(tmp_path: Path) -> None:
+    """Test that merge fails if no input sessions provided."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.merge_sessions([], "output", sessions_dir)
+    assert not ok
+    assert "No sessions provided" in msg
+
+
+@pytest.mark.unit
+def test_merge_sessions_empty_sessions(tmp_path: Path) -> None:
+    """Test that merge handles empty sessions gracefully."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create two empty sessions
+    sf1 = sessions.session_file_for("empty1", sessions_dir)
+    mf1 = sessions.meta_file_for(sf1)
+    sessions.save_session_messages(sf1, [])
+    sessions.save_session_meta(mf1, {
+        "created_at": sessions.iso_now(),
+        "updated_at": sessions.iso_now(),
+        "pinned": False,
+        "tags": [],
+    })
+
+    sf2 = sessions.session_file_for("empty2", sessions_dir)
+    mf2 = sessions.meta_file_for(sf2)
+    sessions.save_session_messages(sf2, [])
+    sessions.save_session_meta(mf2, {
+        "created_at": sessions.iso_now(),
+        "updated_at": sessions.iso_now(),
+        "pinned": False,
+        "tags": [],
+    })
+
+    # Merge empty sessions
+    ok, msg = sessions.merge_sessions(["empty1", "empty2"], "merged_empty", sessions_dir)
+    assert ok
+    assert "0 messages" in msg
+
+    # Verify merged session exists but is empty
+    merged_file = sessions.session_file_for("merged_empty", sessions_dir)
+    merged_messages = sessions.load_session_messages(merged_file)
+    assert len(merged_messages) == 0
+
+
+@pytest.mark.unit
+def test_merge_sessions_single_session(tmp_path: Path) -> None:
+    """Test merging a single session (effectively creates a copy)."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create one session
+    sf = sessions.session_file_for("original", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+    messages = [
+        {"role": "user", "content": "Test message"},
+        {"role": "assistant", "content": "Test response"},
+    ]
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, {
+        "created_at": sessions.iso_now(),
+        "updated_at": sessions.iso_now(),
+        "pinned": False,
+        "tags": ["test"],
+        "title": "Original Session",
+    })
+
+    # Merge single session
+    ok, msg = sessions.merge_sessions(["original"], "copy", sessions_dir)
+    assert ok
+    assert "1 session" in msg  # Singular
+    assert "2 messages" in msg
+
+    # Verify copy exists and matches original
+    copy_file = sessions.session_file_for("copy", sessions_dir)
+    copy_messages = sessions.load_session_messages(copy_file)
+    assert len(copy_messages) == 2
+    assert copy_messages[0]["content"] == "Test message"
+    assert copy_messages[1]["content"] == "Test response"

@@ -1305,6 +1305,180 @@ def _generate_preview(content: str, query: str, case_sensitive: bool, context_ch
     return preview
 
 
+def merge_sessions(
+    session_names: list[str],
+    output_name: str,
+    sessions_dir: Path | None = None,
+) -> tuple[bool, str]:
+    """Merge multiple sessions into a single new session.
+
+    Combines message histories from multiple sessions in the order specified,
+    merges metadata (tags are combined and deduplicated, earliest created_at
+    is preserved), and handles conflicts gracefully.
+
+    **Message Merging:**
+    - Messages from each session are appended in order
+    - Timestamps are preserved from original messages
+    - If a message lacks a timestamp, one is generated
+    - Message IDs are preserved if they exist
+
+    **Metadata Merging:**
+    - created_at: Uses earliest timestamp from all sessions
+    - updated_at: Set to current time
+    - pinned: False (new session starts unpinned)
+    - tags: Combined and deduplicated from all sessions
+    - title: Uses title from first session if available
+    - summary: Uses summary from first session if available
+    - model: Uses model from first session if available
+    - rag_enabled: Uses setting from first session if available
+    - token_estimate: Recalculated for merged messages
+
+    **Conflict Handling:**
+    - If output session already exists, returns error
+    - If any input session doesn't exist, returns error
+    - If no input sessions provided, returns error
+    - Empty sessions are allowed (contribute zero messages)
+
+    Args:
+        session_names: List of session names to merge (in order)
+        output_name: Name for the merged output session
+        sessions_dir: Optional sessions directory override
+
+    Returns:
+        Tuple of (success, message)
+        - success: True if merge completed successfully
+        - message: Success message or error description
+
+    Examples:
+        >>> merge_sessions(["chat1", "chat2"], "combined", None)
+        (True, "Merged 2 sessions into 'combined' (45 messages)")
+
+        >>> merge_sessions(["nonexistent"], "output", None)
+        (False, "Session 'nonexistent' not found")
+
+        >>> merge_sessions(["chat1"], "chat1", None)
+        (False, "Output session 'chat1' already exists")
+    """
+    sessions_dir = sessions_dir or default_sessions_dir()
+
+    # Validation
+    if not session_names:
+        return False, "No sessions provided to merge"
+
+    if not output_name:
+        return False, "Output session name is required"
+
+    # Validate output name
+    try:
+        validate_session_name(output_name)
+    except ValueError as e:
+        return False, f"Invalid output session name: {e}"
+
+    # Check if output session already exists
+    output_file = session_file_for(output_name, sessions_dir)
+    if output_file.exists():
+        return False, f"Output session '{output_name}' already exists"
+
+    # Check if all input sessions exist
+    for name in session_names:
+        try:
+            validate_session_name(name)
+        except ValueError as e:
+            return False, f"Invalid session name '{name}': {e}"
+
+        sf = session_file_for(name, sessions_dir)
+        if not sf.exists():
+            return False, f"Session '{name}' not found"
+
+    # Collect all messages and metadata from input sessions
+    all_messages: list[dict[str, str]] = []
+    all_metadata: list[SessionMetaDict] = []
+
+    for name in session_names:
+        sf = session_file_for(name, sessions_dir)
+        mf = meta_file_for(sf)
+
+        # Load messages
+        messages = load_session_messages(sf)
+
+        # Ensure all messages have timestamps and IDs
+        for msg in messages:
+            if "timestamp" not in msg or not msg.get("timestamp"):
+                msg["timestamp"] = iso_now()
+            if "id" not in msg or not msg.get("id"):
+                msg["id"] = str(uuid.uuid4())
+
+        all_messages.extend(messages)
+
+        # Load metadata
+        meta = load_session_meta(mf)
+        if meta:
+            all_metadata.append(meta)
+
+    # Merge metadata
+    merged_meta: SessionMetaDict = {}
+
+    # created_at: earliest from all sessions
+    created_timestamps = [m.get("created_at") for m in all_metadata if m.get("created_at")]
+    if created_timestamps:
+        merged_meta["created_at"] = min(created_timestamps)
+    else:
+        merged_meta["created_at"] = iso_now()
+
+    # updated_at: current time
+    merged_meta["updated_at"] = iso_now()
+
+    # pinned: false for new session
+    merged_meta["pinned"] = False
+
+    # tags: combine and deduplicate from all sessions
+    all_tags: list[str] = []
+    for meta in all_metadata:
+        tags = meta.get("tags")
+        if isinstance(tags, list):
+            all_tags.extend(str(t) for t in tags)
+    merged_meta["tags"] = normalize_tags(all_tags)
+
+    # title, summary, model, rag_enabled: use from first session if available
+    if all_metadata:
+        first_meta = all_metadata[0]
+        if first_meta.get("title"):
+            merged_meta["title"] = first_meta["title"]
+        if first_meta.get("summary"):
+            merged_meta["summary"] = first_meta["summary"]
+        if first_meta.get("model"):
+            merged_meta["model"] = first_meta["model"]
+        if "rag_enabled" in first_meta:
+            merged_meta["rag_enabled"] = first_meta["rag_enabled"]
+
+    # token_estimate: recalculate for merged messages
+    merged_meta["token_estimate"] = token_estimate_from_messages(all_messages)
+
+    # Ensure all required metadata fields are present
+    merged_meta = ensure_meta_defaults(merged_meta)
+
+    # Save merged session
+    output_meta_file = meta_file_for(output_file)
+
+    try:
+        save_session_messages(output_file, all_messages)
+        save_session_meta(output_meta_file, merged_meta)
+    except Exception as e:
+        # Clean up on failure
+        try:
+            if output_file.exists():
+                output_file.unlink()
+            if output_meta_file.exists():
+                output_meta_file.unlink()
+        except Exception:
+            pass
+        return False, f"Failed to save merged session: {e}"
+
+    message_count = len(all_messages)
+    session_count = len(session_names)
+    return True, f"Merged {session_count} session{'s' if session_count != 1 else ''} into '{output_name}' ({message_count} message{'s' if message_count != 1 else ''})"
+
+
 __all__ = [
     "default_sessions_dir",
     "session_file_for",
@@ -1339,4 +1513,5 @@ __all__ = [
     "edit_message",
     "truncate_after_message",
     "search_messages",
+    "merge_sessions",
 ]
