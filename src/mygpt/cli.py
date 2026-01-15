@@ -397,6 +397,25 @@ def cmd_sessions(
 
         return 0
 
+    if action == "merge":
+        # For merge: name is output name, extras are input session names
+        if not name:
+            print("ERROR: output session name is required", file=sys.stderr)
+            return 2
+        if not extras or len(extras) < 1:
+            print("ERROR: at least one input session name is required", file=sys.stderr)
+            return 2
+
+        output_name = name
+        input_names = extras
+
+        ok, msg = sessions.merge_sessions(input_names, output_name, effective_dir)
+        if not ok:
+            print(f"ERROR: {msg}", file=sys.stderr)
+            return 1
+        print(msg)
+        return 0
+
     print(f"Unknown sessions action: {action}", file=sys.stderr)
     return 2
 
@@ -623,6 +642,7 @@ def cli(argv: list[str] | None = None) -> int:
             "summarize",
             "export",
             "search",
+            "merge",
         ],
     )
     sessions_p.add_argument("name", nargs="?", help="Session name")
