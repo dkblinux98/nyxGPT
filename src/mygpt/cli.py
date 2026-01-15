@@ -416,6 +416,116 @@ def cmd_sessions(
         print(msg)
         return 0
 
+    if action == "stats":
+        if not name:
+            print("ERROR: session name is required", file=sys.stderr)
+            return 2
+
+        # Load session data
+        rows = _list_sessions_in_dir(effective_dir)
+        session_data = None
+        for r in rows:
+            if r["name"] == name:
+                session_data = r
+                break
+
+        if not session_data:
+            print(f"No such session: {name}", file=sys.stderr)
+            return 1
+
+        # Extract data
+        messages = sessions.load_session_messages(Path(session_data["file"]))
+        meta_value = session_data.get("meta")
+        meta: dict[str, Any] = meta_value if isinstance(meta_value, dict) else {}
+
+        # Calculate statistics
+        total_messages = len(messages)
+        user_messages = sum(1 for m in messages if m.get("role") == "user")
+        assistant_messages = sum(1 for m in messages if m.get("role") == "assistant")
+        system_messages = sum(1 for m in messages if m.get("role") == "system")
+
+        # Token estimate
+        token_estimate = meta.get("token_estimate", 0)
+        if not token_estimate and messages:
+            token_estimate = sessions.token_estimate_from_messages(messages)
+
+        # Age and activity calculations
+        created_at = meta.get("created_at", "Unknown")
+        updated_at = meta.get("updated_at", "Unknown")
+
+        def format_age(timestamp_str: str) -> str:
+            """Format age from ISO timestamp to human-readable string."""
+            if timestamp_str == "Unknown":
+                return "Unknown"
+            try:
+                from datetime import datetime
+                ts = datetime.fromisoformat(timestamp_str)
+                now = datetime.now()
+                delta = now - ts
+
+                days = delta.days
+                hours = delta.seconds // 3600
+                minutes = (delta.seconds % 3600) // 60
+
+                if days > 0:
+                    return f"{days} day(s), {hours} hour(s)"
+                elif hours > 0:
+                    return f"{hours} hour(s), {minutes} minute(s)"
+                elif minutes > 0:
+                    return f"{minutes} minute(s)"
+                else:
+                    return "< 1 minute"
+            except (ValueError, TypeError):
+                return timestamp_str
+
+        session_age = format_age(created_at)
+        last_activity = format_age(updated_at)
+
+        # RAG status
+        rag_enabled = meta.get("rag_enabled", False)
+        rag_status = "Enabled" if rag_enabled else "Disabled"
+
+        # Other metadata
+        model = meta.get("model", "Unknown")
+        title = meta.get("title", "")
+        summary = meta.get("summary", "")
+        tags = meta.get("tags", [])
+        pinned = meta.get("pinned", False)
+
+        # Display statistics
+        print(f"Session Statistics: {name}")
+        print("=" * 60)
+
+        if title:
+            print(f"Title: {title}")
+        if summary:
+            print(f"Summary: {summary}")
+
+        print(f"\nMessage Counts:")
+        print(f"  Total messages: {total_messages}")
+        print(f"  User messages: {user_messages}")
+        print(f"  Assistant messages: {assistant_messages}")
+        print(f"  System messages: {system_messages}")
+
+        print(f"\nToken Estimate:")
+        print(f"  Approximate tokens: {token_estimate:,}")
+
+        print(f"\nSession Age & Activity:")
+        print(f"  Created: {created_at}")
+        print(f"  Age: {session_age}")
+        print(f"  Last updated: {updated_at}")
+        print(f"  Time since last activity: {last_activity}")
+
+        print(f"\nConfiguration:")
+        print(f"  Model: {model}")
+        print(f"  RAG: {rag_status}")
+        print(f"  Pinned: {'Yes' if pinned else 'No'}")
+
+        if tags:
+            print(f"  Tags: {', '.join(tags)}")
+
+        return 0
+
     print(f"Unknown sessions action: {action}", file=sys.stderr)
     return 2
 
@@ -643,6 +753,7 @@ def cli(argv: list[str] | None = None) -> int:
             "export",
             "search",
             "merge",
+            "stats",
         ],
     )
     sessions_p.add_argument("name", nargs="?", help="Session name")
