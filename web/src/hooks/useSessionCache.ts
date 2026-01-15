@@ -57,6 +57,7 @@ export function useSessionCache(config: CacheConfig = {}) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isStaleError, setIsStaleError] = useState(false);
 
   const cacheRef = useRef<CacheEntry | null>(null);
   const fetchControllerRef = useRef<AbortController | null>(null);
@@ -94,7 +95,13 @@ export function useSessionCache(config: CacheConfig = {}) {
     }
 
     const data = await res.json();
-    return data.sessions || [];
+
+    // Validate API response structure
+    if (!data || !Array.isArray(data.sessions)) {
+      throw new Error('Invalid API response format');
+    }
+
+    return data.sessions;
   }, []);
 
   /**
@@ -131,6 +138,8 @@ export function useSessionCache(config: CacheConfig = {}) {
 
       const data = await fetchSessions(controller.signal);
       updateCache(data);
+      // Clear stale error flag on successful refresh
+      setIsStaleError(false);
       return data;
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
@@ -138,7 +147,12 @@ export function useSessionCache(config: CacheConfig = {}) {
         throw e;
       }
       const errorMsg = e instanceof Error ? e.message : String(e);
-      setError(errorMsg);
+      if (background) {
+        // Set stale error flag for background refresh failures
+        setIsStaleError(true);
+      } else {
+        setError(errorMsg);
+      }
       throw e;
     } finally {
       if (background) {
@@ -205,7 +219,8 @@ export function useSessionCache(config: CacheConfig = {}) {
   const mutate = useCallback((updater: (sessions: Session[]) => Session[]) => {
     // Capture entire cache entry (including timestamp) to prevent race conditions
     const previousCache = cacheRef.current;
-    const currentSessions = previousCache?.data || sessions;
+    // Always use ref, no state fallback to avoid race conditions with async state updates
+    const currentSessions = previousCache?.data ?? [];
     const optimisticSessions = updater(currentSessions);
 
     updateCache(optimisticSessions);
@@ -221,6 +236,8 @@ export function useSessionCache(config: CacheConfig = {}) {
           // Restore entire cache entry, not just data
           cacheRef.current = previousCache;
           setSessions(previousCache.data);
+          // Clear error state on rollback
+          setError(null);
         }
       },
       /**
@@ -228,7 +245,7 @@ export function useSessionCache(config: CacheConfig = {}) {
        */
       revalidate: () => refresh(true),
     };
-  }, [sessions, updateCache, refresh]);
+  }, [updateCache, refresh]);
 
   /**
    * Schedule automatic background refresh when cache becomes stale
@@ -255,7 +272,10 @@ export function useSessionCache(config: CacheConfig = {}) {
         refreshTimeoutRef.current = null;
       }
     };
-    // Remove 'sessions' from deps to prevent unnecessary timer churn
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Intentionally omitting 'sessions' from deps to prevent unnecessary timer churn.
+    // The effect only reads from cacheRef.current, not the sessions state.
+    // refresh is stable (memoized with useCallback), so this is safe.
   }, [cfg.backgroundRefresh, cfg.staleTime, refresh]);
 
   /**
@@ -272,6 +292,9 @@ export function useSessionCache(config: CacheConfig = {}) {
     };
   }, []);
 
+  // All returned functions (getSessions, invalidate, mutate, refresh) are memoized
+  // with useCallback and have stable identities across re-renders. This prevents
+  // unnecessary re-renders in components that depend on these functions.
   return {
     /** Current sessions (may be stale) */
     sessions,
@@ -283,6 +306,8 @@ export function useSessionCache(config: CacheConfig = {}) {
     error,
     /** True if cache exists but is stale */
     isStale: cacheRef.current ? isStale(cacheRef.current) : false,
+    /** True if background refresh failed (data may be stale) */
+    isStaleError,
     /** Fetch sessions with stale-while-revalidate */
     getSessions,
     /** Force refresh and invalidate cache */

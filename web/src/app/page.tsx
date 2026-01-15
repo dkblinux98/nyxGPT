@@ -7,6 +7,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
 import { SessionListSkeleton } from '../components/SkeletonLoader';
 import { SessionListErrorBoundary } from '../components/SessionListErrorBoundary';
+import { SessionCacheErrorBoundary } from '../components/SessionCacheErrorBoundary';
 import { SearchModal } from '../components/SearchModal';
 import { VirtualizedSessionList } from '../components/VirtualizedSessionList';
 import { useToast } from '../contexts/ToastContext';
@@ -32,7 +33,7 @@ type SessionsResponse = {
   }>;
 };
 
-export default function Home() {
+function Home() {
   const toast = useToast();
   const [info, setInfo] = useState<Info | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1309,5 +1310,14 @@ export default function Home() {
         onResultClick={handleSearchResultClick}
       />
     </main>
+  );
+}
+
+// Wrap with error boundary to handle cache initialization errors
+export default function WrappedHome() {
+  return (
+    <SessionCacheErrorBoundary>
+      <Home />
+    </SessionCacheErrorBoundary>
   );
 }
