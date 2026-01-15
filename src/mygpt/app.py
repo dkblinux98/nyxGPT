@@ -793,15 +793,43 @@ def sessions_search(
 
 
 @api.get("/sessions/{name}")
-def sessions_show(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
+def sessions_show(
+    name: str,
+    sessions_dir: Optional[str] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+) -> dict[str, Any]:
     sd = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     sf = sessions.session_file_for(name, sd or sessions.default_sessions_dir())
     mf = sessions.meta_file_for(sf)
-    msgs = sessions.load_session_messages(sf)
-    meta = sessions.load_session_meta(mf)
     if not sf.exists():
         raise HTTPException(status_code=404, detail="No such session")
-    return {"name": name, "messages": msgs, "meta": meta}
+
+    # Validate pagination parameters (Medium Issue 4)
+    if offset is not None and offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be non-negative")
+    if limit is not None and limit < 0:
+        raise HTTPException(status_code=400, detail="limit must be non-negative")
+
+    # Use paginated loading to avoid loading all messages into memory (Critical Issue 1)
+    if offset is not None or limit is not None:
+        start = offset if offset is not None else 0
+        msgs, total_count = sessions.load_session_messages_paginated(sf, start, limit)
+    else:
+        # No pagination requested - use regular load for backward compatibility
+        all_msgs = sessions.load_session_messages(sf)
+        msgs = all_msgs
+        total_count = len(all_msgs)
+
+    meta = sessions.load_session_meta(mf)
+    return {
+        "name": name,
+        "messages": msgs,
+        "meta": meta,
+        "total": total_count,
+        "offset": offset if offset is not None else 0,
+        "limit": limit if limit is not None else total_count,
+    }
 
 # Lightweight session initialization endpoint (does NOT invoke the model)
 
