@@ -203,7 +203,9 @@ export function useSessionCache(config: CacheConfig = {}) {
    * Update cache optimistically with a mutation
    */
   const mutate = useCallback((updater: (sessions: Session[]) => Session[]) => {
-    const currentSessions = cacheRef.current?.data || sessions;
+    // Capture entire cache entry (including timestamp) to prevent race conditions
+    const previousCache = cacheRef.current;
+    const currentSessions = previousCache?.data || sessions;
     const optimisticSessions = updater(currentSessions);
 
     updateCache(optimisticSessions);
@@ -211,10 +213,14 @@ export function useSessionCache(config: CacheConfig = {}) {
     return {
       /**
        * Rollback to previous state
+       * Restores entire cache entry atomically to prevent race conditions
+       * with background refreshes
        */
       rollback: () => {
-        if (cacheRef.current) {
-          setSessions(currentSessions);
+        if (previousCache) {
+          // Restore entire cache entry, not just data
+          cacheRef.current = previousCache;
+          setSessions(previousCache.data);
         }
       },
       /**
@@ -249,7 +255,8 @@ export function useSessionCache(config: CacheConfig = {}) {
         refreshTimeoutRef.current = null;
       }
     };
-  }, [cfg.backgroundRefresh, cfg.staleTime, refresh, sessions]);
+    // Remove 'sessions' from deps to prevent unnecessary timer churn
+  }, [cfg.backgroundRefresh, cfg.staleTime, refresh]);
 
   /**
    * Cleanup on unmount
