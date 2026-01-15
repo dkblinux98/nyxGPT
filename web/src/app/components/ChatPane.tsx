@@ -1,10 +1,57 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Component, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
 import { useToast } from '../../contexts/ToastContext';
+
+// Error Boundary for Virtuoso rendering
+class VirtuosoErrorBoundary extends Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('Virtuoso rendering error:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 12, color: 'var(--error)' }}>
+          <strong>Failed to render messages</strong>
+          <div style={{ fontSize: 12, marginTop: 8, opacity: 0.8 }}>
+            {this.state.error?.message || 'Unknown error'}
+          </div>
+          <button
+            onClick={() => this.setState({ hasError: false, error: null })}
+            style={{
+              marginTop: 8,
+              padding: '6px 12px',
+              borderRadius: 4,
+              border: '1px solid var(--border)',
+              background: 'var(--button-hover)',
+              cursor: 'pointer',
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
 
 type ChatMessage = {
   role: 'user' | 'assistant';
@@ -184,6 +231,11 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [highlightedMessageIndex, setHighlightedMessageIndex] = useState<number | null>(null);
 
+  // Track scroll state to prevent infinite re-renders and maintain position on edits
+  const lastMessageCountRef = useRef(0);
+  const isAtBottomRef = useRef(true);
+  const scrollStateRef = useRef<{ index: number; offset: number } | null>(null);
+
   // RAG state
   const [ragEnabled, setRagEnabled] = useState<boolean>(false);
   const [ragStatus, setRagStatus] = useState<'idle' | 'uploading' | 'error'>('idle');
@@ -287,15 +339,20 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     }
   }, [scrollToMessageIndex]);
 
-  // Auto-scroll to bottom when streaming new messages
+  // Auto-scroll to bottom when streaming new messages (ref-based to prevent infinite re-renders)
   useEffect(() => {
-    if (isStreaming && messages.length > 0) {
+    // Only scroll if:
+    // 1. Currently streaming
+    // 2. Messages were added (not just updated)
+    // 3. User is at bottom (hasn't manually scrolled away)
+    if (isStreaming && messages.length > lastMessageCountRef.current && isAtBottomRef.current) {
       virtuosoRef.current?.scrollToIndex({
         index: messages.length - 1,
         align: 'end',
         behavior: 'auto',
       });
     }
+    lastMessageCountRef.current = messages.length;
   }, [isStreaming, messages.length]);
 
   async function toggleRag() {
@@ -641,121 +698,109 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         {messages.length === 0 ? (
           <div style={{ padding: 12, opacity: 0.7 }}>Send a message to start…</div>
         ) : (
-          <Virtuoso
-            ref={virtuosoRef}
-            data={messages}
-            style={{ height: '100%' }}
-            initialTopMostItemIndex={messages.length - 1}
-            followOutput="smooth"
-            itemContent={(idx, m) => (
-              <div
-                data-message-index={idx}
-                style={{
-                  padding: '12px',
-                  marginBottom: 12,
-                  background: highlightedMessageIndex === idx ? 'var(--highlight)' : 'transparent',
-                  borderRadius: highlightedMessageIndex === idx ? 8 : 0,
-                  transition: 'all 0.3s ease',
-                }}
-              >
-                <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <strong>{m.role}</strong>
-                  {m.edited_at && <span style={{ fontSize: 10, opacity: 0.6 }}>(edited)</span>}
-                </div>
-                {/* Show RAG citations if available (streaming) or persisted (loaded from session) */}
-                {((m.ragChunks && m.ragChunks.length > 0) || (m.rag_chunks && m.rag_chunks.length > 0)) && (
-                  <RagCitationsCollapsible
-                    sessionName={sessionName}
-                    messageIndex={idx}
-                    initialChunks={m.ragChunks || m.rag_chunks || ragChunksCache.get(idx)}
-                    onChunksLoaded={(chunks) => {
-                      setRagChunksCache((prev) => {
-                        const next = new Map(prev);
-                        next.set(idx, chunks);
-                        return next;
-                      });
-                    }}
-                  />
-                )}
-                {editingIndex === idx ? (
-                  <div>
-                    <textarea
-                      value={editContent}
-                      onChange={(e) => setEditContent(e.target.value)}
-                      style={{
-                        width: '100%',
-                        minHeight: 80,
-                        padding: 8,
-                        borderRadius: 6,
-                        border: '1px solid var(--border)',
-                        background: 'var(--input-bg)',
-                        color: 'var(--foreground)',
-                        fontFamily: 'inherit',
-                        fontSize: 14,
-                        resize: 'vertical',
+          <VirtuosoErrorBoundary>
+            <Virtuoso
+              ref={virtuosoRef}
+              data={messages}
+              style={{ height: '100%' }}
+              initialTopMostItemIndex={messages.length - 1}
+              defaultItemHeight={100}
+              followOutput={() => (isAtBottomRef.current ? 'smooth' : false)}
+              atBottomStateChange={(atBottom) => {
+                isAtBottomRef.current = atBottom;
+              }}
+              itemContent={(idx, m) => (
+                <div
+                  data-message-index={idx}
+                  style={{
+                    padding: '12px',
+                    marginBottom: 12,
+                    background: highlightedMessageIndex === idx ? 'var(--highlight)' : 'transparent',
+                    borderRadius: highlightedMessageIndex === idx ? 8 : 0,
+                    transition: 'all 0.3s ease',
+                  }}
+                >
+                  <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <strong>{m.role}</strong>
+                    {m.edited_at && <span style={{ fontSize: 10, opacity: 0.6 }}>(edited)</span>}
+                  </div>
+                  {/* Show RAG citations if available (streaming) or persisted (loaded from session) */}
+                  {((m.ragChunks && m.ragChunks.length > 0) || (m.rag_chunks && m.rag_chunks.length > 0)) && (
+                    <RagCitationsCollapsible
+                      sessionName={sessionName}
+                      messageIndex={idx}
+                      initialChunks={m.ragChunks || m.rag_chunks || ragChunksCache.get(idx)}
+                      onChunksLoaded={(chunks) => {
+                        setRagChunksCache((prev) => {
+                          const next = new Map(prev);
+                          next.set(idx, chunks);
+                          return next;
+                        });
                       }}
                     />
-                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                      <button
-                        onClick={() => saveEdit(idx)}
+                  )}
+                  {editingIndex === idx ? (
+                    <div>
+                      <textarea
+                        value={editContent}
+                        onChange={(e) => setEditContent(e.target.value)}
                         style={{
-                          padding: '4px 8px',
-                          fontSize: 12,
-                          borderRadius: 4,
+                          width: '100%',
+                          minHeight: 80,
+                          padding: 8,
+                          borderRadius: 6,
                           border: '1px solid var(--border)',
-                          background: 'var(--success)',
-                          color: 'white',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        Save
-                      </button>
-                      <button
-                        onClick={cancelEdit}
-                        style={{
-                          padding: '4px 8px',
-                          fontSize: 12,
-                          borderRadius: 4,
-                          border: '1px solid var(--border)',
-                          background: 'var(--button-hover)',
+                          background: 'var(--input-bg)',
                           color: 'var(--foreground)',
-                          cursor: 'pointer',
+                          fontFamily: 'inherit',
+                          fontSize: 14,
+                          resize: 'vertical',
                         }}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div>
-                    <div style={{ whiteSpace: 'pre-wrap' }}>
-                      {m.role === 'assistant' && !m.content && status === 'connecting' ? (
-                        <span style={{ opacity: 0.5 }}>⋯</span>
-                      ) : (
-                        m.content
-                      )}
-                    </div>
-                    {!isStreaming && (
+                      />
                       <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                         <button
-                          onClick={() => handleEditMessage(idx)}
+                          onClick={() => saveEdit(idx)}
                           style={{
                             padding: '4px 8px',
-                            fontSize: 11,
+                            fontSize: 12,
                             borderRadius: 4,
                             border: '1px solid var(--border)',
-                            background: 'transparent',
+                            background: 'var(--success)',
+                            color: 'white',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={cancelEdit}
+                          style={{
+                            padding: '4px 8px',
+                            fontSize: 12,
+                            borderRadius: 4,
+                            border: '1px solid var(--border)',
+                            background: 'var(--button-hover)',
                             color: 'var(--foreground)',
                             cursor: 'pointer',
-                            opacity: 0.7,
                           }}
-                          title="Edit message"
                         >
-                          ✏️ Edit
+                          Cancel
                         </button>
-                        {m.role === 'user' && (
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <div style={{ whiteSpace: 'pre-wrap' }}>
+                        {m.role === 'assistant' && !m.content && status === 'connecting' ? (
+                          <span style={{ opacity: 0.5 }}>⋯</span>
+                        ) : (
+                          m.content
+                        )}
+                      </div>
+                      {!isStreaming && (
+                        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                           <button
-                            onClick={() => handleRegenerateResponse(idx)}
+                            onClick={() => handleEditMessage(idx)}
                             style={{
                               padding: '4px 8px',
                               fontSize: 11,
@@ -766,18 +811,36 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                               cursor: 'pointer',
                               opacity: 0.7,
                             }}
-                            title="Regenerate response from this message"
+                            title="Edit message"
                           >
-                            🔄 Regenerate
+                            ✏️ Edit
                           </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          />
+                          {m.role === 'user' && (
+                            <button
+                              onClick={() => handleRegenerateResponse(idx)}
+                              style={{
+                                padding: '4px 8px',
+                                fontSize: 11,
+                                borderRadius: 4,
+                                border: '1px solid var(--border)',
+                                background: 'transparent',
+                                color: 'var(--foreground)',
+                                cursor: 'pointer',
+                                opacity: 0.7,
+                              }}
+                              title="Regenerate response from this message"
+                            >
+                              🔄 Regenerate
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            />
+          </VirtuosoErrorBoundary>
         )}
       </div>
 
