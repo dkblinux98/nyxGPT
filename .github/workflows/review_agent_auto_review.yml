@@ -170,8 +170,9 @@ jobs:
             exit 1
           fi
 
-          # Save review comment to file for parsing
-          echo "$REVIEW_COMMENT" > /tmp/review-comment.txt
+          # Save review comment to file for parsing (use RUNNER_TEMP for security)
+          echo "$REVIEW_COMMENT" > "$RUNNER_TEMP/review-comment.txt"
+          echo "review_file=$RUNNER_TEMP/review-comment.txt" >> "$GITHUB_OUTPUT"
           echo "::notice::Found review comment from @${{ vars.REVIEW_AGENT }}"
 
       - name: Create sub-issues (if changes requested)
@@ -184,7 +185,7 @@ jobs:
           echo "::notice::Human confirmed changes requested - parsing sub-issues from review comment"
 
           # Parse Critical and Medium issues from the review comment
-          REVIEW_COMMENT=$(cat /tmp/review-comment.txt)
+          REVIEW_COMMENT=$(cat "${{ steps.find_review.outputs.review_file }}")
 
           # Extract Critical Issues section
           CRITICAL_SECTION=$(echo "$REVIEW_COMMENT" | sed -n '/### Critical Issues/,/### Medium Issues\|### Minor Issues\|### Decision/p' | grep '^\- \*\*' || echo "")
@@ -214,7 +215,8 @@ jobs:
             fi
 
             # Create body file for sub-issue - use timestamp to avoid filename length issues
-            BODY_FILE="/tmp/sub-issue-${ISSUE}-$(date +%s%N).md"
+            # Use RUNNER_TEMP for security instead of /tmp
+            BODY_FILE="$RUNNER_TEMP/sub-issue-${ISSUE}-$(date +%s%N).md"
             cat > "$BODY_FILE" <<EOFBODY
           ## Acceptance Failure
 
