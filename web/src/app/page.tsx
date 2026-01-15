@@ -10,6 +10,7 @@ import { SessionListErrorBoundary } from '../components/SessionListErrorBoundary
 import { SearchModal } from '../components/SearchModal';
 import { VirtualizedSessionList } from '../components/VirtualizedSessionList';
 import { useToast } from '../contexts/ToastContext';
+import { useSessionCache } from '../hooks/useSessionCache';
 
 type Info = {
   ollama_base_url: string;
@@ -38,10 +39,21 @@ export default function Home() {
   const [loadingInfo, setLoadingInfo] = useState<boolean>(true);
   const [retryingInfo, setRetryingInfo] = useState<boolean>(false);
 
-  const [sessions, setSessions] = useState<SessionsResponse['sessions']>([]);
-  const [sessionsError, setSessionsError] = useState<string | null>(null);
-  const [loadingSessions, setLoadingSessions] = useState<boolean>(true);
-  const [retryingSessions, setRetryingSessions] = useState<boolean>(false);
+  // Use session cache hook with stale-while-revalidate
+  const {
+    sessions,
+    isLoading: loadingSessions,
+    isRefreshing: retryingSessions,
+    error: sessionsError,
+    getSessions,
+    invalidate: invalidateSessions,
+    mutate: mutateSessions,
+  } = useSessionCache({
+    staleTime: 30_000, // 30 seconds
+    maxAge: 300_000, // 5 minutes
+    backgroundRefresh: true,
+  });
+
   const [selectedSession, setSelectedSession] = useState<string>('default');
   const [sidebarVisible, setSidebarVisible] = useState<boolean>(true);
 
@@ -105,40 +117,19 @@ export default function Home() {
     }
   }, []);
 
-  // Fetch sessions with retry support
-  const fetchSessions = useCallback(async (isRetry = false) => {
-    if (isRetry) {
-      setRetryingSessions(true);
-    } else {
-      setLoadingSessions(true);
-    }
-    setSessionsError(null);
-
-    try {
-      const res = await fetch('/api/sessions');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: SessionsResponse = await res.json();
-      setSessions(data.sessions || []);
-      // Keep selection stable; if current selection disappears, fall back.
-      const names = new Set((data.sessions || []).map((s) => s.name));
-      if (!names.has(selectedSession)) {
-        setSelectedSession(names.has('default') ? 'default' : (data.sessions?.[0]?.name ?? 'default'));
-      }
-      setSessionsError(null);
-    } catch (e) {
-      setSessionsError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoadingSessions(false);
-      setRetryingSessions(false);
-    }
-  }, [selectedSession]);
-
   useEffect(() => {
     void fetchInfo();
   }, [fetchInfo]);
 
+  // Initialize session cache on mount
   useEffect(() => {
-    void fetchSessions();
+    void getSessions().then((sessionList) => {
+      // Keep selection stable; if current selection disappears, fall back.
+      const names = new Set(sessionList.map((s) => s.name));
+      if (!names.has(selectedSession)) {
+        setSelectedSession(names.has('default') ? 'default' : (sessionList[0]?.name ?? 'default'));
+      }
+    });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -182,20 +173,15 @@ export default function Home() {
     setFilterTags('');
   };
 
-  // Refresh session list
+  // Refresh session list (invalidate cache and fetch fresh)
   const refreshSessions = useCallback(async () => {
     try {
-      // Add timestamp to prevent browser caching
-      const res = await fetch(`/api/sessions?t=${Date.now()}`, {
-        cache: 'no-store',
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data: SessionsResponse = await res.json();
-      setSessions(data.sessions || []);
+      await invalidateSessions();
     } catch (e) {
-      setSessionsError(e instanceof Error ? e.message : String(e));
+      // Error is already handled by the cache hook
+      console.error('Failed to refresh sessions:', e);
     }
-  }, []);
+  }, [invalidateSessions]);
 
   // Create new chat with optimistic update
   const createNewChat = useCallback(async () => {
@@ -206,10 +192,9 @@ export default function Home() {
     if (!sessionName || !sessionName.trim()) return;
 
     const trimmedName = sessionName.trim();
-
-    // Optimistic update: add new session to local state immediately
-    const previousSessions = [...sessions];
     const previousSelection = selectedSession;
+
+    // Optimistic update: add new session to cache immediately
     const newSession = {
       name: trimmedName,
       messages: 0,
@@ -219,7 +204,7 @@ export default function Home() {
       modified: new Date().toISOString(),
     };
 
-    setSessions([newSession, ...sessions]);
+    const { rollback, revalidate } = mutateSessions((sessions) => [newSession, ...sessions]);
     setSelectedSession(trimmedName);
 
     try {
@@ -238,18 +223,18 @@ export default function Home() {
         throw new Error(errorData.detail || `HTTP ${res.status}`);
       }
 
-      // Refresh the sessions list to get actual server state
-      await refreshSessions();
+      // Revalidate the cache to get actual server state
+      await revalidate();
       toast.success('New chat created successfully');
     } catch (e) {
-      // Rollback on failure: restore previous state
-      setSessions(previousSessions);
+      // Rollback on failure: restore previous cache state
+      rollback();
       setSelectedSession(previousSelection);
       const msg = e instanceof Error ? e.message : String(e);
       toast.error(`Failed to create new chat: ${msg}`);
       console.error('Failed to create new chat:', e);
     }
-  }, [refreshSessions, setSelectedSession, sessions, selectedSession]);
+  }, [mutateSessions, setSelectedSession, selectedSession, toast]);
 
   // Delete session with optimistic update
   const deleteSession = async (sessionName: string) => {
@@ -267,27 +252,18 @@ export default function Home() {
       setDeletingSession(sessionName);
       announce(`Deleting session ${sessionName}`);
 
-      // Capture previous state for rollback
-      let previousSessions: typeof sessions = [];
-      let previousSelection = '';
+      const previousSelection = selectedSession;
 
-      // Optimistic update: remove session immediately from local state using functional update
-      setSessions(prevSessions => {
-        previousSessions = [...prevSessions];
-        const remainingSessions = prevSessions.filter((s) => s.name !== sessionName);
-        return remainingSessions;
-      });
+      // Optimistic update: remove session from cache immediately
+      const { rollback, revalidate } = mutateSessions((sessions) =>
+        sessions.filter((s) => s.name !== sessionName)
+      );
 
-      // If deleting the selected session, switch to another immediately using functional update
-      setSelectedSession(prevSelected => {
-        previousSelection = prevSelected;
-        if (sessionName === prevSelected) {
-          // Access the updated sessions from the closure
-          const remainingSessions = previousSessions.filter((s) => s.name !== sessionName);
-          return remainingSessions[0]?.name || 'default';
-        }
-        return prevSelected;
-      });
+      // If deleting the selected session, switch to another immediately
+      if (sessionName === selectedSession) {
+        const remainingSessions = sessions.filter((s) => s.name !== sessionName);
+        setSelectedSession(remainingSessions[0]?.name || 'default');
+      }
 
       try {
         const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/delete`, {
@@ -300,17 +276,17 @@ export default function Home() {
         }
         announce(`Session ${sessionName} deleted successfully`);
         toast.success(`Session deleted successfully`);
+        // Revalidate to ensure consistency
+        await revalidate();
       } catch (e) {
-        // Rollback on failure: restore previous state
-        setSessions(previousSessions);
+        // Rollback on failure: restore previous cache state
+        rollback();
         setSelectedSession(previousSelection);
         const errorMsg = `Failed to delete session: ${e instanceof Error ? e.message : String(e)}`;
         toast.error(errorMsg);
         announce(errorMsg);
       } finally {
         setDeletingSession(null);
-        // Always refresh to ensure consistency regardless of success/failure
-        await refreshSessions();
       }
     } catch (error) {
       // Catch any unexpected errors in state updates or operations
@@ -318,25 +294,15 @@ export default function Home() {
       const unexpectedErrorMsg = 'An unexpected error occurred while deleting the session. Please refresh the page.';
       toast.error(unexpectedErrorMsg);
       announce(unexpectedErrorMsg);
-      // Attempt to refresh sessions to restore consistent state
-      try {
-        await refreshSessions();
-      } catch (refreshError) {
-        console.error('Failed to refresh after error:', refreshError);
-      }
     }
   };
 
   // Rename session with optimistic update
   const renameSession = async (sessionName: string) => {
     try {
-      // Use functional update to get current session
-      let currentTitle = '';
-      setSessions(prevSessions => {
-        const session = prevSessions.find((s) => s.name === sessionName);
-        currentTitle = session?.title || sessionName;
-        return prevSessions;
-      });
+      // Get current session title
+      const currentSession = sessions.find((s) => s.name === sessionName);
+      const currentTitle = currentSession?.title || sessionName;
 
       const newName = prompt('Enter new session name or title:', currentTitle);
 
@@ -355,49 +321,44 @@ export default function Home() {
         return next;
       });
 
-      // Capture previous state for rollback
-      let previousSessions: typeof sessions = [];
-      let previousSelection = '';
+      const previousSelection = selectedSession;
 
-      // Optimistic update: update session title immediately using functional update
-      setSessions(prevSessions => {
-        previousSessions = [...prevSessions];
-        const optimisticSessions = prevSessions.map((s) =>
+      // Optimistic update: update session title in cache immediately
+      const { rollback, revalidate } = mutateSessions((sessions) =>
+        sessions.map((s) =>
           s.name === sessionName ? { ...s, title: newName.trim() } : s
-        );
-        return optimisticSessions;
-      });
+        )
+      );
 
-    try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/rename`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          new_name: newName.trim(),
-          sync_filename: true,
-        }),
-      });
+      try {
+        const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/rename`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            new_name: newName.trim(),
+            sync_filename: true,
+          }),
+        });
 
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.detail || 'Rename failed');
-      }
-
-      const data = await res.json();
-
-      // If filename changed, update selected session using functional update
-      setSelectedSession(prevSelected => {
-        previousSelection = prevSelected;
-        if (data.new_name !== sessionName && sessionName === prevSelected) {
-          return data.new_name;
+        if (!res.ok) {
+          const errorData = await res.json();
+          throw new Error(errorData.detail || 'Rename failed');
         }
-        return prevSelected;
-      });
-      announce(`Session renamed successfully to ${newName.trim()}`);
-      toast.success('Session renamed successfully');
+
+        const data = await res.json();
+
+        // If filename changed, update selected session
+        if (data.new_name !== sessionName && sessionName === selectedSession) {
+          setSelectedSession(data.new_name);
+        }
+
+        announce(`Session renamed successfully to ${newName.trim()}`);
+        toast.success('Session renamed successfully');
+        // Revalidate to ensure consistency
+        await revalidate();
       } catch (e) {
-        // Rollback on failure: restore previous state
-        setSessions(previousSessions);
+        // Rollback on failure: restore previous cache state
+        rollback();
         setSelectedSession(previousSelection);
         const errorMsg = `Failed to rename session: ${e instanceof Error ? e.message : String(e)}`;
         toast.error(errorMsg);
@@ -409,8 +370,6 @@ export default function Home() {
           next.delete(sessionName);
           return next;
         });
-        // Always refresh to ensure consistency regardless of success/failure
-        await refreshSessions();
       }
     } catch (error) {
       // Catch any unexpected errors in state updates or operations
@@ -418,12 +377,6 @@ export default function Home() {
       const unexpectedErrorMsg = 'An unexpected error occurred while renaming the session. Please refresh the page.';
       toast.error(unexpectedErrorMsg);
       announce(unexpectedErrorMsg);
-      // Attempt to refresh sessions to restore consistent state
-      try {
-        await refreshSessions();
-      } catch (refreshError) {
-        console.error('Failed to refresh after error:', refreshError);
-      }
     }
   };
 
@@ -478,15 +431,10 @@ export default function Home() {
         return;
       }
 
-      // Use functional update to get current session state
-      let isPinned = false;
-      let action = '';
-      setSessions(prevSessions => {
-        const session = prevSessions.find((s) => s.name === sessionName);
-        isPinned = session?.pinned || false;
-        action = isPinned ? 'unpin' : 'pin';
-        return prevSessions;
-      });
+      // Get current session state
+      const currentSession = sessions.find((s) => s.name === sessionName);
+      const isPinned = currentSession?.pinned || false;
+      const action = isPinned ? 'unpin' : 'pin';
 
       // Mark as pending for visual feedback
       setPendingSessions((prev) => {
@@ -495,17 +443,12 @@ export default function Home() {
         return next;
       });
 
-      // Capture previous state for rollback
-      let previousSessions: typeof sessions = [];
-
-      // Optimistic update: toggle pin status immediately in local state using functional update
-      setSessions(prevSessions => {
-        previousSessions = [...prevSessions];
-        const optimisticSessions = prevSessions.map((s) =>
+      // Optimistic update: toggle pin status in cache immediately
+      const { rollback, revalidate } = mutateSessions((sessions) =>
+        sessions.map((s) =>
           s.name === sessionName ? { ...s, pinned: !isPinned } : s
-        );
-        return optimisticSessions;
-      });
+        )
+      );
 
       try {
         const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/${action}`, {
@@ -515,9 +458,11 @@ export default function Home() {
         if (!res.ok) throw new Error(`Failed to ${action} session`);
         announce(`Session ${sessionName} ${action === 'pin' ? 'pinned' : 'unpinned'} successfully`);
         toast.success(`Session ${action === 'pin' ? 'pinned' : 'unpinned'} successfully`);
+        // Revalidate to ensure consistency
+        await revalidate();
       } catch (e) {
-        // Rollback on failure: restore previous state
-        setSessions(previousSessions);
+        // Rollback on failure: restore previous cache state
+        rollback();
         const errorMsg = `Failed to ${action} session: ${e instanceof Error ? e.message : String(e)}`;
         toast.error(errorMsg);
         announce(errorMsg);
@@ -528,8 +473,6 @@ export default function Home() {
           next.delete(sessionName);
           return next;
         });
-        // Always refresh to ensure consistency regardless of success/failure
-        await refreshSessions();
       }
     } catch (error) {
       // Catch any unexpected errors in state updates or operations
@@ -537,12 +480,6 @@ export default function Home() {
       const unexpectedErrorMsg = 'An unexpected error occurred while toggling pin status. Please refresh the page.';
       toast.error(unexpectedErrorMsg);
       announce(unexpectedErrorMsg);
-      // Attempt to refresh sessions to restore consistent state
-      try {
-        await refreshSessions();
-      } catch (refreshError) {
-        console.error('Failed to refresh after error:', refreshError);
-      }
     }
   };
 
@@ -1033,7 +970,7 @@ export default function Home() {
               <ErrorMessage
                 title="Failed to load sessions"
                 message={sessionsError}
-                onRetry={() => void fetchSessions(true)}
+                onRetry={() => void invalidateSessions()}
                 retrying={retryingSessions}
               />
             </div>

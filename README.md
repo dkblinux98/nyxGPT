@@ -295,6 +295,7 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
 - Chat interface with streaming responses
 - **Message editing and regeneration** - Edit any message and fork the conversation from that point, or regenerate assistant responses
 - Session picker and management
+- **Client-side session metadata cache** - Stale-while-revalidate pattern for faster UI updates with automatic background refresh
 - **Optimistic UI updates** for instant feedback on session operations (pin, rename, delete, create)
 - RAG document upload and toggle
 - **Configuration wizard** at `/admin` for step-by-step setup
