@@ -195,4 +195,13 @@ export const handlers = [
       },
     });
   }),
+
+  // GET /api/v1/sessions/:name
+  http.get(/\/api\/v1\/sessions\/[^/]+$/, () => {
+    return HttpResponse.json({
+      messages: [],
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+    });
+  }),
 ];
