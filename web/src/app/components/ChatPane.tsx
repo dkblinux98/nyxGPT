@@ -197,6 +197,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editContent, setEditContent] = useState<string>('');
 
+  // Pagination state
+  const [totalMessages, setTotalMessages] = useState<number>(0);
+  const [loadedOffset, setLoadedOffset] = useState<number>(0);
+  const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
+  const [hasMore, setHasMore] = useState<boolean>(true);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const PAGE_SIZE = 50;
+
   const title = useMemo(() => sessionTitle || `Session: ${sessionName}`, [sessionTitle, sessionName]);
 
   // Fetch available models on mount
@@ -229,6 +237,9 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     setLastError(null);
     setInput('');
     setSelectedModel(''); // Reset model selector immediately
+    setTotalMessages(0);
+    setLoadedOffset(0);
+    setHasMore(true);
     isStreamingRef.current = false;
     abortRef.current?.abort();
     abortRef.current = null;
@@ -251,31 +262,56 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         setSelectedModel(''); // Default to empty (will use first available model)
       });
 
-    // Load historical messages for the session
-    fetch(`/api/v1/sessions/${encodeURIComponent(sessionName)}`)
-      .then(async (res) => {
+    // Load most recent messages with pagination
+    async function loadInitialMessages() {
+      try {
+        const res = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionName)}`);
         if (res.ok) {
           const data = await res.json();
           if (data.messages && Array.isArray(data.messages)) {
-            setMessages(data.messages);
+            const total = data.total || data.messages.length;
+            setTotalMessages(total);
+
+            // Calculate offset to load most recent PAGE_SIZE messages
+            const offset = Math.max(0, total - PAGE_SIZE);
+
+            if (offset > 0) {
+              // Load paginated recent messages
+              const paginatedRes = await fetch(
+                `/api/v1/sessions/${encodeURIComponent(sessionName)}?offset=${offset}&limit=${PAGE_SIZE}`
+              );
+              if (paginatedRes.ok) {
+                const paginatedData = await paginatedRes.json();
+                setMessages(paginatedData.messages || []);
+                setLoadedOffset(offset);
+                setHasMore(offset > 0);
+              }
+            } else {
+              // All messages fit in one page
+              setMessages(data.messages);
+              setLoadedOffset(0);
+              setHasMore(false);
+            }
           }
         }
-      })
-      .catch((err) => {
+      } catch (err) {
         console.error('Failed to load session messages:', err);
-      });
-  }, [sessionName]);
+      }
+    }
+
+    void loadInitialMessages();
+  }, [sessionName, PAGE_SIZE]);
 
   // Scroll to message when scrollToMessageIndex changes
   useEffect(() => {
     if (scrollToMessageIndex !== null && scrollToMessageIndex !== undefined) {
       // Wait a bit for messages to render
       setTimeout(() => {
-        const targetRef = messageRefs.current[scrollToMessageIndex];
+        const targetRef = messageRefs.current[scrollToMessageIndex - loadedOffset];
         if (targetRef) {
           targetRef.scrollIntoView({ behavior: 'smooth', block: 'center' });
           // Highlight the message
-          setHighlightedMessageIndex(scrollToMessageIndex);
+          setHighlightedMessageIndex(scrollToMessageIndex - loadedOffset);
           // Remove highlight after 2 seconds
           setTimeout(() => {
             setHighlightedMessageIndex(null);
@@ -283,7 +319,62 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         }
       }, 100);
     }
-  }, [scrollToMessageIndex]);
+  }, [scrollToMessageIndex, loadedOffset]);
+
+  // Load older messages function
+  const loadOlderMessages = async () => {
+    if (isLoadingMore || !hasMore) return;
+
+    const newOffset = Math.max(0, loadedOffset - PAGE_SIZE);
+    if (newOffset === loadedOffset) {
+      setHasMore(false);
+      return;
+    }
+
+    setIsLoadingMore(true);
+    const container = messagesContainerRef.current;
+    const previousScrollHeight = container?.scrollHeight || 0;
+
+    try {
+      const res = await fetch(
+        `/api/v1/sessions/${encodeURIComponent(sessionName)}?offset=${newOffset}&limit=${PAGE_SIZE}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const olderMessages = data.messages || [];
+        setMessages((prev) => [...olderMessages, ...prev]);
+        setLoadedOffset(newOffset);
+        setHasMore(newOffset > 0);
+
+        // Preserve scroll position by restoring scroll height
+        setTimeout(() => {
+          if (container) {
+            const newScrollHeight = container.scrollHeight;
+            container.scrollTop = newScrollHeight - previousScrollHeight;
+          }
+        }, 0);
+      }
+    } catch (err) {
+      console.error('Failed to load older messages:', err);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
+  // Handle scroll to load more messages
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    const handleScroll = () => {
+      if (container.scrollTop === 0 && hasMore && !isLoadingMore) {
+        void loadOlderMessages();
+      }
+    };
+
+    container.addEventListener('scroll', handleScroll);
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, [hasMore, isLoadingMore, loadedOffset, sessionName, PAGE_SIZE]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function toggleRag() {
     try {
@@ -616,6 +707,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       </div>
 
       <div
+        ref={messagesContainerRef}
         style={{
           flex: 1,
           marginTop: 12,
@@ -627,6 +719,18 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
           background: 'var(--chat-bg)',
         }}
       >
+        {isLoadingMore && (
+          <div
+            style={{
+              padding: '8px',
+              textAlign: 'center',
+              opacity: 0.7,
+              fontSize: 12,
+            }}
+          >
+            Loading older messages...
+          </div>
+        )}
         {messages.length === 0 ? (
           <div style={{ opacity: 0.7 }}>Send a message to start…</div>
         ) : (

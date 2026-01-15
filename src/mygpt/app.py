@@ -793,15 +793,39 @@ def sessions_search(
 
 
 @api.get("/sessions/{name}")
-def sessions_show(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
+def sessions_show(
+    name: str,
+    sessions_dir: Optional[str] = None,
+    offset: Optional[int] = None,
+    limit: Optional[int] = None,
+) -> dict[str, Any]:
     sd = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     sf = sessions.session_file_for(name, sd or sessions.default_sessions_dir())
     mf = sessions.meta_file_for(sf)
-    msgs = sessions.load_session_messages(sf)
-    meta = sessions.load_session_meta(mf)
     if not sf.exists():
         raise HTTPException(status_code=404, detail="No such session")
-    return {"name": name, "messages": msgs, "meta": meta}
+
+    # Load all messages
+    all_msgs = sessions.load_session_messages(sf)
+    total_count = len(all_msgs)
+
+    # Apply pagination if requested
+    if offset is not None or limit is not None:
+        start = offset if offset is not None else 0
+        end = start + limit if limit is not None else len(all_msgs)
+        msgs = all_msgs[start:end]
+    else:
+        msgs = all_msgs
+
+    meta = sessions.load_session_meta(mf)
+    return {
+        "name": name,
+        "messages": msgs,
+        "meta": meta,
+        "total": total_count,
+        "offset": offset if offset is not None else 0,
+        "limit": limit if limit is not None else total_count,
+    }
 
 # Lightweight session initialization endpoint (does NOT invoke the model)
 

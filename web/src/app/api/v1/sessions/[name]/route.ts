@@ -9,12 +9,21 @@ export async function GET(
 ) {
   const { name } = await params;
 
-  const r = await fetch(
-    `${getBaseUrl()}/api/v1/sessions/${encodeURIComponent(name)}`,
-    {
-      cache: "no-store",
-    }
+  // Forward pagination query parameters
+  const searchParams = request.nextUrl.searchParams;
+  const offset = searchParams.get('offset');
+  const limit = searchParams.get('limit');
+
+  const url = new URL(
+    `/api/v1/sessions/${encodeURIComponent(name)}`,
+    getBaseUrl()
   );
+  if (offset) url.searchParams.set('offset', offset);
+  if (limit) url.searchParams.set('limit', limit);
+
+  const r = await fetch(url.toString(), {
+    cache: "no-store",
+  });
 
   return new Response(r.body, {
     status: r.status,
