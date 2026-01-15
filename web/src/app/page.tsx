@@ -8,6 +8,7 @@ import ErrorMessage from '../components/ErrorMessage';
 import { SessionListSkeleton } from '../components/SkeletonLoader';
 import { SessionListErrorBoundary } from '../components/SessionListErrorBoundary';
 import { SearchModal } from '../components/SearchModal';
+import { VirtualizedSessionList } from '../components/VirtualizedSessionList';
 import { useToast } from '../contexts/ToastContext';
 
 type Info = {
@@ -668,7 +669,7 @@ export default function Home() {
   }, [contextMenu, createNewChat, announce]);
 
   // Highlight search matches in text
-  const highlightText = (text: string, search: string) => {
+  const highlightText = useCallback((text: string, search: string) => {
     if (!search) return text;
     const parts = text.split(new RegExp(`(${search})`, 'gi'));
     return parts.map((part, i) =>
@@ -680,7 +681,17 @@ export default function Home() {
         part
       )
     );
-  };
+  }, []);
+
+  // Handle context menu for virtualized list
+  const handleContextMenu = useCallback((e: React.MouseEvent, sessionName: string) => {
+    e.preventDefault();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      sessionName,
+    });
+  }, []);
 
   return (
     <main
@@ -737,10 +748,13 @@ export default function Home() {
         <aside
           style={{
             width: 320,
+            height: '100vh',
             borderRight: '1px solid var(--border)',
             padding: '1rem',
-            overflowY: 'auto',
             background: 'var(--sidebar-bg)',
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
           }}
         >
         <h1 style={{ margin: 0 }}>myGPT</h1>
@@ -997,103 +1011,64 @@ export default function Home() {
           )}
         </div>
 
-        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10 }}>
-          Selected: <strong>{selectedSession}</strong>
-          {filteredSessions.length !== sessions.length && (
-            <span style={{ marginLeft: 8 }}>
-              ({filteredSessions.length} of {sessions.length})
-            </span>
-          )}
-        </div>
-
-        {sessionsError && (
-          <div style={{ marginBottom: 10 }}>
-            <ErrorMessage
-              title="Failed to load sessions"
-              message={sessionsError}
-              onRetry={() => void fetchSessions(true)}
-              retrying={retryingSessions}
-            />
+        {/* Session list container - uses flex to fill remaining space */}
+        <div style={{
+          flex: 1,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden'
+        }}>
+          <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 10, flexShrink: 0 }}>
+            Selected: <strong>{selectedSession}</strong>
+            {filteredSessions.length !== sessions.length && (
+              <span style={{ marginLeft: 8 }}>
+                ({filteredSessions.length} of {sessions.length})
+              </span>
+            )}
           </div>
-        )}
 
-        {loadingSessions && !sessionsError && (
-          <SessionListSkeleton />
-        )}
-
-        {!loadingSessions && !sessionsError && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {filteredSessions.map((s) => {
-            const isActive = s.name === selectedSession;
-            const displayText = s.title?.trim() ? s.title : s.name;
-            const isPending = pendingSessions.has(s.name);
-            return (
-              <button
-                key={s.name}
-                onClick={() => setSelectedSession(s.name)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  setContextMenu({
-                    x: e.clientX,
-                    y: e.clientY,
-                    sessionName: s.name,
-                  });
-                }}
-                style={{
-                  textAlign: 'left',
-                  padding: '10px 10px',
-                  borderRadius: 8,
-                  border: '1px solid ' + (isActive ? 'var(--border)' : 'var(--border-light)'),
-                  background: isActive ? 'var(--active-bg)' : 'var(--sidebar-bg)',
-                  cursor: 'pointer',
-                  color: 'var(--foreground)',
-                  opacity: isPending ? 0.6 : 1,
-                  transition: 'opacity 0.2s ease',
-                  position: 'relative',
-                }}
-              >
-                <div style={{ fontWeight: 600, fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {s.pinned && <span>📌 </span>}
-                  {searchText ? highlightText(displayText, searchText) : displayText}
-                  {isPending && (
-                    <span
-                      style={{
-                        fontSize: 10,
-                        opacity: 0.5,
-                        animation: 'pulse 1.5s ease-in-out infinite',
-                        willChange: 'transform, opacity'
-                      }}
-                      title="Syncing..."
-                    >
-                      ⟳
-                    </span>
-                  )}
-                </div>
-                <div style={{ fontSize: 12, opacity: 0.75, marginTop: 2 }}>
-                  {s.messages ?? 0} msg · {s.model ?? ''}
-                </div>
-                {!!(s.tags && s.tags.length) && (
-                  <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
-                    {s.tags.slice(0, 5).join(', ')}
-                  </div>
-                )}
-              </button>
-            );
-          })}
-
-          {filteredSessions.length === 0 && sessions.length > 0 && (
-            <div style={{ fontSize: 12, opacity: 0.75 }}>
-              No sessions match your filters.
+          {sessionsError && (
+            <div style={{ marginBottom: 10, flexShrink: 0 }}>
+              <ErrorMessage
+                title="Failed to load sessions"
+                message={sessionsError}
+                onRetry={() => void fetchSessions(true)}
+                retrying={retryingSessions}
+              />
             </div>
           )}
 
-          {sessions.length === 0 && !sessionsError && !loadingSessions && (
-            <div style={{ fontSize: 12, opacity: 0.75 }}>
-              No sessions found yet.
-            </div>
+          {loadingSessions && !sessionsError && (
+            <SessionListSkeleton />
+          )}
+
+          {!loadingSessions && !sessionsError && (
+            <>
+              {filteredSessions.length === 0 && sessions.length > 0 && (
+                <div style={{ fontSize: 12, opacity: 0.75 }}>
+                  No sessions match your filters.
+                </div>
+              )}
+              {filteredSessions.length > 0 && (
+                <VirtualizedSessionList
+                  sessions={filteredSessions}
+                  selectedSession={selectedSession}
+                  onSelectSession={setSelectedSession}
+                  onContextMenu={handleContextMenu}
+                  searchText={searchText}
+                  pendingSessions={pendingSessions}
+                  highlightText={highlightText}
+                />
+              )}
+              {sessions.length === 0 && !sessionsError && !loadingSessions && (
+                <div style={{ fontSize: 12, opacity: 0.75 }}>
+                  No sessions found yet.
+                </div>
+              )}
+            </>
           )}
         </div>
-        )}
 
         {/* Context Menu */}
         {contextMenu && (
