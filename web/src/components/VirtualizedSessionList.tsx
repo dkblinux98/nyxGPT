@@ -241,10 +241,19 @@ export const VirtualizedSessionList = memo(function VirtualizedSessionList({
   }
 
   return (
-    <div onKeyDown={handleKeyDown} tabIndex={-1}>
+    <div
+      onKeyDown={handleKeyDown}
+      tabIndex={-1}
+      style={{
+        flex: 1,
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
       <Virtuoso
         ref={virtuosoRef}
-        style={{ flex: 1, minHeight: 0 }}
+        style={{ height: '100%' }}
         totalCount={sessions.length}
         itemContent={renderItem}
         overscan={5}
