@@ -102,19 +102,11 @@ On CI failure:
 
 On code review recommendation:
 - Post structured review comment with findings and recommendation
-- **If REVIEW_AUTO_FIX_ENABLED=true (Automated Fix Loop)**:
-  - On REQUEST_CHANGES: Automated fix loop triggers
-  - Developer-agent checks out PR branch and fixes all Critical/Medium issues
-  - Commits fixes and pushes to PR branch (triggers re-review)
-  - Loops up to 3 times maximum
-  - After 3 loops with persistent issues: Escalate to human (@HUMAN_OWNER comment + assign)
-  - On APPROVE or within 3 loops: Proceeds normally
-- **If REVIEW_AUTO_FIX_ENABLED=false (Manual Workflow)**:
-  - Wait for human to post confirmation comment
-  - Human posts `@approve-merge` or `@request-changes`
-  - Automation executes:
-    - `@approve-merge`: Merge PR, assign issue to human for acceptance
-    - `@request-changes`: Create Acceptance Failure sub-issues, assign to developer-agent
+- Wait for human to post confirmation comment
+- Human posts `@approve-merge` or `@request-changes`
+- Automation executes:
+  - `@approve-merge`: Merge PR, assign issue to human for acceptance
+  - `@request-changes`: Create Acceptance Failure sub-issues, assign to developer-agent
 
 Scripts (executed by automation after human approval):
 - review_request_changes.sh <ISSUE> "<TITLE>" <BODY_FILE>
