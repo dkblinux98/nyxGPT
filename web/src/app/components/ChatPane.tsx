@@ -338,7 +338,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   const [loadedOffset, setLoadedOffset] = useState<number>(0);
   const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
   const [hasMore, setHasMore] = useState<boolean>(true);
-  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const [firstItemIndex, setFirstItemIndex] = useState<number>(0);
   const PAGE_SIZE = 50;
 
   const title = useMemo(() => sessionTitle || `Session: ${sessionName}`, [sessionTitle, sessionName]);
@@ -412,21 +412,39 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
             const offset = Math.max(0, total - PAGE_SIZE);
 
             if (offset > 0) {
-              // Load paginated recent messages
-              const paginatedRes = await fetch(
-                `/api/v1/sessions/${encodeURIComponent(sessionName)}?offset=${offset}&limit=${PAGE_SIZE}`
-              );
-              if (paginatedRes.ok) {
-                const paginatedData = await paginatedRes.json();
-                setMessages(paginatedData.messages || []);
-                setLoadedOffset(offset);
-                setHasMore(offset > 0);
+              // Load paginated recent messages (Medium Issue 3: Add error handling)
+              try {
+                const paginatedRes = await fetch(
+                  `/api/v1/sessions/${encodeURIComponent(sessionName)}?offset=${offset}&limit=${PAGE_SIZE}`
+                );
+                if (paginatedRes.ok) {
+                  const paginatedData = await paginatedRes.json();
+                  setMessages(paginatedData.messages || []);
+                  setLoadedOffset(offset);
+                  setHasMore(offset > 0);
+                  setFirstItemIndex(offset);
+                } else {
+                  // Fallback: use all messages from initial fetch if pagination fails
+                  console.warn('Pagination fetch failed, falling back to all messages');
+                  setMessages(data.messages);
+                  setLoadedOffset(0);
+                  setHasMore(false);
+                  setFirstItemIndex(0);
+                }
+              } catch (paginationErr) {
+                // Fallback: use all messages from initial fetch if pagination fails
+                console.error('Pagination fetch error, falling back:', paginationErr);
+                setMessages(data.messages);
+                setLoadedOffset(0);
+                setHasMore(false);
+                setFirstItemIndex(0);
               }
             } else {
               // All messages fit in one page
               setMessages(data.messages);
               setLoadedOffset(0);
               setHasMore(false);
+              setFirstItemIndex(0);
             }
           }
         }
@@ -459,7 +477,16 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   }, [scrollToMessageIndex, loadedOffset]);
 
   // Load older messages function
-  const loadOlderMessages = async () => {
+  // Helper to reset pagination state (Medium Issue 6: Called after message mutations)
+  const resetPaginationState = useCallback((newMessages: ChatMessage[]) => {
+    setTotalMessages(newMessages.length);
+    setLoadedOffset(0);
+    setHasMore(false);
+    setFirstItemIndex(0);
+  }, []);
+
+  // Load older messages when scrolling to top (Critical Issue 2: Use Virtuoso's startReached)
+  const loadOlderMessages = useCallback(async () => {
     if (isLoadingMore || !hasMore) return;
 
     const newOffset = Math.max(0, loadedOffset - PAGE_SIZE);
@@ -469,8 +496,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     }
 
     setIsLoadingMore(true);
-    const container = messagesContainerRef.current;
-    const previousScrollHeight = container?.scrollHeight || 0;
 
     try {
       const res = await fetch(
@@ -479,39 +504,20 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       if (res.ok) {
         const data = await res.json();
         const olderMessages = data.messages || [];
+
+        // Prepend older messages and adjust firstItemIndex for Virtuoso
         setMessages((prev) => [...olderMessages, ...prev]);
         setLoadedOffset(newOffset);
         setHasMore(newOffset > 0);
-
-        // Preserve scroll position by restoring scroll height
-        setTimeout(() => {
-          if (container) {
-            const newScrollHeight = container.scrollHeight;
-            container.scrollTop = newScrollHeight - previousScrollHeight;
-          }
-        }, 0);
+        setFirstItemIndex(newOffset);
       }
     } catch (err) {
       console.error('Failed to load older messages:', err);
+      toast.error('Failed to load older messages');
     } finally {
       setIsLoadingMore(false);
     }
-  };
-
-  // Handle scroll to load more messages
-  useEffect(() => {
-    const container = messagesContainerRef.current;
-    if (!container) return;
-
-    const handleScroll = () => {
-      if (container.scrollTop === 0 && hasMore && !isLoadingMore) {
-        void loadOlderMessages();
-      }
-    };
-
-    container.addEventListener('scroll', handleScroll);
-    return () => container.removeEventListener('scroll', handleScroll);
-  }, [hasMore, isLoadingMore, loadedOffset, sessionName, PAGE_SIZE]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isLoadingMore, hasMore, loadedOffset, sessionName, PAGE_SIZE, toast]);
 
   // Auto-scroll to bottom when streaming new messages (ref-based to prevent infinite re-renders)
   useEffect(() => {
@@ -768,6 +774,9 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         if (data.messages && Array.isArray(data.messages)) {
           setMessages(data.messages);
 
+          // Reset pagination state after edit (Medium Issue 6)
+          resetPaginationState(data.messages);
+
           // Restore scroll position after messages update
           setTimeout(() => {
             if (scrollStateRef.current) {
@@ -973,6 +982,9 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         if (reloadData.messages && Array.isArray(reloadData.messages)) {
           setMessages(reloadData.messages);
 
+          // Reset pagination state after regeneration (Medium Issue 6)
+          resetPaginationState(reloadData.messages);
+
           // Restore scroll position after messages update
           setTimeout(() => {
             if (scrollStateRef.current) {
@@ -1047,7 +1059,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       </div>
 
       <div
-        ref={messagesContainerRef}
         style={{
           flex: 1,
           marginTop: 12,
@@ -1057,18 +1068,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
           overflow: 'hidden',
         }}
       >
-        {isLoadingMore && (
-          <div
-            style={{
-              padding: '8px',
-              textAlign: 'center',
-              opacity: 0.7,
-              fontSize: 12,
-            }}
-          >
-            Loading older messages...
-          </div>
-        )}
         {messages.length === 0 ? (
           <div style={{ padding: 12, opacity: 0.7 }}>Send a message to start…</div>
         ) : (
@@ -1081,13 +1080,31 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               ref={virtuosoRef}
               data={messages}
               style={{ height: '100%' }}
+              firstItemIndex={firstItemIndex}
               initialTopMostItemIndex={messages.length - 1}
               defaultItemHeight={100}
               followOutput={() => (isAtBottomRef.current ? 'smooth' : false)}
               atBottomStateChange={(atBottom) => {
                 isAtBottomRef.current = atBottom;
               }}
+              startReached={loadOlderMessages}
               itemContent={(idx, m) => renderMessageItem(idx, m)}
+              components={{
+                Header: isLoadingMore
+                  ? () => (
+                      <div
+                        style={{
+                          padding: '8px',
+                          textAlign: 'center',
+                          opacity: 0.7,
+                          fontSize: 12,
+                        }}
+                      >
+                        Loading older messages...
+                      </div>
+                    )
+                  : undefined,
+              }}
             />
           </VirtuosoErrorBoundary>
         )}

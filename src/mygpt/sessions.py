@@ -269,6 +269,58 @@ def load_session_messages(session_file: Path) -> list[dict[str, str]]:
     return []
 
 
+def load_session_messages_paginated(
+    session_file: Path,
+    offset: int = 0,
+    limit: int | None = None,
+) -> tuple[list[dict[str, str]], int]:
+    """
+    Load messages with pagination support, avoiding loading entire file into memory
+    when only a subset is needed.
+
+    Args:
+        session_file: Path to the session JSON file
+        offset: Number of messages to skip from the start (default: 0)
+        limit: Maximum number of messages to return (default: None, returns all after offset)
+
+    Returns:
+        tuple of (messages, total_count) where messages is the paginated slice
+        and total_count is the total number of valid messages in the file
+    """
+    if not session_file.exists():
+        return ([], 0)
+
+    try:
+        data = json.loads(session_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        log.warning("Invalid JSON in session file %s: %s", session_file, e)
+        return ([], 0)
+    except (IOError, OSError) as e:
+        log.warning("Failed to read session file %s: %s", session_file, e)
+        return ([], 0)
+
+    if isinstance(data, list):
+        # Filter valid messages first
+        valid_messages: list[dict[str, str]] = []
+        for item in data:
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("role"), str)
+                and isinstance(item.get("content"), str)
+            ):
+                valid_messages.append(item)
+
+        total_count = len(valid_messages)
+
+        # Apply pagination slice
+        end = offset + limit if limit is not None else total_count
+        paginated = valid_messages[offset:end]
+
+        return (paginated, total_count)
+
+    return ([], 0)
+
+
 def save_session_messages(session_file: Path, messages: list[dict[str, str]]) -> None:
     session_file.parent.mkdir(parents=True, exist_ok=True)
     # Use unique temp file name to avoid race conditions in concurrent writes

@@ -805,17 +805,21 @@ def sessions_show(
     if not sf.exists():
         raise HTTPException(status_code=404, detail="No such session")
 
-    # Load all messages
-    all_msgs = sessions.load_session_messages(sf)
-    total_count = len(all_msgs)
+    # Validate pagination parameters (Medium Issue 4)
+    if offset is not None and offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be non-negative")
+    if limit is not None and limit < 0:
+        raise HTTPException(status_code=400, detail="limit must be non-negative")
 
-    # Apply pagination if requested
+    # Use paginated loading to avoid loading all messages into memory (Critical Issue 1)
     if offset is not None or limit is not None:
         start = offset if offset is not None else 0
-        end = start + limit if limit is not None else len(all_msgs)
-        msgs = all_msgs[start:end]
+        msgs, total_count = sessions.load_session_messages_paginated(sf, start, limit)
     else:
+        # No pagination requested - use regular load for backward compatibility
+        all_msgs = sessions.load_session_messages(sf)
         msgs = all_msgs
+        total_count = len(all_msgs)
 
     meta = sessions.load_session_meta(mf)
     return {
