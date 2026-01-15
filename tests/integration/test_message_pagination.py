@@ -300,7 +300,7 @@ def test_pagination_input_validation(api_base_url: str, tmp_sessions_dir) -> Non
         timeout=5.0
     )
     assert r.status_code == 400
-    assert "offset must be non-negative" in r.json()["detail"]
+    assert "offset must be non-negative" in r.json()["error"]["message"]
 
     # Test negative limit
     r = httpx.get(
@@ -309,4 +309,4 @@ def test_pagination_input_validation(api_base_url: str, tmp_sessions_dir) -> Non
         timeout=5.0
     )
     assert r.status_code == 400
-    assert "limit must be non-negative" in r.json()["detail"]
+    assert "limit must be non-negative" in r.json()["error"]["message"]

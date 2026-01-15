@@ -111,3 +111,11 @@ def require_cassandra(cfg: Any) -> None:
 
     if not _can_connect(host, port, timeout=2.0):
         pytest.skip(f"Cassandra not reachable at {host}:{port}")
+
+
+@pytest.fixture
+def tmp_sessions_dir(tmp_path):
+    """Provide a temporary directory for session files in integration tests."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(exist_ok=True)
+    return sessions_dir
