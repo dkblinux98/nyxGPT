@@ -12,12 +12,12 @@ jobs:
     # Only run if:
     # 1. Auto-fix enabled
     # 2. Comment is on PR
-    # 3. Comment is from github-actions bot
+    # 3. Comment is from claude (Claude Code Action OAuth user)
     # 4. Comment starts with "## Code Review - REQUEST_CHANGES"
     if: >-
       ${{ vars.REVIEW_AUTO_FIX_ENABLED == 'true'
           && github.event.issue.pull_request
-          && github.event.comment.user.login == 'github-actions[bot]'
+          && github.event.comment.user.login == 'claude'
           && startsWith(github.event.comment.body, '## Code Review - REQUEST_CHANGES') }}
     runs-on: ubuntu-latest
 
@@ -147,11 +147,11 @@ jobs:
         run: |
           PR="${{ steps.pr.outputs.pr_number }}"
 
-          # Query PR comments from github-actions[bot] starting with "## Code Review - REQUEST_CHANGES"
+          # Query PR comments from claude (Claude Code Action OAuth user) starting with "## Code Review - REQUEST_CHANGES"
           # Only count REQUEST_CHANGES iterations, not APPROVE comments
           COUNT=$(gh pr view "$PR" --repo "${{ github.repository }}" --json comments --jq '
             [.comments[] |
-             select(.author.login == "github-actions[bot]" and
+             select(.author.login == "claude" and
                     (.body | startswith("## Code Review - REQUEST_CHANGES")))] |
             length
           ')
@@ -247,7 +247,7 @@ jobs:
           # Get most recent "## Code Review - REQUEST_CHANGES" comment
           REVIEW_BODY=$(gh pr view "$PR" --repo "${{ github.repository }}" --json comments --jq '
             [.comments[] |
-             select(.author.login == "github-actions[bot]" and
+             select(.author.login == "claude" and
                     (.body | startswith("## Code Review - REQUEST_CHANGES")))] |
             last |
             .body
