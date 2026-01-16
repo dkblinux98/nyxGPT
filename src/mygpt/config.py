@@ -402,6 +402,53 @@ def get_context_warning_threshold(cfg: ConfigParser) -> float:
         return 0.8
 
 
+def get_rag_instruction_template(cfg: ConfigParser) -> str:
+    """Get RAG instruction template for the LLM.
+
+    This template tells the model how to use retrieved context.
+    Supports template variables: {context}
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Instruction template string
+    """
+    default_template = (
+        "Use the retrieved context below when it is relevant and helpful. "
+        "Do not mention that you were given retrieved context unless the user explicitly asks about sources. "
+        "If the context is insufficient, say so and answer from general knowledge.\n\n"
+        "{context}"
+    )
+    try:
+        return cfg.get("rag", "instruction_template", fallback=default_template)
+    except Exception:
+        return default_template
+
+
+def get_rag_context_format(cfg: ConfigParser) -> str:
+    """Get RAG context format template.
+
+    This template wraps the retrieved context chunks.
+    Supports template variables: {context}
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Context format template string
+    """
+    default_format = (
+        "--- BEGIN RETRIEVED CONTEXT ---\n"
+        "{context}\n"
+        "--- END RETRIEVED CONTEXT ---"
+    )
+    try:
+        return cfg.get("rag", "context_format", fallback=default_format)
+    except Exception:
+        return default_format
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "load_config",
@@ -420,6 +467,8 @@ __all__ = [
     "get_rag_dedupe",
     "get_rag_include_scores",
     "get_rag_include_headers",
+    "get_rag_instruction_template",
+    "get_rag_context_format",
     "get_rate_limit_enabled",
     "get_rate_limit_config",
     "get_context_window_size",
