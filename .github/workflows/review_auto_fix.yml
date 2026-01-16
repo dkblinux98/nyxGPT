@@ -17,7 +17,7 @@ jobs:
     if: >-
       ${{ vars.REVIEW_AUTO_FIX_ENABLED == 'true'
           && github.event.issue.pull_request
-          && github.event.comment.user.login == 'claude'
+          && github.event.comment.user.login == 'claude[bot]'
           && startsWith(github.event.comment.body, '## Code Review - REQUEST_CHANGES') }}
     runs-on: ubuntu-latest
 
