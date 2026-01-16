@@ -187,7 +187,44 @@ jobs:
           echo "branch_name=$BRANCH" >> "$GITHUB_OUTPUT"
           echo "::endgroup::"
 
+      - name: Check if PR already exists
+        id: check_pr
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH="${{ steps.branch.outputs.branch_name }}"
+
+          # Check if PR exists for this branch
+          EXISTING_PR=$(gh pr list --head "$BRANCH" --json number -q '.[0].number' || echo "")
+
+          if [[ -n "$EXISTING_PR" ]]; then
+            echo "pr_exists=true" >> "$GITHUB_OUTPUT"
+            echo "existing_pr=$EXISTING_PR" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR already exists for branch $BRANCH: #$EXISTING_PR"
+          else
+            echo "pr_exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No existing PR found for branch $BRANCH"
+          fi
+
+      - name: Post PR exists notice (if PR exists)
+        if: steps.check_pr.outputs.pr_exists == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const pr_number = '${{ steps.check_pr.outputs.existing_pr }}';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: `✅ **Developer Agent**: PR already exists for this issue.
+
+            PR #${pr_number} is already open and under review. Skipping implementation step.`
+            });
+
       - name: Post implementation start comment
+        if: steps.check_pr.outputs.pr_exists == 'false'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -202,6 +239,7 @@ jobs:
             });
 
       - name: Run Claude Code to implement issue
+        if: steps.check_pr.outputs.pr_exists == 'false'
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
@@ -256,6 +294,7 @@ jobs:
             });
 
       - name: Submit PR for review
+        if: steps.check_pr.outputs.pr_exists == 'false'
         id: pr
         shell: bash
         run: |
@@ -268,6 +307,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Post PR created comment
+        if: steps.check_pr.outputs.pr_exists == 'false'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
