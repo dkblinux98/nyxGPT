@@ -621,3 +621,4 @@ Future work focuses on:
 - richer session metadata and search
 - optional multi‑user and auth extensions
 
+
