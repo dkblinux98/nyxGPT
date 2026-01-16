@@ -402,6 +402,26 @@ def get_context_warning_threshold(cfg: ConfigParser) -> float:
         return 0.8
 
 
+def get_system_prompt_minimize(cfg: ConfigParser) -> bool:
+    """Get system prompt minimization setting.
+
+    When enabled, system prompts are optimized to reduce token usage by:
+    - Removing redundant whitespace and formatting
+    - Condensing verbose patterns
+    - Preserving semantic meaning
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        True if minimization is enabled, False otherwise (default)
+    """
+    try:
+        return cfg.getboolean("mygpt", "system_prompt_minimize", fallback=False)
+    except Exception:
+        return False
+
+
 def get_rag_instruction_template(cfg: ConfigParser) -> str:
     """Get RAG instruction template for the LLM.
 
@@ -539,6 +559,7 @@ __all__ = [
     "get_rate_limit_config",
     "get_context_window_size",
     "get_context_warning_threshold",
+    "get_system_prompt_minimize",
     "get_prompt_mode_enabled",
     "get_prompt_mode_short_threshold",
     "get_prompt_mode_long_threshold",

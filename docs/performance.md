@@ -7,6 +7,7 @@ This guide covers optimization strategies for myGPT to improve response times, r
 ## Quick Performance Checklist
 
 - [ ] Choose appropriate model size for your hardware
+- [ ] Enable system prompt minimization for verbose prompts
 - [ ] Tune RAG configuration for your use case
 - [ ] Optimize Cassandra settings
 - [ ] Configure batch sizes appropriately
@@ -86,6 +87,48 @@ default_model = qwen2.5:14b
 3. **Check GPU availability**: Models run 5-10x faster on GPU vs CPU
 4. **Monitor memory**: Use `ollama ps` to see model memory usage
 5. **Consider quantization**: Smaller quantized versions (e.g., `q4_0`, `q4_K_M`) trade quality for speed
+
+---
+
+## System Prompt Optimization
+
+System prompts can be optimized to reduce token usage and improve response times.
+
+### System Prompt Minimization
+
+```ini
+[mygpt]
+system_prompt_minimize = false    # Default
+```
+
+**When to enable**:
+- Using long or verbose system prompts
+- Want to reduce token usage
+- Need faster response times
+- Approaching context window limits
+
+**What it does**:
+- Removes redundant whitespace and formatting
+- Strips filler words ("Please", "You are", "Make sure to", etc.)
+- Condenses verbose patterns ("in order to" → "to", "as well as" → "and")
+- Preserves semantic meaning
+
+**Performance impact**:
+- Reduces system prompt tokens by 10-30% depending on verbosity
+- Minimal processing overhead (<1ms)
+- Particularly effective with verbose custom system prompts
+
+**Example**:
+```
+Before: "You are a helpful assistant. Please respond to user queries carefully.
+         Make sure to be accurate as well as concise."
+After:  "a helpful assistant. respond to user queries carefully. be accurate and concise."
+```
+
+**Trade-offs**:
+- Slightly less formal tone
+- May affect very specific phrasing requirements
+- Disable if exact wording of system prompt is critical
 
 ---
 
