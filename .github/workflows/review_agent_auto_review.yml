@@ -7,11 +7,12 @@ on:
 jobs:
   execute-review-decision:
     # Only run if comment is on a PR and contains human approval trigger
-    # NOTE: We use simple 'contains' here for quick filtering, then validate with regex in parse_decision step
-    # This prevents workflow from running on unrelated comments while still catching valid triggers
+    # When REVIEW_AUTO_FIX_ENABLED=true, skip @request-changes (auto-fix handles it)
+    # Always allow @approve-merge for manual override
     if: |
       github.event.issue.pull_request &&
-      (contains(github.event.comment.body, '@approve-merge') || contains(github.event.comment.body, '@request-changes'))
+      (contains(github.event.comment.body, '@approve-merge') ||
+       (contains(github.event.comment.body, '@request-changes') && vars.REVIEW_AUTO_FIX_ENABLED != 'true'))
     runs-on: ubuntu-latest
 
     permissions:
