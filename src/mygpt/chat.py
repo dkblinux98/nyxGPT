@@ -11,6 +11,7 @@ from mygpt.config import (
     load_config,
     get_context_window_size,
     get_context_warning_threshold,
+    get_system_prompt_minimize,
 )
 from mygpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
 from mygpt.rag.rag import retrieve_context, compose_context
@@ -78,6 +79,60 @@ def _get_str(cfg: Any, section: str, key: str, default: str) -> str:
         return cfg.get(section, key, fallback=default)
     except Exception:
         return default
+
+
+def _minimize_system_prompt(prompt: str) -> str:
+    """Minimize system prompt to reduce token usage.
+
+    Applies conservative optimizations that preserve semantic meaning:
+    - Normalizes whitespace (removes extra spaces, newlines)
+    - Removes redundant filler words and phrases
+    - Condenses common verbose patterns
+
+    Args:
+        prompt: Original system prompt text
+
+    Returns:
+        Minimized version of the prompt
+    """
+    import re
+
+    if not prompt or not prompt.strip():
+        return prompt
+
+    text = prompt.strip()
+
+    # Normalize whitespace: collapse multiple spaces/newlines
+    text = re.sub(r'\s+', ' ', text)
+
+    # Remove redundant courtesies and filler words (case-insensitive)
+    # These patterns preserve meaning while reducing tokens
+    patterns = [
+        (r'\bPlease\s+', ''),  # "Please respond" -> "Respond"
+        (r'\bYou are\s+', ''),  # "You are a helpful assistant" -> "helpful assistant"
+        (r'\bYou should\s+', ''),  # "You should answer" -> "Answer"
+        (r'\bI want you to\s+', ''),  # "I want you to act" -> "Act"
+        (r'\bYour task is to\s+', ''),  # "Your task is to help" -> "Help"
+        (r'\bMake sure to\s+', ''),  # "Make sure to respond" -> "Respond"
+        (r'\bBe sure to\s+', ''),  # "Be sure to answer" -> "Answer"
+        (r'\s+in order to\s+', ' to '),  # "do X in order to Y" -> "do X to Y"
+        (r'\s+as well as\s+', ' and '),  # "X as well as Y" -> "X and Y"
+    ]
+
+    for pattern, replacement in patterns:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+
+    # Clean up any double spaces created by replacements
+    text = re.sub(r'\s{2,}', ' ', text).strip()
+
+    logger.debug(
+        "Minimized system prompt: %d -> %d chars (%.1f%% reduction)",
+        len(prompt),
+        len(text),
+        100 * (1 - len(text) / len(prompt)) if len(prompt) > 0 else 0
+    )
+
+    return text
 
 
 def _truncate_messages_to_budget(
@@ -222,6 +277,9 @@ def _prepare_chat_context(
     # System prompt
     sys_msg = system or _get_str(cfg, "mygpt", "system_prompt", "")
     if sys_msg.strip():
+        # Apply minimization if enabled
+        if get_system_prompt_minimize(cfg):
+            sys_msg = _minimize_system_prompt(sys_msg)
         messages.append({"role": "system", "content": sys_msg.strip()})
 
     # Optional RAG context injection
