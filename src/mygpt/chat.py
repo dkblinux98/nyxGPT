@@ -13,6 +13,9 @@ from mygpt.config import (
     get_context_warning_threshold,
     get_rag_instruction_template,
     get_rag_context_format,
+    get_prompt_mode_enabled,
+    get_prompt_mode_short_threshold,
+    get_prompt_mode_long_threshold,
 )
 from mygpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
 from mygpt.rag.rag import retrieve_context, compose_context

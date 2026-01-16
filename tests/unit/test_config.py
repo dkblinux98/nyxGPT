@@ -8,7 +8,14 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from mygpt.config import load_config, validate_config, get_api_port
+from mygpt.config import (
+    load_config,
+    validate_config,
+    get_api_port,
+    get_prompt_mode_enabled,
+    get_prompt_mode_short_threshold,
+    get_prompt_mode_long_threshold,
+)
 
 
 def _write(p: Path, text: str) -> None:
@@ -185,3 +192,261 @@ port = invalid
 
     assert port == 8000
     assert "Invalid api.port" in caplog.text
+
+
+def test_get_prompt_mode_enabled_default(tmp_path: Path) -> None:
+    """get_prompt_mode_enabled should return False by default."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_prompt_mode_enabled(cfg) is False
+
+
+def test_get_prompt_mode_enabled_true(tmp_path: Path) -> None:
+    """get_prompt_mode_enabled should return configured value."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[prompt]
+adaptive_mode_enabled = true
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_prompt_mode_enabled(cfg) is True
+
+
+def test_get_prompt_mode_enabled_false(tmp_path: Path) -> None:
+    """get_prompt_mode_enabled should return configured value."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[prompt]
+adaptive_mode_enabled = false
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_prompt_mode_enabled(cfg) is False
+
+
+def test_get_prompt_mode_enabled_invalid_value(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """get_prompt_mode_enabled should handle invalid values gracefully."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[prompt]
+adaptive_mode_enabled = not_a_boolean
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    caplog.set_level(logging.WARNING, logger="mygpt.config")
+    enabled = get_prompt_mode_enabled(cfg)
+
+    assert enabled is False
+    assert "Invalid prompt.adaptive_mode_enabled" in caplog.text
+
+
+def test_get_prompt_mode_short_threshold_default(tmp_path: Path) -> None:
+    """get_prompt_mode_short_threshold should return default value."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_prompt_mode_short_threshold(cfg) == 3
+
+
+def test_get_prompt_mode_short_threshold_configured(tmp_path: Path) -> None:
+    """get_prompt_mode_short_threshold should return configured value."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[prompt]
+short_threshold = 5
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_prompt_mode_short_threshold(cfg) == 5
+
+
+def test_get_prompt_mode_short_threshold_minimum_value(tmp_path: Path) -> None:
+    """get_prompt_mode_short_threshold should enforce minimum value of 1."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[prompt]
+short_threshold = 0
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_prompt_mode_short_threshold(cfg) == 1
+
+
+def test_get_prompt_mode_short_threshold_invalid_value(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """get_prompt_mode_short_threshold should handle invalid values gracefully."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[prompt]
+short_threshold = not_a_number
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    caplog.set_level(logging.WARNING, logger="mygpt.config")
+    threshold = get_prompt_mode_short_threshold(cfg)
+
+    assert threshold == 3
+    assert "Invalid prompt.short_threshold" in caplog.text
+
+
+def test_get_prompt_mode_long_threshold_default(tmp_path: Path) -> None:
+    """get_prompt_mode_long_threshold should return default value."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_prompt_mode_long_threshold(cfg) == 10
+
+
+def test_get_prompt_mode_long_threshold_configured(tmp_path: Path) -> None:
+    """get_prompt_mode_long_threshold should return configured value."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[prompt]
+short_threshold = 3
+long_threshold = 15
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_prompt_mode_long_threshold(cfg) == 15
+
+
+def test_get_prompt_mode_long_threshold_enforces_minimum(tmp_path: Path) -> None:
+    """get_prompt_mode_long_threshold should be greater than short_threshold."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[prompt]
+short_threshold = 10
+long_threshold = 5
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    # long_threshold should be at least short_threshold + 1
+    assert get_prompt_mode_long_threshold(cfg) == 11
+
+
+def test_get_prompt_mode_long_threshold_invalid_value(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """get_prompt_mode_long_threshold should handle invalid values gracefully."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[prompt]
+long_threshold = not_a_number
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    caplog.set_level(logging.WARNING, logger="mygpt.config")
+    threshold = get_prompt_mode_long_threshold(cfg)
+
+    assert threshold == 10
+    assert "Invalid prompt.long_threshold" in caplog.text
