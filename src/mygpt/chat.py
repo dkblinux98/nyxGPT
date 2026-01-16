@@ -12,6 +12,8 @@ from mygpt.config import (
     get_context_window_size,
     get_context_warning_threshold,
     get_system_prompt_minimize,
+    get_rag_instruction_template,
+    get_rag_context_format,
 )
 from mygpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
 from mygpt.rag.rag import retrieve_context, compose_context
@@ -304,15 +306,20 @@ def _prepare_chat_context(
         rag_context = compose_context(rows)
 
         if rag_context:
+            # Load configurable templates
+            instruction_template = get_rag_instruction_template(cfg)
+            context_format = get_rag_context_format(cfg)
+
+            # Format the context using the template
+            formatted_context = context_format.format(context=rag_context)
+
+            # Build the full instruction with formatted context
+            full_instruction = instruction_template.format(context=formatted_context)
+
             messages.append(
                 {
                     "role": "system",
-                    "content": "Use the retrieved context below when it is relevant and helpful. "
-                    "Do not mention that you were given retrieved context unless the user explicitly asks about sources. "
-                    "If the context is insufficient, say so and answer from general knowledge.\n\n"
-                    "--- BEGIN RETRIEVED CONTEXT ---\n"
-                    f"{rag_context}\n"
-                    "--- END RETRIEVED CONTEXT ---",
+                    "content": full_instruction,
                 }
             )
 

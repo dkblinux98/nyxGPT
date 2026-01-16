@@ -255,3 +255,81 @@ def test_chat_with_rag_enabled_but_no_chunks_found(monkeypatch: pytest.MonkeyPat
     # - Message WITHOUT rag_chunks field = RAG was disabled
     # - Message WITH rag_chunks: [] = RAG was enabled but found nothing
     # - Message WITH rag_chunks: [...] = RAG was enabled and found chunks
+
+
+def test_chat_with_custom_rag_templates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Test that custom RAG templates are used when configured."""
+    cfg = _cfg(tmp_path, rag_enabled=True)
+
+    # Add custom templates to config
+    cfg["rag"]["instruction_template"] = "CUSTOM INSTRUCTION: {context}"
+    cfg["rag"]["context_format"] = "[[CUSTOM FORMAT: {context}]]"
+
+    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+
+    # Mock RAG retrieval
+    monkeypatch.setattr(
+        "mygpt.chat.retrieve_context",
+        lambda *a, **k: [{"text": "TEST CONTEXT", "score": 0.9}],
+    )
+
+    # Capture messages sent to ollama
+    sent: dict[str, Any] = {}
+
+    def fake_ollama_chat(*, messages: list[dict[str, str]], **_: Any) -> str:
+        sent["messages"] = messages
+        return "answer"
+
+    monkeypatch.setattr("mygpt.chat.ollama_chat", fake_ollama_chat)
+
+    result = chat("question", config_path=None)
+    assert result.reply == "answer"
+
+    # Extract the RAG system message
+    all_text = "\n".join(m.get("content", "") for m in sent["messages"])
+
+    # Verify custom templates were used
+    assert "CUSTOM INSTRUCTION:" in all_text
+    assert "[[CUSTOM FORMAT:" in all_text
+    assert "TEST CONTEXT" in all_text
+
+    # Verify default templates are NOT present
+    assert "BEGIN RETRIEVED CONTEXT" not in all_text
+    assert "Use the retrieved context below" not in all_text
+
+
+def test_chat_rag_templates_default_backward_compatible(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Test that default templates match the original hardcoded behavior."""
+    cfg = _cfg(tmp_path, rag_enabled=True)
+
+    # Don't set custom templates - should use defaults
+    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+
+    # Mock RAG retrieval
+    monkeypatch.setattr(
+        "mygpt.chat.retrieve_context",
+        lambda *a, **k: [{"text": "CONTEXT TEXT", "score": 0.9}],
+    )
+
+    # Capture messages sent to ollama
+    sent: dict[str, Any] = {}
+
+    def fake_ollama_chat(*, messages: list[dict[str, str]], **_: Any) -> str:
+        sent["messages"] = messages
+        return "answer"
+
+    monkeypatch.setattr("mygpt.chat.ollama_chat", fake_ollama_chat)
+
+    result = chat("question", config_path=None)
+    assert result.reply == "answer"
+
+    # Extract the RAG system message
+    all_text = "\n".join(m.get("content", "") for m in sent["messages"])
+
+    # Verify default templates (matching original hardcoded behavior)
+    assert "Use the retrieved context below when it is relevant and helpful" in all_text
+    assert "--- BEGIN RETRIEVED CONTEXT ---" in all_text
+    assert "--- END RETRIEVED CONTEXT ---" in all_text
+    assert "CONTEXT TEXT" in all_text
