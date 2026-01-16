@@ -35,7 +35,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0  # Full history needed for complete PR diff review
 
       - name: Determine PR number
         id: pr_number
@@ -53,6 +53,12 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Review PR #${{ steps.pr_number.outputs.pr }} according to the review-agent charter and runbook.
+
+            CRITICAL: Review ALL changes in this PR from base branch to HEAD.
+            - Use `gh pr diff ${{ steps.pr_number.outputs.pr }}` to see the COMPLETE diff
+            - Review the ENTIRE changeset, not just the most recent commit
+            - This is important for auto-fix loops where multiple commits may exist
+            - Every review must assess the full state of the PR, not incremental changes
 
             Perform comprehensive code review checking:
 
