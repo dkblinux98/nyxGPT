@@ -449,6 +449,72 @@ def get_rag_context_format(cfg: ConfigParser) -> str:
         return default_format
 
 
+def get_prompt_mode_enabled(cfg: ConfigParser) -> bool:
+    """Get whether adaptive prompt mode is enabled.
+
+    When enabled, system prompts adapt based on conversation length
+    (short/medium/long modes). Only applies when no custom system_prompt is set.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        True if adaptive mode is enabled, False otherwise
+    """
+    try:
+        return cfg.getboolean("prompt", "adaptive_mode_enabled", fallback=False)
+    except (ValueError, TypeError) as e:
+        import logging
+        log = logging.getLogger(__name__)
+        log.warning("Invalid prompt.adaptive_mode_enabled in config, using False: %s", e)
+        return False
+
+
+def get_prompt_mode_short_threshold(cfg: ConfigParser) -> int:
+    """Get message count threshold for short prompt mode.
+
+    Conversations with fewer messages than this threshold use short mode.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Message count threshold for short mode (default: 3)
+    """
+    try:
+        threshold = cfg.getint("prompt", "short_threshold", fallback=3)
+        return max(1, threshold)  # Must be at least 1
+    except (ValueError, TypeError) as e:
+        import logging
+        log = logging.getLogger(__name__)
+        log.warning("Invalid prompt.short_threshold in config, using 3: %s", e)
+        return 3
+
+
+def get_prompt_mode_long_threshold(cfg: ConfigParser) -> int:
+    """Get message count threshold for long prompt mode.
+
+    Conversations with this many messages or more use long mode.
+    Between short_threshold and long_threshold, medium mode is used.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Message count threshold for long mode (default: 10)
+    """
+    try:
+        threshold = cfg.getint("prompt", "long_threshold", fallback=10)
+        # Ensure long_threshold is greater than short_threshold
+        short_threshold = get_prompt_mode_short_threshold(cfg)
+        return max(short_threshold + 1, threshold)
+    except (ValueError, TypeError) as e:
+        import logging
+        log = logging.getLogger(__name__)
+        log.warning("Invalid prompt.long_threshold in config, using 10: %s", e)
+        return 10
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "load_config",
@@ -473,6 +539,9 @@ __all__ = [
     "get_rate_limit_config",
     "get_context_window_size",
     "get_context_warning_threshold",
+    "get_prompt_mode_enabled",
+    "get_prompt_mode_short_threshold",
+    "get_prompt_mode_long_threshold",
     "validate_config",
     "ConfigValidationError",
 ]
