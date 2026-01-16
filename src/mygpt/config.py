@@ -402,6 +402,56 @@ def get_context_warning_threshold(cfg: ConfigParser) -> float:
         return 0.8
 
 
+def get_prompt_mode_enabled(cfg: ConfigParser) -> bool:
+    """Check if adaptive prompt mode is enabled.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        True if adaptive prompt mode is enabled
+    """
+    try:
+        return cfg.getboolean("prompt", "adaptive_mode_enabled", fallback=False)
+    except Exception:
+        return False
+
+
+def get_prompt_mode_short_threshold(cfg: ConfigParser) -> int:
+    """Get message count threshold for short mode.
+
+    Conversations with fewer messages than this use short mode prompts.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Message count threshold for short mode (default 3)
+    """
+    try:
+        return cfg.getint("prompt", "short_threshold", fallback=3)
+    except Exception:
+        return 3
+
+
+def get_prompt_mode_long_threshold(cfg: ConfigParser) -> int:
+    """Get message count threshold for long mode.
+
+    Conversations with more messages than this use long mode prompts.
+    Between short and long thresholds, medium mode is used.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Message count threshold for long mode (default 10)
+    """
+    try:
+        return cfg.getint("prompt", "long_threshold", fallback=10)
+    except Exception:
+        return 10
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "load_config",
@@ -424,6 +474,9 @@ __all__ = [
     "get_rate_limit_config",
     "get_context_window_size",
     "get_context_warning_threshold",
+    "get_prompt_mode_enabled",
+    "get_prompt_mode_short_threshold",
+    "get_prompt_mode_long_threshold",
     "validate_config",
     "ConfigValidationError",
 ]
