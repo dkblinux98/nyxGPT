@@ -482,6 +482,33 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
   -F "file=@document.md"
 ```
 
+#### Debug Mode
+
+RAG debug mode provides detailed troubleshooting metrics for performance tuning and understanding retrieval behavior.
+
+**Enable via config** (`~/.myGPT/config.ini`):
+
+```ini
+[rag]
+debug_mode = true
+```
+
+**Or enable per-request via API:**
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "test query", "debug_mode": true}'
+```
+
+**Debug information includes:**
+- **Timing metrics** - Query expansion, embedding generation, vector search, filtering, composition
+- **Query analysis** - Original query, expanded variants, number of queries executed
+- **Embedding details** - Model name, dimensions, batch size, processing time
+- **Vector search results** - Result counts, score distribution (min, max, mean)
+- **Filtering stats** - Results after each filter stage (min score, deduplication, max chunks)
+- **Context composition** - Character counts before/after truncation, chunks included
+
 **Priority chain:** Explicit API parameter > Session metadata > Global config
 
 ---

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Iterable, List
 from cassandra.cluster import Cluster
@@ -15,6 +16,16 @@ class CassandraConfig:
     port: int
     keyspace: str
     table: str
+
+
+@dataclass
+class VectorSearchDebugMetrics:
+    """Debug metrics for vector search operations."""
+    raw_results_count: int
+    score_min: float | None
+    score_max: float | None
+    score_mean: float | None
+    vector_search_time_ms: float
 
 
 class VectorStoreError(RuntimeError):
@@ -133,9 +144,28 @@ class CassandraVectorStore:
     # Query
     # ----------------------------
 
-    def query_by_embedding(self, embedding: List[float], k: int = 5) -> list[dict]:
+    def query_by_embedding(
+        self,
+        embedding: List[float],
+        k: int = 5,
+        *,
+        collect_metrics: bool = False
+    ) -> list[dict] | tuple[list[dict], VectorSearchDebugMetrics]:
+        """Query by embedding vector.
+
+        Args:
+            embedding: Query vector
+            k: Number of results to return
+            collect_metrics: If True, return tuple of (results, metrics)
+
+        Returns:
+            List of result dicts with doc_id, chunk_id, text, metadata, score.
+            If collect_metrics=True, returns tuple of (results, VectorSearchDebugMetrics).
+        """
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
+
+        start_time = time.perf_counter()
 
         stmt = SimpleStatement(
             f"""
@@ -149,16 +179,31 @@ class CassandraVectorStore:
 
         rows = self.session.execute(stmt, (embedding, embedding, k))
         out: list[dict] = []
+        scores: list[float] = []
         for r in rows:
+            score = float(r.score) if hasattr(r, 'score') and r.score is not None else 0.0
             out.append(
                 {
                     "doc_id": r.doc_id,
                     "chunk_id": r.chunk_id,
                     "text": r.text,
                     "metadata": json.loads(r.metadata) if r.metadata else {},
-                    "score": float(r.score) if hasattr(r, 'score') and r.score is not None else 0.0,
+                    "score": score,
                 }
             )
+            scores.append(score)
+
+        if collect_metrics:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+            metrics = VectorSearchDebugMetrics(
+                raw_results_count=len(out),
+                score_min=min(scores) if scores else None,
+                score_max=max(scores) if scores else None,
+                score_mean=sum(scores) / len(scores) if scores else None,
+                vector_search_time_ms=elapsed_ms,
+            )
+            return out, metrics
+
         return out
 
     def list_docs(self) -> list[dict]:

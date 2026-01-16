@@ -303,6 +303,24 @@ def get_rag_include_headers(cfg: ConfigParser) -> bool:
         return True
 
 
+def get_rag_debug_mode(cfg: ConfigParser) -> bool:
+    """Get RAG debug mode flag.
+
+    When enabled, RAG operations collect and return detailed debug information
+    including timing metrics, query analysis, embedding details, and filtering stats.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        True if debug mode is enabled, False otherwise
+    """
+    try:
+        return cfg.getboolean("rag", "debug_mode", fallback=False)
+    except Exception:
+        return False
+
+
 def get_rate_limit_enabled(cfg: ConfigParser) -> bool:
     """Get rate limiting enabled flag.
 

@@ -200,3 +200,90 @@ def test_retrieve_context_empty_query(monkeypatch: pytest.MonkeyPatch) -> None:
     rows = retrieve_context("")
     assert rows == []
     assert fake_store.last_k == 5  # Verify chat_top_k was passed correctly
+
+
+@pytest.mark.unit
+def test_retrieve_context_debug_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """retrieve_context with debug_mode=True should return debug info."""
+    cfg = ConfigParser()
+    cfg["rag"] = {
+        "chat_top_k": "5",
+        "min_score": "0.50",
+        "max_chunks": "3",
+        "dedupe": "true",
+        "debug_mode": "false",  # Test explicit override
+    }
+
+    monkeypatch.setattr("mygpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    # Mock embed_texts to return embeddings + metrics
+    from mygpt.rag.embeddings import EmbeddingDebugMetrics
+    def mock_embed_texts(texts, *, collect_metrics=False):
+        embeddings = [[0.1, 0.2, 0.3] for _ in texts]
+        if collect_metrics:
+            metrics = EmbeddingDebugMetrics(
+                embedding_model="test-model",
+                embedding_dim=3,
+                num_texts_embedded=len(texts),
+                batch_size=16,
+                embedding_time_ms=10.5,
+            )
+            return embeddings, metrics
+        return embeddings
+
+    monkeypatch.setattr("mygpt.rag.rag.embed_texts", mock_embed_texts)
+    monkeypatch.setattr("mygpt.rag.rag.embed_text", lambda _q: [0.1, 0.2, 0.3])
+
+    # Mock vector store
+    from mygpt.rag.vectorstore_cassandra import VectorSearchDebugMetrics
+    class FakeStore:
+        def query_by_embedding(self, _emb, k: int, *, collect_metrics=False):
+            results = [
+                {"text": "result one", "score": 0.90, "doc_id": "doc1", "chunk_id": 0},
+                {"text": "result two", "score": 0.75, "doc_id": "doc2", "chunk_id": 0},
+                {"text": "result three", "score": 0.60, "doc_id": "doc3", "chunk_id": 0},
+            ]
+            if collect_metrics:
+                metrics = VectorSearchDebugMetrics(
+                    raw_results_count=3,
+                    score_min=0.60,
+                    score_max=0.90,
+                    score_mean=0.75,
+                    vector_search_time_ms=25.3,
+                )
+                return results, metrics
+            return results
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("mygpt.rag.rag.CassandraVectorStore", FakeStore)
+
+    from mygpt.rag.rag import retrieve_context
+
+    # Test with explicit debug_mode=True (overrides config)
+    result = retrieve_context("test query", debug_mode=True)
+    assert isinstance(result, tuple)
+    results, debug_info = result
+
+    # Verify results
+    assert len(results) == 3
+    assert results[0]["text"] == "result one"
+
+    # Verify debug info structure
+    assert debug_info.total_time_ms > 0
+    assert debug_info.embedding_time_ms == 10.5
+    assert debug_info.vector_search_time_ms == 25.3
+    assert debug_info.original_query == "test query"
+    assert debug_info.query_variants == ["test query"]
+    assert debug_info.num_queries == 1
+    assert debug_info.embedding_model == "test-model"
+    assert debug_info.embedding_dim == 3
+    assert debug_info.num_texts_embedded == 1
+    assert debug_info.raw_results_count == 3
+    assert debug_info.score_min == 0.60
+    assert debug_info.score_max == 0.90
+    assert debug_info.score_mean == 0.75
+    assert debug_info.after_dedupe_filter == 3
+    assert debug_info.after_min_score_filter == 3
+    assert debug_info.chunks_included == 3
