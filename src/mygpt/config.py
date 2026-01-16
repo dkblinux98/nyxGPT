@@ -402,54 +402,51 @@ def get_context_warning_threshold(cfg: ConfigParser) -> float:
         return 0.8
 
 
-def get_prompt_mode_enabled(cfg: ConfigParser) -> bool:
-    """Check if adaptive prompt mode is enabled.
+def get_rag_instruction_template(cfg: ConfigParser) -> str:
+    """Get RAG instruction template for the LLM.
+
+    This template tells the model how to use retrieved context.
+    Supports template variables: {context}
 
     Args:
         cfg: ConfigParser instance
 
     Returns:
-        True if adaptive prompt mode is enabled
+        Instruction template string
     """
+    default_template = (
+        "Use the retrieved context below when it is relevant and helpful. "
+        "Do not mention that you were given retrieved context unless the user explicitly asks about sources. "
+        "If the context is insufficient, say so and answer from general knowledge.\n\n"
+        "{context}"
+    )
     try:
-        return cfg.getboolean("prompt", "adaptive_mode_enabled", fallback=False)
+        return cfg.get("rag", "instruction_template", fallback=default_template)
     except Exception:
-        return False
+        return default_template
 
 
-def get_prompt_mode_short_threshold(cfg: ConfigParser) -> int:
-    """Get message count threshold for short mode.
+def get_rag_context_format(cfg: ConfigParser) -> str:
+    """Get RAG context format template.
 
-    Conversations with fewer messages than this use short mode prompts.
+    This template wraps the retrieved context chunks.
+    Supports template variables: {context}
 
     Args:
         cfg: ConfigParser instance
 
     Returns:
-        Message count threshold for short mode (default 3)
+        Context format template string
     """
+    default_format = (
+        "--- BEGIN RETRIEVED CONTEXT ---\n"
+        "{context}\n"
+        "--- END RETRIEVED CONTEXT ---"
+    )
     try:
-        return cfg.getint("prompt", "short_threshold", fallback=3)
+        return cfg.get("rag", "context_format", fallback=default_format)
     except Exception:
-        return 3
-
-
-def get_prompt_mode_long_threshold(cfg: ConfigParser) -> int:
-    """Get message count threshold for long mode.
-
-    Conversations with more messages than this use long mode prompts.
-    Between short and long thresholds, medium mode is used.
-
-    Args:
-        cfg: ConfigParser instance
-
-    Returns:
-        Message count threshold for long mode (default 10)
-    """
-    try:
-        return cfg.getint("prompt", "long_threshold", fallback=10)
-    except Exception:
-        return 10
+        return default_format
 
 
 __all__ = [
@@ -470,6 +467,8 @@ __all__ = [
     "get_rag_dedupe",
     "get_rag_include_scores",
     "get_rag_include_headers",
+    "get_rag_instruction_template",
+    "get_rag_context_format",
     "get_rate_limit_enabled",
     "get_rate_limit_config",
     "get_context_window_size",
