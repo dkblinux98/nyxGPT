@@ -409,11 +409,6 @@ def get_system_prompt_minimize(cfg: ConfigParser) -> bool:
     - Removing redundant whitespace and formatting
     - Condensing verbose patterns
     - Preserving semantic meaning
-def get_rag_instruction_template(cfg: ConfigParser) -> str:
-    """Get RAG instruction template for the LLM.
-
-    This template tells the model how to use retrieved context.
-    Supports template variables: {context}
 
     Args:
         cfg: ConfigParser instance
@@ -425,6 +420,18 @@ def get_rag_instruction_template(cfg: ConfigParser) -> str:
         return cfg.getboolean("mygpt", "system_prompt_minimize", fallback=False)
     except Exception:
         return False
+
+
+def get_rag_instruction_template(cfg: ConfigParser) -> str:
+    """Get RAG instruction template for the LLM.
+
+    This template tells the model how to use retrieved context.
+    Supports template variables: {context}
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
         Instruction template string
     """
     default_template = (
