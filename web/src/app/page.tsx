@@ -1197,23 +1197,23 @@ function Home() {
           <div style={{ fontWeight: 600, marginBottom: 6 }}>Keyboard Shortcuts</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div>
-              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3 }}>{modKey}+K</kbd> New
+              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3, minWidth: 48, display: 'inline-block' }}>{modKey}+K</kbd> New
               chat
             </div>
             <div>
-              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3 }}>{modKey}+/</kbd> Toggle
+              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3, minWidth: 48, display: 'inline-block' }}>{modKey}+/</kbd> Toggle
               sidebar
             </div>
             <div>
-              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3 }}>{modKey}+F</kbd> Search
+              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3, minWidth: 48, display: 'inline-block' }}>{modKey}+F</kbd> Search
               messages
             </div>
             <div>
-              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3 }}>/</kbd> Filter
+              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3, minWidth: 48, display: 'inline-block' }}>/</kbd> Filter
               sessions
             </div>
             <div>
-              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3 }}>Esc</kbd> Close
+              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3, minWidth: 48, display: 'inline-block' }}>Esc</kbd> Close
               menus
             </div>
           </div>
