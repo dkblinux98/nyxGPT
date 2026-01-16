@@ -6,9 +6,11 @@ on:
 
 jobs:
   execute-review-decision:
-    # Only run if comment is on a PR and contains human approval trigger
-    # When REVIEW_AUTO_FIX_ENABLED=true, skip @request-changes (auto-fix handles it)
-    # Always allow @approve-merge for manual override
+    # Manual workflow - requires human comment to trigger
+    # @approve-merge: Always allowed (manual merge override)
+    # @request-changes: Only when REVIEW_AUTO_FIX_ENABLED=false (manual auto-fix trigger)
+    #                   When true, review_auto_fix.yml handles it automatically
+    # Both triggers now run auto-fix loop (no sub-issues created)
     if: |
       github.event.issue.pull_request &&
       (contains(github.event.comment.body, '@approve-merge') ||
@@ -33,6 +35,21 @@ jobs:
 
       - name: Auth gh
         run: gh auth status
+
+      - name: Validate required secrets
+        run: |
+          if [[ -z "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" ]]; then
+            echo "::error::CLAUDE_CODE_OAUTH_TOKEN secret is not configured"
+            echo "::error::Configure it at: Settings → Secrets and variables → Actions → Secrets"
+            exit 1
+          fi
+
+          if [[ -z "${{ secrets.REVIEW_AGENT_TOKEN }}" ]]; then
+            echo "::error::REVIEW_AGENT_TOKEN secret is not configured"
+            exit 1
+          fi
+
+          echo "✓ Required secrets validated"
 
       - name: Write ephemeral config.ini
         shell: bash
@@ -152,90 +169,196 @@ jobs:
           echo "::notice::Human approved merge - executing merge"
           bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_accept_and_merge.sh '$PR' '$ISSUE'"
 
-      - name: Find review-agent's review comment (if changes requested)
+      - name: Count review iterations (if changes requested)
         if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES'
-        id: find_review
+        id: count
         shell: bash
         run: |
           set -euo pipefail
           PR="${{ steps.get_pr.outputs.pr_number }}"
 
-          echo "::notice::Finding review-agent's review comment on PR #$PR"
+          # Query PR comments from claude (Claude Code Action OAuth user) starting with "## Code Review - REQUEST_CHANGES"
+          # Only count REQUEST_CHANGES iterations, not APPROVE comments
+          COUNT=$(gh pr view "$PR" --json comments --jq '
+            [.comments[] |
+             select(.author.login == "claude" and
+                    (.body | startswith("## Code Review - REQUEST_CHANGES")))] |
+            length
+          ')
 
-          # Get all comments on this PR, find most recent from REVIEW_AGENT starting with "## Code Review"
-          REVIEW_COMMENT=$(gh pr view "$PR" --json comments --jq '.comments[] | select(.author.login == "${{ vars.REVIEW_AGENT }}" and (.body | startswith("## Code Review"))) | .body' | tail -1)
+          echo "loop_count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "Review loop count (REQUEST_CHANGES only): $COUNT"
 
-          if [[ -z "$REVIEW_COMMENT" ]]; then
-            echo "::error::Could not find review comment from @${{ vars.REVIEW_AGENT }}"
-            echo "::error::Human requested changes, but no review comment found to parse issues from"
-            exit 1
+          # Escalate when COUNT >= 3 (already 3 reviews exist, this would be 4th attempt)
+          if [[ "$COUNT" -ge 3 ]]; then
+            echo "escalate=true" >> "$GITHUB_OUTPUT"
+            echo "Escalation required: 3 review loops completed"
+          else
+            echo "escalate=false" >> "$GITHUB_OUTPUT"
+            echo "Continuing with auto-fix (loop $(($COUNT + 1))/3)"
           fi
 
-          # Save review comment to file for parsing (use RUNNER_TEMP for security)
-          echo "$REVIEW_COMMENT" > "$RUNNER_TEMP/review-comment.txt"
-          echo "review_file=$RUNNER_TEMP/review-comment.txt" >> "$GITHUB_OUTPUT"
-          echo "::notice::Found review comment from @${{ vars.REVIEW_AGENT }}"
-
-      - name: Create sub-issues (if changes requested)
-        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES'
+      - name: Escalate to human (if 3+ loops)
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          ISSUE="${{ steps.get_issue.outputs.issue_number }}"
+          PR="${{ steps.get_pr.outputs.pr_number }}"
 
-          echo "::notice::Human confirmed changes requested - parsing sub-issues from review comment"
+          echo "Escalating PR #$PR to human after 3 review attempts"
 
-          # Parse Critical and Medium issues from the review comment
-          REVIEW_COMMENT=$(cat "${{ steps.find_review.outputs.review_file }}")
+          gh pr comment "$PR" --body "@${{ vars.HUMAN_OWNER }} claude bot has attempted to review and fix this PR 3 times but issues persist. Manual intervention is required."
 
-          # Extract Critical Issues section
-          CRITICAL_SECTION=$(echo "$REVIEW_COMMENT" | sed -n '/### Critical Issues/,/### Medium Issues\|### Minor Issues\|### Decision/p' | grep '^\- \*\*' || echo "")
+          gh pr edit "$PR" --add-assignee "${{ vars.HUMAN_OWNER }}"
 
-          # Extract Medium Issues section
-          MEDIUM_SECTION=$(echo "$REVIEW_COMMENT" | sed -n '/### Medium Issues/,/### Minor Issues\|### Decision/p' | grep '^\- \*\*' || echo "")
+          echo "✓ Escalation complete"
+          exit 0
 
-          # Combine Critical and Medium issues
-          BLOCKING_ISSUES=$(echo -e "$CRITICAL_SECTION\n$MEDIUM_SECTION" | grep '^\- \*\*' || echo "")
+      - name: Get PR branch name (if changes requested and not escalated)
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'false'
+        id: branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ steps.get_pr.outputs.pr_number }}"
+          BRANCH=$(gh pr view "$PR" --json headRefName -q .headRefName)
 
-          if [[ -z "$BLOCKING_ISSUES" ]]; then
-            echo "::error::REQUEST_CHANGES decision but no Critical/Medium issues found in review comment"
+          if [[ -z "$BRANCH" ]]; then
+            echo "ERROR: Could not get PR branch name"
             exit 1
           fi
 
-          # Create a sub-issue for each blocking issue
-          echo "$BLOCKING_ISSUES" | while IFS= read -r line; do
-            if [[ -z "$line" ]]; then continue; fi
+          echo "branch_name=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "PR branch: $BRANCH"
 
-            # Extract title from **Title**: format
-            TITLE=$(echo "$line" | sed -n 's/^- \*\*\(.*\)\*\*:.*/\1/p')
-            DESCRIPTION=$(echo "$line" | sed -n 's/^- \*\*.*\*\*: \(.*\)/\1/p')
+      - name: Checkout PR branch (if changes requested and not escalated)
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH="${{ steps.branch.outputs.branch_name }}"
 
-            if [[ -z "$TITLE" ]]; then
-              echo "::warning::Could not parse title from: $line"
-              continue
-            fi
+          echo "Fetching and checking out branch: $BRANCH"
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
 
-            # Create body file for sub-issue - use timestamp to avoid filename length issues
-            # Use RUNNER_TEMP for security instead of /tmp
-            BODY_FILE="$RUNNER_TEMP/sub-issue-${ISSUE}-$(date +%s%N).md"
-            cat > "$BODY_FILE" <<EOFBODY
-          ## Acceptance Failure
+          echo "✓ Checked out PR branch"
 
-          From code review of parent issue #${ISSUE}
+      - name: Parse review findings (if changes requested and not escalated)
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'false'
+        id: findings
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ steps.get_pr.outputs.pr_number }}"
 
-          ### Issue
-          ${DESCRIPTION}
+          echo "Extracting most recent Code Review comment..."
 
-          ### How to Fix
-          See code review comment for details and specific file/line references.
+          # Get most recent "## Code Review - REQUEST_CHANGES" comment
+          REVIEW_BODY=$(gh pr view "$PR" --json comments --jq '
+            [.comments[] |
+             select(.author.login == "claude" and
+                    (.body | startswith("## Code Review - REQUEST_CHANGES")))] |
+            last |
+            .body
+          ')
 
-          ### Parent Issue
-          Issue ${ISSUE}
-          EOFBODY
+          if [[ -z "$REVIEW_BODY" ]]; then
+            echo "ERROR: Could not find review comment"
+            exit 1
+          fi
 
-            echo "Creating sub-issue: $TITLE"
-            bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_request_changes.sh '$ISSUE' '$TITLE' '$BODY_FILE'"
-          done
+          # Validate review body has expected structure
+          if ! echo "$REVIEW_BODY" | head -1 | grep -q "^## Code Review - REQUEST_CHANGES"; then
+            echo "ERROR: Review comment does not have expected header format"
+            exit 1
+          fi
+
+          # Validate presence of Critical or Medium issues sections
+          if ! echo "$REVIEW_BODY" | grep -qE "^### (Critical|Medium) Issues"; then
+            echo "WARNING: Review comment has no Critical or Medium issues sections"
+            echo "This may be a malformed review - skipping auto-fix"
+            gh pr comment "$PR" --body "⚠️ **Review Agent**: Auto-fix skipped - review comment appears malformed (no Critical/Medium issues found).
+
+          @${{ vars.HUMAN_OWNER }} Please review manually."
+            exit 1
+          fi
+
+          # Use GitHub runner temp directory instead of /tmp for security
+          FINDINGS_FILE="$RUNNER_TEMP/review-findings.txt"
+          echo "$REVIEW_BODY" > "$FINDINGS_FILE"
+
+          # Verify file was written correctly
+          if [[ ! -f "$FINDINGS_FILE" ]]; then
+            echo "ERROR: Failed to write review findings file"
+            exit 1
+          fi
+
+          echo "findings_file=$FINDINGS_FILE" >> "$GITHUB_OUTPUT"
+          echo "✓ Review findings extracted to $FINDINGS_FILE"
+
+      - name: Verify PR is still open (if changes requested and not escalated)
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ steps.get_pr.outputs.pr_number }}"
+
+          PR_STATE=$(gh pr view "$PR" --json state -q .state)
+
+          if [[ "$PR_STATE" != "OPEN" ]]; then
+            echo "ERROR: PR #$PR is no longer open (state: $PR_STATE)"
+            echo "Aborting auto-fix to prevent push to deleted branch"
+            exit 1
+          fi
+
+          echo "✓ PR is still open"
+
+      - name: Run Claude Code to fix issues (if changes requested and not escalated)
+        if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES' && steps.count.outputs.escalate == 'false'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
+          prompt: |
+            You are the developer agent fixing code review issues for PR #${{ steps.get_pr.outputs.pr_number }}.
+
+            ## Context
+
+            - PR: #${{ steps.get_pr.outputs.pr_number }}
+            - Issue: #${{ steps.get_issue.outputs.issue_number }}
+            - Branch: ${{ steps.branch.outputs.branch_name }}
+            - Review iteration: $((${{ steps.count.outputs.loop_count }} + 1))/3
+
+            ## Review Findings
+
+            The code review findings are in `${{ steps.findings.outputs.findings_file }}`. Read that file to see all the issues.
+
+            ## Your Task
+
+            Fix ALL Critical and Medium issues identified in the code review. DO NOT fix Minor issues (they are style/nits and don't block merge).
+
+            ## Requirements
+
+            1. Read and parse `${{ steps.findings.outputs.findings_file }}` to understand all Critical and Medium issues
+            2. Fix each issue thoroughly with proper testing
+            3. Run relevant tests to verify your fixes work
+            4. Make a SINGLE commit with all fixes included
+            5. Use this exact commit message format:
+               ```
+               fix: address code review findings (review loop $((${{ steps.count.outputs.loop_count }} + 1))) (#${{ steps.get_issue.outputs.issue_number }})
+               ```
+            6. Push the commit to update the PR
+
+            ## Important Notes
+
+            - You are already on the PR branch `${{ steps.branch.outputs.branch_name }}`
+            - All fixes must be in ONE commit (not multiple commits)
+            - After you push, the PR will be automatically re-reviewed
+            - This is iteration $((${{ steps.count.outputs.loop_count }} + 1)) of maximum 3 loops
+
+            Begin by reading the review findings file, then implement all the fixes.
 
       - name: Post completion comment
         if: always()
@@ -245,12 +368,19 @@ jobs:
           script: |
             const pr_number = ${{ steps.get_pr.outputs.pr_number }};
             const decision = '${{ steps.parse_decision.outputs.decision }}';
+            const escalate = '${{ steps.count.outputs.escalate }}';
+            const loop_count = '${{ steps.count.outputs.loop_count }}';
 
             let body;
             if (decision === 'APPROVE') {
               body = '✅ **Review Agent**: PR merged successfully.\n\nHuman approved merge. Changes have been merged to release branch.';
             } else if (decision === 'REQUEST_CHANGES') {
-              body = '🔄 **Review Agent**: Changes requested.\n\nHuman confirmed changes needed. Acceptance failure sub-issues have been created for Critical/Medium findings. Issue assigned back to developer-agent.';
+              if (escalate === 'true') {
+                body = '⚠️ **Review Agent**: Escalated after 3 review loops.\n\nHuman confirmed changes needed. 3 auto-fix attempts completed but issues persist. Manual intervention assigned to @${{ vars.HUMAN_OWNER }}.';
+              } else {
+                const next_iteration = parseInt(loop_count) + 1;
+                body = `🔧 **Review Agent**: Auto-fix loop iteration ${next_iteration}/3 complete.\n\nHuman confirmed changes needed. Fixes have been pushed to branch. PR will be automatically re-reviewed shortly.`;
+              }
             } else {
               body = '❌ **Review Agent**: Execution failed.\n\nCheck workflow logs for details.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
             }

@@ -14,6 +14,9 @@ from mygpt.config import (
     get_system_prompt_minimize,
     get_rag_instruction_template,
     get_rag_context_format,
+    get_prompt_mode_enabled,
+    get_prompt_mode_short_threshold,
+    get_prompt_mode_long_threshold,
 )
 from mygpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
 from mygpt.rag.rag import retrieve_context, compose_context
@@ -135,6 +138,54 @@ def _minimize_system_prompt(prompt: str) -> str:
     )
 
     return text
+def _detect_prompt_mode(message_count: int, cfg: Any) -> str:
+    """Detect appropriate prompt mode based on conversation length.
+
+    Args:
+        message_count: Number of messages in conversation (excluding system)
+        cfg: Config instance
+
+    Returns:
+        One of: "short", "medium", "long"
+    """
+    short_threshold = get_prompt_mode_short_threshold(cfg)
+    long_threshold = get_prompt_mode_long_threshold(cfg)
+
+    if message_count < short_threshold:
+        return "short"
+    elif message_count >= long_threshold:
+        return "long"
+    else:
+        return "medium"
+
+
+def _get_prompt_template(mode: str) -> str:
+    """Get system prompt template for the given mode.
+
+    Args:
+        mode: One of "short", "medium", "long"
+
+    Returns:
+        Prompt template string appropriate for the mode
+    """
+    templates = {
+        "short": (
+            "You are a helpful AI assistant. "
+            "Provide clear, concise responses."
+        ),
+        "medium": (
+            "You are a helpful AI assistant engaged in a conversation. "
+            "Provide informative responses while maintaining context from previous messages. "
+            "Be concise but thorough when needed."
+        ),
+        "long": (
+            "You are a helpful AI assistant engaged in an extended conversation. "
+            "Maintain awareness of the full conversation history and refer back to earlier points when relevant. "
+            "Provide comprehensive responses that build on previous exchanges. "
+            "Be thoughtful about context and continuity throughout the discussion."
+        ),
+    }
+    return templates.get(mode, templates["medium"])
 
 
 def _truncate_messages_to_budget(
@@ -276,8 +327,20 @@ def _prepare_chat_context(
 
     messages: list[dict[str, str]] = []
 
-    # System prompt
+    # System prompt with adaptive mode
     sys_msg = system or _get_str(cfg, "mygpt", "system_prompt", "")
+
+    # Apply adaptive prompt mode if enabled and no custom system prompt
+    if not sys_msg.strip() and get_prompt_mode_enabled(cfg):
+        # Count conversation messages to determine mode
+        conversation_msg_count = len(state.messages)
+        mode = _detect_prompt_mode(conversation_msg_count, cfg)
+        sys_msg = _get_prompt_template(mode)
+        logger.debug(
+            f"Adaptive prompt mode: {mode} "
+            f"(conversation has {conversation_msg_count} messages)"
+        )
+
     if sys_msg.strip():
         # Apply minimization if enabled
         if get_system_prompt_minimize(cfg):
