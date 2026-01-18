@@ -1621,3 +1621,460 @@ async def test_search_results_screen_case_sensitive_filter() -> None:
     # Verify case_sensitive parameter was sent
     call_args = mock_client.get.call_args
     assert call_args[1]["params"]["case_sensitive"] == "true"
+
+
+# ============================================================================
+# RAG Toggle Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_tui_update_rag_status(tmp_path: Path) -> None:
+    """Test _update_rag_status updates the label correctly."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    # Mock rag_status widget
+    app.rag_status = MagicMock()
+    app.rag_status.update = MagicMock()
+
+    # Test with RAG enabled
+    app.rag_enabled = True
+    app._update_rag_status()
+    app.rag_status.update.assert_called_with("RAG: ON")
+
+    # Test with RAG disabled
+    app.rag_enabled = False
+    app._update_rag_status()
+    app.rag_status.update.assert_called_with("RAG: OFF")
+
+
+@pytest.mark.asyncio
+async def test_tui_update_rag_status_widget_not_available(tmp_path: Path) -> None:
+    """Test _update_rag_status handles missing widget gracefully."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test")
+
+    # Don't set rag_status widget - should not crash
+    app.rag_enabled = True
+    app._update_rag_status()  # Should not raise
+
+
+@pytest.mark.asyncio
+async def test_tui_fetch_rag_status_success(tmp_path: Path) -> None:
+    """Test _fetch_rag_status fetches and updates RAG status."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test-session")
+
+    # Mock the rag_status widget
+    app.rag_status = MagicMock()
+
+    # Mock httpx response
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"rag_enabled": True}
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.get = AsyncMock(return_value=mock_response)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._fetch_rag_status()
+
+    # Verify RAG status was fetched and updated
+    assert app.rag_enabled is True
+    mock_client.get.assert_called_once()
+    call_args = mock_client.get.call_args
+    assert "/api/v1/sessions/test-session/metadata" in call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_tui_fetch_rag_status_api_error(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Test _fetch_rag_status handles API errors gracefully."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test-session")
+
+    # Mock httpx to raise exception
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.get = AsyncMock(side_effect=Exception("Connection failed"))
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        with caplog.at_level(logging.WARNING, logger="mygpt.tui"):
+            await app._fetch_rag_status()
+
+    # Verify RAG status defaults to False on error
+    assert app.rag_enabled is False
+    assert "Failed to fetch RAG status" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_tui_action_toggle_rag_enable(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Test action_toggle_rag enables RAG when disabled."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test-session")
+
+    # Start with RAG disabled
+    app.rag_enabled = False
+    app.rag_status = MagicMock()
+
+    # Mock httpx response
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        with caplog.at_level(logging.INFO, logger="mygpt.tui"):
+            await app.action_toggle_rag()
+
+    # Verify RAG was enabled
+    assert app.rag_enabled is True
+    assert "RAG enabled" in caplog.text
+
+    # Verify API was called correctly
+    mock_client.post.assert_called_once()
+    call_args = mock_client.post.call_args
+    assert "/api/v1/sessions/test-session/rag/enable" in call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_tui_action_toggle_rag_disable(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Test action_toggle_rag disables RAG when enabled."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test-session")
+
+    # Start with RAG enabled
+    app.rag_enabled = True
+    app.rag_status = MagicMock()
+
+    # Mock httpx response
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        with caplog.at_level(logging.INFO, logger="mygpt.tui"):
+            await app.action_toggle_rag()
+
+    # Verify RAG was disabled
+    assert app.rag_enabled is False
+    assert "RAG disabled" in caplog.text
+
+    # Verify API was called with disable endpoint
+    call_args = mock_client.post.call_args
+    assert "/api/v1/sessions/test-session/rag/disable" in call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_tui_action_toggle_rag_error(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Test action_toggle_rag handles API errors."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test-session")
+
+    app.rag_enabled = False
+    app.rag_status = MagicMock()
+
+    # Mock httpx to raise exception
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = None
+    mock_client.post = AsyncMock(side_effect=Exception("Connection failed"))
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        with caplog.at_level(logging.ERROR, logger="mygpt.tui"):
+            await app.action_toggle_rag()
+
+    # Verify error was logged
+    assert "Failed to toggle RAG" in caplog.text
+
+    # Verify RAG status remained unchanged
+    assert app.rag_enabled is False
+
+
+# ============================================================================
+# Models Manager Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_tui_action_models_manager(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Test action_models_manager opens ModelsManagerScreen."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test", config_path=str(config_file))
+
+    # Mock push_screen_wait
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)) as mock_push:
+        with caplog.at_level(logging.INFO, logger="mygpt.tui"):
+            await app.action_models_manager()
+
+    # Verify ModelsManagerScreen was shown
+    mock_push.assert_called_once()
+    assert "Models manager closed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_models_manager_initialization() -> None:
+    """Test ModelsManagerScreen initializes correctly."""
+    from mygpt.tui import ModelsManagerScreen
+
+    screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
+
+    assert screen.api_base_url == "http://127.0.0.1:8000"
+    assert screen.models == []
+
+
+@pytest.mark.asyncio
+async def test_models_manager_refresh_models_success() -> None:
+    """Test ModelsManagerScreen refreshes models successfully."""
+    from mygpt.tui import ModelsManagerScreen
+
+    screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
+
+    # Mock widgets
+    screen.query_one = MagicMock(return_value=MagicMock())
+
+    # Mock update methods
+    with patch.object(screen, "update_status", new=AsyncMock()):
+        with patch.object(screen, "update_models_list", new=AsyncMock()):
+            # Mock httpx responses
+            # First response: list of models
+            mock_list_response = MagicMock()
+            mock_list_response.status_code = 200
+            mock_list_response.json.return_value = {"models": ["model1", "model2"]}
+            mock_list_response.raise_for_status = MagicMock()
+
+            # Second/third responses: model info
+            mock_info_response = MagicMock()
+            mock_info_response.status_code = 200
+            mock_info_response.json.return_value = {
+                "info": {"size": 1073741824, "modified_at": "2024-01-01"}
+            }
+            mock_info_response.raise_for_status = MagicMock()
+
+            mock_client = AsyncMock()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            mock_client.get = AsyncMock(side_effect=[mock_list_response, mock_info_response, mock_info_response])
+
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                await screen.refresh_models()
+
+    # Verify models were loaded
+    assert len(screen.models) == 2
+    assert screen.models[0]["name"] == "model1"
+    assert screen.models[1]["name"] == "model2"
+
+
+@pytest.mark.asyncio
+async def test_models_manager_refresh_models_error(caplog: pytest.LogCaptureFixture) -> None:
+    """Test ModelsManagerScreen handles refresh errors."""
+    from mygpt.tui import ModelsManagerScreen
+
+    screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
+
+    # Mock update_status
+    with patch.object(screen, "update_status", new=AsyncMock()):
+        # Mock httpx to raise exception
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get = AsyncMock(side_effect=Exception("Connection failed"))
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            with caplog.at_level(logging.ERROR, logger="mygpt.tui"):
+                await screen.refresh_models()
+
+    # Verify error was logged
+    assert "Failed to load models" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_models_manager_action_refresh() -> None:
+    """Test ModelsManagerScreen refresh action."""
+    from mygpt.tui import ModelsManagerScreen
+
+    screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
+
+    # Mock refresh_models
+    with patch.object(screen, "refresh_models", new=AsyncMock()) as mock_refresh:
+        await screen.action_refresh()
+
+    # Verify refresh was called
+    mock_refresh.assert_called_once()
+
+
+def test_models_manager_action_quit_screen() -> None:
+    """Test ModelsManagerScreen quit action."""
+    from mygpt.tui import ModelsManagerScreen
+
+    screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
+
+    # Mock dismiss method
+    with patch.object(screen, "dismiss") as mock_dismiss:
+        screen.action_quit_screen()
+
+    # Verify screen was dismissed
+    mock_dismiss.assert_called_once()
+
+
+# ============================================================================
+# Session Picker Additional Tests
+# ============================================================================
+
+
+def test_session_picker_action_select() -> None:
+    """Test SessionPickerScreen select action."""
+    from mygpt.tui import SessionPickerScreen
+
+    config_file = Path("/tmp/test_config.ini")
+    cfg = configparser.ConfigParser()
+    cfg["mygpt"] = {"sessions_dir": "/tmp/sessions"}
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        screen = SessionPickerScreen(str(config_file))
+
+    # Mock the ListView with a highlighted item
+    mock_list_view = MagicMock()
+    mock_highlighted = MagicMock()
+    mock_highlighted.name = "selected-session"
+    mock_list_view.highlighted_child = mock_highlighted
+
+    with patch.object(screen, "query_one", return_value=mock_list_view):
+        with patch.object(screen, "dismiss") as mock_dismiss:
+            screen.action_select()
+
+    # Verify session was selected
+    mock_dismiss.assert_called_once_with("selected-session")
+
+
+def test_session_picker_action_select_no_highlight() -> None:
+    """Test SessionPickerScreen select action with no highlight."""
+    from mygpt.tui import SessionPickerScreen
+
+    config_file = Path("/tmp/test_config.ini")
+    cfg = configparser.ConfigParser()
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        screen = SessionPickerScreen(str(config_file))
+
+    # Mock the ListView with no highlighted item
+    mock_list_view = MagicMock()
+    mock_list_view.highlighted_child = None
+
+    with patch.object(screen, "query_one", return_value=mock_list_view):
+        with patch.object(screen, "dismiss") as mock_dismiss:
+            screen.action_select()
+
+    # Should not dismiss (no selection)
+    mock_dismiss.assert_not_called()
+
+
+# ============================================================================
+# Search Results Screen Additional Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_initialization() -> None:
+    """Test SearchResultsScreen initializes correctly."""
+    from mygpt.tui import SearchResultsScreen
+
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+
+    assert screen.api_base_url == "http://127.0.0.1:8000"
+    assert screen.current_session == "test"
+    assert screen.results == []
+    assert screen.case_sensitive is False
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_on_mount() -> None:
+    """Test SearchResultsScreen focuses search input on mount."""
+    from mygpt.tui import SearchResultsScreen
+
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+
+    # Mock search_input widget
+    mock_search_input = MagicMock()
+    screen.search_input = mock_search_input
+
+    await screen.on_mount()
+
+    # Verify input was focused
+    mock_search_input.focus.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_action_close() -> None:
+    """Test SearchResultsScreen close action."""
+    from mygpt.tui import SearchResultsScreen
+
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+
+    # Mock dismiss
+    with patch.object(screen, "dismiss") as mock_dismiss:
+        await screen.action_close()
+
+    # Verify screen was dismissed with None
+    mock_dismiss.assert_called_once_with(None)

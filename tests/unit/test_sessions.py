@@ -1336,3 +1336,776 @@ def test_batch_update_metadata(tmp_path: Path) -> None:
     # Verify RAG enabled updated
     meta1 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir)))
     assert meta1.get("rag_enabled") is True
+
+
+# --- Additional tests for improved coverage ---
+
+
+def test_load_session_messages_paginated_basic(tmp_path: Path) -> None:
+    """Test paginated message loading with offset and limit."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create session with 10 messages
+    sf = sessions.session_file_for("paginated-test", sessions_dir)
+    messages = [{"role": "user", "content": f"Message {i}"} for i in range(10)]
+    sessions.save_session_messages(sf, messages)
+
+    # Load first 3 messages
+    msgs, total = sessions.load_session_messages_paginated(sf, offset=0, limit=3)
+    assert total == 10
+    assert len(msgs) == 3
+    assert msgs[0]["content"] == "Message 0"
+    assert msgs[2]["content"] == "Message 2"
+
+    # Load messages 5-7
+    msgs, total = sessions.load_session_messages_paginated(sf, offset=5, limit=3)
+    assert total == 10
+    assert len(msgs) == 3
+    assert msgs[0]["content"] == "Message 5"
+
+    # Load all remaining messages from offset 8
+    msgs, total = sessions.load_session_messages_paginated(sf, offset=8, limit=None)
+    assert total == 10
+    assert len(msgs) == 2
+    assert msgs[0]["content"] == "Message 8"
+    assert msgs[1]["content"] == "Message 9"
+
+
+def test_load_session_messages_paginated_nonexistent(tmp_path: Path) -> None:
+    """Test paginated loading of nonexistent session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("nonexistent", sessions_dir)
+    msgs, total = sessions.load_session_messages_paginated(sf)
+    assert msgs == []
+    assert total == 0
+
+
+def test_load_session_messages_paginated_corrupted(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Test paginated loading handles corrupted JSON."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("corrupted", sessions_dir)
+    sf.write_text("{invalid json")
+
+    with caplog.at_level(logging.WARNING, logger="mygpt.sessions"):
+        msgs, total = sessions.load_session_messages_paginated(sf)
+
+    assert msgs == []
+    assert total == 0
+    assert "Invalid JSON" in caplog.text
+
+
+def test_rename_session_basic(tmp_path: Path) -> None:
+    """Test basic session rename functionality."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create a session
+    sf, mf, msgs, meta = sessions.init_session(
+        "old-name", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    msgs.append({"role": "user", "content": "Test message"})
+    sessions.save_session_messages(sf, msgs)
+    meta["title"] = "Test Session"
+    sessions.save_session_meta(mf, meta)
+
+    # Rename session
+    ok, msg = sessions.rename_session("old-name", "new-name", sessions_dir)
+    assert ok
+    assert msg == "OK"
+
+    # Verify old files are gone
+    assert not sf.exists()
+    assert not mf.exists()
+
+    # Verify new files exist
+    new_sf = sessions.session_file_for("new-name", sessions_dir)
+    new_mf = sessions.meta_file_for(new_sf)
+    assert new_sf.exists()
+    assert new_mf.exists()
+
+    # Verify content preserved
+    new_msgs = sessions.load_session_messages(new_sf)
+    assert len(new_msgs) == 1
+    assert new_msgs[0]["content"] == "Test message"
+
+    new_meta = sessions.load_session_meta(new_mf)
+    assert new_meta["title"] == "Test Session"
+
+
+def test_rename_session_nonexistent(tmp_path: Path) -> None:
+    """Test renaming nonexistent session fails."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.rename_session("nonexistent", "new-name", sessions_dir)
+    assert not ok
+    assert msg == "No such session"
+
+
+def test_rename_session_target_exists(tmp_path: Path) -> None:
+    """Test renaming to existing session name fails."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create two sessions
+    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
+
+    # Try to rename session1 to session2
+    ok, msg = sessions.rename_session("session1", "session2", sessions_dir)
+    assert not ok
+    assert "already exists" in msg
+
+
+def test_set_pinned_basic(tmp_path: Path) -> None:
+    """Test setting pinned status."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create session
+    sf, mf, msgs, meta = sessions.init_session(
+        "test-pinned", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+
+    # Initially not pinned
+    assert meta.get("pinned") is False
+
+    # Pin session
+    ok, msg = sessions.set_pinned("test-pinned", True, sessions_dir)
+    assert ok
+    assert msg == "OK"
+
+    # Verify pinned
+    meta = sessions.load_session_meta(mf)
+    assert meta["pinned"] is True
+
+    # Unpin session
+    ok, msg = sessions.set_pinned("test-pinned", False, sessions_dir)
+    assert ok
+
+    meta = sessions.load_session_meta(mf)
+    assert meta["pinned"] is False
+
+
+def test_set_pinned_nonexistent(tmp_path: Path) -> None:
+    """Test setting pinned on nonexistent session fails."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.set_pinned("nonexistent", True, sessions_dir)
+    assert not ok
+    assert msg == "No such session"
+
+
+def test_set_title_basic(tmp_path: Path) -> None:
+    """Test setting session title."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create session
+    sf, mf, msgs, meta = sessions.init_session(
+        "test-title", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+
+    # Set title
+    ok, msg = sessions.set_title("test-title", "My New Title", sessions_dir)
+    assert ok
+    assert msg == "OK"
+
+    # Verify title
+    meta = sessions.load_session_meta(mf)
+    assert meta["title"] == "My New Title"
+
+
+def test_set_title_nonexistent(tmp_path: Path) -> None:
+    """Test setting title on nonexistent session fails."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.set_title("nonexistent", "Title", sessions_dir)
+    assert not ok
+    assert msg == "No such session"
+
+
+def test_edit_message_basic(tmp_path: Path) -> None:
+    """Test editing a message in a session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create session with messages
+    sf = sessions.session_file_for("edit-test", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+    messages = [
+        {"role": "user", "content": "Original message 1"},
+        {"role": "assistant", "content": "Response 1"},
+        {"role": "user", "content": "Original message 2"},
+        {"role": "assistant", "content": "Response 2"},
+    ]
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, sessions.ensure_meta_defaults({}))
+
+    # Edit message at index 2 (third message)
+    ok, msg = sessions.edit_message("edit-test", 2, "Edited message 2", sessions_dir, fork=True)
+    assert ok
+    assert msg == "Message edited"
+
+    # Verify edit
+    msgs = sessions.load_session_messages(sf)
+    assert len(msgs) == 3  # Fork truncates after edited message
+    assert msgs[2]["content"] == "Edited message 2"
+    assert msgs[2]["original_content"] == "Original message 2"
+    assert "edited_at" in msgs[2]
+
+
+def test_edit_message_no_fork(tmp_path: Path) -> None:
+    """Test editing a message without forking."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("edit-no-fork", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+    messages = [
+        {"role": "user", "content": "Message 1"},
+        {"role": "assistant", "content": "Response 1"},
+        {"role": "user", "content": "Message 2"},
+    ]
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, sessions.ensure_meta_defaults({}))
+
+    # Edit without forking
+    ok, msg = sessions.edit_message("edit-no-fork", 0, "Edited message 1", sessions_dir, fork=False)
+    assert ok
+
+    # All messages should still exist
+    msgs = sessions.load_session_messages(sf)
+    assert len(msgs) == 3
+    assert msgs[0]["content"] == "Edited message 1"
+
+
+def test_edit_message_invalid_index(tmp_path: Path) -> None:
+    """Test editing with invalid message index."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("edit-invalid", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+    messages = [{"role": "user", "content": "Message"}]
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, sessions.ensure_meta_defaults({}))
+
+    # Try to edit invalid index
+    ok, msg = sessions.edit_message("edit-invalid", 99, "New content", sessions_dir)
+    assert not ok
+    assert "Invalid message index" in msg
+
+
+def test_edit_message_nonexistent_session(tmp_path: Path) -> None:
+    """Test editing message in nonexistent session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.edit_message("nonexistent", 0, "Content", sessions_dir)
+    assert not ok
+    assert msg == "No such session"
+
+
+def test_truncate_after_message_basic(tmp_path: Path) -> None:
+    """Test truncating conversation after a specific message."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("truncate-test", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+    messages = [
+        {"role": "user", "content": "Message 1"},
+        {"role": "assistant", "content": "Response 1"},
+        {"role": "user", "content": "Message 2"},
+        {"role": "assistant", "content": "Response 2"},
+        {"role": "user", "content": "Message 3"},
+    ]
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, sessions.ensure_meta_defaults({}))
+
+    # Truncate after index 2 (keep first 3 messages)
+    ok, msg = sessions.truncate_after_message("truncate-test", 2, sessions_dir)
+    assert ok
+    assert msg == "Conversation truncated"
+
+    # Verify truncation
+    msgs = sessions.load_session_messages(sf)
+    assert len(msgs) == 3
+    assert msgs[2]["content"] == "Message 2"
+
+
+def test_truncate_after_message_invalid_index(tmp_path: Path) -> None:
+    """Test truncating with invalid index."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("truncate-invalid", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+    messages = [{"role": "user", "content": "Message"}]
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, sessions.ensure_meta_defaults({}))
+
+    ok, msg = sessions.truncate_after_message("truncate-invalid", 99, sessions_dir)
+    assert not ok
+    assert "Invalid message index" in msg
+
+
+def test_truncate_after_message_nonexistent(tmp_path: Path) -> None:
+    """Test truncating nonexistent session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.truncate_after_message("nonexistent", 0, sessions_dir)
+    assert not ok
+    assert msg == "No such session"
+
+
+def test_normalize_tags(tmp_path: Path) -> None:
+    """Test tag normalization functionality."""
+    # Test deduplication (case-insensitive)
+    tags = sessions.normalize_tags(["Python", "python", "PYTHON", "Java"])
+    assert tags == ["Java", "Python"]  # Sorted, deduplicated
+
+    # Test whitespace handling
+    tags = sessions.normalize_tags(["  tag1  ", "tag2", "", "  ", "tag3"])
+    assert tags == ["tag1", "tag2", "tag3"]
+
+    # Test empty input
+    tags = sessions.normalize_tags([])
+    assert tags == []
+
+    # Test sorting
+    tags = sessions.normalize_tags(["zebra", "apple", "banana"])
+    assert tags == ["apple", "banana", "zebra"]
+
+
+def test_token_estimate_from_messages(tmp_path: Path) -> None:
+    """Test token estimation from messages."""
+    # Empty messages
+    estimate = sessions.token_estimate_from_messages([])
+    assert estimate == 0
+
+    # Single message
+    messages = [{"role": "user", "content": "Hello"}]
+    estimate = sessions.token_estimate_from_messages(messages)
+    assert estimate > 0
+
+    # Multiple messages
+    messages = [
+        {"role": "user", "content": "A" * 100},
+        {"role": "assistant", "content": "B" * 100},
+    ]
+    estimate = sessions.token_estimate_from_messages(messages)
+    assert estimate >= 50  # Rough estimate: 200 chars / 4 = 50 tokens
+
+
+def test_sanitize_title_for_filename(tmp_path: Path) -> None:
+    """Test title sanitization for filenames."""
+    # Basic case
+    assert sessions.sanitize_title_for_filename("My Chat Session") == "my-chat-session"
+
+    # Special characters
+    assert sessions.sanitize_title_for_filename("Python: Tips & Tricks!") == "python-tips-tricks"
+
+    # Multiple spaces and hyphens
+    assert sessions.sanitize_title_for_filename("Test   -  Session") == "test-session"
+
+    # Truncation (> 64 chars)
+    long_title = "A" * 100
+    sanitized = sessions.sanitize_title_for_filename(long_title)
+    assert len(sanitized) == 64
+
+    # Empty after sanitization
+    assert sessions.sanitize_title_for_filename("!!!") == "session"
+
+
+def test_sync_filename_with_title_no_title(tmp_path: Path) -> None:
+    """Test sync when session has no title."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create session without title
+    sf, mf, msgs, meta = sessions.init_session(
+        "test-session", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    # Don't set a title
+
+    # Sync should report no title
+    success, message, new_name = sessions.sync_filename_with_title(
+        "test-session", sessions_dir, force=True
+    )
+    assert success
+    assert message == "no_title"
+    assert new_name == "test-session"
+
+
+def test_sync_filename_with_title_collision(tmp_path: Path) -> None:
+    """Test sync when target filename already exists."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create first session with title
+    sf1, mf1, msgs1, meta1 = sessions.init_session(
+        "session-1", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    meta1["title"] = "Collision Test"
+    sessions.save_session_meta(mf1, meta1)
+
+    # Create second session with same title
+    sf2, mf2, msgs2, meta2 = sessions.init_session(
+        "session-2", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    meta2["title"] = "Collision Test"
+    sessions.save_session_meta(mf2, meta2)
+
+    # Rename first session
+    success, message, new_name = sessions.sync_filename_with_title(
+        "session-1", sessions_dir, force=True
+    )
+    assert success
+    assert message == "renamed"
+    assert new_name == "collision-test"
+
+    # Rename second session (should get collision-test-1)
+    success, message, new_name = sessions.sync_filename_with_title(
+        "session-2", sessions_dir, force=True
+    )
+    assert success
+    assert message == "renamed"
+    assert new_name == "collision-test-1"
+
+
+def test_search_messages_invalid_role_filter(tmp_path: Path) -> None:
+    """Test search with invalid role filter raises ValueError."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    with pytest.raises(ValueError, match="Invalid role_filter"):
+        sessions.search_messages("query", sessions_dir, role_filter="invalid_role")
+
+
+def test_delete_session_basic(tmp_path: Path) -> None:
+    """Test deleting a session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create session
+    sf, mf, msgs, meta = sessions.init_session(
+        "delete-me", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    assert sf.exists()
+    assert mf.exists()
+
+    # Delete session
+    ok = sessions.delete_session("delete-me", sessions_dir)
+    assert ok
+    assert not sf.exists()
+    assert not mf.exists()
+
+
+def test_delete_session_nonexistent(tmp_path: Path) -> None:
+    """Test deleting nonexistent session returns False."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok = sessions.delete_session("nonexistent", sessions_dir)
+    assert not ok
+
+
+def test_load_session_meta_corrupted_json(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Test loading corrupted metadata JSON returns empty dict."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    mf = sessions_dir / "test.meta.json"
+    mf.write_text("{invalid json")
+
+    with caplog.at_level(logging.WARNING, logger="mygpt.sessions"):
+        meta = sessions.load_session_meta(mf)
+
+    assert meta == {}
+    assert "Invalid JSON in metadata file" in caplog.text
+
+
+def test_load_session_meta_io_error(tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test loading metadata with IO error returns empty dict."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    mf = sessions_dir / "test.meta.json"
+    mf.write_text('{"title": "test"}')
+
+    # Monkey-patch Path.read_text to raise IOError
+    def raise_io_error(*args, **kwargs):
+        raise IOError("Simulated IO error")
+
+    monkeypatch.setattr("pathlib.Path.read_text", raise_io_error)
+
+    with caplog.at_level(logging.WARNING, logger="mygpt.sessions"):
+        meta = sessions.load_session_meta(mf)
+
+    assert meta == {}
+    assert "Failed to read metadata file" in caplog.text
+
+
+def test_load_session_messages_io_error(tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test loading session messages with IO error returns empty list."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("test", sessions_dir)
+    sf.write_text('[{"role": "user", "content": "test"}]')
+
+    # Monkey-patch Path.read_text to raise IOError
+    def raise_io_error(*args, **kwargs):
+        raise IOError("Simulated IO error")
+
+    monkeypatch.setattr("pathlib.Path.read_text", raise_io_error)
+
+    with caplog.at_level(logging.WARNING, logger="mygpt.sessions"):
+        messages = sessions.load_session_messages(sf)
+
+    assert messages == []
+    assert "Failed to read session file" in caplog.text
+
+
+def test_load_session_messages_invalid_data_type(tmp_path: Path) -> None:
+    """Test loading session with non-list data returns empty list."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("invalid-type", sessions_dir)
+    sf.write_text('{"not": "a list"}')  # Valid JSON, but not a list
+
+    messages = sessions.load_session_messages(sf)
+    assert messages == []
+
+
+def test_apply_system_prompt_existing_system(tmp_path: Path) -> None:
+    """Test applying system prompt when one already exists."""
+    messages = [
+        {"role": "system", "content": "Old system prompt"},
+        {"role": "user", "content": "Hello"},
+    ]
+
+    result = sessions.apply_system_prompt(messages, "New system prompt")
+    assert len(result) == 2
+    assert result[0]["role"] == "system"
+    assert result[0]["content"] == "New system prompt"
+
+
+def test_apply_system_prompt_no_existing_system(tmp_path: Path) -> None:
+    """Test applying system prompt when none exists."""
+    messages = [
+        {"role": "user", "content": "Hello"},
+    ]
+
+    result = sessions.apply_system_prompt(messages, "System prompt")
+    assert len(result) == 2
+    assert result[0]["role"] == "system"
+    assert result[0]["content"] == "System prompt"
+
+
+def test_apply_system_prompt_none(tmp_path: Path) -> None:
+    """Test applying None system prompt leaves messages unchanged."""
+    messages = [{"role": "user", "content": "Hello"}]
+    result = sessions.apply_system_prompt(messages, None)
+    assert result == messages
+
+
+def test_ensure_meta_defaults_missing_fields(tmp_path: Path) -> None:
+    """Test ensure_meta_defaults fills in missing fields."""
+    meta = {}
+    result = sessions.ensure_meta_defaults(meta, model="llama3.1:8b")
+
+    assert "created_at" in result
+    assert "updated_at" in result
+    assert result["pinned"] is False
+    assert result["tags"] == []
+    assert result["model"] == "llama3.1:8b"
+    assert "rag_enabled" in result
+
+
+def test_ensure_meta_defaults_invalid_types(tmp_path: Path) -> None:
+    """Test ensure_meta_defaults fixes invalid field types."""
+    meta = {
+        "created_at": 12345,  # Should be string
+        "pinned": "yes",  # Should be bool
+        "tags": "not a list",  # Should be list
+    }
+
+    result = sessions.ensure_meta_defaults(meta)
+    assert isinstance(result["created_at"], str)
+    assert result["pinned"] is False
+    assert result["tags"] == []
+
+
+def test_meta_file_for(tmp_path: Path) -> None:
+    """Test meta_file_for generates correct metadata path."""
+    sessions_dir = tmp_path / "sessions"
+    sf = sessions.session_file_for("test", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    assert mf.name == "test.meta.json"
+    assert mf.parent == sf.parent
+
+
+def test_iso_now(tmp_path: Path) -> None:
+    """Test iso_now returns valid ISO 8601 timestamp."""
+    timestamp = sessions.iso_now()
+    assert isinstance(timestamp, str)
+    assert "T" in timestamp
+    # Verify it's parseable as ISO 8601
+    from datetime import datetime
+    parsed = datetime.fromisoformat(timestamp)
+    assert parsed is not None
+
+
+def test_default_sessions_dir(tmp_path: Path) -> None:
+    """Test default_sessions_dir returns valid path."""
+    result = sessions.default_sessions_dir()
+    assert isinstance(result, Path)
+
+
+def test_batch_export_invalid_format(tmp_path: Path) -> None:
+    """Test batch export with invalid format raises ValueError."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    output_dir = tmp_path / "exports"
+
+    with pytest.raises(ValueError, match="Invalid format"):
+        sessions.batch_export_sessions(
+            ["session1"], output_dir, sessions_dir, format="invalid"
+        )
+
+
+def test_list_sessions_sorting(tmp_path: Path) -> None:
+    """Test list_sessions sorts pinned sessions first."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create sessions
+    sf1, mf1, msgs1, meta1 = sessions.init_session(
+        "unpinned", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+
+    sf2, mf2, msgs2, meta2 = sessions.init_session(
+        "pinned", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    meta2["pinned"] = True
+    sessions.save_session_meta(mf2, meta2)
+
+    # List sessions
+    result = sessions.list_sessions(sessions_dir)
+    assert len(result) == 2
+
+    # Pinned session should come first
+    assert result[0]["name"] == "pinned"
+    assert result[1]["name"] == "unpinned"
+
+
+def test_list_sessions_with_path_object(tmp_path: Path) -> None:
+    """Test list_sessions accepts Path object directly."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sessions.init_session("test", sessions_dir, new_session=True, model="llama3.1:8b")
+
+    # Pass Path object instead of config
+    result = sessions.list_sessions(sessions_dir)
+    assert len(result) == 1
+    assert result[0]["name"] == "test"
+
+
+def test_save_session_messages_atomic(tmp_path: Path) -> None:
+    """Test save_session_messages uses atomic temp file."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("atomic-test", sessions_dir)
+    messages = [{"role": "user", "content": "Test"}]
+
+    # Save messages
+    sessions.save_session_messages(sf, messages)
+
+    # Verify file exists and no temp files remain
+    assert sf.exists()
+    temp_files = list(sessions_dir.glob(".*.tmp"))
+    assert len(temp_files) == 0
+
+    # Verify content
+    loaded = sessions.load_session_messages(sf)
+    assert len(loaded) == 1
+    assert loaded[0]["content"] == "Test"
+
+
+def test_save_session_meta_atomic(tmp_path: Path) -> None:
+    """Test save_session_meta uses atomic temp file."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    mf = sessions_dir / "test.meta.json"
+    meta = {"title": "Test", "pinned": False, "tags": []}
+
+    # Save metadata
+    sessions.save_session_meta(mf, meta)
+
+    # Verify file exists and no temp files remain
+    assert mf.exists()
+    temp_files = list(sessions_dir.glob(".*.tmp"))
+    assert len(temp_files) == 0
+
+    # Verify content
+    loaded = sessions.load_session_meta(mf)
+    assert loaded["title"] == "Test"
+
+
+def test_add_tags_preserves_existing(tmp_path: Path) -> None:
+    """Test add_tags preserves existing tags."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create session with existing tags
+    sf, mf, msgs, meta = sessions.init_session(
+        "tag-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    meta["tags"] = ["existing1", "existing2"]
+    sessions.save_session_meta(mf, meta)
+
+    # Add new tags
+    ok, msg = sessions.add_tags("tag-test", ["new1", "new2"], sessions_dir)
+    assert ok
+
+    # Verify all tags present
+    meta = sessions.load_session_meta(mf)
+    assert set(meta["tags"]) == {"existing1", "existing2", "new1", "new2"}
+
+
+def test_remove_tags_case_insensitive(tmp_path: Path) -> None:
+    """Test remove_tags is case-insensitive."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    # Create session with tags
+    sf, mf, msgs, meta = sessions.init_session(
+        "remove-tags-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    meta["tags"] = ["Python", "Java", "Rust"]
+    sessions.save_session_meta(mf, meta)
+
+    # Remove tag with different case
+    ok, msg = sessions.remove_tags("remove-tags-test", ["python"], sessions_dir)
+    assert ok
+
+    # Verify tag removed
+    meta = sessions.load_session_meta(mf)
+    assert "Python" not in meta["tags"]
+    assert set(meta["tags"]) == {"Java", "Rust"}
