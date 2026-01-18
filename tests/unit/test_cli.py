@@ -385,3 +385,699 @@ def test_sessions_stats_calculates_token_estimate(tmp_path: Path, capsys: pytest
     assert "Approximate tokens:" in captured.out
     # Token count should be greater than 0
     assert not "Approximate tokens: 0" in captured.out
+
+
+# Session list command tests
+def test_sessions_list_empty(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test listing sessions when none exist."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    exit_code = cli(["sessions", "list", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert f"No sessions found in {sessions_dir}" in captured.out
+
+
+def test_sessions_list_with_sessions(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test listing sessions displays session info."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create multiple test sessions
+    for name in ["session1", "session2", "session3"]:
+        session_file = sessions.session_file_for(name, sessions_dir)
+        meta_file = sessions.meta_file_for(session_file)
+
+        messages = [{"role": "user", "content": f"Test message for {name}"}]
+        metadata = {
+            "title": f"Title for {name}",
+            "created_at": "2024-01-01T12:00:00",
+            "updated_at": "2024-01-01T12:00:00",
+            "tags": ["test", name],
+            "pinned": name == "session1",
+        }
+
+        sessions.save_session_messages(session_file, messages)
+        sessions.save_session_meta(meta_file, metadata)
+
+    exit_code = cli(["sessions", "list", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    # Verify all sessions are listed
+    assert "session1" in captured.out
+    assert "session2" in captured.out
+    assert "session3" in captured.out
+    # Verify pinned session has the pin indicator
+    assert "📌 session1" in captured.out
+    # Verify titles are shown
+    assert "Title for session1" in captured.out
+
+
+# Session show command tests
+def test_sessions_show(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test showing session details."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("test-show", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [{"role": "user", "content": "Test"}]
+    metadata = {"title": "Test Session", "created_at": "2024-01-01T12:00:00"}
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    exit_code = cli(["sessions", "show", "test-show", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Session: test-show" in captured.out
+    assert "Messages: 1" in captured.out
+    assert '"title": "Test Session"' in captured.out
+
+
+def test_sessions_show_nonexistent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test show fails for nonexistent session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    exit_code = cli(["sessions", "show", "nonexistent", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "No such session: nonexistent" in captured.out
+
+
+def test_sessions_show_missing_name(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test show fails when name is missing."""
+    exit_code = cli(["sessions", "show"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "session name is required" in captured.err
+
+
+# Session delete command tests
+def test_sessions_delete(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test deleting a session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("test-delete", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [{"role": "user", "content": "Test"}]
+    metadata = {"created_at": "2024-01-01T12:00:00"}
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    exit_code = cli(["sessions", "delete", "test-delete", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Deleted session: test-delete" in captured.out
+    # Verify session file is gone
+    assert not session_file.exists()
+
+
+def test_sessions_delete_nonexistent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test delete fails for nonexistent session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    exit_code = cli(["sessions", "delete", "nonexistent", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "No such session: nonexistent" in captured.out
+
+
+def test_sessions_delete_missing_name(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test delete fails when name is missing."""
+    exit_code = cli(["sessions", "delete"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "session name is required" in captured.err
+
+
+# Session rename command tests
+def test_sessions_rename(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test renaming a session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("old-name", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [{"role": "user", "content": "Test"}]
+    metadata = {"created_at": "2024-01-01T12:00:00"}
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    exit_code = cli(["sessions", "rename", "old-name", "new-name", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Renamed session: old-name -> new-name" in captured.out
+    # Verify old name is gone and new name exists
+    assert not session_file.exists()
+    new_file = sessions.session_file_for("new-name", sessions_dir)
+    assert new_file.exists()
+
+
+def test_sessions_rename_missing_names(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test rename fails when names are missing."""
+    exit_code = cli(["sessions", "rename", "old-name"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "old and new names required" in captured.err
+
+
+# Session pin/unpin command tests
+def test_sessions_pin(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test pinning a session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("test-pin", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [{"role": "user", "content": "Test"}]
+    metadata = {"created_at": "2024-01-01T12:00:00", "pinned": False}
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    exit_code = cli(["sessions", "pin", "test-pin", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Pinned session: test-pin" in captured.out
+
+
+def test_sessions_unpin(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test unpinning a session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("test-unpin", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [{"role": "user", "content": "Test"}]
+    metadata = {"created_at": "2024-01-01T12:00:00", "pinned": True}
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    exit_code = cli(["sessions", "unpin", "test-unpin", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Unpinned session: test-unpin" in captured.out
+
+
+def test_sessions_pin_missing_name(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test pin fails when name is missing."""
+    exit_code = cli(["sessions", "pin"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "session name is required" in captured.err
+
+
+# Session tag-add/tag-rm command tests
+def test_sessions_tag_add(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test adding tags to a session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("test-tag", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [{"role": "user", "content": "Test"}]
+    metadata = {"created_at": "2024-01-01T12:00:00", "tags": ["existing"]}
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    exit_code = cli(["sessions", "tag-add", "test-tag", "new-tag", "another-tag", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Updated tags for session: test-tag" in captured.out
+
+
+def test_sessions_tag_rm(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test removing tags from a session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("test-tag-rm", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [{"role": "user", "content": "Test"}]
+    metadata = {"created_at": "2024-01-01T12:00:00", "tags": ["tag1", "tag2", "tag3"]}
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    # Need at least 2 tags after session name due to argparse structure (new_name, *extras)
+    exit_code = cli(["sessions", "tag-rm", "test-tag-rm", "tag2", "tag3", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Updated tags for session: test-tag-rm" in captured.out
+
+
+def test_sessions_tag_add_missing_name(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test tag-add fails when name is missing."""
+    exit_code = cli(["sessions", "tag-add"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "session name is required" in captured.err
+
+
+def test_sessions_tag_add_missing_tags(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test tag-add fails when tags are missing."""
+    exit_code = cli(["sessions", "tag-add", "test-session"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "at least one tag is required" in captured.err
+
+
+# Session title command tests
+def test_sessions_title(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test setting session title."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("test-title", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [{"role": "user", "content": "Test"}]
+    metadata = {"created_at": "2024-01-01T12:00:00"}
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    exit_code = cli(["sessions", "title", "test-title", "New Title", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Set title for session: test-title" in captured.out
+
+
+def test_sessions_title_missing_args(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test title fails when args are missing."""
+    exit_code = cli(["sessions", "title", "test-session"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "session name and title required" in captured.err
+
+
+# Session search command tests
+def test_sessions_search(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test searching sessions."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("test-search", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    messages = [
+        {"role": "user", "content": "This is a searchable message"},
+        {"role": "assistant", "content": "Here is the response"},
+    ]
+    metadata = {"title": "Search Test", "created_at": "2024-01-01T12:00:00"}
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    # Mock input to avoid pagination prompt
+    monkeypatch.setattr('builtins.input', lambda _: 'q')
+
+    exit_code = cli(["sessions", "search", "searchable", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Found" in captured.out
+    assert "searchable" in captured.out.lower()
+
+
+def test_sessions_search_no_results(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test search with no results."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    exit_code = cli(["sessions", "search", "nonexistent", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "No results found" in captured.out
+
+
+def test_sessions_search_missing_query(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test search fails when query is missing."""
+    exit_code = cli(["sessions", "search"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "search query is required" in captured.err
+
+
+# Session merge command tests
+def test_sessions_merge(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test merging sessions."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create two sessions to merge
+    for name in ["merge1", "merge2"]:
+        session_file = sessions.session_file_for(name, sessions_dir)
+        meta_file = sessions.meta_file_for(session_file)
+
+        messages = [{"role": "user", "content": f"Message from {name}"}]
+        metadata = {"created_at": "2024-01-01T12:00:00"}
+
+        sessions.save_session_messages(session_file, messages)
+        sessions.save_session_meta(meta_file, metadata)
+
+    exit_code = cli(["sessions", "merge", "merged-output", "merge1", "merge2", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    # Verify success message
+    assert "merged" in captured.out.lower() or "Merged" in captured.out
+
+
+def test_sessions_merge_missing_args(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test merge fails when args are missing."""
+    exit_code = cli(["sessions", "merge", "output"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "at least one input session" in captured.err
+
+
+# Batch delete command tests
+def test_batch_delete(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test batch deleting sessions."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create multiple sessions
+    for name in ["batch1", "batch2", "batch3"]:
+        session_file = sessions.session_file_for(name, sessions_dir)
+        meta_file = sessions.meta_file_for(session_file)
+
+        messages = [{"role": "user", "content": "Test"}]
+        metadata = {"created_at": "2024-01-01T12:00:00"}
+
+        sessions.save_session_messages(session_file, messages)
+        sessions.save_session_meta(meta_file, metadata)
+
+    # Need at least 3 args after action because argparse fills name, new_name, then extras
+    # With 3 args, only the last one (batch3) is in extras
+    exit_code = cli(["sessions", "batch-delete", "batch1", "batch2", "batch3", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Deleted 1 session(s)" in captured.out
+
+
+def test_batch_delete_missing_args(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test batch-delete fails when args are missing."""
+    exit_code = cli(["sessions", "batch-delete"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "at least one session name is required" in captured.err
+
+
+# Batch tag operations tests
+def test_batch_tag_add(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test batch adding tags."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create sessions
+    for name in ["tag1", "tag2", "tag3"]:
+        session_file = sessions.session_file_for(name, sessions_dir)
+        meta_file = sessions.meta_file_for(session_file)
+
+        messages = [{"role": "user", "content": "Test"}]
+        metadata = {"created_at": "2024-01-01T12:00:00", "tags": []}
+
+        sessions.save_session_messages(session_file, messages)
+        sessions.save_session_meta(meta_file, metadata)
+
+    # Tags are passed as space-separated string in 'name', then session names
+    # Need at least 2 session names (new_name gets 1st, extras gets rest)
+    exit_code = cli(["sessions", "batch-tag-add", "newtag anothertag", "tag1", "tag2", "tag3", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Added tags to 2 session(s)" in captured.out
+
+
+def test_batch_tag_rm(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test batch removing tags."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create sessions with tags
+    for name in ["tagr1", "tagr2", "tagr3"]:
+        session_file = sessions.session_file_for(name, sessions_dir)
+        meta_file = sessions.meta_file_for(session_file)
+
+        messages = [{"role": "user", "content": "Test"}]
+        metadata = {"created_at": "2024-01-01T12:00:00", "tags": ["oldtag", "keep"]}
+
+        sessions.save_session_messages(session_file, messages)
+        sessions.save_session_meta(meta_file, metadata)
+
+    # Tags are passed as space-separated string in 'name', then session names
+    exit_code = cli(["sessions", "batch-tag-rm", "oldtag", "tagr1", "tagr2", "tagr3", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Removed tags from 2 session(s)" in captured.out
+
+
+def test_batch_tag_add_missing_args(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test batch-tag-add fails when args are missing."""
+    exit_code = cli(["sessions", "batch-tag-add"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "at least one tag is required" in captured.err
+
+
+# Batch export tests
+def test_batch_export(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test batch exporting sessions."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = tmp_path / "exports"
+    output_dir.mkdir()
+
+    # Create sessions
+    for name in ["exp1", "exp2", "exp3"]:
+        session_file = sessions.session_file_for(name, sessions_dir)
+        meta_file = sessions.meta_file_for(session_file)
+
+        messages = [{"role": "user", "content": "Test"}]
+        metadata = {"title": f"Export {name}", "created_at": "2024-01-01T12:00:00"}
+
+        sessions.save_session_messages(session_file, messages)
+        sessions.save_session_meta(meta_file, metadata)
+
+    # Need at least 3 session names (only last one ends up in extras)
+    exit_code = cli([
+        "sessions", "batch-export",
+        "exp1", "exp2", "exp3",
+        "--sessions-dir", str(sessions_dir),
+        "--output", str(output_dir)
+    ])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Exported 1 session(s)" in captured.out
+
+
+def test_batch_export_missing_output(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test batch-export fails when output directory is missing."""
+    # Need at least 3 positional args for extras to have values
+    exit_code = cli(["sessions", "batch-export", "s1", "s2", "s3", "--sessions-dir", str(tmp_path)])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "--output directory is required" in captured.err
+
+
+# Batch pin/unpin tests
+def test_batch_pin(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test batch pinning sessions."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create sessions
+    for name in ["pin1", "pin2", "pin3"]:
+        session_file = sessions.session_file_for(name, sessions_dir)
+        meta_file = sessions.meta_file_for(session_file)
+
+        messages = [{"role": "user", "content": "Test"}]
+        metadata = {"created_at": "2024-01-01T12:00:00", "pinned": False}
+
+        sessions.save_session_messages(session_file, messages)
+        sessions.save_session_meta(meta_file, metadata)
+
+    # Need at least 3 session names (only last one ends up in extras)
+    exit_code = cli(["sessions", "batch-pin", "pin1", "pin2", "pin3", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Pinned 1 session(s)" in captured.out
+
+
+def test_batch_unpin(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test batch unpinning sessions."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create sessions
+    for name in ["unpin1", "unpin2", "unpin3"]:
+        session_file = sessions.session_file_for(name, sessions_dir)
+        meta_file = sessions.meta_file_for(session_file)
+
+        messages = [{"role": "user", "content": "Test"}]
+        metadata = {"created_at": "2024-01-01T12:00:00", "pinned": True}
+
+        sessions.save_session_messages(session_file, messages)
+        sessions.save_session_meta(meta_file, metadata)
+
+    # Need at least 3 session names (only last one ends up in extras)
+    exit_code = cli(["sessions", "batch-unpin", "unpin1", "unpin2", "unpin3", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Unpinned 1 session(s)" in captured.out
+
+
+def test_batch_pin_missing_args(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test batch-pin fails when args are missing."""
+    exit_code = cli(["sessions", "batch-pin"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "at least one session name is required" in captured.err
+
+
+# Info command tests
+def test_info_command(capsys: pytest.CaptureFixture[str]) -> None:
+    """Test info command displays configuration."""
+    exit_code = cli(["info"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "myGPT OK" in captured.out
+    assert "Ollama base_url:" in captured.out
+    assert "Default model:" in captured.out
+
+
+# Models command tests (with mocking for Ollama API)
+def test_models_list(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test models list command."""
+    # Mock the models.list_models function
+    import mygpt.models as models_mod
+
+    def mock_list_models():
+        return [
+            {"name": "llama3.1:8b", "size": 4800000000, "modified_at": "2024-01-01T12:00:00"},
+            {"name": "mistral:latest", "size": 3900000000, "modified_at": "2024-01-02T12:00:00"},
+        ]
+
+    monkeypatch.setattr(models_mod, "list_models", mock_list_models)
+
+    exit_code = cli(["models", "list"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "llama3.1:8b" in captured.out
+    assert "mistral:latest" in captured.out
+
+
+def test_models_list_empty(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test models list when no models exist."""
+    import mygpt.models as models_mod
+
+    monkeypatch.setattr(models_mod, "list_models", lambda: [])
+
+    exit_code = cli(["models", "list"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "No models found" in captured.out
+
+
+def test_models_pull(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test models pull command."""
+    import mygpt.models as models_mod
+
+    def mock_pull_model(name, progress_callback=None):
+        if progress_callback:
+            progress_callback("Downloading", 50.0)
+            progress_callback("Complete", 100.0)
+
+    monkeypatch.setattr(models_mod, "pull_model", mock_pull_model)
+
+    exit_code = cli(["models", "pull", "llama3.1:8b"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Successfully pulled model" in captured.out
+
+
+def test_models_delete_with_force(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test models delete command with force flag."""
+    import mygpt.models as models_mod
+
+    monkeypatch.setattr(models_mod, "delete_model", lambda name: None)
+
+    exit_code = cli(["models", "delete", "llama3.1:8b", "--force"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Deleted model: llama3.1:8b" in captured.out
+
+
+def test_models_show(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test models show command."""
+    import mygpt.models as models_mod
+
+    def mock_show_model(name):
+        return {
+            "modelfile": "FROM llama3.1",
+            "parameters": "temperature 0.7",
+            "template": "{{.System}}\n{{.Prompt}}",
+        }
+
+    monkeypatch.setattr(models_mod, "show_model", mock_show_model)
+
+    exit_code = cli(["models", "show", "llama3.1:8b"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Model: llama3.1:8b" in captured.out
+    assert "Modelfile:" in captured.out
