@@ -20,7 +20,6 @@ def test_message_pagination_basic(api_base_url: str, tmp_sessions_dir) -> None:
 
     # Save session file
     import json
-    from pathlib import Path
     session_file = tmp_sessions_dir / f"{session_name}.json"
     session_file.write_text(json.dumps(messages))
 
@@ -80,7 +79,6 @@ def test_message_pagination_edge_cases(api_base_url: str, tmp_sessions_dir) -> N
     ]
 
     import json
-    from pathlib import Path
     session_file = tmp_sessions_dir / f"{session_name}.json"
     session_file.write_text(json.dumps(messages))
 
@@ -137,7 +135,6 @@ def test_message_pagination_empty_session(api_base_url: str, tmp_sessions_dir) -
 
     # Create empty session
     import json
-    from pathlib import Path
     session_file = tmp_sessions_dir / f"{session_name}.json"
     session_file.write_text(json.dumps([]))
 
@@ -170,7 +167,6 @@ def test_message_pagination_after_edit(api_base_url: str, tmp_sessions_dir) -> N
     ]
 
     import json
-    from pathlib import Path
     session_file = tmp_sessions_dir / f"{session_name}.json"
     session_file.write_text(json.dumps(messages))
 
@@ -231,7 +227,6 @@ def test_message_pagination_after_regenerate(api_base_url: str, tmp_sessions_dir
     ]
 
     import json
-    from pathlib import Path
     session_file = tmp_sessions_dir / f"{session_name}.json"
     session_file.write_text(json.dumps(messages))
 
@@ -289,7 +284,6 @@ def test_pagination_input_validation(api_base_url: str, tmp_sessions_dir) -> Non
     # Create a test session
     messages = [{"role": "user", "content": "Test"}]
     import json
-    from pathlib import Path
     session_file = tmp_sessions_dir / f"{session_name}.json"
     session_file.write_text(json.dumps(messages))
 

@@ -759,7 +759,6 @@ def test_metadata_file_deleted_between_checks(tmp_path: Path, monkeypatch: pytes
     assert new_sf.exists()
 
     # Metadata file was deleted, so new metadata should not exist
-    new_mf = sessions.meta_file_for(new_sf)
     # The operation should have handled the missing file gracefully
     # (not crashed or left files in inconsistent state)
 

@@ -103,7 +103,7 @@ def _configure_rag() -> dict[str, Any]:
 
     enable_rag = _prompt_yes_no("Enable RAG support?", default=False)
 
-    rag_config = {
+    rag_config: dict[str, Any] = {
         "enable_chat_context": enable_rag,
     }
 
@@ -313,7 +313,7 @@ def run_wizard(output_path: Path | None = None) -> int:
     try:
         _generate_config_ini(output_path, default_model, ollama_base_url, rag_config)
         print(f"\n✅ Configuration saved to: {output_path}")
-        print(f"   Permissions: 600 (owner read/write only)")
+        print("   Permissions: 600 (owner read/write only)")
 
         # Next steps
         print("\n" + "=" * 60)

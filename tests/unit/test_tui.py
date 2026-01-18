@@ -1362,7 +1362,6 @@ async def test_tui_action_search_messages_opens_screen(tmp_path: Path) -> None:
     # Verify SearchResultsScreen was shown
     mock_push.assert_called_once()
     # Verify the screen is a SearchResultsScreen instance
-    from mygpt.tui import SearchResultsScreen
     assert isinstance(mock_push.call_args[0][0], SearchResultsScreen)
 
 
@@ -1442,8 +1441,6 @@ async def test_tui_action_search_messages_same_session(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_search_results_screen_perform_search_success() -> None:
     """Test SearchResultsScreen perform_search with successful API response."""
-    from mygpt.tui import SearchResultsScreen
-    import httpx
 
     screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
 
@@ -1513,7 +1510,6 @@ async def test_search_results_screen_perform_search_success() -> None:
 @pytest.mark.asyncio
 async def test_search_results_screen_perform_search_no_results() -> None:
     """Test SearchResultsScreen perform_search with no results."""
-    from mygpt.tui import SearchResultsScreen
 
     screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
 
@@ -1554,7 +1550,6 @@ async def test_search_results_screen_perform_search_no_results() -> None:
 @pytest.mark.asyncio
 async def test_search_results_screen_perform_search_api_error() -> None:
     """Test SearchResultsScreen perform_search handles API errors."""
-    from mygpt.tui import SearchResultsScreen
 
     screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
 
@@ -1586,7 +1581,6 @@ async def test_search_results_screen_perform_search_api_error() -> None:
 @pytest.mark.asyncio
 async def test_search_results_screen_case_sensitive_filter() -> None:
     """Test SearchResultsScreen applies case_sensitive filter."""
-    from mygpt.tui import SearchResultsScreen
 
     screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
 
@@ -2038,7 +2032,6 @@ def test_session_picker_action_select_no_highlight() -> None:
 @pytest.mark.asyncio
 async def test_search_results_screen_initialization() -> None:
     """Test SearchResultsScreen initializes correctly."""
-    from mygpt.tui import SearchResultsScreen
 
     screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
 
@@ -2051,7 +2044,6 @@ async def test_search_results_screen_initialization() -> None:
 @pytest.mark.asyncio
 async def test_search_results_screen_on_mount() -> None:
     """Test SearchResultsScreen focuses search input on mount."""
-    from mygpt.tui import SearchResultsScreen
 
     screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
 
@@ -2068,7 +2060,6 @@ async def test_search_results_screen_on_mount() -> None:
 @pytest.mark.asyncio
 async def test_search_results_screen_action_close() -> None:
     """Test SearchResultsScreen close action."""
-    from mygpt.tui import SearchResultsScreen
 
     screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
 

@@ -4,10 +4,9 @@ from pathlib import Path
 from typing import Any
 import configparser
 import pytest
+from mygpt.chat import _minimize_system_prompt, chat
 
 pytestmark = pytest.mark.unit
-
-from mygpt.chat import _minimize_system_prompt, chat
 
 
 def test_minimize_whitespace():

@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from configparser import ConfigParser
 from typing import Any
-from unittest.mock import Mock, patch
-import json
+from unittest.mock import Mock
 import urllib.error
 
 import pytest
@@ -620,7 +619,7 @@ def test_ingest_document_with_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     from mygpt.rag.rag import ingest_document
 
     metadata = {"source": "test", "version": "1.0"}
-    count = ingest_document("doc1", "Some text to chunk", metadata=metadata)
+    _ = ingest_document("doc1", "Some text to chunk", metadata=metadata)
 
     # Verify upsert_chunks was called with metadata
     assert mock_store.upsert_chunks.called
@@ -661,7 +660,6 @@ def test_expand_query_enabled_with_valid_response(monkeypatch: pytest.MonkeyPatc
         return '["variant 1", "variant 2"]'
 
     # ollama_chat is imported inside expand_query, so mock the module
-    import mygpt.ollama_client
     monkeypatch.setattr("mygpt.ollama_client.ollama_chat", mock_ollama_chat)
 
     from mygpt.rag.rag import expand_query
@@ -686,7 +684,6 @@ def test_expand_query_handles_markdown_json(monkeypatch: pytest.MonkeyPatch) -> 
     def mock_ollama_chat(base_url, model, messages, timeout_s):
         return '```json\n["variant 1", "variant 2"]\n```'
 
-    import mygpt.ollama_client
     monkeypatch.setattr("mygpt.ollama_client.ollama_chat", mock_ollama_chat)
 
     from mygpt.rag.rag import expand_query
@@ -709,7 +706,6 @@ def test_expand_query_error_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     def mock_ollama_chat(base_url, model, messages, timeout_s):
         raise Exception("LLM error")
 
-    import mygpt.ollama_client
     monkeypatch.setattr("mygpt.ollama_client.ollama_chat", mock_ollama_chat)
 
     from mygpt.rag.rag import expand_query

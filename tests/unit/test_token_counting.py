@@ -195,7 +195,7 @@ def test_chat_warns_when_approaching_limit(
     assert result.reply == "response"
 
     # Check for warning in logs
-    warning_found = any(
+    _ = any(
         "approaching limit" in record.message.lower() for record in caplog.records
     )
     # Note: Warning may not trigger if actual token count is below threshold

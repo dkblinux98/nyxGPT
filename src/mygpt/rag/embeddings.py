@@ -199,5 +199,10 @@ def embed_text(text: str, *, model: str | None = None, dimension: int | None = N
     Returns:
         Embedding vector
     """
-    vecs = embed_texts([text], model=model, dimension=dimension)
+    result = embed_texts([text], model=model, dimension=dimension)
+    # Handle both return types: list[list[float]] or tuple with metrics
+    if isinstance(result, tuple):
+        vecs, _ = result
+    else:
+        vecs = result
     return vecs[0] if vecs else []

@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
-pytestmark = pytest.mark.unit
-
 from mygpt.wizard import (
     _configure_rag,
     _generate_config_ini,
@@ -16,6 +13,8 @@ from mygpt.wizard import (
     _validate_ollama_connection,
     run_wizard,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_validate_ollama_connection_success():

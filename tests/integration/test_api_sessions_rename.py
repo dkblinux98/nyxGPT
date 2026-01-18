@@ -257,7 +257,6 @@ def test_session_rename_empty_name(api_base_url: str) -> None:
 def test_session_rename_preserves_messages(api_base_url: str) -> None:
     """Test that renaming a session preserves its messages and metadata."""
     import json
-    from pathlib import Path
 
     old_name = f"rename-preserve-test-{uuid.uuid4().hex[:8]}"
     new_name = f"renamed-preserve-{uuid.uuid4().hex[:8]}"

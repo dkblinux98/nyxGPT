@@ -58,7 +58,6 @@ def ensure_api_server_current():
         time.sleep(3)
 
         # Verify server is accessible
-        api_base = os.environ.get("MYGPT_TEST_API_BASE", "http://127.0.0.1:8000")
         if _can_connect("127.0.0.1", 8000, timeout=2.0):
             print("[INTEGRATION TESTS] API server is accessible")
         else:

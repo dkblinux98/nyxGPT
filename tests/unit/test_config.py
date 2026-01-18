@@ -1,13 +1,9 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 import pytest
-
-pytestmark = pytest.mark.unit
-
 from mygpt.config import (
     load_config,
     validate_config,
@@ -16,6 +12,8 @@ from mygpt.config import (
     get_prompt_mode_short_threshold,
     get_prompt_mode_long_threshold,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _write(p: Path, text: str) -> None:

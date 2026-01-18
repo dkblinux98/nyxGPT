@@ -599,7 +599,7 @@ def chat_stream(
 
             parts.append(chunk)
             yield chunk
-    except Exception as e:
+    except Exception:
         # If we have retry messages but the connection ultimately failed,
         # yield them before re-raising
         for retry_msg in retry_messages:

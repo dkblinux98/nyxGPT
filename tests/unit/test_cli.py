@@ -3,11 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-pytestmark = pytest.mark.unit
-
 from mygpt import sessions
 from mygpt.cli import cli
+
+pytestmark = pytest.mark.unit
 
 
 def test_sessions_export_markdown_to_stdout(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -384,7 +383,7 @@ def test_sessions_stats_calculates_token_estimate(tmp_path: Path, capsys: pytest
     assert "Token Estimate:" in captured.out
     assert "Approximate tokens:" in captured.out
     # Token count should be greater than 0
-    assert not "Approximate tokens: 0" in captured.out
+    assert "Approximate tokens: 0" not in captured.out
 
 
 # Session list command tests

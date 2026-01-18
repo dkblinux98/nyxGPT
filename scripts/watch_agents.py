@@ -11,7 +11,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 # ANSI color codes
@@ -79,7 +79,7 @@ def get_project_id(config: Dict[str, str]) -> Optional[str]:
         if result:
             data = json.loads(result)
             return data.get('data', {}).get('user', {}).get('projectV2', {}).get('id')
-    except:
+    except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
         pass
 
     return None
@@ -279,7 +279,7 @@ def print_run_row(run: Dict, config: Dict[str, str]):
             duration_seconds = int((updated - created).total_seconds())
             if duration_seconds > 0:
                 duration = format_duration(duration_seconds)
-        except:
+        except (ValueError, TypeError, AttributeError):
             pass
 
     # Get icon and display status
@@ -346,7 +346,7 @@ def main():
     if args.issue:
         print(f"🔍 Initializing watch for issue #{args.issue}...")
     else:
-        print(f"🔍 Initializing watch for all agent workflows...")
+        print("🔍 Initializing watch for all agent workflows...")
     print(f"Repository: {repo}")
     print(f"Poll interval: {args.poll_interval}s")
     time.sleep(2)

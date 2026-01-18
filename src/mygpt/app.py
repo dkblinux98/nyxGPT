@@ -1146,7 +1146,6 @@ def regenerate_response(
             raise HTTPException(status_code=400, detail=msg)
 
     # Generate new response using existing chat endpoint logic
-    cfg = _cfg(None)
     try:
         result = chat_module.chat(
             prompt=prompt,
@@ -1688,7 +1687,7 @@ def logs_view_file(
 
     except HTTPException:
         raise
-    except (ValueError, OSError) as e:
+    except (ValueError, OSError):
         raise HTTPException(status_code=404, detail="Log file not found")
 
     try:
@@ -1768,7 +1767,7 @@ async def logs_stream_file(
 
     except HTTPException:
         raise
-    except (ValueError, OSError) as e:
+    except (ValueError, OSError):
         raise HTTPException(status_code=404, detail="Log file not found")
 
     async def stream_lines():

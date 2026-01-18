@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from typing import Any
 
-from mygpt.rag.embeddings import _embedding_cfg, embed_texts
+from mygpt.rag.embeddings import _embedding_cfg
 from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 
 
@@ -97,7 +96,7 @@ def test_ingest_document_with_collection(monkeypatch: pytest.MonkeyPatch) -> Non
 
     # Mock embed_texts to return fake embeddings
     def fake_embed_texts(texts, **kwargs):
-        model = kwargs.get("model", "nomic-embed-text")
+        _ = kwargs.get("model", "nomic-embed-text")
         dimension = kwargs.get("dimension", 768)
         return [[0.1] * dimension for _ in texts]
 
@@ -209,7 +208,7 @@ def test_model_comparison_benchmark_embedding_speed(monkeypatch: pytest.MonkeyPa
     def fake_embed_texts(texts, **kwargs):
         nonlocal call_count
         call_count += 1
-        model = kwargs.get("model", "nomic-embed-text")
+        _ = kwargs.get("model", "nomic-embed-text")
         dimension = kwargs.get("dimension", 768)
         return [[0.1] * dimension for _ in texts]
 

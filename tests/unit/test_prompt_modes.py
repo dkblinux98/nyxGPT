@@ -4,9 +4,6 @@ from pathlib import Path
 from typing import Any
 import configparser
 import pytest
-
-pytestmark = pytest.mark.unit
-
 from mygpt.chat import (
     chat,
     _detect_prompt_mode,
@@ -18,6 +15,8 @@ from mygpt.config import (
     get_prompt_mode_short_threshold,
     get_prompt_mode_long_threshold,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def _cfg(

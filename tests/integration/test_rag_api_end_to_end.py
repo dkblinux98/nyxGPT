@@ -70,7 +70,6 @@ def test_session_rag_enable_disable(api_base_url: str) -> None:
         assert "rag_enabled" in meta
         # Default should be False (or inherited from config)
         assert isinstance(meta["rag_enabled"], bool)
-        initial_rag_state = meta["rag_enabled"]
 
         # 2. Enable RAG
         enable_resp = client.post(f"/api/v1/sessions/{session_name}/rag/enable")

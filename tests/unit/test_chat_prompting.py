@@ -4,10 +4,9 @@ from pathlib import Path
 from typing import Any
 import configparser
 import pytest
+from mygpt.chat import chat, chat_stream
 
 pytestmark = pytest.mark.unit
-
-from mygpt.chat import chat, chat_stream
 
 
 

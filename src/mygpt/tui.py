@@ -700,9 +700,6 @@ class MyGPTTUI(App):
                             start_idx = buffer.index("__RETRY_START__")
                             end_idx = buffer.index("__RETRY_END__") + len("__RETRY_END__")
 
-                            # Extract the marker content
-                            marker_content = buffer[start_idx:end_idx]
-
                             # Parse retry status
                             try:
                                 import json

@@ -1,7 +1,6 @@
 """Tests for Ollama reconnection logic."""
 from __future__ import annotations
 
-import time
 import urllib.error
 from unittest.mock import MagicMock, patch
 
@@ -119,7 +118,7 @@ def test_retry_with_backoff_exponential_delay() -> None:
     mock_callback = MagicMock()
 
     with pytest.raises(urllib.error.URLError):
-        with patch("time.sleep") as mock_sleep:
+        with patch("time.sleep"):
             _retry_with_backoff(
                 mock_func,
                 max_retries=3,

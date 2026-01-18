@@ -181,6 +181,8 @@ def cmd_sessions(
     case_sensitive: bool = False,
     role: str | None = None,
     limit: int = 50,
+    model: str | None = None,
+    rag_enabled: bool | None = None,
 ) -> int:
     cfg = load_config(None)
     effective_dir = sessions_dir or get_sessions_dir(cfg)
@@ -594,22 +596,22 @@ def cmd_sessions(
         if summary:
             print(f"Summary: {summary}")
 
-        print(f"\nMessage Counts:")
+        print("\nMessage Counts:")
         print(f"  Total messages: {total_messages}")
         print(f"  User messages: {user_messages}")
         print(f"  Assistant messages: {assistant_messages}")
         print(f"  System messages: {system_messages}")
 
-        print(f"\nToken Estimate:")
+        print("\nToken Estimate:")
         print(f"  Approximate tokens: {token_estimate:,}")
 
-        print(f"\nSession Age & Activity:")
+        print("\nSession Age & Activity:")
         print(f"  Created: {created_at}")
         print(f"  Age: {session_age}")
         print(f"  Last updated: {updated_at}")
         print(f"  Time since last activity: {last_activity}")
 
-        print(f"\nConfiguration:")
+        print("\nConfiguration:")
         print(f"  Model: {model}")
         print(f"  RAG: {rag_status}")
         print(f"  Pinned: {'Yes' if pinned else 'No'}")
@@ -973,6 +975,8 @@ def cli(argv: list[str] | None = None) -> int:
     sessions_p.add_argument("--case-sensitive", action="store_true", help="Case-sensitive search (search only)")
     sessions_p.add_argument("--role", choices=["user", "assistant", "system"], help="Filter by message role (search only)")
     sessions_p.add_argument("--limit", type=int, default=20, help="Maximum number of search results (default: 20, search only)")
+    sessions_p.add_argument("--model", help="Model name for batch-update-meta (batch-update-meta only)")
+    sessions_p.add_argument("--rag-enabled", type=lambda x: x.lower() in ("true", "1", "yes"), help="RAG enabled flag for batch-update-meta (batch-update-meta only)")
 
     tools_p = sub.add_parser("tools", help="Explicit local filesystem tools")
     tools_p.add_argument("action", choices=["ls", "cat", "grep"], help="Tool to run")
@@ -1003,7 +1007,7 @@ def cli(argv: list[str] | None = None) -> int:
     list_p = rag_sub.add_parser("list", help="List ingested documents")
     list_p.add_argument("--collection", default="default", help="Collection name (default: default)")
 
-    collections_p = rag_sub.add_parser("collections", help="List all available collections")
+    _ = rag_sub.add_parser("collections", help="List all available collections")
 
     compare_p = rag_sub.add_parser("compare", help="Compare embedding models performance")
     compare_p.add_argument("test_file", type=Path, help="Path to test file")
@@ -1105,6 +1109,8 @@ def cli(argv: list[str] | None = None) -> int:
             case_sensitive=getattr(args, "case_sensitive", False),
             role=getattr(args, "role", None),
             limit=getattr(args, "limit", 50),
+            model=getattr(args, "model", None),
+            rag_enabled=getattr(args, "rag_enabled", None),
         )
 
     if cmd == "tools":
