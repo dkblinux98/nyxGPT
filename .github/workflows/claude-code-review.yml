@@ -88,6 +88,37 @@ jobs:
           echo "Running pytest..."
           pytest -v || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
 
+      - name: Check test coverage
+        id: test_coverage
+        run: |
+          PR="${{ steps.pr_number.outputs.pr }}"
+
+          echo "Checking if tests were updated with code changes..."
+
+          # Get list of changed files
+          CHANGED_FILES=$(gh pr view "$PR" --json files --jq '.files[].path')
+
+          # Check if source code changed (src/, excluding test files)
+          SRC_CODE_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^src/.*\.py$' | grep -v -E '(test_|_test\.py|tests/)' || echo "")
+
+          # Check if test files changed
+          TESTS_CHANGED=$(echo "$CHANGED_FILES" | grep -E '(^tests/|test_.*\.py$|.*_test\.py$)' || echo "")
+
+          if [[ -n "$SRC_CODE_CHANGED" ]]; then
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"
+
+            if [[ -z "$TESTS_CHANGED" ]]; then
+              echo "tests_updated=false" >> "$GITHUB_OUTPUT"
+              echo "::error::Source code changed but no test files updated"
+            else
+              echo "tests_updated=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Test files updated with code changes"
+            fi
+          else
+            echo "code_changed=false" >> "$GITHUB_OUTPUT"
+            echo "tests_updated=true" >> "$GITHUB_OUTPUT"  # Not applicable
+          fi
+
       - name: Check documentation updates
         id: docs
         run: |
@@ -169,6 +200,9 @@ jobs:
 
             **Test Status:**
             - Pytest: ${{ steps.test.outputs.pytest_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
+            - Code changed: ${{ steps.test_coverage.outputs.code_changed }}
+            - Tests updated: ${{ steps.test_coverage.outputs.tests_updated }}
+            - Code changed without test updates: ${{ steps.test_coverage.outputs.code_changed == 'true' && steps.test_coverage.outputs.tests_updated == 'false' && '❌ YES (BLOCKS APPROVE)' || '✅ NO' }}
 
             **Documentation Status:**
             - Code changed: ${{ steps.docs.outputs.code_changed }}
@@ -177,9 +211,10 @@ jobs:
 
             MANDATORY: You MUST REQUEST_CHANGES if:
             - ANY linter or test failed
+            - Source code changed WITHOUT test updates (tests_updated=false)
             - User-facing code changed WITHOUT documentation updates (user_facing_undocumented=true)
 
-            Do not APPROVE until all checks pass AND documentation is complete.
+            Do not APPROVE until all checks pass, tests are updated, AND documentation is complete.
 
             ## Review Context
 
@@ -260,6 +295,11 @@ jobs:
             - All linters: [PASS/FAIL]
             [If any failed, this BLOCKS APPROVE]
 
+            ### Test Coverage
+            - Source code changed: [YES/NO]
+            - Test files updated: [YES/NO]
+            [If source code changed without test updates, this BLOCKS APPROVE]
+
             ### Documentation Status
             - User-facing code changed: [YES/NO]
             - Documentation updated: [YES/NO]
@@ -295,11 +335,13 @@ jobs:
             - The first line MUST be exactly "## Code Review - APPROVE" or "## Code Review - REQUEST_CHANGES"
             - MUST REQUEST_CHANGES if:
               * Tests or linters failed
+              * Source code changed without test updates
               * User-facing code changed without documentation updates
             - For re-reviews: MUST verify ALL previous Critical/Medium issues are resolved
             - Each Critical/Medium issue needs a clear title and description for sub-issue creation
             - Be specific with file paths and line numbers
             - Explain how to fix blocking issues
+            - If tests are missing, add as a Medium issue: "Missing tests for code changes"
             - If documentation is missing, add as a Medium issue: "Missing documentation for user-facing changes"
 
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
