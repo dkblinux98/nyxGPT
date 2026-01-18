@@ -45,12 +45,25 @@ def _cassandra_cfg() -> CassandraConfig:
 
 
 class CassandraVectorStore:
-    def __init__(self) -> None:
+    def __init__(self, *, collection: str = "default") -> None:
+        """Initialize Cassandra vector store.
+
+        Args:
+            collection: Collection name for multi-model support (default: "default")
+        """
         self.cfg = _cassandra_cfg()
+        self.collection = collection
         self.cluster = Cluster(self.cfg.hosts, port=self.cfg.port)
         # Connect without a keyspace so we can create it if missing.
         self.session = self.cluster.connect()
         self._keyspace_ready = False
+
+    @property
+    def table_name(self) -> str:
+        """Get the table name for the current collection."""
+        if self.collection == "default":
+            return self.cfg.table
+        return f"{self.cfg.table}_{self.collection}"
 
     def _ensure_keyspace_selected(self) -> None:
         if self._keyspace_ready:
@@ -68,13 +81,26 @@ class CassandraVectorStore:
     # Schema helpers (optional)
     # ----------------------------
 
-    def ensure_schema(self, embedding_dim: int) -> None:
+    def ensure_schema(self, embedding_dim: int, *, collection: str = "default") -> None:
         """Ensure keyspace, table, and SAI vector index exist.
 
-        NOTE: embedding_dim must match the VECTOR<FLOAT, N> dimension.
+        Supports multiple embedding models per collection.
+
+        NOTE: embedding_dim must match the VECTOR<FLOAT, N> dimension for the collection.
+
+        Multi-model support:
+        - Each collection can use a different embedding model and dimension
+        - Creates a separate table per collection for optimal performance
+        - Collection names: "default", "nomic768", "all-minilm-384", etc.
+
+        Args:
+            embedding_dim: Dimension of embedding vectors for this collection
+            collection: Collection name (enables multi-model support)
         """
         ks = self.cfg.keyspace
-        tbl = self.cfg.table
+        base_tbl = self.cfg.table
+        # Each collection gets its own table with appropriate vector dimensions
+        tbl = f"{base_tbl}_{collection}" if collection != "default" else base_tbl
 
         self.session.execute(
             f"""
@@ -86,6 +112,7 @@ class CassandraVectorStore:
         self.session.execute(f"USE {ks}")
         self._keyspace_ready = True
 
+        # Create table with collection-specific vector dimension
         self.session.execute(
             f"""
             CREATE TABLE IF NOT EXISTS {tbl} (
@@ -94,6 +121,8 @@ class CassandraVectorStore:
               text text,
               metadata text,
               embedding VECTOR<FLOAT, {int(embedding_dim)}>,
+              embedding_model text,
+              embedding_dim int,
               PRIMARY KEY (doc_id, chunk_id)
             );
             """
@@ -103,6 +132,14 @@ class CassandraVectorStore:
             f"""
             CREATE INDEX IF NOT EXISTS {tbl}_embedding_sai
             ON {tbl}(embedding) USING 'sai';
+            """
+        )
+
+        # Add index on embedding_model for efficient model-based filtering
+        self.session.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS {tbl}_model_idx
+            ON {tbl}(embedding_model);
             """
         )
 
@@ -116,7 +153,20 @@ class CassandraVectorStore:
         texts: Iterable[str],
         embeddings: Iterable[List[float]],
         metadatas: Iterable[dict] | None = None,
+        *,
+        embedding_model: str | None = None,
+        embedding_dim: int | None = None,
     ) -> None:
+        """Upsert document chunks with embeddings.
+
+        Args:
+            doc_id: Document identifier
+            texts: Text chunks
+            embeddings: Embedding vectors
+            metadatas: Optional metadata dicts
+            embedding_model: Embedding model name (for multi-model support)
+            embedding_dim: Embedding dimension (for multi-model support)
+        """
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
@@ -127,17 +177,21 @@ class CassandraVectorStore:
         if not (len(texts_l) == len(embs_l) == len(metas_l)):
             raise VectorStoreError("texts, embeddings, and metadatas length mismatch")
 
+        # Auto-detect dimension from first embedding if not provided
+        if embedding_dim is None and embs_l:
+            embedding_dim = len(embs_l[0])
+
         stmt = self.session.prepare(
             f"""
-            INSERT INTO {self.cfg.table} (doc_id, chunk_id, text, metadata, embedding)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO {self.table_name} (doc_id, chunk_id, text, metadata, embedding, embedding_model, embedding_dim)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """
         )
 
         for idx, (text, emb, meta) in enumerate(zip(texts_l, embs_l, metas_l)):
             self.session.execute(
                 stmt,
-                (doc_id, idx, text, json.dumps(meta), emb),
+                (doc_id, idx, text, json.dumps(meta), emb, embedding_model, embedding_dim),
             )
 
     # ----------------------------
@@ -149,7 +203,8 @@ class CassandraVectorStore:
         embedding: List[float],
         k: int = 5,
         *,
-        collect_metrics: bool = False
+        collect_metrics: bool = False,
+        embedding_model: str | None = None,
     ) -> list[dict] | tuple[list[dict], VectorSearchDebugMetrics]:
         """Query by embedding vector.
 
@@ -157,9 +212,10 @@ class CassandraVectorStore:
             embedding: Query vector
             k: Number of results to return
             collect_metrics: If True, return tuple of (results, metrics)
+            embedding_model: Filter results by embedding model (for multi-model support)
 
         Returns:
-            List of result dicts with doc_id, chunk_id, text, metadata, score.
+            List of result dicts with doc_id, chunk_id, text, metadata, score, embedding_model.
             If collect_metrics=True, returns tuple of (results, VectorSearchDebugMetrics).
         """
         if not self._keyspace_ready:
@@ -167,10 +223,11 @@ class CassandraVectorStore:
 
         start_time = time.perf_counter()
 
+        # Build query with optional model filtering
         stmt = SimpleStatement(
             f"""
-            SELECT doc_id, chunk_id, text, metadata, similarity_cosine(embedding, %s) AS score
-            FROM {self.cfg.table}
+            SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim, similarity_cosine(embedding, %s) AS score
+            FROM {self.table_name}
             ORDER BY embedding ANN OF %s
             LIMIT %s
             """,
@@ -181,6 +238,10 @@ class CassandraVectorStore:
         out: list[dict] = []
         scores: list[float] = []
         for r in rows:
+            # Filter by embedding_model if specified
+            if embedding_model is not None and hasattr(r, 'embedding_model') and r.embedding_model != embedding_model:
+                continue
+
             score = float(r.score) if hasattr(r, 'score') and r.score is not None else 0.0
             out.append(
                 {
@@ -189,6 +250,8 @@ class CassandraVectorStore:
                     "text": r.text,
                     "metadata": json.loads(r.metadata) if r.metadata else {},
                     "score": score,
+                    "embedding_model": r.embedding_model if hasattr(r, 'embedding_model') else None,
+                    "embedding_dim": r.embedding_dim if hasattr(r, 'embedding_dim') else None,
                 }
             )
             scores.append(score)
@@ -207,22 +270,26 @@ class CassandraVectorStore:
         return out
 
     def list_docs(self) -> list[dict]:
-        """Return a list of documents currently stored: {doc_id, chunks}."""
+        """Return a list of documents currently stored: {doc_id, chunks, embedding_model}."""
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
         stmt = SimpleStatement(
             f"""
-            SELECT doc_id, count(*) as chunks
-            FROM {self.cfg.table}
-            GROUP BY doc_id
+            SELECT doc_id, embedding_model, count(*) as chunks
+            FROM {self.table_name}
+            GROUP BY doc_id, embedding_model
             """,
         )
 
         rows = self.session.execute(stmt)
         out: list[dict] = []
         for r in rows:
-            out.append({"doc_id": r.doc_id, "chunks": int(r.chunks)})
+            out.append({
+                "doc_id": r.doc_id,
+                "chunks": int(r.chunks),
+                "embedding_model": r.embedding_model if hasattr(r, 'embedding_model') else None,
+            })
         # Sort for stable output
         out.sort(key=lambda x: x["doc_id"])
         return out
@@ -234,7 +301,7 @@ class CassandraVectorStore:
 
         self.session.execute(
             SimpleStatement(
-                f"DELETE FROM {self.cfg.table} WHERE doc_id = %s",
+                f"DELETE FROM {self.table_name} WHERE doc_id = %s",
             ),
             (doc_id,),
         )
@@ -244,4 +311,30 @@ class CassandraVectorStore:
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
-        self.session.execute(SimpleStatement(f"TRUNCATE {self.cfg.table}"))
+        self.session.execute(SimpleStatement(f"TRUNCATE {self.table_name}"))
+
+    def list_collections(self) -> list[str]:
+        """List all available collections (tables)."""
+        if not self._keyspace_ready:
+            self._ensure_keyspace_selected()
+
+        stmt = SimpleStatement(
+            """
+            SELECT table_name
+            FROM system_schema.tables
+            WHERE keyspace_name = %s
+            """
+        )
+
+        rows = self.session.execute(stmt, (self.cfg.keyspace,))
+        base_tbl = self.cfg.table
+        collections = []
+        for r in rows:
+            tbl_name = r.table_name
+            if tbl_name == base_tbl:
+                collections.append("default")
+            elif tbl_name.startswith(f"{base_tbl}_"):
+                collection_name = tbl_name[len(f"{base_tbl}_"):]
+                collections.append(collection_name)
+        collections.sort()
+        return collections

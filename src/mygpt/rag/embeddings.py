@@ -34,23 +34,35 @@ class EmbeddingError(RuntimeError):
     pass
 
 
-def _embedding_cfg() -> EmbeddingConfig:
+def _embedding_cfg(model: str | None = None, dimension: int | None = None) -> EmbeddingConfig:
+    """Get embedding configuration.
+
+    Args:
+        model: Override embedding model (default: from config)
+        dimension: Override embedding dimension (default: from config)
+
+    Returns:
+        EmbeddingConfig with model, dimension, and connection settings
+    """
     cfg = load_config(None)
     base_url = get_ollama_base_url(cfg).rstrip("/")
 
     # Allow dedicated embedding model override; otherwise fall back to default_model.
     # [rag] embedding_model = ...
-    model = cfg.get("rag", "embedding_model", fallback="").strip() or get_default_model(cfg)
+    if model is None:
+        model = cfg.get("rag", "embedding_model", fallback="").strip() or get_default_model(cfg)
 
     # Default dimension must match Cassandra schema; override in config if needed.
-    dim = cfg.getint("rag", "embedding_dim", fallback=768)
+    if dimension is None:
+        dimension = cfg.getint("rag", "embedding_dim", fallback=768)
+
     timeout = cfg.getint("rag", "embedding_timeout_seconds", fallback=120)
     batch_size = cfg.getint("rag", "embedding_batch_size", fallback=16)
 
     return EmbeddingConfig(
         base_url=base_url,
         model=model,
-        dimension=int(dim),
+        dimension=int(dimension),
         timeout=int(timeout),
         batch_size=int(batch_size),
     )
@@ -84,19 +96,32 @@ def _batched(iterable, size):
         yield batch
 
 
-def embed_texts(texts: Iterable[str], *, collect_metrics: bool = False) -> list[list[float]] | tuple[list[list[float]], EmbeddingDebugMetrics]:
+def embed_texts(
+    texts: Iterable[str],
+    *,
+    collect_metrics: bool = False,
+    model: str | None = None,
+    dimension: int | None = None,
+) -> list[list[float]] | tuple[list[list[float]], EmbeddingDebugMetrics]:
     """Embed a batch of texts using Ollama.
 
     Uses the `/api/embed` endpoint.
 
+    Multi-model support:
+      - Pass `model` to use a specific embedding model
+      - Pass `dimension` to validate the expected output dimension
+      - If not specified, uses config defaults
+
     Config:
       - `[ollama] base_url`
-      - `[rag] embedding_model` (optional)
-      - `[rag] embedding_dim` (must match Cassandra table schema)
+      - `[rag] embedding_model` (optional, can be overridden)
+      - `[rag] embedding_dim` (can be overridden)
 
     Args:
         texts: Iterable of texts to embed
         collect_metrics: If True, return tuple of (embeddings, metrics)
+        model: Override embedding model (default: from config)
+        dimension: Override expected dimension (default: from config)
 
     Returns:
         list of float vectors, one per input text.
@@ -106,7 +131,7 @@ def embed_texts(texts: Iterable[str], *, collect_metrics: bool = False) -> list[
     texts_list = [t if isinstance(t, str) else str(t) for t in texts]
     if not texts_list:
         if collect_metrics:
-            ecfg = _embedding_cfg()
+            ecfg = _embedding_cfg(model=model, dimension=dimension)
             metrics = EmbeddingDebugMetrics(
                 embedding_model=ecfg.model,
                 embedding_dim=ecfg.dimension,
@@ -118,7 +143,7 @@ def embed_texts(texts: Iterable[str], *, collect_metrics: bool = False) -> list[
         return []
 
     start_time = time.perf_counter()
-    ecfg = _embedding_cfg()
+    ecfg = _embedding_cfg(model=model, dimension=dimension)
     url = f"{ecfg.base_url}/api/embed"
 
     out: list[list[float]] = []
@@ -144,7 +169,8 @@ def embed_texts(texts: Iterable[str], *, collect_metrics: bool = False) -> list[
             if len(v) != ecfg.dimension:
                 raise EmbeddingError(
                     f"Embedding has dim {len(v)} but expected {ecfg.dimension}. "
-                    f"Update Cassandra schema and/or [rag] embedding_dim to match."
+                    f"Update collection dimension to match model output. "
+                    f"Use --collection flag to specify a different collection."
                 )
             out.append([float(x) for x in v])
 
@@ -162,7 +188,16 @@ def embed_texts(texts: Iterable[str], *, collect_metrics: bool = False) -> list[
     return out
 
 
-def embed_text(text: str) -> list[float]:
-    """Convenience wrapper for a single string."""
-    vecs = embed_texts([text])
+def embed_text(text: str, *, model: str | None = None, dimension: int | None = None) -> list[float]:
+    """Convenience wrapper for a single string.
+
+    Args:
+        text: Text to embed
+        model: Override embedding model (default: from config)
+        dimension: Override expected dimension (default: from config)
+
+    Returns:
+        Embedding vector
+    """
+    vecs = embed_texts([text], model=model, dimension=dimension)
     return vecs[0] if vecs else []

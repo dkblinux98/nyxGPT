@@ -222,6 +222,10 @@ def ingest_document(
     text: str,
     metadata: dict | None = None,
     ensure_schema: bool = False,
+    *,
+    collection: str = "default",
+    embedding_model: str | None = None,
+    embedding_dim: int | None = None,
 ) -> int:
     """Chunk, embed, and store a document in the vector store.
 
@@ -229,25 +233,40 @@ def ingest_document(
     RAG knowledge base. It handles all the complexity of chunking,
     embedding generation, and storage.
 
+    **Multi-Model Support:**
+
+    You can ingest documents using different embedding models by specifying
+    a collection. Each collection uses its own table with the appropriate
+    vector dimensions.
+
     **Pipeline Steps:**
 
     1. **Chunking**: Text is split into semantic chunks using paragraph-aware
        chunking with configurable overlap.
 
     2. **Embedding**: Each chunk is converted to a vector embedding using
-       the configured embedding model (typically Ollama's nomic-embed-text).
+       the specified embedding model (or config default).
 
     3. **Storage**: Chunks and embeddings are stored in Cassandra with
        upsert semantics (existing doc_id is replaced).
 
     **Usage Examples:**
 
-        # Basic document ingestion
+        # Basic document ingestion (uses default collection)
         >>> n = ingest_document(
         ...     doc_id="user-guide-v2.1",
         ...     text=documentation_text
         ... )
         >>> print(f"Ingested {n} chunks")
+
+        # Use a specific embedding model (multi-model support)
+        >>> n = ingest_document(
+        ...     doc_id="api-reference",
+        ...     text=api_docs,
+        ...     collection="all-minilm",
+        ...     embedding_model="all-minilm:latest",
+        ...     embedding_dim=384
+        ... )
 
         # With metadata for filtering
         >>> n = ingest_document(
@@ -260,7 +279,7 @@ def ingest_document(
         >>> n = ingest_document(
         ...     doc_id="first-doc",
         ...     text=content,
-        ...     ensure_schema=True  # Only needed once
+        ...     ensure_schema=True  # Only needed once per collection
         ... )
 
     **Important Notes:**
@@ -269,6 +288,7 @@ def ingest_document(
     - Empty text returns 0 without error
     - Embedding dimension is inferred from first embedding if ensure_schema=True
     - Cassandra connection is opened and closed within this function
+    - Each collection maintains its own vector index with appropriate dimensions
 
     Args:
         doc_id: Unique identifier for this document (used for updates/deletes)
@@ -276,6 +296,9 @@ def ingest_document(
         metadata: Optional metadata dict to attach to all chunks
         ensure_schema: If True, creates vector store schema if it doesn't exist
                       (should be True for first document, False afterwards)
+        collection: Collection name for multi-model support (default: "default")
+        embedding_model: Override embedding model (default: from config)
+        embedding_dim: Override embedding dimension (default: from config)
 
     Returns:
         Number of chunks successfully ingested
@@ -288,21 +311,29 @@ def ingest_document(
     if not chunks:
         return 0
 
-    embeddings = embed_texts(chunks)
+    embeddings = embed_texts(chunks, model=embedding_model, dimension=embedding_dim)
+
+    # Get the actual model and dimension from embeddings config
+    from mygpt.rag.embeddings import _embedding_cfg
+    ecfg = _embedding_cfg(model=embedding_model, dimension=embedding_dim)
+    actual_model = ecfg.model
+    actual_dim = len(embeddings[0]) if embeddings else ecfg.dimension
 
     metas = [metadata or {} for _ in chunks]
 
-    store = CassandraVectorStore()
+    store = CassandraVectorStore(collection=collection)
     try:
         if ensure_schema:
             # embedding dimension inferred from first vector
-            store.ensure_schema(len(embeddings[0]))
+            store.ensure_schema(actual_dim, collection=collection)
 
         store.upsert_chunks(
             doc_id=doc_id,
             texts=chunks,
             embeddings=embeddings,
             metadatas=metas,
+            embedding_model=actual_model,
+            embedding_dim=actual_dim,
         )
     finally:
         store.close()
@@ -403,16 +434,27 @@ def retrieve_context(
     query: str,
     top_k: int | None = None,
     *,
-    debug_mode: bool | None = None
+    debug_mode: bool | None = None,
+    collection: str = "default",
+    embedding_model: str | None = None,
+    embedding_dim: int | None = None,
 ) -> list[dict] | tuple[list[dict], RAGDebugInfo]:
     """Retrieve relevant context for a query.
 
     Optionally performs query expansion to improve recall.
 
+    Multi-model support:
+    - Specify collection to query a specific embedding model's vectors
+    - Specify embedding_model to use a particular model for the query
+    - Results are filtered by embedding_model to ensure compatibility
+
     Args:
         query: User's search query
         top_k: Number of results to return (uses config default if None)
         debug_mode: If True, return debug info; if None, use config setting
+        collection: Collection name for multi-model support (default: "default")
+        embedding_model: Override embedding model (default: from config)
+        embedding_dim: Override embedding dimension (default: from config)
 
     Returns:
         List of result dictionaries with text, score, and metadata.
@@ -423,6 +465,11 @@ def retrieve_context(
 
     # Determine debug mode from parameter or config
     collect_debug = debug_mode if debug_mode is not None else get_rag_debug_mode(cfg)
+
+    # Get the actual model that will be used for embedding
+    from mygpt.rag.embeddings import _embedding_cfg
+    ecfg = _embedding_cfg(model=embedding_model, dimension=embedding_dim)
+    actual_model = ecfg.model
 
     k = int(top_k) if top_k is not None else get_rag_chat_top_k(cfg)
     min_score = get_rag_min_score(cfg)
@@ -452,23 +499,24 @@ def retrieve_context(
     total_raw_results = 0
     all_scores: list[float] = []
 
-    store = CassandraVectorStore()
+    store = CassandraVectorStore(collection=collection)
     try:
         for idx, q in enumerate(queries):
             # Embed with metrics collection if debug mode
             if collect_debug:
-                result = embed_texts([q], collect_metrics=True)
+                result = embed_texts([q], collect_metrics=True, model=embedding_model, dimension=embedding_dim)
                 embeddings, emb_metrics = result
                 q_emb = embeddings[0] if embeddings else []
                 # Store only the first embedding metrics (they're all the same model/config)
                 if idx == 0:
                     embedding_metrics = emb_metrics
             else:
-                q_emb = embed_text(q)
+                q_emb = embed_text(q, model=embedding_model, dimension=embedding_dim)
 
             # Query vector store with metrics collection if debug mode
+            # Filter by embedding_model to ensure we only get results from the same model
             if collect_debug:
-                result = store.query_by_embedding(q_emb, k=k, collect_metrics=True)
+                result = store.query_by_embedding(q_emb, k=k, collect_metrics=True, embedding_model=actual_model)
                 results, vs_metrics = result
                 total_raw_results += vs_metrics.raw_results_count
                 # Accumulate scores for overall statistics
@@ -478,7 +526,7 @@ def retrieve_context(
                 if idx == 0:
                     vector_search_metrics = vs_metrics
             else:
-                results = store.query_by_embedding(q_emb, k=k)
+                results = store.query_by_embedding(q_emb, k=k, embedding_model=actual_model)
 
             for r in results:
                 text = (r.get("text") or "").strip()

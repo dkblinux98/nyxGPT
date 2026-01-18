@@ -234,6 +234,153 @@ The retrieved context is prepended as a system message.
 
 ---
 
+## Multiple Embedding Models
+
+**New in v1.0:** myGPT now supports using multiple embedding models simultaneously via collections.
+
+### Why Multiple Models?
+
+Different embedding models have different strengths:
+- **Small/fast models** (e.g., `all-minilm:latest`, 384 dimensions): Quick retrieval, lower memory
+- **High-quality models** (e.g., `nomic-embed-text`, 768 dimensions): Better semantic understanding
+- **Specialized models**: Multilingual, code-specific, domain-adapted
+
+### Collections
+
+Each collection:
+- Uses a separate Cassandra table
+- Supports a specific embedding model and dimension
+- Maintains its own vector index
+- Can be queried independently
+
+### Using Multiple Models
+
+#### 1. Ingest documents with different models
+
+```python
+from mygpt.rag.rag import ingest_document
+
+# Default collection (nomic-embed-text, 768d)
+n = ingest_document(
+    doc_id="doc1",
+    text=content,
+    ensure_schema=True
+)
+
+# Fast model collection (all-minilm, 384d)
+n = ingest_document(
+    doc_id="doc2",
+    text=content,
+    collection="all-minilm",
+    embedding_model="all-minilm:latest",
+    embedding_dim=384,
+    ensure_schema=True  # First time for this collection
+)
+
+# High-quality collection (mxbai-embed-large, 1024d)
+n = ingest_document(
+    doc_id="doc3",
+    text=content,
+    collection="mxbai",
+    embedding_model="mxbai-embed-large:latest",
+    embedding_dim=1024,
+    ensure_schema=True  # First time for this collection
+)
+```
+
+#### 2. Query specific collections
+
+```python
+from mygpt.rag.rag import retrieve_context
+
+# Query default collection
+results = retrieve_context("test query")
+
+# Query fast model collection
+results = retrieve_context(
+    "test query",
+    collection="all-minilm",
+    embedding_model="all-minilm:latest",
+    embedding_dim=384
+)
+
+# Query high-quality collection
+results = retrieve_context(
+    "test query",
+    collection="mxbai",
+    embedding_model="mxbai-embed-large:latest",
+    embedding_dim=1024
+)
+```
+
+#### 3. Compare model performance
+
+```python
+from mygpt.rag.model_compare import compare_models, print_comparison_table
+
+models = [
+    ("nomic-embed-text", 768, "default"),
+    ("all-minilm:latest", 384, "all-minilm"),
+    ("mxbai-embed-large:latest", 1024, "mxbai"),
+]
+
+test_texts = ["sample text 1", "sample text 2"]
+test_queries = ["test query 1", "test query 2"]
+
+results = compare_models(models, test_texts, test_queries)
+print_comparison_table(results)
+```
+
+**Example output:**
+
+```
+================================================================================
+Model                      Dim      Embed (ms)      Query (ms)
+================================================================================
+nomic-embed-text           768      145.23          67.89
+all-minilm:latest          384      89.45           42.11
+mxbai-embed-large:latest   1024     312.67          98.34
+================================================================================
+
+Fastest embedding: all-minilm:latest (89.45 ms)
+Fastest query: all-minilm:latest (42.11 ms)
+```
+
+### Model Switching Without Re-indexing
+
+You can switch between models **without re-indexing** by using collections:
+
+1. Ingest the same documents into multiple collections (one per model)
+2. Query the collection that best fits your use case
+3. Switch collections at runtime based on speed/quality trade-offs
+
+**Benefits:**
+- No downtime during model transitions
+- A/B testing of different models
+- Dynamic selection based on query type
+
+**Trade-off:** Higher disk usage (one copy per collection)
+
+### List Available Collections
+
+```python
+from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+store = CassandraVectorStore()
+collections = store.list_collections()
+print(f"Available collections: {collections}")
+store.close()
+```
+
+### Collection Best Practices
+
+1. **Naming:** Use descriptive names: `all-minilm`, `nomic768`, `mxbai1024`
+2. **Schema:** Call `ensure_schema=True` once per collection
+3. **Consistency:** Always use the same model/dimension for a collection
+4. **Cleanup:** Delete unused collections to free disk space
+
+---
+
 ## Re‑ingesting data
 
 If you change:
@@ -241,7 +388,9 @@ If you change:
 - embedding dimension
 - chunking parameters
 
-You **must delete existing chunks and re‑ingest** documents.
+For **single-model setups**, you **must delete existing chunks and re‑ingest** documents.
+
+For **multi-model setups**, use collections to avoid re-ingestion (see "Multiple Embedding Models" above).
 
 ---
 
@@ -250,3 +399,4 @@ You **must delete existing chunks and re‑ingest** documents.
 - RAG is optional and can be disabled at any time.
 - Cassandra is used only for vector storage; no full‑text search is required.
 - RAG latency depends on embedding generation and vector search performance.
+- Multiple embedding models are supported via collections (separate tables per model).
