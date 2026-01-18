@@ -637,64 +637,172 @@ def cmd_tools(action: str, path: Path, pattern: str | None, head: int | None, ta
     return 2
 
 
-def cmd_rag_ingest(doc_id: str, path: Path, ensure_schema: bool) -> int:
+def cmd_rag_ingest(
+    doc_id: str,
+    path: Path,
+    ensure_schema: bool,
+    collection: str = "default",
+    model: str | None = None,
+    dimension: int | None = None,
+) -> int:
     text = path.read_text(encoding="utf-8")
-    n = ingest_document(doc_id, text, metadata={"path": str(path)}, ensure_schema=ensure_schema)
-    print(f"Ingested {n} chunks for doc_id={doc_id}")
+    n = ingest_document(
+        doc_id,
+        text,
+        metadata={"path": str(path)},
+        ensure_schema=ensure_schema,
+        collection=collection,
+        embedding_model=model,
+        embedding_dim=dimension,
+    )
+    print(f"Ingested {n} chunks for doc_id={doc_id} into collection '{collection}'")
+    if model:
+        print(f"  Using embedding model: {model}")
+    if dimension:
+        print(f"  Using dimension: {dimension}")
     return 0
 
 
 
-def cmd_rag_query(question: str, top_k: int) -> int:
-    results = retrieve_context(question, top_k=top_k)
-    print(f"Results: {len(results)}")
+def cmd_rag_query(
+    question: str,
+    top_k: int,
+    collection: str = "default",
+    model: str | None = None,
+    dimension: int | None = None,
+) -> int:
+    results = retrieve_context(
+        question,
+        top_k=top_k,
+        collection=collection,
+        embedding_model=model,
+        embedding_dim=dimension,
+    )
+    print(f"Results: {len(results)} (from collection '{collection}')")
+    if model:
+        print(f"  Using embedding model: {model}")
     for i, r in enumerate(results, 1):
         print(f"--- {i} ---")
         print(r.get("text", ""))
+        if "embedding_model" in r:
+            print(f"  [model: {r.get('embedding_model')}, score: {r.get('score', 0):.3f}]")
     return 0
 
 
-def cmd_rag_list() -> int:
-    store = CassandraVectorStore()
+def cmd_rag_list(collection: str = "default") -> int:
+    store = CassandraVectorStore(collection=collection)
     try:
         rows = store.list_docs()
     finally:
         store.close()
 
     if not rows:
-        print("No documents found in RAG store")
+        print(f"No documents found in collection '{collection}'")
         return 0
 
-    print(f"{'doc_id':<30} chunks")
-    print("-" * 40)
+    print(f"Collection: {collection}")
+    print(f"{'doc_id':<30} {'chunks':<10} {'model':<30}")
+    print("-" * 75)
     for r in rows:
-        print(f"{r['doc_id']:<30} {r['chunks']}")
+        model_info = r.get('embedding_model', 'N/A')
+        print(f"{r['doc_id']:<30} {r['chunks']:<10} {model_info:<30}")
     return 0
 
 
-def cmd_rag_delete(doc_id: str) -> int:
+def cmd_rag_collections() -> int:
+    """List all available collections."""
     store = CassandraVectorStore()
+    try:
+        collections = store.list_collections()
+    finally:
+        store.close()
+
+    if not collections:
+        print("No collections found")
+        return 0
+
+    print("Available collections:")
+    for coll in collections:
+        print(f"  - {coll}")
+    return 0
+
+
+def cmd_rag_compare(
+    test_file: Path,
+    models_spec: list[str],
+) -> int:
+    """Compare embedding models performance.
+
+    Args:
+        test_file: Path to text file for testing
+        models_spec: List of model specifications in format "model:dim:collection"
+    """
+    from mygpt.rag.model_compare import compare_models, print_comparison_table
+
+    # Parse model specs
+    models = []
+    for spec in models_spec:
+        parts = spec.split(":")
+        if len(parts) != 3:
+            print(f"ERROR: Invalid model spec '{spec}'. Expected format: model:dimension:collection", file=sys.stderr)
+            return 2
+        model_name, dim_str, collection = parts
+        try:
+            dimension = int(dim_str)
+        except ValueError:
+            print(f"ERROR: Invalid dimension '{dim_str}' in spec '{spec}'", file=sys.stderr)
+            return 2
+        models.append((model_name, dimension, collection))
+
+    # Load test texts
+    try:
+        test_text = test_file.read_text(encoding="utf-8")
+        # Use first few sentences as test texts
+        test_texts = test_text[:1000].split(".")[:5]
+        test_texts = [t.strip() for t in test_texts if t.strip()]
+    except Exception as e:
+        print(f"ERROR: Failed to read test file: {e}", file=sys.stderr)
+        return 2
+
+    if not test_texts:
+        print("ERROR: Test file contains no usable text", file=sys.stderr)
+        return 2
+
+    print(f"Comparing {len(models)} embedding models...")
+    print(f"Test texts: {len(test_texts)}")
+
+    try:
+        metrics = compare_models(models, test_texts)
+        print_comparison_table(metrics)
+        return 0
+    except Exception as e:
+        print(f"ERROR: Comparison failed: {e}", file=sys.stderr)
+        return 2
+
+
+def cmd_rag_delete(doc_id: str, collection: str = "default") -> int:
+    store = CassandraVectorStore(collection=collection)
     try:
         store.delete_doc(doc_id)
     finally:
         store.close()
 
-    print(f"Deleted RAG document: {doc_id}")
+    print(f"Deleted RAG document: {doc_id} from collection '{collection}'")
     return 0
 
 
-def cmd_rag_wipe(confirm: bool) -> int:
+def cmd_rag_wipe(confirm: bool, collection: str = "default") -> int:
     if not confirm:
         print("ERROR: refusing to wipe RAG store without --yes-really", file=sys.stderr)
         return 2
 
-    store = CassandraVectorStore()
+    store = CassandraVectorStore(collection=collection)
     try:
         store.truncate()
     finally:
         store.close()
 
-    print("Wiped all RAG documents")
+    print(f"Wiped all RAG documents from collection '{collection}'")
     return 0
 
 
@@ -881,18 +989,33 @@ def cli(argv: list[str] | None = None) -> int:
     ingest_p.add_argument("doc_id", help="Document ID")
     ingest_p.add_argument("path", type=Path, help="Path to text file")
     ingest_p.add_argument("--ensure-schema", action="store_true", help="Create schema if missing")
+    ingest_p.add_argument("--collection", default="default", help="Collection name (default: default)")
+    ingest_p.add_argument("--model", help="Override embedding model (default: from config)")
+    ingest_p.add_argument("--dimension", type=int, help="Override embedding dimension (default: from config)")
 
     query_p = rag_sub.add_parser("query", help="Query the vector store")
     query_p.add_argument("question", help="Query text")
     query_p.add_argument("--top-k", type=int, default=5, help="Number of results")
+    query_p.add_argument("--collection", default="default", help="Collection name (default: default)")
+    query_p.add_argument("--model", help="Override embedding model (default: from config)")
+    query_p.add_argument("--dimension", type=int, help="Override embedding dimension (default: from config)")
 
-    _list_p = rag_sub.add_parser("list", help="List ingested documents")
+    list_p = rag_sub.add_parser("list", help="List ingested documents")
+    list_p.add_argument("--collection", default="default", help="Collection name (default: default)")
+
+    collections_p = rag_sub.add_parser("collections", help="List all available collections")
+
+    compare_p = rag_sub.add_parser("compare", help="Compare embedding models performance")
+    compare_p.add_argument("test_file", type=Path, help="Path to test file")
+    compare_p.add_argument("models", nargs="+", help="Model specs in format 'model:dimension:collection' (e.g., 'nomic-embed-text:768:default')")
 
     delete_p = rag_sub.add_parser("delete", help="Delete a document by doc_id")
     delete_p.add_argument("doc_id", help="Document ID to delete")
+    delete_p.add_argument("--collection", default="default", help="Collection name (default: default)")
 
     wipe_p = rag_sub.add_parser("wipe", help="Delete ALL documents (dangerous)")
     wipe_p.add_argument("--yes-really", action="store_true", help="Confirm destructive wipe")
+    wipe_p.add_argument("--collection", default="default", help="Collection name (default: default)")
 
     # Add models command
     models_p = sub.add_parser("models", help="Manage Ollama models")
@@ -996,15 +1119,32 @@ def cli(argv: list[str] | None = None) -> int:
 
     if cmd == "rag":
         if args.rag_cmd == "ingest":
-            return cmd_rag_ingest(args.doc_id, args.path, args.ensure_schema)
+            return cmd_rag_ingest(
+                args.doc_id,
+                args.path,
+                args.ensure_schema,
+                collection=args.collection,
+                model=args.model,
+                dimension=args.dimension,
+            )
         if args.rag_cmd == "query":
-            return cmd_rag_query(args.question, args.top_k)
+            return cmd_rag_query(
+                args.question,
+                args.top_k,
+                collection=args.collection,
+                model=args.model,
+                dimension=args.dimension,
+            )
         if args.rag_cmd == "list":
-            return cmd_rag_list()
+            return cmd_rag_list(collection=args.collection)
+        if args.rag_cmd == "collections":
+            return cmd_rag_collections()
+        if args.rag_cmd == "compare":
+            return cmd_rag_compare(args.test_file, args.models)
         if args.rag_cmd == "delete":
-            return cmd_rag_delete(args.doc_id)
+            return cmd_rag_delete(args.doc_id, collection=args.collection)
         if args.rag_cmd == "wipe":
-            return cmd_rag_wipe(args.yes_really)
+            return cmd_rag_wipe(args.yes_really, collection=args.collection)
 
     if cmd == "models":
         if args.models_cmd == "list":
