@@ -88,6 +88,45 @@ jobs:
           echo "Running pytest..."
           pytest -v || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
 
+      - name: Check documentation updates
+        id: docs
+        run: |
+          PR="${{ steps.pr_number.outputs.pr }}"
+
+          echo "Checking if documentation was updated..."
+
+          # Get list of changed files
+          CHANGED_FILES=$(gh pr view "$PR" --json files --jq '.files[].path')
+
+          # Check if code files changed (src/, excluding tests)
+          CODE_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^src/.*\.py$' | grep -v test_ || echo "")
+
+          # Check if docs changed
+          DOCS_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^(docs/|README\.md|.*\.md$)' || echo "")
+
+          # Check if this is a user-facing change (API, CLI, config)
+          USER_FACING=$(echo "$CHANGED_FILES" | grep -E '^(src/mygpt/(api|cli|app)\.py|example\.config\.ini)' || echo "")
+
+          if [[ -n "$CODE_CHANGED" ]]; then
+            echo "code_changed=true" >> "$GITHUB_OUTPUT"
+
+            if [[ -z "$DOCS_CHANGED" ]]; then
+              echo "docs_updated=false" >> "$GITHUB_OUTPUT"
+              echo "::warning::Code changed but no documentation files updated"
+
+              if [[ -n "$USER_FACING" ]]; then
+                echo "user_facing_undocumented=true" >> "$GITHUB_OUTPUT"
+                echo "::error::User-facing code changed but no documentation updated"
+              fi
+            else
+              echo "docs_updated=true" >> "$GITHUB_OUTPUT"
+              echo "::notice::Documentation files updated"
+            fi
+          else
+            echo "code_changed=false" >> "$GITHUB_OUTPUT"
+            echo "docs_updated=true" >> "$GITHUB_OUTPUT"  # Not applicable
+          fi
+
       - name: Check for previous REQUEST_CHANGES reviews
         id: previous_review
         run: |
@@ -131,7 +170,16 @@ jobs:
             **Test Status:**
             - Pytest: ${{ steps.test.outputs.pytest_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
 
-            MANDATORY: You MUST REQUEST_CHANGES if ANY linter or test failed. Do not APPROVE until all checks pass.
+            **Documentation Status:**
+            - Code changed: ${{ steps.docs.outputs.code_changed }}
+            - Docs updated: ${{ steps.docs.outputs.docs_updated }}
+            - User-facing changes without docs: ${{ steps.docs.outputs.user_facing_undocumented == 'true' && '❌ YES (BLOCKS APPROVE)' || '✅ NO' }}
+
+            MANDATORY: You MUST REQUEST_CHANGES if:
+            - ANY linter or test failed
+            - User-facing code changed WITHOUT documentation updates (user_facing_undocumented=true)
+
+            Do not APPROVE until all checks pass AND documentation is complete.
 
             ## Review Context
 
@@ -212,6 +260,11 @@ jobs:
             - All linters: [PASS/FAIL]
             [If any failed, this BLOCKS APPROVE]
 
+            ### Documentation Status
+            - User-facing code changed: [YES/NO]
+            - Documentation updated: [YES/NO]
+            [If user-facing code changed without docs, this BLOCKS APPROVE]
+
             ${{ steps.previous_review.outputs.is_rereview == 'true' && '
             ### Fix Verification (for re-reviews)
             [For each previous Critical/Medium issue:]
@@ -240,11 +293,14 @@ jobs:
 
             IMPORTANT:
             - The first line MUST be exactly "## Code Review - APPROVE" or "## Code Review - REQUEST_CHANGES"
-            - MUST REQUEST_CHANGES if tests or linters failed
+            - MUST REQUEST_CHANGES if:
+              * Tests or linters failed
+              * User-facing code changed without documentation updates
             - For re-reviews: MUST verify ALL previous Critical/Medium issues are resolved
             - Each Critical/Medium issue needs a clear title and description for sub-issue creation
             - Be specific with file paths and line numbers
             - Explain how to fix blocking issues
+            - If documentation is missing, add as a Medium issue: "Missing documentation for user-facing changes"
 
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options

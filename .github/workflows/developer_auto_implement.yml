@@ -256,9 +256,14 @@ jobs:
 
             Requirements:
             - Make the minimal correct change to resolve the issue.
-            - Add/update tests.
+            - Add/update tests for ALL code changes.
             - Run the test suite and fix failures.
-            - Update docs if needed.
+            - **MANDATORY DOCUMENTATION**: Update documentation for ALL user-facing changes:
+              * If you modify src/mygpt/api.py or src/mygpt/app.py → Update docs/api.md
+              * If you modify src/mygpt/cli.py → Update docs/configuration.md or README.md CLI section
+              * If you add/change config options → Update example.config.ini AND docs/configuration.md
+              * If you add new features → Update README.md feature list
+              * For ANY code change, check if docs/ files need updates
             - Commit changes with clear messages that MUST include issue references.
 
             CRITICAL COMMIT MESSAGE FORMAT:
