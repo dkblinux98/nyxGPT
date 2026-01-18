@@ -1405,7 +1405,41 @@ def rag_ingest(request: Request, req: RagIngestRequest) -> RagIngestResponse:
 @api.post("/rag/query", response_model=RagQueryResponse)
 def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
     try:
-        results = retrieve_context(req.query, top_k=req.top_k)
+        result = retrieve_context(req.query, top_k=req.top_k, debug_mode=req.debug_mode)
+
+        if req.debug_mode:
+            results, debug_info = result
+            # Convert RAGDebugInfo to RagDebugInfo (API model)
+            from mygpt.api_models import RagDebugInfo
+            api_debug_info = RagDebugInfo(
+                total_time_ms=debug_info.total_time_ms,
+                query_expansion_time_ms=debug_info.query_expansion_time_ms,
+                embedding_time_ms=debug_info.embedding_time_ms,
+                vector_search_time_ms=debug_info.vector_search_time_ms,
+                filtering_time_ms=debug_info.filtering_time_ms,
+                composition_time_ms=debug_info.composition_time_ms,
+                original_query=debug_info.original_query,
+                query_variants=debug_info.query_variants,
+                num_queries=debug_info.num_queries,
+                embedding_model=debug_info.embedding_model,
+                embedding_dim=debug_info.embedding_dim,
+                num_texts_embedded=debug_info.num_texts_embedded,
+                batch_size=debug_info.batch_size,
+                raw_results_count=debug_info.raw_results_count,
+                score_min=debug_info.score_min,
+                score_max=debug_info.score_max,
+                score_mean=debug_info.score_mean,
+                after_min_score_filter=debug_info.after_min_score_filter,
+                after_dedupe_filter=debug_info.after_dedupe_filter,
+                after_max_chunks_filter=debug_info.after_max_chunks_filter,
+                total_chars_before_truncation=debug_info.total_chars_before_truncation,
+                total_chars_after_truncation=debug_info.total_chars_after_truncation,
+                chunks_included=debug_info.chunks_included,
+            )
+        else:
+            results = result
+            api_debug_info = None
+
         out = [
             RagQueryResult(
                 doc_id=str(r.get("doc_id", "")),
@@ -1415,7 +1449,7 @@ def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
             )
             for r in results
         ]
-        return RagQueryResponse(results=out)
+        return RagQueryResponse(results=out, debug_info=api_debug_info)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

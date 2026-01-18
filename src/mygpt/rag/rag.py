@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Iterable, List
 import logging
 import json
+import time
 
 from mygpt.config import (
     load_config,
@@ -14,9 +15,10 @@ from mygpt.config import (
     get_rag_dedupe,
     get_rag_include_scores,
     get_rag_include_headers,
+    get_rag_debug_mode,
 )
-from mygpt.rag.embeddings import embed_text, embed_texts
-from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+from mygpt.rag.embeddings import embed_text, embed_texts, EmbeddingDebugMetrics
+from mygpt.rag.vectorstore_cassandra import CassandraVectorStore, VectorSearchDebugMetrics
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +27,45 @@ log = logging.getLogger(__name__)
 class ChunkingConfig:
     chunk_size: int
     overlap: int
+
+
+@dataclass
+class RAGDebugInfo:
+    """Complete debug information for RAG operations."""
+    # Timing
+    total_time_ms: float
+    query_expansion_time_ms: float | None
+    embedding_time_ms: float
+    vector_search_time_ms: float
+    filtering_time_ms: float
+    composition_time_ms: float
+
+    # Query analysis
+    original_query: str
+    query_variants: list[str]
+    num_queries: int
+
+    # Embedding details
+    embedding_model: str
+    embedding_dim: int
+    num_texts_embedded: int
+    batch_size: int
+
+    # Vector search results
+    raw_results_count: int
+    score_min: float | None
+    score_max: float | None
+    score_mean: float | None
+
+    # Filtering stats
+    after_min_score_filter: int
+    after_dedupe_filter: int
+    after_max_chunks_filter: int
+
+    # Context composition
+    total_chars_before_truncation: int
+    total_chars_after_truncation: int
+    chunks_included: int
 
 
 class RAGError(RuntimeError):
@@ -358,7 +399,12 @@ def expand_query(query: str, max_expansions: int = 3) -> list[str]:
 # ----------------------------
 
 
-def retrieve_context(query: str, top_k: int | None = None) -> list[dict]:
+def retrieve_context(
+    query: str,
+    top_k: int | None = None,
+    *,
+    debug_mode: bool | None = None
+) -> list[dict] | tuple[list[dict], RAGDebugInfo]:
     """Retrieve relevant context for a query.
 
     Optionally performs query expansion to improve recall.
@@ -366,11 +412,17 @@ def retrieve_context(query: str, top_k: int | None = None) -> list[dict]:
     Args:
         query: User's search query
         top_k: Number of results to return (uses config default if None)
+        debug_mode: If True, return debug info; if None, use config setting
 
     Returns:
-        List of result dictionaries with text, score, and metadata
+        List of result dictionaries with text, score, and metadata.
+        If debug_mode=True, returns tuple of (results, RAGDebugInfo).
     """
+    start_time = time.perf_counter()
     cfg = load_config(None)
+
+    # Determine debug mode from parameter or config
+    collect_debug = debug_mode if debug_mode is not None else get_rag_debug_mode(cfg)
 
     k = int(top_k) if top_k is not None else get_rag_chat_top_k(cfg)
     min_score = get_rag_min_score(cfg)
@@ -378,8 +430,18 @@ def retrieve_context(query: str, top_k: int | None = None) -> list[dict]:
     _dedupe = get_rag_dedupe(cfg)  # Reserved for future deduplication feature
     use_expansion = cfg.getboolean("rag", "enable_query_expansion", fallback=False)
 
+    # Track debug metrics
+    query_expansion_time_ms = None
+    embedding_metrics: EmbeddingDebugMetrics | None = None
+    vector_search_metrics: VectorSearchDebugMetrics | None = None
+
     # Generate query expansions if enabled
-    queries = expand_query(query) if use_expansion else [query]
+    if use_expansion and collect_debug:
+        expansion_start = time.perf_counter()
+        queries = expand_query(query)
+        query_expansion_time_ms = (time.perf_counter() - expansion_start) * 1000.0
+    else:
+        queries = expand_query(query) if use_expansion else [query]
 
     if len(queries) > 1:
         log.debug("Expanded query into %d variants", len(queries))
@@ -387,12 +449,36 @@ def retrieve_context(query: str, top_k: int | None = None) -> list[dict]:
     # Collect results from all query variants
     all_results: list[dict] = []
     seen_texts: set[str] = set()
+    total_raw_results = 0
+    all_scores: list[float] = []
 
     store = CassandraVectorStore()
     try:
-        for q in queries:
-            q_emb = embed_text(q)
-            results = store.query_by_embedding(q_emb, k=k)
+        for idx, q in enumerate(queries):
+            # Embed with metrics collection if debug mode
+            if collect_debug:
+                result = embed_texts([q], collect_metrics=True)
+                embeddings, emb_metrics = result
+                q_emb = embeddings[0] if embeddings else []
+                # Store only the first embedding metrics (they're all the same model/config)
+                if idx == 0:
+                    embedding_metrics = emb_metrics
+            else:
+                q_emb = embed_text(q)
+
+            # Query vector store with metrics collection if debug mode
+            if collect_debug:
+                result = store.query_by_embedding(q_emb, k=k, collect_metrics=True)
+                results, vs_metrics = result
+                total_raw_results += vs_metrics.raw_results_count
+                # Accumulate scores for overall statistics
+                if vs_metrics.score_min is not None:
+                    all_scores.extend([r.get("score", 0.0) for r in results])
+                # Store metrics from first query
+                if idx == 0:
+                    vector_search_metrics = vs_metrics
+            else:
+                results = store.query_by_embedding(q_emb, k=k)
 
             for r in results:
                 text = (r.get("text") or "").strip()
@@ -412,6 +498,10 @@ def retrieve_context(query: str, top_k: int | None = None) -> list[dict]:
     # Sort by score (highest first) and filter
     all_results.sort(key=lambda r: r.get("score", 0.0), reverse=True)
 
+    # Track filtering for debug
+    filter_start = time.perf_counter() if collect_debug else None
+    after_dedupe = len(all_results)
+
     filtered: list[dict] = []
     for r in all_results:
         score = r.get("score")
@@ -422,7 +512,54 @@ def retrieve_context(query: str, top_k: int | None = None) -> list[dict]:
         if len(filtered) >= max_chunks:
             break
 
-    return filtered
+    after_min_score = len(filtered)
+    after_max_chunks = len(filtered)
+
+    filtering_time_ms = (time.perf_counter() - filter_start) * 1000.0 if filter_start else 0.0
+
+    if not collect_debug:
+        return filtered
+
+    # Build debug info
+    total_time_ms = (time.perf_counter() - start_time) * 1000.0
+
+    # Calculate overall score statistics if we have multiple queries
+    if len(queries) > 1 and all_scores:
+        overall_score_min = min(all_scores) if all_scores else None
+        overall_score_max = max(all_scores) if all_scores else None
+        overall_score_mean = sum(all_scores) / len(all_scores) if all_scores else None
+    else:
+        overall_score_min = vector_search_metrics.score_min if vector_search_metrics else None
+        overall_score_max = vector_search_metrics.score_max if vector_search_metrics else None
+        overall_score_mean = vector_search_metrics.score_mean if vector_search_metrics else None
+
+    debug_info = RAGDebugInfo(
+        total_time_ms=total_time_ms,
+        query_expansion_time_ms=query_expansion_time_ms,
+        embedding_time_ms=embedding_metrics.embedding_time_ms if embedding_metrics else 0.0,
+        vector_search_time_ms=vector_search_metrics.vector_search_time_ms if vector_search_metrics else 0.0,
+        filtering_time_ms=filtering_time_ms,
+        composition_time_ms=0.0,  # compose_context is called separately
+        original_query=query,
+        query_variants=queries,
+        num_queries=len(queries),
+        embedding_model=embedding_metrics.embedding_model if embedding_metrics else "",
+        embedding_dim=embedding_metrics.embedding_dim if embedding_metrics else 0,
+        num_texts_embedded=embedding_metrics.num_texts_embedded if embedding_metrics else 0,
+        batch_size=embedding_metrics.batch_size if embedding_metrics else 0,
+        raw_results_count=total_raw_results if len(queries) > 1 else (vector_search_metrics.raw_results_count if vector_search_metrics else 0),
+        score_min=overall_score_min,
+        score_max=overall_score_max,
+        score_mean=overall_score_mean,
+        after_min_score_filter=after_min_score,
+        after_dedupe_filter=after_dedupe,
+        after_max_chunks_filter=after_max_chunks,
+        total_chars_before_truncation=0,  # Not available at this level
+        total_chars_after_truncation=0,  # Not available at this level
+        chunks_included=len(filtered),
+    )
+
+    return filtered, debug_info
 
 
 # ----------------------------

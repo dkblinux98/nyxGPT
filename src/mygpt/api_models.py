@@ -139,6 +139,7 @@ class RagIngestResponse(BaseModel):
 class RagQueryRequest(BaseModel):
     query: str = Field(..., description="Search query")
     top_k: int = Field(5, ge=1, le=50)
+    debug_mode: bool = Field(False, description="Enable debug mode to return detailed metrics")
 
 
 class RagQueryResult(BaseModel):
@@ -148,8 +149,47 @@ class RagQueryResult(BaseModel):
     score: float
 
 
+class RagDebugInfo(BaseModel):
+    """Debug information for RAG query troubleshooting."""
+    # Timing metrics (milliseconds)
+    total_time_ms: float
+    query_expansion_time_ms: float | None = None
+    embedding_time_ms: float
+    vector_search_time_ms: float
+    filtering_time_ms: float
+    composition_time_ms: float
+
+    # Query analysis
+    original_query: str
+    query_variants: list[str]
+    num_queries: int
+
+    # Embedding details
+    embedding_model: str
+    embedding_dim: int
+    num_texts_embedded: int
+    batch_size: int
+
+    # Vector search results
+    raw_results_count: int
+    score_min: float | None = None
+    score_max: float | None = None
+    score_mean: float | None = None
+
+    # Filtering stats
+    after_min_score_filter: int
+    after_dedupe_filter: int
+    after_max_chunks_filter: int
+
+    # Context composition
+    total_chars_before_truncation: int
+    total_chars_after_truncation: int
+    chunks_included: int
+
+
 class RagQueryResponse(BaseModel):
     results: list[RagQueryResult]
+    debug_info: RagDebugInfo | None = None
 
 
 # ----------------------------
