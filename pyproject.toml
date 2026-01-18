@@ -39,6 +39,7 @@ mygpt = "mygpt.cli:cli"
 minversion = "8.0"
 addopts = "-v"
 testpaths = ["tests"]
+asyncio_mode = "auto"
 markers = [
   "unit: fast unit tests with no external dependencies",
   "integration: tests requiring external services (Ollama/Cassandra/Docker)",
