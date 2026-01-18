@@ -25,8 +25,8 @@ EOF
 
 # Parse arguments
 SELECT_ONLY=0
-for arg in "$@"; do
-  case "$arg" in
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     -h|--help)
       usage
       exit 0
@@ -36,7 +36,7 @@ for arg in "$@"; do
       shift
       ;;
     *)
-      echo "[error] Unknown argument: $arg" >&2
+      echo "[error] Unknown argument: $1" >&2
       usage >&2
       exit 2
       ;;
@@ -198,7 +198,9 @@ for page in $(seq 1 "$MAX_PAGES"); do
 
     # Default behavior: start the issue automatically
     log "Starting issue #${best_issue}..."
-    "$DIR/scrummaster_start_issue.sh" "$best_issue"
+    # Use absolute path to ensure we find scrummaster_start_issue.sh in same directory
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    "$SCRIPT_DIR/scrummaster_start_issue.sh" "$best_issue"
     echo "$best_issue"
     exit 0
   fi
