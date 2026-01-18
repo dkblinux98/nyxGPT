@@ -257,7 +257,12 @@ jobs:
             Requirements:
             - Make the minimal correct change to resolve the issue.
             - Add/update tests for ALL code changes.
-            - Run the test suite and fix failures.
+            - **MANDATORY TEST SUCCESS BEFORE COMMIT**:
+              * Run the test suite with: pytest -v
+              * ALL tests MUST PASS (0 failures, 0 errors) before proceeding
+              * If ANY test fails or has errors, you MUST fix them before committing
+              * DO NOT commit code with failing tests under ANY circumstances
+              * Verify test success by checking the pytest output shows "passed" with no "FAILED" or "ERROR"
             - **MANDATORY DOCUMENTATION**: Update documentation for ALL user-facing changes:
               * If you modify src/mygpt/api.py or src/mygpt/app.py → Update docs/api.md
               * If you modify src/mygpt/cli.py → Update docs/configuration.md or README.md CLI section
