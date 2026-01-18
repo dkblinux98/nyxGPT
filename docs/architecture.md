@@ -183,14 +183,64 @@ Code coverage is collected using `pytest-cov` (a pytest plugin for `coverage.py`
 
 ---
 
+## Implemented Extensions
+
+The following features have been successfully implemented:
+
+### Streaming responses
+
+**Status:** Fully implemented and production-ready.
+
+Token-by-token streaming is available across all interfaces:
+- Core chat logic (`chat_stream`)
+- CLI (default behavior)
+- FastAPI (`/api/v1/chat/stream`)
+
+Streaming includes:
+- RAG context injection before generation
+- Incremental text chunk delivery
+- Full session persistence after streaming completes
+- RAG metadata in first chunk (when enabled)
+
+### Web UI (Next.js)
+
+**Status:** Fully implemented and available.
+
+The Next.js web UI provides:
+- Modern React-based interface
+- Real-time streaming chat
+- Session management and organization
+- RAG document upload and management
+- Comprehensive settings and configuration
+- Runs as background service via Homebrew
+
+Access at `http://127.0.0.1:3000` after starting the service.
+
+### Terminal UI (TUI)
+
+**Status:** Fully implemented using Textual framework.
+
+The TUI provides:
+- Rich terminal-based interface
+- Keyboard-driven navigation
+- Real-time streaming chat
+- Session management
+- RAG toggle (Ctrl+R)
+- Markdown rendering
+- Works entirely in the terminal
+
+Launch with `mygpt tui`.
+
+---
+
 ## Future extensions
 
-The architecture intentionally supports:
+The architecture intentionally supports additional features:
 
-- Streaming responses
-- Web UI (React / Next.js)
-- Terminal UI (TUI)
 - Pluggable memory backends
-- Additional vector databases
+- Additional vector databases beyond Cassandra
+- Multi-user authentication and authorization
+- Advanced context window management strategies
+- Custom tool/function calling
 
-No architectural changes are required to add these features.
+No major architectural changes are required to add these features.

@@ -10,6 +10,55 @@ The API is designed to run **locally only** by default.
 
 ---
 
+## API Endpoint Reference
+
+Quick reference of all 41 available endpoints:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/api/v1/info` | GET | Runtime configuration |
+| `/api/v1/config` | GET | Get current configuration |
+| `/api/v1/config` | POST | Update configuration (full replace) |
+| `/api/v1/config` | PATCH | Partial configuration update |
+| `/api/v1/models` | GET | List Ollama models |
+| `/api/v1/models/pull` | POST | Pull model from Ollama |
+| `/api/v1/models/{model_name}` | DELETE | Delete model |
+| `/api/v1/models/{model_name}/info` | GET | Get model details |
+| `/api/v1/sessions` | GET | List all sessions |
+| `/api/v1/sessions/search` | GET | Search messages across sessions |
+| `/api/v1/sessions/init` | POST | Initialize session (idempotent) |
+| `/api/v1/sessions/{name}` | GET | Get session with messages |
+| `/api/v1/sessions/{name}` | DELETE | Delete session |
+| `/api/v1/sessions/{name}/summarize` | POST | Generate title/summary/tags |
+| `/api/v1/sessions/{name}/pin` | POST | Pin session |
+| `/api/v1/sessions/{name}/unpin` | POST | Unpin session |
+| `/api/v1/sessions/{name}/title` | POST | Set session title |
+| `/api/v1/sessions/{name}/tags/add` | POST | Add tags to session |
+| `/api/v1/sessions/{name}/tags/remove` | POST | Remove tags from session |
+| `/api/v1/sessions/{name}/rename` | POST | Rename session |
+| `/api/v1/sessions/{name}/sync-filename` | POST | Sync filename with title |
+| `/api/v1/sessions/{name}/metadata` | GET | Get session metadata |
+| `/api/v1/sessions/{name}/rag/enable` | POST | Enable RAG for session |
+| `/api/v1/sessions/{name}/rag/disable` | POST | Disable RAG for session |
+| `/api/v1/sessions/{name}/messages/{index}` | PATCH | Edit message (with fork option) |
+| `/api/v1/sessions/{name}/messages/{index}/regenerate` | POST | Regenerate response |
+| `/api/v1/sessions/{name}/messages/{index}/rag` | GET | Get RAG chunks for message |
+| `/api/v1/sessions/{name}/export` | GET | Export session (markdown/json/html) |
+| `/api/v1/chat` | POST | Send chat message |
+| `/api/v1/chat/stream` | POST | Stream chat response |
+| `/api/v1/tools/ls` | POST | List files |
+| `/api/v1/tools/cat` | POST | Read file |
+| `/api/v1/tools/grep` | POST | Search files |
+| `/api/v1/rag/ingest` | POST | Ingest text document |
+| `/api/v1/rag/query` | POST | Query RAG vector store |
+| `/api/v1/rag/upload` | POST | Upload and ingest file |
+| `/api/v1/logs/files` | GET | List log files |
+| `/api/v1/logs/view/{filename}` | GET | View log file contents |
+| `/api/v1/logs/stream/{filename}` | GET | Stream log file |
+
+---
+
 ## Running the API
 
 ### Development (manual)
@@ -335,13 +384,70 @@ curl http://127.0.0.1:8000/api/v1/models/llama3.1:8b/info
 
 ---
 
+## Config Management
+
+Configuration can be read and updated via the API. Changes to hot-reloadable settings (default_model, rag_enabled, log_level) take effect immediately without restart.
+
+### `GET /api/v1/config`
+
+Get current configuration values.
+
+**Response:**
+
+```json
+{
+  "ollama_base_url": "http://127.0.0.1:11434",
+  "default_model": "qwen2.5:0.5b",
+  "rag_enabled": false,
+  "log_level": "INFO"
+}
+```
+
+### `POST /api/v1/config`
+
+Update configuration (full replace). Only provided keys are updated.
+
+**Request:**
+
+```json
+{
+  "default_model": "llama3.1:8b",
+  "rag_enabled": true,
+  "log_level": "DEBUG"
+}
+```
+
+**Response:**
+
+```json
+{
+  "updated": {
+    "default_model": "llama3.1:8b",
+    "rag_enabled": true,
+    "log_level": "DEBUG"
+  },
+  "effective": {
+    "ollama_base_url": "http://127.0.0.1:11434",
+    "default_model": "llama3.1:8b",
+    "rag_enabled": true,
+    "log_level": "DEBUG"
+  }
+}
+```
+
+### `PATCH /api/v1/config`
+
+Partial configuration update (same as POST, provided for semantic clarity).
+
+---
+
 ## Sessions endpoints
 
 Sessions store conversation history and metadata and are persisted automatically on disk.
 
 ### `GET /api/v1/sessions`
 
-List all known sessions.
+List all known sessions with comprehensive metadata.
 
 **Response:**
 
@@ -353,11 +459,76 @@ List all known sessions.
       "messages": 14,
       "modified": "2025-12-23 23:35:32",
       "pinned": false,
-      "tags": [],
-      "title": "",
-      "summary": "",
-      "token_estimate": 228,
+      "tags": ["python", "debugging"],
+      "title": "Debugging Python Script",
+      "summary": "Troubleshooting import errors in main.py",
+      "token_estimate": 2284,
       "model": "llama3.1:8b"
+    }
+  ]
+}
+```
+
+**Metadata fields:**
+- `pinned` (bool) - Session is pinned to top of list
+- `tags` (list) - User-defined tags for organization
+- `title` (string) - Human-readable session title
+- `summary` (string) - Auto-generated or manual summary
+- `token_estimate` (int) - Estimated total tokens in session
+- `model` (string) - Model used for this session
+
+---
+
+### `GET /api/v1/sessions/search`
+
+Search for messages across all sessions or within a specific session.
+
+**Query Parameters:**
+- `query` (required) - Text to search for in messages
+- `case_sensitive` (optional, default: false) - Case-sensitive search
+- `role_filter` (optional) - Filter by message role: `user`, `assistant`, `system`
+- `session_filter` (optional) - Filter to specific session name
+- `limit` (optional, default: 50, max: 500) - Maximum results to return
+
+**Example:**
+
+```bash
+# Search all sessions
+curl "http://127.0.0.1:8000/api/v1/sessions/search?query=python&limit=10"
+
+# Search only user messages
+curl "http://127.0.0.1:8000/api/v1/sessions/search?query=error&role_filter=user"
+
+# Search within specific session
+curl "http://127.0.0.1:8000/api/v1/sessions/search?query=function&session_filter=default"
+```
+
+**Response:**
+
+```json
+{
+  "query": "python",
+  "total_results": 3,
+  "results": [
+    {
+      "session_name": "default",
+      "session_title": "Python Tutorial",
+      "message_index": 5,
+      "role": "user",
+      "content": "How do I use Python decorators?",
+      "content_preview": "How do I use Python decorators?",
+      "timestamp": "2025-01-15T10:30:00",
+      "matches": 1
+    },
+    {
+      "session_name": "research",
+      "session_title": null,
+      "message_index": 2,
+      "role": "assistant",
+      "content": "Python decorators are a powerful feature...",
+      "content_preview": "Python decorators are a powerful...",
+      "timestamp": "2025-01-14T14:20:00",
+      "matches": 2
     }
   ]
 }
@@ -404,6 +575,315 @@ Retrieve a single session, including messages and metadata.
     "title": "",
     "summary": ""
   }
+}
+```
+
+---
+
+## Session Metadata Management
+
+Endpoints for managing session metadata including titles, tags, pinning, and auto-summarization.
+
+### `POST /api/v1/sessions/{name}/summarize`
+
+Generate title, summary, and tags for a session using the LLM. This analyzes the conversation and automatically extracts meaningful metadata.
+
+**Response:**
+
+```json
+{
+  "ok": true
+}
+```
+
+After success, the session metadata will contain auto-generated title, summary, and tags.
+
+### `POST /api/v1/sessions/{name}/pin`
+
+Pin a session to keep it at the top of the session list.
+
+**Response:**
+
+```json
+{
+  "ok": true
+}
+```
+
+### `POST /api/v1/sessions/{name}/unpin`
+
+Unpin a session.
+
+**Response:**
+
+```json
+{
+  "ok": true
+}
+```
+
+### `POST /api/v1/sessions/{name}/title`
+
+Set the session title manually.
+
+**Request:**
+
+```json
+{
+  "title": "Python Debugging Session"
+}
+```
+
+**Response:**
+
+```json
+{
+  "ok": true
+}
+```
+
+### `POST /api/v1/sessions/{name}/tags/add`
+
+Add one or more tags to a session.
+
+**Request:**
+
+```json
+{
+  "tags": ["python", "debugging", "tutorial"]
+}
+```
+
+**Response:**
+
+```json
+{
+  "ok": true
+}
+```
+
+### `POST /api/v1/sessions/{name}/tags/remove`
+
+Remove one or more tags from a session.
+
+**Request:**
+
+```json
+{
+  "tags": ["tutorial"]
+}
+```
+
+**Response:**
+
+```json
+{
+  "ok": true
+}
+```
+
+### `POST /api/v1/sessions/{name}/rename`
+
+Rename a session with optional title update and filename sync.
+
+**Request (direct rename):**
+
+```json
+{
+  "new_name": "my-new-session-name",
+  "sync_filename": false
+}
+```
+
+**Request (title-based rename with auto-sync):**
+
+```json
+{
+  "new_name": "Python Debugging Session",
+  "sync_filename": true
+}
+```
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "old_name": "default",
+  "new_name": "python-debugging-session",
+  "message": "Session renamed and filename synced"
+}
+```
+
+When `sync_filename` is true:
+1. The title is set to `new_name`
+2. The filename is automatically sanitized and synced
+3. Only alphanumeric characters, hyphens, and underscores are kept
+
+### `POST /api/v1/sessions/{name}/sync-filename`
+
+Force filename sync for a session based on its current title. Useful for cleaning up session filenames to match their titles.
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "old_name": "default",
+  "new_name": "python-debugging-session",
+  "message": "Filename synced with title"
+}
+```
+
+**Possible statuses:**
+- `renamed` - Filename was changed to match title
+- `no_change` - Filename already matches title
+- `no_title` - No title set, filename unchanged
+
+### `GET /api/v1/sessions/{name}/metadata`
+
+Get metadata for a specific session.
+
+**Response:**
+
+```json
+{
+  "pinned": false,
+  "tags": ["python", "debugging"],
+  "title": "Python Debugging Session",
+  "summary": "Troubleshooting import errors and syntax issues",
+  "token_estimate": 2284,
+  "model": "llama3.1:8b",
+  "rag_enabled": false,
+  "created_at": "2025-01-15T10:00:00",
+  "modified_at": "2025-01-15T14:30:00"
+}
+```
+
+### `POST /api/v1/sessions/{name}/rag/enable`
+
+Enable RAG (Retrieval-Augmented Generation) for a specific session.
+
+**Response:**
+
+```json
+{
+  "session": "default",
+  "rag_enabled": true
+}
+```
+
+### `POST /api/v1/sessions/{name}/rag/disable`
+
+Disable RAG for a specific session.
+
+**Response:**
+
+```json
+{
+  "session": "default",
+  "rag_enabled": false
+}
+```
+
+---
+
+## Message Editing
+
+Endpoints for editing messages, forking conversations, and regenerating responses.
+
+### `PATCH /api/v1/sessions/{name}/messages/{message_index}`
+
+Edit a message in a session. By default, this forks the conversation (truncates messages after the edited one).
+
+**Request:**
+
+```json
+{
+  "content": "Updated message content",
+  "fork": true
+}
+```
+
+**Parameters:**
+- `content` (required) - New message content
+- `fork` (optional, default: true) - Whether to truncate messages after this one
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "message": "Message edited and conversation forked"
+}
+```
+
+**Use cases:**
+- Fix typos in user messages
+- Modify prompt and regenerate from that point
+- Create conversation branches by editing + regenerating
+
+### `POST /api/v1/sessions/{name}/messages/{message_index}/regenerate`
+
+Regenerate the assistant response from a specific user message.
+
+**Request:**
+
+```json
+{
+  "prompt": "Optional new prompt to replace the message",
+  "model": "llama3.1:8b",
+  "rag_enabled": false
+}
+```
+
+**Parameters:**
+- `prompt` (optional) - New prompt to replace the message content
+- `model` (optional) - Model override for regeneration
+- `rag_enabled` (optional) - RAG override for regeneration
+
+**Response:**
+
+```json
+{
+  "ok": true,
+  "session": "default",
+  "model": "llama3.1:8b",
+  "reply": "New assistant response...",
+  "rag_used": false
+}
+```
+
+**Workflow:**
+1. Optionally replaces the user message with new prompt
+2. Truncates conversation after that message
+3. Generates a new response using the chat endpoint
+4. Returns the new response
+
+### `GET /api/v1/sessions/{name}/messages/{message_index}/rag`
+
+Get RAG chunks associated with a specific message. Enables lazy loading of RAG citation data.
+
+**Response:**
+
+```json
+{
+  "message_index": 5,
+  "has_rag": true,
+  "chunks": [
+    {
+      "text": "Relevant document content here...",
+      "score": 0.95,
+      "doc_id": "doc123",
+      "chunk_id": 5
+    },
+    {
+      "text": "Another relevant chunk...",
+      "score": 0.87,
+      "doc_id": "doc123",
+      "chunk_id": 6
+    }
+  ]
 }
 ```
 

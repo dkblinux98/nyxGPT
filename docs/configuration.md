@@ -32,16 +32,26 @@ General application behavior.
 [mygpt]
 default_model = qwen2.5:0.5b
 sessions_dir = ~/.myGPT/sessions
+vectorstore_dir = ~/.myGPT/vectorstore
 chat_timeout_seconds = 60
+auto_summarize_enabled = true
+auto_summarize_after_messages = 5
+auto_sync_filename = true
+system_prompt_minimize = false
 ```
 
 | Key | Description |
 |---|---|
 | `default_model` | Ollama model name used when none is specified |
 | `sessions_dir` | Directory for chat session storage |
+| `vectorstore_dir` | Directory for vector embeddings and RAG data |
 | `chat_timeout_seconds` | Timeout for a single chat request |
+| `auto_summarize_enabled` | Automatically generate session title/summary/tags |
+| `auto_summarize_after_messages` | Trigger auto-summarization after N messages (0 to disable) |
+| `auto_sync_filename` | Automatically sync session filename with title |
+| `system_prompt_minimize` | Minimize system prompts to reduce token usage |
 
-**Note:** `default_model` is **hot-reloadable** and does not require a restart.
+**Note:** `default_model`, `auto_summarize_enabled`, and `auto_summarize_after_messages` are **hot-reloadable** and do not require a restart.
 
 ---
 
@@ -95,6 +105,31 @@ dir = ~/.myGPT/logs
 All components (CLI, API, tests) use this centralized configuration. Logs are written to `{dir}/mygpt.log` with automatic rotation.
 
 **Note:** Changes to the logging `level` are **applied at runtime without restart**.
+
+---
+
+## `[prompt]` section
+
+Adaptive prompt mode configuration for dynamic system prompts.
+
+```ini
+[prompt]
+adaptive_mode_enabled = false
+short_threshold = 3
+long_threshold = 10
+```
+
+| Key | Description |
+|---|---|
+| `adaptive_mode_enabled` | Enable adaptive prompt mode (adjusts prompts based on conversation length) |
+| `short_threshold` | Message count threshold for short mode (concise prompts) |
+| `long_threshold` | Message count threshold for long mode (comprehensive prompts) |
+
+**Behavior:**
+- Disabled by default - only applies when no custom system_prompt is set
+- Short mode (< `short_threshold` messages): Concise prompts for quick interactions
+- Medium mode (`short_threshold` to `long_threshold` messages): Balanced prompts
+- Long mode (> `long_threshold` messages): Comprehensive prompts for complex discussions
 
 ---
 
@@ -172,28 +207,85 @@ Retrieval-Augmented Generation (RAG) settings.
 
 ```ini
 [rag]
-enabled = true
+enable_chat_context = false
 embedding_model = nomic-embed-text
 embedding_dim = 768
-chat_top_k = 3
-chat_context_max_chars = 4000
-cassandra_host = 127.0.0.1
+embedding_batch_size = 16
+embedding_timeout_seconds = 120
+chunk_size = 800
+chunk_overlap = 100
+chat_top_k = 5
+min_score = 0.0
+max_chunks = 6
+chat_context_max_chars = 2400
+dedupe = true
+enable_query_expansion = false
+include_scores = false
+include_headers = true
+cassandra_hosts = 127.0.0.1
 cassandra_port = 9042
-keyspace = mygpt
+cassandra_keyspace = mygpt
+cassandra_table = rag_chunks
 ```
 
 | Key | Description |
 |---|---|
-| `enabled` | Enable RAG features |
+| `enable_chat_context` | Enable RAG context injection for chat (hot-reloadable) |
 | `embedding_model` | Ollama embedding model |
-| `embedding_dim` | Vector dimensionality (must match schema) |
-| `chat_top_k` | Number of chunks retrieved per query |
-| `chat_context_max_chars` | Max characters injected into prompt |
-| `cassandra_host` | Cassandra host |
+| `embedding_dim` | Vector dimensionality (must match Cassandra VECTOR dimension) |
+| `embedding_batch_size` | Batch size for embedding requests (smaller = lower memory, slower) |
+| `embedding_timeout_seconds` | Timeout for each embedding batch request to Ollama |
+| `chunk_size` | Maximum characters per text chunk |
+| `chunk_overlap` | Character overlap between adjacent chunks |
+| `chat_top_k` | Number of candidate chunks to retrieve from vector store |
+| `min_score` | Minimum similarity score required for chunk inclusion |
+| `max_chunks` | Hard cap on number of chunks injected into prompt |
+| `chat_context_max_chars` | Maximum total characters of retrieved context |
+| `dedupe` | Remove duplicate or near-duplicate chunks before injection |
+| `enable_query_expansion` | Generate alternative phrasings to improve retrieval |
+| `expansion_model` | Model for query expansion (optional, defaults to mygpt.default_model) |
+| `include_scores` | Include similarity scores in context headers (debugging only) |
+| `include_headers` | Include per-chunk headers like "[Context 1]" in injected context |
+| `cassandra_hosts` | Cassandra host(s) |
 | `cassandra_port` | Cassandra port |
-| `keyspace` | Cassandra keyspace for RAG |
+| `cassandra_keyspace` | Cassandra keyspace for RAG |
+| `cassandra_table` | Cassandra table name for RAG chunks |
 
-**Note:** `enabled` is **hot-reloadable** and takes effect on the next request. Changes to embedding schema require re-ingestion of documents.
+**RAG Prompt Templates:**
+
+Configurable templates control how retrieved context is presented to the LLM. Use `{context}` as a placeholder for formatted retrieved chunks.
+
+```ini
+[rag]
+# Instruction template: tells the model how to use retrieved context
+# instruction_template = Use the retrieved context below when it is relevant and helpful. Do not mention that you were given retrieved context unless the user explicitly asks about sources. If the context is insufficient, say so and answer from general knowledge.
+#
+# {context}
+
+# Context format: wraps the retrieved chunks
+# context_format = --- BEGIN RETRIEVED CONTEXT ---
+# {context}
+# --- END RETRIEVED CONTEXT ---
+```
+
+**Alternative template examples:**
+
+```ini
+# Minimal/concise template:
+# instruction_template = Answer using the following context when relevant:
+# {context}
+# context_format = Context: {context}
+
+# Verbose/detailed template with emphasis on citations:
+# instruction_template = You have access to retrieved context below. Use it to inform your response when relevant. Always cite sources when using retrieved information. If the context doesn't contain relevant information, clearly state that and provide a general answer.
+#
+# {context}
+# context_format = === RETRIEVED DOCUMENTS ===
+# {context}
+# === END DOCUMENTS ===
+```
+
+**Note:** `enable_chat_context` is **hot-reloadable** and takes effect on the next request. Changes to embedding schema require re-ingestion of documents.
 
 ---
 
