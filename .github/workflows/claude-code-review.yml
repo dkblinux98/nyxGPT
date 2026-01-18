@@ -90,6 +90,8 @@ jobs:
 
       - name: Check test coverage
         id: test_coverage
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           PR="${{ steps.pr_number.outputs.pr }}"
 
@@ -121,6 +123,8 @@ jobs:
 
       - name: Check documentation updates
         id: docs
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           PR="${{ steps.pr_number.outputs.pr }}"
 
@@ -160,6 +164,8 @@ jobs:
 
       - name: Check for previous REQUEST_CHANGES reviews
         id: previous_review
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           PR="${{ steps.pr_number.outputs.pr }}"
 
