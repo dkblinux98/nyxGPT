@@ -9,6 +9,40 @@ require_cmd python3
 
 log() { echo "[scrum] $*" >&2; }
 
+usage() {
+  cat <<'EOF'
+Usage:
+  scrummaster_next_issue.sh [--select-only]
+
+Selects the next Backlog issue (lowest Phase, lowest issue number).
+By default, automatically starts the issue (Status -> In Progress, assigns to DEV_AGENT).
+
+Options:
+  --select-only   Only select and print issue number, don't start it
+  -h, --help      Show this help
+EOF
+}
+
+# Parse arguments
+SELECT_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --select-only)
+      SELECT_ONLY=1
+      shift
+      ;;
+    *)
+      echo "[error] Unknown argument: $arg" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
 # ---- Init ----
 load_config
 require_gh_auth
@@ -155,6 +189,16 @@ for page in $(seq 1 "$MAX_PAGES"); do
 
   if [[ -n "${best_issue:-}" && "${best_issue:-}" != "null" ]]; then
     log "Selected issue #${best_issue} (first candidate page ${page})"
+
+    if [[ "$SELECT_ONLY" == "1" ]]; then
+      log "Select-only mode: printing issue number without starting"
+      echo "$best_issue"
+      exit 0
+    fi
+
+    # Default behavior: start the issue automatically
+    log "Starting issue #${best_issue}..."
+    "$DIR/scrummaster_start_issue.sh" "$best_issue"
     echo "$best_issue"
     exit 0
   fi

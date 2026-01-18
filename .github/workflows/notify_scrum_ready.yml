@@ -87,7 +87,8 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::Selecting next issue from Backlog"
-          NEXT_ISSUE=$(bash -lc './scripts/agents/scrummaster_next_issue.sh' || echo "")
+          # Use --select-only since workflow handles starting separately
+          NEXT_ISSUE=$(bash -lc './scripts/agents/scrummaster_next_issue.sh --select-only' || echo "")
 
           if [[ -z "$NEXT_ISSUE" ]]; then
             echo "::warning::No eligible issues found in Backlog"
