@@ -29,8 +29,12 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_install_scripts", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_web_deps", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_cassandra_launchagent", return_value=mixed),
-        patch.object(ops, "_install_homebrew_web", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(
+            ops, "_install_homebrew_web", return_value=[ops.OpsResult(True, "ok")]
+        ),
+        patch.object(
+            ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]
+        ),
     ):
         rc = ops.install(MagicMock())
         assert rc == 2

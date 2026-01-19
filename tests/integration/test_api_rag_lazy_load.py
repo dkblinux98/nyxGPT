@@ -3,6 +3,7 @@
 Tests the GET /api/v1/sessions/{name}/messages/{message_index}/rag endpoint
 which returns RAG chunks associated with a specific message.
 """
+
 from __future__ import annotations
 
 import json
@@ -75,7 +76,7 @@ def test_get_rag_chunks_index_out_of_bounds(api_base_url: str) -> None:
         session_file = sessions_dir / f"{session_name}.json"
         messages = [
             {"role": "user", "content": "Message 1"},
-            {"role": "assistant", "content": "Response 1"}
+            {"role": "assistant", "content": "Response 1"},
         ]
         session_file.write_text(json.dumps(messages, indent=2))
 
@@ -111,14 +112,14 @@ def test_get_rag_chunks_message_with_rag_data(api_base_url: str) -> None:
                 "text": "This is chunk 1 from RAG search",
                 "doc_id": "doc-123",
                 "chunk_id": "chunk-1",
-                "score": 0.95
+                "score": 0.95,
             },
             {
                 "text": "This is chunk 2 from RAG search",
                 "doc_id": "doc-456",
                 "chunk_id": "chunk-2",
-                "score": 0.87
-            }
+                "score": 0.87,
+            },
         ]
 
         # Add message with RAG chunks
@@ -127,12 +128,9 @@ def test_get_rag_chunks_message_with_rag_data(api_base_url: str) -> None:
             {
                 "role": "user",
                 "content": "Question about RAG",
-                "rag_chunks": test_chunks
+                "rag_chunks": test_chunks,
             },
-            {
-                "role": "assistant",
-                "content": "Answer using RAG"
-            }
+            {"role": "assistant", "content": "Answer using RAG"},
         ]
         session_file.write_text(json.dumps(messages, indent=2))
 
@@ -181,7 +179,7 @@ def test_get_rag_chunks_message_without_rag_data(api_base_url: str) -> None:
         session_file = sessions_dir / f"{session_name}.json"
         messages = [
             {"role": "user", "content": "Regular message without RAG"},
-            {"role": "assistant", "content": "Regular response"}
+            {"role": "assistant", "content": "Regular response"},
         ]
         session_file.write_text(json.dumps(messages, indent=2))
 
@@ -228,12 +226,12 @@ def test_get_rag_chunks_response_format_validation(api_base_url: str) -> None:
                         "text": "RAG content",
                         "doc_id": "doc-1",
                         "chunk_id": "chunk-1",
-                        "score": 0.9
+                        "score": 0.9,
                     }
-                ]
+                ],
             },
             {"role": "assistant", "content": "Response"},
-            {"role": "user", "content": "Message without RAG"}
+            {"role": "user", "content": "Message without RAG"},
         ]
         session_file.write_text(json.dumps(messages, indent=2))
 
@@ -283,17 +281,34 @@ def test_get_rag_chunks_multiple_messages_different_indices(api_base_url: str) -
             {
                 "role": "assistant",
                 "content": "Response 1 - has RAG",
-                "rag_chunks": [{"text": "Assistant RAG", "doc_id": "d1", "chunk_id": "c1", "score": 0.9}]
+                "rag_chunks": [
+                    {
+                        "text": "Assistant RAG",
+                        "doc_id": "d1",
+                        "chunk_id": "c1",
+                        "score": 0.9,
+                    }
+                ],
             },
             {"role": "user", "content": "Message 2 - no RAG"},
             {
                 "role": "user",
                 "content": "Message 3 - has RAG",
                 "rag_chunks": [
-                    {"text": "User RAG chunk 1", "doc_id": "d2", "chunk_id": "c2", "score": 0.85},
-                    {"text": "User RAG chunk 2", "doc_id": "d3", "chunk_id": "c3", "score": 0.80}
-                ]
-            }
+                    {
+                        "text": "User RAG chunk 1",
+                        "doc_id": "d2",
+                        "chunk_id": "c2",
+                        "score": 0.85,
+                    },
+                    {
+                        "text": "User RAG chunk 2",
+                        "doc_id": "d3",
+                        "chunk_id": "c3",
+                        "score": 0.80,
+                    },
+                ],
+            },
         ]
         session_file.write_text(json.dumps(messages, indent=2))
 

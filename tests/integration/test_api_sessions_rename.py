@@ -7,6 +7,7 @@ Tests the following endpoints:
 These endpoints handle session renaming, title-based filename sync, and
 filename sanitization for file system compatibility.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -30,7 +31,7 @@ def test_session_rename_direct(api_base_url: str) -> None:
         # Rename without sync
         rename_resp = client.post(
             f"/api/v1/sessions/{old_name}/rename",
-            json={"new_name": new_name, "sync_filename": False}
+            json={"new_name": new_name, "sync_filename": False},
         )
         assert rename_resp.status_code == 200
         data = rename_resp.json()
@@ -61,7 +62,7 @@ def test_session_rename_with_sync(api_base_url: str) -> None:
         # Rename with sync (title will be sanitized for filename)
         rename_resp = client.post(
             f"/api/v1/sessions/{old_name}/rename",
-            json={"new_name": title, "sync_filename": True}
+            json={"new_name": title, "sync_filename": True},
         )
         assert rename_resp.status_code == 200
         data = rename_resp.json()
@@ -94,7 +95,7 @@ def test_session_rename_invalid_characters(api_base_url: str) -> None:
         # Try to rename with path traversal attempt
         rename_resp = client.post(
             f"/api/v1/sessions/{old_name}/rename",
-            json={"new_name": invalid_name, "sync_filename": False}
+            json={"new_name": invalid_name, "sync_filename": False},
         )
 
         # Should reject invalid name
@@ -110,7 +111,7 @@ def test_session_rename_nonexistent_session(api_base_url: str) -> None:
     with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
         rename_resp = client.post(
             f"/api/v1/sessions/{nonexistent_session}/rename",
-            json={"new_name": new_name, "sync_filename": False}
+            json={"new_name": new_name, "sync_filename": False},
         )
 
     assert rename_resp.status_code == 404
@@ -133,7 +134,7 @@ def test_session_rename_to_existing_name(api_base_url: str) -> None:
         # Try to rename session1 to session2's name
         rename_resp = client.post(
             f"/api/v1/sessions/{session1}/rename",
-            json={"new_name": session2, "sync_filename": False}
+            json={"new_name": session2, "sync_filename": False},
         )
 
         # Should fail (conflict)
@@ -153,8 +154,7 @@ def test_session_sync_filename_with_title(api_base_url: str) -> None:
 
         # Set title
         title_resp = client.post(
-            f"/api/v1/sessions/{session_name}/title",
-            json={"title": title}
+            f"/api/v1/sessions/{session_name}/title", json={"title": title}
         )
         assert title_resp.status_code == 200
 
@@ -206,8 +206,7 @@ def test_session_sync_filename_already_synced(api_base_url: str) -> None:
 
         # Set title that matches current filename
         title_resp = client.post(
-            f"/api/v1/sessions/{session_name}/title",
-            json={"title": title}
+            f"/api/v1/sessions/{session_name}/title", json={"title": title}
         )
         assert title_resp.status_code == 200
 
@@ -219,7 +218,10 @@ def test_session_sync_filename_already_synced(api_base_url: str) -> None:
 
         # Should report no change
         if "message" in data:
-            assert "already" in data["message"].lower() or "no change" in data["message"].lower()
+            assert (
+                "already" in data["message"].lower()
+                or "no change" in data["message"].lower()
+            )
 
 
 @pytest.mark.integration
@@ -246,7 +248,7 @@ def test_session_rename_empty_name(api_base_url: str) -> None:
         # Try to rename with empty name
         rename_resp = client.post(
             f"/api/v1/sessions/{session_name}/rename",
-            json={"new_name": "", "sync_filename": False}
+            json={"new_name": "", "sync_filename": False},
         )
 
         # Should reject empty name (422 for validation errors)
@@ -274,21 +276,20 @@ def test_session_rename_preserves_messages(api_base_url: str) -> None:
         session_file = sessions_dir / f"{old_name}.json"
         messages = [
             {"role": "user", "content": "Test message 1"},
-            {"role": "assistant", "content": "Test response 1"}
+            {"role": "assistant", "content": "Test response 1"},
         ]
         session_file.write_text(json.dumps(messages, indent=2))
 
         # Set title
         title_resp = client.post(
-            f"/api/v1/sessions/{old_name}/title",
-            json={"title": "Test Title"}
+            f"/api/v1/sessions/{old_name}/title", json={"title": "Test Title"}
         )
         assert title_resp.status_code == 200
 
         # Rename session
         rename_resp = client.post(
             f"/api/v1/sessions/{old_name}/rename",
-            json={"new_name": new_name, "sync_filename": False}
+            json={"new_name": new_name, "sync_filename": False},
         )
         assert rename_resp.status_code == 200
 

@@ -93,7 +93,9 @@ def _ensure_test_logging_works():
     root = logging.getLogger()
 
     # Simple formatter without request_id
-    test_formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    test_formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
 
     # Configure all root handlers
     for handler in root.handlers:
@@ -102,7 +104,14 @@ def _ensure_test_logging_works():
 
     # Ensure all mygpt.* loggers are set to DEBUG and propagate
     # This is needed for tests that create custom loggers like "mygpt.test"
-    for logger_name in ["mygpt", "mygpt.test", "mygpt.chat", "mygpt.config", "mygpt.sessions", "mygpt.tui"]:
+    for logger_name in [
+        "mygpt",
+        "mygpt.test",
+        "mygpt.chat",
+        "mygpt.config",
+        "mygpt.sessions",
+        "mygpt.tui",
+    ]:
         logger = logging.getLogger(logger_name)
         logger.setLevel(logging.DEBUG)
         logger.propagate = True

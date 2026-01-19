@@ -1,5 +1,3 @@
-
-
 """
 myGPT package
 """

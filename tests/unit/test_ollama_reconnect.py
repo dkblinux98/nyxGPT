@@ -1,4 +1,5 @@
 """Tests for Ollama reconnection logic."""
+
 from __future__ import annotations
 
 import urllib.error

@@ -52,7 +52,9 @@ def test_load_config_missing_file_raises(tmp_path: Path) -> None:
         load_config(str(missing))
 
 
-def test_load_config_expands_tilde_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_config_expands_tilde_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Simulate a home dir and a config file under it
     fake_home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(fake_home))
@@ -70,14 +72,18 @@ default_model = llama3.1:8b
     assert cfg.get("mygpt", "default_model") == "llama3.1:8b"
 
 
-def test_default_log_dir_is_under_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_log_dir_is_under_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # This test encodes the desired default: ~/.myGPT/logs
     fake_home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(fake_home))
 
     cfg = load_config(None)
     # We will implement mygpt.log_dir; until then, this uses fallback.
-    log_dir = cfg.get("mygpt", "log_dir", fallback=str(Path("~/.myGPT/logs").expanduser()))
+    log_dir = cfg.get(
+        "mygpt", "log_dir", fallback=str(Path("~/.myGPT/logs").expanduser())
+    )
 
     # Must resolve under fake HOME
     resolved = Path(log_dir).expanduser()
@@ -90,7 +96,7 @@ def test_config_allows_overriding_log_dir(tmp_path: Path) -> None:
         ini,
         f"""
 [mygpt]
-log_dir = {tmp_path / 'logs'}
+log_dir = {tmp_path / "logs"}
 """.lstrip(),
     )
 
@@ -128,10 +134,10 @@ def test_validate_config_detects_invalid_port(tmp_path: Path) -> None:
 port = not_a_number
 """.lstrip(),
     )
-    
+
     cfg = load_config(str(ini))
     errors = validate_config(cfg)
-    
+
     assert len(errors) > 0
     assert any("port" in err.lower() for err in errors)
 
@@ -172,7 +178,9 @@ port = 99999
     assert any("port" in err.lower() and "1024-65535" in err for err in errors)
 
 
-def test_get_api_port_handles_invalid_type_gracefully(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_get_api_port_handles_invalid_type_gracefully(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """get_api_port should return default value for invalid port types."""
     ini = tmp_path / "config.ini"
     _write(
@@ -252,7 +260,9 @@ adaptive_mode_enabled = false
     assert get_prompt_mode_enabled(cfg) is False
 
 
-def test_get_prompt_mode_enabled_invalid_value(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_get_prompt_mode_enabled_invalid_value(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """get_prompt_mode_enabled should handle invalid values gracefully."""
     ini = tmp_path / "config.ini"
     _write(
@@ -337,7 +347,9 @@ short_threshold = 0
     assert get_prompt_mode_short_threshold(cfg) == 1
 
 
-def test_get_prompt_mode_short_threshold_invalid_value(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_get_prompt_mode_short_threshold_invalid_value(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """get_prompt_mode_short_threshold should handle invalid values gracefully."""
     ini = tmp_path / "config.ini"
     _write(
@@ -425,7 +437,9 @@ long_threshold = 5
     assert get_prompt_mode_long_threshold(cfg) == 11
 
 
-def test_get_prompt_mode_long_threshold_invalid_value(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_get_prompt_mode_long_threshold_invalid_value(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """get_prompt_mode_long_threshold should handle invalid values gracefully."""
     ini = tmp_path / "config.ini"
     _write(

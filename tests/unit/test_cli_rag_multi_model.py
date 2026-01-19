@@ -10,7 +10,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
-def test_rag_ingest_with_collection_flag(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_rag_ingest_with_collection_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """Test rag ingest command with --collection flag."""
     from mygpt.cli import cli
 
@@ -20,14 +22,20 @@ def test_rag_ingest_with_collection_flag(tmp_path: Path, capsys: pytest.CaptureF
     with patch("mygpt.cli.ingest_document") as mock_ingest:
         mock_ingest.return_value = 5  # 5 chunks ingested
 
-        exit_code = cli([
-            "rag", "ingest",
-            "test-doc",
-            str(test_file),
-            "--collection", "all-minilm",
-            "--model", "all-minilm:latest",
-            "--dimension", "384",
-        ])
+        exit_code = cli(
+            [
+                "rag",
+                "ingest",
+                "test-doc",
+                str(test_file),
+                "--collection",
+                "all-minilm",
+                "--model",
+                "all-minilm:latest",
+                "--dimension",
+                "384",
+            ]
+        )
 
         assert exit_code == 0
         mock_ingest.assert_called_once()
@@ -52,13 +60,19 @@ def test_rag_query_with_collection_flag(capsys: pytest.CaptureFixture[str]) -> N
             {"text": "Result 2", "score": 0.8, "embedding_model": "all-minilm:latest"},
         ]
 
-        exit_code = cli([
-            "rag", "query",
-            "test question",
-            "--collection", "all-minilm",
-            "--model", "all-minilm:latest",
-            "--dimension", "384",
-        ])
+        exit_code = cli(
+            [
+                "rag",
+                "query",
+                "test question",
+                "--collection",
+                "all-minilm",
+                "--model",
+                "all-minilm:latest",
+                "--dimension",
+                "384",
+            ]
+        )
 
         assert exit_code == 0
         mock_retrieve.assert_called_once()
@@ -120,29 +134,38 @@ def test_rag_collections_command(capsys: pytest.CaptureFixture[str]) -> None:
         assert "nomic768" in captured.out
 
 
-def test_rag_compare_command(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_rag_compare_command(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """Test rag compare command."""
     from mygpt.cli import cli
 
     test_file = tmp_path / "test.txt"
-    test_file.write_text("This is a test document. It has multiple sentences. Used for testing.")
+    test_file.write_text(
+        "This is a test document. It has multiple sentences. Used for testing."
+    )
 
     # Mock the imports from model_compare module where they're used
-    with patch("mygpt.rag.model_compare.compare_models") as mock_compare, \
-         patch("mygpt.rag.model_compare.print_comparison_table") as mock_print_table:
-
+    with (
+        patch("mygpt.rag.model_compare.compare_models") as mock_compare,
+        patch("mygpt.rag.model_compare.print_comparison_table") as mock_print_table,
+    ):
         from mygpt.rag.model_compare import ModelPerformanceMetrics
+
         mock_compare.return_value = [
             ModelPerformanceMetrics("nomic-embed-text", 768, 10.5, 5.2, None, None),
             ModelPerformanceMetrics("all-minilm-latest", 384, 8.3, 4.1, None, None),
         ]
 
-        exit_code = cli([
-            "rag", "compare",
-            str(test_file),
-            "nomic-embed-text:768:default",
-            "all-minilm-latest:384:all-minilm",
-        ])
+        exit_code = cli(
+            [
+                "rag",
+                "compare",
+                str(test_file),
+                "nomic-embed-text:768:default",
+                "all-minilm-latest:384:all-minilm",
+            ]
+        )
 
         assert exit_code == 0
         mock_compare.assert_called_once()
@@ -166,11 +189,14 @@ def test_rag_compare_invalid_spec(capsys: pytest.CaptureFixture[str]) -> None:
         test_file = Path(f.name)
 
     try:
-        exit_code = cli([
-            "rag", "compare",
-            str(test_file),
-            "invalid-spec",  # Missing : separators
-        ])
+        exit_code = cli(
+            [
+                "rag",
+                "compare",
+                str(test_file),
+                "invalid-spec",  # Missing : separators
+            ]
+        )
 
         assert exit_code == 2
         captured = capsys.readouterr()

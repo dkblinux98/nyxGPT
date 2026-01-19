@@ -14,6 +14,7 @@ _CACHED_MTIME_NS: int | None = None
 
 class ConfigValidationError(Exception):
     """Raised when configuration validation fails."""
+
     pass
 
 
@@ -44,9 +45,7 @@ def validate_config(cfg: ConfigParser) -> list[str]:
         try:
             port = cfg.getint("api", "port")
             if not (1024 <= port <= 65535):
-                errors.append(
-                    f"Invalid api.port: {port} (must be 1024-65535)"
-                )
+                errors.append(f"Invalid api.port: {port} (must be 1024-65535)")
         except ValueError as e:
             errors.append(f"Invalid api.port: must be an integer ({e})")
 
@@ -61,8 +60,7 @@ def validate_config(cfg: ConfigParser) -> list[str]:
         url = cfg.get("ollama", "base_url")
         if not url.startswith(("http://", "https://")):
             errors.append(
-                f"Invalid ollama.base_url: {url} "
-                "(must start with http:// or https://)"
+                f"Invalid ollama.base_url: {url} (must start with http:// or https://)"
             )
 
     # Validate RAG numeric settings
@@ -80,13 +78,10 @@ def validate_config(cfg: ConfigParser) -> list[str]:
                 val = cfg.getint("rag", setting)
                 if not (min_val <= val <= max_val):
                     errors.append(
-                        f"Invalid rag.{setting}: {val} "
-                        f"(must be {min_val}-{max_val})"
+                        f"Invalid rag.{setting}: {val} (must be {min_val}-{max_val})"
                     )
             except ValueError as e:
-                errors.append(
-                    f"Invalid rag.{setting}: must be an integer ({e})"
-                )
+                errors.append(f"Invalid rag.{setting}: must be an integer ({e})")
 
     # Validate chunk_overlap < chunk_size
     if cfg.has_option("rag", "chunk_size") and cfg.has_option("rag", "chunk_overlap"):
@@ -154,7 +149,9 @@ def load_config(path: str | Path | None = None) -> ConfigParser:
     if _CACHED_CFG is None:
         validation_errors = validate_config(parser)
         if validation_errors:
-            error_msg = "Configuration validation failed:\n  " + "\n  ".join(validation_errors)
+            error_msg = "Configuration validation failed:\n  " + "\n  ".join(
+                validation_errors
+            )
             # Print to stderr for visibility even if logging isn't set up yet
             print(f"ERROR: {error_msg}", file=sys.stderr)
             # Don't raise, just warn - allows system to start with fallback values
@@ -189,12 +186,16 @@ def _expand_path(value: str) -> Path:
 
 
 def get_sessions_dir(cfg: ConfigParser) -> Path:
-    val = cfg.get("mygpt", "sessions_dir", fallback=str(Path.home() / ".myGPT" / "sessions"))
+    val = cfg.get(
+        "mygpt", "sessions_dir", fallback=str(Path.home() / ".myGPT" / "sessions")
+    )
     return _expand_path(val)
 
 
 def get_vectorstore_dir(cfg: ConfigParser) -> Path:
-    val = cfg.get("mygpt", "vectorstore_dir", fallback=str(Path.home() / ".myGPT" / "vectorstore"))
+    val = cfg.get(
+        "mygpt", "vectorstore_dir", fallback=str(Path.home() / ".myGPT" / "vectorstore")
+    )
     return _expand_path(val)
 
 
@@ -207,6 +208,7 @@ def get_api_port(cfg: ConfigParser) -> int:
         return cfg.getint("api", "port", fallback=8000)
     except (ValueError, TypeError) as e:
         import logging
+
         log = logging.getLogger(__name__)
         log.warning("Invalid api.port in config, using default 8000: %s", e)
         return 8000
@@ -222,6 +224,7 @@ def get_rag_enabled(cfg: ConfigParser) -> bool:
     - [rag] enable_chat_context
     """
     import logging
+
     log = logging.getLogger(__name__)
 
     # New setting.
@@ -249,6 +252,7 @@ def get_rag_enable_chat_context(cfg: ConfigParser) -> bool:
         return cfg.getboolean("rag", "enable_chat_context", fallback=False)
     except (ValueError, TypeError) as e:
         import logging
+
         log = logging.getLogger(__name__)
         log.warning("Invalid rag.enable_chat_context in config, using False: %s", e)
         return False
@@ -477,9 +481,7 @@ def get_rag_context_format(cfg: ConfigParser) -> str:
         Context format template string
     """
     default_format = (
-        "--- BEGIN RETRIEVED CONTEXT ---\n"
-        "{context}\n"
-        "--- END RETRIEVED CONTEXT ---"
+        "--- BEGIN RETRIEVED CONTEXT ---\n{context}\n--- END RETRIEVED CONTEXT ---"
     )
     try:
         return cfg.get("rag", "context_format", fallback=default_format)
@@ -503,8 +505,11 @@ def get_prompt_mode_enabled(cfg: ConfigParser) -> bool:
         return cfg.getboolean("prompt", "adaptive_mode_enabled", fallback=False)
     except (ValueError, TypeError) as e:
         import logging
+
         log = logging.getLogger(__name__)
-        log.warning("Invalid prompt.adaptive_mode_enabled in config, using False: %s", e)
+        log.warning(
+            "Invalid prompt.adaptive_mode_enabled in config, using False: %s", e
+        )
         return False
 
 
@@ -524,6 +529,7 @@ def get_prompt_mode_short_threshold(cfg: ConfigParser) -> int:
         return max(1, threshold)  # Must be at least 1
     except (ValueError, TypeError) as e:
         import logging
+
         log = logging.getLogger(__name__)
         log.warning("Invalid prompt.short_threshold in config, using 3: %s", e)
         return 3
@@ -548,6 +554,7 @@ def get_prompt_mode_long_threshold(cfg: ConfigParser) -> int:
         return max(short_threshold + 1, threshold)
     except (ValueError, TypeError) as e:
         import logging
+
         log = logging.getLogger(__name__)
         log.warning("Invalid prompt.long_threshold in config, using 10: %s", e)
         return 10

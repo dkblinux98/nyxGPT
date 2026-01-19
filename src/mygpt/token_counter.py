@@ -16,6 +16,7 @@ def _get_encoder():
     if _tiktoken_encoder is None:
         try:
             import tiktoken
+
             # Use cl100k_base encoding which is used by GPT-3.5/GPT-4
             # This provides reasonable estimates for most LLMs
             _tiktoken_encoder = tiktoken.get_encoding("cl100k_base")
@@ -104,8 +105,7 @@ def count_message_tokens(messages: list[dict[str, str]]) -> int:
     except ImportError:
         # Fallback to simple character-based estimation
         total_chars = sum(
-            len(msg.get("role", "")) + len(msg.get("content", ""))
-            for msg in messages
+            len(msg.get("role", "")) + len(msg.get("content", "")) for msg in messages
         )
         # Add overhead estimate and divide by 4 chars/token
         return (total_chars + len(messages) * 10) // 4

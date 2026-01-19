@@ -61,5 +61,6 @@ def test_session_metadata_rag_enabled_invalid_type():
         meta = ensure_meta_defaults(meta)
 
         # Should be replaced with a boolean (default False)
-        assert isinstance(meta.get("rag_enabled"), bool), \
+        assert isinstance(meta.get("rag_enabled"), bool), (
             f"rag_enabled should be bool after fixing invalid value: {invalid}"
+        )

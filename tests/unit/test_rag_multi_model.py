@@ -22,8 +22,12 @@ def test_embedding_cfg_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
     monkeypatch.setattr("mygpt.rag.embeddings.load_config", lambda *_: cfg)
-    monkeypatch.setattr("mygpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b")
-    monkeypatch.setattr("mygpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434")
+    monkeypatch.setattr(
+        "mygpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b"
+    )
+    monkeypatch.setattr(
+        "mygpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434"
+    )
 
     # Default config
     ecfg1 = _embedding_cfg()
@@ -55,8 +59,12 @@ def test_embedding_cfg_dimension_override(monkeypatch: pytest.MonkeyPatch) -> No
     }
 
     monkeypatch.setattr("mygpt.rag.embeddings.load_config", lambda *_: cfg)
-    monkeypatch.setattr("mygpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b")
-    monkeypatch.setattr("mygpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434")
+    monkeypatch.setattr(
+        "mygpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b"
+    )
+    monkeypatch.setattr(
+        "mygpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434"
+    )
 
     # Default config
     ecfg1 = _embedding_cfg()
@@ -120,7 +128,14 @@ def test_ingest_document_with_collection(monkeypatch: pytest.MonkeyPatch) -> Non
             pass
 
     monkeypatch.setattr("mygpt.rag.rag.CassandraVectorStore", FakeStore)
-    monkeypatch.setattr("mygpt.rag.rag._embedding_cfg", lambda **kw: type("obj", (), {"model": kw.get("model", "nomic"), "dimension": kw.get("dimension", 768)})())
+    monkeypatch.setattr(
+        "mygpt.rag.embeddings._embedding_cfg",
+        lambda **kw: type(
+            "obj",
+            (),
+            {"model": kw.get("model", "nomic"), "dimension": kw.get("dimension", 768)},
+        )(),
+    )
 
     from mygpt.rag.rag import ingest_document
 
@@ -158,7 +173,14 @@ def test_retrieve_context_with_collection(monkeypatch: pytest.MonkeyPatch) -> No
 
     # Mock embed_text
     monkeypatch.setattr("mygpt.rag.rag.embed_text", lambda *args, **kwargs: [0.1] * 384)
-    monkeypatch.setattr("mygpt.rag.rag._embedding_cfg", lambda **kw: type("obj", (), {"model": kw.get("model", "nomic"), "dimension": kw.get("dimension", 768)})())
+    monkeypatch.setattr(
+        "mygpt.rag.rag._embedding_cfg",
+        lambda **kw: type(
+            "obj",
+            (),
+            {"model": kw.get("model", "nomic"), "dimension": kw.get("dimension", 768)},
+        )(),
+    )
 
     # Track calls to CassandraVectorStore
     store_calls = []
@@ -198,7 +220,9 @@ def test_retrieve_context_with_collection(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.unit
-def test_model_comparison_benchmark_embedding_speed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_comparison_benchmark_embedding_speed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test benchmark_embedding_speed function."""
     from mygpt.rag.model_compare import benchmark_embedding_speed
 

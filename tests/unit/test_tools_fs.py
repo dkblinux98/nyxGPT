@@ -5,6 +5,7 @@ These tests verify functionality, error handling, and edge cases.
 
 Related: tools_fs.py implementation
 """
+
 from __future__ import annotations
 
 import io

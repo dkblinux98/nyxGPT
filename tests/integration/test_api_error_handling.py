@@ -33,7 +33,7 @@ def test_chat_with_invalid_data_type(api_base_url: str) -> None:
             "/api/v1/chat",
             json={
                 "prompt": 12345,  # Should be string, not int
-                "session": "test-session"
+                "session": "test-session",
             },
         )
         assert response.status_code == 422
@@ -49,7 +49,9 @@ def test_chat_with_empty_json_body(api_base_url: str) -> None:
         assert response.status_code == 422
 
 
-def test_rag_ingest_with_missing_fields(api_base_url: str, require_cassandra: None) -> None:
+def test_rag_ingest_with_missing_fields(
+    api_base_url: str, require_cassandra: None
+) -> None:
     """POST /api/v1/rag/ingest with missing required fields should return 422."""
     with httpx.Client(base_url=api_base_url, timeout=5.0) as client:
         response = client.post(
@@ -94,8 +96,7 @@ def test_api_key_authentication_invalid(api_base_url: str) -> None:
     with httpx.Client(base_url=api_base_url, timeout=5.0) as client:
         # Make request with invalid API key
         response = client.get(
-            "/api/v1/info",
-            headers={"X-API-Key": "invalid-key-12345"}
+            "/api/v1/info", headers={"X-API-Key": "invalid-key-12345"}
         )
 
         # Either authentication is disabled (200) or key is invalid (401/403)
@@ -155,14 +156,16 @@ def test_session_init_with_too_long_name(api_base_url: str) -> None:
         assert "error" in response.json()
 
 
-def test_rag_query_with_invalid_top_k(api_base_url: str, require_cassandra: None) -> None:
+def test_rag_query_with_invalid_top_k(
+    api_base_url: str, require_cassandra: None
+) -> None:
     """POST /api/v1/rag/query with invalid top_k value should return 422."""
     with httpx.Client(base_url=api_base_url, timeout=5.0) as client:
         response = client.post(
             "/api/v1/rag/query",
             json={
                 "query": "test query",
-                "top_k": -5  # Negative value should be invalid
+                "top_k": -5,  # Negative value should be invalid
             },
         )
         # Should reject negative top_k
@@ -181,7 +184,7 @@ def test_chat_with_invalid_model_name(api_base_url: str) -> None:
             json={
                 "prompt": "test",
                 "session": "test-session",
-                "model": ""  # Empty model name - should use default
+                "model": "",  # Empty model name - should use default
             },
         )
         # Empty model uses default, so should succeed
@@ -202,10 +205,7 @@ def test_rag_operations_without_cassandra(api_base_url: str) -> None:
     with httpx.Client(base_url=api_base_url, timeout=5.0) as client:
         response = client.post(
             "/api/v1/rag/query",
-            json={
-                "query": "test query",
-                "top_k": 5
-            },
+            json={"query": "test query", "top_k": 5},
         )
 
         # Either Cassandra is available (200) or unavailable (500/503)
@@ -225,7 +225,7 @@ def test_error_response_includes_request_id(api_base_url: str) -> None:
         # Make request that will fail (nonexistent session)
         response = client.delete(
             "/api/v1/sessions/nonexistent-session-xyz",
-            headers={"X-Request-ID": custom_request_id}
+            headers={"X-Request-ID": custom_request_id},
         )
 
         # Should return 404
@@ -248,7 +248,7 @@ def test_malformed_json_returns_error(api_base_url: str) -> None:
         response = client.post(
             "/api/v1/chat",
             content="{invalid json}",
-            headers={"Content-Type": "application/json"}
+            headers={"Content-Type": "application/json"},
         )
 
         # Should return 400 or 422 for malformed JSON
@@ -262,7 +262,7 @@ def test_unsupported_content_type(api_base_url: str) -> None:
         response = client.post(
             "/api/v1/chat",
             data={"prompt": "test", "session": "test"},
-            headers={"Content-Type": "application/x-www-form-urlencoded"}
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
         # Should return 415 (Unsupported Media Type) or 422
@@ -296,12 +296,14 @@ def test_cors_preflight_on_protected_endpoint(api_base_url: str) -> None:
             headers={
                 "Origin": "http://localhost:3000",
                 "Access-Control-Request-Method": "POST",
-            }
+            },
         )
 
         # OPTIONS should succeed
         assert response.status_code in (200, 204)
 
         # Should have CORS headers
-        assert "access-control-allow-origin" in response.headers or \
-               "Access-Control-Allow-Origin" in response.headers
+        assert (
+            "access-control-allow-origin" in response.headers
+            or "Access-Control-Allow-Origin" in response.headers
+        )

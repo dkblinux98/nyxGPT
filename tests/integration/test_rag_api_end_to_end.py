@@ -8,7 +8,9 @@ import pytest
 
 
 @pytest.mark.integration
-def test_rag_api_ingest_and_query(api_base_url: str, require_ollama: None, require_cassandra: None) -> None:
+def test_rag_api_ingest_and_query(
+    api_base_url: str, require_ollama: None, require_cassandra: None
+) -> None:
     doc_id = f"itest-{uuid.uuid4().hex[:10]}"
     text = (
         "Cassandra 5.0 supports vector search with SAI indexes. "
@@ -99,7 +101,9 @@ def test_session_rag_enable_disable(api_base_url: str) -> None:
 
 
 @pytest.mark.integration
-def test_rag_upload_text_file(api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path) -> None:
+def test_rag_upload_text_file(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
     """Test RAG file upload endpoint with .txt file."""
     # Create a test text file
     test_file = tmp_path / "test_upload.txt"
@@ -123,8 +127,7 @@ def test_rag_upload_text_file(api_base_url: str, require_ollama: None, require_c
 
         # Verify we can query the uploaded content
         query_resp = client.post(
-            "/api/v1/rag/query",
-            json={"query": "test document", "top_k": 5}
+            "/api/v1/rag/query", json={"query": "test document", "top_k": 5}
         )
         assert query_resp.status_code == 200
         results = query_resp.json()["results"]
@@ -132,7 +135,9 @@ def test_rag_upload_text_file(api_base_url: str, require_ollama: None, require_c
 
 
 @pytest.mark.integration
-def test_rag_upload_markdown_file(api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path) -> None:
+def test_rag_upload_markdown_file(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
     """Test RAG file upload endpoint with .md file with frontmatter."""
     # Create a test markdown file with frontmatter
     test_file = tmp_path / "test.md"
@@ -178,8 +183,7 @@ More content for testing RAG ingestion.
 
         # Verify we can query the uploaded content
         query_resp = client.post(
-            "/api/v1/rag/query",
-            json={"query": "markdown document", "top_k": 5}
+            "/api/v1/rag/query", json={"query": "markdown document", "top_k": 5}
         )
         assert query_resp.status_code == 200
         results = query_resp.json()["results"]

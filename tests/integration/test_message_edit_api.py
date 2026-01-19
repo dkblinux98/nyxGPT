@@ -1,4 +1,5 @@
 """Integration tests for message edit and regenerate API endpoints (#2641)."""
+
 from __future__ import annotations
 
 import httpx
@@ -12,9 +13,7 @@ def test_edit_message_endpoint(api_base_url: str) -> None:
 
     # Initialize session
     init_resp = httpx.post(
-        f"{api_base_url}/api/v1/sessions/init",
-        json={"name": session_name},
-        timeout=5.0
+        f"{api_base_url}/api/v1/sessions/init", json={"name": session_name}, timeout=5.0
     )
     assert init_resp.status_code == 200
 
@@ -29,7 +28,7 @@ def test_edit_message_endpoint(api_base_url: str) -> None:
     session_file = sessions_dir / f"{session_name}.json"
     messages = [
         {"role": "user", "content": "Original message"},
-        {"role": "assistant", "content": "Original response"}
+        {"role": "assistant", "content": "Original response"},
     ]
     session_file.write_text(json.dumps(messages, indent=2))
 
@@ -37,7 +36,7 @@ def test_edit_message_endpoint(api_base_url: str) -> None:
     edit_resp = httpx.patch(
         f"{api_base_url}/api/v1/sessions/{session_name}/messages/0",
         json={"content": "Edited message", "fork": False},
-        timeout=5.0
+        timeout=5.0,
     )
     assert edit_resp.status_code == 200
     data = edit_resp.json()
@@ -60,9 +59,7 @@ def test_edit_message_with_fork(api_base_url: str) -> None:
 
     # Initialize session
     init_resp = httpx.post(
-        f"{api_base_url}/api/v1/sessions/init",
-        json={"name": session_name},
-        timeout=5.0
+        f"{api_base_url}/api/v1/sessions/init", json={"name": session_name}, timeout=5.0
     )
     assert init_resp.status_code == 200
 
@@ -78,7 +75,7 @@ def test_edit_message_with_fork(api_base_url: str) -> None:
         {"role": "user", "content": "Message 1"},
         {"role": "assistant", "content": "Response 1"},
         {"role": "user", "content": "Message 2"},
-        {"role": "assistant", "content": "Response 2"}
+        {"role": "assistant", "content": "Response 2"},
     ]
     session_file.write_text(json.dumps(messages, indent=2))
 
@@ -86,7 +83,7 @@ def test_edit_message_with_fork(api_base_url: str) -> None:
     edit_resp = httpx.patch(
         f"{api_base_url}/api/v1/sessions/{session_name}/messages/0",
         json={"content": "Edited message", "fork": True},
-        timeout=5.0
+        timeout=5.0,
     )
     assert edit_resp.status_code == 200
 
@@ -104,9 +101,7 @@ def test_edit_message_invalid_index(api_base_url: str) -> None:
 
     # Initialize session with one message
     init_resp = httpx.post(
-        f"{api_base_url}/api/v1/sessions/init",
-        json={"name": session_name},
-        timeout=5.0
+        f"{api_base_url}/api/v1/sessions/init", json={"name": session_name}, timeout=5.0
     )
     assert init_resp.status_code == 200
 
@@ -124,7 +119,7 @@ def test_edit_message_invalid_index(api_base_url: str) -> None:
     edit_resp = httpx.patch(
         f"{api_base_url}/api/v1/sessions/{session_name}/messages/99",
         json={"content": "Should fail", "fork": False},
-        timeout=5.0
+        timeout=5.0,
     )
     assert edit_resp.status_code == 400
 
@@ -136,9 +131,7 @@ def test_regenerate_endpoint_requires_user_message(api_base_url: str) -> None:
 
     # Initialize session
     init_resp = httpx.post(
-        f"{api_base_url}/api/v1/sessions/init",
-        json={"name": session_name},
-        timeout=5.0
+        f"{api_base_url}/api/v1/sessions/init", json={"name": session_name}, timeout=5.0
     )
     assert init_resp.status_code == 200
 
@@ -157,7 +150,7 @@ def test_regenerate_endpoint_requires_user_message(api_base_url: str) -> None:
     regen_resp = httpx.post(
         f"{api_base_url}/api/v1/sessions/{session_name}/messages/0/regenerate",
         json={},
-        timeout=5.0
+        timeout=5.0,
     )
     assert regen_resp.status_code == 400
     data = regen_resp.json()
@@ -170,6 +163,6 @@ def test_regenerate_endpoint_nonexistent_session(api_base_url: str) -> None:
     regen_resp = httpx.post(
         f"{api_base_url}/api/v1/sessions/nonexistent-session/messages/0/regenerate",
         json={},
-        timeout=5.0
+        timeout=5.0,
     )
     assert regen_resp.status_code == 404

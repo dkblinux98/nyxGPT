@@ -5,6 +5,7 @@ management, including GET, POST, and PATCH methods.
 
 Related: #2636 (Configuration wizard), #2923 (Backend API verification)
 """
+
 from __future__ import annotations
 
 import httpx
@@ -188,7 +189,16 @@ def test_config_post_validation(api_base_url: str) -> None:
     # Valid log levels are: DEBUG, INFO, WARNING, ERROR
     # The backend should accept these and convert to uppercase
 
-    valid_log_levels = ["debug", "DEBUG", "info", "INFO", "warning", "WARNING", "error", "ERROR"]
+    valid_log_levels = [
+        "debug",
+        "DEBUG",
+        "info",
+        "INFO",
+        "warning",
+        "WARNING",
+        "error",
+        "ERROR",
+    ]
 
     for log_level in valid_log_levels:
         payload = {"log_level": log_level}
@@ -200,7 +210,12 @@ def test_config_post_validation(api_base_url: str) -> None:
         assert r.status_code == 200
         data = r.json()
         # Backend should normalize to uppercase
-        assert data["effective"]["log_level"].upper() in ["DEBUG", "INFO", "WARNING", "ERROR"]
+        assert data["effective"]["log_level"].upper() in [
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "ERROR",
+        ]
 
 
 @pytest.mark.integration

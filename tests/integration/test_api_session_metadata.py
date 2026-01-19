@@ -11,6 +11,7 @@ Tests for 9 session metadata endpoints:
 - POST /api/v1/sessions/{name}/summarize
 - GET /api/v1/sessions/{name}/metadata
 """
+
 from __future__ import annotations
 
 import json
@@ -20,13 +21,13 @@ import httpx
 import pytest
 
 
-def _create_test_session(api_base_url: str, session_name: str, sessions_dir: Path) -> None:
+def _create_test_session(
+    api_base_url: str, session_name: str, sessions_dir: Path
+) -> None:
     """Helper to create a test session with some messages."""
     # Initialize session via API
     init_resp = httpx.post(
-        f"{api_base_url}/api/v1/sessions/init",
-        json={"name": session_name},
-        timeout=5.0
+        f"{api_base_url}/api/v1/sessions/init", json={"name": session_name}, timeout=5.0
     )
     assert init_resp.status_code == 200
 
@@ -34,7 +35,7 @@ def _create_test_session(api_base_url: str, session_name: str, sessions_dir: Pat
     session_file = sessions_dir / f"{session_name}.json"
     messages = [
         {"role": "user", "content": "Test message 1"},
-        {"role": "assistant", "content": "Test response 1"}
+        {"role": "assistant", "content": "Test response 1"},
     ]
     session_file.write_text(json.dumps(messages, indent=2))
 
@@ -52,7 +53,7 @@ def test_pin_session_success(api_base_url: str, tmp_sessions_dir: Path) -> None:
     pin_resp = httpx.post(
         f"{api_base_url}/api/v1/sessions/{session_name}/pin",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert pin_resp.status_code == 200
     assert pin_resp.json()["ok"] is True
@@ -61,7 +62,7 @@ def test_pin_session_success(api_base_url: str, tmp_sessions_dir: Path) -> None:
     get_resp = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert get_resp.status_code == 200
     session_data = get_resp.json()
@@ -74,7 +75,7 @@ def test_pin_session_nonexistent(api_base_url: str, tmp_sessions_dir: Path) -> N
     pin_resp = httpx.post(
         f"{api_base_url}/api/v1/sessions/nonexistent-session/pin",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     # The endpoint returns 400 for nonexistent sessions (not 404)
     assert pin_resp.status_code == 400
@@ -90,7 +91,7 @@ def test_unpin_session_success(api_base_url: str, tmp_sessions_dir: Path) -> Non
     pin_resp = httpx.post(
         f"{api_base_url}/api/v1/sessions/{session_name}/pin",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert pin_resp.status_code == 200
 
@@ -98,7 +99,7 @@ def test_unpin_session_success(api_base_url: str, tmp_sessions_dir: Path) -> Non
     unpin_resp = httpx.post(
         f"{api_base_url}/api/v1/sessions/{session_name}/unpin",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert unpin_resp.status_code == 200
     assert unpin_resp.json()["ok"] is True
@@ -107,7 +108,7 @@ def test_unpin_session_success(api_base_url: str, tmp_sessions_dir: Path) -> Non
     get_resp = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert get_resp.status_code == 200
     session_data = get_resp.json()
@@ -120,7 +121,7 @@ def test_unpin_session_nonexistent(api_base_url: str, tmp_sessions_dir: Path) ->
     unpin_resp = httpx.post(
         f"{api_base_url}/api/v1/sessions/nonexistent-session/unpin",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert unpin_resp.status_code == 400
 
@@ -140,7 +141,7 @@ def test_set_title_success(api_base_url: str, tmp_sessions_dir: Path) -> None:
         f"{api_base_url}/api/v1/sessions/{session_name}/title",
         json={"title": title},
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert title_resp.status_code == 200
     assert title_resp.json()["ok"] is True
@@ -149,7 +150,7 @@ def test_set_title_success(api_base_url: str, tmp_sessions_dir: Path) -> None:
     get_resp = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert get_resp.status_code == 200
     session_data = get_resp.json()
@@ -163,7 +164,7 @@ def test_set_title_nonexistent(api_base_url: str, tmp_sessions_dir: Path) -> Non
         f"{api_base_url}/api/v1/sessions/nonexistent-session/title",
         json={"title": "Some Title"},
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert title_resp.status_code == 400
 
@@ -179,7 +180,7 @@ def test_set_title_empty_string(api_base_url: str, tmp_sessions_dir: Path) -> No
         f"{api_base_url}/api/v1/sessions/{session_name}/title",
         json={"title": ""},
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     # Pydantic validation should reject this (422)
     assert title_resp.status_code == 422
@@ -200,7 +201,7 @@ def test_add_tags_success(api_base_url: str, tmp_sessions_dir: Path) -> None:
         f"{api_base_url}/api/v1/sessions/{session_name}/tags/add",
         json={"tags": tags},
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert tags_resp.status_code == 200
     assert tags_resp.json()["ok"] is True
@@ -209,7 +210,7 @@ def test_add_tags_success(api_base_url: str, tmp_sessions_dir: Path) -> None:
     get_resp = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert get_resp.status_code == 200
     session_data = get_resp.json()
@@ -223,7 +224,7 @@ def test_add_tags_nonexistent(api_base_url: str, tmp_sessions_dir: Path) -> None
         f"{api_base_url}/api/v1/sessions/nonexistent-session/tags/add",
         json={"tags": ["test"]},
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert tags_resp.status_code == 400
 
@@ -239,7 +240,7 @@ def test_add_tags_empty_list(api_base_url: str, tmp_sessions_dir: Path) -> None:
         f"{api_base_url}/api/v1/sessions/{session_name}/tags/add",
         json={"tags": []},
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     # Should fail - endpoint requires at least one tag
     assert tags_resp.status_code == 400
@@ -257,7 +258,7 @@ def test_remove_tags_success(api_base_url: str, tmp_sessions_dir: Path) -> None:
         f"{api_base_url}/api/v1/sessions/{session_name}/tags/add",
         json={"tags": tags},
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
 
     # Remove some tags
@@ -266,7 +267,7 @@ def test_remove_tags_success(api_base_url: str, tmp_sessions_dir: Path) -> None:
         f"{api_base_url}/api/v1/sessions/{session_name}/tags/remove",
         json={"tags": remove_tags},
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert remove_resp.status_code == 200
     assert remove_resp.json()["ok"] is True
@@ -275,7 +276,7 @@ def test_remove_tags_success(api_base_url: str, tmp_sessions_dir: Path) -> None:
     get_resp = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert get_resp.status_code == 200
     session_data = get_resp.json()
@@ -292,7 +293,7 @@ def test_remove_tags_nonexistent(api_base_url: str, tmp_sessions_dir: Path) -> N
         f"{api_base_url}/api/v1/sessions/nonexistent-session/tags/remove",
         json={"tags": ["test"]},
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert remove_resp.status_code == 400
 
@@ -312,7 +313,7 @@ def test_rename_session_direct(api_base_url: str, tmp_sessions_dir: Path) -> Non
         f"{api_base_url}/api/v1/sessions/{session_name}/rename",
         json={"new_name": new_name, "sync_filename": False},
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert rename_resp.status_code == 200
     data = rename_resp.json()
@@ -330,7 +331,9 @@ def test_rename_session_direct(api_base_url: str, tmp_sessions_dir: Path) -> Non
 
 
 @pytest.mark.integration
-def test_rename_session_with_title_sync(api_base_url: str, tmp_sessions_dir: Path) -> None:
+def test_rename_session_with_title_sync(
+    api_base_url: str, tmp_sessions_dir: Path
+) -> None:
     """Test session rename with title update and filename sync."""
     session_name = "test-rename-sync"
     _create_test_session(api_base_url, session_name, tmp_sessions_dir)
@@ -341,7 +344,7 @@ def test_rename_session_with_title_sync(api_base_url: str, tmp_sessions_dir: Pat
         f"{api_base_url}/api/v1/sessions/{session_name}/rename",
         json={"new_name": new_title, "sync_filename": True},
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert rename_resp.status_code == 200
     data = rename_resp.json()
@@ -358,7 +361,7 @@ def test_rename_session_with_title_sync(api_base_url: str, tmp_sessions_dir: Pat
     get_resp = httpx.get(
         f"{api_base_url}/api/v1/sessions/{sanitized_name}",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert get_resp.status_code == 200
     session_data = get_resp.json()
@@ -372,7 +375,7 @@ def test_rename_session_nonexistent(api_base_url: str, tmp_sessions_dir: Path) -
         f"{api_base_url}/api/v1/sessions/nonexistent-session/rename",
         json={"new_name": "new-name", "sync_filename": False},
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert rename_resp.status_code == 404
 
@@ -388,7 +391,7 @@ def test_rename_session_invalid_name(api_base_url: str, tmp_sessions_dir: Path) 
         f"{api_base_url}/api/v1/sessions/{session_name}/rename",
         json={"new_name": "../invalid/name", "sync_filename": False},
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert rename_resp.status_code == 400
 
@@ -408,14 +411,14 @@ def test_sync_filename_success(api_base_url: str, tmp_sessions_dir: Path) -> Non
         f"{api_base_url}/api/v1/sessions/{session_name}/title",
         json={"title": title},
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
 
     # Sync filename
     sync_resp = httpx.post(
         f"{api_base_url}/api/v1/sessions/{session_name}/sync-filename",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert sync_resp.status_code == 200
     data = sync_resp.json()
@@ -434,7 +437,7 @@ def test_sync_filename_success(api_base_url: str, tmp_sessions_dir: Path) -> Non
     get_resp = httpx.get(
         f"{api_base_url}/api/v1/sessions/{new_name}",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert get_resp.status_code == 200
     session_data = get_resp.json()
@@ -451,7 +454,7 @@ def test_sync_filename_no_title(api_base_url: str, tmp_sessions_dir: Path) -> No
     sync_resp = httpx.post(
         f"{api_base_url}/api/v1/sessions/{session_name}/sync-filename",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert sync_resp.status_code == 200
     data = sync_resp.json()
@@ -466,7 +469,7 @@ def test_sync_filename_nonexistent(api_base_url: str, tmp_sessions_dir: Path) ->
     sync_resp = httpx.post(
         f"{api_base_url}/api/v1/sessions/nonexistent-session/sync-filename",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert sync_resp.status_code == 404
 
@@ -475,7 +478,9 @@ def test_sync_filename_nonexistent(api_base_url: str, tmp_sessions_dir: Path) ->
 
 
 @pytest.mark.integration
-def test_summarize_session_success(api_base_url: str, tmp_sessions_dir: Path, require_ollama) -> None:
+def test_summarize_session_success(
+    api_base_url: str, tmp_sessions_dir: Path, require_ollama
+) -> None:
     """Test generating session summary/title/tags successfully.
 
     This test requires a running Ollama instance with a working model.
@@ -485,13 +490,12 @@ def test_summarize_session_success(api_base_url: str, tmp_sessions_dir: Path, re
     """
     # Use a unique session name to avoid conflicts with default sessions_dir
     import uuid
+
     session_name = f"test-summarize-{uuid.uuid4().hex[:8]}"
 
     # Initialize session in default sessions_dir (not tmp)
     init_resp = httpx.post(
-        f"{api_base_url}/api/v1/sessions/init",
-        json={"name": session_name},
-        timeout=5.0
+        f"{api_base_url}/api/v1/sessions/init", json={"name": session_name}, timeout=5.0
     )
     assert init_resp.status_code == 200
 
@@ -503,9 +507,15 @@ def test_summarize_session_success(api_base_url: str, tmp_sessions_dir: Path, re
     session_file = default_sessions_dir / f"{session_name}.json"
     messages = [
         {"role": "user", "content": "What is Python programming language?"},
-        {"role": "assistant", "content": "Python is a high-level, interpreted programming language known for its simplicity."},
+        {
+            "role": "assistant",
+            "content": "Python is a high-level, interpreted programming language known for its simplicity.",
+        },
         {"role": "user", "content": "How do I install it?"},
-        {"role": "assistant", "content": "You can download Python from python.org or use a package manager."}
+        {
+            "role": "assistant",
+            "content": "You can download Python from python.org or use a package manager.",
+        },
     ]
     session_file.write_text(json.dumps(messages, indent=2))
 
@@ -513,13 +523,14 @@ def test_summarize_session_success(api_base_url: str, tmp_sessions_dir: Path, re
         # Summarize session (uses default sessions_dir)
         summarize_resp = httpx.post(
             f"{api_base_url}/api/v1/sessions/{session_name}/summarize",
-            timeout=60.0  # LLM call may take time
+            timeout=60.0,  # LLM call may take time
         )
 
         # The endpoint should return either 200 (success) or 400 (LLM failure)
         # but never crash (500)
-        assert summarize_resp.status_code in [200, 400], \
+        assert summarize_resp.status_code in [200, 400], (
             f"Expected 200 or 400, got {summarize_resp.status_code}: {summarize_resp.text}"
+        )
 
         # If successful, verify metadata was updated
         if summarize_resp.status_code == 200:
@@ -527,8 +538,7 @@ def test_summarize_session_success(api_base_url: str, tmp_sessions_dir: Path, re
 
             # Verify metadata was updated (title/summary/tags should be set)
             get_resp = httpx.get(
-                f"{api_base_url}/api/v1/sessions/{session_name}",
-                timeout=5.0
+                f"{api_base_url}/api/v1/sessions/{session_name}", timeout=5.0
             )
             assert get_resp.status_code == 200
             session_data = get_resp.json()
@@ -543,7 +553,9 @@ def test_summarize_session_success(api_base_url: str, tmp_sessions_dir: Path, re
             error_data = summarize_resp.json()
             assert "error" in error_data
             # This is acceptable - LLM might not be configured or working properly
-            pytest.skip(f"Summarization failed due to LLM issue: {error_data['error'].get('message', 'Unknown error')}")
+            pytest.skip(
+                f"Summarization failed due to LLM issue: {error_data['error'].get('message', 'Unknown error')}"
+            )
     finally:
         # Clean up - delete the test session
         try:
@@ -553,13 +565,15 @@ def test_summarize_session_success(api_base_url: str, tmp_sessions_dir: Path, re
 
 
 @pytest.mark.integration
-def test_summarize_session_nonexistent(api_base_url: str, tmp_sessions_dir: Path) -> None:
+def test_summarize_session_nonexistent(
+    api_base_url: str, tmp_sessions_dir: Path
+) -> None:
     """Test summarizing nonexistent session returns 400."""
     # Use tmp_sessions_dir to ensure session doesn't exist
     summarize_resp = httpx.post(
         f"{api_base_url}/api/v1/sessions/nonexistent-session-xyz123/summarize",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert summarize_resp.status_code == 400
 
@@ -574,13 +588,12 @@ def test_get_metadata_success(api_base_url: str) -> None:
     Note: The metadata endpoint uses the default sessions_dir from config.
     """
     import uuid
+
     session_name = f"test-metadata-{uuid.uuid4().hex[:8]}"
 
     # Initialize session in default sessions_dir
     init_resp = httpx.post(
-        f"{api_base_url}/api/v1/sessions/init",
-        json={"name": session_name},
-        timeout=5.0
+        f"{api_base_url}/api/v1/sessions/init", json={"name": session_name}, timeout=5.0
     )
     assert init_resp.status_code == 200
 
@@ -589,22 +602,18 @@ def test_get_metadata_success(api_base_url: str) -> None:
         httpx.post(
             f"{api_base_url}/api/v1/sessions/{session_name}/title",
             json={"title": "Test Metadata Session"},
-            timeout=5.0
+            timeout=5.0,
         )
         httpx.post(
             f"{api_base_url}/api/v1/sessions/{session_name}/tags/add",
             json={"tags": ["test", "metadata"]},
-            timeout=5.0
+            timeout=5.0,
         )
-        httpx.post(
-            f"{api_base_url}/api/v1/sessions/{session_name}/pin",
-            timeout=5.0
-        )
+        httpx.post(f"{api_base_url}/api/v1/sessions/{session_name}/pin", timeout=5.0)
 
         # Get metadata directly via metadata endpoint
         meta_resp = httpx.get(
-            f"{api_base_url}/api/v1/sessions/{session_name}/metadata",
-            timeout=5.0
+            f"{api_base_url}/api/v1/sessions/{session_name}/metadata", timeout=5.0
         )
         assert meta_resp.status_code == 200
         meta = meta_resp.json()
@@ -634,13 +643,13 @@ def test_get_metadata_creates_session_if_missing(api_base_url: str) -> None:
     with default metadata if it doesn't exist yet.
     """
     import uuid
+
     session_name = f"test-metadata-autocreate-{uuid.uuid4().hex[:8]}"
 
     try:
         # Get metadata for non-existent session
         meta_resp = httpx.get(
-            f"{api_base_url}/api/v1/sessions/{session_name}/metadata",
-            timeout=5.0
+            f"{api_base_url}/api/v1/sessions/{session_name}/metadata", timeout=5.0
         )
         assert meta_resp.status_code == 200
         meta = meta_resp.json()
@@ -656,8 +665,7 @@ def test_get_metadata_creates_session_if_missing(api_base_url: str) -> None:
 
         # Verify session was actually created
         get_resp = httpx.get(
-            f"{api_base_url}/api/v1/sessions/{session_name}",
-            timeout=5.0
+            f"{api_base_url}/api/v1/sessions/{session_name}", timeout=5.0
         )
         assert get_resp.status_code == 200
     finally:

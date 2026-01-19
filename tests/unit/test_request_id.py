@@ -125,7 +125,7 @@ def test_request_id_in_error_responses():
     # This triggers our custom exception handler
     response = client.delete(
         "/api/v1/sessions/nonexistent-session-123",
-        headers={"X-Request-ID": custom_req_id}
+        headers={"X-Request-ID": custom_req_id},
     )
 
     # Should be 404 (session not found)
@@ -190,7 +190,9 @@ async def test_request_id_async_context_propagation():
 
     # Awaited async tasks should preserve context
     child_result = await child_async_task()
-    assert child_result == parent_request_id, "Request ID should propagate to awaited tasks"
+    assert child_result == parent_request_id, (
+        "Request ID should propagate to awaited tasks"
+    )
 
     # Nested async calls should also preserve context
     async def nested_async_call():
@@ -198,7 +200,9 @@ async def test_request_id_async_context_propagation():
         return inner_result
 
     nested_result = await nested_async_call()
-    assert nested_result == parent_request_id, "Request ID should propagate through nested awaits"
+    assert nested_result == parent_request_id, (
+        "Request ID should propagate through nested awaits"
+    )
 
     # Parent context should still be intact
     assert request_id_var.get() == parent_request_id

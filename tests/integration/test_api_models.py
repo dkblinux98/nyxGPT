@@ -8,6 +8,7 @@ Tests the following endpoints:
 
 These tests require Ollama to be running and accessible.
 """
+
 from __future__ import annotations
 
 import httpx
@@ -48,7 +49,9 @@ def test_models_list_non_empty(api_base_url: str, require_ollama: None) -> None:
 
 
 @pytest.mark.integration
-def test_models_delete_nonexistent_model(api_base_url: str, require_ollama: None) -> None:
+def test_models_delete_nonexistent_model(
+    api_base_url: str, require_ollama: None
+) -> None:
     """Test DELETE /api/v1/models/{model_name} for nonexistent model."""
     nonexistent_model = "nonexistent-model:999"
 
@@ -150,7 +153,9 @@ def test_models_pull_whitespace_model_name(api_base_url: str) -> None:
 
 
 @pytest.mark.integration
-def test_models_info_special_characters(api_base_url: str, require_ollama: None) -> None:
+def test_models_info_special_characters(
+    api_base_url: str, require_ollama: None
+) -> None:
     """Test GET /api/v1/models/{model_name}/info with special characters."""
     # Test URL encoding and special character handling
     model_with_special_chars = "model:with/special@chars"

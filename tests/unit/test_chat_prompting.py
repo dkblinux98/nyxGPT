@@ -9,8 +9,6 @@ from mygpt.chat import chat, chat_stream
 pytestmark = pytest.mark.unit
 
 
-
-
 def _cfg(tmp_path: Path, *, rag_enabled: bool) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     cfg["mygpt"] = {
@@ -43,7 +41,9 @@ def test_chat_without_rag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     assert result.reply == "hello"
 
 
-def test_chat_with_rag_injects_context(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_chat_with_rag_injects_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     cfg = _cfg(tmp_path, rag_enabled=True)
 
     # Ensure chat() and sessions use our in-memory config
@@ -80,7 +80,9 @@ def test_chat_with_rag_injects_context(monkeypatch: pytest.MonkeyPatch, tmp_path
     )
 
 
-def test_chat_rag_disabled_does_not_call_retrieve(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_chat_rag_disabled_does_not_call_retrieve(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     cfg = _cfg(tmp_path, rag_enabled=False)
 
     # Ensure chat() uses our in-memory config
@@ -100,7 +102,9 @@ def test_chat_rag_disabled_does_not_call_retrieve(monkeypatch: pytest.MonkeyPatc
     assert called["count"] == 0
 
 
-def test_chat_stream_yields_chunks_and_persists(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_chat_stream_yields_chunks_and_persists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """chat_stream should yield incremental chunks and persist the final reply."""
     cfg = _cfg(tmp_path, rag_enabled=False)
 
@@ -137,7 +141,9 @@ def test_chat_stream_yields_chunks_and_persists(monkeypatch: pytest.MonkeyPatch,
     assert last_msg["content"] == "hello"
 
 
-def test_chat_with_rag_returns_chunk_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_chat_with_rag_returns_chunk_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """chat() should return RAG chunk metadata when RAG is enabled."""
     cfg = _cfg(tmp_path, rag_enabled=True)
 
@@ -165,7 +171,9 @@ def test_chat_with_rag_returns_chunk_metadata(monkeypatch: pytest.MonkeyPatch, t
     assert result.rag_context[0]["chunk_id"] == 0
 
 
-def test_chat_stream_emits_rag_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_chat_stream_emits_rag_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """chat_stream should emit RAG metadata as first chunk when RAG is enabled."""
     cfg = _cfg(tmp_path, rag_enabled=True)
 
@@ -196,6 +204,7 @@ def test_chat_stream_emits_rag_metadata(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
     # Extract JSON between markers
     import json
+
     start_marker = "__RAG_START__"
     end_marker = "__RAG_END__"
     start_idx = first_chunk.index(start_marker) + len(start_marker)
@@ -215,7 +224,9 @@ def test_chat_stream_emits_rag_metadata(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert chunks[1] == "answer"
 
 
-def test_chat_with_rag_enabled_but_no_chunks_found(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_chat_with_rag_enabled_but_no_chunks_found(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """When RAG is enabled but no chunks are found, rag_chunks should be empty array (not absent)."""
     cfg = _cfg(tmp_path, rag_enabled=True)
 
@@ -226,7 +237,9 @@ def test_chat_with_rag_enabled_but_no_chunks_found(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr("mygpt.chat.retrieve_context", lambda *a, **k: [])
 
     # Mock ollama response
-    monkeypatch.setattr("mygpt.chat.ollama_chat", lambda **_: "answer without RAG context")
+    monkeypatch.setattr(
+        "mygpt.chat.ollama_chat", lambda **_: "answer without RAG context"
+    )
 
     # Track what gets saved
     saved = {}
@@ -248,7 +261,9 @@ def test_chat_with_rag_enabled_but_no_chunks_found(monkeypatch: pytest.MonkeyPat
     last_msg = saved["messages"][-1]
     assert last_msg["role"] == "assistant"
     assert "rag_chunks" in last_msg, "rag_chunks field should exist when RAG is enabled"
-    assert last_msg["rag_chunks"] == [], "rag_chunks should be empty array when no chunks found"
+    assert last_msg["rag_chunks"] == [], (
+        "rag_chunks should be empty array when no chunks found"
+    )
 
     # This distinguishes "RAG was enabled but found nothing" from "RAG was disabled"
     # - Message WITHOUT rag_chunks field = RAG was disabled
@@ -256,7 +271,9 @@ def test_chat_with_rag_enabled_but_no_chunks_found(monkeypatch: pytest.MonkeyPat
     # - Message WITH rag_chunks: [...] = RAG was enabled and found chunks
 
 
-def test_chat_with_custom_rag_templates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_chat_with_custom_rag_templates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Test that custom RAG templates are used when configured."""
     cfg = _cfg(tmp_path, rag_enabled=True)
 
@@ -298,7 +315,9 @@ def test_chat_with_custom_rag_templates(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert "Use the retrieved context below" not in all_text
 
 
-def test_chat_rag_templates_default_backward_compatible(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_chat_rag_templates_default_backward_compatible(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Test that default templates match the original hardcoded behavior."""
     cfg = _cfg(tmp_path, rag_enabled=True)
 

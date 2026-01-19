@@ -34,7 +34,7 @@ def test_rate_limiter_allows_within_limit():
     # First 5 requests should succeed (burst)
     for i in range(5):
         allowed, headers = limiter.is_allowed("client1")
-        assert allowed, f"Request {i+1} should be allowed"
+        assert allowed, f"Request {i + 1} should be allowed"
         assert "X-RateLimit-Limit" in headers
         assert "X-RateLimit-Remaining" in headers
         assert "X-RateLimit-Reset" in headers
@@ -176,7 +176,7 @@ def test_rate_limiter_burst_behavior():
     # Should allow 5 requests immediately (burst)
     for i in range(5):
         allowed, _ = limiter.is_allowed("client1")
-        assert allowed, f"Burst request {i+1} should be allowed"
+        assert allowed, f"Burst request {i + 1} should be allowed"
 
     # 6th request should be blocked
     allowed, _ = limiter.is_allowed("client1")

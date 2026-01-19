@@ -80,7 +80,9 @@ def test_logs_view_file_with_level_filter(api_base_url: str) -> None:
     first_file = files[0]["name"]
 
     # View with level filter
-    r = httpx.get(f"{api_base_url}/api/v1/logs/view/{first_file}?level=ERROR", timeout=5.0)
+    r = httpx.get(
+        f"{api_base_url}/api/v1/logs/view/{first_file}?level=ERROR", timeout=5.0
+    )
     assert r.status_code == 200
     data = r.json()
     assert "lines" in data

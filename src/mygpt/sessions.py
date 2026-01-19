@@ -13,7 +13,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, TypedDict, NotRequired
 
-from mygpt.config import load_config, get_default_model, get_ollama_base_url, get_sessions_dir
+from mygpt.config import (
+    load_config,
+    get_default_model,
+    get_ollama_base_url,
+    get_sessions_dir,
+)
 from mygpt.ollama_client import ollama_chat
 
 
@@ -102,6 +107,7 @@ def file_lock(file_path: Path, timeout: float = 5.0):
         # Platform-specific locking
         if sys.platform == "win32":
             import msvcrt
+
             start_time = time.time()
             while True:
                 try:
@@ -109,10 +115,13 @@ def file_lock(file_path: Path, timeout: float = 5.0):
                     break
                 except OSError:
                     if time.time() - start_time > timeout:
-                        raise TimeoutError(f"Could not acquire lock on {file_path} within {timeout}s")
+                        raise TimeoutError(
+                            f"Could not acquire lock on {file_path} within {timeout}s"
+                        )
                     time.sleep(0.1)
         else:
             import fcntl
+
             start_time = time.time()
             while True:
                 try:
@@ -120,7 +129,9 @@ def file_lock(file_path: Path, timeout: float = 5.0):
                     break
                 except (OSError, BlockingIOError):
                     if time.time() - start_time > timeout:
-                        raise TimeoutError(f"Could not acquire lock on {file_path} within {timeout}s")
+                        raise TimeoutError(
+                            f"Could not acquire lock on {file_path} within {timeout}s"
+                        )
                     time.sleep(0.1)
 
         yield fd
@@ -130,9 +141,11 @@ def file_lock(file_path: Path, timeout: float = 5.0):
         try:
             if sys.platform == "win32":
                 import msvcrt
+
                 msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
             else:
                 import fcntl
+
                 fcntl.flock(fd, fcntl.LOCK_UN)
         except Exception as e:
             log.warning(f"Failed to unlock {file_path}: {e}")
@@ -146,6 +159,7 @@ class SessionMetadata(TypedDict):
     This provides IDE autocomplete, type checking, and documentation
     for all metadata fields stored in .meta.json files.
     """
+
     created_at: str  # ISO 8601 datetime
     updated_at: str  # ISO 8601 datetime
     pinned: bool
@@ -166,7 +180,7 @@ SessionMetaDict = dict[str, Any]
 
 # Session names must be alphanumeric with underscores or hyphens, 1-64 chars
 # This prevents path traversal and ensures filesystem compatibility
-VALID_SESSION_NAME_PATTERN = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
+VALID_SESSION_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 def validate_session_name(name: str) -> str:
@@ -206,8 +220,7 @@ def validate_session_name(name: str) -> str:
 
     if not VALID_SESSION_NAME_PATTERN.match(raw):
         raise ValueError(
-            "Session name must be 1-64 alphanumeric characters, "
-            "underscores, or hyphens"
+            "Session name must be 1-64 alphanumeric characters, underscores, or hyphens"
         )
 
     return raw
@@ -325,7 +338,9 @@ def save_session_messages(session_file: Path, messages: list[dict[str, str]]) ->
     session_file.parent.mkdir(parents=True, exist_ok=True)
     # Use unique temp file name to avoid race conditions in concurrent writes
     tmp = session_file.parent / f".{session_file.name}.{uuid.uuid4().hex[:8]}.tmp"
-    tmp.write_text(json.dumps(messages, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(messages, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     os.replace(tmp, session_file)
 
 
@@ -348,7 +363,9 @@ def save_session_meta(meta_file: Path, meta: SessionMetaDict) -> None:
     meta_file.parent.mkdir(parents=True, exist_ok=True)
     # Use unique temp file name to avoid race conditions in concurrent writes
     tmp = meta_file.parent / f".{meta_file.name}.{uuid.uuid4().hex[:8]}.tmp"
-    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     os.replace(tmp, meta_file)
 
 
@@ -368,9 +385,7 @@ def normalize_tags(tags: list[str]) -> list[str]:
 
 
 def ensure_meta_defaults(
-    meta: SessionMetaDict,
-    *,
-    model: str | None = None
+    meta: SessionMetaDict, *, model: str | None = None
 ) -> SessionMetaDict:
     """Ensure metadata has all required fields with valid defaults.
 
@@ -398,14 +413,18 @@ def ensure_meta_defaults(
     if "rag_enabled" not in meta or not isinstance(meta.get("rag_enabled"), bool):
         cfg = load_config(None)
         try:
-            meta["rag_enabled"] = cfg.getboolean("rag", "enable_chat_context", fallback=False)
+            meta["rag_enabled"] = cfg.getboolean(
+                "rag", "enable_chat_context", fallback=False
+            )
         except Exception:
             meta["rag_enabled"] = False
 
     return meta
 
 
-def apply_system_prompt(messages: list[dict[str, str]], system: str | None) -> list[dict[str, str]]:
+def apply_system_prompt(
+    messages: list[dict[str, str]], system: str | None
+) -> list[dict[str, str]]:
     if not system:
         return messages
     if messages and messages[0].get("role") == "system":
@@ -447,7 +466,9 @@ def init_session(
     return session_file, meta_file, messages, meta
 
 
-def persist_after_exchange(session_file: Path, meta_file: Path, messages: list[dict[str, str]], *, model: str) -> str:
+def persist_after_exchange(
+    session_file: Path, meta_file: Path, messages: list[dict[str, str]], *, model: str
+) -> str:
     """Persist session messages and metadata after a chat exchange.
 
     Also triggers auto-summarization and filename sync if enabled in config.
@@ -474,8 +495,12 @@ def persist_after_exchange(session_file: Path, meta_file: Path, messages: list[d
     # Auto-summarization trigger
     cfg = load_config(None)
     try:
-        auto_summarize_enabled = cfg.getboolean("mygpt", "auto_summarize_enabled", fallback=False)
-        auto_summarize_after = cfg.getint("mygpt", "auto_summarize_after_messages", fallback=5)
+        auto_summarize_enabled = cfg.getboolean(
+            "mygpt", "auto_summarize_enabled", fallback=False
+        )
+        auto_summarize_after = cfg.getint(
+            "mygpt", "auto_summarize_after_messages", fallback=5
+        )
     except Exception:
         auto_summarize_enabled = False
         auto_summarize_after = 5
@@ -490,13 +515,17 @@ def persist_after_exchange(session_file: Path, meta_file: Path, messages: list[d
 
         # Only auto-summarize once (when reaching threshold without a title)
         if not has_title and message_count >= auto_summarize_after:
-            log.info(f"Auto-summarizing session '{session_name}' ({message_count} messages)")
+            log.info(
+                f"Auto-summarizing session '{session_name}' ({message_count} messages)"
+            )
             success, msg = summarize_session(session_name, sessions_dir)
             if not success:
                 log.warning(f"Auto-summarization failed for '{session_name}': {msg}")
             else:
                 # After summarization, sync filename if enabled
-                success, status, new_name = sync_filename_with_title(session_name, sessions_dir)
+                success, status, new_name = sync_filename_with_title(
+                    session_name, sessions_dir
+                )
                 if success and status == "renamed":
                     log.info(f"Auto-synced filename '{session_name}' -> '{new_name}'")
                     session_name = new_name
@@ -526,7 +555,11 @@ def load_session(
 
     Returns a SessionState with messages + meta loaded and defaults applied.
     """
-    sessions_dir = Path(sessions_dir_override).expanduser() if sessions_dir_override else get_sessions_dir(cfg)
+    sessions_dir = (
+        Path(sessions_dir_override).expanduser()
+        if sessions_dir_override
+        else get_sessions_dir(cfg)
+    )
     chosen_model = model or get_default_model(cfg)
 
     sf, mf, msgs, meta = init_session(
@@ -536,7 +569,9 @@ def load_session(
         model=chosen_model,
         system=system,
     )
-    return SessionState(name=name, session_file=sf, meta_file=mf, messages=msgs, meta=meta)
+    return SessionState(
+        name=name, session_file=sf, meta_file=mf, messages=msgs, meta=meta
+    )
 
 
 def save_session(
@@ -558,7 +593,9 @@ def save_session(
         state.meta_file = meta_file_for(state.session_file)
 
     chosen_model = model or str(state.meta.get("model") or get_default_model(cfg))
-    new_name = persist_after_exchange(state.session_file, state.meta_file, state.messages, model=chosen_model)
+    new_name = persist_after_exchange(
+        state.session_file, state.meta_file, state.messages, model=chosen_model
+    )
 
     # Update SessionState if name changed (due to filename sync)
     if new_name != state.name:
@@ -570,16 +607,21 @@ def save_session(
 
 # --- Session management operations for the CLI ---
 
+
 def list_sessions(cfg: Any | None) -> list[dict[str, Any]]:
     # Accept either a config object or a Path
     if isinstance(cfg, Path):
         sessions_dir = cfg
     else:
-        sessions_dir = get_sessions_dir(cfg) if cfg is not None else default_sessions_dir()
+        sessions_dir = (
+            get_sessions_dir(cfg) if cfg is not None else default_sessions_dir()
+        )
 
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    files = [p for p in sessions_dir.glob("*.json") if not p.name.endswith(".meta.json")]
+    files = [
+        p for p in sessions_dir.glob("*.json") if not p.name.endswith(".meta.json")
+    ]
 
     def sort_key(p: Path):
         meta = load_session_meta(meta_file_for(p))
@@ -592,7 +634,9 @@ def list_sessions(cfg: Any | None) -> list[dict[str, Any]]:
     for p in files:
         name = p.stem
         try:
-            mtime = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            mtime = datetime.fromtimestamp(p.stat().st_mtime).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
         except Exception:
             mtime = "?"
         msgs = load_session_messages(p)
@@ -673,7 +717,9 @@ def add_tags(name: str, tags: list[str], sessions_dir: Path | None) -> tuple[boo
     return True, "OK"
 
 
-def remove_tags(name: str, tags: list[str], sessions_dir: Path | None) -> tuple[bool, str]:
+def remove_tags(
+    name: str, tags: list[str], sessions_dir: Path | None
+) -> tuple[bool, str]:
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
     mf = meta_file_for(sf)
@@ -840,18 +886,34 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
     html_parts.append('<html lang="en">')
     html_parts.append("<head>")
     html_parts.append('  <meta charset="UTF-8">')
-    html_parts.append('  <meta name="viewport" content="width=device-width, initial-scale=1.0">')
+    html_parts.append(
+        '  <meta name="viewport" content="width=device-width, initial-scale=1.0">'
+    )
     html_parts.append(f"  <title>{title}</title>")
     html_parts.append("  <style>")
-    html_parts.append("    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }")
+    html_parts.append(
+        "    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }"
+    )
     html_parts.append("    h1 { color: #333; }")
-    html_parts.append("    .metadata { background: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px; }")
+    html_parts.append(
+        "    .metadata { background: #f5f5f5; padding: 15px; border-radius: 5px; margin-bottom: 20px; }"
+    )
     html_parts.append("    .metadata p { margin: 5px 0; }")
-    html_parts.append("    .message { margin: 20px 0; padding: 15px; border-radius: 5px; }")
-    html_parts.append("    .system { background: #fff3cd; border-left: 4px solid #ffc107; }")
-    html_parts.append("    .user { background: #e3f2fd; border-left: 4px solid #2196f3; }")
-    html_parts.append("    .assistant { background: #f1f8e9; border-left: 4px solid #4caf50; }")
-    html_parts.append("    .role { font-weight: bold; margin-bottom: 10px; text-transform: uppercase; font-size: 12px; }")
+    html_parts.append(
+        "    .message { margin: 20px 0; padding: 15px; border-radius: 5px; }"
+    )
+    html_parts.append(
+        "    .system { background: #fff3cd; border-left: 4px solid #ffc107; }"
+    )
+    html_parts.append(
+        "    .user { background: #e3f2fd; border-left: 4px solid #2196f3; }"
+    )
+    html_parts.append(
+        "    .assistant { background: #f1f8e9; border-left: 4px solid #4caf50; }"
+    )
+    html_parts.append(
+        "    .role { font-weight: bold; margin-bottom: 10px; text-transform: uppercase; font-size: 12px; }"
+    )
     html_parts.append("    .content { white-space: pre-wrap; line-height: 1.6; }")
     html_parts.append("  </style>")
     html_parts.append("</head>")
@@ -861,13 +923,19 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
     if meta.get("summary"):
         html_parts.append(f"    <p><strong>Summary:</strong> {meta['summary']}</p>")
     html_parts.append(f"    <p><strong>Session:</strong> {name}</p>")
-    html_parts.append(f"    <p><strong>Created:</strong> {meta.get('created_at', 'Unknown')}</p>")
-    html_parts.append(f"    <p><strong>Updated:</strong> {meta.get('updated_at', 'Unknown')}</p>")
+    html_parts.append(
+        f"    <p><strong>Created:</strong> {meta.get('created_at', 'Unknown')}</p>"
+    )
+    html_parts.append(
+        f"    <p><strong>Updated:</strong> {meta.get('updated_at', 'Unknown')}</p>"
+    )
     html_parts.append(f"    <p><strong>Messages:</strong> {len(msgs)}</p>")
     if meta.get("model"):
         html_parts.append(f"    <p><strong>Model:</strong> {meta['model']}</p>")
     if meta.get("tags"):
-        html_parts.append(f"    <p><strong>Tags:</strong> {', '.join(meta['tags'])}</p>")
+        html_parts.append(
+            f"    <p><strong>Tags:</strong> {', '.join(meta['tags'])}</p>"
+        )
     html_parts.append("  </div>")
 
     for msg in msgs:
@@ -912,7 +980,38 @@ def sanitize_title_for_filename(title: str) -> str:
     sanitized = sanitized.replace(" ", "-")
 
     # Replace common special chars with hyphens
-    for char in [":", ";", ",", ".", "!", "?", "(", ")", "[", "]", "{", "}", "/", "\\", "|", "&", "@", "#", "$", "%", "^", "*", "+", "=", "~", "`", "'", '"', "<", ">"]:
+    for char in [
+        ":",
+        ";",
+        ",",
+        ".",
+        "!",
+        "?",
+        "(",
+        ")",
+        "[",
+        "]",
+        "{",
+        "}",
+        "/",
+        "\\",
+        "|",
+        "&",
+        "@",
+        "#",
+        "$",
+        "%",
+        "^",
+        "*",
+        "+",
+        "=",
+        "~",
+        "`",
+        "'",
+        '"',
+        "<",
+        ">",
+    ]:
         sanitized = sanitized.replace(char, "-")
 
     # Keep only alphanumeric, hyphens, and underscores
@@ -937,10 +1036,7 @@ def sanitize_title_for_filename(title: str) -> str:
 
 
 def sync_filename_with_title(
-    current_name: str,
-    sessions_dir: Path | None,
-    *,
-    force: bool = False
+    current_name: str, sessions_dir: Path | None, *, force: bool = False
 ) -> tuple[bool, str, str]:
     """Rename session file to match its title (atomic copy-then-delete with locking).
 
@@ -1037,14 +1133,19 @@ def sync_filename_with_title(
         meta_existed_initially = mf.exists()
         if meta_existed_initially:
             files_to_lock.append(mf)
-        files_to_lock.sort(key=lambda p: p.as_posix())  # Cross-platform alphabetical order
+        files_to_lock.sort(
+            key=lambda p: p.as_posix()
+        )  # Cross-platform alphabetical order
 
         # Verify ordering in debug mode (catches violations during development)
         verify_lock_ordering(*files_to_lock)
 
         # Acquire locks in consistent order
         if len(files_to_lock) == 2:
-            with file_lock(files_to_lock[0], timeout=10.0), file_lock(files_to_lock[1], timeout=10.0):
+            with (
+                file_lock(files_to_lock[0], timeout=10.0),
+                file_lock(files_to_lock[1], timeout=10.0),
+            ):
                 # 1. Copy session file to new location
                 new_sf.parent.mkdir(parents=True, exist_ok=True)
                 msgs = load_session_messages(sf)
@@ -1134,7 +1235,7 @@ def edit_message(
 
         # Fork conversation: truncate all messages after the edited one
         if fork:
-            messages = messages[:message_index + 1]
+            messages = messages[: message_index + 1]
 
         save_session_messages(sf, messages)
 
@@ -1177,7 +1278,7 @@ def truncate_after_message(
             return False, f"Invalid message index: {message_index}"
 
         # Keep messages up to and including the specified index
-        messages = messages[:message_index + 1]
+        messages = messages[: message_index + 1]
         save_session_messages(sf, messages)
 
         # Update metadata timestamp
@@ -1250,7 +1351,9 @@ def search_messages(
     search_query = query if case_sensitive else query.lower()
 
     results: list[dict[str, Any]] = []
-    session_files = [p for p in sessions_dir.glob("*.json") if not p.name.endswith(".meta.json")]
+    session_files = [
+        p for p in sessions_dir.glob("*.json") if not p.name.endswith(".meta.json")
+    ]
 
     # Filter to specific session if requested
     if session_filter:
@@ -1299,16 +1402,18 @@ def search_messages(
                 # Generate content preview with match context
                 preview = _generate_preview(content, query, case_sensitive)
 
-                results.append({
-                    "session_name": session_name,
-                    "session_title": session_title,
-                    "message_index": idx,
-                    "role": role,
-                    "content": content,
-                    "content_preview": preview,
-                    "timestamp": timestamp,
-                    "matches": match_count,
-                })
+                results.append(
+                    {
+                        "session_name": session_name,
+                        "session_title": session_title,
+                        "message_index": idx,
+                        "role": role,
+                        "content": content,
+                        "content_preview": preview,
+                        "timestamp": timestamp,
+                        "matches": match_count,
+                    }
+                )
 
                 # Check limit
                 if len(results) >= limit:
@@ -1321,7 +1426,9 @@ def search_messages(
     return results
 
 
-def _generate_preview(content: str, query: str, case_sensitive: bool, context_chars: int = 100) -> str:
+def _generate_preview(
+    content: str, query: str, case_sensitive: bool, context_chars: int = 100
+) -> str:
     """Generate a content preview showing the match in context.
 
     Args:
@@ -1471,7 +1578,9 @@ def merge_sessions(
     merged_meta: SessionMetaDict = {}
 
     # created_at: earliest from all sessions
-    created_timestamps = [ts for m in all_metadata if (ts := m.get("created_at")) is not None]
+    created_timestamps = [
+        ts for m in all_metadata if (ts := m.get("created_at")) is not None
+    ]
     if created_timestamps:
         merged_meta["created_at"] = min(created_timestamps)
     else:
@@ -1528,10 +1637,14 @@ def merge_sessions(
 
     message_count = len(all_messages)
     session_count = len(session_names)
-    return True, f"Merged {session_count} session{'s' if session_count != 1 else ''} into '{output_name}' ({message_count} message{'s' if message_count != 1 else ''})"
+    return (
+        True,
+        f"Merged {session_count} session{'s' if session_count != 1 else ''} into '{output_name}' ({message_count} message{'s' if message_count != 1 else ''})",
+    )
 
 
 # --- Batch operations ---
+
 
 def batch_delete_sessions(
     session_names: list[str],
