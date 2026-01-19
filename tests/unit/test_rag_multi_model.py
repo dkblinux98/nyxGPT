@@ -174,7 +174,7 @@ def test_retrieve_context_with_collection(monkeypatch: pytest.MonkeyPatch) -> No
     # Mock embed_text
     monkeypatch.setattr("mygpt.rag.rag.embed_text", lambda *args, **kwargs: [0.1] * 384)
     monkeypatch.setattr(
-        "mygpt.rag.rag._embedding_cfg",
+        "mygpt.rag.embeddings._embedding_cfg",
         lambda **kw: type(
             "obj",
             (),

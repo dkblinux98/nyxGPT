@@ -58,6 +58,7 @@ class CassandraVectorStore:
         # Connect without a keyspace so we can create it if missing.
         self.session = self.cluster.connect()
         self._keyspace_ready = False
+        self._migration_checked = False
 
     @property
     def table_name(self) -> str:
@@ -73,6 +74,44 @@ class CassandraVectorStore:
         # create it first (via ensure_schema) or have created it externally.
         self.session.execute(f"USE {self.cfg.keyspace}")
         self._keyspace_ready = True
+        # After selecting keyspace, ensure migration has been checked
+        self._ensure_schema_migrated()
+
+    def _ensure_schema_migrated(self) -> None:
+        """Ensure table schema includes multi-model support columns.
+
+        This migration adds embedding_model and embedding_dim columns to existing
+        tables that were created before the multi-model feature. It runs once per
+        instance and is idempotent.
+        """
+        if self._migration_checked:
+            return
+
+        self._migration_checked = True
+        ks = self.cfg.keyspace
+        tbl = self.table_name
+
+        try:
+            # Check if embedding_model column exists
+            result = self.session.execute(
+                f"SELECT column_name FROM system_schema.columns "
+                f"WHERE keyspace_name = '{ks}' AND table_name = '{tbl}' "
+                f"AND column_name = 'embedding_model'"
+            )
+            if not list(result):
+                # Columns don't exist, add them
+                self.session.execute(f"ALTER TABLE {tbl} ADD embedding_model text")
+                self.session.execute(f"ALTER TABLE {tbl} ADD embedding_dim int")
+                # Also create the index on embedding_model
+                self.session.execute(
+                    f"CREATE INDEX IF NOT EXISTS {tbl}_model_idx "
+                    f"ON {tbl}(embedding_model)"
+                )
+        except Exception:
+            # Migration might fail if table doesn't exist yet (first run)
+            # or if columns already exist (race condition in concurrent access)
+            # This is fine - actual operations will reveal any real problems
+            pass
 
     def close(self) -> None:
         self.session.shutdown()

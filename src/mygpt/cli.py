@@ -604,15 +604,15 @@ def cmd_sessions(
         last_activity = format_age(updated_at)
 
         # RAG status
-        rag_enabled = meta.get("rag_enabled", False)
+        rag_enabled = session_meta.get("rag_enabled", False)
         rag_status = "Enabled" if rag_enabled else "Disabled"
 
         # Other metadata
-        model = meta.get("model", "Unknown")
-        title = meta.get("title", "")
-        summary = meta.get("summary", "")
-        tags = meta.get("tags", [])
-        pinned = meta.get("pinned", False)
+        model = session_meta.get("model", "Unknown")
+        title = session_meta.get("title", "")
+        summary = session_meta.get("summary", "")
+        tags = session_meta.get("tags", [])
+        pinned = session_meta.get("pinned", False)
 
         # Display statistics
         print(f"Session Statistics: {name}")
