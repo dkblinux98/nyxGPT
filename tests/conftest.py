@@ -25,7 +25,9 @@ def _ensure_test_config():
 
         # Create minimal config for tests
         config_content = """[ollama]
-api_base_url = http://localhost:11434
+base_url = http://localhost:11434
+
+[mygpt]
 default_model = qwen2.5-coder:latest
 
 [rag]
