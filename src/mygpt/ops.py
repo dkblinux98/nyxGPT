@@ -63,7 +63,7 @@ def _brew_prefix() -> Path:
         cp = _run(["brew", "--prefix"])
         return Path((cp.stdout or "").strip())
     except Exception:
-        return Path("/usr/local")
+        return Path("/opt/homebrew")
 
 
 def _tap_repo(tap: str) -> Path:

@@ -41,7 +41,7 @@ fi
 # Ensure node is discoverable for tools that use `#!/usr/bin/env node` (e.g., npm)
 NODE_DIR="$(dirname "$NODE_BIN")"
 NPM_DIR="$(dirname "$NPM_BIN")"
-export PATH="$NODE_DIR:$NPM_DIR:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+export PATH="$NODE_DIR:$NPM_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 if ! command -v node >/dev/null 2>&1; then
   echo "node not found on PATH (PATH=$PATH). Check [paths] node_bin and npm_bin in $CONFIG" >&2

@@ -252,8 +252,8 @@ def _generate_config_ini(
     config.add_section("paths")
     config.set("paths", "repo_dir", "/path/to/myGPT")
     config.set("paths", "venv_python", "/path/to/myGPT/.venv/bin/python")
-    config.set("paths", "node_bin", "/usr/local/bin/node")
-    config.set("paths", "npm_bin", "/usr/local/bin/npm")
+    config.set("paths", "node_bin", "/opt/homebrew/bin/node")
+    config.set("paths", "npm_bin", "/opt/homebrew/bin/npm")
 
     # Write to file
     output_path.parent.mkdir(parents=True, exist_ok=True)

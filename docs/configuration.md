@@ -303,8 +303,8 @@ Absolute paths for operational components.
 [paths]
 repo_dir = /path/to/myGPT
 venv_python = /path/to/myGPT/.venv/bin/python
-node_bin = /usr/local/bin/node
-npm_bin = /usr/local/bin/npm
+node_bin = /opt/homebrew/bin/node
+npm_bin = /opt/homebrew/bin/npm
 ```
 
 | Key | Description |
