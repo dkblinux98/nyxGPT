@@ -36,7 +36,8 @@ def list_models(base_url: str | None = None) -> list[dict[str, Any]]:
 
     url = f"{base_url.rstrip('/')}/api/tags"
     data = post_json(url, {}, timeout_s=10.0)
-    return data.get("models", [])
+    models: list[dict[str, Any]] = data.get("models", [])
+    return models
 
 
 def pull_model(

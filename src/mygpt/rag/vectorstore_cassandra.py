@@ -4,8 +4,8 @@ import json
 import time
 from dataclasses import dataclass
 from typing import Iterable, List
-from cassandra.cluster import Cluster  # type: ignore[import-untyped]
-from cassandra.query import SimpleStatement  # type: ignore[import-untyped]
+from cassandra.cluster import Cluster
+from cassandra.query import SimpleStatement
 
 from mygpt.config import load_config
 
@@ -21,6 +21,7 @@ class CassandraConfig:
 @dataclass
 class VectorSearchDebugMetrics:
     """Debug metrics for vector search operations."""
+
     raw_results_count: int
     score_min: float | None
     score_max: float | None
@@ -191,7 +192,15 @@ class CassandraVectorStore:
         for idx, (text, emb, meta) in enumerate(zip(texts_l, embs_l, metas_l)):
             self.session.execute(
                 stmt,
-                (doc_id, idx, text, json.dumps(meta), emb, embedding_model, embedding_dim),
+                (
+                    doc_id,
+                    idx,
+                    text,
+                    json.dumps(meta),
+                    emb,
+                    embedding_model,
+                    embedding_dim,
+                ),
             )
 
     # ----------------------------
@@ -239,10 +248,16 @@ class CassandraVectorStore:
         scores: list[float] = []
         for r in rows:
             # Filter by embedding_model if specified
-            if embedding_model is not None and hasattr(r, 'embedding_model') and r.embedding_model != embedding_model:
+            if (
+                embedding_model is not None
+                and hasattr(r, "embedding_model")
+                and r.embedding_model != embedding_model
+            ):
                 continue
 
-            score = float(r.score) if hasattr(r, 'score') and r.score is not None else 0.0
+            score = (
+                float(r.score) if hasattr(r, "score") and r.score is not None else 0.0
+            )
             out.append(
                 {
                     "doc_id": r.doc_id,
@@ -250,8 +265,12 @@ class CassandraVectorStore:
                     "text": r.text,
                     "metadata": json.loads(r.metadata) if r.metadata else {},
                     "score": score,
-                    "embedding_model": r.embedding_model if hasattr(r, 'embedding_model') else None,
-                    "embedding_dim": r.embedding_dim if hasattr(r, 'embedding_dim') else None,
+                    "embedding_model": r.embedding_model
+                    if hasattr(r, "embedding_model")
+                    else None,
+                    "embedding_dim": r.embedding_dim
+                    if hasattr(r, "embedding_dim")
+                    else None,
                 }
             )
             scores.append(score)
@@ -285,11 +304,15 @@ class CassandraVectorStore:
         rows = self.session.execute(stmt)
         out: list[dict] = []
         for r in rows:
-            out.append({
-                "doc_id": r.doc_id,
-                "chunks": int(r.chunks),
-                "embedding_model": r.embedding_model if hasattr(r, 'embedding_model') else None,
-            })
+            out.append(
+                {
+                    "doc_id": r.doc_id,
+                    "chunks": int(r.chunks),
+                    "embedding_model": r.embedding_model
+                    if hasattr(r, "embedding_model")
+                    else None,
+                }
+            )
         # Sort for stable output
         out.sort(key=lambda x: x["doc_id"])
         return out
@@ -334,7 +357,7 @@ class CassandraVectorStore:
             if tbl_name == base_tbl:
                 collections.append("default")
             elif tbl_name.startswith(f"{base_tbl}_"):
-                collection_name = tbl_name[len(f"{base_tbl}_"):]
+                collection_name = tbl_name[len(f"{base_tbl}_") :]
                 collections.append(collection_name)
         collections.sort()
         return collections
