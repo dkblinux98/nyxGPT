@@ -311,7 +311,12 @@ def ingest_document(
     if not chunks:
         return 0
 
-    embeddings = embed_texts(chunks, model=embedding_model, dimension=embedding_dim)
+    embeddings_result = embed_texts(chunks, model=embedding_model, dimension=embedding_dim)
+    # embed_texts returns list[list[float]] when collect_metrics=False (default)
+    # Type narrowing: we didn't pass collect_metrics, so it's always the list form
+    embeddings: list[list[float]] = (
+        embeddings_result if isinstance(embeddings_result, list) else embeddings_result[0]
+    )
 
     # Get the actual model and dimension from embeddings config
     from mygpt.rag.embeddings import _embedding_cfg

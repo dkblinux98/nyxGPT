@@ -1471,7 +1471,7 @@ def merge_sessions(
     merged_meta: SessionMetaDict = {}
 
     # created_at: earliest from all sessions
-    created_timestamps = [m.get("created_at") for m in all_metadata if m.get("created_at")]
+    created_timestamps = [ts for m in all_metadata if (ts := m.get("created_at")) is not None]
     if created_timestamps:
         merged_meta["created_at"] = min(created_timestamps)
     else:

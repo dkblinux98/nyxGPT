@@ -4,8 +4,8 @@ import json
 import time
 from dataclasses import dataclass
 from typing import Iterable, List
-from cassandra.cluster import Cluster
-from cassandra.query import SimpleStatement
+from cassandra.cluster import Cluster  # type: ignore[import-untyped]
+from cassandra.query import SimpleStatement  # type: ignore[import-untyped]
 
 from mygpt.config import load_config
 

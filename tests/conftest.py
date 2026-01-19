@@ -14,13 +14,21 @@ def _configure_test_logging():
     """
     Ensure pytest runs write logs to ~/.myGPT/logs/tests.log (in addition to pytest capture).
     """
-    cfg = load_config(None)
-    log_dir = Path(get_log_dir(cfg)).expanduser()
+    # In CI or when config doesn't exist, use default log directory
+    try:
+        cfg = load_config(None)
+        log_dir = Path(get_log_dir(cfg)).expanduser()
+    except FileNotFoundError:
+        # Config doesn't exist (e.g., in CI), use default log directory
+        log_dir = Path("~/.myGPT/logs").expanduser()
+        cfg = None
+
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initialize the same rotating-file logging used by the app/CLI.
+    # Initialize the same rotating-file logging used by the app/CLI if config available
     # This adds the RequestIdFilter to the root logger
-    configure_logging(cfg, console=False)
+    if cfg is not None:
+        configure_logging(cfg, console=False)
 
     # IMPORTANT: Ensure root logger level allows WARNING/INFO during tests
     # The configure_logging might set it too high
