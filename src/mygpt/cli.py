@@ -4,7 +4,7 @@ import argparse
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from mygpt.config import (
     load_config,
@@ -527,9 +527,9 @@ def cmd_sessions(
             return 1
 
         # Extract data
-        messages = sessions.load_session_messages(Path(session_data["file"]))
-        meta_value = session_data.get("meta")
-        meta: dict[str, Any] = meta_value if isinstance(meta_value, dict) else {}
+        messages = sessions.load_session_messages(Path(cast(str, session_data["file"])))
+        session_meta_value = session_data.get("meta")
+        session_meta: dict[str, Any] = session_meta_value if isinstance(session_meta_value, dict) else {}
 
         # Calculate statistics
         total_messages = len(messages)
@@ -538,13 +538,13 @@ def cmd_sessions(
         system_messages = sum(1 for m in messages if m.get("role") == "system")
 
         # Token estimate
-        token_estimate = meta.get("token_estimate", 0)
+        token_estimate = session_meta.get("token_estimate", 0)
         if not token_estimate and messages:
             token_estimate = sessions.token_estimate_from_messages(messages)
 
         # Age and activity calculations
-        created_at = meta.get("created_at", "Unknown")
-        updated_at = meta.get("updated_at", "Unknown")
+        created_at = session_meta.get("created_at", "Unknown")
+        updated_at = session_meta.get("updated_at", "Unknown")
 
         def format_age(timestamp_str: str) -> str:
             """Format age from ISO timestamp to human-readable string."""
@@ -673,13 +673,16 @@ def cmd_rag_query(
     model: str | None = None,
     dimension: int | None = None,
 ) -> int:
-    results = retrieve_context(
+    results_raw = retrieve_context(
         question,
         top_k=top_k,
+        debug_mode=False,  # CLI doesn't need debug info
         collection=collection,
         embedding_model=model,
         embedding_dim=dimension,
     )
+    # Type narrowing: debug_mode=False means result is list[dict]
+    results = cast(list[dict], results_raw)
     print(f"Results: {len(results)} (from collection '{collection}')")
     if model:
         print(f"  Using embedding model: {model}")

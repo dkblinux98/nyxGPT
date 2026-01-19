@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import List
+from typing import List, cast
 
 from mygpt.rag.embeddings import embed_texts, EmbeddingError
 from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
@@ -85,7 +85,8 @@ def benchmark_query_speed(
             for query in test_queries:
                 # Embed query
                 emb_result = embed_texts([query], model=model, dimension=dimension)
-                q_emb = emb_result[0] if emb_result else []
+                # Type narrowing: emb_result is list[list[float]] (not tuple) since collect_metrics=False
+                q_emb = cast(list[list[float]], emb_result)[0] if emb_result else []
                 # Query vector store
                 store.query_by_embedding(q_emb, k=k, embedding_model=model)
             elapsed = (time.perf_counter() - start) * 1000.0

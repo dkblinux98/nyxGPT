@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, cast
 from configparser import ConfigParser
 
 from mygpt.config import (
@@ -363,7 +363,10 @@ def _prepare_chat_context(
     rag_rows = None  # Store raw RAG results
 
     if should_use_rag:
-        rows = retrieve_context(prompt)
+        # Disable debug mode for chat path - we don't need debug info here
+        rows_result = retrieve_context(prompt, debug_mode=False)
+        # Type narrowing: debug_mode=False means result is list[dict], not tuple
+        rows = cast(list[dict], rows_result)
         rag_chunks = len(rows)
         rag_rows = rows  # Save raw results
         rag_context = compose_context(rows)

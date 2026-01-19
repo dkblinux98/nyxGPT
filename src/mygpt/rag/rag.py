@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List
+from typing import Iterable, List, cast
 import logging
 import json
 import time
@@ -510,7 +510,8 @@ def retrieve_context(
             # Embed with metrics collection if debug mode
             if collect_debug:
                 result = embed_texts([q], collect_metrics=True, model=embedding_model, dimension=embedding_dim)
-                embeddings, emb_metrics = result
+                # Type narrowing: result is tuple[list[list[float]], EmbeddingDebugMetrics]
+                embeddings, emb_metrics = cast(tuple[list[list[float]], EmbeddingDebugMetrics], result)
                 q_emb = embeddings[0] if embeddings else []
                 # Store only the first embedding metrics (they're all the same model/config)
                 if idx == 0:
@@ -521,8 +522,9 @@ def retrieve_context(
             # Query vector store with metrics collection if debug mode
             # Filter by embedding_model to ensure we only get results from the same model
             if collect_debug:
-                result = store.query_by_embedding(q_emb, k=k, collect_metrics=True, embedding_model=actual_model)
-                results, vs_metrics = result
+                vs_result = store.query_by_embedding(q_emb, k=k, collect_metrics=True, embedding_model=actual_model)
+                # Type narrowing: vs_result is tuple[list[dict], VectorSearchDebugMetrics]
+                results, vs_metrics = cast(tuple[list[dict], VectorSearchDebugMetrics], vs_result)
                 total_raw_results += vs_metrics.raw_results_count
                 # Accumulate scores for overall statistics
                 if vs_metrics.score_min is not None:
@@ -531,7 +533,7 @@ def retrieve_context(
                 if idx == 0:
                     vector_search_metrics = vs_metrics
             else:
-                results = store.query_by_embedding(q_emb, k=k, embedding_model=actual_model)
+                results = cast(list[dict], store.query_by_embedding(q_emb, k=k, embedding_model=actual_model))
 
             for r in results:
                 text = (r.get("text") or "").strip()

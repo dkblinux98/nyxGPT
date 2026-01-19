@@ -295,7 +295,7 @@ class SearchResultsScreen(ModalScreen[dict | None]):
         super().__init__()
         self.api_base_url = api_base_url
         self.current_session = current_session
-        self.results = []
+        self.results: list[dict] = []
         self.case_sensitive = False
 
     def compose(self) -> ComposeResult:
@@ -394,9 +394,11 @@ class SearchResultsScreen(ModalScreen[dict | None]):
             return
 
         try:
-            result = self.results[self.results_list.index]
-            preview_text = result.get("content_preview", "")
-            self.preview.update(preview_text)
+            idx = self.results_list.index
+            if idx is not None:
+                result = self.results[idx]
+                preview_text = result.get("content_preview", "")
+                self.preview.update(preview_text)
         except (IndexError, AttributeError):
             pass
 

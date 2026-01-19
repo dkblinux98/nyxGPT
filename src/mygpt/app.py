@@ -8,7 +8,7 @@ import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 import urllib.request
 import urllib.error
 from configparser import ConfigParser
@@ -1079,7 +1079,7 @@ def get_message_rag_chunks(
     message = msgs[message_index]
 
     # Extract RAG chunks if present
-    rag_chunks = message.get("rag_chunks", [])
+    rag_chunks: list[Any] = cast(list[Any], message.get("rag_chunks", []))
 
     return {
         "message_index": message_index,
@@ -1407,7 +1407,9 @@ def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
         result = retrieve_context(req.query, top_k=req.top_k, debug_mode=req.debug_mode)
 
         if req.debug_mode:
-            results, debug_info = result
+            # Type narrowing: debug_mode=True means result is tuple[list[dict], RAGDebugInfo]
+            from mygpt.rag.rag import RAGDebugInfo
+            results, debug_info = cast(tuple[list[dict], RAGDebugInfo], result)
             # Convert RAGDebugInfo to RagDebugInfo (API model)
             from mygpt.api_models import RagDebugInfo
             api_debug_info = RagDebugInfo(
@@ -1436,7 +1438,8 @@ def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
                 chunks_included=debug_info.chunks_included,
             )
         else:
-            results = result
+            # Type narrowing: debug_mode=False means result is list[dict]
+            results = cast(list[dict], result)
             api_debug_info = None
 
         out = [
