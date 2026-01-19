@@ -148,6 +148,9 @@ def test_ops_doctor_ok(monkeypatch, capsys, tmp_path):
     # Tools exist
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
 
+    # Mock REPO_ROOT to point to tmp_path (no web/ directory)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+
     rc = ops.doctor(MagicMock())
     assert rc == 0
     out = capsys.readouterr().out

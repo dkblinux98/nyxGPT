@@ -76,8 +76,15 @@ def test_embedding_cfg_dimension_override(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.unit
-def test_cassandra_vectorstore_collection_table_name() -> None:
+def test_cassandra_vectorstore_collection_table_name(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that collection parameter affects table name."""
+    # Mock Cassandra Cluster to avoid actual connection
+    from unittest.mock import MagicMock
+    mock_cluster = MagicMock()
+    mock_session = MagicMock()
+    mock_cluster.connect.return_value = mock_session
+    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.Cluster", lambda *args, **kwargs: mock_cluster)
+
     # Default collection
     store1 = CassandraVectorStore(collection="default")
     assert store1.collection == "default"
