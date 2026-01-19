@@ -310,7 +310,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
-          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
+          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep" --allowed-bots "*"'
           prompt: |
             You are the developer agent fixing code review issues for PR #${{ steps.pr.outputs.pr_number }}.
 
