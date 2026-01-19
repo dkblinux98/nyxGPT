@@ -30,6 +30,7 @@ dev = [
   "textual>=0.58",
   "mypy>=1.8",
   "ruff>=0.1",
+  "types-Markdown",
 ]
 
 [project.scripts]
