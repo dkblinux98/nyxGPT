@@ -352,6 +352,7 @@ jobs:
 
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
+          show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep" --allowed-bots "*"'
 
       # Note: review_agent_auto_review.yml triggers automatically on the comment via issue_comment event
