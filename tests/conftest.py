@@ -10,6 +10,57 @@ from mygpt.logging import configure_logging, get_log_dir
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _ensure_test_config():
+    """Ensure a config file exists for tests (needed for CI environments).
+
+    Creates a minimal config file if ~/.myGPT/config.ini doesn't exist.
+    This allows tests to run in CI without requiring a pre-configured environment.
+    """
+    config_path = Path.home() / ".myGPT" / "config.ini"
+    created_config = False
+
+    if not config_path.exists():
+        created_config = True
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Create minimal config for tests
+        config_content = """[ollama]
+api_base_url = http://localhost:11434
+default_model = qwen2.5-coder:latest
+
+[rag]
+cassandra_hosts = localhost
+cassandra_port = 9042
+cassandra_keyspace = mygpt
+chat_top_k = 5
+min_score = 0.0
+max_chunks = 10
+chunk_size = 500
+chunk_overlap = 50
+max_context_chars = 10000
+enable_query_expansion = false
+dedupe = true
+
+[sessions]
+dir = ~/.myGPT/sessions
+
+[logs]
+dir = ~/.myGPT/logs
+level = INFO
+
+[dev]
+release_branch = v1.0.0
+"""
+        config_path.write_text(config_content)
+
+    yield
+
+    # Clean up created config after tests
+    if created_config and config_path.exists():
+        config_path.unlink()
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _configure_test_logging():
     """
     Ensure pytest runs write logs to ~/.myGPT/logs/tests.log (in addition to pytest capture).
