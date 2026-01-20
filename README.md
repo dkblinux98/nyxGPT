@@ -181,7 +181,7 @@ The stats command displays comprehensive session information:
 mygpt tui
 ```
 
-The TUI streams responses, persists sessions, and supports RAG‑assisted chat.
+The TUI streams responses, persists sessions, and supports RAG‑assisted chat. The status bar displays current session information including session name, message count, active model, and RAG status.
 
 **Keybindings:**
 - `Ctrl+S` - Session picker (search and switch)

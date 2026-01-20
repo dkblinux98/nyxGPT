@@ -24,7 +24,7 @@ from textual.widgets import (
     Button,
     Checkbox,
 )
-from textual.containers import Vertical, Container
+from textual.containers import Vertical, Container, Horizontal
 from textual.binding import Binding
 from textual.screen import Screen, ModalScreen
 
@@ -61,6 +61,38 @@ class ChatOutput(Static):
         if self._buffer.endswith("⋯"):
             self._buffer = self._buffer[:-1]
             self.update(self._buffer)
+
+
+class SessionStatusBar(Static):
+    """Widget to display current session information in the status bar."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.session_name: str = ""
+        self.message_count: int = 0
+        self.model: str = ""
+        self.rag_enabled: bool = False
+
+    def update_info(
+        self, session_name: str, message_count: int, model: str, rag_enabled: bool
+    ) -> None:
+        """Update session information and refresh display."""
+        self.session_name = session_name
+        self.message_count = message_count
+        self.model = model
+        self.rag_enabled = rag_enabled
+        self._refresh_display()
+
+    def _refresh_display(self) -> None:
+        """Refresh the status bar display with current info."""
+        rag_indicator = "RAG:ON" if self.rag_enabled else "RAG:OFF"
+        status_text = (
+            f"Session: {self.session_name} | "
+            f"Messages: {self.message_count} | "
+            f"Model: {self.model} | "
+            f"{rag_indicator}"
+        )
+        self.update(status_text)
 
 
 class SessionMetadataPreview(Static):
@@ -499,8 +531,8 @@ class MyGPTTUI(App):
         with Vertical():
             self.output = ChatOutput()
             yield self.output
-            self.rag_status = Label("RAG: OFF", id="rag-status")
-            yield self.rag_status
+            self.status_bar = SessionStatusBar(id="session-status-bar")
+            yield self.status_bar
             self.prompt = Input(placeholder="Type a message and press Enter")
             yield self.prompt
         yield Footer()
@@ -513,32 +545,49 @@ class MyGPTTUI(App):
         inconsistent state.
         """
         self._unlock_prompt()
-        # Fetch RAG status for current session
-        await self._fetch_rag_status()
+        # Fetch session info for current session
+        await self._update_session_status()
 
-    async def _fetch_rag_status(self) -> None:
-        """Fetch RAG enabled status for current session."""
+    async def _update_session_status(self) -> None:
+        """Fetch and update session status bar with current session info."""
         try:
             async with httpx.AsyncClient() as client:
-                res = await client.get(
+                # Fetch session metadata
+                metadata_res = await client.get(
                     f"{self.api_base_url}/api/v1/sessions/{self.session}/metadata"
                 )
-                res.raise_for_status()
-                data = res.json()
-                self.rag_enabled = data.get("rag_enabled", False)
-                self._update_rag_status()
-        except Exception as e:
-            log.warning(f"Failed to fetch RAG status for session {self.session}: {e}")
-            self.rag_enabled = False
+                metadata_res.raise_for_status()
+                metadata = metadata_res.json()
 
-    def _update_rag_status(self) -> None:
-        """Update RAG status label."""
-        try:
-            status = "RAG: ON" if self.rag_enabled else "RAG: OFF"
-            self.rag_status.update(status)
-        except Exception:
-            # Widget not yet available or app shutting down
-            pass
+                # Fetch session messages to count them
+                session_res = await client.get(
+                    f"{self.api_base_url}/api/v1/sessions/{self.session}"
+                )
+                session_res.raise_for_status()
+                session_data = session_res.json()
+
+                # Extract info
+                self.rag_enabled = metadata.get("rag_enabled", False)
+                model = metadata.get("model", "unknown")
+                message_count = len(session_data.get("messages", []))
+
+                # Update status bar
+                try:
+                    self.status_bar.update_info(
+                        session_name=self.session,
+                        message_count=message_count,
+                        model=model,
+                        rag_enabled=self.rag_enabled,
+                    )
+                except Exception:
+                    # Widget not yet available or app shutting down
+                    pass
+
+        except Exception as e:
+            log.warning(
+                f"Failed to fetch session status for session {self.session}: {e}"
+            )
+            self.rag_enabled = False
 
     async def action_toggle_rag(self) -> None:
         """Toggle RAG for current session."""
@@ -551,7 +600,8 @@ class MyGPTTUI(App):
                 res.raise_for_status()
 
             self.rag_enabled = not self.rag_enabled
-            self._update_rag_status()
+            # Update status bar to reflect new RAG status
+            await self._update_session_status()
             log.info(
                 f"RAG {'enabled' if self.rag_enabled else 'disabled'} for session {self.session}"
             )
@@ -571,8 +621,8 @@ class MyGPTTUI(App):
             self.output.clear()
             # Show confirmation message
             self.output.append(f"Switched to session: {session_name}\n\n")
-            # Fetch RAG status for new session
-            await self._fetch_rag_status()
+            # Update status bar for new session
+            await self._update_session_status()
             log.info("Session switched", extra={"session": session_name})
 
     async def action_models_manager(self) -> None:
@@ -864,6 +914,8 @@ class MyGPTTUI(App):
             self.output.append(f"\n\n[error] {type(e).__name__}: {e}\n\n")
 
         finally:
+            # Update status bar to reflect new message count
+            await self._update_session_status()
             self._unlock_prompt()
 
 

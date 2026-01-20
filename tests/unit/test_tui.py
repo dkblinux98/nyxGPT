@@ -14,6 +14,7 @@ from mygpt.tui import (
     SessionMetadataPreview,
     SessionPickerScreen,
     SearchResultsScreen,
+    SessionStatusBar,
 )
 
 pytestmark = pytest.mark.unit
@@ -96,6 +97,83 @@ def test_chat_output_remove_typing_indicator_no_indicator() -> None:
     assert widget._buffer == "Assistant: Hello"
     # update should only be called once (from append)
     assert mock_update.call_count == 1
+
+
+# ============================================================================
+# SessionStatusBar Widget Tests
+# ============================================================================
+
+
+def test_session_status_bar_initialization() -> None:
+    """Test that SessionStatusBar initializes with empty values."""
+    widget = SessionStatusBar()
+    assert widget.session_name == ""
+    assert widget.message_count == 0
+    assert widget.model == ""
+    assert widget.rag_enabled is False
+
+
+def test_session_status_bar_update_info() -> None:
+    """Test that update_info() updates all fields and refreshes display."""
+    widget = SessionStatusBar()
+
+    with patch.object(widget, "update") as mock_update:
+        widget.update_info(
+            session_name="test-session",
+            message_count=42,
+            model="llama3.1:8b",
+            rag_enabled=True,
+        )
+
+    # Verify fields were updated
+    assert widget.session_name == "test-session"
+    assert widget.message_count == 42
+    assert widget.model == "llama3.1:8b"
+    assert widget.rag_enabled is True
+
+    # Verify display was updated
+    mock_update.assert_called_once()
+    call_arg = mock_update.call_args[0][0]
+    assert "test-session" in call_arg
+    assert "42" in call_arg
+    assert "llama3.1:8b" in call_arg
+    assert "RAG:ON" in call_arg
+
+
+def test_session_status_bar_update_info_rag_disabled() -> None:
+    """Test that update_info() shows RAG:OFF when RAG is disabled."""
+    widget = SessionStatusBar()
+
+    with patch.object(widget, "update") as mock_update:
+        widget.update_info(
+            session_name="test-session",
+            message_count=10,
+            model="mistral:7b",
+            rag_enabled=False,
+        )
+
+    # Verify RAG status shows OFF
+    call_arg = mock_update.call_args[0][0]
+    assert "RAG:OFF" in call_arg
+
+
+def test_session_status_bar_refresh_display() -> None:
+    """Test that _refresh_display() formats status text correctly."""
+    widget = SessionStatusBar()
+    widget.session_name = "my-session"
+    widget.message_count = 5
+    widget.model = "gpt4"
+    widget.rag_enabled = True
+
+    with patch.object(widget, "update") as mock_update:
+        widget._refresh_display()
+
+    # Verify formatted output
+    call_arg = mock_update.call_args[0][0]
+    assert "Session: my-session" in call_arg
+    assert "Messages: 5" in call_arg
+    assert "Model: gpt4" in call_arg
+    assert "RAG:ON" in call_arg
 
 
 # ============================================================================
@@ -276,9 +354,10 @@ async def test_on_mount_calls_unlock_prompt(tmp_path: Path) -> None:
     with patch("mygpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI()
 
-    # Mock _unlock_prompt
+    # Mock _unlock_prompt and _update_session_status
     with patch.object(app, "_unlock_prompt") as mock_unlock:
-        await app.on_mount()
+        with patch.object(app, "_update_session_status", new=AsyncMock()):
+            await app.on_mount()
 
     # Verify defensive reset was called
     mock_unlock.assert_called_once()
@@ -752,7 +831,8 @@ async def test_tui_action_pick_session(tmp_path: Path) -> None:
     with patch.object(
         app, "push_screen_wait", new=AsyncMock(return_value="new-session")
     ):
-        await app.action_pick_session()
+        with patch.object(app, "_update_session_status", new=AsyncMock()):
+            await app.action_pick_session()
 
     # Verify session was switched
     assert app.session == "new-session"
@@ -1675,52 +1755,8 @@ async def test_search_results_screen_case_sensitive_filter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tui_update_rag_status(tmp_path: Path) -> None:
-    """Test _update_rag_status updates the label correctly."""
-    config_file = tmp_path / "config.ini"
-    cfg = configparser.ConfigParser()
-    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
-    with open(config_file, "w") as f:
-        cfg.write(f)
-
-    with patch("mygpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test")
-
-    # Mock rag_status widget
-    app.rag_status = MagicMock()
-    app.rag_status.update = MagicMock()
-
-    # Test with RAG enabled
-    app.rag_enabled = True
-    app._update_rag_status()
-    app.rag_status.update.assert_called_with("RAG: ON")
-
-    # Test with RAG disabled
-    app.rag_enabled = False
-    app._update_rag_status()
-    app.rag_status.update.assert_called_with("RAG: OFF")
-
-
-@pytest.mark.asyncio
-async def test_tui_update_rag_status_widget_not_available(tmp_path: Path) -> None:
-    """Test _update_rag_status handles missing widget gracefully."""
-    config_file = tmp_path / "config.ini"
-    cfg = configparser.ConfigParser()
-    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
-    with open(config_file, "w") as f:
-        cfg.write(f)
-
-    with patch("mygpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test")
-
-    # Don't set rag_status widget - should not crash
-    app.rag_enabled = True
-    app._update_rag_status()  # Should not raise
-
-
-@pytest.mark.asyncio
-async def test_tui_fetch_rag_status_success(tmp_path: Path) -> None:
-    """Test _fetch_rag_status fetches and updates RAG status."""
+async def test_tui_update_session_status_success(tmp_path: Path) -> None:
+    """Test _update_session_status fetches and updates session info."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
     cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
@@ -1730,35 +1766,50 @@ async def test_tui_fetch_rag_status_success(tmp_path: Path) -> None:
     with patch("mygpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test-session")
 
-    # Mock the rag_status widget
-    app.rag_status = MagicMock()
+    # Mock the status_bar widget
+    app.status_bar = MagicMock(spec=SessionStatusBar)
 
-    # Mock httpx response
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {"rag_enabled": True}
-    mock_response.raise_for_status = MagicMock()
+    # Mock httpx responses
+    mock_metadata_response = MagicMock()
+    mock_metadata_response.status_code = 200
+    mock_metadata_response.json.return_value = {
+        "rag_enabled": True,
+        "model": "llama3.1:8b",
+    }
+    mock_metadata_response.raise_for_status = MagicMock()
+
+    mock_session_response = MagicMock()
+    mock_session_response.status_code = 200
+    mock_session_response.json.return_value = {
+        "messages": [{"role": "user", "content": "test"}] * 5
+    }
+    mock_session_response.raise_for_status = MagicMock()
 
     mock_client = AsyncMock()
     mock_client.__aenter__.return_value = mock_client
     mock_client.__aexit__.return_value = None
-    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.get = AsyncMock(
+        side_effect=[mock_metadata_response, mock_session_response]
+    )
 
     with patch("httpx.AsyncClient", return_value=mock_client):
-        await app._fetch_rag_status()
+        await app._update_session_status()
 
-    # Verify RAG status was fetched and updated
+    # Verify session info was updated
     assert app.rag_enabled is True
-    mock_client.get.assert_called_once()
-    call_args = mock_client.get.call_args
-    assert "/api/v1/sessions/test-session/metadata" in call_args[0][0]
+    app.status_bar.update_info.assert_called_once_with(
+        session_name="test-session",
+        message_count=5,
+        model="llama3.1:8b",
+        rag_enabled=True,
+    )
 
 
 @pytest.mark.asyncio
-async def test_tui_fetch_rag_status_api_error(
+async def test_tui_update_session_status_api_error(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Test _fetch_rag_status handles API errors gracefully."""
+    """Test _update_session_status handles API errors gracefully."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
     cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
@@ -1776,11 +1827,11 @@ async def test_tui_fetch_rag_status_api_error(
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         with caplog.at_level(logging.WARNING, logger="mygpt.tui"):
-            await app._fetch_rag_status()
+            await app._update_session_status()
 
     # Verify RAG status defaults to False on error
     assert app.rag_enabled is False
-    assert "Failed to fetch RAG status" in caplog.text
+    assert "Failed to fetch session status" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -1799,7 +1850,6 @@ async def test_tui_action_toggle_rag_enable(
 
     # Start with RAG disabled
     app.rag_enabled = False
-    app.rag_status = MagicMock()
 
     # Mock httpx response
     mock_response = MagicMock()
@@ -1812,8 +1862,9 @@ async def test_tui_action_toggle_rag_enable(
     mock_client.post = AsyncMock(return_value=mock_response)
 
     with patch("httpx.AsyncClient", return_value=mock_client):
-        with caplog.at_level(logging.INFO, logger="mygpt.tui"):
-            await app.action_toggle_rag()
+        with patch.object(app, "_update_session_status", new=AsyncMock()):
+            with caplog.at_level(logging.INFO, logger="mygpt.tui"):
+                await app.action_toggle_rag()
 
     # Verify RAG was enabled
     assert app.rag_enabled is True
@@ -1841,7 +1892,6 @@ async def test_tui_action_toggle_rag_disable(
 
     # Start with RAG enabled
     app.rag_enabled = True
-    app.rag_status = MagicMock()
 
     # Mock httpx response
     mock_response = MagicMock()
@@ -1854,8 +1904,9 @@ async def test_tui_action_toggle_rag_disable(
     mock_client.post = AsyncMock(return_value=mock_response)
 
     with patch("httpx.AsyncClient", return_value=mock_client):
-        with caplog.at_level(logging.INFO, logger="mygpt.tui"):
-            await app.action_toggle_rag()
+        with patch.object(app, "_update_session_status", new=AsyncMock()):
+            with caplog.at_level(logging.INFO, logger="mygpt.tui"):
+                await app.action_toggle_rag()
 
     # Verify RAG was disabled
     assert app.rag_enabled is False
@@ -1881,7 +1932,6 @@ async def test_tui_action_toggle_rag_error(
         app = MyGPTTUI(session="test-session")
 
     app.rag_enabled = False
-    app.rag_status = MagicMock()
 
     # Mock httpx to raise exception
     mock_client = AsyncMock()
