@@ -61,7 +61,10 @@ cd "$REPO_DIR/web"
 # This prevents 404 errors when new routes are added
 if [[ -d ".next" ]]; then
   echo "Clearing Next.js cache (.next directory)..."
-  rm -rf .next
+  # Remove extended attributes (Dropbox, etc.) that prevent deletion
+  xattr -rc .next 2>/dev/null || true
+  # Don't fail if rm fails (Dropbox might prevent deletion)
+  rm -rf .next || echo "Warning: Could not clear .next cache (may be protected by Dropbox)" >&2
 fi
 
 exec "$NPM_BIN" run dev
