@@ -834,7 +834,7 @@ async def test_tui_action_pick_session(tmp_path: Path) -> None:
         app, "push_screen_wait", new=AsyncMock(return_value="new-session")
     ):
         with patch.object(app, "_update_session_status", new=AsyncMock()):
-            await app.action_pick_session()
+            await app._pick_session_worker()
 
     # Verify session was switched
     assert app.session == "new-session"
@@ -862,7 +862,7 @@ async def test_tui_action_pick_session_cancel(tmp_path: Path) -> None:
 
     # Mock push_screen_wait to return None (cancel)
     with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)):
-        await app.action_pick_session()
+        await app._pick_session_worker()
 
     # Verify session was NOT switched
     assert app.session == "original-session"
@@ -1477,7 +1477,7 @@ async def test_tui_action_search_messages_opens_screen(tmp_path: Path) -> None:
     with patch.object(
         app, "push_screen_wait", new=AsyncMock(return_value=None)
     ) as mock_push:
-        await app.action_search_messages()
+        await app._search_messages_worker()
 
     # Verify SearchResultsScreen was shown
     mock_push.assert_called_once()
@@ -1511,7 +1511,7 @@ async def test_tui_action_search_messages_switches_session(tmp_path: Path) -> No
     ):
         with patch.object(app, "query_one", return_value=mock_output):
             with patch.object(app, "notify") as mock_notify:
-                await app.action_search_messages()
+                await app._search_messages_worker()
 
     # Verify session was switched
     assert app.session == "target-session"
@@ -1552,7 +1552,7 @@ async def test_tui_action_search_messages_same_session(tmp_path: Path) -> None:
         app, "push_screen_wait", new=AsyncMock(return_value=search_result)
     ):
         with patch.object(app, "notify") as mock_notify:
-            await app.action_search_messages()
+            await app._search_messages_worker()
 
     # Verify session stayed the same
     assert app.session == "current-session"
@@ -1976,7 +1976,7 @@ async def test_tui_action_models_manager(
         app, "push_screen_wait", new=AsyncMock(return_value=None)
     ) as mock_push:
         with caplog.at_level(logging.INFO, logger="mygpt.tui"):
-            await app.action_models_manager()
+            await app._models_manager_worker()
 
     # Verify ModelsManagerScreen was shown
     mock_push.assert_called_once()
@@ -2149,8 +2149,7 @@ def test_session_picker_action_select_no_highlight() -> None:
 # ============================================================================
 
 
-@pytest.mark.asyncio
-async def test_action_clear_output(tmp_path: Path) -> None:
+def test_action_clear_output(tmp_path: Path) -> None:
     """Test that clear output action clears the buffer."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -2165,14 +2164,13 @@ async def test_action_clear_output(tmp_path: Path) -> None:
     app.output = MagicMock(spec=ChatOutput)
     app.output.clear = MagicMock()
 
-    await app.action_clear_output()
+    app.action_clear_output()
 
     # Verify output was cleared
     app.output.clear.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_action_clear_output_handles_exception(
+def test_action_clear_output_handles_exception(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Test that clear output action handles exceptions gracefully."""
@@ -2190,7 +2188,7 @@ async def test_action_clear_output_handles_exception(
     app.output.clear = MagicMock(side_effect=RuntimeError("Clear failed"))
 
     with caplog.at_level(logging.ERROR, logger="mygpt.tui"):
-        await app.action_clear_output()
+        app.action_clear_output()
 
     # Verify error was logged
     assert "Failed to clear output" in caplog.text
@@ -2381,7 +2379,7 @@ async def test_action_show_help(tmp_path: Path, caplog: pytest.LogCaptureFixture
         app, "push_screen_wait", new=AsyncMock(return_value=None)
     ) as mock_push:
         with caplog.at_level(logging.INFO, logger="mygpt.tui"):
-            await app.action_show_help()
+            await app._show_help_worker()
 
     # Verify HelpOverlayScreen was shown
     mock_push.assert_called_once()

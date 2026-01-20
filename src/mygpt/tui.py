@@ -755,8 +755,12 @@ class MyGPTTUI(App):
         except Exception as e:
             log.error(f"Failed to toggle RAG: {type(e).__name__}: {e}")
 
-    async def action_pick_session(self) -> None:
+    def action_pick_session(self) -> None:
         """Open the session picker and switch to the selected session."""
+        self.run_worker(self._pick_session_worker(), exclusive=True)
+
+    async def _pick_session_worker(self) -> None:
+        """Worker to handle async session picker logic."""
         session_name = await self.push_screen_wait(
             SessionPickerScreen(self.config_path)
         )
@@ -772,13 +776,21 @@ class MyGPTTUI(App):
             await self._update_session_status()
             log.info("Session switched", extra={"session": session_name})
 
-    async def action_models_manager(self) -> None:
+    def action_models_manager(self) -> None:
         """Open the models manager screen."""
+        self.run_worker(self._models_manager_worker(), exclusive=True)
+
+    async def _models_manager_worker(self) -> None:
+        """Worker to handle async models manager logic."""
         await self.push_screen_wait(ModelsManagerScreen(self.api_base_url))
         log.info("Models manager closed")
 
-    async def action_search_messages(self) -> None:
+    def action_search_messages(self) -> None:
         """Open message search modal."""
+        self.run_worker(self._search_messages_worker(), exclusive=True)
+
+    async def _search_messages_worker(self) -> None:
+        """Worker to handle async message search logic."""
         result = await self.push_screen_wait(
             SearchResultsScreen(self.api_base_url, self.session)
         )
@@ -806,8 +818,12 @@ class MyGPTTUI(App):
                     severity="information",
                 )
 
-    async def action_rename_session(self) -> None:
+    def action_rename_session(self) -> None:
         """Rename the current session with automatic filename sync."""
+        self.run_worker(self._rename_session_worker(), exclusive=True)
+
+    async def _rename_session_worker(self) -> None:
+        """Worker to handle async rename session logic."""
         from textual.widgets import Label
         from textual.containers import Container
         from textual.screen import ModalScreen
@@ -897,7 +913,7 @@ class MyGPTTUI(App):
             log.error(f"Failed to rename session: {type(e).__name__}: {e}")
             self.output.append(f"\n[error] Failed to rename session: {e}\n\n")
 
-    async def action_clear_output(self) -> None:
+    def action_clear_output(self) -> None:
         """Clear the chat output buffer."""
         try:
             self.output.clear()
@@ -905,8 +921,12 @@ class MyGPTTUI(App):
         except Exception as e:
             log.error(f"Failed to clear output: {type(e).__name__}: {e}")
 
-    async def action_show_help(self) -> None:
+    def action_show_help(self) -> None:
         """Show the keyboard shortcuts help overlay."""
+        self.run_worker(self._show_help_worker(), exclusive=True)
+
+    async def _show_help_worker(self) -> None:
+        """Worker to handle async help overlay logic."""
         await self.push_screen_wait(HelpOverlayScreen())
         log.info("Help overlay closed")
 
@@ -916,6 +936,8 @@ class MyGPTTUI(App):
 
     async def _command_palette_worker(self) -> None:
         """Worker to handle async command palette logic."""
+        import inspect
+
         command_key = await self.push_screen_wait(CommandPaletteScreen())
 
         if command_key:
@@ -934,14 +956,18 @@ class MyGPTTUI(App):
 
             action = action_map.get(command_key)
             if action:
-                await action()
+                # Handle both sync and async actions
+                if inspect.iscoroutinefunction(action):
+                    await action()
+                else:
+                    action()
             else:
                 log.warning(f"Unknown command key: {command_key}")
 
     async def _handle_command(self, command: str) -> None:
         """Handle slash commands."""
         if command == "clear":
-            await self.action_clear_output()
+            self.action_clear_output()
         else:
             self.output.append(f"[System] Unknown command: /{command}\n\n")
             log.warning(f"Unknown command: /{command}")
