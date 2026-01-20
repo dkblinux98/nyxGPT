@@ -55,6 +55,7 @@ The TUI:
 - persists conversations via the Sessions API
 - defaults to the `default` session
 - supports RAG-assisted chat if enabled
+- displays a status bar showing session name, message count, active model, and RAG status
 
 ### TUI Keyboard Shortcuts
 
