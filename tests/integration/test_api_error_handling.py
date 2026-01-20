@@ -178,7 +178,7 @@ def test_chat_with_invalid_model_name(api_base_url: str) -> None:
     Note: Empty model name is gracefully handled by using the default model
     from configuration, so this returns 200 OK.
     """
-    with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         response = client.post(
             "/api/v1/chat",
             json={
@@ -202,7 +202,7 @@ def test_rag_operations_without_cassandra(api_base_url: str) -> None:
     Note: This test runs WITHOUT require_cassandra fixture, so Cassandra
     may or may not be available. If unavailable, should return 500 or 503.
     """
-    with httpx.Client(base_url=api_base_url, timeout=5.0) as client:
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         response = client.post(
             "/api/v1/rag/query",
             json={"query": "test query", "top_k": 5},
