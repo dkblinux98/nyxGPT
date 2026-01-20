@@ -216,6 +216,62 @@ class RagQueryResponse(BaseModel):
     debug_info: RagDebugInfo | None = None
 
 
+class RetrievalAccuracyMetrics(BaseModel):
+    """Metrics for evaluating retrieval accuracy and quality."""
+
+    results_returned: int
+    query_success: bool
+    unique_docs_retrieved: int
+    total_chunks_retrieved: int
+    score_distribution: dict[str, float]
+
+
+class LatencyMetrics(BaseModel):
+    """Enhanced latency tracking with percentile breakdowns."""
+
+    total_time_ms: float
+    stage_timings: dict[str, float]
+    percentiles: dict[str, float] | None = None
+
+
+class HitRateMetrics(BaseModel):
+    """Metrics for hit rate analysis and query patterns."""
+
+    query_success_rate: float
+    total_queries: int
+    successful_queries: int
+    failed_queries: int
+    avg_top_score: float | None
+    score_above_threshold_rate: float
+
+
+class RagEvaluationMetrics(BaseModel):
+    """Comprehensive evaluation metrics for RAG quality."""
+
+    retrieval_accuracy: RetrievalAccuracyMetrics
+    latency: LatencyMetrics
+    hit_rate: HitRateMetrics
+    query_id: str
+    timestamp: float
+
+
+class RagMetricsQueryRequest(BaseModel):
+    """Request model for querying RAG metrics with evaluation."""
+
+    query: str = Field(..., min_length=1)
+    top_k: int | None = None
+    debug_mode: bool = True
+    collect_metrics: bool = True
+
+
+class RagMetricsQueryResponse(BaseModel):
+    """Response model for RAG query with evaluation metrics."""
+
+    results: list[RagQueryResult]
+    debug_info: RagDebugInfo | None = None
+    evaluation_metrics: RagEvaluationMetrics | None = None
+
+
 # ----------------------------
 # Search API models
 # ----------------------------

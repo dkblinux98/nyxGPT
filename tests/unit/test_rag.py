@@ -1079,3 +1079,201 @@ def test_retrieve_context_debug_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     assert debug_info.after_dedupe_filter == 3
     assert debug_info.after_min_score_filter == 3
     assert debug_info.chunks_included == 3
+
+
+# =============================================================================
+# Evaluation Metrics Tests
+# =============================================================================
+
+
+@pytest.mark.unit
+def test_compute_evaluation_metrics_with_results() -> None:
+    """compute_evaluation_metrics should return complete metrics for successful query."""
+    from mygpt.rag.rag import (
+        compute_evaluation_metrics,
+        RAGDebugInfo,
+    )
+
+    # Mock retrieval results
+    results = [
+        {"doc_id": "doc1", "chunk_id": 0, "text": "chunk 1", "score": 0.95},
+        {"doc_id": "doc1", "chunk_id": 1, "text": "chunk 2", "score": 0.85},
+        {"doc_id": "doc2", "chunk_id": 0, "text": "chunk 3", "score": 0.75},
+    ]
+
+    # Mock debug info
+    debug_info = RAGDebugInfo(
+        total_time_ms=100.0,
+        query_expansion_time_ms=10.0,
+        embedding_time_ms=20.0,
+        vector_search_time_ms=50.0,
+        filtering_time_ms=5.0,
+        composition_time_ms=15.0,
+        original_query="test query",
+        query_variants=["test query"],
+        num_queries=1,
+        embedding_model="nomic-embed-text",
+        embedding_dim=768,
+        num_texts_embedded=1,
+        batch_size=1,
+        raw_results_count=3,
+        score_min=0.75,
+        score_max=0.95,
+        score_mean=0.85,
+        after_min_score_filter=3,
+        after_dedupe_filter=3,
+        after_max_chunks_filter=3,
+        total_chars_before_truncation=100,
+        total_chars_after_truncation=100,
+        chunks_included=3,
+    )
+
+    min_score = 0.3
+
+    # Compute evaluation metrics
+    eval_metrics = compute_evaluation_metrics(results, debug_info, min_score)
+
+    # Verify retrieval accuracy metrics
+    assert eval_metrics.retrieval_accuracy.results_returned == 3
+    assert eval_metrics.retrieval_accuracy.query_success is True
+    assert eval_metrics.retrieval_accuracy.unique_docs_retrieved == 2
+    assert eval_metrics.retrieval_accuracy.total_chunks_retrieved == 3
+    assert "p50" in eval_metrics.retrieval_accuracy.score_distribution
+    assert "p75" in eval_metrics.retrieval_accuracy.score_distribution
+    assert "p95" in eval_metrics.retrieval_accuracy.score_distribution
+    assert "p99" in eval_metrics.retrieval_accuracy.score_distribution
+
+    # Verify latency metrics
+    assert eval_metrics.latency.total_time_ms == 100.0
+    assert eval_metrics.latency.stage_timings["embedding"] == 20.0
+    assert eval_metrics.latency.stage_timings["vector_search"] == 50.0
+    assert eval_metrics.latency.stage_timings["filtering"] == 5.0
+
+    # Verify hit rate metrics
+    assert eval_metrics.hit_rate.query_success_rate == 1.0
+    assert eval_metrics.hit_rate.total_queries == 1
+    assert eval_metrics.hit_rate.successful_queries == 1
+    assert eval_metrics.hit_rate.failed_queries == 0
+    assert eval_metrics.hit_rate.avg_top_score == 0.95
+    assert eval_metrics.hit_rate.score_above_threshold_rate == 1.0
+
+    # Verify metadata
+    assert len(eval_metrics.query_id) == 36  # UUID length
+    assert eval_metrics.timestamp > 0
+
+
+@pytest.mark.unit
+def test_compute_evaluation_metrics_empty_results() -> None:
+    """compute_evaluation_metrics should handle empty results correctly."""
+    from mygpt.rag.rag import (
+        compute_evaluation_metrics,
+        RAGDebugInfo,
+    )
+
+    # Empty results
+    results: list[dict] = []
+
+    # Mock debug info
+    debug_info = RAGDebugInfo(
+        total_time_ms=50.0,
+        query_expansion_time_ms=None,
+        embedding_time_ms=15.0,
+        vector_search_time_ms=30.0,
+        filtering_time_ms=5.0,
+        composition_time_ms=0.0,
+        original_query="test query",
+        query_variants=["test query"],
+        num_queries=1,
+        embedding_model="nomic-embed-text",
+        embedding_dim=768,
+        num_texts_embedded=1,
+        batch_size=1,
+        raw_results_count=0,
+        score_min=None,
+        score_max=None,
+        score_mean=None,
+        after_min_score_filter=0,
+        after_dedupe_filter=0,
+        after_max_chunks_filter=0,
+        total_chars_before_truncation=0,
+        total_chars_after_truncation=0,
+        chunks_included=0,
+    )
+
+    min_score = 0.3
+
+    # Compute evaluation metrics
+    eval_metrics = compute_evaluation_metrics(results, debug_info, min_score)
+
+    # Verify retrieval accuracy metrics for empty results
+    assert eval_metrics.retrieval_accuracy.results_returned == 0
+    assert eval_metrics.retrieval_accuracy.query_success is False
+    assert eval_metrics.retrieval_accuracy.unique_docs_retrieved == 0
+    assert eval_metrics.retrieval_accuracy.total_chunks_retrieved == 0
+    assert eval_metrics.retrieval_accuracy.score_distribution == {}
+
+    # Verify hit rate metrics for failed query
+    assert eval_metrics.hit_rate.query_success_rate == 0.0
+    assert eval_metrics.hit_rate.total_queries == 1
+    assert eval_metrics.hit_rate.successful_queries == 0
+    assert eval_metrics.hit_rate.failed_queries == 1
+    assert eval_metrics.hit_rate.avg_top_score is None
+    assert eval_metrics.hit_rate.score_above_threshold_rate == 0.0
+
+
+@pytest.mark.unit
+def test_compute_evaluation_metrics_score_percentiles() -> None:
+    """compute_evaluation_metrics should calculate score percentiles correctly."""
+    from mygpt.rag.rag import (
+        compute_evaluation_metrics,
+        RAGDebugInfo,
+    )
+
+    # Results with varied scores
+    results = [
+        {"doc_id": "doc1", "chunk_id": i, "text": f"chunk {i}", "score": 0.5 + i * 0.1}
+        for i in range(5)
+    ]
+
+    debug_info = RAGDebugInfo(
+        total_time_ms=100.0,
+        query_expansion_time_ms=None,
+        embedding_time_ms=20.0,
+        vector_search_time_ms=50.0,
+        filtering_time_ms=5.0,
+        composition_time_ms=25.0,
+        original_query="test",
+        query_variants=["test"],
+        num_queries=1,
+        embedding_model="nomic-embed-text",
+        embedding_dim=768,
+        num_texts_embedded=1,
+        batch_size=1,
+        raw_results_count=5,
+        score_min=0.5,
+        score_max=0.9,
+        score_mean=0.7,
+        after_min_score_filter=5,
+        after_dedupe_filter=5,
+        after_max_chunks_filter=5,
+        total_chars_before_truncation=200,
+        total_chars_after_truncation=200,
+        chunks_included=5,
+    )
+
+    min_score = 0.3
+
+    eval_metrics = compute_evaluation_metrics(results, debug_info, min_score)
+
+    # Verify percentiles are calculated
+    score_dist = eval_metrics.retrieval_accuracy.score_distribution
+    assert "p50" in score_dist
+    assert "p75" in score_dist
+    assert "p95" in score_dist
+    assert "p99" in score_dist
+
+    # Verify percentile values are reasonable (median should be middle value)
+    assert 0.6 <= score_dist["p50"] <= 0.8
+    assert score_dist["p75"] >= score_dist["p50"]
+    assert score_dist["p95"] >= score_dist["p75"]
+    assert score_dist["p99"] >= score_dist["p95"]

@@ -394,9 +394,164 @@ For **multi-model setups**, use collections to avoid re-ingestion (see "Multiple
 
 ---
 
+## RAG Evaluation Metrics
+
+**New in v1.0:** myGPT now provides comprehensive evaluation metrics to assess RAG quality.
+
+### Overview
+
+The metrics endpoint `/api/v1/rag/metrics/query` extends the standard RAG query with detailed performance analytics:
+
+- **Retrieval Accuracy** - Hit rate, unique documents, score distribution
+- **Latency Tracking** - Per-stage timing breakdowns
+- **Hit Rate Analysis** - Success rates, threshold performance
+
+### API Endpoint
+
+#### `POST /api/v1/rag/metrics/query`
+
+Query RAG with comprehensive evaluation metrics.
+
+**Request:**
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/rag/metrics/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is vector search?",
+    "top_k": 5,
+    "collect_metrics": true
+  }'
+```
+
+**Response:**
+```json
+{
+  "results": [
+    {
+      "doc_id": "doc1",
+      "chunk_id": 0,
+      "text": "Vector search is...",
+      "score": 0.95
+    }
+  ],
+  "debug_info": {
+    "total_time_ms": 125.5,
+    "embedding_time_ms": 45.2,
+    "vector_search_time_ms": 65.3,
+    "filtering_time_ms": 5.0,
+    "score_min": 0.85,
+    "score_max": 0.95,
+    "score_mean": 0.90
+  },
+  "evaluation_metrics": {
+    "retrieval_accuracy": {
+      "results_returned": 5,
+      "query_success": true,
+      "unique_docs_retrieved": 3,
+      "total_chunks_retrieved": 5,
+      "score_distribution": {
+        "p50": 0.90,
+        "p75": 0.93,
+        "p95": 0.95,
+        "p99": 0.95
+      }
+    },
+    "latency": {
+      "total_time_ms": 125.5,
+      "stage_timings": {
+        "query_expansion": 0.0,
+        "embedding": 45.2,
+        "vector_search": 65.3,
+        "filtering": 5.0,
+        "composition": 10.0
+      },
+      "percentiles": null
+    },
+    "hit_rate": {
+      "query_success_rate": 1.0,
+      "total_queries": 1,
+      "successful_queries": 1,
+      "failed_queries": 0,
+      "avg_top_score": 0.95,
+      "score_above_threshold_rate": 1.0
+    },
+    "query_id": "550e8400-e29b-41d4-a716-446655440000",
+    "timestamp": 1704067200.0
+  }
+}
+```
+
+### Metrics Explained
+
+#### Retrieval Accuracy Metrics
+
+- **results_returned**: Total number of chunks returned
+- **query_success**: Boolean indicating if any results were found
+- **unique_docs_retrieved**: Number of unique documents in results
+- **total_chunks_retrieved**: Total chunks across all documents
+- **score_distribution**: Percentiles (p50/p75/p95/p99) of similarity scores
+
+#### Latency Metrics
+
+- **total_time_ms**: End-to-end query latency
+- **stage_timings**: Per-stage breakdown (query expansion, embedding, vector search, filtering, composition)
+- **percentiles**: Historical latency percentiles (computed from aggregated data, null for single queries)
+
+#### Hit Rate Metrics
+
+- **query_success_rate**: Percentage of queries returning results (0.0 or 1.0 for single queries)
+- **total_queries**: Number of queries in this batch (always 1 for single queries)
+- **successful_queries**: Queries that returned results
+- **failed_queries**: Queries that returned no results
+- **avg_top_score**: Score of the top-ranked result
+- **score_above_threshold_rate**: Percentage of results above the configured min_score threshold
+
+### Use Cases
+
+**Performance Monitoring:**
+```bash
+# Track latency over time
+for i in {1..10}; do
+  curl -X POST http://127.0.0.1:8000/api/v1/rag/metrics/query \
+    -H "Content-Type: application/json" \
+    -d "{\"query\": \"test query $i\", \"collect_metrics\": true}" \
+    | jq '.evaluation_metrics.latency.total_time_ms'
+done
+```
+
+**Quality Assessment:**
+```bash
+# Analyze score distributions
+curl -X POST http://127.0.0.1:8000/api/v1/rag/metrics/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "machine learning", "collect_metrics": true}' \
+  | jq '.evaluation_metrics.retrieval_accuracy.score_distribution'
+```
+
+**Hit Rate Analysis:**
+```bash
+# Check query success rates
+curl -X POST http://127.0.0.1:8000/api/v1/rag/metrics/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "nonexistent topic", "collect_metrics": true}' \
+  | jq '.evaluation_metrics.hit_rate'
+```
+
+### Configuration
+
+Metrics collection is always enabled for the metrics endpoint. For standard queries with debug info, use:
+
+```ini
+[rag]
+debug_mode = true  # Enables debug_info in standard /rag/query endpoint
+```
+
+---
+
 ## Notes
 
 - RAG is optional and can be disabled at any time.
 - Cassandra is used only for vector storage; no full‑text search is required.
 - RAG latency depends on embedding generation and vector search performance.
 - Multiple embedding models are supported via collections (separate tables per model).
+- Evaluation metrics provide detailed quality and performance insights for RAG queries.

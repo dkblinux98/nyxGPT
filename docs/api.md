@@ -12,7 +12,7 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 41 available endpoints:
+Quick reference of all 42 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -52,6 +52,7 @@ Quick reference of all 41 available endpoints:
 | `/api/v1/tools/grep` | POST | Search files |
 | `/api/v1/rag/ingest` | POST | Ingest text document |
 | `/api/v1/rag/query` | POST | Query RAG vector store |
+| `/api/v1/rag/metrics/query` | POST | Query RAG with evaluation metrics |
 | `/api/v1/rag/upload` | POST | Upload and ingest file |
 | `/api/v1/logs/files` | GET | List log files |
 | `/api/v1/logs/view/{filename}` | GET | View log file contents |
