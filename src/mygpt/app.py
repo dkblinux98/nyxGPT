@@ -1905,8 +1905,14 @@ async def rag_upload_file(
 
     # Ingest
     try:
-        chunks = ingest_document(doc_id=final_doc_id, text=text)
-        return RagIngestResponse(doc_id=final_doc_id, chunks_ingested=chunks)
+        result = ingest_document(doc_id=final_doc_id, text=text)
+        return RagIngestResponse(
+            doc_id=final_doc_id,
+            chunks_ingested=result["chunks_ingested"],
+            status=result["status"],
+            doc_hash=result["doc_hash"],
+            previous_hash=result["previous_hash"],
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")
 

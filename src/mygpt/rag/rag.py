@@ -38,6 +38,7 @@ class ChunkingConfig:
 
 
 @dataclass
+@dataclass
 class RAGDebugInfo:
     """Complete debug information for RAG operations."""
 

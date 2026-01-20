@@ -20,7 +20,7 @@ def test_rag_ingest_with_collection_flag(
     test_file.write_text("Test document content for embedding.")
 
     with patch("mygpt.cli.ingest_document") as mock_ingest:
-        mock_ingest.return_value = 5  # 5 chunks ingested
+        mock_ingest.return_value = {"status": "ingested", "chunks_ingested": 5, "doc_hash": "abc123", "previous_hash": None}
 
         exit_code = cli(
             [

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import time
-import hashlib
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Iterable, List
@@ -449,7 +448,7 @@ class CassandraVectorStore:
         rows = self.session.execute(stmt, (doc_id,))
         row = rows.one()
         if row and hasattr(row, 'doc_hash'):
-            return row.doc_hash
+            return str(row.doc_hash) if row.doc_hash is not None else None
         return None
 
     def get_document_info(self, doc_id: str) -> dict | None:

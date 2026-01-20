@@ -56,7 +56,6 @@ def test_document_update_detection_unchanged(cassandra_test_setup):
     )
 
     assert result1["status"] == "ingested"
-    chunks1 = result1["chunks_ingested"]
     hash1 = result1["doc_hash"]
 
     # Second ingestion with same content
@@ -178,13 +177,11 @@ def test_stale_chunks_deletion(cassandra_test_setup):
     text2 = "This is a much longer text that will create more chunks than the first version."
 
     # First ingestion - short text
-    result1 = ingest_document(
+    ingest_document(
         doc_id=doc_id,
         text=text1,
         ensure_schema=True,
     )
-
-    chunks1 = result1["chunks_ingested"]
 
     # Second ingestion - longer text
     result2 = ingest_document(

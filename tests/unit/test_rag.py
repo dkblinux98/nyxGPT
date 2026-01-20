@@ -649,8 +649,8 @@ def test_ingest_document_empty_text(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from mygpt.rag.rag import ingest_document
 
-    count = ingest_document("doc1", "")
-    assert count == 0
+    result = ingest_document("doc1", "")
+    assert result == {"status": "skipped", "chunks_ingested": 0, "doc_hash": None, "previous_hash": None}
 
 
 @pytest.mark.unit
@@ -1116,6 +1116,8 @@ def test_compute_evaluation_metrics_with_results() -> None:
         query_expansion_time_ms=10.0,
         embedding_time_ms=20.0,
         vector_search_time_ms=50.0,
+        keyword_search_time_ms=None,
+        fusion_time_ms=None,
         filtering_time_ms=5.0,
         composition_time_ms=15.0,
         original_query="test query",
@@ -1129,6 +1131,10 @@ def test_compute_evaluation_metrics_with_results() -> None:
         score_min=0.75,
         score_max=0.95,
         score_mean=0.85,
+        hybrid_enabled=False,
+        keyword_results_count=None,
+        vector_results_count=None,
+        fusion_method=None,
         after_min_score_filter=3,
         after_dedupe_filter=3,
         after_max_chunks_filter=3,
@@ -1188,6 +1194,8 @@ def test_compute_evaluation_metrics_empty_results() -> None:
         query_expansion_time_ms=None,
         embedding_time_ms=15.0,
         vector_search_time_ms=30.0,
+        keyword_search_time_ms=None,
+        fusion_time_ms=None,
         filtering_time_ms=5.0,
         composition_time_ms=0.0,
         original_query="test query",
@@ -1201,6 +1209,10 @@ def test_compute_evaluation_metrics_empty_results() -> None:
         score_min=None,
         score_max=None,
         score_mean=None,
+        hybrid_enabled=False,
+        keyword_results_count=None,
+        vector_results_count=None,
+        fusion_method=None,
         after_min_score_filter=0,
         after_dedupe_filter=0,
         after_max_chunks_filter=0,
@@ -1249,6 +1261,8 @@ def test_compute_evaluation_metrics_score_percentiles() -> None:
         query_expansion_time_ms=None,
         embedding_time_ms=20.0,
         vector_search_time_ms=50.0,
+        keyword_search_time_ms=None,
+        fusion_time_ms=None,
         filtering_time_ms=5.0,
         composition_time_ms=25.0,
         original_query="test",
@@ -1262,6 +1276,10 @@ def test_compute_evaluation_metrics_score_percentiles() -> None:
         score_min=0.5,
         score_max=0.9,
         score_mean=0.7,
+        hybrid_enabled=False,
+        keyword_results_count=None,
+        vector_results_count=None,
+        fusion_method=None,
         after_min_score_filter=5,
         after_dedupe_filter=5,
         after_max_chunks_filter=5,
