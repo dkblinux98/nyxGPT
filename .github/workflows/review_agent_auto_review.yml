@@ -6,15 +6,18 @@ on:
 
 jobs:
   execute-review-decision:
-    # Manual workflow - requires human comment to trigger
-    # @approve-merge: Always allowed (manual merge override)
-    # @request-changes: Only when REVIEW_AUTO_FIX_ENABLED=false (manual auto-fix trigger)
-    #                   When true, review_auto_fix.yml handles it automatically
-    # Both triggers now run auto-fix loop (no sub-issues created)
+    # Automated workflow - triggers on review decisions or manual override
+    # Auto-triggers:
+    #   - APPROVE decision: Automatically merges when review approves
+    #   - REQUEST_CHANGES: Only when REVIEW_AUTO_FIX_ENABLED=false (else review_auto_fix.yml handles it)
+    # Manual triggers:
+    #   - @approve-merge: Manual merge override
+    #   - @request-changes: Manual auto-fix trigger (when auto-fix disabled)
     if: |
       github.event.issue.pull_request &&
       (contains(github.event.comment.body, '@approve-merge') ||
-       (contains(github.event.comment.body, '@request-changes') && vars.REVIEW_AUTO_FIX_ENABLED != 'true'))
+       (contains(github.event.comment.body, '@request-changes') && vars.REVIEW_AUTO_FIX_ENABLED != 'true') ||
+       (startsWith(github.event.comment.body, '## Code Review - APPROVE') && (github.event.comment.user.login == 'claude[bot]' || github.event.comment.user.login == vars.DEV_AGENT)))
     runs-on: ubuntu-latest
 
     permissions:
