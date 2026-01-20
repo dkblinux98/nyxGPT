@@ -148,11 +148,12 @@ jobs:
         run: |
           PR="${{ steps.pr.outputs.pr_number }}"
 
-          # Query PR comments from claude (Claude Code Action OAuth user) starting with "## Code Review - REQUEST_CHANGES"
+          # Query PR comments from review agents starting with "## Code Review - REQUEST_CHANGES"
+          # Accept comments from claude[bot] or developer-agent
           # Only count REQUEST_CHANGES iterations, not APPROVE comments
           COUNT=$(gh pr view "$PR" --repo "${{ github.repository }}" --json comments --jq '
             [.comments[] |
-             select(.author.login == "claude" and
+             select((.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "${{ vars.DEV_AGENT }}") and
                     (.body | startswith("## Code Review - REQUEST_CHANGES")))] |
             length
           ')
@@ -246,9 +247,10 @@ jobs:
           echo "Extracting most recent Code Review comment..."
 
           # Get most recent "## Code Review - REQUEST_CHANGES" comment
+          # Accept comments from claude[bot] or developer-agent
           REVIEW_BODY=$(gh pr view "$PR" --repo "${{ github.repository }}" --json comments --jq '
             [.comments[] |
-             select(.author.login == "claude" and
+             select((.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "${{ vars.DEV_AGENT }}") and
                     (.body | startswith("## Code Review - REQUEST_CHANGES")))] |
             last |
             .body
