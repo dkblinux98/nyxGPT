@@ -2409,7 +2409,7 @@ async def test_action_command_palette_execute_command(
         # Mock action_clear_output
         with patch.object(app, "action_clear_output", new=AsyncMock()) as mock_clear:
             with caplog.at_level(logging.INFO, logger="mygpt.tui"):
-                await app.action_command_palette()
+                await app._command_palette_worker()
 
     # Verify command was executed
     mock_clear.assert_called_once()
@@ -2431,7 +2431,7 @@ async def test_action_command_palette_cancel(tmp_path: Path) -> None:
     # Mock push_screen_wait to return None (cancel)
     with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)):
         # No action should be called
-        await app.action_command_palette()
+        await app._command_palette_worker()
 
     # Test passes if no exception raised
 
@@ -2455,7 +2455,7 @@ async def test_action_command_palette_unknown_command(
         app, "push_screen_wait", new=AsyncMock(return_value="unknown_command")
     ):
         with caplog.at_level(logging.WARNING, logger="mygpt.tui"):
-            await app.action_command_palette()
+            await app._command_palette_worker()
 
     # Verify warning was logged
     assert "Unknown command key: unknown_command" in caplog.text
