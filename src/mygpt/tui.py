@@ -450,6 +450,7 @@ class MyGPTTUI(App):
         ("ctrl+r", "toggle_rag", "Toggle RAG"),
         ("ctrl+m", "models_manager", "Models"),
         ("ctrl+n", "rename_session", "Rename"),
+        ("ctrl+l", "clear_output", "Clear"),
     ]
 
     def __init__(
@@ -699,9 +700,31 @@ class MyGPTTUI(App):
             log.error(f"Failed to rename session: {type(e).__name__}: {e}")
             self.output.append(f"\n[error] Failed to rename session: {e}\n\n")
 
+    async def action_clear_output(self) -> None:
+        """Clear the chat output buffer."""
+        try:
+            self.output.clear()
+            log.info(f"Output cleared for session {self.session}")
+        except Exception as e:
+            log.error(f"Failed to clear output: {type(e).__name__}: {e}")
+
+    async def _handle_command(self, command: str) -> None:
+        """Handle slash commands."""
+        if command == "clear":
+            await self.action_clear_output()
+        else:
+            self.output.append(f"[System] Unknown command: /{command}\n\n")
+            log.warning(f"Unknown command: /{command}")
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         if not text:
+            return
+
+        # Handle commands
+        if text.startswith("/"):
+            await self._handle_command(text[1:])
+            self.prompt.value = ""
             return
 
         # Prevent double-submits while a stream is active
