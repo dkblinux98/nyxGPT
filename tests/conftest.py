@@ -10,17 +10,78 @@ from mygpt.logging import configure_logging, get_log_dir
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _ensure_test_config():
+    """Ensure a config file exists for tests (needed for CI environments).
+
+    Creates a minimal config file if ~/.myGPT/config.ini doesn't exist.
+    This allows tests to run in CI without requiring a pre-configured environment.
+    """
+    config_path = Path.home() / ".myGPT" / "config.ini"
+    created_config = False
+
+    if not config_path.exists():
+        created_config = True
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Create minimal config for tests
+        config_content = """[ollama]
+base_url = http://localhost:11434
+
+[mygpt]
+default_model = qwen2.5-coder:latest
+
+[rag]
+cassandra_hosts = localhost
+cassandra_port = 9042
+cassandra_keyspace = mygpt
+chat_top_k = 5
+min_score = 0.0
+max_chunks = 10
+chunk_size = 500
+chunk_overlap = 50
+max_context_chars = 10000
+enable_query_expansion = false
+dedupe = true
+
+[sessions]
+dir = ~/.myGPT/sessions
+
+[logs]
+dir = ~/.myGPT/logs
+level = INFO
+
+[dev]
+release_branch = v1.0.0
+"""
+        config_path.write_text(config_content)
+
+    yield
+
+    # Clean up created config after tests
+    if created_config and config_path.exists():
+        config_path.unlink()
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _configure_test_logging():
     """
     Ensure pytest runs write logs to ~/.myGPT/logs/tests.log (in addition to pytest capture).
     """
-    cfg = load_config(None)
-    log_dir = Path(get_log_dir(cfg)).expanduser()
+    # In CI or when config doesn't exist, use default log directory
+    try:
+        cfg = load_config(None)
+        log_dir = Path(get_log_dir(cfg)).expanduser()
+    except FileNotFoundError:
+        # Config doesn't exist (e.g., in CI), use default log directory
+        log_dir = Path("~/.myGPT/logs").expanduser()
+        cfg = None
+
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initialize the same rotating-file logging used by the app/CLI.
+    # Initialize the same rotating-file logging used by the app/CLI if config available
     # This adds the RequestIdFilter to the root logger
-    configure_logging(cfg, console=False)
+    if cfg is not None:
+        configure_logging(cfg, console=False)
 
     # IMPORTANT: Ensure root logger level allows WARNING/INFO during tests
     # The configure_logging might set it too high
@@ -85,7 +146,9 @@ def _ensure_test_logging_works():
     root = logging.getLogger()
 
     # Simple formatter without request_id
-    test_formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    test_formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
 
     # Configure all root handlers
     for handler in root.handlers:
@@ -94,7 +157,14 @@ def _ensure_test_logging_works():
 
     # Ensure all mygpt.* loggers are set to DEBUG and propagate
     # This is needed for tests that create custom loggers like "mygpt.test"
-    for logger_name in ["mygpt", "mygpt.test", "mygpt.chat", "mygpt.config", "mygpt.sessions", "mygpt.tui"]:
+    for logger_name in [
+        "mygpt",
+        "mygpt.test",
+        "mygpt.chat",
+        "mygpt.config",
+        "mygpt.sessions",
+        "mygpt.tui",
+    ]:
         logger = logging.getLogger(logger_name)
         logger.setLevel(logging.DEBUG)
         logger.propagate = True

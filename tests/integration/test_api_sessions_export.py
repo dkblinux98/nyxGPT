@@ -6,6 +6,7 @@ Tests the following endpoint:
 This endpoint allows exporting session conversations in various formats
 for archival, sharing, or integration with other tools.
 """
+
 from __future__ import annotations
 
 import json
@@ -34,12 +35,14 @@ def test_session_export_markdown(api_base_url: str) -> None:
         session_file = sessions_dir / f"{session_name}.json"
         messages = [
             {"role": "user", "content": "Hello, this is a test"},
-            {"role": "assistant", "content": "Hi! I'm happy to help."}
+            {"role": "assistant", "content": "Hi! I'm happy to help."},
         ]
         session_file.write_text(json.dumps(messages, indent=2))
 
         # Export as markdown
-        export_resp = client.get(f"/api/v1/sessions/{session_name}/export?format=markdown")
+        export_resp = client.get(
+            f"/api/v1/sessions/{session_name}/export?format=markdown"
+        )
 
     assert export_resp.status_code == 200
     assert export_resp.headers["content-type"] == "text/markdown; charset=utf-8"
@@ -70,7 +73,7 @@ def test_session_export_json(api_base_url: str) -> None:
         session_file = sessions_dir / f"{session_name}.json"
         messages = [
             {"role": "user", "content": "Test message"},
-            {"role": "assistant", "content": "Test response"}
+            {"role": "assistant", "content": "Test response"},
         ]
         session_file.write_text(json.dumps(messages, indent=2))
 
@@ -106,7 +109,7 @@ def test_session_export_html(api_base_url: str) -> None:
         session_file = sessions_dir / f"{session_name}.json"
         messages = [
             {"role": "user", "content": "HTML export test"},
-            {"role": "assistant", "content": "This should be in HTML format"}
+            {"role": "assistant", "content": "This should be in HTML format"},
         ]
         session_file.write_text(json.dumps(messages, indent=2))
 
@@ -166,7 +169,9 @@ def test_session_export_nonexistent_session(api_base_url: str) -> None:
     nonexistent_session = f"nonexistent-{uuid.uuid4().hex[:8]}"
 
     with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
-        export_resp = client.get(f"/api/v1/sessions/{nonexistent_session}/export?format=markdown")
+        export_resp = client.get(
+            f"/api/v1/sessions/{nonexistent_session}/export?format=markdown"
+        )
 
     assert export_resp.status_code == 404
 
@@ -182,7 +187,9 @@ def test_session_export_empty_session(api_base_url: str) -> None:
         assert init_resp.status_code == 200
 
         # Export empty session (should succeed but with minimal content)
-        export_resp = client.get(f"/api/v1/sessions/{session_name}/export?format=markdown")
+        export_resp = client.get(
+            f"/api/v1/sessions/{session_name}/export?format=markdown"
+        )
 
     assert export_resp.status_code == 200
     # Should still return valid response even if session is empty
@@ -216,7 +223,9 @@ def test_session_export_with_metadata(api_base_url: str) -> None:
         client.post(f"/api/v1/sessions/{session_name}/tags/add", json={"tags": tags})
 
         # Export
-        export_resp = client.get(f"/api/v1/sessions/{session_name}/export?format=markdown")
+        export_resp = client.get(
+            f"/api/v1/sessions/{session_name}/export?format=markdown"
+        )
 
     assert export_resp.status_code == 200
     content = export_resp.text
@@ -273,7 +282,9 @@ def test_session_export_case_insensitive_format(api_base_url: str) -> None:
         assert init_resp.status_code == 200
 
         # Try uppercase format
-        export_resp = client.get(f"/api/v1/sessions/{session_name}/export?format=MARKDOWN")
+        export_resp = client.get(
+            f"/api/v1/sessions/{session_name}/export?format=MARKDOWN"
+        )
 
     # Should handle case-insensitively
     assert export_resp.status_code == 200

@@ -339,8 +339,8 @@ After starting both services:
 2. Update `[paths]` in config:
    ```ini
    [paths]
-   node_bin = /usr/local/bin/node
-   npm_bin = /usr/local/bin/npm
+   node_bin = /opt/homebrew/bin/node
+   npm_bin = /opt/homebrew/bin/npm
    ```
 
 3. Restart web service:

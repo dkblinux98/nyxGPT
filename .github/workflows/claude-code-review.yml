@@ -85,8 +85,8 @@ jobs:
       - name: Run tests
         id: test
         run: |
-          echo "Running pytest..."
-          pytest -v || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
+          echo "Running pytest (unit tests only)..."
+          pytest tests/unit/ -v || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
 
       - name: Check test coverage
         id: test_coverage

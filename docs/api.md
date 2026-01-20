@@ -1817,7 +1817,7 @@ http://127.0.0.1:3000
 Ollama logs are symlinked into the same directory:
 
 ```bash
-ln -sf /usr/local/var/log/ollama.log ~/.myGPT/logs/ollama.log
+ln -sf /opt/homebrew/var/log/ollama.log ~/.myGPT/logs/ollama.log
 ```
 
 Verify:

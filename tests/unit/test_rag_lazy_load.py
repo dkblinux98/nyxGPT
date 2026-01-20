@@ -14,7 +14,12 @@ def test_rag_chunks_persisted_with_message(tmp_path: Path):
     sf = sessions.session_file_for(session_name, sessions_dir)
 
     test_messages = [
-        {"role": "user", "content": "What is Python?", "id": "msg1", "timestamp": "2024-01-01T00:00:00Z"},
+        {
+            "role": "user",
+            "content": "What is Python?",
+            "id": "msg1",
+            "timestamp": "2024-01-01T00:00:00Z",
+        },
         {
             "role": "assistant",
             "content": "Python is a programming language.",
@@ -46,7 +51,10 @@ def test_rag_chunks_persisted_with_message(tmp_path: Path):
     assert loaded_messages[1]["role"] == "assistant"
     assert "rag_chunks" in loaded_messages[1]
     assert len(loaded_messages[1]["rag_chunks"]) == 2
-    assert loaded_messages[1]["rag_chunks"][0]["text"] == "Python is a high-level programming language."
+    assert (
+        loaded_messages[1]["rag_chunks"][0]["text"]
+        == "Python is a high-level programming language."
+    )
     assert loaded_messages[1]["rag_chunks"][0]["score"] == 0.95
     assert loaded_messages[1]["rag_chunks"][1]["doc_id"] == "doc_python_history"
     assert loaded_messages[1]["rag_chunks"][1]["chunk_id"] == 5
@@ -61,7 +69,12 @@ def test_messages_without_rag_chunks_still_work(tmp_path: Path):
     sf = sessions.session_file_for(session_name, sessions_dir)
 
     test_messages = [
-        {"role": "user", "content": "Hello", "id": "msg1", "timestamp": "2024-01-01T00:00:00Z"},
+        {
+            "role": "user",
+            "content": "Hello",
+            "id": "msg1",
+            "timestamp": "2024-01-01T00:00:00Z",
+        },
         {
             "role": "assistant",
             "content": "Hi there!",
@@ -86,7 +99,12 @@ def test_rag_chunks_optional_fields(tmp_path: Path):
     sf = sessions.session_file_for(session_name, sessions_dir)
 
     test_messages = [
-        {"role": "user", "content": "Test", "id": "msg1", "timestamp": "2024-01-01T00:00:00Z"},
+        {
+            "role": "user",
+            "content": "Test",
+            "id": "msg1",
+            "timestamp": "2024-01-01T00:00:00Z",
+        },
         {
             "role": "assistant",
             "content": "Response",

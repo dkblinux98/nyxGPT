@@ -1,11 +1,8 @@
-
-
 from __future__ import annotations
 
 from configparser import ConfigParser
 from typing import Any
-from unittest.mock import Mock, patch
-import json
+from unittest.mock import Mock
 import urllib.error
 
 import pytest
@@ -14,6 +11,7 @@ import pytest
 # =============================================================================
 # Embeddings Tests
 # =============================================================================
+
 
 @pytest.mark.unit
 def test_embed_text_single_string(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -77,6 +75,7 @@ def test_embed_texts_batch_processing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("mygpt.rag.embeddings.load_config", lambda *_a, **_k: cfg)
 
     call_count = 0
+
     def mock_post_json(url, payload, timeout):
         nonlocal call_count
         call_count += 1
@@ -99,7 +98,11 @@ def test_embed_texts_with_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
     """embed_texts with collect_metrics=True should return metrics."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["rag"] = {"embedding_dim": "3", "embedding_batch_size": "16", "embedding_model": "test-model"}
+    cfg["rag"] = {
+        "embedding_dim": "3",
+        "embedding_batch_size": "16",
+        "embedding_model": "test-model",
+    }
     cfg["default"] = {"model": "default-model"}
 
     monkeypatch.setattr("mygpt.rag.embeddings.load_config", lambda *_a, **_k: cfg)
@@ -131,6 +134,7 @@ def test_embed_texts_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def mock_post_json(url, payload, timeout):
         from mygpt.rag.embeddings import EmbeddingError
+
         raise EmbeddingError("HTTP error calling url: 500 Internal Server Error")
 
     monkeypatch.setattr("mygpt.rag.embeddings._post_json", mock_post_json)
@@ -163,7 +167,9 @@ def test_embed_texts_dimension_mismatch(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 @pytest.mark.unit
-def test_embed_texts_unexpected_response_format(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_embed_texts_unexpected_response_format(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """embed_texts should raise EmbeddingError for unexpected response format."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
@@ -222,6 +228,7 @@ def test_post_json_url_error(monkeypatch: pytest.MonkeyPatch) -> None:
 # Vectorstore Tests
 # =============================================================================
 
+
 @pytest.mark.unit
 def test_cassandra_vectorstore_initialization(monkeypatch: pytest.MonkeyPatch) -> None:
     """CassandraVectorStore should initialize with config values."""
@@ -230,16 +237,20 @@ def test_cassandra_vectorstore_initialization(monkeypatch: pytest.MonkeyPatch) -
         "cassandra_hosts": "localhost,127.0.0.1",
         "cassandra_port": "9042",
         "cassandra_keyspace": "test_keyspace",
-        "cassandra_table": "test_table"
+        "cassandra_table": "test_table",
     }
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg
+    )
 
     mock_cluster = Mock()
     mock_session = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+    )
 
     from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -254,18 +265,19 @@ def test_cassandra_vectorstore_initialization(monkeypatch: pytest.MonkeyPatch) -
 def test_cassandra_vectorstore_upsert_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     """upsert_chunks should insert all chunks with proper parameters."""
     cfg = ConfigParser()
-    cfg["rag"] = {
-        "cassandra_keyspace": "test_ks",
-        "cassandra_table": "test_tbl"
-    }
+    cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg
+    )
 
     mock_session = Mock()
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+    )
 
     from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -285,18 +297,24 @@ def test_cassandra_vectorstore_upsert_chunks(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.unit
-def test_cassandra_vectorstore_upsert_length_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cassandra_vectorstore_upsert_length_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """upsert_chunks should raise error on length mismatch."""
     cfg = ConfigParser()
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg
+    )
 
     mock_session = Mock()
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+    )
 
     from mygpt.rag.vectorstore_cassandra import CassandraVectorStore, VectorStoreError
 
@@ -308,12 +326,16 @@ def test_cassandra_vectorstore_upsert_length_mismatch(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.unit
-def test_cassandra_vectorstore_query_by_embedding(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cassandra_vectorstore_query_by_embedding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """query_by_embedding should return formatted results."""
     cfg = ConfigParser()
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg
+    )
 
     # Mock database rows
     mock_row1 = Mock()
@@ -336,7 +358,9 @@ def test_cassandra_vectorstore_query_by_embedding(monkeypatch: pytest.MonkeyPatc
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+    )
 
     from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -354,18 +378,22 @@ def test_cassandra_vectorstore_query_by_embedding(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.unit
-def test_cassandra_vectorstore_query_with_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cassandra_vectorstore_query_with_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """query_by_embedding with collect_metrics should return metrics."""
     cfg = ConfigParser()
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg
+    )
 
     mock_row = Mock()
     mock_row.doc_id = "doc1"
     mock_row.chunk_id = 0
     mock_row.text = "text"
-    mock_row.metadata = '{}'
+    mock_row.metadata = "{}"
     mock_row.score = 0.90
 
     mock_session = Mock()
@@ -374,7 +402,9 @@ def test_cassandra_vectorstore_query_with_metrics(monkeypatch: pytest.MonkeyPatc
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+    )
 
     from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -397,7 +427,9 @@ def test_cassandra_vectorstore_list_docs(monkeypatch: pytest.MonkeyPatch) -> Non
     cfg = ConfigParser()
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg
+    )
 
     mock_row1 = Mock()
     mock_row1.doc_id = "doc_b"
@@ -413,7 +445,9 @@ def test_cassandra_vectorstore_list_docs(monkeypatch: pytest.MonkeyPatch) -> Non
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+    )
 
     from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -436,13 +470,17 @@ def test_cassandra_vectorstore_delete_doc(monkeypatch: pytest.MonkeyPatch) -> No
     cfg = ConfigParser()
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg
+    )
 
     mock_session = Mock()
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+    )
 
     from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -465,13 +503,17 @@ def test_cassandra_vectorstore_truncate(monkeypatch: pytest.MonkeyPatch) -> None
     cfg = ConfigParser()
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg
+    )
 
     mock_session = Mock()
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+    )
 
     from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -489,27 +531,32 @@ def test_cassandra_vectorstore_ensure_schema(monkeypatch: pytest.MonkeyPatch) ->
     cfg = ConfigParser()
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg
+    )
 
     mock_session = Mock()
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster)
+    monkeypatch.setattr(
+        "mygpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+    )
 
     from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 
     store = CassandraVectorStore()
     store.ensure_schema(embedding_dim=768)
 
-    # Should execute 4 statements: CREATE KEYSPACE, USE, CREATE TABLE, CREATE INDEX
-    assert mock_session.execute.call_count == 4
+    # Should execute 5 statements: CREATE KEYSPACE, USE, CREATE TABLE, CREATE INDEX (vector), CREATE INDEX (embedding_model)
+    assert mock_session.execute.call_count == 5
     assert store._keyspace_ready
 
 
 # =============================================================================
 # RAG Chunking Tests
 # =============================================================================
+
 
 @pytest.mark.unit
 def test_chunk_text_paragraph_aware(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -591,6 +638,7 @@ def test_chunk_text_whitespace_normalization(monkeypatch: pytest.MonkeyPatch) ->
 # RAG Ingestion Tests
 # =============================================================================
 
+
 @pytest.mark.unit
 def test_ingest_document_empty_text(monkeypatch: pytest.MonkeyPatch) -> None:
     """ingest_document with empty text should return 0."""
@@ -612,15 +660,19 @@ def test_ingest_document_with_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     cfg["rag"] = {"chunk_size": "50", "chunk_overlap": "10"}
 
     monkeypatch.setattr("mygpt.rag.rag.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.rag.rag.embed_texts", lambda texts: [[0.1] for _ in texts])
+    monkeypatch.setattr(
+        "mygpt.rag.rag.embed_texts", lambda texts, **kwargs: [[0.1] for _ in texts]
+    )
 
     mock_store = Mock()
-    monkeypatch.setattr("mygpt.rag.rag.CassandraVectorStore", lambda: mock_store)
+    monkeypatch.setattr(
+        "mygpt.rag.rag.CassandraVectorStore", lambda **kwargs: mock_store
+    )
 
     from mygpt.rag.rag import ingest_document
 
     metadata = {"source": "test", "version": "1.0"}
-    count = ingest_document("doc1", "Some text to chunk", metadata=metadata)
+    _ = ingest_document("doc1", "Some text to chunk", metadata=metadata)
 
     # Verify upsert_chunks was called with metadata
     assert mock_store.upsert_chunks.called
@@ -632,6 +684,7 @@ def test_ingest_document_with_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
 # =============================================================================
 # RAG Query Expansion Tests
 # =============================================================================
+
 
 @pytest.mark.unit
 def test_expand_query_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -648,7 +701,9 @@ def test_expand_query_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.unit
-def test_expand_query_enabled_with_valid_response(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_expand_query_enabled_with_valid_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """expand_query should parse LLM response and return variants."""
     cfg = ConfigParser()
     cfg["rag"] = {"enable_query_expansion": "true"}
@@ -661,7 +716,6 @@ def test_expand_query_enabled_with_valid_response(monkeypatch: pytest.MonkeyPatc
         return '["variant 1", "variant 2"]'
 
     # ollama_chat is imported inside expand_query, so mock the module
-    import mygpt.ollama_client
     monkeypatch.setattr("mygpt.ollama_client.ollama_chat", mock_ollama_chat)
 
     from mygpt.rag.rag import expand_query
@@ -686,7 +740,6 @@ def test_expand_query_handles_markdown_json(monkeypatch: pytest.MonkeyPatch) -> 
     def mock_ollama_chat(base_url, model, messages, timeout_s):
         return '```json\n["variant 1", "variant 2"]\n```'
 
-    import mygpt.ollama_client
     monkeypatch.setattr("mygpt.ollama_client.ollama_chat", mock_ollama_chat)
 
     from mygpt.rag.rag import expand_query
@@ -709,7 +762,6 @@ def test_expand_query_error_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     def mock_ollama_chat(base_url, model, messages, timeout_s):
         raise Exception("LLM error")
 
-    import mygpt.ollama_client
     monkeypatch.setattr("mygpt.ollama_client.ollama_chat", mock_ollama_chat)
 
     from mygpt.rag.rag import expand_query
@@ -722,8 +774,11 @@ def test_expand_query_error_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
 # RAG Retrieval Tests (existing tests follow below)
 # =============================================================================
 
+
 @pytest.mark.unit
-def test_retrieve_context_applies_min_score_and_max_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_retrieve_context_applies_min_score_and_max_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """retrieve_context should filter by min_score, dedupe, and cap to max_chunks."""
     # Build a config that enables pruning
     cfg = ConfigParser()
@@ -738,18 +793,21 @@ def test_retrieve_context_applies_min_score_and_max_chunks(monkeypatch: pytest.M
     monkeypatch.setattr("mygpt.rag.rag.load_config", lambda *_a, **_k: cfg)
 
     # Avoid real embedding / Cassandra
-    monkeypatch.setattr("mygpt.rag.rag.embed_text", lambda _q: [0.0] * 3)
+    monkeypatch.setattr("mygpt.rag.rag.embed_text", lambda _q, **kwargs: [0.0] * 3)
 
     class FakeStore:
-        def query_by_embedding(self, _emb: Any, k: int):
+        def __init__(self, **kwargs):
+            pass
+
+        def query_by_embedding(self, _emb: Any, k: int, **kwargs):
             assert k == 10
             # Includes: below-threshold, duplicates, and valid unique
             # Results are sorted by score descending after filtering
             return [
-                {"text": "weak", "score": 0.10},       # filtered: below min_score
+                {"text": "weak", "score": 0.10},  # filtered: below min_score
                 {"text": "keep one", "score": 0.90},
-                {"text": "keep one", "score": 0.91},   # filtered: duplicate
-                {"text": "keep two", "score": 0.70},   # dropped: max_chunks=2
+                {"text": "keep one", "score": 0.91},  # filtered: duplicate
+                {"text": "keep two", "score": 0.70},  # dropped: max_chunks=2
                 {"text": "keep three", "score": 0.80},
             ]
 
@@ -767,7 +825,9 @@ def test_retrieve_context_applies_min_score_and_max_chunks(monkeypatch: pytest.M
 
 
 @pytest.mark.unit
-def test_compose_context_respects_budget_and_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compose_context_respects_budget_and_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """compose_context should honor max chars and header/score flags."""
     cfg = ConfigParser()
     cfg["rag"] = {
@@ -794,7 +854,9 @@ def test_compose_context_respects_budget_and_headers(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.unit
-def test_chunking_config_error_when_overlap_too_large(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_chunking_config_error_when_overlap_too_large(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """_chunking_cfg should raise RAGError if overlap >= chunk_size."""
     cfg = ConfigParser()
     cfg["rag"] = {
@@ -811,7 +873,9 @@ def test_chunking_config_error_when_overlap_too_large(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.unit
-def test_chunking_config_error_when_overlap_greater_than_size(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_chunking_config_error_when_overlap_greater_than_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """_chunking_cfg should raise RAGError if overlap > chunk_size."""
     cfg = ConfigParser()
     cfg["rag"] = {
@@ -893,13 +957,13 @@ def test_retrieve_context_empty_query(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
     monkeypatch.setattr("mygpt.rag.rag.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.rag.rag.embed_text", lambda _q: [0.0] * 3)
+    monkeypatch.setattr("mygpt.rag.rag.embed_text", lambda _q, **kwargs: [0.0] * 3)
 
     class FakeStore:
-        def __init__(self) -> None:
+        def __init__(self, **kwargs) -> None:
             self.last_k: int | None = None
 
-        def query_by_embedding(self, _emb: list[float], k: int) -> list:
+        def query_by_embedding(self, _emb: list[float], k: int, **kwargs) -> list:
             self.last_k = k
             return []
 
@@ -907,7 +971,9 @@ def test_retrieve_context_empty_query(monkeypatch: pytest.MonkeyPatch) -> None:
             pass
 
     fake_store = FakeStore()
-    monkeypatch.setattr("mygpt.rag.rag.CassandraVectorStore", lambda *a, **kw: fake_store)
+    monkeypatch.setattr(
+        "mygpt.rag.rag.CassandraVectorStore", lambda *a, **kw: fake_store
+    )
 
     from mygpt.rag.rag import retrieve_context
 
@@ -932,7 +998,8 @@ def test_retrieve_context_debug_mode(monkeypatch: pytest.MonkeyPatch) -> None:
 
     # Mock embed_texts to return embeddings + metrics
     from mygpt.rag.embeddings import EmbeddingDebugMetrics
-    def mock_embed_texts(texts, *, collect_metrics=False):
+
+    def mock_embed_texts(texts, *, collect_metrics=False, **kwargs):
         embeddings = [[0.1, 0.2, 0.3] for _ in texts]
         if collect_metrics:
             metrics = EmbeddingDebugMetrics(
@@ -946,16 +1013,27 @@ def test_retrieve_context_debug_mode(monkeypatch: pytest.MonkeyPatch) -> None:
         return embeddings
 
     monkeypatch.setattr("mygpt.rag.rag.embed_texts", mock_embed_texts)
-    monkeypatch.setattr("mygpt.rag.rag.embed_text", lambda _q: [0.1, 0.2, 0.3])
+    monkeypatch.setattr(
+        "mygpt.rag.rag.embed_text", lambda _q, **kwargs: [0.1, 0.2, 0.3]
+    )
 
     # Mock vector store
     from mygpt.rag.vectorstore_cassandra import VectorSearchDebugMetrics
+
     class FakeStore:
-        def query_by_embedding(self, _emb, k: int, *, collect_metrics=False):
+        def __init__(self, **kwargs):
+            pass
+
+        def query_by_embedding(self, _emb, k: int, *, collect_metrics=False, **kwargs):
             results = [
                 {"text": "result one", "score": 0.90, "doc_id": "doc1", "chunk_id": 0},
                 {"text": "result two", "score": 0.75, "doc_id": "doc2", "chunk_id": 0},
-                {"text": "result three", "score": 0.60, "doc_id": "doc3", "chunk_id": 0},
+                {
+                    "text": "result three",
+                    "score": 0.60,
+                    "doc_id": "doc3",
+                    "chunk_id": 0,
+                },
             ]
             if collect_metrics:
                 metrics = VectorSearchDebugMetrics(

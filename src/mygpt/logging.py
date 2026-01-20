@@ -43,11 +43,32 @@ class StructuredFormatter(logging.Formatter):
 
         # Add any other extra attributes
         for key, value in record.__dict__.items():
-            if key not in ["name", "msg", "args", "created", "filename", "funcName",
-                          "levelname", "levelno", "lineno", "module", "msecs",
-                          "message", "pathname", "process", "processName",
-                          "relativeCreated", "thread", "threadName", "exc_info",
-                          "exc_text", "stack_info", "request_id", "session", "model"]:
+            if key not in [
+                "name",
+                "msg",
+                "args",
+                "created",
+                "filename",
+                "funcName",
+                "levelname",
+                "levelno",
+                "lineno",
+                "module",
+                "msecs",
+                "message",
+                "pathname",
+                "process",
+                "processName",
+                "relativeCreated",
+                "thread",
+                "threadName",
+                "exc_info",
+                "exc_text",
+                "stack_info",
+                "request_id",
+                "session",
+                "model",
+            ]:
                 log_data[key] = value
 
         return json.dumps(log_data)
@@ -93,7 +114,9 @@ def get_log_dir(cfg: Optional[ConfigParser] = None) -> Path:
     Reads from [logging] dir, falls back to ~/.myGPT/logs.
     """
     cfg = _coerce_cfg(cfg)
-    log_dir_str = cfg.get("logging", "dir", fallback=str(Path.home() / ".myGPT" / "logs"))
+    log_dir_str = cfg.get(
+        "logging", "dir", fallback=str(Path.home() / ".myGPT" / "logs")
+    )
     return Path(log_dir_str).expanduser()
 
 
@@ -130,7 +153,9 @@ def _ensure_console_handler(
 ) -> logging.Handler:
     for h in logger.handlers:
         # NOTE: RotatingFileHandler is also a StreamHandler; exclude it.
-        if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
+        if isinstance(h, logging.StreamHandler) and not isinstance(
+            h, RotatingFileHandler
+        ):
             h.setLevel(level)
             h.setFormatter(formatter)
             return h
@@ -181,7 +206,9 @@ def configure_logging(
     root.setLevel(level)
 
     # Remove any existing RequestIdFilter to avoid duplicates (hot-reload safe)
-    for f in root.filters[:]:  # Iterate over copy to avoid modification during iteration
+    for f in root.filters[
+        :
+    ]:  # Iterate over copy to avoid modification during iteration
         if isinstance(f, RequestIdFilter):
             root.removeFilter(f)
 

@@ -40,7 +40,9 @@ def _prompt_yes_no(question: str, default: bool = False) -> bool:
     return response.lower() in {"y", "yes"}
 
 
-def _validate_ollama_connection(base_url: str) -> tuple[bool, str, list[dict[str, Any]]]:
+def _validate_ollama_connection(
+    base_url: str,
+) -> tuple[bool, str, list[dict[str, Any]]]:
     """Validate connection to Ollama and return models if available.
 
     Returns:
@@ -51,7 +53,11 @@ def _validate_ollama_connection(base_url: str) -> tuple[bool, str, list[dict[str
     try:
         models = list_models(base_url=base_url)
         if not models:
-            return False, "Connected to Ollama but no models found. Please pull a model first.", []
+            return (
+                False,
+                "Connected to Ollama but no models found. Please pull a model first.",
+                [],
+            )
 
         print(f"✅ Successfully connected! Found {len(models)} model(s).")
         return True, "Success", models
@@ -71,7 +77,7 @@ def _select_model(models: list[dict[str, Any]], default: str = "qwen2.5:0.5b") -
     for i, model in enumerate(models, 1):
         name = model.get("name", "")
         size = model.get("size", 0)
-        size_gb = size / (1024 ** 3)
+        size_gb = size / (1024**3)
         print(f"  {i}. {name} ({size_gb:.1f} GB)")
 
     while True:
@@ -82,7 +88,7 @@ def _select_model(models: list[dict[str, Any]], default: str = "qwen2.5:0.5b") -
         try:
             idx = int(response) - 1
             if 0 <= idx < len(models):
-                selected = models[idx].get("name", "")
+                selected: str = models[idx].get("name", "")
                 if selected:
                     return selected
         except ValueError:
@@ -103,7 +109,7 @@ def _configure_rag() -> dict[str, Any]:
 
     enable_rag = _prompt_yes_no("Enable RAG support?", default=False)
 
-    rag_config = {
+    rag_config: dict[str, Any] = {
         "enable_chat_context": enable_rag,
     }
 
@@ -131,15 +137,17 @@ def _configure_rag() -> dict[str, Any]:
             chat_top_k = _prompt("Number of chunks to retrieve (top-k)", "5")
             max_chunks = _prompt("Maximum chunks to inject into prompt", "6")
 
-            rag_config.update({
-                "cassandra_hosts": cassandra_host,
-                "cassandra_port": cassandra_port,
-                "embedding_model": embedding_model,
-                "chunk_size": chunk_size,
-                "chunk_overlap": chunk_overlap,
-                "chat_top_k": chat_top_k,
-                "max_chunks": max_chunks,
-            })
+            rag_config.update(
+                {
+                    "cassandra_hosts": cassandra_host,
+                    "cassandra_port": cassandra_port,
+                    "embedding_model": embedding_model,
+                    "chunk_size": chunk_size,
+                    "chunk_overlap": chunk_overlap,
+                    "chat_top_k": chat_top_k,
+                    "max_chunks": max_chunks,
+                }
+            )
 
     return rag_config
 
@@ -213,11 +221,19 @@ def _generate_config_ini(
     config.set("rag", "enable_chat_context", "true" if enable_rag else "false")
 
     if enable_rag:
-        config.set("rag", "cassandra_hosts", rag_config.get("cassandra_hosts", "127.0.0.1"))
-        config.set("rag", "cassandra_port", str(rag_config.get("cassandra_port", "9042")))
+        config.set(
+            "rag", "cassandra_hosts", rag_config.get("cassandra_hosts", "127.0.0.1")
+        )
+        config.set(
+            "rag", "cassandra_port", str(rag_config.get("cassandra_port", "9042"))
+        )
         config.set("rag", "cassandra_keyspace", "mygpt")
         config.set("rag", "cassandra_table", "rag_chunks")
-        config.set("rag", "embedding_model", rag_config.get("embedding_model", "nomic-embed-text"))
+        config.set(
+            "rag",
+            "embedding_model",
+            rag_config.get("embedding_model", "nomic-embed-text"),
+        )
         config.set("rag", "embedding_dim", "768")
         config.set("rag", "embedding_batch_size", "16")
         config.set("rag", "embedding_timeout_seconds", "120")
@@ -236,8 +252,8 @@ def _generate_config_ini(
     config.add_section("paths")
     config.set("paths", "repo_dir", "/path/to/myGPT")
     config.set("paths", "venv_python", "/path/to/myGPT/.venv/bin/python")
-    config.set("paths", "node_bin", "/usr/local/bin/node")
-    config.set("paths", "npm_bin", "/usr/local/bin/npm")
+    config.set("paths", "node_bin", "/opt/homebrew/bin/node")
+    config.set("paths", "npm_bin", "/opt/homebrew/bin/npm")
 
     # Write to file
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -313,7 +329,7 @@ def run_wizard(output_path: Path | None = None) -> int:
     try:
         _generate_config_ini(output_path, default_model, ollama_base_url, rag_config)
         print(f"\n✅ Configuration saved to: {output_path}")
-        print(f"   Permissions: 600 (owner read/write only)")
+        print("   Permissions: 600 (owner read/write only)")
 
         # Next steps
         print("\n" + "=" * 60)

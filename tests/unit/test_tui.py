@@ -8,7 +8,13 @@ from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
 import pytest
 from textual.widgets import Input
 
-from mygpt.tui import ChatOutput, MyGPTTUI, SessionMetadataPreview, SessionPickerScreen, SearchResultsScreen
+from mygpt.tui import (
+    ChatOutput,
+    MyGPTTUI,
+    SessionMetadataPreview,
+    SessionPickerScreen,
+    SearchResultsScreen,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -121,10 +127,7 @@ def test_tui_initialization_custom_api_url(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("mygpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(
-            session="custom-session",
-            api_base_url="http://localhost:9000"
-        )
+        app = MyGPTTUI(session="custom-session", api_base_url="http://localhost:9000")
 
     assert app.session == "custom-session"
     assert app.api_base_url == "http://localhost:9000"
@@ -149,7 +152,9 @@ def test_tui_initialization_fallback_url(tmp_path: Path) -> None:
 # ============================================================================
 
 
-def test_unlock_prompt_success(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_unlock_prompt_success(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test _unlock_prompt() successfully enables and focuses prompt."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -175,7 +180,9 @@ def test_unlock_prompt_success(tmp_path: Path, caplog: pytest.LogCaptureFixture)
     assert "Input prompt unlocked and focused" in caplog.text
 
 
-def test_unlock_prompt_attribute_error(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_unlock_prompt_attribute_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test _unlock_prompt() handles AttributeError gracefully."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -196,7 +203,9 @@ def test_unlock_prompt_attribute_error(tmp_path: Path, caplog: pytest.LogCapture
     assert "Failed to unlock prompt (widget not available)" in caplog.text
 
 
-def test_unlock_prompt_other_exception(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_unlock_prompt_other_exception(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test _unlock_prompt() handles other exceptions gracefully."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -209,7 +218,9 @@ def test_unlock_prompt_other_exception(tmp_path: Path, caplog: pytest.LogCapture
 
     # Mock prompt to raise RuntimeError when accessing disabled
     app.prompt = MagicMock(spec=Input)
-    type(app.prompt).disabled = PropertyMock(side_effect=RuntimeError("Textual shutdown"))
+    type(app.prompt).disabled = PropertyMock(
+        side_effect=RuntimeError("Textual shutdown")
+    )
 
     with caplog.at_level(logging.WARNING, logger="mygpt.tui"):
         # Should not raise exception
@@ -310,7 +321,9 @@ async def test_input_submitted_empty_string_ignored(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_input_submitted_locks_prompt(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+async def test_input_submitted_locks_prompt(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test that input submission locks the prompt."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -396,7 +409,9 @@ async def test_stream_chat_success(tmp_path: Path) -> None:
         await app._stream_chat("Test prompt")
 
     # Verify typing indicator was shown
-    typing_indicator_calls = [call for call in app.output.append.call_args_list if "⋯" in str(call)]
+    typing_indicator_calls = [
+        call for call in app.output.append.call_args_list if "⋯" in str(call)
+    ]
     assert len(typing_indicator_calls) > 0, "Typing indicator should be shown"
 
     # Verify typing indicator was removed on first content
@@ -412,7 +427,9 @@ async def test_stream_chat_success(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_chat_error_handling(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+async def test_stream_chat_error_handling(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test error handling in chat streaming."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -443,7 +460,9 @@ async def test_stream_chat_error_handling(tmp_path: Path, caplog: pytest.LogCapt
 
     # Verify error was shown in output
     app.output.append.assert_called()
-    error_call = [call for call in app.output.append.call_args_list if "[error]" in str(call)]
+    error_call = [
+        call for call in app.output.append.call_args_list if "[error]" in str(call)
+    ]
     assert len(error_call) > 0
 
     # Verify prompt was unlocked even after error (finally block)
@@ -494,7 +513,7 @@ def test_session_metadata_preview_update() -> None:
             "summary": "This is a test session",
             "tags": ["test", "example"],
             "pinned": True,
-        }
+        },
     }
 
     with patch.object(widget, "update") as mock_update:
@@ -521,7 +540,7 @@ def test_session_metadata_preview_without_optional_fields() -> None:
         "name": "minimal-session",
         "messages": 0,
         "modified": "Unknown",
-        "meta": {}
+        "meta": {},
     }
 
     with patch.object(widget, "update") as mock_update:
@@ -571,14 +590,14 @@ async def test_session_picker_load_sessions(tmp_path: Path) -> None:
             "name": "session1",
             "messages": 5,
             "modified": "2024-01-01 12:00:00",
-            "meta": {"title": "Session 1"}
+            "meta": {"title": "Session 1"},
         },
         {
             "name": "session2",
             "messages": 3,
             "modified": "2024-01-02 14:00:00",
-            "meta": {"title": "Session 2"}
-        }
+            "meta": {"title": "Session 2"},
+        },
     ]
 
     with patch("mygpt.tui.load_config", return_value=cfg):
@@ -607,20 +626,20 @@ async def test_session_picker_search_filter(tmp_path: Path) -> None:
             "name": "python-project",
             "messages": 5,
             "modified": "2024-01-01",
-            "meta": {"title": "Python Development", "tags": ["coding"]}
+            "meta": {"title": "Python Development", "tags": ["coding"]},
         },
         {
             "name": "java-project",
             "messages": 3,
             "modified": "2024-01-02",
-            "meta": {"title": "Java Development", "tags": ["coding"]}
+            "meta": {"title": "Java Development", "tags": ["coding"]},
         },
         {
             "name": "meeting-notes",
             "messages": 2,
             "modified": "2024-01-03",
-            "meta": {"title": "Meeting Notes", "tags": ["notes"]}
-        }
+            "meta": {"title": "Meeting Notes", "tags": ["notes"]},
+        },
     ]
 
     with patch("mygpt.tui.load_config", return_value=cfg):
@@ -656,7 +675,7 @@ async def test_session_picker_search_empty_query(tmp_path: Path) -> None:
 
     mock_sessions = [
         {"name": "session1", "messages": 5, "modified": "2024-01-01", "meta": {}},
-        {"name": "session2", "messages": 3, "modified": "2024-01-02", "meta": {}}
+        {"name": "session2", "messages": 3, "modified": "2024-01-02", "meta": {}},
     ]
 
     with patch("mygpt.tui.load_config", return_value=cfg):
@@ -730,7 +749,9 @@ async def test_tui_action_pick_session(tmp_path: Path) -> None:
     app.output = MagicMock(spec=ChatOutput)
 
     # Mock push_screen_wait to return a selected session
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value="new-session")):
+    with patch.object(
+        app, "push_screen_wait", new=AsyncMock(return_value="new-session")
+    ):
         await app.action_pick_session()
 
     # Verify session was switched
@@ -799,8 +820,9 @@ async def test_stream_chat_with_retry_markers(tmp_path: Path) -> None:
     async def mock_aiter_text():
         # Simulate retry marker followed by response
         import json
+
         retry_data = {"type": "retry_status", "attempt": 1, "delay": 1.5}
-        yield f'__RETRY_START__{json.dumps(retry_data)}__RETRY_END__'
+        yield f"__RETRY_START__{json.dumps(retry_data)}__RETRY_END__"
         yield "Hello"
         yield " "
         yield "World"
@@ -851,8 +873,9 @@ async def test_stream_chat_with_rag_markers_ignored(tmp_path: Path) -> None:
 
     async def mock_aiter_text():
         import json
+
         rag_data = {"type": "rag_metadata", "chunks": []}
-        yield f'__RAG_START__{json.dumps(rag_data)}__RAG_END__'
+        yield f"__RAG_START__{json.dumps(rag_data)}__RAG_END__"
         yield "Response text"
 
     mock_response.aiter_text = mock_aiter_text
@@ -883,7 +906,9 @@ async def test_stream_chat_with_rag_markers_ignored(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_chat_partial_retry_marker_split_across_chunks(tmp_path: Path) -> None:
+async def test_stream_chat_partial_retry_marker_split_across_chunks(
+    tmp_path: Path,
+) -> None:
     """Test marker split across multiple chunks is buffered correctly.
 
     Covers the partial marker detection logic in tui.py:567-578.
@@ -906,8 +931,9 @@ async def test_stream_chat_partial_retry_marker_split_across_chunks(tmp_path: Pa
 
     async def mock_aiter_text():
         import json
+
         retry_data = {"type": "retry_status", "attempt": 1, "delay": 2.0}
-        full_marker = f'__RETRY_START__{json.dumps(retry_data)}__RETRY_END__'
+        full_marker = f"__RETRY_START__{json.dumps(retry_data)}__RETRY_END__"
 
         # Split the marker at different positions
         yield full_marker[:10]  # "__RETRY_ST"
@@ -930,7 +956,9 @@ async def test_stream_chat_partial_retry_marker_split_across_chunks(tmp_path: Pa
     # Verify reconnection message was displayed (marker was reassembled correctly)
     append_calls = [str(call) for call in app.output.append.call_args_list]
     reconnect_calls = [c for c in append_calls if "reconnecting" in c.lower()]
-    assert len(reconnect_calls) > 0, "Partial retry marker should be reassembled and displayed"
+    assert len(reconnect_calls) > 0, (
+        "Partial retry marker should be reassembled and displayed"
+    )
 
     # Verify response text was displayed
     text_calls = [c for c in append_calls if "Hello World" in c]
@@ -963,7 +991,7 @@ async def test_stream_chat_partial_marker_at_chunk_boundary(tmp_path: Path) -> N
 
         # Create the full marker first
         retry_data = {"type": "retry_status", "attempt": 2, "delay": 3.0}
-        full_marker = f'__RETRY_START__{json.dumps(retry_data)}__RETRY_END__'
+        full_marker = f"__RETRY_START__{json.dumps(retry_data)}__RETRY_END__"
 
         # First chunk: regular text ending with partial marker "__R"
         yield "Some text before __R"
@@ -994,7 +1022,9 @@ async def test_stream_chat_partial_marker_at_chunk_boundary(tmp_path: Path) -> N
 
     # Verify reconnection message was displayed
     reconnect_calls = [c for c in append_calls if "reconnecting" in c.lower()]
-    assert len(reconnect_calls) > 0, "Reassembled marker should display reconnection message"
+    assert len(reconnect_calls) > 0, (
+        "Reassembled marker should display reconnection message"
+    )
 
     # Verify text after marker was displayed
     after_calls = [c for c in append_calls if "text after" in c]
@@ -1025,8 +1055,8 @@ async def test_stream_chat_multiple_markers_in_single_chunk(tmp_path: Path) -> N
         # Two retry markers in one chunk
         retry_data_1 = {"type": "retry_status", "attempt": 1, "delay": 1.0}
         retry_data_2 = {"type": "retry_status", "attempt": 2, "delay": 2.0}
-        marker_1 = f'__RETRY_START__{json.dumps(retry_data_1)}__RETRY_END__'
-        marker_2 = f'__RETRY_START__{json.dumps(retry_data_2)}__RETRY_END__'
+        marker_1 = f"__RETRY_START__{json.dumps(retry_data_1)}__RETRY_END__"
+        marker_2 = f"__RETRY_START__{json.dumps(retry_data_2)}__RETRY_END__"
 
         yield marker_1 + marker_2
         yield "Final response"
@@ -1154,7 +1184,9 @@ async def test_stream_chat_malformed_marker_removed(tmp_path: Path) -> None:
     assert len(text_calls) > 0, "Text after malformed marker should still be displayed"
 
     # Verify malformed marker itself was removed (not displayed to user)
-    marker_calls = [c for c in append_calls if "__RETRY_START__" in c or "invalid json" in c]
+    marker_calls = [
+        c for c in append_calls if "__RETRY_START__" in c or "invalid json" in c
+    ]
     assert len(marker_calls) == 0, "Malformed marker should be removed from output"
 
 
@@ -1187,7 +1219,9 @@ async def test_stream_chat_buffer_flush_threshold_exceeded(tmp_path: Path) -> No
         # Send a very long chunk that starts with partial marker prefix
         # This simulates a malformed stream where marker never completes
         # and buffer grows beyond threshold
-        long_text = "__RETRY_" + ("x" * 100)  # Exceeds MARKER_BUFFER_OVERFLOW_THRESHOLD (100)
+        long_text = "__RETRY_" + (
+            "x" * 100
+        )  # Exceeds MARKER_BUFFER_OVERFLOW_THRESHOLD (100)
         yield long_text
         yield " more text after flush"
 
@@ -1240,13 +1274,13 @@ async def test_stream_chat_mixed_partial_retry_and_rag_markers(tmp_path: Path) -
 
         # First: partial RETRY marker
         retry_data = {"type": "retry_status", "attempt": 1, "delay": 1.5}
-        retry_marker = f'__RETRY_START__{json.dumps(retry_data)}__RETRY_END__'
+        retry_marker = f"__RETRY_START__{json.dumps(retry_data)}__RETRY_END__"
         yield retry_marker[:15]  # Partial
         yield retry_marker[15:]  # Complete
 
         # Second: partial RAG marker
         rag_data = {"type": "rag_metadata", "chunks": []}
-        rag_marker = f'__RAG_START__{json.dumps(rag_data)}__RAG_END__'
+        rag_marker = f"__RAG_START__{json.dumps(rag_data)}__RAG_END__"
         yield rag_marker[:10]  # Partial
         yield rag_marker[10:]  # Complete
 
@@ -1331,7 +1365,9 @@ async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
     # Verify the oversized partial-marker buffer was flushed (buffer overflow protection triggered)
     # The large buffer that looks like a partial marker should be treated as regular text and displayed
     large_buffer_calls = [c for c in append_calls if "_" * 100 in c]
-    assert len(large_buffer_calls) > 0, "Oversized partial-marker buffer should be flushed as regular text"
+    assert len(large_buffer_calls) > 0, (
+        "Oversized partial-marker buffer should be flushed as regular text"
+    )
 
     # Verify subsequent text was also displayed
     done_calls = [c for c in append_calls if "done" in c]
@@ -1356,13 +1392,14 @@ async def test_tui_action_search_messages_opens_screen(tmp_path: Path) -> None:
         app = MyGPTTUI(session="test-session", config_path=str(config_file))
 
     # Mock push_screen_wait to return None (user cancelled)
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)) as mock_push:
+    with patch.object(
+        app, "push_screen_wait", new=AsyncMock(return_value=None)
+    ) as mock_push:
         await app.action_search_messages()
 
     # Verify SearchResultsScreen was shown
     mock_push.assert_called_once()
     # Verify the screen is a SearchResultsScreen instance
-    from mygpt.tui import SearchResultsScreen
     assert isinstance(mock_push.call_args[0][0], SearchResultsScreen)
 
 
@@ -1387,7 +1424,9 @@ async def test_tui_action_search_messages_switches_session(tmp_path: Path) -> No
         "message_index": 5,
     }
 
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=search_result)):
+    with patch.object(
+        app, "push_screen_wait", new=AsyncMock(return_value=search_result)
+    ):
         with patch.object(app, "query_one", return_value=mock_output):
             with patch.object(app, "notify") as mock_notify:
                 await app.action_search_messages()
@@ -1401,7 +1440,9 @@ async def test_tui_action_search_messages_switches_session(tmp_path: Path) -> No
     # Verify notification was shown
     mock_notify.assert_called_once()
     assert "target-session" in mock_notify.call_args[0][0]
-    assert "message 6" in mock_notify.call_args[0][0]  # message_index 5 = message 6 (1-indexed)
+    assert (
+        "message 6" in mock_notify.call_args[0][0]
+    )  # message_index 5 = message 6 (1-indexed)
 
 
 @pytest.mark.asyncio
@@ -1425,7 +1466,9 @@ async def test_tui_action_search_messages_same_session(tmp_path: Path) -> None:
         "message_index": 3,
     }
 
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=search_result)):
+    with patch.object(
+        app, "push_screen_wait", new=AsyncMock(return_value=search_result)
+    ):
         with patch.object(app, "notify") as mock_notify:
             await app.action_search_messages()
 
@@ -1442,10 +1485,10 @@ async def test_tui_action_search_messages_same_session(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_search_results_screen_perform_search_success() -> None:
     """Test SearchResultsScreen perform_search with successful API response."""
-    from mygpt.tui import SearchResultsScreen
-    import httpx
 
-    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen = SearchResultsScreen(
+        api_base_url="http://127.0.0.1:8000", current_session="test"
+    )
 
     # Mock the results list
     screen.results_list = MagicMock()
@@ -1513,9 +1556,10 @@ async def test_search_results_screen_perform_search_success() -> None:
 @pytest.mark.asyncio
 async def test_search_results_screen_perform_search_no_results() -> None:
     """Test SearchResultsScreen perform_search with no results."""
-    from mygpt.tui import SearchResultsScreen
 
-    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen = SearchResultsScreen(
+        api_base_url="http://127.0.0.1:8000", current_session="test"
+    )
 
     # Mock the results list
     screen.results_list = MagicMock()
@@ -1554,9 +1598,10 @@ async def test_search_results_screen_perform_search_no_results() -> None:
 @pytest.mark.asyncio
 async def test_search_results_screen_perform_search_api_error() -> None:
     """Test SearchResultsScreen perform_search handles API errors."""
-    from mygpt.tui import SearchResultsScreen
 
-    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen = SearchResultsScreen(
+        api_base_url="http://127.0.0.1:8000", current_session="test"
+    )
 
     # Mock the results list
     screen.results_list = MagicMock()
@@ -1586,9 +1631,10 @@ async def test_search_results_screen_perform_search_api_error() -> None:
 @pytest.mark.asyncio
 async def test_search_results_screen_case_sensitive_filter() -> None:
     """Test SearchResultsScreen applies case_sensitive filter."""
-    from mygpt.tui import SearchResultsScreen
 
-    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen = SearchResultsScreen(
+        api_base_url="http://127.0.0.1:8000", current_session="test"
+    )
 
     # Set case_sensitive to True
     screen.case_sensitive = True
@@ -1709,7 +1755,9 @@ async def test_tui_fetch_rag_status_success(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_tui_fetch_rag_status_api_error(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+async def test_tui_fetch_rag_status_api_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test _fetch_rag_status handles API errors gracefully."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -1736,7 +1784,9 @@ async def test_tui_fetch_rag_status_api_error(tmp_path: Path, caplog: pytest.Log
 
 
 @pytest.mark.asyncio
-async def test_tui_action_toggle_rag_enable(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+async def test_tui_action_toggle_rag_enable(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test action_toggle_rag enables RAG when disabled."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -1776,7 +1826,9 @@ async def test_tui_action_toggle_rag_enable(tmp_path: Path, caplog: pytest.LogCa
 
 
 @pytest.mark.asyncio
-async def test_tui_action_toggle_rag_disable(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+async def test_tui_action_toggle_rag_disable(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test action_toggle_rag disables RAG when enabled."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -1815,7 +1867,9 @@ async def test_tui_action_toggle_rag_disable(tmp_path: Path, caplog: pytest.LogC
 
 
 @pytest.mark.asyncio
-async def test_tui_action_toggle_rag_error(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+async def test_tui_action_toggle_rag_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test action_toggle_rag handles API errors."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -1852,7 +1906,9 @@ async def test_tui_action_toggle_rag_error(tmp_path: Path, caplog: pytest.LogCap
 
 
 @pytest.mark.asyncio
-async def test_tui_action_models_manager(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+async def test_tui_action_models_manager(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test action_models_manager opens ModelsManagerScreen."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -1864,7 +1920,9 @@ async def test_tui_action_models_manager(tmp_path: Path, caplog: pytest.LogCaptu
         app = MyGPTTUI(session="test", config_path=str(config_file))
 
     # Mock push_screen_wait
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)) as mock_push:
+    with patch.object(
+        app, "push_screen_wait", new=AsyncMock(return_value=None)
+    ) as mock_push:
         with caplog.at_level(logging.INFO, logger="mygpt.tui"):
             await app.action_models_manager()
 
@@ -1915,7 +1973,9 @@ async def test_models_manager_refresh_models_success() -> None:
             mock_client = AsyncMock()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
-            mock_client.get = AsyncMock(side_effect=[mock_list_response, mock_info_response, mock_info_response])
+            mock_client.get = AsyncMock(
+                side_effect=[mock_list_response, mock_info_response, mock_info_response]
+            )
 
             with patch("httpx.AsyncClient", return_value=mock_client):
                 await screen.refresh_models()
@@ -1927,7 +1987,9 @@ async def test_models_manager_refresh_models_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_models_manager_refresh_models_error(caplog: pytest.LogCaptureFixture) -> None:
+async def test_models_manager_refresh_models_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Test ModelsManagerScreen handles refresh errors."""
     from mygpt.tui import ModelsManagerScreen
 
@@ -2038,9 +2100,10 @@ def test_session_picker_action_select_no_highlight() -> None:
 @pytest.mark.asyncio
 async def test_search_results_screen_initialization() -> None:
     """Test SearchResultsScreen initializes correctly."""
-    from mygpt.tui import SearchResultsScreen
 
-    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen = SearchResultsScreen(
+        api_base_url="http://127.0.0.1:8000", current_session="test"
+    )
 
     assert screen.api_base_url == "http://127.0.0.1:8000"
     assert screen.current_session == "test"
@@ -2051,9 +2114,10 @@ async def test_search_results_screen_initialization() -> None:
 @pytest.mark.asyncio
 async def test_search_results_screen_on_mount() -> None:
     """Test SearchResultsScreen focuses search input on mount."""
-    from mygpt.tui import SearchResultsScreen
 
-    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen = SearchResultsScreen(
+        api_base_url="http://127.0.0.1:8000", current_session="test"
+    )
 
     # Mock search_input widget
     mock_search_input = MagicMock()
@@ -2068,9 +2132,10 @@ async def test_search_results_screen_on_mount() -> None:
 @pytest.mark.asyncio
 async def test_search_results_screen_action_close() -> None:
     """Test SearchResultsScreen close action."""
-    from mygpt.tui import SearchResultsScreen
 
-    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen = SearchResultsScreen(
+        api_base_url="http://127.0.0.1:8000", current_session="test"
+    )
 
     # Mock dismiss
     with patch.object(screen, "dismiss") as mock_dismiss:

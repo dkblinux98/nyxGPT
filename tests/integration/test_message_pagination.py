@@ -13,14 +13,13 @@ def test_message_pagination_basic(api_base_url: str, tmp_sessions_dir) -> None:
     # Create session with multiple messages
     messages = []
     for i in range(100):
-        messages.append({
-            "role": "user" if i % 2 == 0 else "assistant",
-            "content": f"Message {i}"
-        })
+        messages.append(
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"Message {i}"}
+        )
 
     # Save session file
     import json
-    from pathlib import Path
+
     session_file = tmp_sessions_dir / f"{session_name}.json"
     session_file.write_text(json.dumps(messages))
 
@@ -28,7 +27,7 @@ def test_message_pagination_basic(api_base_url: str, tmp_sessions_dir) -> None:
     r = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r.status_code == 200
     data = r.json()
@@ -41,7 +40,7 @@ def test_message_pagination_basic(api_base_url: str, tmp_sessions_dir) -> None:
     r = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir), "offset": 0, "limit": 10},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r.status_code == 200
     data = r.json()
@@ -56,7 +55,7 @@ def test_message_pagination_basic(api_base_url: str, tmp_sessions_dir) -> None:
     r = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir), "offset": 50, "limit": 20},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r.status_code == 200
     data = r.json()
@@ -80,7 +79,7 @@ def test_message_pagination_edge_cases(api_base_url: str, tmp_sessions_dir) -> N
     ]
 
     import json
-    from pathlib import Path
+
     session_file = tmp_sessions_dir / f"{session_name}.json"
     session_file.write_text(json.dumps(messages))
 
@@ -88,7 +87,7 @@ def test_message_pagination_edge_cases(api_base_url: str, tmp_sessions_dir) -> N
     r = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir), "offset": 100, "limit": 10},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r.status_code == 200
     data = r.json()
@@ -99,7 +98,7 @@ def test_message_pagination_edge_cases(api_base_url: str, tmp_sessions_dir) -> N
     r = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir), "offset": 20, "limit": 100},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r.status_code == 200
     data = r.json()
@@ -110,7 +109,7 @@ def test_message_pagination_edge_cases(api_base_url: str, tmp_sessions_dir) -> N
     r = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir), "offset": 10},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r.status_code == 200
     data = r.json()
@@ -121,7 +120,7 @@ def test_message_pagination_edge_cases(api_base_url: str, tmp_sessions_dir) -> N
     r = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir), "limit": 10},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r.status_code == 200
     data = r.json()
@@ -137,14 +136,14 @@ def test_message_pagination_empty_session(api_base_url: str, tmp_sessions_dir) -
 
     # Create empty session
     import json
-    from pathlib import Path
+
     session_file = tmp_sessions_dir / f"{session_name}.json"
     session_file.write_text(json.dumps([]))
 
     r = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir), "offset": 0, "limit": 10},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r.status_code == 200
     data = r.json()
@@ -170,7 +169,7 @@ def test_message_pagination_after_edit(api_base_url: str, tmp_sessions_dir) -> N
     ]
 
     import json
-    from pathlib import Path
+
     session_file = tmp_sessions_dir / f"{session_name}.json"
     session_file.write_text(json.dumps(messages))
 
@@ -178,7 +177,7 @@ def test_message_pagination_after_edit(api_base_url: str, tmp_sessions_dir) -> N
     r = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir), "offset": 30, "limit": 20},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r.status_code == 200
     data = r.json()
@@ -190,7 +189,7 @@ def test_message_pagination_after_edit(api_base_url: str, tmp_sessions_dir) -> N
         f"{api_base_url}/api/v1/sessions/{session_name}/messages/20",
         params={"sessions_dir": str(tmp_sessions_dir)},
         json={"content": "Edited message 20", "fork": True},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r_edit.status_code == 200
 
@@ -198,7 +197,7 @@ def test_message_pagination_after_edit(api_base_url: str, tmp_sessions_dir) -> N
     r_after = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r_after.status_code == 200
     data_after = r_after.json()
@@ -209,7 +208,7 @@ def test_message_pagination_after_edit(api_base_url: str, tmp_sessions_dir) -> N
     r_pag = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir), "offset": 10, "limit": 20},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r_pag.status_code == 200
     data_pag = r_pag.json()
@@ -217,7 +216,9 @@ def test_message_pagination_after_edit(api_base_url: str, tmp_sessions_dir) -> N
 
 
 @pytest.mark.integration
-def test_message_pagination_after_regenerate(api_base_url: str, tmp_sessions_dir) -> None:
+def test_message_pagination_after_regenerate(
+    api_base_url: str, tmp_sessions_dir
+) -> None:
     """
     Test pagination state after message regeneration (Medium Issue 5).
     Regenerating a response truncates messages after that point.
@@ -231,7 +232,7 @@ def test_message_pagination_after_regenerate(api_base_url: str, tmp_sessions_dir
     ]
 
     import json
-    from pathlib import Path
+
     session_file = tmp_sessions_dir / f"{session_name}.json"
     session_file.write_text(json.dumps(messages))
 
@@ -243,7 +244,7 @@ def test_message_pagination_after_regenerate(api_base_url: str, tmp_sessions_dir
     r = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir), "offset": 20, "limit": 20},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r.status_code == 200
     data = r.json()
@@ -260,7 +261,7 @@ def test_message_pagination_after_regenerate(api_base_url: str, tmp_sessions_dir
     r_after = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir)},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r_after.status_code == 200
     data_after = r_after.json()
@@ -270,7 +271,7 @@ def test_message_pagination_after_regenerate(api_base_url: str, tmp_sessions_dir
     r_beyond = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir), "offset": 30, "limit": 10},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r_beyond.status_code == 200
     data_beyond = r_beyond.json()
@@ -289,7 +290,7 @@ def test_pagination_input_validation(api_base_url: str, tmp_sessions_dir) -> Non
     # Create a test session
     messages = [{"role": "user", "content": "Test"}]
     import json
-    from pathlib import Path
+
     session_file = tmp_sessions_dir / f"{session_name}.json"
     session_file.write_text(json.dumps(messages))
 
@@ -297,7 +298,7 @@ def test_pagination_input_validation(api_base_url: str, tmp_sessions_dir) -> Non
     r = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir), "offset": -1, "limit": 10},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r.status_code == 400
     assert "offset must be non-negative" in r.json()["error"]["message"]
@@ -306,7 +307,7 @@ def test_pagination_input_validation(api_base_url: str, tmp_sessions_dir) -> Non
     r = httpx.get(
         f"{api_base_url}/api/v1/sessions/{session_name}",
         params={"sessions_dir": str(tmp_sessions_dir), "offset": 0, "limit": -5},
-        timeout=5.0
+        timeout=5.0,
     )
     assert r.status_code == 400
     assert "limit must be non-negative" in r.json()["error"]["message"]

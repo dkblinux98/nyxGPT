@@ -4,7 +4,7 @@ import argparse
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from mygpt.config import (
     load_config,
@@ -181,6 +181,8 @@ def cmd_sessions(
     case_sensitive: bool = False,
     role: str | None = None,
     limit: int = 50,
+    model: str | None = None,
+    rag_enabled: bool | None = None,
 ) -> int:
     cfg = load_config(None)
     effective_dir = sessions_dir or get_sessions_dir(cfg)
@@ -380,7 +382,9 @@ def cmd_sessions(
 
                 # Display session info
                 session_display = session_title if session_title else session_name
-                print(f"{i + 1}. [{session_display}] Message #{msg_idx} ({role_str}) - {matches} match(es)")
+                print(
+                    f"{i + 1}. [{session_display}] Message #{msg_idx} ({role_str}) - {matches} match(es)"
+                )
                 print(f"   {preview}")
                 print()
 
@@ -388,8 +392,10 @@ def cmd_sessions(
             if page_end < total_results:
                 remaining = total_results - page_end
                 try:
-                    response = input(f"Showing {page_end}/{total_results} results. Press Enter for more ({remaining} remaining), or 'q' to quit: ")
-                    if response.lower().strip() == 'q':
+                    response = input(
+                        f"Showing {page_end}/{total_results} results. Press Enter for more ({remaining} remaining), or 'q' to quit: "
+                    )
+                    if response.lower().strip() == "q":
                         print(f"Stopped. {remaining} result(s) not shown.")
                         break
                 except (KeyboardInterrupt, EOFError):
@@ -426,7 +432,10 @@ def cmd_sessions(
         success, failure, failed = sessions.batch_delete_sessions(extras, effective_dir)
         print(f"Deleted {success} session(s)")
         if failure > 0:
-            print(f"Failed to delete {failure} session(s): {', '.join(failed)}", file=sys.stderr)
+            print(
+                f"Failed to delete {failure} session(s): {', '.join(failed)}",
+                file=sys.stderr,
+            )
             return 1
         return 0
 
@@ -449,7 +458,10 @@ def cmd_sessions(
         op = "Removed tags from" if is_remove else "Added tags to"
         print(f"{op} {success} session(s)")
         if failure > 0:
-            print(f"Failed to update {failure} session(s): {', '.join(failed)}", file=sys.stderr)
+            print(
+                f"Failed to update {failure} session(s): {', '.join(failed)}",
+                file=sys.stderr,
+            )
             return 1
         return 0
 
@@ -459,7 +471,10 @@ def cmd_sessions(
             print("ERROR: at least one session name is required", file=sys.stderr)
             return 2
         if not output:
-            print("ERROR: --output directory is required for batch export", file=sys.stderr)
+            print(
+                "ERROR: --output directory is required for batch export",
+                file=sys.stderr,
+            )
             return 2
 
         success, failure, failed = sessions.batch_export_sessions(
@@ -467,7 +482,10 @@ def cmd_sessions(
         )
         print(f"Exported {success} session(s) to {output}")
         if failure > 0:
-            print(f"Failed to export {failure} session(s): {', '.join(failed)}", file=sys.stderr)
+            print(
+                f"Failed to export {failure} session(s): {', '.join(failed)}",
+                file=sys.stderr,
+            )
             return 1
         return 0
 
@@ -484,7 +502,10 @@ def cmd_sessions(
         op = "Pinned" if is_pinned else "Unpinned"
         print(f"{op} {success} session(s)")
         if failure > 0:
-            print(f"Failed to update {failure} session(s): {', '.join(failed)}", file=sys.stderr)
+            print(
+                f"Failed to update {failure} session(s): {', '.join(failed)}",
+                file=sys.stderr,
+            )
             return 1
         return 0
 
@@ -495,7 +516,10 @@ def cmd_sessions(
             return 2
 
         if model is None and rag_enabled is None:
-            print("ERROR: at least one metadata field is required (--model, --rag-enabled)", file=sys.stderr)
+            print(
+                "ERROR: at least one metadata field is required (--model, --rag-enabled)",
+                file=sys.stderr,
+            )
             return 2
 
         success, failure, failed = sessions.batch_update_metadata(
@@ -503,7 +527,10 @@ def cmd_sessions(
         )
         print(f"Updated metadata for {success} session(s)")
         if failure > 0:
-            print(f"Failed to update {failure} session(s): {', '.join(failed)}", file=sys.stderr)
+            print(
+                f"Failed to update {failure} session(s): {', '.join(failed)}",
+                file=sys.stderr,
+            )
             return 1
         return 0
 
@@ -525,9 +552,11 @@ def cmd_sessions(
             return 1
 
         # Extract data
-        messages = sessions.load_session_messages(Path(session_data["file"]))
-        meta_value = session_data.get("meta")
-        meta: dict[str, Any] = meta_value if isinstance(meta_value, dict) else {}
+        messages = sessions.load_session_messages(Path(cast(str, session_data["file"])))
+        session_meta_value = session_data.get("meta")
+        session_meta: dict[str, Any] = (
+            session_meta_value if isinstance(session_meta_value, dict) else {}
+        )
 
         # Calculate statistics
         total_messages = len(messages)
@@ -536,13 +565,13 @@ def cmd_sessions(
         system_messages = sum(1 for m in messages if m.get("role") == "system")
 
         # Token estimate
-        token_estimate = meta.get("token_estimate", 0)
+        token_estimate = session_meta.get("token_estimate", 0)
         if not token_estimate and messages:
             token_estimate = sessions.token_estimate_from_messages(messages)
 
         # Age and activity calculations
-        created_at = meta.get("created_at", "Unknown")
-        updated_at = meta.get("updated_at", "Unknown")
+        created_at = session_meta.get("created_at", "Unknown")
+        updated_at = session_meta.get("updated_at", "Unknown")
 
         def format_age(timestamp_str: str) -> str:
             """Format age from ISO timestamp to human-readable string."""
@@ -575,15 +604,15 @@ def cmd_sessions(
         last_activity = format_age(updated_at)
 
         # RAG status
-        rag_enabled = meta.get("rag_enabled", False)
+        rag_enabled = session_meta.get("rag_enabled", False)
         rag_status = "Enabled" if rag_enabled else "Disabled"
 
         # Other metadata
-        model = meta.get("model", "Unknown")
-        title = meta.get("title", "")
-        summary = meta.get("summary", "")
-        tags = meta.get("tags", [])
-        pinned = meta.get("pinned", False)
+        model = session_meta.get("model", "Unknown")
+        title = session_meta.get("title", "")
+        summary = session_meta.get("summary", "")
+        tags = session_meta.get("tags", [])
+        pinned = session_meta.get("pinned", False)
 
         # Display statistics
         print(f"Session Statistics: {name}")
@@ -594,22 +623,22 @@ def cmd_sessions(
         if summary:
             print(f"Summary: {summary}")
 
-        print(f"\nMessage Counts:")
+        print("\nMessage Counts:")
         print(f"  Total messages: {total_messages}")
         print(f"  User messages: {user_messages}")
         print(f"  Assistant messages: {assistant_messages}")
         print(f"  System messages: {system_messages}")
 
-        print(f"\nToken Estimate:")
+        print("\nToken Estimate:")
         print(f"  Approximate tokens: {token_estimate:,}")
 
-        print(f"\nSession Age & Activity:")
+        print("\nSession Age & Activity:")
         print(f"  Created: {created_at}")
         print(f"  Age: {session_age}")
         print(f"  Last updated: {updated_at}")
         print(f"  Time since last activity: {last_activity}")
 
-        print(f"\nConfiguration:")
+        print("\nConfiguration:")
         print(f"  Model: {model}")
         print(f"  RAG: {rag_status}")
         print(f"  Pinned: {'Yes' if pinned else 'No'}")
@@ -623,7 +652,14 @@ def cmd_sessions(
     return 2
 
 
-def cmd_tools(action: str, path: Path, pattern: str | None, head: int | None, tail: int | None, max_matches: int) -> int:
+def cmd_tools(
+    action: str,
+    path: Path,
+    pattern: str | None,
+    head: int | None,
+    tail: int | None,
+    max_matches: int,
+) -> int:
     if action == "ls":
         return tools_fs.ls(path)
     if action == "cat":
@@ -637,64 +673,182 @@ def cmd_tools(action: str, path: Path, pattern: str | None, head: int | None, ta
     return 2
 
 
-def cmd_rag_ingest(doc_id: str, path: Path, ensure_schema: bool) -> int:
+def cmd_rag_ingest(
+    doc_id: str,
+    path: Path,
+    ensure_schema: bool,
+    collection: str = "default",
+    model: str | None = None,
+    dimension: int | None = None,
+) -> int:
     text = path.read_text(encoding="utf-8")
-    n = ingest_document(doc_id, text, metadata={"path": str(path)}, ensure_schema=ensure_schema)
-    print(f"Ingested {n} chunks for doc_id={doc_id}")
+    n = ingest_document(
+        doc_id,
+        text,
+        metadata={"path": str(path)},
+        ensure_schema=ensure_schema,
+        collection=collection,
+        embedding_model=model,
+        embedding_dim=dimension,
+    )
+    print(f"Ingested {n} chunks for doc_id={doc_id} into collection '{collection}'")
+    if model:
+        print(f"  Using embedding model: {model}")
+    if dimension:
+        print(f"  Using dimension: {dimension}")
     return 0
 
 
-
-def cmd_rag_query(question: str, top_k: int) -> int:
-    results = retrieve_context(question, top_k=top_k)
-    print(f"Results: {len(results)}")
+def cmd_rag_query(
+    question: str,
+    top_k: int,
+    collection: str = "default",
+    model: str | None = None,
+    dimension: int | None = None,
+) -> int:
+    results_raw = retrieve_context(
+        question,
+        top_k=top_k,
+        debug_mode=False,  # CLI doesn't need debug info
+        collection=collection,
+        embedding_model=model,
+        embedding_dim=dimension,
+    )
+    # Type narrowing: debug_mode=False means result is list[dict]
+    results = cast(list[dict], results_raw)
+    print(f"Results: {len(results)} (from collection '{collection}')")
+    if model:
+        print(f"  Using embedding model: {model}")
     for i, r in enumerate(results, 1):
         print(f"--- {i} ---")
         print(r.get("text", ""))
+        if "embedding_model" in r:
+            print(
+                f"  [model: {r.get('embedding_model')}, score: {r.get('score', 0):.3f}]"
+            )
     return 0
 
 
-def cmd_rag_list() -> int:
-    store = CassandraVectorStore()
+def cmd_rag_list(collection: str = "default") -> int:
+    store = CassandraVectorStore(collection=collection)
     try:
         rows = store.list_docs()
     finally:
         store.close()
 
     if not rows:
-        print("No documents found in RAG store")
+        print(f"No documents found in collection '{collection}'")
         return 0
 
-    print(f"{'doc_id':<30} chunks")
-    print("-" * 40)
+    print(f"Collection: {collection}")
+    print(f"{'doc_id':<30} {'chunks':<10} {'model':<30}")
+    print("-" * 75)
     for r in rows:
-        print(f"{r['doc_id']:<30} {r['chunks']}")
+        model_info = r.get("embedding_model", "N/A")
+        print(f"{r['doc_id']:<30} {r['chunks']:<10} {model_info:<30}")
     return 0
 
 
-def cmd_rag_delete(doc_id: str) -> int:
+def cmd_rag_collections() -> int:
+    """List all available collections."""
     store = CassandraVectorStore()
+    try:
+        collections = store.list_collections()
+    finally:
+        store.close()
+
+    if not collections:
+        print("No collections found")
+        return 0
+
+    print("Available collections:")
+    for coll in collections:
+        print(f"  - {coll}")
+    return 0
+
+
+def cmd_rag_compare(
+    test_file: Path,
+    models_spec: list[str],
+) -> int:
+    """Compare embedding models performance.
+
+    Args:
+        test_file: Path to text file for testing
+        models_spec: List of model specifications in format "model:dim:collection"
+    """
+    from mygpt.rag.model_compare import compare_models, print_comparison_table
+
+    # Parse model specs
+    models = []
+    for spec in models_spec:
+        parts = spec.split(":")
+        if len(parts) != 3:
+            print(
+                f"ERROR: Invalid model spec '{spec}'. Expected format: model:dimension:collection",
+                file=sys.stderr,
+            )
+            return 2
+        model_name, dim_str, collection = parts
+        try:
+            dimension = int(dim_str)
+        except ValueError:
+            print(
+                f"ERROR: Invalid dimension '{dim_str}' in spec '{spec}'",
+                file=sys.stderr,
+            )
+            return 2
+        models.append((model_name, dimension, collection))
+
+    # Load test texts
+    try:
+        test_text = test_file.read_text(encoding="utf-8")
+        # Use first few sentences as test texts
+        test_texts = test_text[:1000].split(".")[:5]
+        test_texts = [t.strip() for t in test_texts if t.strip()]
+    except Exception as e:
+        print(f"ERROR: Failed to read test file: {e}", file=sys.stderr)
+        return 2
+
+    if not test_texts:
+        print("ERROR: Test file contains no usable text", file=sys.stderr)
+        return 2
+
+    print(f"Comparing {len(models)} embedding models...")
+    print(f"Test texts: {len(test_texts)}")
+
+    try:
+        metrics = compare_models(models, test_texts)
+        print_comparison_table(metrics)
+        return 0
+    except Exception as e:
+        print(f"ERROR: Comparison failed: {e}", file=sys.stderr)
+        return 2
+
+
+def cmd_rag_delete(doc_id: str, collection: str = "default") -> int:
+    store = CassandraVectorStore(collection=collection)
     try:
         store.delete_doc(doc_id)
     finally:
         store.close()
 
-    print(f"Deleted RAG document: {doc_id}")
+    print(f"Deleted RAG document: {doc_id} from collection '{collection}'")
     return 0
 
 
-def cmd_rag_wipe(confirm: bool) -> int:
+def cmd_rag_wipe(confirm: bool, collection: str = "default") -> int:
     if not confirm:
         print("ERROR: refusing to wipe RAG store without --yes-really", file=sys.stderr)
         return 2
 
-    store = CassandraVectorStore()
+    store = CassandraVectorStore(collection=collection)
     try:
         store.truncate()
     finally:
         store.close()
 
-    print("Wiped all RAG documents")
+    print(f"Wiped all RAG documents from collection '{collection}'")
     return 0
 
 
@@ -722,6 +876,7 @@ def cmd_models_list() -> int:
 def cmd_models_pull(name: str) -> int:
     """Pull (download) a model from Ollama library."""
     try:
+
         def progress_callback(status: str, percentage: float):
             print(f"\r{status}: {percentage:.1f}%", end="", flush=True)
 
@@ -787,8 +942,12 @@ def cmd_models_show(name: str) -> int:
 
         # Display other fields as JSON
         import json
-        other_fields = {k: v for k, v in info.items()
-                       if k not in ("modelfile", "parameters", "template")}
+
+        other_fields = {
+            k: v
+            for k, v in info.items()
+            if k not in ("modelfile", "parameters", "template")
+        }
         if other_fields:
             print("Other info:")
             print(json.dumps(other_fields, indent=2, ensure_ascii=False))
@@ -819,11 +978,19 @@ def cli(argv: list[str] | None = None) -> int:
     tui_p.add_argument("--api-url", dest="api_url", help="Override API base URL")
 
     chat_p = sub.add_parser("chat", help="Chat with the configured Ollama model")
-    chat_p.add_argument("prompt", nargs="?", help="Optional single prompt (otherwise interactive)")
-    chat_p.add_argument("--model", dest="model_override", help="Override model for this run")
+    chat_p.add_argument(
+        "prompt", nargs="?", help="Optional single prompt (otherwise interactive)"
+    )
+    chat_p.add_argument(
+        "--model", dest="model_override", help="Override model for this run"
+    )
     chat_p.add_argument("--system", help="Optional system prompt")
-    chat_p.add_argument("--no-stream", action="store_true", help="Disable streaming output")
-    chat_p.add_argument("--session", default="default", help="Conversation session name")
+    chat_p.add_argument(
+        "--no-stream", action="store_true", help="Disable streaming output"
+    )
+    chat_p.add_argument(
+        "--session", default="default", help="Conversation session name"
+    )
     chat_p.add_argument("--new", action="store_true", help="Start a fresh session")
     chat_p.add_argument("--sessions-dir", type=Path, help="Override sessions directory")
 
@@ -857,14 +1024,44 @@ def cli(argv: list[str] | None = None) -> int:
         ],
     )
     sessions_p.add_argument("name", nargs="?", help="Session name")
-    sessions_p.add_argument("new_name", nargs="?", help="Second argument (rename/title)")
+    sessions_p.add_argument(
+        "new_name", nargs="?", help="Second argument (rename/title)"
+    )
     sessions_p.add_argument("extras", nargs="*", help="Extra args (tags)")
-    sessions_p.add_argument("--sessions-dir", type=Path, help="Override sessions directory")
-    sessions_p.add_argument("--format", choices=["markdown", "json", "html"], default="markdown", help="Export format (default: markdown)")
+    sessions_p.add_argument(
+        "--sessions-dir", type=Path, help="Override sessions directory"
+    )
+    sessions_p.add_argument(
+        "--format",
+        choices=["markdown", "json", "html"],
+        default="markdown",
+        help="Export format (default: markdown)",
+    )
     sessions_p.add_argument("--output", type=Path, help="Output file (default: stdout)")
-    sessions_p.add_argument("--case-sensitive", action="store_true", help="Case-sensitive search (search only)")
-    sessions_p.add_argument("--role", choices=["user", "assistant", "system"], help="Filter by message role (search only)")
-    sessions_p.add_argument("--limit", type=int, default=20, help="Maximum number of search results (default: 20, search only)")
+    sessions_p.add_argument(
+        "--case-sensitive",
+        action="store_true",
+        help="Case-sensitive search (search only)",
+    )
+    sessions_p.add_argument(
+        "--role",
+        choices=["user", "assistant", "system"],
+        help="Filter by message role (search only)",
+    )
+    sessions_p.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Maximum number of search results (default: 20, search only)",
+    )
+    sessions_p.add_argument(
+        "--model", help="Model name for batch-update-meta (batch-update-meta only)"
+    )
+    sessions_p.add_argument(
+        "--rag-enabled",
+        type=lambda x: x.lower() in ("true", "1", "yes"),
+        help="RAG enabled flag for batch-update-meta (batch-update-meta only)",
+    )
 
     tools_p = sub.add_parser("tools", help="Explicit local filesystem tools")
     tools_p.add_argument("action", choices=["ls", "cat", "grep"], help="Tool to run")
@@ -872,27 +1069,78 @@ def cli(argv: list[str] | None = None) -> int:
     tools_p.add_argument("path", type=Path, help="File or directory path")
     tools_p.add_argument("--head", type=int, help="Print first N lines (cat)")
     tools_p.add_argument("--tail", type=int, help="Print last N lines (cat)")
-    tools_p.add_argument("--max", dest="max_matches", type=int, default=50, help="Max matches (grep)")
+    tools_p.add_argument(
+        "--max", dest="max_matches", type=int, default=50, help="Max matches (grep)"
+    )
 
     rag_p = sub.add_parser("rag", help="Retrieval-Augmented Generation commands")
     rag_sub = rag_p.add_subparsers(dest="rag_cmd", required=True)
 
-    ingest_p = rag_sub.add_parser("ingest", help="Ingest a document into the vector store")
+    ingest_p = rag_sub.add_parser(
+        "ingest", help="Ingest a document into the vector store"
+    )
     ingest_p.add_argument("doc_id", help="Document ID")
     ingest_p.add_argument("path", type=Path, help="Path to text file")
-    ingest_p.add_argument("--ensure-schema", action="store_true", help="Create schema if missing")
+    ingest_p.add_argument(
+        "--ensure-schema", action="store_true", help="Create schema if missing"
+    )
+    ingest_p.add_argument(
+        "--collection", default="default", help="Collection name (default: default)"
+    )
+    ingest_p.add_argument(
+        "--model", help="Override embedding model (default: from config)"
+    )
+    ingest_p.add_argument(
+        "--dimension",
+        type=int,
+        help="Override embedding dimension (default: from config)",
+    )
 
     query_p = rag_sub.add_parser("query", help="Query the vector store")
     query_p.add_argument("question", help="Query text")
     query_p.add_argument("--top-k", type=int, default=5, help="Number of results")
+    query_p.add_argument(
+        "--collection", default="default", help="Collection name (default: default)"
+    )
+    query_p.add_argument(
+        "--model", help="Override embedding model (default: from config)"
+    )
+    query_p.add_argument(
+        "--dimension",
+        type=int,
+        help="Override embedding dimension (default: from config)",
+    )
 
-    _list_p = rag_sub.add_parser("list", help="List ingested documents")
+    list_p = rag_sub.add_parser("list", help="List ingested documents")
+    list_p.add_argument(
+        "--collection", default="default", help="Collection name (default: default)"
+    )
+
+    _ = rag_sub.add_parser("collections", help="List all available collections")
+
+    compare_p = rag_sub.add_parser(
+        "compare", help="Compare embedding models performance"
+    )
+    compare_p.add_argument("test_file", type=Path, help="Path to test file")
+    compare_p.add_argument(
+        "models",
+        nargs="+",
+        help="Model specs in format 'model:dimension:collection' (e.g., 'nomic-embed-text:768:default')",
+    )
 
     delete_p = rag_sub.add_parser("delete", help="Delete a document by doc_id")
     delete_p.add_argument("doc_id", help="Document ID to delete")
+    delete_p.add_argument(
+        "--collection", default="default", help="Collection name (default: default)"
+    )
 
     wipe_p = rag_sub.add_parser("wipe", help="Delete ALL documents (dangerous)")
-    wipe_p.add_argument("--yes-really", action="store_true", help="Confirm destructive wipe")
+    wipe_p.add_argument(
+        "--yes-really", action="store_true", help="Confirm destructive wipe"
+    )
+    wipe_p.add_argument(
+        "--collection", default="default", help="Collection name (default: default)"
+    )
 
     # Add models command
     models_p = sub.add_parser("models", help="Manage Ollama models")
@@ -905,14 +1153,22 @@ def cli(argv: list[str] | None = None) -> int:
 
     models_delete_p = models_sub.add_parser("delete", help="Delete a model")
     models_delete_p.add_argument("model", help="Model name to delete")
-    models_delete_p.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+    models_delete_p.add_argument(
+        "--force", action="store_true", help="Skip confirmation prompt"
+    )
 
-    models_show_p = models_sub.add_parser("show", help="Show detailed model information")
+    models_show_p = models_sub.add_parser(
+        "show", help="Show detailed model information"
+    )
     models_show_p.add_argument("model", help="Model name to inspect")
 
     # Add wizard command
     wizard_p = sub.add_parser("wizard", help="Run interactive configuration wizard")
-    wizard_p.add_argument("--output", type=Path, help="Output path for config.ini (default: ~/.myGPT/config.ini)")
+    wizard_p.add_argument(
+        "--output",
+        type=Path,
+        help="Output path for config.ini (default: ~/.myGPT/config.ini)",
+    )
 
     # Add ops command
     ops_p = sub.add_parser("ops", help="Operational helpers")
@@ -920,15 +1176,31 @@ def cli(argv: list[str] | None = None) -> int:
 
     ops_install = ops_sub.add_parser("install", help="Install operational helpers")
     ops_install.add_argument("--repo-dir", help="Path to myGPT repo root")
-    ops_install.add_argument("--force", action="store_true", help="Overwrite existing files")
+    ops_install.add_argument(
+        "--force", action="store_true", help="Overwrite existing files"
+    )
 
-    ops_status = ops_sub.add_parser("status", help="Show status of local services (docker/cassandra/agent/api)")
-    ops_status.add_argument("--api-url", help="Override API base URL (default: from config or http://127.0.0.1:8000)")
-    ops_status.add_argument("--timeout", type=float, default=2.0, help="Timeout seconds for checks")
+    ops_status = ops_sub.add_parser(
+        "status", help="Show status of local services (docker/cassandra/agent/api)"
+    )
+    ops_status.add_argument(
+        "--api-url",
+        help="Override API base URL (default: from config or http://127.0.0.1:8000)",
+    )
+    ops_status.add_argument(
+        "--timeout", type=float, default=2.0, help="Timeout seconds for checks"
+    )
 
-    ops_doctor = ops_sub.add_parser("doctor", help="Run checks and return non-zero if something is broken")
-    ops_doctor.add_argument("--api-url", help="Override API base URL (default: from config or http://127.0.0.1:8000)")
-    ops_doctor.add_argument("--timeout", type=float, default=2.0, help="Timeout seconds for checks")
+    ops_doctor = ops_sub.add_parser(
+        "doctor", help="Run checks and return non-zero if something is broken"
+    )
+    ops_doctor.add_argument(
+        "--api-url",
+        help="Override API base URL (default: from config or http://127.0.0.1:8000)",
+    )
+    ops_doctor.add_argument(
+        "--timeout", type=float, default=2.0, help="Timeout seconds for checks"
+    )
 
     ops_restart = ops_sub.add_parser("restart", help="Restart local services")
     ops_restart.add_argument(
@@ -982,6 +1254,8 @@ def cli(argv: list[str] | None = None) -> int:
             case_sensitive=getattr(args, "case_sensitive", False),
             role=getattr(args, "role", None),
             limit=getattr(args, "limit", 50),
+            model=getattr(args, "model", None),
+            rag_enabled=getattr(args, "rag_enabled", None),
         )
 
     if cmd == "tools":
@@ -996,15 +1270,32 @@ def cli(argv: list[str] | None = None) -> int:
 
     if cmd == "rag":
         if args.rag_cmd == "ingest":
-            return cmd_rag_ingest(args.doc_id, args.path, args.ensure_schema)
+            return cmd_rag_ingest(
+                args.doc_id,
+                args.path,
+                args.ensure_schema,
+                collection=args.collection,
+                model=args.model,
+                dimension=args.dimension,
+            )
         if args.rag_cmd == "query":
-            return cmd_rag_query(args.question, args.top_k)
+            return cmd_rag_query(
+                args.question,
+                args.top_k,
+                collection=args.collection,
+                model=args.model,
+                dimension=args.dimension,
+            )
         if args.rag_cmd == "list":
-            return cmd_rag_list()
+            return cmd_rag_list(collection=args.collection)
+        if args.rag_cmd == "collections":
+            return cmd_rag_collections()
+        if args.rag_cmd == "compare":
+            return cmd_rag_compare(args.test_file, args.models)
         if args.rag_cmd == "delete":
-            return cmd_rag_delete(args.doc_id)
+            return cmd_rag_delete(args.doc_id, collection=args.collection)
         if args.rag_cmd == "wipe":
-            return cmd_rag_wipe(args.yes_really)
+            return cmd_rag_wipe(args.yes_really, collection=args.collection)
 
     if cmd == "models":
         if args.models_cmd == "list":

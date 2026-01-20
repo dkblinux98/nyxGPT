@@ -482,6 +482,67 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
   -F "file=@document.md"
 ```
 
+#### Multi-Model Embedding Support
+
+myGPT supports using different embedding models for RAG by organizing documents into collections. Each collection can use its own embedding model and dimension, allowing you to compare model performance and choose the best fit for your use case.
+
+**Ingest documents with different models:**
+
+```bash
+# Default collection (uses config default: nomic-embed-text 768d)
+mygpt rag ingest doc1 document.txt --ensure-schema
+
+# Use a smaller, faster model
+mygpt rag ingest doc2 document.txt \
+  --collection all-minilm \
+  --model all-minilm:latest \
+  --dimension 384 \
+  --ensure-schema
+
+# Use a high-quality model
+mygpt rag ingest doc3 document.txt \
+  --collection mxbai \
+  --model mxbai-embed-large:latest \
+  --dimension 1024 \
+  --ensure-schema
+```
+
+**Query specific collections:**
+
+```bash
+# Query the default collection
+mygpt rag query "What is the architecture?"
+
+# Query a specific collection
+mygpt rag query "What is the architecture?" \
+  --collection all-minilm \
+  --model all-minilm:latest \
+  --dimension 384
+```
+
+**List available collections:**
+
+```bash
+mygpt rag collections
+```
+
+**List documents in a collection:**
+
+```bash
+mygpt rag list --collection all-minilm
+```
+
+**Compare embedding models:**
+
+```bash
+mygpt rag compare test-doc.txt \
+  nomic-embed-text:768:default \
+  all-minilm:latest:384:all-minilm \
+  mxbai-embed-large:latest:1024:mxbai
+```
+
+The compare command benchmarks embedding speed and query performance, helping you choose the optimal model for your requirements.
+
 #### Debug Mode
 
 RAG debug mode provides detailed troubleshooting metrics for performance tuning and understanding retrieval behavior.

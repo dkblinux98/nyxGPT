@@ -7,6 +7,7 @@ request/response format expected by the configuration wizard frontend.
 Addresses acceptance failure #2922 from parent issue #2636, which
 incorrectly claimed the endpoint was missing.
 """
+
 from __future__ import annotations
 
 import httpx
@@ -50,14 +51,10 @@ def test_config_post_endpoint(api_base_url: str) -> None:
     update_payload = {
         "default_model": "llama3.1:8b",
         "rag_enabled": True,
-        "log_level": "DEBUG"
+        "log_level": "DEBUG",
     }
 
-    r = httpx.post(
-        f"{api_base_url}/api/v1/config",
-        json=update_payload,
-        timeout=5.0
-    )
+    r = httpx.post(f"{api_base_url}/api/v1/config", json=update_payload, timeout=5.0)
     assert r.status_code == 200
 
     data = r.json()
@@ -85,13 +82,9 @@ def test_config_post_endpoint(api_base_url: str) -> None:
     restore_payload = {
         "default_model": original_config["default_model"],
         "rag_enabled": original_config["rag_enabled"],
-        "log_level": original_config["log_level"]
+        "log_level": original_config["log_level"],
     }
-    r = httpx.post(
-        f"{api_base_url}/api/v1/config",
-        json=restore_payload,
-        timeout=5.0
-    )
+    r = httpx.post(f"{api_base_url}/api/v1/config", json=restore_payload, timeout=5.0)
     assert r.status_code == 200
 
 
@@ -104,15 +97,9 @@ def test_config_post_partial_update(api_base_url: str) -> None:
     original_config = r.json()
 
     # Update only log_level
-    partial_payload = {
-        "log_level": "WARNING"
-    }
+    partial_payload = {"log_level": "WARNING"}
 
-    r = httpx.post(
-        f"{api_base_url}/api/v1/config",
-        json=partial_payload,
-        timeout=5.0
-    )
+    r = httpx.post(f"{api_base_url}/api/v1/config", json=partial_payload, timeout=5.0)
     assert r.status_code == 200
 
     data = r.json()
@@ -125,11 +112,7 @@ def test_config_post_partial_update(api_base_url: str) -> None:
 
     # Restore original log_level
     restore_payload = {"log_level": original_config["log_level"]}
-    r = httpx.post(
-        f"{api_base_url}/api/v1/config",
-        json=restore_payload,
-        timeout=5.0
-    )
+    r = httpx.post(f"{api_base_url}/api/v1/config", json=restore_payload, timeout=5.0)
     assert r.status_code == 200
 
 
@@ -142,16 +125,9 @@ def test_config_post_ignores_unknown_fields(api_base_url: str) -> None:
     original_config = r.json()
 
     # Send payload with unknown field
-    payload = {
-        "log_level": "INFO",
-        "unknown_field": "should_be_ignored"
-    }
+    payload = {"log_level": "INFO", "unknown_field": "should_be_ignored"}
 
-    r = httpx.post(
-        f"{api_base_url}/api/v1/config",
-        json=payload,
-        timeout=5.0
-    )
+    r = httpx.post(f"{api_base_url}/api/v1/config", json=payload, timeout=5.0)
     assert r.status_code == 200
 
     data = r.json()
@@ -160,16 +136,14 @@ def test_config_post_ignores_unknown_fields(api_base_url: str) -> None:
 
     # Restore original config
     restore_payload = {"log_level": original_config["log_level"]}
-    r = httpx.post(
-        f"{api_base_url}/api/v1/config",
-        json=restore_payload,
-        timeout=5.0
-    )
+    r = httpx.post(f"{api_base_url}/api/v1/config", json=restore_payload, timeout=5.0)
     assert r.status_code == 200
 
 
 @pytest.mark.integration
-def test_config_endpoint_format_matches_frontend_expectations(api_base_url: str) -> None:
+def test_config_endpoint_format_matches_frontend_expectations(
+    api_base_url: str,
+) -> None:
     """Verify the config endpoint returns data in the exact format expected by the frontend.
 
     This test ensures the backend /api/v1/config endpoint is properly mounted and returns
@@ -192,14 +166,10 @@ def test_config_endpoint_format_matches_frontend_expectations(api_base_url: str)
     frontend_payload = {
         "default_model": config["default_model"],
         "rag_enabled": config["rag_enabled"],
-        "log_level": config["log_level"]
+        "log_level": config["log_level"],
     }
 
-    r = httpx.post(
-        f"{api_base_url}/api/v1/config",
-        json=frontend_payload,
-        timeout=5.0
-    )
+    r = httpx.post(f"{api_base_url}/api/v1/config", json=frontend_payload, timeout=5.0)
     assert r.status_code == 200
 
     response = r.json()

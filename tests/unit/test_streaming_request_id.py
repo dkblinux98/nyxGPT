@@ -130,7 +130,7 @@ def test_streaming_request_id_propagates_to_logged_function(caplog):
     test_request_id = f"e2e-test-{uuid.uuid4()}"
 
     # Install RequestIdFilter to add request ID to all log records
-    request_id_filter = RequestIdFilter()
+    _ = RequestIdFilter()
     logger = logging.getLogger("mygpt.test")
     logger.setLevel(logging.DEBUG)
 

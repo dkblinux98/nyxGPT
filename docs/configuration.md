@@ -62,11 +62,15 @@ Connection details for the Ollama server.
 ```ini
 [ollama]
 base_url = http://127.0.0.1:11434
+default_model = qwen2.5:latest
 ```
 
 | Key | Description |
 |---|---|
 | `base_url` | Base URL of the Ollama HTTP API |
+| `default_model` | Default model for Ollama (optional override of `mygpt.default_model`) |
+
+**Note:** If `default_model` is not set, myGPT uses `mygpt.default_model` instead.
 
 ---
 
@@ -231,6 +235,7 @@ cassandra_table = rag_chunks
 | Key | Description |
 |---|---|
 | `enable_chat_context` | Enable RAG context injection for chat (hot-reloadable) |
+| `enabled` | **Legacy alias** for `enable_chat_context` (deprecated, use `enable_chat_context` instead) |
 | `embedding_model` | Ollama embedding model |
 | `embedding_dim` | Vector dimensionality (must match Cassandra VECTOR dimension) |
 | `embedding_batch_size` | Batch size for embedding requests (smaller = lower memory, slower) |
@@ -238,6 +243,7 @@ cassandra_table = rag_chunks
 | `chunk_size` | Maximum characters per text chunk |
 | `chunk_overlap` | Character overlap between adjacent chunks |
 | `chat_top_k` | Number of candidate chunks to retrieve from vector store |
+| `top_k` | **Legacy alias** for `chat_top_k` (deprecated, use `chat_top_k` instead) |
 | `min_score` | Minimum similarity score required for chunk inclusion |
 | `max_chunks` | Hard cap on number of chunks injected into prompt |
 | `chat_context_max_chars` | Maximum total characters of retrieved context |
@@ -297,8 +303,8 @@ Absolute paths for operational components.
 [paths]
 repo_dir = /path/to/myGPT
 venv_python = /path/to/myGPT/.venv/bin/python
-node_bin = /usr/local/bin/node
-npm_bin = /usr/local/bin/npm
+node_bin = /opt/homebrew/bin/node
+npm_bin = /opt/homebrew/bin/npm
 ```
 
 | Key | Description |
@@ -307,6 +313,120 @@ npm_bin = /usr/local/bin/npm
 | `venv_python` | Path to the Python executable in the project venv |
 | `node_bin` | Path to Node.js executable |
 | `npm_bin` | Path to npm executable |
+
+---
+
+## `[openai]` section
+
+OpenAI API integration for accessing GPT models in addition to local Ollama models.
+
+```ini
+[openai]
+api_key =
+```
+
+| Key | Description |
+|---|---|
+| `api_key` | OpenAI API key for accessing GPT models (required if using OpenAI models) |
+
+**Getting your API key:**
+- Visit: https://platform.openai.com/api-keys
+- Create a new API key
+- Store it securely in your config file
+
+**Security best practices:**
+- Keep your API key confidential - never commit it to version control
+- Restrict file permissions: `chmod 600 ~/.myGPT/config.ini`
+- Monitor usage at: https://platform.openai.com/usage
+- Rotate keys regularly
+
+---
+
+## `[github]` section
+
+GitHub integration for automated workflows and agent operations.
+
+```ini
+[github]
+pat =
+agents_enabled = false
+repo_owner = your-username
+repo_name = your-repo-name
+project_owner = your-username
+project_number = 1
+dev_agent = myGPT-developer-agent
+review_agent = myGPT-review-agent
+scrum_agent = myGPT-scrummaster-agent
+human_owner = your-username
+status_field = Status
+status_backlog = Backlog
+status_in_progress = In progress
+status_in_review = In Review
+status_for_release = For Release
+release_branch = v1.0.0
+release_issue_number = 1
+scrummaster_agent_token =
+developer_agent_token =
+review_agent_token =
+myagent_review_agent_token =
+claude_code_oauth_token =
+```
+
+| Key | Description |
+|---|---|
+| `pat` | GitHub Personal Access Token with `repo` and `project` scopes |
+| `agents_enabled` | Enable GitHub agent integration (default: `false`) |
+| `repo_owner` | GitHub repository owner username |
+| `repo_name` | GitHub repository name |
+| `project_owner` | GitHub Project owner username |
+| `project_number` | GitHub Project number (from project URL) |
+| `dev_agent` | Developer agent GitHub username |
+| `review_agent` | Review agent GitHub username |
+| `scrum_agent` | Scrummaster agent GitHub username |
+| `human_owner` | Human owner GitHub username |
+| `status_field` | GitHub Project status field name |
+| `status_backlog` | Status value for backlog items |
+| `status_in_progress` | Status value for in-progress items |
+| `status_in_review` | Status value for items in review |
+| `status_for_release` | Status value for items ready for release |
+| `release_branch` | Active release branch name |
+| `release_issue_number` | GitHub issue number tracking the current release |
+| `scrummaster_agent_token` | Optional fine-grained token for scrummaster agent |
+| `developer_agent_token` | Optional fine-grained token for developer agent |
+| `review_agent_token` | Optional fine-grained token for review agent |
+| `myagent_review_agent_token` | Optional fine-grained token for custom review agent |
+| `claude_code_oauth_token` | OAuth token for Claude Code AI-assisted operations |
+
+**Setting up GitHub integration:**
+
+1. **Create a Personal Access Token (PAT):**
+   - Visit: https://github.com/settings/tokens
+   - Generate a new token with `repo` and `project` permissions
+   - Store it in the `pat` field
+
+2. **Create agent accounts (optional):**
+   - Create separate GitHub accounts for each agent
+   - Generate tokens for each agent with appropriate permissions
+   - Configure agent-specific tokens in the config
+
+3. **Configure GitHub Project:**
+   - Create or identify your GitHub Project
+   - Note the project number from the URL (e.g., `https://github.com/users/USERNAME/projects/2` → project_number = 2)
+   - Ensure status field and values match your project configuration
+
+4. **Get Claude Code OAuth token:**
+   - Visit: https://claude.ai/settings/oauth
+   - Create an OAuth token for API access
+   - Store it in `claude_code_oauth_token`
+
+**Security considerations:**
+- All tokens are sensitive - never commit config files with real tokens
+- Use fine-grained tokens with minimum required permissions
+- Regularly rotate tokens
+- Monitor agent activity in GitHub audit logs
+- See [`docs/github-tokens.md`](github-tokens.md) for detailed token setup
+
+**Note:** Agent tokens fall back to the main `pat` if not explicitly set.
 
 ---
 

@@ -1,4 +1,5 @@
 """Tests for message edit and regenerate functionality (#2641)."""
+
 from __future__ import annotations
 
 import configparser
@@ -166,12 +167,14 @@ def test_message_ids_and_timestamps_preserved(tmp_path: Path) -> None:
 
     # Create a session with a message that has extra fields
     state = sessions.load_session("test-preserve", cfg, new_session=True)
-    state.messages.append({
-        "role": "user",
-        "content": "Original",
-        "id": "msg-123",
-        "timestamp": "2024-01-01T00:00:00Z"
-    })
+    state.messages.append(
+        {
+            "role": "user",
+            "content": "Original",
+            "id": "msg-123",
+            "timestamp": "2024-01-01T00:00:00Z",
+        }
+    )
     sessions.save_session(state, cfg)
 
     # Edit the message

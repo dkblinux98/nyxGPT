@@ -88,7 +88,9 @@ def _retry_with_backoff(
     raise RuntimeError("Retry loop ended unexpectedly")
 
 
-def post_json(url: str, payload: dict[str, Any], timeout_s: float = 120.0) -> dict[str, Any]:
+def post_json(
+    url: str, payload: dict[str, Any], timeout_s: float = 120.0
+) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url=url,
@@ -169,12 +171,14 @@ def post_json_lines(
         resp.close()
 
 
-def ollama_chat(base_url: str, model: str, messages: list[dict[str, str]], timeout_s: float = 120.0) -> str:
+def ollama_chat(
+    base_url: str, model: str, messages: list[dict[str, str]], timeout_s: float = 120.0
+) -> str:
     url = base_url.rstrip("/") + "/api/chat"
     payload = {"model": model, "messages": messages, "stream": False}
     data = post_json(url, payload, timeout_s=timeout_s)
 
-    msg = (data.get("message") or {})
+    msg = data.get("message") or {}
     content = msg.get("content")
     if not isinstance(content, str):
         raise RuntimeError(f"Unexpected Ollama response: {data}")
@@ -208,8 +212,10 @@ def ollama_chat_stream_tokens(
     url = base_url.rstrip("/") + "/api/chat"
     payload = {"model": model, "messages": messages, "stream": True}
 
-    for obj in post_json_lines(url, payload, timeout_s=timeout_s, max_retries=max_retries, on_retry=on_retry):
-        msg = (obj.get("message") or {})
+    for obj in post_json_lines(
+        url, payload, timeout_s=timeout_s, max_retries=max_retries, on_retry=on_retry
+    ):
+        msg = obj.get("message") or {}
         part = msg.get("content")
         if isinstance(part, str) and part:
             yield part
@@ -224,10 +230,14 @@ def ollama_chat_stream(
     timeout_s: float = 120.0,
 ) -> str:
     """Stream from Ollama and return the final assistant message content."""
-    return "".join(ollama_chat_stream_tokens(base_url, model, messages, timeout_s=timeout_s))
+    return "".join(
+        ollama_chat_stream_tokens(base_url, model, messages, timeout_s=timeout_s)
+    )
 
 
-def delete_json(url: str, payload: dict[str, Any], timeout_s: float = 60.0) -> dict[str, Any]:
+def delete_json(
+    url: str, payload: dict[str, Any], timeout_s: float = 60.0
+) -> dict[str, Any]:
     """Send DELETE request with JSON payload to Ollama API.
 
     Args:

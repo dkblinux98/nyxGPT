@@ -29,8 +29,12 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_install_scripts", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_web_deps", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_cassandra_launchagent", return_value=mixed),
-        patch.object(ops, "_install_homebrew_web", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(
+            ops, "_install_homebrew_web", return_value=[ops.OpsResult(True, "ok")]
+        ),
+        patch.object(
+            ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]
+        ),
     ):
         rc = ops.install(MagicMock())
         assert rc == 2
@@ -143,6 +147,9 @@ def test_ops_doctor_ok(monkeypatch, capsys, tmp_path):
 
     # Tools exist
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+
+    # Mock REPO_ROOT to point to tmp_path (no web/ directory)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
 
     rc = ops.doctor(MagicMock())
     assert rc == 0

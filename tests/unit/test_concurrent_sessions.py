@@ -3,12 +3,10 @@
 These tests verify that session files remain consistent even when
 accessed by multiple processes or threads simultaneously.
 """
+
 from __future__ import annotations
 
-import multiprocessing
 import threading
-import time
-from pathlib import Path
 
 import pytest
 
@@ -66,10 +64,7 @@ def test_concurrent_reads_same_session(test_sessions_dir):
     session_file = sessions.session_file_for(session_name, test_sessions_dir)
 
     # Create a session with some messages
-    messages = [
-        {"role": "user", "content": f"Message {i}"}
-        for i in range(100)
-    ]
+    messages = [{"role": "user", "content": f"Message {i}"} for i in range(100)]
     sessions.save_session_messages(session_file, messages)
 
     results = []
@@ -109,8 +104,7 @@ def test_concurrent_writes_different_sessions(test_sessions_dir):
 
     # Write to multiple sessions concurrently
     threads = [
-        threading.Thread(target=write_session, args=(i,))
-        for i in range(num_sessions)
+        threading.Thread(target=write_session, args=(i,)) for i in range(num_sessions)
     ]
     for t in threads:
         t.start()
@@ -178,10 +172,7 @@ def test_metadata_concurrent_updates(test_sessions_dir):
         sessions.save_session_meta(meta_file, meta)
 
     # Add tags concurrently
-    threads = [
-        threading.Thread(target=add_tag, args=(f"tag-{i}",))
-        for i in range(5)
-    ]
+    threads = [threading.Thread(target=add_tag, args=(f"tag-{i}",)) for i in range(5)]
     for t in threads:
         t.start()
     for t in threads:

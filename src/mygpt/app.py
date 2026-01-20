@@ -8,12 +8,22 @@ import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 import urllib.request
 import urllib.error
 from configparser import ConfigParser
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request, Body, UploadFile, File, Depends, Query
+from fastapi import (
+    APIRouter,
+    FastAPI,
+    HTTPException,
+    Request,
+    Body,
+    UploadFile,
+    File,
+    Depends,
+    Query,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.status import HTTP_401_UNAUTHORIZED
@@ -58,8 +68,8 @@ from mygpt.logging import configure_logging, request_id_var, get_log_dir
 from mygpt.rate_limiter import RateLimiter
 
 
-
 import logging
+
 log = logging.getLogger("mygpt.api")
 
 # Global rate limiter instance (initialized at startup if enabled)
@@ -75,6 +85,7 @@ def log_with_context(level, message, request_id=None, **extra):
 # ----------------------------
 # Startup diagnostics using lifespan
 # ----------------------------
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -95,7 +106,7 @@ async def lifespan(_app: FastAPI):
         sessions_dir.mkdir(parents=True, exist_ok=True)
         log.info(
             "Sessions directory ready",
-            extra={"component": "startup", "sessions_dir": str(sessions_dir)}
+            extra={"component": "startup", "sessions_dir": str(sessions_dir)},
         )
     except Exception as e:
         log.error("Failed to prepare sessions directory %s: %s", sessions_dir, e)
@@ -108,7 +119,7 @@ async def lifespan(_app: FastAPI):
         with urllib.request.urlopen(req, timeout=2):
             log.info(
                 "Ollama health check passed",
-                extra={"component": "startup", "ollama_url": base_url}
+                extra={"component": "startup", "ollama_url": base_url},
             )
     except urllib.error.URLError as e:
         log.warning(
@@ -117,8 +128,8 @@ async def lifespan(_app: FastAPI):
                 "component": "startup",
                 "ollama_url": base_url,
                 "error": str(e),
-                "note": "API will still start; chat requests may fail until Ollama is available"
-            }
+                "note": "API will still start; chat requests may fail until Ollama is available",
+            },
         )
 
     # Initialize rate limiter if enabled
@@ -126,7 +137,7 @@ async def lifespan(_app: FastAPI):
         rate_cfg = get_rate_limit_config(cfg)
         _rate_limiter = RateLimiter(
             requests_per_second=rate_cfg["requests_per_second"],
-            burst_size=rate_cfg["burst_size"]
+            burst_size=rate_cfg["burst_size"],
         )
         log.info(
             "Rate limiting enabled",
@@ -134,7 +145,7 @@ async def lifespan(_app: FastAPI):
                 "component": "startup",
                 "requests_per_second": rate_cfg["requests_per_second"],
                 "burst_size": rate_cfg["burst_size"],
-            }
+            },
         )
     else:
         log.info("Rate limiting disabled", extra={"component": "startup"})
@@ -187,12 +198,12 @@ async def security_headers_middleware(request: Request, call_next):
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline'; "  # Allow inline scripts for development
-        "style-src 'self' 'unsafe-inline'; "   # Allow inline styles
-        "img-src 'self' data:; "                # Allow data URIs for images
-        "connect-src 'self'; "                  # API calls to same origin only
-        "frame-ancestors 'none'; "              # Prevent embedding (redundant with X-Frame-Options)
-        "form-action 'self'; "                  # Forms can only submit to same origin
-        "base-uri 'self'"                       # Prevent base tag injection
+        "style-src 'self' 'unsafe-inline'; "  # Allow inline styles
+        "img-src 'self' data:; "  # Allow data URIs for images
+        "connect-src 'self'; "  # API calls to same origin only
+        "frame-ancestors 'none'; "  # Prevent embedding (redundant with X-Frame-Options)
+        "form-action 'self'; "  # Forms can only submit to same origin
+        "base-uri 'self'"  # Prevent base tag injection
     )
 
     # Prevent MIME type sniffing
@@ -296,7 +307,7 @@ async def rate_limit_middleware(request: Request, call_next):
             "Rate limit exceeded for %s on %s (request_id=%s)",
             client_id,
             request.url.path,
-            req_id
+            req_id,
         )
 
         # Return 429 error with rate limit headers
@@ -306,10 +317,10 @@ async def rate_limit_middleware(request: Request, call_next):
                 "error": {
                     "code": "rate_limit_exceeded",
                     "message": "Too many requests. Please try again later.",
-                    "request_id": req_id
+                    "request_id": req_id,
                 }
             },
-            headers=headers
+            headers=headers,
         )
 
     # Add rate limit headers to response
@@ -325,7 +336,12 @@ async def api_key_auth(request: Request, call_next):
     path = request.url.path
 
     # Allow unauthenticated access to health and docs
-    if path == "/health" or path.startswith("/docs") or path.startswith("/openapi") or path.startswith("/redoc"):
+    if (
+        path == "/health"
+        or path.startswith("/docs")
+        or path.startswith("/openapi")
+        or path.startswith("/redoc")
+    ):
         return await call_next(request)
 
     # Only protect versioned API
@@ -407,6 +423,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 # Helpers
 # ----------------------------
 
+
 # Request-scoped config helper
 def _req_cfg(request: Request) -> ConfigParser:
     cfg = getattr(request.state, "cfg", None)
@@ -414,6 +431,7 @@ def _req_cfg(request: Request) -> ConfigParser:
         cfg = load_config(None)
         request.state.cfg = cfg
     return cfg
+
 
 # Auth config is read on each request so ~/.myGPT/config.ini edits
 # take effect without restarting the API.
@@ -430,6 +448,7 @@ def _auth_cfg(cfg: ConfigParser | None = None) -> dict[str, Any]:
 
 
 # --- Config file helpers and hot-update endpoints ---
+
 
 def _config_file_path() -> Path:
     # Canonical per-user config location
@@ -512,11 +531,15 @@ def _ollama_get_json(url: str, timeout_s: float = 10.0) -> Any:
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
         data = resp.read()
     import json
+
     return json.loads(data.decode("utf-8"))
 
 
-def _ollama_post_json(url: str, payload: dict[str, Any], timeout_s: float = 60.0) -> Any:
+def _ollama_post_json(
+    url: str, payload: dict[str, Any], timeout_s: float = 60.0
+) -> Any:
     import json
+
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
@@ -570,8 +593,6 @@ def _capture_stdout(fn, *args, **kwargs) -> tuple[int, str, str]:
     return int(rc), out.getvalue(), err.getvalue()
 
 
-
-
 # ----------------------------
 # Routes
 # ----------------------------
@@ -594,6 +615,7 @@ def info(request: Request) -> InfoResponse:
 
 # --- Config get/set endpoints ---
 
+
 @api.get("/config")
 def config_get(request: Request) -> dict[str, Any]:
     cfg = _req_cfg(request)
@@ -606,7 +628,9 @@ def config_get(request: Request) -> dict[str, Any]:
 
 
 @api.post("/config")
-def config_update(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+def config_update(
+    request: Request, payload: dict[str, Any] = Body(...)
+) -> dict[str, Any]:
     # Only apply known keys; ignore the rest.
     updates: dict[str, Any] = {}
     if "default_model" in payload:
@@ -634,7 +658,9 @@ def config_update(request: Request, payload: dict[str, Any] = Body(...)) -> dict
 
 # PATCH endpoint for config updates
 @api.patch("/config")
-def config_patch(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+def config_patch(
+    request: Request, payload: dict[str, Any] = Body(...)
+) -> dict[str, Any]:
     return config_update(request, payload)
 
 
@@ -652,11 +678,15 @@ def models_list(request: Request) -> dict[str, Any]:
                 names.append(m["name"])
         return {"models": names}
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to list models from Ollama: {e}")
+        raise HTTPException(
+            status_code=502, detail=f"Failed to list models from Ollama: {e}"
+        )
 
 
 @api.post("/models/pull")
-def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+def models_pull(
+    request: Request, payload: dict[str, Any] = Body(...)
+) -> dict[str, Any]:
     cfg = _req_cfg(request)
     model = payload.get("model")
     if not isinstance(model, str) or not model.strip():
@@ -664,10 +694,16 @@ def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> dict[s
     model = model.strip()
     try:
         # Non-streaming pull; Ollama may take a while.
-        data = _ollama_post_json(_ollama_url(cfg, "/api/pull"), {"name": model, "stream": False}, timeout_s=600.0)
+        data = _ollama_post_json(
+            _ollama_url(cfg, "/api/pull"),
+            {"name": model, "stream": False},
+            timeout_s=600.0,
+        )
         return {"ok": True, "model": model, "result": data}
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to pull model via Ollama: {e}")
+        raise HTTPException(
+            status_code=502, detail=f"Failed to pull model via Ollama: {e}"
+        )
 
 
 @api.delete("/models/{model_name}")
@@ -680,7 +716,9 @@ def models_delete(request: Request, model_name: str) -> dict[str, Any]:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to delete model via Ollama: {e}")
+        raise HTTPException(
+            status_code=502, detail=f"Failed to delete model via Ollama: {e}"
+        )
 
 
 @api.get("/models/{model_name}/info")
@@ -693,7 +731,9 @@ def models_info(request: Request, model_name: str) -> dict[str, Any]:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to get model info via Ollama: {e}")
+        raise HTTPException(
+            status_code=502, detail=f"Failed to get model info via Ollama: {e}"
+        )
 
 
 @api.get("/sessions", response_model=SessionsListResponse)
@@ -711,10 +751,18 @@ def sessions_list(sessions_dir: Optional[str] = None) -> SessionsListResponse:
                 "modified": r.get("modified"),
                 "pinned": bool(meta.get("pinned")),
                 "tags": meta.get("tags") if isinstance(meta.get("tags"), list) else [],
-                "title": meta.get("title") if isinstance(meta.get("title"), str) else "",
-                "summary": meta.get("summary") if isinstance(meta.get("summary"), str) else "",
-                "token_estimate": meta.get("token_estimate") if isinstance(meta.get("token_estimate"), int) else None,
-                "model": meta.get("model") if isinstance(meta.get("model"), str) else "",
+                "title": meta.get("title")
+                if isinstance(meta.get("title"), str)
+                else "",
+                "summary": meta.get("summary")
+                if isinstance(meta.get("summary"), str)
+                else "",
+                "token_estimate": meta.get("token_estimate")
+                if isinstance(meta.get("token_estimate"), int)
+                else None,
+                "model": meta.get("model")
+                if isinstance(meta.get("model"), str)
+                else "",
             }
         )
     return SessionsListResponse(sessions=out)
@@ -722,10 +770,18 @@ def sessions_list(sessions_dir: Optional[str] = None) -> SessionsListResponse:
 
 def search_params(
     query: str = Query(..., min_length=1, description="Text to search for in messages"),
-    case_sensitive: bool = Query(False, description="Whether to perform case-sensitive search"),
-    role_filter: Optional[api_models.MessageRole] = Query(None, description="Filter by message role (user, assistant, system)"),
-    session_filter: Optional[str] = Query(None, description="Filter to specific session name"),
-    limit: int = Query(50, ge=1, le=500, description="Maximum number of results to return"),
+    case_sensitive: bool = Query(
+        False, description="Whether to perform case-sensitive search"
+    ),
+    role_filter: Optional[api_models.MessageRole] = Query(
+        None, description="Filter by message role (user, assistant, system)"
+    ),
+    session_filter: Optional[str] = Query(
+        None, description="Filter to specific session name"
+    ),
+    limit: int = Query(
+        50, ge=1, le=500, description="Maximum number of results to return"
+    ),
 ) -> api_models.SearchRequest:
     """Dependency function to validate search parameters using SearchRequest model.
 
@@ -831,7 +887,9 @@ def sessions_show(
         "limit": limit if limit is not None else total_count,
     }
 
+
 # Lightweight session initialization endpoint (does NOT invoke the model)
+
 
 @api.post("/sessions/init")
 def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
@@ -885,7 +943,9 @@ def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 @api.delete("/sessions/{name}")
 def sessions_delete(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
-    ok = sessions.delete_session(name, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
+    ok = sessions.delete_session(
+        name, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="No such session")
     return {"ok": True}
@@ -893,7 +953,9 @@ def sessions_delete(name: str, sessions_dir: Optional[str] = None) -> dict[str, 
 
 @api.post("/sessions/{name}/summarize")
 def sessions_summarize(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
-    ok, msg = sessions.summarize_session(name, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
+    ok, msg = sessions.summarize_session(
+        name, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
+    )
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"ok": True}
@@ -901,7 +963,9 @@ def sessions_summarize(name: str, sessions_dir: Optional[str] = None) -> dict[st
 
 @api.post("/sessions/{name}/pin")
 def sessions_pin(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
-    ok, msg = sessions.set_pinned(name, True, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
+    ok, msg = sessions.set_pinned(
+        name, True, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
+    )
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"ok": True}
@@ -909,42 +973,66 @@ def sessions_pin(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any
 
 @api.post("/sessions/{name}/unpin")
 def sessions_unpin(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
-    ok, msg = sessions.set_pinned(name, False, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
+    ok, msg = sessions.set_pinned(
+        name,
+        False,
+        _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)),
+    )
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"ok": True}
 
 
 @api.post("/sessions/{name}/title")
-def sessions_title(name: str, req: TitleRequest, sessions_dir: Optional[str] = None) -> dict[str, Any]:
-    ok, msg = sessions.set_title(name, req.title, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
+def sessions_title(
+    name: str, req: TitleRequest, sessions_dir: Optional[str] = None
+) -> dict[str, Any]:
+    ok, msg = sessions.set_title(
+        name,
+        req.title,
+        _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)),
+    )
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"ok": True}
 
 
 @api.post("/sessions/{name}/tags/add")
-def sessions_tags_add(name: str, req: TagsRequest, sessions_dir: Optional[str] = None) -> dict[str, Any]:
+def sessions_tags_add(
+    name: str, req: TagsRequest, sessions_dir: Optional[str] = None
+) -> dict[str, Any]:
     if not req.tags:
         raise HTTPException(status_code=400, detail="At least one tag is required")
-    ok, msg = sessions.add_tags(name, req.tags, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
+    ok, msg = sessions.add_tags(
+        name,
+        req.tags,
+        _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)),
+    )
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"ok": True}
 
 
 @api.post("/sessions/{name}/tags/remove")
-def sessions_tags_remove(name: str, req: TagsRequest, sessions_dir: Optional[str] = None) -> dict[str, Any]:
+def sessions_tags_remove(
+    name: str, req: TagsRequest, sessions_dir: Optional[str] = None
+) -> dict[str, Any]:
     if not req.tags:
         raise HTTPException(status_code=400, detail="At least one tag is required")
-    ok, msg = sessions.remove_tags(name, req.tags, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)))
+    ok, msg = sessions.remove_tags(
+        name,
+        req.tags,
+        _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None)),
+    )
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return {"ok": True}
 
 
 @api.post("/sessions/{name}/rename")
-def sessions_rename(name: str, req: RenameRequest, sessions_dir: Optional[str] = None) -> dict[str, Any]:
+def sessions_rename(
+    name: str, req: RenameRequest, sessions_dir: Optional[str] = None
+) -> dict[str, Any]:
     """Rename a session with optional title update and filename sync.
 
     This endpoint supports two modes:
@@ -969,11 +1057,21 @@ def sessions_rename(name: str, req: RenameRequest, sessions_dir: Optional[str] =
             raise HTTPException(status_code=400, detail=msg)
 
         # Then sync filename based on title
-        success, status, new_name = sessions.sync_filename_with_title(name, _sessions_dir, force=True)
+        success, status, new_name = sessions.sync_filename_with_title(
+            name, _sessions_dir, force=True
+        )
         if not success:
-            raise HTTPException(status_code=500, detail=f"Title updated but filename sync failed: {status}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Title updated but filename sync failed: {status}",
+            )
 
-        return {"ok": True, "old_name": name, "new_name": new_name, "message": "Session renamed and filename synced"}
+        return {
+            "ok": True,
+            "old_name": name,
+            "new_name": new_name,
+            "message": "Session renamed and filename synced",
+        }
     else:
         # Mode 2: Direct rename (validate new name first)
         try:
@@ -986,11 +1084,18 @@ def sessions_rename(name: str, req: RenameRequest, sessions_dir: Optional[str] =
         if not ok:
             raise HTTPException(status_code=400, detail=msg)
 
-        return {"ok": True, "old_name": name, "new_name": validated_name, "message": "Session renamed"}
+        return {
+            "ok": True,
+            "old_name": name,
+            "new_name": validated_name,
+            "message": "Session renamed",
+        }
 
 
 @api.post("/sessions/{name}/sync-filename")
-def sessions_sync_filename(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
+def sessions_sync_filename(
+    name: str, sessions_dir: Optional[str] = None
+) -> dict[str, Any]:
     """Force filename sync for a session based on its current title.
 
     This endpoint is useful when:
@@ -1006,7 +1111,9 @@ def sessions_sync_filename(name: str, sessions_dir: Optional[str] = None) -> dic
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     # Force filename sync
-    success, status, new_name = sessions.sync_filename_with_title(name, _sessions_dir, force=True)
+    success, status, new_name = sessions.sync_filename_with_title(
+        name, _sessions_dir, force=True
+    )
 
     if not success:
         raise HTTPException(status_code=500, detail=f"Filename sync failed: {status}")
@@ -1016,7 +1123,12 @@ def sessions_sync_filename(name: str, sessions_dir: Optional[str] = None) -> dic
     elif status == "no_change":
         return {"ok": True, "message": "Filename already matches title", "name": name}
     elif status == "renamed":
-        return {"ok": True, "old_name": name, "new_name": new_name, "message": "Filename synced with title"}
+        return {
+            "ok": True,
+            "old_name": name,
+            "new_name": new_name,
+            "message": "Filename synced with title",
+        }
     else:
         return {"ok": True, "message": status, "name": new_name}
 
@@ -1026,7 +1138,7 @@ def edit_message(
     name: str,
     message_index: int,
     req: api_models.EditMessageRequest,
-    sessions_dir: Optional[str] = None
+    sessions_dir: Optional[str] = None,
 ) -> dict[str, Any]:
     """Edit a message in a session.
 
@@ -1051,9 +1163,7 @@ def edit_message(
 
 @api.get("/sessions/{name}/messages/{message_index}/rag")
 def get_message_rag_chunks(
-    name: str,
-    message_index: int,
-    sessions_dir: Optional[str] = None
+    name: str, message_index: int, sessions_dir: Optional[str] = None
 ) -> dict[str, Any]:
     """Get RAG chunks for a specific message.
 
@@ -1073,18 +1183,18 @@ def get_message_rag_chunks(
     if message_index < 0 or message_index >= len(msgs):
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid message_index: {message_index} (session has {len(msgs)} messages)"
+            detail=f"Invalid message_index: {message_index} (session has {len(msgs)} messages)",
         )
 
     message = msgs[message_index]
 
     # Extract RAG chunks if present
-    rag_chunks = message.get("rag_chunks", [])
+    rag_chunks: list[Any] = cast(list[Any], message.get("rag_chunks", []))
 
     return {
         "message_index": message_index,
         "has_rag": len(rag_chunks) > 0,
-        "chunks": rag_chunks
+        "chunks": rag_chunks,
     }
 
 
@@ -1114,13 +1224,14 @@ def regenerate_response(
 
     msgs = sessions.load_session_messages(sf)
     if message_index < 0 or message_index >= len(msgs):
-        raise HTTPException(status_code=400, detail=f"Invalid message index: {message_index}")
+        raise HTTPException(
+            status_code=400, detail=f"Invalid message index: {message_index}"
+        )
 
     message = msgs[message_index]
     if message.get("role") != "user":
         raise HTTPException(
-            status_code=400,
-            detail="Can only regenerate from user messages"
+            status_code=400, detail="Can only regenerate from user messages"
         )
 
     # If new prompt provided, edit the message first
@@ -1146,7 +1257,6 @@ def regenerate_response(
             raise HTTPException(status_code=400, detail=msg)
 
     # Generate new response using existing chat endpoint logic
-    cfg = _cfg(None)
     try:
         result = chat_module.chat(
             prompt=prompt,
@@ -1170,11 +1280,16 @@ def regenerate_response(
 
 
 @api.get("/sessions/{name}/export")
-def sessions_export(name: str, format: str = "markdown", sessions_dir: Optional[str] = None):
+def sessions_export(
+    name: str, format: str = "markdown", sessions_dir: Optional[str] = None
+):
     """Export session to markdown, JSON, or HTML format."""
     format_lower = format.lower()
     if format_lower not in ("markdown", "json", "html"):
-        raise HTTPException(status_code=400, detail="Invalid format. Must be one of: markdown, json, html")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid format. Must be one of: markdown, json, html",
+        )
 
     sd = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
 
@@ -1195,7 +1310,12 @@ def sessions_export(name: str, format: str = "markdown", sessions_dir: Optional[
         raise HTTPException(status_code=404, detail=content)
 
     from fastapi.responses import Response
-    return Response(content=content, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{name}.{extension}"'})
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{name}.{extension}"'},
+    )
 
 
 @api.post("/chat", response_model=ChatResponse)
@@ -1215,7 +1335,7 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
                 "new_session": req.new,
                 "prompt_length": len(req.prompt),
                 "rag_enabled": d.get("rag_enabled", False),
-            }
+            },
         )
 
         kwargs: dict[str, Any] = {
@@ -1230,7 +1350,9 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
         # Optional runtime override: only pass if chat implementation supports it.
         if _maybe_kw(run_chat, "rag_enabled"):
             rag_val = getattr(req, "rag_enabled", None)
-            kwargs["rag_enabled"] = d["rag_enabled"] if rag_val is None else bool(rag_val)
+            kwargs["rag_enabled"] = (
+                d["rag_enabled"] if rag_val is None else bool(rag_val)
+            )
 
         result = run_chat(req.prompt, **kwargs)
 
@@ -1241,19 +1363,21 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
                 "session": result.session,
                 "model": result.model,
                 "reply_length": len(result.reply),
-            }
+            },
         )
 
         # Convert RAG context to RagChunkInfo objects
         rag_chunks = []
         if result.rag_context:
             for chunk_data in result.rag_context:
-                rag_chunks.append(RagChunkInfo(
-                    text=chunk_data.get("text", ""),
-                    score=chunk_data.get("score", 0.0),
-                    doc_id=chunk_data.get("doc_id"),
-                    chunk_id=chunk_data.get("chunk_id"),
-                ))
+                rag_chunks.append(
+                    RagChunkInfo(
+                        text=chunk_data.get("text", ""),
+                        score=chunk_data.get("score", 0.0),
+                        doc_id=chunk_data.get("doc_id"),
+                        chunk_id=chunk_data.get("chunk_id"),
+                    )
+                )
 
         return ChatResponse(
             session=result.session,
@@ -1264,13 +1388,19 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
         )
     except ValueError as e:
         # Validation errors (e.g., invalid session name)
-        log.warning("Chat validation error", extra={"request_id": req_id, "error": str(e)})
+        log.warning(
+            "Chat validation error", extra={"request_id": req_id, "error": str(e)}
+        )
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         log.error(
             "Chat request failed",
-            extra={"request_id": req_id, "error": str(e), "error_type": type(e).__name__},
-            exc_info=True
+            extra={
+                "request_id": req_id,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
+            exc_info=True,
         )
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -1295,6 +1425,7 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
         # Validate session name early, before creating generator
         # This ensures validation errors are caught and return 422 instead of failing during streaming
         from mygpt.sessions import validate_session_name
+
         try:
             validate_session_name(req.session)
         except ValueError as e:
@@ -1327,7 +1458,9 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
 
             if _maybe_kw(chat_stream, "rag_enabled"):
                 rag_val = getattr(req, "rag_enabled", None)
-                kwargs["rag_enabled"] = d["rag_enabled"] if rag_val is None else bool(rag_val)
+                kwargs["rag_enabled"] = (
+                    d["rag_enabled"] if rag_val is None else bool(rag_val)
+                )
 
             for chunk in chat_stream(req.prompt, **kwargs):
                 yield chunk
@@ -1368,23 +1501,33 @@ def chat_stream_api_legacy(request: Request, req: ChatRequest):
 def tool_ls(req: ToolLsRequest) -> ToolTextResponse:
     rc, out, err = _capture_stdout(tools_fs.ls, Path(req.path))
     if rc != 0:
-        raise HTTPException(status_code=400, detail=(err.strip() or out.strip() or "ls failed"))
+        raise HTTPException(
+            status_code=400, detail=(err.strip() or out.strip() or "ls failed")
+        )
     return ToolTextResponse(output=out)
 
 
 @api.post("/tools/cat", response_model=ToolTextResponse)
 def tool_cat(req: ToolCatRequest) -> ToolTextResponse:
-    rc, out, err = _capture_stdout(tools_fs.cat, Path(req.path), head=req.head, tail=req.tail)
+    rc, out, err = _capture_stdout(
+        tools_fs.cat, Path(req.path), head=req.head, tail=req.tail
+    )
     if rc != 0:
-        raise HTTPException(status_code=400, detail=(err.strip() or out.strip() or "cat failed"))
+        raise HTTPException(
+            status_code=400, detail=(err.strip() or out.strip() or "cat failed")
+        )
     return ToolTextResponse(output=out)
 
 
 @api.post("/tools/grep", response_model=ToolTextResponse)
 def tool_grep(req: ToolGrepRequest) -> ToolTextResponse:
-    rc, out, err = _capture_stdout(tools_fs.grep, req.pattern, Path(req.path), max_matches=req.max)
+    rc, out, err = _capture_stdout(
+        tools_fs.grep, req.pattern, Path(req.path), max_matches=req.max
+    )
     if rc != 0:
-        raise HTTPException(status_code=400, detail=(err.strip() or out.strip() or "grep failed"))
+        raise HTTPException(
+            status_code=400, detail=(err.strip() or out.strip() or "grep failed")
+        )
     return ToolTextResponse(output=out)
 
 
@@ -1408,9 +1551,13 @@ def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
         result = retrieve_context(req.query, top_k=req.top_k, debug_mode=req.debug_mode)
 
         if req.debug_mode:
-            results, debug_info = result
+            # Type narrowing: debug_mode=True means result is tuple[list[dict], RAGDebugInfo]
+            from mygpt.rag.rag import RAGDebugInfo
+
+            results, debug_info = cast(tuple[list[dict], RAGDebugInfo], result)
             # Convert RAGDebugInfo to RagDebugInfo (API model)
             from mygpt.api_models import RagDebugInfo
+
             api_debug_info = RagDebugInfo(
                 total_time_ms=debug_info.total_time_ms,
                 query_expansion_time_ms=debug_info.query_expansion_time_ms,
@@ -1437,7 +1584,8 @@ def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
                 chunks_included=debug_info.chunks_included,
             )
         else:
-            results = result
+            # Type narrowing: debug_mode=False means result is list[dict]
+            results = cast(list[dict], result)
             api_debug_info = None
 
         out = [
@@ -1535,7 +1683,7 @@ async def rag_upload_file(
     if file_ext not in allowed_types:
         raise HTTPException(
             status_code=400,
-            detail=f"File type {file_ext} not supported. Allowed: {', '.join(allowed_types)}"
+            detail=f"File type {file_ext} not supported. Allowed: {', '.join(allowed_types)}",
         )
 
     # Read file content
@@ -1546,7 +1694,7 @@ async def rag_upload_file(
     if len(content) > MAX_UPLOAD_SIZE:
         raise HTTPException(
             status_code=413,
-            detail=f"File too large ({len(content)} bytes). Maximum size: {MAX_UPLOAD_SIZE} bytes (10MB)"
+            detail=f"File too large ({len(content)} bytes). Maximum size: {MAX_UPLOAD_SIZE} bytes (10MB)",
         )
 
     # Parse based on file type
@@ -1554,10 +1702,14 @@ async def rag_upload_file(
         # Handle PDF (if pypdf available)
         try:
             from pypdf import PdfReader
+
             reader = PdfReader(io.BytesIO(content))
             text = "\n\n".join(page.extract_text() for page in reader.pages)
         except ImportError:
-            raise HTTPException(status_code=400, detail="PDF support not available. Install pypdf: pip install pypdf")
+            raise HTTPException(
+                status_code=400,
+                detail="PDF support not available. Install pypdf: pip install pypdf",
+            )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"PDF parsing failed: {e}")
 
@@ -1577,8 +1729,8 @@ async def rag_upload_file(
             # Convert markdown to plain text (strip HTML tags)
             # This preserves structure while making it searchable
             html = markdown(post.content)
-            soup = BeautifulSoup(html, 'html.parser')
-            text = soup.get_text(separator='\n\n')
+            soup = BeautifulSoup(html, "html.parser")
+            text = soup.get_text(separator="\n\n")
 
             # Prepend frontmatter as metadata section
             if metadata:
@@ -1594,6 +1746,7 @@ async def rag_upload_file(
     elif file_ext == ".json":
         # JSON files stored as formatted text
         import json
+
         try:
             data = json.loads(content.decode("utf-8"))
             text = json.dumps(data, indent=2, ensure_ascii=False)
@@ -1608,7 +1761,9 @@ async def rag_upload_file(
             raise HTTPException(status_code=400, detail=f"File encoding error: {e}")
 
     # Use filename as doc_id if not provided (sanitize to prevent path traversal)
-    safe_filename = os.path.basename(file.filename or "").strip() if file.filename else ""
+    safe_filename = (
+        os.path.basename(file.filename or "").strip() if file.filename else ""
+    )
     final_doc_id = doc_id or safe_filename or f"upload_{uuid.uuid4().hex[:8]}"
 
     # Ingest
@@ -1635,12 +1790,14 @@ def logs_list_files(request: Request) -> dict[str, Any]:
     for log_file in sorted(log_dir.glob("*.log*"), reverse=True):
         if log_file.is_file():
             stat = log_file.stat()
-            files.append({
-                "name": log_file.name,
-                "path": str(log_file),
-                "size": stat.st_size,
-                "modified": stat.st_mtime,
-            })
+            files.append(
+                {
+                    "name": log_file.name,
+                    "path": str(log_file),
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime,
+                }
+            )
 
     return {"files": files, "log_dir": str(log_dir)}
 
@@ -1688,7 +1845,7 @@ def logs_view_file(
 
     except HTTPException:
         raise
-    except (ValueError, OSError) as e:
+    except (ValueError, OSError):
         raise HTTPException(status_code=404, detail="Log file not found")
 
     try:
@@ -1701,17 +1858,13 @@ def logs_view_file(
         # Filter by log level
         if level:
             level_upper = level.upper()
-            filtered_lines = [
-                line for line in filtered_lines
-                if level_upper in line
-            ]
+            filtered_lines = [line for line in filtered_lines if level_upper in line]
 
         # Filter by search string
         if search:
             search_lower = search.lower()
             filtered_lines = [
-                line for line in filtered_lines
-                if search_lower in line.lower()
+                line for line in filtered_lines if search_lower in line.lower()
             ]
 
         # Apply tail limit
@@ -1768,7 +1921,7 @@ async def logs_stream_file(
 
     except HTTPException:
         raise
-    except (ValueError, OSError) as e:
+    except (ValueError, OSError):
         raise HTTPException(status_code=404, detail="Log file not found")
 
     async def stream_lines():

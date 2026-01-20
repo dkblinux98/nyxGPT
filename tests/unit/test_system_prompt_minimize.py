@@ -4,10 +4,9 @@ from pathlib import Path
 from typing import Any
 import configparser
 import pytest
+from mygpt.chat import _minimize_system_prompt, chat
 
 pytestmark = pytest.mark.unit
-
-from mygpt.chat import _minimize_system_prompt, chat
 
 
 def test_minimize_whitespace():
@@ -123,7 +122,9 @@ def test_minimize_preserves_case_in_content():
     assert "JavaScript" in result
 
 
-def test_chat_with_minimize_disabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_chat_with_minimize_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Test that chat works normally when minimization is disabled."""
     cfg = configparser.ConfigParser()
     cfg["mygpt"] = {
@@ -156,7 +157,9 @@ def test_chat_with_minimize_disabled(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert system_msg["content"] == "You are a helpful assistant."
 
 
-def test_chat_with_minimize_enabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_chat_with_minimize_enabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Test that chat applies minimization when enabled."""
     cfg = configparser.ConfigParser()
     cfg["mygpt"] = {

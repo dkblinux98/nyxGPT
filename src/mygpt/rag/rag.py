@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List
+from typing import Iterable, List, cast
 import logging
 import json
 import time
@@ -18,7 +18,10 @@ from mygpt.config import (
     get_rag_debug_mode,
 )
 from mygpt.rag.embeddings import embed_text, embed_texts, EmbeddingDebugMetrics
-from mygpt.rag.vectorstore_cassandra import CassandraVectorStore, VectorSearchDebugMetrics
+from mygpt.rag.vectorstore_cassandra import (
+    CassandraVectorStore,
+    VectorSearchDebugMetrics,
+)
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +35,7 @@ class ChunkingConfig:
 @dataclass
 class RAGDebugInfo:
     """Complete debug information for RAG operations."""
+
     # Timing
     total_time_ms: float
     query_expansion_time_ms: float | None
@@ -311,10 +315,20 @@ def ingest_document(
     if not chunks:
         return 0
 
-    embeddings = embed_texts(chunks, model=embedding_model, dimension=embedding_dim)
+    embeddings_result = embed_texts(
+        chunks, model=embedding_model, dimension=embedding_dim
+    )
+    # embed_texts returns list[list[float]] when collect_metrics=False (default)
+    # Type narrowing: we didn't pass collect_metrics, so it's always the list form
+    embeddings: list[list[float]] = (
+        embeddings_result
+        if isinstance(embeddings_result, list)
+        else embeddings_result[0]
+    )
 
     # Get the actual model and dimension from embeddings config
     from mygpt.rag.embeddings import _embedding_cfg
+
     ecfg = _embedding_cfg(model=embedding_model, dimension=embedding_dim)
     actual_model = ecfg.model
     actual_dim = len(embeddings[0]) if embeddings else ecfg.dimension
@@ -379,7 +393,9 @@ def expand_query(query: str, max_expansions: int = 3) -> list[str]:
         from mygpt.ollama_client import ollama_chat
 
         base_url = get_ollama_base_url(cfg)
-        model = cfg.get("rag", "expansion_model", fallback=None) or get_default_model(cfg)
+        model = cfg.get("rag", "expansion_model", fallback=None) or get_default_model(
+            cfg
+        )
 
         system_prompt = (
             "You are a query expansion assistant. Given a search query, "
@@ -391,14 +407,14 @@ def expand_query(query: str, max_expansions: int = 3) -> list[str]:
 
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Original query: {query}"}
+            {"role": "user", "content": f"Original query: {query}"},
         ]
 
         response = ollama_chat(
             base_url=base_url,
             model=model,
             messages=messages,
-            timeout_s=10  # Short timeout for expansion
+            timeout_s=10,  # Short timeout for expansion
         )
 
         # Parse JSON response
@@ -416,7 +432,9 @@ def expand_query(query: str, max_expansions: int = 3) -> list[str]:
 
         if isinstance(expansions, list):
             # Return original + valid expansions (up to max)
-            valid = [str(e).strip() for e in expansions if e and len(str(e).strip()) > 0]
+            valid = [
+                str(e).strip() for e in expansions if e and len(str(e).strip()) > 0
+            ]
             return [query] + valid[:max_expansions]
 
     except Exception as e:
@@ -468,6 +486,7 @@ def retrieve_context(
 
     # Get the actual model that will be used for embedding
     from mygpt.rag.embeddings import _embedding_cfg
+
     ecfg = _embedding_cfg(model=embedding_model, dimension=embedding_dim)
     actual_model = ecfg.model
 
@@ -504,8 +523,16 @@ def retrieve_context(
         for idx, q in enumerate(queries):
             # Embed with metrics collection if debug mode
             if collect_debug:
-                result = embed_texts([q], collect_metrics=True, model=embedding_model, dimension=embedding_dim)
-                embeddings, emb_metrics = result
+                result = embed_texts(
+                    [q],
+                    collect_metrics=True,
+                    model=embedding_model,
+                    dimension=embedding_dim,
+                )
+                # Type narrowing: result is tuple[list[list[float]], EmbeddingDebugMetrics]
+                embeddings, emb_metrics = cast(
+                    tuple[list[list[float]], EmbeddingDebugMetrics], result
+                )
                 q_emb = embeddings[0] if embeddings else []
                 # Store only the first embedding metrics (they're all the same model/config)
                 if idx == 0:
@@ -516,8 +543,13 @@ def retrieve_context(
             # Query vector store with metrics collection if debug mode
             # Filter by embedding_model to ensure we only get results from the same model
             if collect_debug:
-                result = store.query_by_embedding(q_emb, k=k, collect_metrics=True, embedding_model=actual_model)
-                results, vs_metrics = result
+                vs_result = store.query_by_embedding(
+                    q_emb, k=k, collect_metrics=True, embedding_model=actual_model
+                )
+                # Type narrowing: vs_result is tuple[list[dict], VectorSearchDebugMetrics]
+                results, vs_metrics = cast(
+                    tuple[list[dict], VectorSearchDebugMetrics], vs_result
+                )
                 total_raw_results += vs_metrics.raw_results_count
                 # Accumulate scores for overall statistics
                 if vs_metrics.score_min is not None:
@@ -526,7 +558,10 @@ def retrieve_context(
                 if idx == 0:
                     vector_search_metrics = vs_metrics
             else:
-                results = store.query_by_embedding(q_emb, k=k, embedding_model=actual_model)
+                results = cast(
+                    list[dict],
+                    store.query_by_embedding(q_emb, k=k, embedding_model=actual_model),
+                )
 
             for r in results:
                 text = (r.get("text") or "").strip()
@@ -563,7 +598,9 @@ def retrieve_context(
     after_min_score = len(filtered)
     after_max_chunks = len(filtered)
 
-    filtering_time_ms = (time.perf_counter() - filter_start) * 1000.0 if filter_start else 0.0
+    filtering_time_ms = (
+        (time.perf_counter() - filter_start) * 1000.0 if filter_start else 0.0
+    )
 
     if not collect_debug:
         return filtered
@@ -577,15 +614,25 @@ def retrieve_context(
         overall_score_max = max(all_scores) if all_scores else None
         overall_score_mean = sum(all_scores) / len(all_scores) if all_scores else None
     else:
-        overall_score_min = vector_search_metrics.score_min if vector_search_metrics else None
-        overall_score_max = vector_search_metrics.score_max if vector_search_metrics else None
-        overall_score_mean = vector_search_metrics.score_mean if vector_search_metrics else None
+        overall_score_min = (
+            vector_search_metrics.score_min if vector_search_metrics else None
+        )
+        overall_score_max = (
+            vector_search_metrics.score_max if vector_search_metrics else None
+        )
+        overall_score_mean = (
+            vector_search_metrics.score_mean if vector_search_metrics else None
+        )
 
     debug_info = RAGDebugInfo(
         total_time_ms=total_time_ms,
         query_expansion_time_ms=query_expansion_time_ms,
-        embedding_time_ms=embedding_metrics.embedding_time_ms if embedding_metrics else 0.0,
-        vector_search_time_ms=vector_search_metrics.vector_search_time_ms if vector_search_metrics else 0.0,
+        embedding_time_ms=embedding_metrics.embedding_time_ms
+        if embedding_metrics
+        else 0.0,
+        vector_search_time_ms=vector_search_metrics.vector_search_time_ms
+        if vector_search_metrics
+        else 0.0,
         filtering_time_ms=filtering_time_ms,
         composition_time_ms=0.0,  # compose_context is called separately
         original_query=query,
@@ -593,9 +640,13 @@ def retrieve_context(
         num_queries=len(queries),
         embedding_model=embedding_metrics.embedding_model if embedding_metrics else "",
         embedding_dim=embedding_metrics.embedding_dim if embedding_metrics else 0,
-        num_texts_embedded=embedding_metrics.num_texts_embedded if embedding_metrics else 0,
+        num_texts_embedded=embedding_metrics.num_texts_embedded
+        if embedding_metrics
+        else 0,
         batch_size=embedding_metrics.batch_size if embedding_metrics else 0,
-        raw_results_count=total_raw_results if len(queries) > 1 else (vector_search_metrics.raw_results_count if vector_search_metrics else 0),
+        raw_results_count=total_raw_results
+        if len(queries) > 1
+        else (vector_search_metrics.raw_results_count if vector_search_metrics else 0),
         score_min=overall_score_min,
         score_max=overall_score_max,
         score_mean=overall_score_mean,

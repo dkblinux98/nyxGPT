@@ -13,7 +13,17 @@ import logging
 from typing import Optional
 
 from textual.app import App, ComposeResult
-from textual.widgets import Header, Footer, Static, Input, ListView, ListItem, Label, Button, Checkbox
+from textual.widgets import (
+    Header,
+    Footer,
+    Static,
+    Input,
+    ListView,
+    ListItem,
+    Label,
+    Button,
+    Checkbox,
+)
 from textual.containers import Vertical, Container
 from textual.binding import Binding
 from textual.screen import Screen, ModalScreen
@@ -71,7 +81,7 @@ class SessionMetadataPreview(Static):
 
 Modified: {modified}
 Messages: {messages_count}
-Tags: {', '.join(tags) if tags else 'None'}
+Tags: {", ".join(tags) if tags else "None"}
 
 {summary}
         """.strip()
@@ -146,11 +156,14 @@ class SessionPickerScreen(Screen):
         else:
             # Search in name, title, summary, and tags
             self.filtered_sessions = [
-                s for s in self.all_sessions
+                s
+                for s in self.all_sessions
                 if query in s["name"].lower()
                 or query in s.get("meta", {}).get("title", "").lower()
                 or query in s.get("meta", {}).get("summary", "").lower()
-                or any(query in tag.lower() for tag in s.get("meta", {}).get("tags", []))
+                or any(
+                    query in tag.lower() for tag in s.get("meta", {}).get("tags", [])
+                )
             ]
 
         await self.update_session_list()
@@ -161,7 +174,9 @@ class SessionPickerScreen(Screen):
             return
 
         session_name = event.item.name
-        session = next((s for s in self.filtered_sessions if s["name"] == session_name), None)
+        session = next(
+            (s for s in self.filtered_sessions if s["name"] == session_name), None
+        )
 
         if session:
             preview = self.query_one("#session-preview", SessionMetadataPreview)
@@ -212,7 +227,9 @@ class ModelsManagerScreen(Screen):
 
         try:
             async with httpx.AsyncClient() as client:
-                res = await client.get(f"{self.api_base_url}/api/v1/models", timeout=10.0)
+                res = await client.get(
+                    f"{self.api_base_url}/api/v1/models", timeout=10.0
+                )
                 res.raise_for_status()
                 data = res.json()
                 model_names = data.get("models", [])
@@ -223,16 +240,18 @@ class ModelsManagerScreen(Screen):
                     try:
                         info_res = await client.get(
                             f"{self.api_base_url}/api/v1/models/{name}/info",
-                            timeout=10.0
+                            timeout=10.0,
                         )
                         info_res.raise_for_status()
                         info_data = info_res.json()
                         model_info = info_data.get("info", {})
-                        self.models.append({
-                            "name": name,
-                            "size": model_info.get("size", 0),
-                            "modified_at": model_info.get("modified_at", ""),
-                        })
+                        self.models.append(
+                            {
+                                "name": name,
+                                "size": model_info.get("size", 0),
+                                "modified_at": model_info.get("modified_at", ""),
+                            }
+                        )
                     except Exception:
                         # If info fails, just add name
                         self.models.append({"name": name, "size": 0, "modified_at": ""})
@@ -258,7 +277,7 @@ class ModelsManagerScreen(Screen):
             size_bytes = model.get("size", 0)
             # Format size (simple version)
             if size_bytes > 0:
-                size_gb = size_bytes / (1024 ** 3)
+                size_gb = size_bytes / (1024**3)
                 size_str = f"{size_gb:.1f} GB"
             else:
                 size_str = "Unknown"
@@ -295,7 +314,7 @@ class SearchResultsScreen(ModalScreen[dict | None]):
         super().__init__()
         self.api_base_url = api_base_url
         self.current_session = current_session
-        self.results = []
+        self.results: list[dict] = []
         self.case_sensitive = False
 
     def compose(self) -> ComposeResult:
@@ -303,8 +322,7 @@ class SearchResultsScreen(ModalScreen[dict | None]):
         with Container(id="search-dialog"):
             yield Label("Search Messages")
             self.search_input = Input(
-                placeholder="Enter search query...",
-                id="search-input"
+                placeholder="Enter search query...", id="search-input"
             )
             yield self.search_input
 
@@ -355,8 +373,8 @@ class SearchResultsScreen(ModalScreen[dict | None]):
                     params={
                         "query": query,
                         "case_sensitive": str(self.case_sensitive).lower(),
-                        "limit": 50
-                    }
+                        "limit": 50,
+                    },
                 )
                 res.raise_for_status()
                 data = res.json()
@@ -366,7 +384,9 @@ class SearchResultsScreen(ModalScreen[dict | None]):
                 if len(self.results) == 0:
                     self.notify(f"No results found for '{query}'", severity="warning")
                 else:
-                    self.notify(f"Found {len(self.results)} result(s)", severity="information")
+                    self.notify(
+                        f"Found {len(self.results)} result(s)", severity="information"
+                    )
         except Exception as e:
             self.notify(f"Search failed: {str(e)}", severity="error")
             self.results = []
@@ -382,7 +402,11 @@ class SearchResultsScreen(ModalScreen[dict | None]):
         for idx, result in enumerate(self.results):
             session_title = result.get("session_title") or result.get("session_name")
             role_icon = "👤" if result.get("role") == "user" else "🤖"
-            matches_text = f" ({result.get('matches')} matches)" if result.get("matches", 0) > 1 else ""
+            matches_text = (
+                f" ({result.get('matches')} matches)"
+                if result.get("matches", 0) > 1
+                else ""
+            )
             label_text = f"{role_icon} {session_title}{matches_text}"
 
             item = ListItem(Label(label_text))
@@ -394,15 +418,19 @@ class SearchResultsScreen(ModalScreen[dict | None]):
             return
 
         try:
-            result = self.results[self.results_list.index]
-            preview_text = result.get("content_preview", "")
-            self.preview.update(preview_text)
+            idx = self.results_list.index
+            if idx is not None:
+                result = self.results[idx]
+                preview_text = result.get("content_preview", "")
+                self.preview.update(preview_text)
         except (IndexError, AttributeError):
             pass
 
     async def action_select_result(self) -> None:
         """Return selected result to caller."""
-        if self.results_list.index is not None and self.results_list.index < len(self.results):
+        if self.results_list.index is not None and self.results_list.index < len(
+            self.results
+        ):
             result = self.results[self.results_list.index]
             self.dismiss(result)
         else:
@@ -424,17 +452,28 @@ class MyGPTTUI(App):
         ("ctrl+n", "rename_session", "Rename"),
     ]
 
-    def __init__(self, session: str = "default", api_base_url: Optional[str] = None, config_path: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        session: str = "default",
+        api_base_url: Optional[str] = None,
+        config_path: Optional[str] = None,
+    ) -> None:
         super().__init__()
         cfg = load_config(config_path)
         self.session = session
         # api_base_url parameter or config value, guaranteed to be str due to fallback
-        base_url = api_base_url if api_base_url is not None else cfg.get("api", "base_url", fallback="http://127.0.0.1:8000")
+        base_url = (
+            api_base_url
+            if api_base_url is not None
+            else cfg.get("api", "base_url", fallback="http://127.0.0.1:8000")
+        )
         self.api_base_url: str = str(base_url)  # Ensure str type for mypy
         self.config_path = config_path
         self.rag_enabled = False  # Track current session RAG state
 
-        log.info("TUI initialized", extra={"session": session, "api": self.api_base_url})
+        log.info(
+            "TUI initialized", extra={"session": session, "api": self.api_base_url}
+        )
 
     def _unlock_prompt(self) -> None:
         """Re-enable the input prompt and focus it.
@@ -512,13 +551,17 @@ class MyGPTTUI(App):
 
             self.rag_enabled = not self.rag_enabled
             self._update_rag_status()
-            log.info(f"RAG {'enabled' if self.rag_enabled else 'disabled'} for session {self.session}")
+            log.info(
+                f"RAG {'enabled' if self.rag_enabled else 'disabled'} for session {self.session}"
+            )
         except Exception as e:
             log.error(f"Failed to toggle RAG: {type(e).__name__}: {e}")
 
     async def action_pick_session(self) -> None:
         """Open the session picker and switch to the selected session."""
-        session_name = await self.push_screen_wait(SessionPickerScreen(self.config_path))
+        session_name = await self.push_screen_wait(
+            SessionPickerScreen(self.config_path)
+        )
 
         if session_name:
             # Update the current session
@@ -562,7 +605,7 @@ class MyGPTTUI(App):
                 # Notify user about navigation
                 self.notify(
                     f"Switched to session '{session_name}', message {message_index + 1}",
-                    severity="information"
+                    severity="information",
                 )
 
     async def action_rename_session(self) -> None:
@@ -586,7 +629,7 @@ class MyGPTTUI(App):
                     self.rename_input = Input(
                         placeholder="Enter new session name or title",
                         value=self.current_title,
-                        id="rename-input"
+                        id="rename-input",
                     )
                     yield self.rename_input
                     with Container(classes="rename-buttons"):
@@ -621,7 +664,9 @@ class MyGPTTUI(App):
             current_title = ""
 
         # Show rename dialog
-        new_name = await self.push_screen_wait(RenameScreen(self.session, current_title))
+        new_name = await self.push_screen_wait(
+            RenameScreen(self.session, current_title)
+        )
 
         if not new_name:
             return
@@ -631,7 +676,7 @@ class MyGPTTUI(App):
             async with httpx.AsyncClient() as client:
                 res = await client.post(
                     f"{self.api_base_url}/api/v1/sessions/{self.session}/rename",
-                    json={"new_name": new_name, "sync_filename": True}
+                    json={"new_name": new_name, "sync_filename": True},
                 )
                 res.raise_for_status()
                 data = res.json()
@@ -642,7 +687,9 @@ class MyGPTTUI(App):
                 # Update session name if filename changed
                 if new_session_name != old_name:
                     self.session = new_session_name
-                    self.output.append(f"\nSession renamed: {old_name} → {new_session_name}\n\n")
+                    self.output.append(
+                        f"\nSession renamed: {old_name} → {new_session_name}\n\n"
+                    )
                     log.info(f"Session renamed: {old_name} → {new_session_name}")
                 else:
                     self.output.append(f"\nSession title updated to: {new_name}\n\n")
@@ -677,7 +724,10 @@ class MyGPTTUI(App):
             "rag_enabled": self.rag_enabled,
         }
 
-        log.debug("Sending chat request", extra={"session": self.session, "rag_enabled": self.rag_enabled})
+        log.debug(
+            "Sending chat request",
+            extra={"session": self.session, "rag_enabled": self.rag_enabled},
+        )
 
         try:
             async with httpx.AsyncClient(timeout=None) as client:
@@ -698,14 +748,14 @@ class MyGPTTUI(App):
                         # Check for retry status markers
                         while "__RETRY_START__" in buffer and "__RETRY_END__" in buffer:
                             start_idx = buffer.index("__RETRY_START__")
-                            end_idx = buffer.index("__RETRY_END__") + len("__RETRY_END__")
-
-                            # Extract the marker content
-                            marker_content = buffer[start_idx:end_idx]
+                            end_idx = buffer.index("__RETRY_END__") + len(
+                                "__RETRY_END__"
+                            )
 
                             # Parse retry status
                             try:
                                 import json
+
                                 json_start = start_idx + len("__RETRY_START__")
                                 json_end = end_idx - len("__RETRY_END__")
                                 retry_json = buffer[json_start:json_end]
@@ -721,7 +771,9 @@ class MyGPTTUI(App):
                                     f"\n[reconnecting] Connection lost. Retrying (attempt {attempt}) in {delay:.1f}s...\n"
                                 )
                             except Exception as parse_err:
-                                log.warning(f"Failed to parse retry status: {parse_err}")
+                                log.warning(
+                                    f"Failed to parse retry status: {parse_err}"
+                                )
                             finally:
                                 # Always remove the marker from buffer (whether parsing succeeded or failed)
                                 buffer = buffer[:start_idx] + buffer[end_idx:]
@@ -767,7 +819,10 @@ class MyGPTTUI(App):
                                     first_content = False
                                 self.output.append(buffer)
                                 buffer = ""
-                            elif safe_idx == 0 and len(buffer) > MARKER_BUFFER_OVERFLOW_THRESHOLD:
+                            elif (
+                                safe_idx == 0
+                                and len(buffer) > MARKER_BUFFER_OVERFLOW_THRESHOLD
+                            ):
                                 # Entire buffer is potential partial marker but too large, flush it
                                 if first_content and buffer.strip():
                                     self.output.remove_typing_indicator()

@@ -23,7 +23,9 @@ def test_sanitize_title_for_filename_basic():
 def test_sanitize_title_for_filename_special_chars():
     """Test sanitization of special characters."""
     assert sanitize_title_for_filename("Python: Tips & Tricks!") == "python-tips-tricks"
-    assert sanitize_title_for_filename("Session #42 (Important)") == "session-42-important"
+    assert (
+        sanitize_title_for_filename("Session #42 (Important)") == "session-42-important"
+    )
     assert sanitize_title_for_filename("Hello/World\\Test") == "hello-world-test"
     assert sanitize_title_for_filename("Test@Home.com") == "test-home-com"
 
@@ -67,7 +69,9 @@ def test_sync_filename_with_title_no_title(tmp_path):
     save_session_meta(mf, {})
 
     # Should not rename (no title)
-    success, message, new_name = sync_filename_with_title(session_name, sessions_dir, force=True)
+    success, message, new_name = sync_filename_with_title(
+        session_name, sessions_dir, force=True
+    )
 
     assert success is True
     assert message == "no_title"
@@ -87,7 +91,9 @@ def test_sync_filename_with_title_no_change_needed(tmp_path):
     save_session_messages(sf, [{"role": "user", "content": "Hello"}])
     save_session_meta(mf, {"title": "My Chat Session"})  # Sanitizes to same name
 
-    success, message, new_name = sync_filename_with_title(session_name, sessions_dir, force=True)
+    success, message, new_name = sync_filename_with_title(
+        session_name, sessions_dir, force=True
+    )
 
     assert success is True
     assert message == "no_change"
@@ -113,7 +119,9 @@ def test_sync_filename_with_title_renames(tmp_path):
     save_session_meta(mf, meta)
 
     # Perform rename
-    success, message, new_name = sync_filename_with_title(old_name, sessions_dir, force=True)
+    success, message, new_name = sync_filename_with_title(
+        old_name, sessions_dir, force=True
+    )
 
     assert success is True
     assert message == "renamed"
@@ -131,6 +139,7 @@ def test_sync_filename_with_title_renames(tmp_path):
 
     # Verify content preserved
     from mygpt.sessions import load_session_messages
+
     loaded_messages = load_session_messages(new_sf)
     assert loaded_messages == messages
 
@@ -155,7 +164,9 @@ def test_sync_filename_with_title_handles_collision(tmp_path):
     save_session_meta(mf, {"title": "My Session"})
 
     # Should append -1
-    success, message, new_name = sync_filename_with_title(source_name, sessions_dir, force=True)
+    success, message, new_name = sync_filename_with_title(
+        source_name, sessions_dir, force=True
+    )
 
     assert success is True
     assert message == "renamed"
@@ -184,6 +195,7 @@ def test_sync_filename_with_title_disabled_by_config(tmp_path, monkeypatch):
 
     # Monkeypatch DEFAULT_CONFIG_PATH to use temp directory
     import mygpt.config
+
     monkeypatch.setattr(mygpt.config, "DEFAULT_CONFIG_PATH", config_file)
 
     # Clear config cache to force reload
@@ -192,7 +204,9 @@ def test_sync_filename_with_title_disabled_by_config(tmp_path, monkeypatch):
     mygpt.config._CACHED_MTIME_NS = None
 
     # Should not rename (disabled)
-    success, message, new_name = sync_filename_with_title(session_name, sessions_dir, force=False)
+    success, message, new_name = sync_filename_with_title(
+        session_name, sessions_dir, force=False
+    )
 
     assert success is True
     assert message == "disabled"
@@ -221,6 +235,7 @@ def test_sync_filename_with_title_force_override_config(tmp_path, monkeypatch):
 
     # Monkeypatch DEFAULT_CONFIG_PATH to use temp directory
     import mygpt.config
+
     monkeypatch.setattr(mygpt.config, "DEFAULT_CONFIG_PATH", config_file)
 
     # Clear config cache to force reload
@@ -229,7 +244,9 @@ def test_sync_filename_with_title_force_override_config(tmp_path, monkeypatch):
     mygpt.config._CACHED_MTIME_NS = None
 
     # Should rename anyway (force=True)
-    success, message, new_name = sync_filename_with_title(session_name, sessions_dir, force=True)
+    success, message, new_name = sync_filename_with_title(
+        session_name, sessions_dir, force=True
+    )
 
     assert success is True
     assert message == "renamed"

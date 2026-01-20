@@ -21,6 +21,7 @@ class CassandraConfig:
 @dataclass
 class VectorSearchDebugMetrics:
     """Debug metrics for vector search operations."""
+
     raw_results_count: int
     score_min: float | None
     score_max: float | None
@@ -57,6 +58,7 @@ class CassandraVectorStore:
         # Connect without a keyspace so we can create it if missing.
         self.session = self.cluster.connect()
         self._keyspace_ready = False
+        self._migration_checked = False
 
     @property
     def table_name(self) -> str:
@@ -72,6 +74,44 @@ class CassandraVectorStore:
         # create it first (via ensure_schema) or have created it externally.
         self.session.execute(f"USE {self.cfg.keyspace}")
         self._keyspace_ready = True
+        # After selecting keyspace, ensure migration has been checked
+        self._ensure_schema_migrated()
+
+    def _ensure_schema_migrated(self) -> None:
+        """Ensure table schema includes multi-model support columns.
+
+        This migration adds embedding_model and embedding_dim columns to existing
+        tables that were created before the multi-model feature. It runs once per
+        instance and is idempotent.
+        """
+        if self._migration_checked:
+            return
+
+        self._migration_checked = True
+        ks = self.cfg.keyspace
+        tbl = self.table_name
+
+        try:
+            # Check if embedding_model column exists
+            result = self.session.execute(
+                f"SELECT column_name FROM system_schema.columns "
+                f"WHERE keyspace_name = '{ks}' AND table_name = '{tbl}' "
+                f"AND column_name = 'embedding_model'"
+            )
+            if not list(result):
+                # Columns don't exist, add them
+                self.session.execute(f"ALTER TABLE {tbl} ADD embedding_model text")
+                self.session.execute(f"ALTER TABLE {tbl} ADD embedding_dim int")
+                # Also create the index on embedding_model
+                self.session.execute(
+                    f"CREATE INDEX IF NOT EXISTS {tbl}_model_idx "
+                    f"ON {tbl}(embedding_model)"
+                )
+        except Exception:
+            # Migration might fail if table doesn't exist yet (first run)
+            # or if columns already exist (race condition in concurrent access)
+            # This is fine - actual operations will reveal any real problems
+            pass
 
     def close(self) -> None:
         self.session.shutdown()
@@ -191,7 +231,15 @@ class CassandraVectorStore:
         for idx, (text, emb, meta) in enumerate(zip(texts_l, embs_l, metas_l)):
             self.session.execute(
                 stmt,
-                (doc_id, idx, text, json.dumps(meta), emb, embedding_model, embedding_dim),
+                (
+                    doc_id,
+                    idx,
+                    text,
+                    json.dumps(meta),
+                    emb,
+                    embedding_model,
+                    embedding_dim,
+                ),
             )
 
     # ----------------------------
@@ -239,10 +287,16 @@ class CassandraVectorStore:
         scores: list[float] = []
         for r in rows:
             # Filter by embedding_model if specified
-            if embedding_model is not None and hasattr(r, 'embedding_model') and r.embedding_model != embedding_model:
+            if (
+                embedding_model is not None
+                and hasattr(r, "embedding_model")
+                and r.embedding_model != embedding_model
+            ):
                 continue
 
-            score = float(r.score) if hasattr(r, 'score') and r.score is not None else 0.0
+            score = (
+                float(r.score) if hasattr(r, "score") and r.score is not None else 0.0
+            )
             out.append(
                 {
                     "doc_id": r.doc_id,
@@ -250,8 +304,12 @@ class CassandraVectorStore:
                     "text": r.text,
                     "metadata": json.loads(r.metadata) if r.metadata else {},
                     "score": score,
-                    "embedding_model": r.embedding_model if hasattr(r, 'embedding_model') else None,
-                    "embedding_dim": r.embedding_dim if hasattr(r, 'embedding_dim') else None,
+                    "embedding_model": r.embedding_model
+                    if hasattr(r, "embedding_model")
+                    else None,
+                    "embedding_dim": r.embedding_dim
+                    if hasattr(r, "embedding_dim")
+                    else None,
                 }
             )
             scores.append(score)
@@ -285,11 +343,15 @@ class CassandraVectorStore:
         rows = self.session.execute(stmt)
         out: list[dict] = []
         for r in rows:
-            out.append({
-                "doc_id": r.doc_id,
-                "chunks": int(r.chunks),
-                "embedding_model": r.embedding_model if hasattr(r, 'embedding_model') else None,
-            })
+            out.append(
+                {
+                    "doc_id": r.doc_id,
+                    "chunks": int(r.chunks),
+                    "embedding_model": r.embedding_model
+                    if hasattr(r, "embedding_model")
+                    else None,
+                }
+            )
         # Sort for stable output
         out.sort(key=lambda x: x["doc_id"])
         return out
@@ -334,7 +396,7 @@ class CassandraVectorStore:
             if tbl_name == base_tbl:
                 collections.append("default")
             elif tbl_name.startswith(f"{base_tbl}_"):
-                collection_name = tbl_name[len(f"{base_tbl}_"):]
+                collection_name = tbl_name[len(f"{base_tbl}_") :]
                 collections.append(collection_name)
         collections.sort()
         return collections

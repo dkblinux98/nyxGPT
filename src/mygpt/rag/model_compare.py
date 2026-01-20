@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import List
+from typing import List, cast
 
 from mygpt.rag.embeddings import embed_texts, EmbeddingError
 from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
@@ -17,6 +17,7 @@ from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 @dataclass
 class ModelPerformanceMetrics:
     """Performance metrics for an embedding model."""
+
     model_name: str
     dimension: int
     avg_embedding_time_ms: float
@@ -85,7 +86,8 @@ def benchmark_query_speed(
             for query in test_queries:
                 # Embed query
                 emb_result = embed_texts([query], model=model, dimension=dimension)
-                q_emb = emb_result[0] if emb_result else []
+                # Type narrowing: emb_result is list[list[float]] (not tuple) since collect_metrics=False
+                q_emb = cast(list[list[float]], emb_result)[0] if emb_result else []
                 # Query vector store
                 store.query_by_embedding(q_emb, k=k, embedding_model=model)
             elapsed = (time.perf_counter() - start) * 1000.0
@@ -114,7 +116,9 @@ def compare_models(
     results = []
 
     for model_name, dimension, collection in models:
-        print(f"\nBenchmarking {model_name} (dim={dimension}, collection={collection})...")
+        print(
+            f"\nBenchmarking {model_name} (dim={dimension}, collection={collection})..."
+        )
 
         # Benchmark embedding speed
         try:
@@ -128,7 +132,9 @@ def compare_models(
         query_time = 0.0
         if test_queries:
             try:
-                query_time = benchmark_query_speed(collection, test_queries, model_name, dimension)
+                query_time = benchmark_query_speed(
+                    collection, test_queries, model_name, dimension
+                )
                 print(f"  Query time: {query_time:.2f} ms")
             except Exception as e:
                 print(f"  Query failed: {e}")
@@ -163,7 +169,9 @@ def print_comparison_table(metrics: List[ModelPerformanceMetrics]) -> None:
 
     # Print header
     print("\n" + "=" * 80)
-    print(f"{'Model':<{model_width}} {'Dim':<{dim_width}} {'Embed (ms)':<15} {'Query (ms)':<15}")
+    print(
+        f"{'Model':<{model_width}} {'Dim':<{dim_width}} {'Embed (ms)':<15} {'Query (ms)':<15}"
+    )
     print("=" * 80)
 
     # Print rows
@@ -180,8 +188,16 @@ def print_comparison_table(metrics: List[ModelPerformanceMetrics]) -> None:
     # Print summary
     if len(metrics) > 1:
         fastest_emb = min(metrics, key=lambda m: m.avg_embedding_time_ms)
-        fastest_query = min(metrics, key=lambda m: m.avg_query_time_ms) if any(m.avg_query_time_ms > 0 for m in metrics) else None
+        fastest_query = (
+            min(metrics, key=lambda m: m.avg_query_time_ms)
+            if any(m.avg_query_time_ms > 0 for m in metrics)
+            else None
+        )
 
-        print(f"\nFastest embedding: {fastest_emb.model_name} ({fastest_emb.avg_embedding_time_ms:.2f} ms)")
+        print(
+            f"\nFastest embedding: {fastest_emb.model_name} ({fastest_emb.avg_embedding_time_ms:.2f} ms)"
+        )
         if fastest_query:
-            print(f"Fastest query: {fastest_query.model_name} ({fastest_query.avg_query_time_ms:.2f} ms)")
+            print(
+                f"Fastest query: {fastest_query.model_name} ({fastest_query.avg_query_time_ms:.2f} ms)"
+            )

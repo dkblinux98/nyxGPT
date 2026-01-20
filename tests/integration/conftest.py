@@ -34,7 +34,9 @@ def ensure_api_server_current():
     """
     # Only restart if MYGPT_SKIP_RESTART is not set (allows CI/custom setups to opt out)
     if os.environ.get("MYGPT_SKIP_RESTART"):
-        print("\n[INTEGRATION TESTS] Skipping API server restart (MYGPT_SKIP_RESTART set)")
+        print(
+            "\n[INTEGRATION TESTS] Skipping API server restart (MYGPT_SKIP_RESTART set)"
+        )
         yield
         return
 
@@ -44,13 +46,15 @@ def ensure_api_server_current():
             ["mygpt", "ops", "restart", "api"],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=30,
         )
 
         if result.returncode == 0:
             print("[INTEGRATION TESTS] API server restart successful")
         else:
-            print(f"[INTEGRATION TESTS] API restart returned non-zero: {result.returncode}")
+            print(
+                f"[INTEGRATION TESTS] API restart returned non-zero: {result.returncode}"
+            )
             if result.stderr:
                 print(f"[INTEGRATION TESTS] stderr: {result.stderr}")
 
@@ -58,18 +62,25 @@ def ensure_api_server_current():
         time.sleep(3)
 
         # Verify server is accessible
-        api_base = os.environ.get("MYGPT_TEST_API_BASE", "http://127.0.0.1:8000")
         if _can_connect("127.0.0.1", 8000, timeout=2.0):
             print("[INTEGRATION TESTS] API server is accessible")
         else:
-            print("[INTEGRATION TESTS] WARNING: API server not accessible after restart")
+            print(
+                "[INTEGRATION TESTS] WARNING: API server not accessible after restart"
+            )
 
     except subprocess.TimeoutExpired:
-        print("[INTEGRATION TESTS] WARNING: API restart timed out (server might not be managed by ops)")
+        print(
+            "[INTEGRATION TESTS] WARNING: API restart timed out (server might not be managed by ops)"
+        )
     except FileNotFoundError:
-        print("[INTEGRATION TESTS] WARNING: 'mygpt' command not found (tests may use stale code)")
+        print(
+            "[INTEGRATION TESTS] WARNING: 'mygpt' command not found (tests may use stale code)"
+        )
     except Exception as e:
-        print(f"[INTEGRATION TESTS] WARNING: Could not restart API: {type(e).__name__}: {e}")
+        print(
+            f"[INTEGRATION TESTS] WARNING: Could not restart API: {type(e).__name__}: {e}"
+        )
 
     yield
 
@@ -103,9 +114,11 @@ def require_cassandra(cfg: Any) -> None:
     # Keep this tolerant: different keys possible over time.
     # Defaults assume local Docker Cassandra.
     host = (
-            cfg.get("rag", "cassandra_host", fallback=None)
-            or cfg.get("rag", "cassandra_contact_points", fallback="127.0.0.1").split(",")[0].strip()
-            or "127.0.0.1"
+        cfg.get("rag", "cassandra_host", fallback=None)
+        or cfg.get("rag", "cassandra_contact_points", fallback="127.0.0.1")
+        .split(",")[0]
+        .strip()
+        or "127.0.0.1"
     )
     port = int(cfg.get("rag", "cassandra_port", fallback="9042"))
 

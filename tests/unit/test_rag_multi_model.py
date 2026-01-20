@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from typing import Any
 
-from mygpt.rag.embeddings import _embedding_cfg, embed_texts
+from mygpt.rag.embeddings import _embedding_cfg
 from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 
 
@@ -23,8 +22,12 @@ def test_embedding_cfg_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
     monkeypatch.setattr("mygpt.rag.embeddings.load_config", lambda *_: cfg)
-    monkeypatch.setattr("mygpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b")
-    monkeypatch.setattr("mygpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434")
+    monkeypatch.setattr(
+        "mygpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b"
+    )
+    monkeypatch.setattr(
+        "mygpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434"
+    )
 
     # Default config
     ecfg1 = _embedding_cfg()
@@ -56,8 +59,12 @@ def test_embedding_cfg_dimension_override(monkeypatch: pytest.MonkeyPatch) -> No
     }
 
     monkeypatch.setattr("mygpt.rag.embeddings.load_config", lambda *_: cfg)
-    monkeypatch.setattr("mygpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b")
-    monkeypatch.setattr("mygpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434")
+    monkeypatch.setattr(
+        "mygpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b"
+    )
+    monkeypatch.setattr(
+        "mygpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434"
+    )
 
     # Default config
     ecfg1 = _embedding_cfg()
@@ -69,8 +76,15 @@ def test_embedding_cfg_dimension_override(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.unit
-def test_cassandra_vectorstore_collection_table_name() -> None:
+def test_cassandra_vectorstore_collection_table_name(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that collection parameter affects table name."""
+    # Mock Cassandra Cluster to avoid actual connection
+    from unittest.mock import MagicMock
+    mock_cluster = MagicMock()
+    mock_session = MagicMock()
+    mock_cluster.connect.return_value = mock_session
+    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.Cluster", lambda *args, **kwargs: mock_cluster)
+
     # Default collection
     store1 = CassandraVectorStore(collection="default")
     assert store1.collection == "default"
@@ -97,7 +111,7 @@ def test_ingest_document_with_collection(monkeypatch: pytest.MonkeyPatch) -> Non
 
     # Mock embed_texts to return fake embeddings
     def fake_embed_texts(texts, **kwargs):
-        model = kwargs.get("model", "nomic-embed-text")
+        _ = kwargs.get("model", "nomic-embed-text")
         dimension = kwargs.get("dimension", 768)
         return [[0.1] * dimension for _ in texts]
 
@@ -121,7 +135,14 @@ def test_ingest_document_with_collection(monkeypatch: pytest.MonkeyPatch) -> Non
             pass
 
     monkeypatch.setattr("mygpt.rag.rag.CassandraVectorStore", FakeStore)
-    monkeypatch.setattr("mygpt.rag.rag._embedding_cfg", lambda **kw: type("obj", (), {"model": kw.get("model", "nomic"), "dimension": kw.get("dimension", 768)})())
+    monkeypatch.setattr(
+        "mygpt.rag.embeddings._embedding_cfg",
+        lambda **kw: type(
+            "obj",
+            (),
+            {"model": kw.get("model", "nomic"), "dimension": kw.get("dimension", 768)},
+        )(),
+    )
 
     from mygpt.rag.rag import ingest_document
 
@@ -159,7 +180,14 @@ def test_retrieve_context_with_collection(monkeypatch: pytest.MonkeyPatch) -> No
 
     # Mock embed_text
     monkeypatch.setattr("mygpt.rag.rag.embed_text", lambda *args, **kwargs: [0.1] * 384)
-    monkeypatch.setattr("mygpt.rag.rag._embedding_cfg", lambda **kw: type("obj", (), {"model": kw.get("model", "nomic"), "dimension": kw.get("dimension", 768)})())
+    monkeypatch.setattr(
+        "mygpt.rag.embeddings._embedding_cfg",
+        lambda **kw: type(
+            "obj",
+            (),
+            {"model": kw.get("model", "nomic"), "dimension": kw.get("dimension", 768)},
+        )(),
+    )
 
     # Track calls to CassandraVectorStore
     store_calls = []
@@ -199,7 +227,9 @@ def test_retrieve_context_with_collection(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.unit
-def test_model_comparison_benchmark_embedding_speed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_comparison_benchmark_embedding_speed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Test benchmark_embedding_speed function."""
     from mygpt.rag.model_compare import benchmark_embedding_speed
 
@@ -209,7 +239,7 @@ def test_model_comparison_benchmark_embedding_speed(monkeypatch: pytest.MonkeyPa
     def fake_embed_texts(texts, **kwargs):
         nonlocal call_count
         call_count += 1
-        model = kwargs.get("model", "nomic-embed-text")
+        _ = kwargs.get("model", "nomic-embed-text")
         dimension = kwargs.get("dimension", 768)
         return [[0.1] * dimension for _ in texts]
 

@@ -64,8 +64,7 @@ class RateLimiter:
         with self._clients_lock:
             if client_id not in self._clients:
                 self._clients[client_id] = ClientBucket(
-                    tokens=float(self._burst_size),
-                    last_refill=time.time()
+                    tokens=float(self._burst_size), last_refill=time.time()
                 )
             bucket = self._clients[client_id]
 
@@ -74,8 +73,7 @@ class RateLimiter:
             now = time.time()
             elapsed = now - bucket.last_refill
             bucket.tokens = min(
-                self._burst_size,
-                bucket.tokens + (elapsed * self._requests_per_second)
+                self._burst_size, bucket.tokens + (elapsed * self._requests_per_second)
             )
             bucket.last_refill = now
 

@@ -72,7 +72,9 @@ def test_request_id_in_streaming_with_auto_generation(require_ollama):
     ) as response:
         # Response should have an auto-generated request ID
         auto_request_id = response.headers.get("X-Request-Id")
-        assert auto_request_id is not None, "Expected auto-generated request ID in response header"
+        assert auto_request_id is not None, (
+            "Expected auto-generated request ID in response header"
+        )
         assert len(auto_request_id) > 0, "Auto-generated request ID should not be empty"
         assert response.status_code == 200
 

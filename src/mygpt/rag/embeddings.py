@@ -23,6 +23,7 @@ class EmbeddingConfig:
 @dataclass
 class EmbeddingDebugMetrics:
     """Debug metrics for embedding operations."""
+
     embedding_model: str
     embedding_dim: int
     num_texts_embedded: int
@@ -34,7 +35,9 @@ class EmbeddingError(RuntimeError):
     pass
 
 
-def _embedding_cfg(model: str | None = None, dimension: int | None = None) -> EmbeddingConfig:
+def _embedding_cfg(
+    model: str | None = None, dimension: int | None = None
+) -> EmbeddingConfig:
     """Get embedding configuration.
 
     Args:
@@ -50,7 +53,9 @@ def _embedding_cfg(model: str | None = None, dimension: int | None = None) -> Em
     # Allow dedicated embedding model override; otherwise fall back to default_model.
     # [rag] embedding_model = ...
     if model is None:
-        model = cfg.get("rag", "embedding_model", fallback="").strip() or get_default_model(cfg)
+        model = cfg.get(
+            "rag", "embedding_model", fallback=""
+        ).strip() or get_default_model(cfg)
 
     # Default dimension must match Cassandra schema; override in config if needed.
     if dimension is None:
@@ -81,7 +86,9 @@ def _post_json(url: str, payload: dict, timeout: int) -> dict:
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
-        msg = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
+        msg = (
+            e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
+        )
         raise EmbeddingError(f"HTTP error calling {url}: {e.code} {msg}")
     except urllib.error.URLError as e:
         raise EmbeddingError(f"Failed to reach Ollama at {url}: {e}")
@@ -188,7 +195,9 @@ def embed_texts(
     return out
 
 
-def embed_text(text: str, *, model: str | None = None, dimension: int | None = None) -> list[float]:
+def embed_text(
+    text: str, *, model: str | None = None, dimension: int | None = None
+) -> list[float]:
     """Convenience wrapper for a single string.
 
     Args:
@@ -199,5 +208,10 @@ def embed_text(text: str, *, model: str | None = None, dimension: int | None = N
     Returns:
         Embedding vector
     """
-    vecs = embed_texts([text], model=model, dimension=dimension)
+    result = embed_texts([text], model=model, dimension=dimension)
+    # Handle both return types: list[list[float]] or tuple with metrics
+    if isinstance(result, tuple):
+        vecs, _ = result
+    else:
+        vecs = result
     return vecs[0] if vecs else []

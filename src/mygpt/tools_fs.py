@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 import os
@@ -90,9 +88,9 @@ def grep(pattern: str, path: Path, *, max_matches: int = 50) -> int:
     else:
         # Walk directory, avoid hidden directories/files
         for root, dirs, filenames in os.walk(p):
-            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
             for fn in filenames:
-                if fn.startswith('.'):
+                if fn.startswith("."):
                     continue
                 files.append(Path(root) / fn)
 

@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, cast
 from configparser import ConfigParser
 
 from mygpt.config import (
@@ -43,6 +43,7 @@ class ChatContext:
     This consolidates all the setup work shared between
     streaming and non-streaming chat.
     """
+
     messages: list[dict[str, str]]
     state: Any  # SessionState
     chosen_model: str
@@ -59,7 +60,8 @@ def _cfg(config_path: str | None) -> Any:
 
 def _get_bool(cfg: Any, section: str, key: str, default: bool) -> bool:
     try:
-        return cfg.getboolean(section, key, fallback=default)
+        result: bool = cfg.getboolean(section, key, fallback=default)
+        return result
     except Exception:
         # Robust against missing/invalid types
         try:
@@ -71,7 +73,8 @@ def _get_bool(cfg: Any, section: str, key: str, default: bool) -> bool:
 
 def _get_int(cfg: Any, section: str, key: str, default: int) -> int:
     try:
-        return cfg.getint(section, key, fallback=default)
+        result: int = cfg.getint(section, key, fallback=default)
+        return result
     except Exception:
         try:
             return int(cfg.get(section, key, fallback=str(default)))
@@ -81,7 +84,8 @@ def _get_int(cfg: Any, section: str, key: str, default: int) -> int:
 
 def _get_str(cfg: Any, section: str, key: str, default: str) -> str:
     try:
-        return cfg.get(section, key, fallback=default)
+        result: str = cfg.get(section, key, fallback=default)
+        return result
     except Exception:
         return default
 
@@ -108,36 +112,38 @@ def _minimize_system_prompt(prompt: str) -> str:
     text = prompt.strip()
 
     # Normalize whitespace: collapse multiple spaces/newlines
-    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r"\s+", " ", text)
 
     # Remove redundant courtesies and filler words (case-insensitive)
     # These patterns preserve meaning while reducing tokens
     patterns = [
-        (r'\bPlease\s+', ''),  # "Please respond" -> "Respond"
-        (r'\bYou are\s+', ''),  # "You are a helpful assistant" -> "helpful assistant"
-        (r'\bYou should\s+', ''),  # "You should answer" -> "Answer"
-        (r'\bI want you to\s+', ''),  # "I want you to act" -> "Act"
-        (r'\bYour task is to\s+', ''),  # "Your task is to help" -> "Help"
-        (r'\bMake sure to\s+', ''),  # "Make sure to respond" -> "Respond"
-        (r'\bBe sure to\s+', ''),  # "Be sure to answer" -> "Answer"
-        (r'\s+in order to\s+', ' to '),  # "do X in order to Y" -> "do X to Y"
-        (r'\s+as well as\s+', ' and '),  # "X as well as Y" -> "X and Y"
+        (r"\bPlease\s+", ""),  # "Please respond" -> "Respond"
+        (r"\bYou are\s+", ""),  # "You are a helpful assistant" -> "helpful assistant"
+        (r"\bYou should\s+", ""),  # "You should answer" -> "Answer"
+        (r"\bI want you to\s+", ""),  # "I want you to act" -> "Act"
+        (r"\bYour task is to\s+", ""),  # "Your task is to help" -> "Help"
+        (r"\bMake sure to\s+", ""),  # "Make sure to respond" -> "Respond"
+        (r"\bBe sure to\s+", ""),  # "Be sure to answer" -> "Answer"
+        (r"\s+in order to\s+", " to "),  # "do X in order to Y" -> "do X to Y"
+        (r"\s+as well as\s+", " and "),  # "X as well as Y" -> "X and Y"
     ]
 
     for pattern, replacement in patterns:
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
 
     # Clean up any double spaces created by replacements
-    text = re.sub(r'\s{2,}', ' ', text).strip()
+    text = re.sub(r"\s{2,}", " ", text).strip()
 
     logger.debug(
         "Minimized system prompt: %d -> %d chars (%.1f%% reduction)",
         len(prompt),
         len(text),
-        100 * (1 - len(text) / len(prompt)) if len(prompt) > 0 else 0
+        100 * (1 - len(text) / len(prompt)) if len(prompt) > 0 else 0,
     )
 
     return text
+
+
 def _detect_prompt_mode(message_count: int, cfg: Any) -> str:
     """Detect appropriate prompt mode based on conversation length.
 
@@ -169,10 +175,7 @@ def _get_prompt_template(mode: str) -> str:
         Prompt template string appropriate for the mode
     """
     templates = {
-        "short": (
-            "You are a helpful AI assistant. "
-            "Provide clear, concise responses."
-        ),
+        "short": ("You are a helpful AI assistant. Provide clear, concise responses."),
         "medium": (
             "You are a helpful AI assistant engaged in a conversation. "
             "Provide informative responses while maintaining context from previous messages. "
@@ -363,7 +366,10 @@ def _prepare_chat_context(
     rag_rows = None  # Store raw RAG results
 
     if should_use_rag:
-        rows = retrieve_context(prompt)
+        # Disable debug mode for chat path - we don't need debug info here
+        rows_result = retrieve_context(prompt, debug_mode=False)
+        # Type narrowing: debug_mode=False means result is list[dict], not tuple
+        rows = cast(list[dict], rows_result)
         rag_chunks = len(rows)
         rag_rows = rows  # Save raw results
         rag_context = compose_context(rows)
@@ -424,19 +430,21 @@ def _persist_chat_turn(
 ) -> None:
     """Persist a completed chat turn to session storage."""
     timestamp = datetime.now(timezone.utc).isoformat()
-    context.state.messages.append({
-        "role": "user",
-        "content": prompt,
-        "id": str(uuid.uuid4()),
-        "timestamp": timestamp
-    })
+    context.state.messages.append(
+        {
+            "role": "user",
+            "content": prompt,
+            "id": str(uuid.uuid4()),
+            "timestamp": timestamp,
+        }
+    )
 
     # Build assistant message with optional RAG chunks
     assistant_msg: dict[str, Any] = {
         "role": "assistant",
         "content": reply,
         "id": str(uuid.uuid4()),
-        "timestamp": timestamp
+        "timestamp": timestamp,
     }
 
     # Include RAG chunks if RAG was used
@@ -540,14 +548,13 @@ def chat_stream(
     )
 
     logger.debug(
-        "Starting chat stream for session=%s, model=%s",
-        session,
-        context.chosen_model
+        "Starting chat stream for session=%s, model=%s", session, context.chosen_model
     )
 
     # Yield RAG metadata as first chunk if RAG was used
     if context.rag_used and context.rag_context:
         import json
+
         rag_data = {
             "type": "rag_metadata",
             "chunks": [
@@ -558,7 +565,7 @@ def chat_stream(
                     "chunk_id": chunk.get("chunk_id"),
                 }
                 for chunk in context.rag_context
-            ]
+            ],
         }
         yield f"__RAG_START__{json.dumps(rag_data)}__RAG_END__\n"
 
@@ -566,6 +573,7 @@ def chat_stream(
     def _retry_callback(attempt: int, delay: float, error: Exception) -> None:
         # Yield a special marker for retry status
         import json
+
         retry_data = {
             "type": "retry_status",
             "attempt": attempt,
@@ -599,7 +607,7 @@ def chat_stream(
 
             parts.append(chunk)
             yield chunk
-    except Exception as e:
+    except Exception:
         # If we have retry messages but the connection ultimately failed,
         # yield them before re-raising
         for retry_msg in retry_messages:

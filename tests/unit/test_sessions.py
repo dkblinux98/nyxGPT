@@ -74,7 +74,9 @@ def test_sessions_dir_override_is_respected(tmp_path: Path) -> None:
     cfg = _cfg_with_sessions_dir(tmp_path / "sessions")
 
     override_dir = tmp_path / "override_sessions"
-    state = sessions.load_session("s-override", cfg, sessions_dir_override=str(override_dir), new_session=True)
+    state = sessions.load_session(
+        "s-override", cfg, sessions_dir_override=str(override_dir), new_session=True
+    )
     assert state.session_file.parent == override_dir
 
     state.messages.append({"role": "user", "content": "A"})
@@ -82,7 +84,9 @@ def test_sessions_dir_override_is_respected(tmp_path: Path) -> None:
     sessions.save_session(state, cfg, sessions_dir_override=str(override_dir))
 
     # Ensure it can be reloaded from override location
-    state2 = sessions.load_session("s-override", cfg, sessions_dir_override=str(override_dir))
+    state2 = sessions.load_session(
+        "s-override", cfg, sessions_dir_override=str(override_dir)
+    )
     assert len(state2.messages) == 2
 
 
@@ -117,12 +121,15 @@ def test_list_sessions_finds_created_sessions(tmp_path: Path) -> None:
         "..\\escape",
     ],
 )
-def test_session_name_validation_rejects_path_traversal(tmp_path: Path, bad_name: str) -> None:
+def test_session_name_validation_rejects_path_traversal(
+    tmp_path: Path, bad_name: str
+) -> None:
     cfg = _cfg_with_sessions_dir(tmp_path / "sessions")
 
     # If your implementation allows these, this test will fail and we can tighten validation.
     with pytest.raises(Exception):
         sessions.load_session(bad_name, cfg, new_session=True)
+
 
 def test_validate_session_name_rejects_non_string() -> None:
     """validate_session_name should raise ValueError for non-string input."""
@@ -149,7 +156,9 @@ def test_validate_session_name_rejects_invalid_chars() -> None:
         sessions.validate_session_name("invalid@name")
 
 
-def test_load_session_corrupted_json_file(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_load_session_corrupted_json_file(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """load_session should handle corrupted JSON gracefully by returning empty messages."""
     cfg = _cfg_with_sessions_dir(tmp_path / "sessions")
     sessions_dir = sessions.get_sessions_dir(cfg)
@@ -176,14 +185,14 @@ def test_load_session_corrupted_json_file(tmp_path: Path, caplog: pytest.LogCapt
 def test_save_session_creates_parent_directory(tmp_path: Path) -> None:
     """save_session should create parent directory if it doesn't exist."""
     cfg = _cfg_with_sessions_dir(tmp_path / "new_sessions" / "nested")
-    
+
     # Load (which should create the session)
     state = sessions.load_session("test", cfg, new_session=True)
     state.messages.append({"role": "user", "content": "test"})
-    
+
     # Save should work even if directory structure doesn't exist
     sessions.save_session(state, cfg)
-    
+
     # Verify the session was saved
     assert state.session_file.exists()
     assert state.meta_file.exists()
@@ -394,6 +403,7 @@ def test_export_includes_all_metadata_fields(tmp_path: Path) -> None:
 def _hold_lock_for_duration(file_path: Path, duration: float) -> None:
     """Helper: hold a lock for specified duration."""
     import time
+
     with sessions.file_lock(file_path, timeout=10.0):
         time.sleep(duration)
 
@@ -401,6 +411,7 @@ def _hold_lock_for_duration(file_path: Path, duration: float) -> None:
 def _hold_lock_briefly(file_path: Path) -> None:
     """Helper: hold a lock briefly."""
     import time
+
     with sessions.file_lock(file_path, timeout=10.0):
         time.sleep(0.5)
 
@@ -688,7 +699,9 @@ def test_verify_lock_ordering_violation() -> None:
     # Only test in debug mode (when __debug__ is True)
     if __debug__:
         # Should raise AssertionError - files in wrong order
-        with pytest.raises(AssertionError, match="File lock ordering violation detected"):
+        with pytest.raises(
+            AssertionError, match="File lock ordering violation detected"
+        ):
             sessions.verify_lock_ordering(file_b, file_a)  # Wrong order!
     else:
         # In optimized mode (-O flag), no assertion raised
@@ -711,7 +724,9 @@ def test_verify_lock_ordering_mixed_paths(tmp_path: Path) -> None:
     sessions.verify_lock_ordering(*files)
 
 
-def test_metadata_file_deleted_between_checks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_metadata_file_deleted_between_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Test that rename handles metadata file deletion between existence checks (TOCTOU race)."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
@@ -738,7 +753,9 @@ def test_metadata_file_deleted_between_checks(tmp_path: Path, monkeypatch: pytes
     def patched_file_lock(file_path: Path, timeout: float = 5.0):
         lock_call_count["count"] += 1
         # Delete metadata file when we try to lock it (simulates race condition)
-        if file_path == mf and lock_call_count["count"] == 2:  # Second lock call is for metadata
+        if (
+            file_path == mf and lock_call_count["count"] == 2
+        ):  # Second lock call is for metadata
             if mf.exists():
                 mf.unlink()
         return original_file_lock(file_path, timeout)
@@ -759,7 +776,6 @@ def test_metadata_file_deleted_between_checks(tmp_path: Path, monkeypatch: pytes
     assert new_sf.exists()
 
     # Metadata file was deleted, so new metadata should not exist
-    new_mf = sessions.meta_file_for(new_sf)
     # The operation should have handled the missing file gracefully
     # (not crashed or left files in inconsistent state)
 
@@ -781,11 +797,23 @@ def test_search_messages_finds_exact_match(tmp_path: Path) -> None:
         {"role": "user", "content": "Hello, how are you?"},
         {"role": "assistant", "content": "I'm doing well, thanks for asking!"},
         {"role": "user", "content": "What is Python programming?"},
-        {"role": "assistant", "content": "Python is a high-level programming language."},
+        {
+            "role": "assistant",
+            "content": "Python is a high-level programming language.",
+        },
     ]
 
     sessions.save_session_messages(sf, messages)
-    sessions.save_session_meta(mf, {"title": "Test Session", "created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+    sessions.save_session_meta(
+        mf,
+        {
+            "title": "Test Session",
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": [],
+        },
+    )
 
     # Search for "Python"
     results = sessions.search_messages("Python", sessions_dir)
@@ -812,7 +840,15 @@ def test_search_messages_case_insensitive_by_default(tmp_path: Path) -> None:
     ]
 
     sessions.save_session_messages(sf, messages)
-    sessions.save_session_meta(mf, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+    sessions.save_session_meta(
+        mf,
+        {
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": [],
+        },
+    )
 
     # Search with lowercase should find both
     results = sessions.search_messages("hello", sessions_dir, case_sensitive=False)
@@ -834,7 +870,15 @@ def test_search_messages_case_sensitive(tmp_path: Path) -> None:
     ]
 
     sessions.save_session_messages(sf, messages)
-    sessions.save_session_meta(mf, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+    sessions.save_session_meta(
+        mf,
+        {
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": [],
+        },
+    )
 
     # Case-sensitive search for "hello" should only find lowercase
     results = sessions.search_messages("hello", sessions_dir, case_sensitive=True)
@@ -859,11 +903,21 @@ def test_search_messages_filters_by_role(tmp_path: Path) -> None:
     ]
 
     sessions.save_session_messages(sf, messages)
-    sessions.save_session_meta(mf, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+    sessions.save_session_meta(
+        mf,
+        {
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": [],
+        },
+    )
 
     # Search for "about" with role filter
     user_results = sessions.search_messages("about", sessions_dir, role_filter="user")
-    assistant_results = sessions.search_messages("about", sessions_dir, role_filter="assistant")
+    assistant_results = sessions.search_messages(
+        "about", sessions_dir, role_filter="assistant"
+    )
 
     assert len(user_results) == 2  # Both user messages contain "about"
     assert len(assistant_results) == 0  # No assistant messages contain "about"
@@ -880,20 +934,38 @@ def test_search_messages_filters_by_session(tmp_path: Path) -> None:
     mf1 = sessions.meta_file_for(sf1)
     messages1 = [{"role": "user", "content": "Python is great"}]
     sessions.save_session_messages(sf1, messages1)
-    sessions.save_session_meta(mf1, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+    sessions.save_session_meta(
+        mf1,
+        {
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": [],
+        },
+    )
 
     sf2 = sessions.session_file_for("session-2", sessions_dir)
     mf2 = sessions.meta_file_for(sf2)
     messages2 = [{"role": "user", "content": "Python is awesome"}]
     sessions.save_session_messages(sf2, messages2)
-    sessions.save_session_meta(mf2, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+    sessions.save_session_meta(
+        mf2,
+        {
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": [],
+        },
+    )
 
     # Search across all sessions
     all_results = sessions.search_messages("Python", sessions_dir)
     assert len(all_results) == 2
 
     # Search only in session-1
-    filtered_results = sessions.search_messages("Python", sessions_dir, session_filter="session-1")
+    filtered_results = sessions.search_messages(
+        "Python", sessions_dir, session_filter="session-1"
+    )
     assert len(filtered_results) == 1
     assert filtered_results[0]["session_name"] == "session-1"
 
@@ -910,7 +982,15 @@ def test_search_messages_respects_limit(tmp_path: Path) -> None:
     # Create 10 messages all containing "test"
     messages = [{"role": "user", "content": f"test message {i}"} for i in range(10)]
     sessions.save_session_messages(sf, messages)
-    sessions.save_session_meta(mf, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+    sessions.save_session_meta(
+        mf,
+        {
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": [],
+        },
+    )
 
     # Search with limit=5
     results = sessions.search_messages("test", sessions_dir, limit=5)
@@ -929,7 +1009,15 @@ def test_search_messages_generates_preview(tmp_path: Path) -> None:
     long_content = "A" * 150 + "SEARCHTERM" + "B" * 150
     messages = [{"role": "user", "content": long_content}]
     sessions.save_session_messages(sf, messages)
-    sessions.save_session_meta(mf, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+    sessions.save_session_meta(
+        mf,
+        {
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": [],
+        },
+    )
 
     results = sessions.search_messages("SEARCHTERM", sessions_dir)
     assert len(results) == 1
@@ -964,7 +1052,15 @@ def test_search_messages_no_matches(tmp_path: Path) -> None:
 
     messages = [{"role": "user", "content": "Hello world"}]
     sessions.save_session_messages(sf, messages)
-    sessions.save_session_meta(mf, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+    sessions.save_session_meta(
+        mf,
+        {
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": [],
+        },
+    )
 
     results = sessions.search_messages("nonexistent", sessions_dir)
     assert len(results) == 0
@@ -981,7 +1077,16 @@ def test_search_messages_includes_session_title(tmp_path: Path) -> None:
 
     messages = [{"role": "user", "content": "Test message"}]
     sessions.save_session_messages(sf, messages)
-    sessions.save_session_meta(mf, {"title": "My Titled Session", "created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+    sessions.save_session_meta(
+        mf,
+        {
+            "title": "My Titled Session",
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": [],
+        },
+    )
 
     results = sessions.search_messages("Test", sessions_dir)
     assert len(results) == 1
@@ -999,7 +1104,15 @@ def test_search_messages_counts_matches(tmp_path: Path) -> None:
 
     messages = [{"role": "user", "content": "Python Python Python"}]
     sessions.save_session_messages(sf, messages)
-    sessions.save_session_meta(mf, {"created_at": sessions.iso_now(), "updated_at": sessions.iso_now(), "pinned": False, "tags": []})
+    sessions.save_session_meta(
+        mf,
+        {
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": [],
+        },
+    )
 
     results = sessions.search_messages("Python", sessions_dir)
     assert len(results) == 1
@@ -1020,13 +1133,16 @@ def test_merge_sessions_basic(tmp_path: Path) -> None:
         {"role": "assistant", "content": "Hi from session 1"},
     ]
     sessions.save_session_messages(sf1, messages1)
-    sessions.save_session_meta(mf1, {
-        "created_at": "2025-01-01T10:00:00",
-        "updated_at": "2025-01-01T10:05:00",
-        "pinned": False,
-        "tags": ["tag1", "tag2"],
-        "title": "First Session",
-    })
+    sessions.save_session_meta(
+        mf1,
+        {
+            "created_at": "2025-01-01T10:00:00",
+            "updated_at": "2025-01-01T10:05:00",
+            "pinned": False,
+            "tags": ["tag1", "tag2"],
+            "title": "First Session",
+        },
+    )
 
     sf2 = sessions.session_file_for("session2", sessions_dir)
     mf2 = sessions.meta_file_for(sf2)
@@ -1035,12 +1151,15 @@ def test_merge_sessions_basic(tmp_path: Path) -> None:
         {"role": "assistant", "content": "Hi from session 2"},
     ]
     sessions.save_session_messages(sf2, messages2)
-    sessions.save_session_meta(mf2, {
-        "created_at": "2025-01-02T10:00:00",
-        "updated_at": "2025-01-02T10:05:00",
-        "pinned": False,
-        "tags": ["tag2", "tag3"],
-    })
+    sessions.save_session_meta(
+        mf2,
+        {
+            "created_at": "2025-01-02T10:00:00",
+            "updated_at": "2025-01-02T10:05:00",
+            "pinned": False,
+            "tags": ["tag2", "tag3"],
+        },
+    )
 
     # Merge sessions
     ok, msg = sessions.merge_sessions(["session1", "session2"], "merged", sessions_dir)
@@ -1127,25 +1246,33 @@ def test_merge_sessions_empty_sessions(tmp_path: Path) -> None:
     sf1 = sessions.session_file_for("empty1", sessions_dir)
     mf1 = sessions.meta_file_for(sf1)
     sessions.save_session_messages(sf1, [])
-    sessions.save_session_meta(mf1, {
-        "created_at": sessions.iso_now(),
-        "updated_at": sessions.iso_now(),
-        "pinned": False,
-        "tags": [],
-    })
+    sessions.save_session_meta(
+        mf1,
+        {
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": [],
+        },
+    )
 
     sf2 = sessions.session_file_for("empty2", sessions_dir)
     mf2 = sessions.meta_file_for(sf2)
     sessions.save_session_messages(sf2, [])
-    sessions.save_session_meta(mf2, {
-        "created_at": sessions.iso_now(),
-        "updated_at": sessions.iso_now(),
-        "pinned": False,
-        "tags": [],
-    })
+    sessions.save_session_meta(
+        mf2,
+        {
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": [],
+        },
+    )
 
     # Merge empty sessions
-    ok, msg = sessions.merge_sessions(["empty1", "empty2"], "merged_empty", sessions_dir)
+    ok, msg = sessions.merge_sessions(
+        ["empty1", "empty2"], "merged_empty", sessions_dir
+    )
     assert ok
     assert "0 messages" in msg
 
@@ -1169,13 +1296,16 @@ def test_merge_sessions_single_session(tmp_path: Path) -> None:
         {"role": "assistant", "content": "Test response"},
     ]
     sessions.save_session_messages(sf, messages)
-    sessions.save_session_meta(mf, {
-        "created_at": sessions.iso_now(),
-        "updated_at": sessions.iso_now(),
-        "pinned": False,
-        "tags": ["test"],
-        "title": "Original Session",
-    })
+    sessions.save_session_meta(
+        mf,
+        {
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": ["test"],
+            "title": "Original Session",
+        },
+    )
 
     # Merge single session
     ok, msg = sessions.merge_sessions(["original"], "copy", sessions_dir)
@@ -1196,12 +1326,20 @@ def test_batch_delete_sessions(tmp_path: Path) -> None:
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     # Create test sessions
-    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
-    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
-    sessions.init_session("session3", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session(
+        "session1", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    sessions.init_session(
+        "session2", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    sessions.init_session(
+        "session3", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
 
     # Batch delete two sessions
-    success, failure, failed = sessions.batch_delete_sessions(["session1", "session2"], sessions_dir)
+    success, failure, failed = sessions.batch_delete_sessions(
+        ["session1", "session2"], sessions_dir
+    )
     assert success == 2
     assert failure == 0
     assert failed == []
@@ -1212,7 +1350,9 @@ def test_batch_delete_sessions(tmp_path: Path) -> None:
     assert sessions.session_file_for("session3", sessions_dir).exists()
 
     # Delete non-existent session
-    success, failure, failed = sessions.batch_delete_sessions(["nonexistent"], sessions_dir)
+    success, failure, failed = sessions.batch_delete_sessions(
+        ["nonexistent"], sessions_dir
+    )
     assert success == 0
     assert failure == 1
     assert failed == ["nonexistent"]
@@ -1223,8 +1363,12 @@ def test_batch_tag_sessions(tmp_path: Path) -> None:
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     # Create test sessions
-    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
-    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session(
+        "session1", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    sessions.init_session(
+        "session2", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
 
     # Batch add tags
     success, failure, failed = sessions.batch_tag_sessions(
@@ -1235,8 +1379,12 @@ def test_batch_tag_sessions(tmp_path: Path) -> None:
     assert failed == []
 
     # Verify tags added
-    meta1 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir)))
-    meta2 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session2", sessions_dir)))
+    meta1 = sessions.load_session_meta(
+        sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir))
+    )
+    meta2 = sessions.load_session_meta(
+        sessions.meta_file_for(sessions.session_file_for("session2", sessions_dir))
+    )
     assert set(meta1.get("tags", [])) == {"tag1", "tag2"}
     assert set(meta2.get("tags", [])) == {"tag1", "tag2"}
 
@@ -1248,8 +1396,12 @@ def test_batch_tag_sessions(tmp_path: Path) -> None:
     assert failure == 0
 
     # Verify tags removed
-    meta1 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir)))
-    meta2 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session2", sessions_dir)))
+    meta1 = sessions.load_session_meta(
+        sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir))
+    )
+    meta2 = sessions.load_session_meta(
+        sessions.meta_file_for(sessions.session_file_for("session2", sessions_dir))
+    )
     assert meta1.get("tags", []) == ["tag2"]
     assert meta2.get("tags", []) == ["tag2"]
 
@@ -1260,11 +1412,15 @@ def test_batch_export_sessions(tmp_path: Path) -> None:
     output_dir = tmp_path / "exports"
 
     # Create test sessions with messages
-    sf1, mf1, msgs1, meta1 = sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
+    sf1, mf1, msgs1, meta1 = sessions.init_session(
+        "session1", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
     msgs1.append({"role": "user", "content": "Test message 1"})
     sessions.save_session_messages(sf1, msgs1)
 
-    sf2, mf2, msgs2, meta2 = sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
+    sf2, mf2, msgs2, meta2 = sessions.init_session(
+        "session2", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
     msgs2.append({"role": "user", "content": "Test message 2"})
     sessions.save_session_messages(sf2, msgs2)
 
@@ -1298,8 +1454,12 @@ def test_batch_update_metadata(tmp_path: Path) -> None:
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     # Create test sessions
-    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
-    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session(
+        "session1", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    sessions.init_session(
+        "session2", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
 
     # Batch update pinned status
     success, failure, failed = sessions.batch_update_metadata(
@@ -1310,8 +1470,12 @@ def test_batch_update_metadata(tmp_path: Path) -> None:
     assert failed == []
 
     # Verify pinned status
-    meta1 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir)))
-    meta2 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session2", sessions_dir)))
+    meta1 = sessions.load_session_meta(
+        sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir))
+    )
+    meta2 = sessions.load_session_meta(
+        sessions.meta_file_for(sessions.session_file_for("session2", sessions_dir))
+    )
     assert meta1.get("pinned") is True
     assert meta2.get("pinned") is True
 
@@ -1322,8 +1486,12 @@ def test_batch_update_metadata(tmp_path: Path) -> None:
     assert success == 2
 
     # Verify model updated
-    meta1 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir)))
-    meta2 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session2", sessions_dir)))
+    meta1 = sessions.load_session_meta(
+        sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir))
+    )
+    meta2 = sessions.load_session_meta(
+        sessions.meta_file_for(sessions.session_file_for("session2", sessions_dir))
+    )
     assert meta1.get("model") == "mistral:7b"
     assert meta2.get("model") == "mistral:7b"
 
@@ -1334,7 +1502,9 @@ def test_batch_update_metadata(tmp_path: Path) -> None:
     assert success == 1
 
     # Verify RAG enabled updated
-    meta1 = sessions.load_session_meta(sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir)))
+    meta1 = sessions.load_session_meta(
+        sessions.meta_file_for(sessions.session_file_for("session1", sessions_dir))
+    )
     assert meta1.get("rag_enabled") is True
 
 
@@ -1383,7 +1553,9 @@ def test_load_session_messages_paginated_nonexistent(tmp_path: Path) -> None:
     assert total == 0
 
 
-def test_load_session_messages_paginated_corrupted(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_load_session_messages_paginated_corrupted(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test paginated loading handles corrupted JSON."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
@@ -1453,8 +1625,12 @@ def test_rename_session_target_exists(tmp_path: Path) -> None:
     sessions_dir.mkdir()
 
     # Create two sessions
-    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
-    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session(
+        "session1", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    sessions.init_session(
+        "session2", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
 
     # Try to rename session1 to session2
     ok, msg = sessions.rename_session("session1", "session2", sessions_dir)
@@ -1550,7 +1726,9 @@ def test_edit_message_basic(tmp_path: Path) -> None:
     sessions.save_session_meta(mf, sessions.ensure_meta_defaults({}))
 
     # Edit message at index 2 (third message)
-    ok, msg = sessions.edit_message("edit-test", 2, "Edited message 2", sessions_dir, fork=True)
+    ok, msg = sessions.edit_message(
+        "edit-test", 2, "Edited message 2", sessions_dir, fork=True
+    )
     assert ok
     assert msg == "Message edited"
 
@@ -1578,7 +1756,9 @@ def test_edit_message_no_fork(tmp_path: Path) -> None:
     sessions.save_session_meta(mf, sessions.ensure_meta_defaults({}))
 
     # Edit without forking
-    ok, msg = sessions.edit_message("edit-no-fork", 0, "Edited message 1", sessions_dir, fork=False)
+    ok, msg = sessions.edit_message(
+        "edit-no-fork", 0, "Edited message 1", sessions_dir, fork=False
+    )
     assert ok
 
     # All messages should still exist
@@ -1713,7 +1893,10 @@ def test_sanitize_title_for_filename(tmp_path: Path) -> None:
     assert sessions.sanitize_title_for_filename("My Chat Session") == "my-chat-session"
 
     # Special characters
-    assert sessions.sanitize_title_for_filename("Python: Tips & Tricks!") == "python-tips-tricks"
+    assert (
+        sessions.sanitize_title_for_filename("Python: Tips & Tricks!")
+        == "python-tips-tricks"
+    )
 
     # Multiple spaces and hyphens
     assert sessions.sanitize_title_for_filename("Test   -  Session") == "test-session"
@@ -1820,7 +2003,9 @@ def test_delete_session_nonexistent(tmp_path: Path) -> None:
     assert not ok
 
 
-def test_load_session_meta_corrupted_json(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_load_session_meta_corrupted_json(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """Test loading corrupted metadata JSON returns empty dict."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
@@ -1835,7 +2020,9 @@ def test_load_session_meta_corrupted_json(tmp_path: Path, caplog: pytest.LogCapt
     assert "Invalid JSON in metadata file" in caplog.text
 
 
-def test_load_session_meta_io_error(tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_session_meta_io_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Test loading metadata with IO error returns empty dict."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
@@ -1856,7 +2043,9 @@ def test_load_session_meta_io_error(tmp_path: Path, caplog: pytest.LogCaptureFix
     assert "Failed to read metadata file" in caplog.text
 
 
-def test_load_session_messages_io_error(tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_load_session_messages_io_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Test loading session messages with IO error returns empty list."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
@@ -1965,6 +2154,7 @@ def test_iso_now(tmp_path: Path) -> None:
     assert "T" in timestamp
     # Verify it's parseable as ISO 8601
     from datetime import datetime
+
     parsed = datetime.fromisoformat(timestamp)
     assert parsed is not None
 

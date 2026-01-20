@@ -23,7 +23,7 @@ class MygptWeb < Formula
 
       # launchd/Homebrew services often run with a minimal PATH.
       # Ensure Homebrew bins are available so node/npm can be found.
-      export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+      export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
       # Prefer the Node installed by Homebrew.
       export PATH="#{Formula["node"].opt_bin}:#{Formula["node"].opt_libexec}/bin:${PATH}"
@@ -37,13 +37,13 @@ class MygptWeb < Formula
     run [opt_bin/"mygpt-web"]
     keep_alive true
 
-    # Homebrew's conventional log locations:
-    #   /usr/local/var/log/mygpt-web.log
-    #   /usr/local/var/log/mygpt-web.err.log
+    # Homebrew's conventional log locations (arm64):
+    #   /opt/homebrew/var/log/mygpt-web.log
+    #   /opt/homebrew/var/log/mygpt-web.err.log
     #
     # If you want everything consolidated under ~/.myGPT/logs, you can symlink:
-    #   ln -sf /usr/local/var/log/mygpt-web.log ~/.myGPT/logs/mygpt-web.log
-    #   ln -sf /usr/local/var/log/mygpt-web.err.log ~/.myGPT/logs/mygpt-web.err.log
+    #   ln -sf /opt/homebrew/var/log/mygpt-web.log ~/.myGPT/logs/mygpt-web.log
+    #   ln -sf /opt/homebrew/var/log/mygpt-web.err.log ~/.myGPT/logs/mygpt-web.err.log
     log_path var/"log/mygpt-web.log"
     error_log_path var/"log/mygpt-web.err.log"
   end
