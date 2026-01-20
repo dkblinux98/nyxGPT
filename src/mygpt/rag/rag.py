@@ -807,12 +807,18 @@ def retrieve_context(
     if reranking_enabled and all_results:
         log.debug("Applying reranking to %d results", len(all_results))
         if collect_debug:
-            reranked_results, reranking_metrics = rerank_results(
+            rerank_result = rerank_results(
                 query, all_results, collect_metrics=True
             )
+            # Type narrowing: collect_metrics=True returns tuple
+            assert isinstance(rerank_result, tuple), "Expected tuple when collect_metrics=True"
+            reranked_results, reranking_metrics = rerank_result
             all_results = reranked_results
         else:
-            all_results = rerank_results(query, all_results)
+            rerank_result = rerank_results(query, all_results)
+            # Type narrowing: collect_metrics=False returns list
+            assert isinstance(rerank_result, list), "Expected list when collect_metrics=False"
+            all_results = rerank_result
 
     # ======================================================================
     # FILTERING

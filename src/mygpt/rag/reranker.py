@@ -37,10 +37,23 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from typing import Any, TypedDict
 
 from mygpt.config import get_default_model, get_ollama_base_url, load_config
 
 log = logging.getLogger(__name__)
+
+
+class SearchResult(TypedDict, total=False):
+    """Type definition for search result dictionaries.
+
+    This defines the structure of search results passed to and returned
+    from the reranker. Not all fields are required in input results.
+    Additional fields beyond those listed here may be present.
+    """
+    text: str  # Document text (required for reranking)
+    score: float | None  # Relevance score (updated by reranking, may be None)
+    original_score: float | None  # Original score before reranking (added by reranker)
 
 
 @dataclass
@@ -197,10 +210,10 @@ def _score_relevance(
 
 def rerank_results(
     query: str,
-    results: list[dict],
+    results: list[dict[str, Any]],
     *,
     collect_metrics: bool = False,
-) -> list[dict] | tuple[list[dict], RerankerDebugMetrics]:
+) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], RerankerDebugMetrics]:
     """Rerank search results using cross-encoder scoring.
 
     Takes initial retrieval results and re-scores them using a more
@@ -229,12 +242,14 @@ def rerank_results(
 
     Args:
         query: User's search query
-        results: Initial retrieval results (list of dicts with 'text' and 'score')
+        results: Initial retrieval results (list of SearchResult-like dicts).
+                 Each dict should have 'text' and optionally 'score' fields.
         collect_metrics: If True, return tuple of (results, metrics)
 
     Returns:
         Reranked results (top-N), sorted by relevance.
         If collect_metrics=True, returns tuple of (results, RerankerDebugMetrics).
+        Results follow the SearchResult type structure.
 
     Raises:
         RerankError: If reranking fails for all results
@@ -287,7 +302,7 @@ def rerank_results(
     )
 
     # Score each result
-    reranked: list[tuple[dict, float]] = []
+    reranked: list[tuple[dict[str, Any], float]] = []
     failed_count = 0
 
     for result in results:
