@@ -2461,7 +2461,6 @@ async def test_action_command_palette_unknown_command(
 
 def test_help_overlay_screen_initialization() -> None:
     """Test HelpOverlayScreen initializes correctly."""
-    from mygpt.tui import HelpOverlayScreen
 
     screen = HelpOverlayScreen()
     assert screen is not None
@@ -2470,7 +2469,6 @@ def test_help_overlay_screen_initialization() -> None:
 @pytest.mark.asyncio
 async def test_help_overlay_screen_action_close() -> None:
     """Test HelpOverlayScreen close action."""
-    from mygpt.tui import HelpOverlayScreen
 
     screen = HelpOverlayScreen()
 
@@ -2484,7 +2482,6 @@ async def test_help_overlay_screen_action_close() -> None:
 
 def test_command_palette_screen_initialization() -> None:
     """Test CommandPaletteScreen initializes correctly."""
-    from mygpt.tui import CommandPaletteScreen
 
     screen = CommandPaletteScreen()
     assert screen.all_commands is not None
@@ -2495,7 +2492,6 @@ def test_command_palette_screen_initialization() -> None:
 @pytest.mark.asyncio
 async def test_command_palette_screen_filter_commands() -> None:
     """Test CommandPaletteScreen filters commands based on search."""
-    from mygpt.tui import CommandPaletteScreen
 
     screen = CommandPaletteScreen()
 
@@ -2519,7 +2515,6 @@ async def test_command_palette_screen_filter_commands() -> None:
 @pytest.mark.asyncio
 async def test_command_palette_screen_filter_empty_query() -> None:
     """Test CommandPaletteScreen shows all commands when search is empty."""
-    from mygpt.tui import CommandPaletteScreen
 
     screen = CommandPaletteScreen()
     original_count = len(screen.all_commands)
@@ -2544,7 +2539,6 @@ async def test_command_palette_screen_filter_empty_query() -> None:
 @pytest.mark.asyncio
 async def test_command_palette_screen_action_execute_command() -> None:
     """Test CommandPaletteScreen execute command action."""
-    from mygpt.tui import CommandPaletteScreen
 
     screen = CommandPaletteScreen()
 
@@ -2565,7 +2559,6 @@ async def test_command_palette_screen_action_execute_command() -> None:
 @pytest.mark.asyncio
 async def test_command_palette_screen_action_close() -> None:
     """Test CommandPaletteScreen close action."""
-    from mygpt.tui import CommandPaletteScreen
 
     screen = CommandPaletteScreen()
 
