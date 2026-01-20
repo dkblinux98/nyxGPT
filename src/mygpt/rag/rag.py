@@ -5,6 +5,8 @@ from typing import Iterable, List, cast
 import logging
 import json
 import time
+import uuid
+import statistics
 
 from mygpt.config import (
     load_config,
@@ -80,6 +82,65 @@ class RAGDebugInfo:
     total_chars_before_truncation: int
     total_chars_after_truncation: int
     chunks_included: int
+
+
+@dataclass
+class RetrievalAccuracyMetrics:
+    """Metrics for evaluating retrieval accuracy and quality."""
+
+    # Retrieval success
+    results_returned: int
+    query_success: bool  # True if results_returned > 0
+
+    # Coverage metrics
+    unique_docs_retrieved: int
+    total_chunks_retrieved: int
+
+    # Score distribution
+    score_distribution: dict[str, float]  # p50, p75, p95, p99
+
+
+@dataclass
+class LatencyMetrics:
+    """Enhanced latency tracking with percentile breakdowns."""
+
+    # Overall timing
+    total_time_ms: float
+
+    # Per-stage breakdowns
+    stage_timings: dict[str, float]  # {stage_name: time_ms}
+
+    # Percentile tracking (computed from historical data)
+    percentiles: dict[str, float] | None = None  # p50, p95, p99
+
+
+@dataclass
+class HitRateMetrics:
+    """Metrics for hit rate analysis and query patterns."""
+
+    # Query success tracking
+    query_success_rate: float  # % of queries returning results
+    total_queries: int
+    successful_queries: int
+    failed_queries: int
+
+    # Score statistics
+    avg_top_score: float | None
+    score_above_threshold_rate: float  # % of results above min_score
+
+
+@dataclass
+class RAGEvaluationMetrics:
+    """Comprehensive evaluation metrics for RAG quality."""
+
+    # Composed metrics
+    retrieval_accuracy: RetrievalAccuracyMetrics
+    latency: LatencyMetrics
+    hit_rate: HitRateMetrics
+
+    # Query metadata
+    query_id: str  # UUID for tracking
+    timestamp: float  # Unix timestamp
 
 
 class RAGError(RuntimeError):
@@ -815,6 +876,93 @@ def retrieve_context(
     )
 
     return filtered, debug_info
+
+
+def compute_evaluation_metrics(
+    results: list[dict],
+    debug_info: RAGDebugInfo,
+    min_score: float,
+) -> RAGEvaluationMetrics:
+    """Compute comprehensive evaluation metrics from retrieval results.
+
+    Args:
+        results: Retrieved results from retrieve_context
+        debug_info: Debug information from retrieve_context
+        min_score: Minimum score threshold for filtering
+
+    Returns:
+        RAGEvaluationMetrics with accuracy, latency, and hit rate metrics
+    """
+    # Extract scores for distribution analysis
+    scores = [r.get("score", 0.0) for r in results if r.get("score") is not None]
+
+    # Compute score percentiles
+    score_distribution = {}
+    if scores:
+        sorted_scores = sorted(scores)
+        score_distribution = {
+            "p50": statistics.median(sorted_scores),
+            "p75": statistics.quantiles(sorted_scores, n=4)[2] if len(sorted_scores) >= 2 else sorted_scores[-1],
+            "p95": statistics.quantiles(sorted_scores, n=20)[18] if len(sorted_scores) >= 2 else sorted_scores[-1],
+            "p99": statistics.quantiles(sorted_scores, n=100)[98] if len(sorted_scores) >= 2 else sorted_scores[-1],
+        }
+
+    # Retrieval accuracy metrics
+    unique_docs = len(set(r.get("doc_id") for r in results if r.get("doc_id")))
+    retrieval_accuracy = RetrievalAccuracyMetrics(
+        results_returned=len(results),
+        query_success=len(results) > 0,
+        unique_docs_retrieved=unique_docs,
+        total_chunks_retrieved=len(results),
+        score_distribution=score_distribution,
+    )
+
+    # Latency metrics with stage breakdowns
+    stage_timings = {
+        "query_expansion": debug_info.query_expansion_time_ms or 0.0,
+        "embedding": debug_info.embedding_time_ms,
+        "vector_search": debug_info.vector_search_time_ms,
+        "filtering": debug_info.filtering_time_ms,
+        "composition": debug_info.composition_time_ms,
+    }
+    latency = LatencyMetrics(
+        total_time_ms=debug_info.total_time_ms,
+        stage_timings=stage_timings,
+        percentiles=None,  # Computed from historical data (not available in single query)
+    )
+
+    # Hit rate metrics
+    successful = 1 if len(results) > 0 else 0
+    failed = 1 - successful
+    query_success_rate = float(successful)  # For single query, rate is 0.0 or 1.0
+
+    # Score statistics
+    avg_top_score = scores[0] if scores else None
+    above_threshold = sum(1 for s in scores if s >= min_score)
+    score_above_threshold_rate = (
+        float(above_threshold) / len(scores) if scores else 0.0
+    )
+
+    hit_rate = HitRateMetrics(
+        query_success_rate=query_success_rate,
+        total_queries=1,
+        successful_queries=successful,
+        failed_queries=failed,
+        avg_top_score=avg_top_score,
+        score_above_threshold_rate=score_above_threshold_rate,
+    )
+
+    # Generate unique query ID and timestamp
+    query_id = str(uuid.uuid4())
+    timestamp = time.time()
+
+    return RAGEvaluationMetrics(
+        retrieval_accuracy=retrieval_accuracy,
+        latency=latency,
+        hit_rate=hit_rate,
+        query_id=query_id,
+        timestamp=timestamp,
+    )
 
 
 # ----------------------------

@@ -46,6 +46,8 @@ from mygpt.api_models import (
     RagQueryRequest,
     RagQueryResult,
     RagQueryResponse,
+    RagMetricsQueryRequest,
+    RagMetricsQueryResponse,
 )
 
 from mygpt.config import (
@@ -1598,6 +1600,115 @@ def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
             for r in results
         ]
         return RagQueryResponse(results=out, debug_info=api_debug_info)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.post("/rag/metrics/query", response_model=RagMetricsQueryResponse)
+def rag_metrics_query(
+    request: Request, req: RagMetricsQueryRequest
+) -> RagMetricsQueryResponse:
+    """Query RAG with comprehensive evaluation metrics.
+
+    This endpoint extends the standard RAG query with evaluation metrics including:
+    - Retrieval accuracy (hit rate, unique docs, score distribution)
+    - Latency tracking (per-stage breakdowns)
+    - Hit rate analysis (success rate, threshold performance)
+
+    Requires debug_mode=True to collect metrics.
+    """
+    try:
+        from mygpt.config import get_rag_min_score
+
+        # Force debug mode to collect metrics
+        result = retrieve_context(req.query, top_k=req.top_k, debug_mode=True)
+
+        # Type narrowing: debug_mode=True means result is tuple[list[dict], RAGDebugInfo]
+        from mygpt.rag.rag import RAGDebugInfo, compute_evaluation_metrics
+
+        results, debug_info = cast(tuple[list[dict], RAGDebugInfo], result)
+
+        # Convert RAGDebugInfo to RagDebugInfo (API model)
+        from mygpt.api_models import (
+            RagDebugInfo,
+            RagEvaluationMetrics as ApiRagEvaluationMetrics,
+            RetrievalAccuracyMetrics as ApiRetrievalAccuracyMetrics,
+            LatencyMetrics as ApiLatencyMetrics,
+            HitRateMetrics as ApiHitRateMetrics,
+        )
+
+        api_debug_info = RagDebugInfo(
+            total_time_ms=debug_info.total_time_ms,
+            query_expansion_time_ms=debug_info.query_expansion_time_ms,
+            embedding_time_ms=debug_info.embedding_time_ms,
+            vector_search_time_ms=debug_info.vector_search_time_ms,
+            filtering_time_ms=debug_info.filtering_time_ms,
+            composition_time_ms=debug_info.composition_time_ms,
+            original_query=debug_info.original_query,
+            query_variants=debug_info.query_variants,
+            num_queries=debug_info.num_queries,
+            embedding_model=debug_info.embedding_model,
+            embedding_dim=debug_info.embedding_dim,
+            num_texts_embedded=debug_info.num_texts_embedded,
+            batch_size=debug_info.batch_size,
+            raw_results_count=debug_info.raw_results_count,
+            score_min=debug_info.score_min,
+            score_max=debug_info.score_max,
+            score_mean=debug_info.score_mean,
+            after_min_score_filter=debug_info.after_min_score_filter,
+            after_dedupe_filter=debug_info.after_dedupe_filter,
+            after_max_chunks_filter=debug_info.after_max_chunks_filter,
+            total_chars_before_truncation=debug_info.total_chars_before_truncation,
+            total_chars_after_truncation=debug_info.total_chars_after_truncation,
+            chunks_included=debug_info.chunks_included,
+        )
+
+        # Compute evaluation metrics if requested
+        evaluation_metrics = None
+        if req.collect_metrics:
+            cfg = load_config(None)
+            min_score = get_rag_min_score(cfg)
+            eval_metrics = compute_evaluation_metrics(results, debug_info, min_score)
+
+            # Convert to API models
+            evaluation_metrics = ApiRagEvaluationMetrics(
+                retrieval_accuracy=ApiRetrievalAccuracyMetrics(
+                    results_returned=eval_metrics.retrieval_accuracy.results_returned,
+                    query_success=eval_metrics.retrieval_accuracy.query_success,
+                    unique_docs_retrieved=eval_metrics.retrieval_accuracy.unique_docs_retrieved,
+                    total_chunks_retrieved=eval_metrics.retrieval_accuracy.total_chunks_retrieved,
+                    score_distribution=eval_metrics.retrieval_accuracy.score_distribution,
+                ),
+                latency=ApiLatencyMetrics(
+                    total_time_ms=eval_metrics.latency.total_time_ms,
+                    stage_timings=eval_metrics.latency.stage_timings,
+                    percentiles=eval_metrics.latency.percentiles,
+                ),
+                hit_rate=ApiHitRateMetrics(
+                    query_success_rate=eval_metrics.hit_rate.query_success_rate,
+                    total_queries=eval_metrics.hit_rate.total_queries,
+                    successful_queries=eval_metrics.hit_rate.successful_queries,
+                    failed_queries=eval_metrics.hit_rate.failed_queries,
+                    avg_top_score=eval_metrics.hit_rate.avg_top_score,
+                    score_above_threshold_rate=eval_metrics.hit_rate.score_above_threshold_rate,
+                ),
+                query_id=eval_metrics.query_id,
+                timestamp=eval_metrics.timestamp,
+            )
+
+        out = [
+            RagQueryResult(
+                doc_id=str(r.get("doc_id", "")),
+                chunk_id=int(r.get("chunk_id", 0)),
+                text=str(r.get("text", "")),
+                score=float(r.get("score", 0.0)),
+            )
+            for r in results
+        ]
+
+        return RagMetricsQueryResponse(
+            results=out, debug_info=api_debug_info, evaluation_metrics=evaluation_metrics
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
