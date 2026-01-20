@@ -482,6 +482,11 @@ ensure_pr_project_hygiene() {
                   field { ... on ProjectV2SingleSelectField { name } }
                   name
                 }
+                ... on ProjectV2ItemFieldIterationValue {
+                  field { ... on ProjectV2IterationField { name } }
+                  title
+                  id
+                }
               }
             }
           }
@@ -497,6 +502,11 @@ ensure_pr_project_hygiene() {
               field { ... on ProjectV2SingleSelectField { name } }
               name
             }
+            ... on ProjectV2ItemFieldIterationValue {
+              field { ... on ProjectV2IterationField { name } }
+              title
+              id
+            }
           }
         }
       }
@@ -507,12 +517,13 @@ ensure_pr_project_hygiene() {
   resp="$(graphql "$q_get_fields" -F project="$project_id" -F item="$issue_item_id")"
 
   # Extract field values from issue
-  local priority effort module
+  local priority effort module sprint
   priority="$(echo "$resp" | jq -r '.data.projectItem.fieldValues.nodes[] | select(.field.name == "Priority") | .name // empty')"
   effort="$(echo "$resp" | jq -r '.data.projectItem.fieldValues.nodes[] | select(.field.name == "Effort") | .name // empty')"
   module="$(echo "$resp" | jq -r '.data.projectItem.fieldValues.nodes[] | select(.field.name == "Module") | .name // empty')"
+  sprint="$(echo "$resp" | jq -r '.data.projectItem.fieldValues.nodes[] | select(.field.name == "Sprint") | .title // empty')"
 
-  _debug "Issue #${issue_number} fields: Priority=$priority, Effort=$effort, Module=$module"
+  _debug "Issue #${issue_number} fields: Priority=$priority, Effort=$effort, Module=$module, Sprint=$sprint"
 
   # Get milestone from issue
   local milestone_number
@@ -532,6 +543,11 @@ ensure_pr_project_hygiene() {
   if [[ -n "$module" && "$module" != "null" ]]; then
     _debug "Setting PR Module to: $module"
     set_project_field_value "$pr_item_id" "Module" "$module" || _warn "Failed to set Module on PR #${pr_number}"
+  fi
+
+  if [[ -n "$sprint" && "$sprint" != "null" ]]; then
+    _debug "Setting PR Sprint to: $sprint"
+    set_project_field_value "$pr_item_id" "Sprint" "$sprint" || _warn "Failed to set Sprint on PR #${pr_number}"
   fi
 
   # Set milestone on PR
