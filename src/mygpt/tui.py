@@ -757,7 +757,7 @@ class MyGPTTUI(App):
 
     def action_pick_session(self) -> None:
         """Open the session picker and switch to the selected session."""
-        self.run_worker(self._pick_session_worker(), exclusive=True)
+        self.run_worker(self._pick_session_worker())
 
     async def _pick_session_worker(self) -> None:
         """Worker to handle async session picker logic."""
@@ -778,7 +778,7 @@ class MyGPTTUI(App):
 
     def action_models_manager(self) -> None:
         """Open the models manager screen."""
-        self.run_worker(self._models_manager_worker(), exclusive=True)
+        self.run_worker(self._models_manager_worker())
 
     async def _models_manager_worker(self) -> None:
         """Worker to handle async models manager logic."""
@@ -787,7 +787,7 @@ class MyGPTTUI(App):
 
     def action_search_messages(self) -> None:
         """Open message search modal."""
-        self.run_worker(self._search_messages_worker(), exclusive=True)
+        self.run_worker(self._search_messages_worker())
 
     async def _search_messages_worker(self) -> None:
         """Worker to handle async message search logic."""
@@ -820,7 +820,7 @@ class MyGPTTUI(App):
 
     def action_rename_session(self) -> None:
         """Rename the current session with automatic filename sync."""
-        self.run_worker(self._rename_session_worker(), exclusive=True)
+        self.run_worker(self._rename_session_worker())
 
     async def _rename_session_worker(self) -> None:
         """Worker to handle async rename session logic."""
@@ -923,7 +923,7 @@ class MyGPTTUI(App):
 
     def action_show_help(self) -> None:
         """Show the keyboard shortcuts help overlay."""
-        self.run_worker(self._show_help_worker(), exclusive=True)
+        self.run_worker(self._show_help_worker())
 
     async def _show_help_worker(self) -> None:
         """Worker to handle async help overlay logic."""
@@ -932,7 +932,7 @@ class MyGPTTUI(App):
 
     def action_command_palette(self) -> None:
         """Show the command palette and execute selected command."""
-        self.run_worker(self._command_palette_worker(), exclusive=True)
+        self.run_worker(self._command_palette_worker())
 
     async def _command_palette_worker(self) -> None:
         """Worker to handle async command palette logic."""
