@@ -12,6 +12,12 @@ const nextConfig: NextConfig = {
     "http://127.0.0.1:3000",
     "http://192.168.86.21:3000",
   ],
+
+  // Position dev indicator in top-right to avoid covering app UI
+  devIndicators: {
+    buildActivity: true,
+    buildActivityPosition: 'top-right',
+  },
 };
 
 export default nextConfig;
