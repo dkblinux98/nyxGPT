@@ -473,10 +473,157 @@ class SearchResultsScreen(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
+class HelpOverlayScreen(ModalScreen[None]):
+    """Modal screen displaying keyboard shortcuts and help information."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        ("ctrl+c", "close", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(id="help-dialog"):
+            yield Label("Keyboard Shortcuts")
+
+            # Main shortcuts
+            yield Label("\n[bold]Main Shortcuts:[/bold]")
+            yield Label("  Ctrl+H / F1    - Show this help")
+            yield Label("  Ctrl+P         - Command palette")
+            yield Label("  Ctrl+C         - Quit application")
+
+            # Navigation
+            yield Label("\n[bold]Navigation:[/bold]")
+            yield Label("  Tab            - Next pane")
+            yield Label("  Shift+Tab      - Previous pane")
+
+            # Sessions
+            yield Label("\n[bold]Sessions:[/bold]")
+            yield Label("  Ctrl+S         - Session picker")
+            yield Label("  Ctrl+N         - Rename session")
+
+            # Features
+            yield Label("\n[bold]Features:[/bold]")
+            yield Label("  Ctrl+F         - Search messages")
+            yield Label("  Ctrl+R         - Toggle RAG")
+            yield Label("  Ctrl+M         - Models manager")
+            yield Label("  Ctrl+L         - Clear output")
+
+            # Commands
+            yield Label("\n[bold]Slash Commands:[/bold]")
+            yield Label("  /clear         - Clear output buffer")
+
+            yield Label("\nPress ESC or Ctrl+C to close")
+        yield Footer()
+
+    async def action_close(self) -> None:
+        """Close the help overlay."""
+        self.dismiss(None)
+
+
+class CommandPaletteScreen(ModalScreen[str | None]):
+    """Modal screen for quick command access with fuzzy search."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        ("ctrl+c", "close", "Close"),
+        ("enter", "execute_command", "Execute"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.all_commands = [
+            {"key": "pick_session", "label": "Session Picker", "description": "Browse and switch sessions"},
+            {"key": "search_messages", "label": "Search Messages", "description": "Search across all sessions"},
+            {"key": "toggle_rag", "label": "Toggle RAG", "description": "Enable/disable RAG for current session"},
+            {"key": "models_manager", "label": "Models Manager", "description": "Manage Ollama models"},
+            {"key": "rename_session", "label": "Rename Session", "description": "Rename current session"},
+            {"key": "clear_output", "label": "Clear Output", "description": "Clear chat output buffer"},
+            {"key": "show_help", "label": "Show Help", "description": "Display keyboard shortcuts"},
+            {"key": "quit", "label": "Quit", "description": "Exit the application"},
+        ]
+        self.filtered_commands = self.all_commands.copy()
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(id="command-palette-dialog"):
+            yield Label("Command Palette")
+            yield Input(placeholder="Type to search commands...", id="command-search")
+            yield ListView(id="command-list")
+            with Container(id="command-preview"):
+                yield Label("", id="command-description")
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        """Focus search input when screen appears."""
+        search_input = self.query_one("#command-search", Input)
+        search_input.focus()
+        await self.update_command_list()
+
+    async def on_input_changed(self, event: Input.Changed) -> None:
+        """Filter commands based on search input."""
+        if event.input.id != "command-search":
+            return
+
+        query = event.value.lower()
+        if not query:
+            self.filtered_commands = self.all_commands.copy()
+        else:
+            # Simple fuzzy search: match if query chars appear in order
+            self.filtered_commands = [
+                cmd for cmd in self.all_commands
+                if query in cmd["label"].lower() or query in cmd["description"].lower()
+            ]
+
+        await self.update_command_list()
+
+    async def update_command_list(self) -> None:
+        """Update the ListView with filtered commands."""
+        list_view = self.query_one("#command-list", ListView)
+        await list_view.clear()
+
+        for cmd in self.filtered_commands:
+            label_text = f"{cmd['label']} - {cmd['description']}"
+            await list_view.append(ListItem(Label(label_text), name=cmd["key"]))
+
+        # Update description for first command if any
+        if self.filtered_commands:
+            desc_label = self.query_one("#command-description", Label)
+            desc_label.update(self.filtered_commands[0]["description"])
+
+    async def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        """Update description when a command is highlighted."""
+        if event.item is None:
+            return
+
+        command_key = event.item.name
+        command = next((c for c in self.filtered_commands if c["key"] == command_key), None)
+
+        if command:
+            desc_label = self.query_one("#command-description", Label)
+            desc_label.update(command["description"])
+
+    async def action_execute_command(self) -> None:
+        """Execute the currently highlighted command."""
+        list_view = self.query_one("#command-list", ListView)
+        if list_view.highlighted_child:
+            command_key = list_view.highlighted_child.name
+            self.dismiss(command_key)
+
+    async def action_close(self) -> None:
+        """Close the command palette."""
+        self.dismiss(None)
+
+
 class MyGPTTUI(App):
     CSS_PATH = None
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
+        ("ctrl+h", "show_help", "Help"),
+        ("f1", "show_help", "Help"),
+        ("ctrl+p", "command_palette", "Commands"),
+        ("tab", "focus_next", "Next"),
+        ("shift+tab", "focus_previous", "Previous"),
         ("ctrl+s", "pick_session", "Sessions"),
         ("ctrl+f", "search_messages", "Search"),
         ("ctrl+r", "toggle_rag", "Toggle RAG"),
@@ -757,6 +904,35 @@ class MyGPTTUI(App):
             log.info(f"Output cleared for session {self.session}")
         except Exception as e:
             log.error(f"Failed to clear output: {type(e).__name__}: {e}")
+
+    async def action_show_help(self) -> None:
+        """Show the keyboard shortcuts help overlay."""
+        await self.push_screen_wait(HelpOverlayScreen())
+        log.info("Help overlay closed")
+
+    async def action_command_palette(self) -> None:
+        """Show the command palette and execute selected command."""
+        command_key = await self.push_screen_wait(CommandPaletteScreen())
+
+        if command_key:
+            log.info(f"Executing command from palette: {command_key}")
+            # Map command key to action method
+            action_map = {
+                "pick_session": self.action_pick_session,
+                "search_messages": self.action_search_messages,
+                "toggle_rag": self.action_toggle_rag,
+                "models_manager": self.action_models_manager,
+                "rename_session": self.action_rename_session,
+                "clear_output": self.action_clear_output,
+                "show_help": self.action_show_help,
+                "quit": self.action_quit,
+            }
+
+            action = action_map.get(command_key)
+            if action:
+                await action()
+            else:
+                log.warning(f"Unknown command key: {command_key}")
 
     async def _handle_command(self, command: str) -> None:
         """Handle slash commands."""

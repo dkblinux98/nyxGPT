@@ -15,6 +15,8 @@ from mygpt.tui import (
     SessionPickerScreen,
     SearchResultsScreen,
     SessionStatusBar,
+    HelpOverlayScreen,
+    CommandPaletteScreen,
 )
 
 pytestmark = pytest.mark.unit
@@ -2348,6 +2350,226 @@ async def test_search_results_screen_action_close() -> None:
     screen = SearchResultsScreen(
         api_base_url="http://127.0.0.1:8000", current_session="test"
     )
+
+    # Mock dismiss
+    with patch.object(screen, "dismiss") as mock_dismiss:
+        await screen.action_close()
+
+    # Verify screen was dismissed with None
+    mock_dismiss.assert_called_once_with(None)
+
+
+# ============================================================================
+# Keyboard Navigation Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_action_show_help(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """Test action_show_help opens HelpOverlayScreen."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test", config_path=str(config_file))
+
+    # Mock push_screen_wait
+    with patch.object(
+        app, "push_screen_wait", new=AsyncMock(return_value=None)
+    ) as mock_push:
+        with caplog.at_level(logging.INFO, logger="mygpt.tui"):
+            await app.action_show_help()
+
+    # Verify HelpOverlayScreen was shown
+    mock_push.assert_called_once()
+    assert "Help overlay closed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_action_command_palette_execute_command(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test action_command_palette executes selected command."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test", config_path=str(config_file))
+
+    # Mock push_screen_wait to return a command key
+    with patch.object(
+        app, "push_screen_wait", new=AsyncMock(return_value="clear_output")
+    ):
+        # Mock action_clear_output
+        with patch.object(app, "action_clear_output", new=AsyncMock()) as mock_clear:
+            with caplog.at_level(logging.INFO, logger="mygpt.tui"):
+                await app.action_command_palette()
+
+    # Verify command was executed
+    mock_clear.assert_called_once()
+    assert "Executing command from palette: clear_output" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_action_command_palette_cancel(tmp_path: Path) -> None:
+    """Test action_command_palette handles cancel (None returned)."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test", config_path=str(config_file))
+
+    # Mock push_screen_wait to return None (cancel)
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)):
+        # No action should be called
+        await app.action_command_palette()
+
+    # Test passes if no exception raised
+
+
+@pytest.mark.asyncio
+async def test_action_command_palette_unknown_command(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test action_command_palette handles unknown command key."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test", config_path=str(config_file))
+
+    # Mock push_screen_wait to return an unknown command key
+    with patch.object(
+        app, "push_screen_wait", new=AsyncMock(return_value="unknown_command")
+    ):
+        with caplog.at_level(logging.WARNING, logger="mygpt.tui"):
+            await app.action_command_palette()
+
+    # Verify warning was logged
+    assert "Unknown command key: unknown_command" in caplog.text
+
+
+def test_help_overlay_screen_initialization() -> None:
+    """Test HelpOverlayScreen initializes correctly."""
+    from mygpt.tui import HelpOverlayScreen
+
+    screen = HelpOverlayScreen()
+    assert screen is not None
+
+
+@pytest.mark.asyncio
+async def test_help_overlay_screen_action_close() -> None:
+    """Test HelpOverlayScreen close action."""
+    from mygpt.tui import HelpOverlayScreen
+
+    screen = HelpOverlayScreen()
+
+    # Mock dismiss
+    with patch.object(screen, "dismiss") as mock_dismiss:
+        await screen.action_close()
+
+    # Verify screen was dismissed with None
+    mock_dismiss.assert_called_once_with(None)
+
+
+def test_command_palette_screen_initialization() -> None:
+    """Test CommandPaletteScreen initializes correctly."""
+    from mygpt.tui import CommandPaletteScreen
+
+    screen = CommandPaletteScreen()
+    assert screen.all_commands is not None
+    assert len(screen.all_commands) > 0
+    assert screen.filtered_commands == screen.all_commands
+
+
+@pytest.mark.asyncio
+async def test_command_palette_screen_filter_commands() -> None:
+    """Test CommandPaletteScreen filters commands based on search."""
+    from mygpt.tui import CommandPaletteScreen
+
+    screen = CommandPaletteScreen()
+
+    # Mock update_command_list
+    with patch.object(screen, "update_command_list", new=AsyncMock()):
+        # Create mock input event
+        mock_input = MagicMock(spec=Input)
+        mock_input.id = "command-search"
+        event = MagicMock()
+        event.input = mock_input
+        event.value = "search"
+
+        await screen.on_input_changed(event)
+
+    # Should filter to commands containing "search"
+    assert len(screen.filtered_commands) > 0
+    assert all("search" in cmd["label"].lower() or "search" in cmd["description"].lower()
+               for cmd in screen.filtered_commands)
+
+
+@pytest.mark.asyncio
+async def test_command_palette_screen_filter_empty_query() -> None:
+    """Test CommandPaletteScreen shows all commands when search is empty."""
+    from mygpt.tui import CommandPaletteScreen
+
+    screen = CommandPaletteScreen()
+    original_count = len(screen.all_commands)
+
+    # Filter first
+    screen.filtered_commands = []
+
+    # Mock update_command_list
+    with patch.object(screen, "update_command_list", new=AsyncMock()):
+        mock_input = MagicMock(spec=Input)
+        mock_input.id = "command-search"
+        event = MagicMock()
+        event.input = mock_input
+        event.value = ""
+
+        await screen.on_input_changed(event)
+
+    # Should show all commands
+    assert len(screen.filtered_commands) == original_count
+
+
+@pytest.mark.asyncio
+async def test_command_palette_screen_action_execute_command() -> None:
+    """Test CommandPaletteScreen execute command action."""
+    from mygpt.tui import CommandPaletteScreen
+
+    screen = CommandPaletteScreen()
+
+    # Mock the ListView with a highlighted item
+    mock_list_view = MagicMock()
+    mock_highlighted = MagicMock()
+    mock_highlighted.name = "clear_output"
+    mock_list_view.highlighted_child = mock_highlighted
+
+    with patch.object(screen, "query_one", return_value=mock_list_view):
+        with patch.object(screen, "dismiss") as mock_dismiss:
+            await screen.action_execute_command()
+
+    # Verify command key was returned
+    mock_dismiss.assert_called_once_with("clear_output")
+
+
+@pytest.mark.asyncio
+async def test_command_palette_screen_action_close() -> None:
+    """Test CommandPaletteScreen close action."""
+    from mygpt.tui import CommandPaletteScreen
+
+    screen = CommandPaletteScreen()
 
     # Mock dismiss
     with patch.object(screen, "dismiss") as mock_dismiss:
