@@ -12,12 +12,12 @@ jobs:
     # Only run if:
     # 1. Auto-fix enabled
     # 2. Comment is on PR
-    # 3. Comment is from claude (Claude Code Action OAuth user)
+    # 3. Comment is from authorized agent (claude[bot] or developer agent)
     # 4. Comment starts with "## Code Review - REQUEST_CHANGES"
     if: >-
       ${{ vars.REVIEW_AUTO_FIX_ENABLED == 'true'
           && github.event.issue.pull_request
-          && github.event.comment.user.login == 'claude[bot]'
+          && (github.event.comment.user.login == 'claude[bot]' || github.event.comment.user.login == vars.DEV_AGENT)
           && startsWith(github.event.comment.body, '## Code Review - REQUEST_CHANGES') }}
     runs-on: ubuntu-latest
 
