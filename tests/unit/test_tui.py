@@ -834,7 +834,7 @@ async def test_tui_action_pick_session(tmp_path: Path) -> None:
         app, "push_screen_wait", new=AsyncMock(return_value="new-session")
     ):
         with patch.object(app, "_update_session_status", new=AsyncMock()):
-            await app._pick_session_worker()
+            await app.action_pick_session()
 
     # Verify session was switched
     assert app.session == "new-session"
@@ -862,7 +862,7 @@ async def test_tui_action_pick_session_cancel(tmp_path: Path) -> None:
 
     # Mock push_screen_wait to return None (cancel)
     with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)):
-        await app._pick_session_worker()
+        await app.action_pick_session()
 
     # Verify session was NOT switched
     assert app.session == "original-session"
@@ -1477,7 +1477,7 @@ async def test_tui_action_search_messages_opens_screen(tmp_path: Path) -> None:
     with patch.object(
         app, "push_screen_wait", new=AsyncMock(return_value=None)
     ) as mock_push:
-        await app._search_messages_worker()
+        await app.action_search_messages()
 
     # Verify SearchResultsScreen was shown
     mock_push.assert_called_once()
@@ -1511,7 +1511,7 @@ async def test_tui_action_search_messages_switches_session(tmp_path: Path) -> No
     ):
         with patch.object(app, "query_one", return_value=mock_output):
             with patch.object(app, "notify") as mock_notify:
-                await app._search_messages_worker()
+                await app.action_search_messages()
 
     # Verify session was switched
     assert app.session == "target-session"
@@ -1552,7 +1552,7 @@ async def test_tui_action_search_messages_same_session(tmp_path: Path) -> None:
         app, "push_screen_wait", new=AsyncMock(return_value=search_result)
     ):
         with patch.object(app, "notify") as mock_notify:
-            await app._search_messages_worker()
+            await app.action_search_messages()
 
     # Verify session stayed the same
     assert app.session == "current-session"
@@ -1976,7 +1976,7 @@ async def test_tui_action_models_manager(
         app, "push_screen_wait", new=AsyncMock(return_value=None)
     ) as mock_push:
         with caplog.at_level(logging.INFO, logger="mygpt.tui"):
-            await app._models_manager_worker()
+            await app.action_models_manager()
 
     # Verify ModelsManagerScreen was shown
     mock_push.assert_called_once()
@@ -2379,7 +2379,7 @@ async def test_action_show_help(tmp_path: Path, caplog: pytest.LogCaptureFixture
         app, "push_screen_wait", new=AsyncMock(return_value=None)
     ) as mock_push:
         with caplog.at_level(logging.INFO, logger="mygpt.tui"):
-            await app._show_help_worker()
+            await app.action_show_help()
 
     # Verify HelpOverlayScreen was shown
     mock_push.assert_called_once()
@@ -2407,7 +2407,7 @@ async def test_action_command_palette_execute_command(
         # Mock action_clear_output
         with patch.object(app, "action_clear_output", new=AsyncMock()) as mock_clear:
             with caplog.at_level(logging.INFO, logger="mygpt.tui"):
-                await app._command_palette_worker()
+                await app.action_command_palette()
 
     # Verify command was executed
     mock_clear.assert_called_once()
@@ -2429,7 +2429,7 @@ async def test_action_command_palette_cancel(tmp_path: Path) -> None:
     # Mock push_screen_wait to return None (cancel)
     with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)):
         # No action should be called
-        await app._command_palette_worker()
+        await app.action_command_palette()
 
     # Test passes if no exception raised
 
@@ -2453,7 +2453,7 @@ async def test_action_command_palette_unknown_command(
         app, "push_screen_wait", new=AsyncMock(return_value="unknown_command")
     ):
         with caplog.at_level(logging.WARNING, logger="mygpt.tui"):
-            await app._command_palette_worker()
+            await app.action_command_palette()
 
     # Verify warning was logged
     assert "Unknown command key: unknown_command" in caplog.text
@@ -2461,7 +2461,6 @@ async def test_action_command_palette_unknown_command(
 
 def test_help_overlay_screen_initialization() -> None:
     """Test HelpOverlayScreen initializes correctly."""
-    from mygpt.tui import HelpOverlayScreen
 
     screen = HelpOverlayScreen()
     assert screen is not None
@@ -2470,7 +2469,6 @@ def test_help_overlay_screen_initialization() -> None:
 @pytest.mark.asyncio
 async def test_help_overlay_screen_action_close() -> None:
     """Test HelpOverlayScreen close action."""
-    from mygpt.tui import HelpOverlayScreen
 
     screen = HelpOverlayScreen()
 
@@ -2484,7 +2482,6 @@ async def test_help_overlay_screen_action_close() -> None:
 
 def test_command_palette_screen_initialization() -> None:
     """Test CommandPaletteScreen initializes correctly."""
-    from mygpt.tui import CommandPaletteScreen
 
     screen = CommandPaletteScreen()
     assert screen.all_commands is not None
@@ -2495,7 +2492,6 @@ def test_command_palette_screen_initialization() -> None:
 @pytest.mark.asyncio
 async def test_command_palette_screen_filter_commands() -> None:
     """Test CommandPaletteScreen filters commands based on search."""
-    from mygpt.tui import CommandPaletteScreen
 
     screen = CommandPaletteScreen()
 
@@ -2519,7 +2515,6 @@ async def test_command_palette_screen_filter_commands() -> None:
 @pytest.mark.asyncio
 async def test_command_palette_screen_filter_empty_query() -> None:
     """Test CommandPaletteScreen shows all commands when search is empty."""
-    from mygpt.tui import CommandPaletteScreen
 
     screen = CommandPaletteScreen()
     original_count = len(screen.all_commands)
@@ -2544,7 +2539,6 @@ async def test_command_palette_screen_filter_empty_query() -> None:
 @pytest.mark.asyncio
 async def test_command_palette_screen_action_execute_command() -> None:
     """Test CommandPaletteScreen execute command action."""
-    from mygpt.tui import CommandPaletteScreen
 
     screen = CommandPaletteScreen()
 
@@ -2565,7 +2559,6 @@ async def test_command_palette_screen_action_execute_command() -> None:
 @pytest.mark.asyncio
 async def test_command_palette_screen_action_close() -> None:
     """Test CommandPaletteScreen close action."""
-    from mygpt.tui import CommandPaletteScreen
 
     screen = CommandPaletteScreen()
 

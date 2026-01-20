@@ -804,12 +804,15 @@ def test_retrieve_context_applies_min_score_and_max_chunks(
             # Includes: below-threshold, duplicates, and valid unique
             # Results are sorted by score descending after filtering
             return [
-                {"text": "weak", "score": 0.10},  # filtered: below min_score
-                {"text": "keep one", "score": 0.90},
-                {"text": "keep one", "score": 0.91},  # filtered: duplicate
-                {"text": "keep two", "score": 0.70},  # dropped: max_chunks=2
-                {"text": "keep three", "score": 0.80},
+                {"text": "weak", "score": 0.10, "doc_id": "doc1", "chunk_id": 0},  # filtered: below min_score
+                {"text": "keep one", "score": 0.90, "doc_id": "doc2", "chunk_id": 0},
+                {"text": "keep one", "score": 0.91, "doc_id": "doc2", "chunk_id": 0},  # filtered: duplicate
+                {"text": "keep two", "score": 0.70, "doc_id": "doc3", "chunk_id": 0},  # dropped: max_chunks=2
+                {"text": "keep three", "score": 0.80, "doc_id": "doc4", "chunk_id": 0},
             ]
+
+        def list_docs(self):
+            return []
 
         def close(self):
             return None
@@ -967,6 +970,9 @@ def test_retrieve_context_empty_query(monkeypatch: pytest.MonkeyPatch) -> None:
             self.last_k = k
             return []
 
+        def list_docs(self):
+            return []
+
         def close(self) -> None:
             pass
 
@@ -1045,6 +1051,9 @@ def test_retrieve_context_debug_mode(monkeypatch: pytest.MonkeyPatch) -> None:
                 )
                 return results, metrics
             return results
+
+        def list_docs(self):
+            return []
 
         def close(self):
             pass

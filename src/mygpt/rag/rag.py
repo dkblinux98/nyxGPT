@@ -24,6 +24,8 @@ from mygpt.rag.vectorstore_cassandra import (
     CassandraVectorStore,
     VectorSearchDebugMetrics,
 )
+from mygpt.rag.bm25 import BM25Index
+from mygpt.rag.fusion import reciprocal_rank_fusion, weighted_fusion
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +45,8 @@ class RAGDebugInfo:
     query_expansion_time_ms: float | None
     embedding_time_ms: float
     vector_search_time_ms: float
+    keyword_search_time_ms: float | None
+    fusion_time_ms: float | None
     filtering_time_ms: float
     composition_time_ms: float
 
@@ -62,6 +66,12 @@ class RAGDebugInfo:
     score_min: float | None
     score_max: float | None
     score_mean: float | None
+
+    # Hybrid search details
+    hybrid_enabled: bool
+    keyword_results_count: int | None
+    vector_results_count: int | None
+    fusion_method: str | None
 
     # Filtering stats
     after_min_score_filter: int
@@ -518,7 +528,10 @@ def retrieve_context(
     embedding_model: str | None = None,
     embedding_dim: int | None = None,
 ) -> list[dict] | tuple[list[dict], RAGDebugInfo]:
-    """Retrieve relevant context for a query.
+    """Retrieve relevant context for a query using hybrid search.
+
+    Combines vector similarity search with BM25 keyword search using
+    Reciprocal Rank Fusion (RRF) for improved retrieval quality.
 
     Optionally performs query expansion to improve recall.
 
@@ -556,11 +569,18 @@ def retrieve_context(
     max_chunks = get_rag_max_chunks(cfg)
     _dedupe = get_rag_dedupe(cfg)  # Reserved for future deduplication feature
     use_expansion = cfg.getboolean("rag", "enable_query_expansion", fallback=False)
+    use_hybrid = cfg.getboolean("rag", "enable_hybrid_search", fallback=True)
+    hybrid_alpha = cfg.getfloat("rag", "hybrid_alpha", fallback=None)
 
     # Track debug metrics
     query_expansion_time_ms = None
     embedding_metrics: EmbeddingDebugMetrics | None = None
     vector_search_metrics: VectorSearchDebugMetrics | None = None
+    keyword_search_time_ms = None
+    fusion_time_ms = None
+    keyword_results_count = None
+    vector_results_count = None
+    fusion_method = None
 
     # Generate query expansions if enabled
     if use_expansion and collect_debug:
@@ -573,11 +593,12 @@ def retrieve_context(
     if len(queries) > 1:
         log.debug("Expanded query into %d variants", len(queries))
 
-    # Collect results from all query variants
-    all_results: list[dict] = []
-    seen_texts: set[str] = set()
-    total_raw_results = 0
+    # ======================================================================
+    # VECTOR SEARCH
+    # ======================================================================
+    vector_results_map: dict[tuple, dict] = {}  # (doc_id, chunk_id) -> result dict
     all_scores: list[float] = []
+    total_raw_results = 0
 
     store = CassandraVectorStore(collection=collection)
     try:
@@ -629,20 +650,149 @@ def retrieve_context(
                 if not text:
                     continue
 
-                # Deduplicate across all queries
-                norm = " ".join(text.split())
-                if norm in seen_texts:
-                    continue
+                # Use (doc_id, chunk_id) as unique key for deduplication
+                chunk_key = (r.get("doc_id"), r.get("chunk_id"))
+                if chunk_key not in vector_results_map:
+                    vector_results_map[chunk_key] = r
 
-                seen_texts.add(norm)
-                all_results.append(r)
+        # Get list of all documents for keyword search
+        all_docs = store.list_docs()
+        if not all_docs:
+            log.debug("No documents in vector store, skipping hybrid search")
+            use_hybrid = False
     finally:
-        store.close()
+        # Don't close store yet if we need to fetch documents for BM25
+        pass
 
-    # Sort by score (highest first) and filter
-    all_results.sort(key=lambda r: r.get("score", 0.0), reverse=True)
+    # ======================================================================
+    # KEYWORD SEARCH (BM25)
+    # ======================================================================
+    keyword_results_map: dict[tuple, dict] = {}  # (doc_id, chunk_id) -> result dict
 
-    # Track filtering for debug
+    if use_hybrid and all_docs:
+        keyword_start = time.perf_counter()
+
+        # Fetch all document chunks for BM25 indexing
+        # Build a mapping: chunk_idx -> result dict
+        all_chunks: list[str] = []
+        chunk_to_result: dict[int, dict] = {}
+
+        for doc_info in all_docs:
+            doc_id = doc_info["doc_id"]
+            # Fetch all chunks for this document
+            try:
+                # Query by doc_id to get all chunks
+                stmt = f"SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim FROM {store.table_name} WHERE doc_id = %s"
+                if not store._keyspace_ready:
+                    store._ensure_keyspace_selected()
+                rows = store.session.execute(stmt, (doc_id,))
+
+                for r in rows:
+                    # Filter by embedding_model if specified
+                    if (
+                        actual_model is not None
+                        and hasattr(r, "embedding_model")
+                        and r.embedding_model != actual_model
+                    ):
+                        continue
+
+                    text = (r.text or "").strip()
+                    if not text:
+                        continue
+
+                    chunk_idx = len(all_chunks)
+                    all_chunks.append(text)
+                    chunk_to_result[chunk_idx] = {
+                        "doc_id": r.doc_id,
+                        "chunk_id": r.chunk_id,
+                        "text": text,
+                        "metadata": json.loads(r.metadata) if r.metadata else {},
+                        "embedding_model": r.embedding_model if hasattr(r, "embedding_model") else None,
+                        "embedding_dim": r.embedding_dim if hasattr(r, "embedding_dim") else None,
+                    }
+            except Exception as e:
+                log.warning("Failed to fetch chunks for doc %s: %s", doc_id, e)
+                continue
+
+        # Build BM25 index and search
+        if all_chunks:
+            bm25_index = BM25Index()
+            bm25_index.build_index(all_chunks)
+            bm25_results = bm25_index.search(query, k=k)
+
+            # Convert BM25 results to result dict format
+            for chunk_idx, bm25_score in bm25_results:
+                if chunk_idx in chunk_to_result:
+                    chunk_result = chunk_to_result[chunk_idx].copy()
+                    chunk_result["score"] = bm25_score
+                    chunk_key = (chunk_result["doc_id"], chunk_result["chunk_id"])
+                    keyword_results_map[chunk_key] = chunk_result
+
+        keyword_search_time_ms = (time.perf_counter() - keyword_start) * 1000.0
+        keyword_results_count = len(keyword_results_map)
+
+    # Close store after we're done with Cassandra operations
+    store.close()
+
+    # ======================================================================
+    # FUSION
+    # ======================================================================
+    vector_results_count = len(vector_results_map)
+
+    if use_hybrid and keyword_results_map:
+        fusion_start = time.perf_counter()
+
+        # Prepare rankings for fusion
+        # Vector results: sorted by score descending
+        vector_ranking = sorted(
+            [(k, r["score"]) for k, r in vector_results_map.items()],
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        # Keyword results: sorted by score descending
+        keyword_ranking = sorted(
+            [(k, r["score"]) for k, r in keyword_results_map.items()],
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        # Decide fusion method
+        if hybrid_alpha is not None:
+            # Use weighted fusion
+            fusion_method = f"weighted(alpha={hybrid_alpha})"
+            fused_ranking = weighted_fusion(vector_ranking, keyword_ranking, alpha=hybrid_alpha)
+        else:
+            # Use RRF (default)
+            fusion_method = "reciprocal_rank_fusion"
+            fused_ranking = reciprocal_rank_fusion([vector_ranking, keyword_ranking])
+
+        # Build final results from fused ranking
+        all_results: list[dict] = []
+        for chunk_key, fused_score in fused_ranking:
+            # Get result from either vector or keyword results
+            if chunk_key in vector_results_map:
+                fused_result = vector_results_map[chunk_key].copy()
+            else:
+                fused_result = keyword_results_map[chunk_key].copy()
+
+            # Update score to fused score
+            fused_result["score"] = fused_score
+            all_results.append(fused_result)
+
+        fusion_time_ms = (time.perf_counter() - fusion_start) * 1000.0
+    else:
+        # No hybrid search, use vector results only
+        fusion_method = "vector_only"
+        all_results = sorted(
+            vector_results_map.values(),
+            key=lambda r: r.get("score", 0.0),
+            reverse=True
+        )
+
+    # ======================================================================
+    # FILTERING
+    # ======================================================================
     filter_start = time.perf_counter() if collect_debug else None
     after_dedupe = len(all_results)
 
@@ -694,6 +844,8 @@ def retrieve_context(
         vector_search_time_ms=vector_search_metrics.vector_search_time_ms
         if vector_search_metrics
         else 0.0,
+        keyword_search_time_ms=keyword_search_time_ms,
+        fusion_time_ms=fusion_time_ms,
         filtering_time_ms=filtering_time_ms,
         composition_time_ms=0.0,  # compose_context is called separately
         original_query=query,
@@ -711,6 +863,10 @@ def retrieve_context(
         score_min=overall_score_min,
         score_max=overall_score_max,
         score_mean=overall_score_mean,
+        hybrid_enabled=use_hybrid,
+        keyword_results_count=keyword_results_count,
+        vector_results_count=vector_results_count,
+        fusion_method=fusion_method,
         after_min_score_filter=after_min_score,
         after_dedupe_filter=after_dedupe,
         after_max_chunks_filter=after_max_chunks,
