@@ -662,10 +662,10 @@ def retrieve_context(
             # Convert BM25 results to result dict format
             for chunk_idx, bm25_score in bm25_results:
                 if chunk_idx in chunk_to_result:
-                    result = chunk_to_result[chunk_idx].copy()
-                    result["score"] = bm25_score
-                    chunk_key = (result["doc_id"], result["chunk_id"])
-                    keyword_results_map[chunk_key] = result
+                    chunk_result = chunk_to_result[chunk_idx].copy()
+                    chunk_result["score"] = bm25_score
+                    chunk_key = (chunk_result["doc_id"], chunk_result["chunk_id"])
+                    keyword_results_map[chunk_key] = chunk_result
 
         keyword_search_time_ms = (time.perf_counter() - keyword_start) * 1000.0
         keyword_results_count = len(keyword_results_map)
@@ -711,13 +711,13 @@ def retrieve_context(
         for chunk_key, fused_score in fused_ranking:
             # Get result from either vector or keyword results
             if chunk_key in vector_results_map:
-                result = vector_results_map[chunk_key].copy()
+                fused_result = vector_results_map[chunk_key].copy()
             else:
-                result = keyword_results_map[chunk_key].copy()
+                fused_result = keyword_results_map[chunk_key].copy()
 
             # Update score to fused score
-            result["score"] = fused_score
-            all_results.append(result)
+            fused_result["score"] = fused_score
+            all_results.append(fused_result)
 
         fusion_time_ms = (time.perf_counter() - fusion_start) * 1000.0
     else:
