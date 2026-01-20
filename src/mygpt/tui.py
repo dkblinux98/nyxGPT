@@ -24,7 +24,7 @@ from textual.widgets import (
     Button,
     Checkbox,
 )
-from textual.containers import Vertical, Container, Horizontal
+from textual.containers import Vertical, Container
 from textual.binding import Binding
 from textual.screen import Screen, ModalScreen
 
