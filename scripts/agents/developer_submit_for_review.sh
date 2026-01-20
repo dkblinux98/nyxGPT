@@ -204,6 +204,16 @@ if ! gh pr edit "$pr_number" --repo "$REPO" --add-reviewer "$REVIEW_AGENT" >&2; 
 fi
 echo "[dev] Reviewer set: @$REVIEW_AGENT" >&2
 
+# Copy label from issue to PR
+gh pr edit "$pr_number" --repo "$REPO" --add-label "$PREFIX_LABEL" >&2 || _warn "Failed to add label '$PREFIX_LABEL' to PR"
+echo "[dev] Label copied: $PREFIX_LABEL" >&2
+
+# Copy milestone from issue to PR (if present)
+if [[ -n "$milestone_title" ]]; then
+  gh pr edit "$pr_number" --repo "$REPO" --milestone "$milestone_title" >&2 || _warn "Failed to set milestone '$milestone_title' on PR"
+  echo "[dev] Milestone copied: $milestone_title" >&2
+fi
+
 # Link PR to issue in Development field (GitHub auto-links via "Closes #N", but verify)
 gh issue develop "$ISSUE" --repo "$REPO" --checkout false --branch "$CURRENT_BRANCH" 2>/dev/null || {
   _warn "Could not explicitly link PR to issue Development field (may already be linked via 'Closes #N')"
