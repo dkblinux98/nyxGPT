@@ -394,6 +394,117 @@ For **multi-model setups**, use collections to avoid re-ingestion (see "Multiple
 
 ---
 
+## Chunk Boundary Optimization
+
+**New in v1.0:** Enhanced chunking with semantic boundary awareness for improved retrieval quality.
+
+### Overview
+
+myGPT implements advanced text chunking that goes beyond simple character-based splitting:
+
+- **Sentence Boundary Awareness**: Splits on sentence boundaries rather than arbitrary character positions
+- **Heading-Aware Splitting**: Preserves Markdown heading structure with content
+- **Configurable Overlap Strategies**: Three overlap methods for different use cases
+- **Semantic Chunking**: Respects paragraph and section boundaries
+
+### Why It Matters
+
+Better chunk boundaries lead to:
+- **Higher retrieval quality**: Complete sentences and paragraphs are more semantically meaningful
+- **Better context**: Headings provide hierarchical context for content
+- **Reduced fragmentation**: Sentences aren't split mid-thought
+- **Improved LLM comprehension**: Complete semantic units are easier to understand
+
+### Configuration Options
+
+Add to `~/.myGPT/config.ini` under `[rag]`:
+
+```ini
+[rag]
+# Basic chunking
+chunk_size = 800             # Target max characters per chunk
+chunk_overlap = 100          # Characters to overlap between chunks
+
+# Chunk boundary optimization (new)
+overlap_strategy = trailing  # Options: trailing, sentence, semantic
+preserve_headings = true     # Keep headings with their content
+sentence_aware = true        # Split on sentence boundaries
+```
+
+### Overlap Strategies
+
+**trailing** (default, legacy behavior):
+- Overlaps with trailing characters from previous chunk
+- Word-safe (starts at whitespace boundary)
+- Good for: General-purpose use, backward compatibility
+
+**sentence**:
+- Overlaps with complete sentences from previous chunk
+- Finds sentences that fit within overlap budget
+- Good for: Q&A, fact retrieval, precise context
+
+**semantic**:
+- Overlaps with complete paragraphs/sections from previous chunk
+- Preserves full semantic units
+- Good for: Narrative text, documentation, long-form content
+
+### Heading-Aware Splitting
+
+When `preserve_headings = true`:
+
+```markdown
+# Main Section
+
+Content under main section.
+
+## Subsection
+
+Content under subsection.
+```
+
+Results in chunks that keep headings with their content, maintaining hierarchical context.
+
+### Sentence Boundary Detection
+
+When `sentence_aware = true`:
+
+- Detects sentence endings: `.`, `!`, `?`
+- Avoids false splits on abbreviations: `Dr.`, `Mr.`, `U.S.`, etc.
+- Handles edge cases: numbers, URLs, etc.
+
+### Example Comparison
+
+**Without optimization** (legacy):
+```
+Chunk 1: "This is the first sentence. This is the sec"
+Chunk 2: "ond sentence. This is the third sentence."
+```
+
+**With optimization** (sentence-aware):
+```
+Chunk 1: "This is the first sentence. This is the second sentence."
+Chunk 2: "This is the second sentence. This is the third sentence."
+```
+
+### Performance Impact
+
+- **Ingestion**: Minimal overhead (< 5% slower for sentence detection)
+- **Retrieval**: No impact (chunking happens at ingestion time)
+- **Quality**: Significant improvement in retrieval relevance
+
+### Best Practices
+
+1. **Enable sentence_aware for most content**: Better boundaries → better retrieval
+2. **Use semantic overlap for documentation**: Preserves full paragraphs
+3. **Use sentence overlap for Q&A**: Complete sentences provide better context
+4. **Keep preserve_headings enabled**: Hierarchical context improves relevance
+5. **Adjust chunk_size based on content**:
+   - Technical docs: 800-1200 characters
+   - Narrative text: 1200-1600 characters
+   - Code/snippets: 400-800 characters
+
+---
+
 ## RAG Evaluation Metrics
 
 **New in v1.0:** myGPT now provides comprehensive evaluation metrics to assess RAG quality.

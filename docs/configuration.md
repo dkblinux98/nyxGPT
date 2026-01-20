@@ -218,6 +218,9 @@ embedding_batch_size = 16
 embedding_timeout_seconds = 120
 chunk_size = 800
 chunk_overlap = 100
+overlap_strategy = trailing
+preserve_headings = true
+sentence_aware = true
 chat_top_k = 5
 min_score = 0.0
 max_chunks = 6
@@ -242,6 +245,9 @@ cassandra_table = rag_chunks
 | `embedding_timeout_seconds` | Timeout for each embedding batch request to Ollama |
 | `chunk_size` | Maximum characters per text chunk |
 | `chunk_overlap` | Character overlap between adjacent chunks |
+| `overlap_strategy` | Overlap method: `trailing` (characters), `sentence` (complete sentences), or `semantic` (paragraphs) |
+| `preserve_headings` | Keep Markdown headings with their content for better context (default: true) |
+| `sentence_aware` | Split on sentence boundaries for better semantic chunking (default: true) |
 | `chat_top_k` | Number of candidate chunks to retrieve from vector store |
 | `top_k` | **Legacy alias** for `chat_top_k` (deprecated, use `chat_top_k` instead) |
 | `min_score` | Minimum similarity score required for chunk inclusion |
