@@ -20,6 +20,7 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
+      actions: read
 
     env:
       GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
