@@ -682,7 +682,7 @@ def cmd_rag_ingest(
     dimension: int | None = None,
 ) -> int:
     text = path.read_text(encoding="utf-8")
-    n = ingest_document(
+    result = ingest_document(
         doc_id,
         text,
         metadata={"path": str(path)},
@@ -691,7 +691,22 @@ def cmd_rag_ingest(
         embedding_model=model,
         embedding_dim=dimension,
     )
-    print(f"Ingested {n} chunks for doc_id={doc_id} into collection '{collection}'")
+
+    status = result["status"]
+    chunks = result["chunks_ingested"]
+    doc_hash = result["doc_hash"]
+
+    if status == "skipped":
+        print(f"Document {doc_id} unchanged (hash: {doc_hash[:16]}...), skipped re-ingestion")
+    elif status == "updated":
+        print(f"Updated {chunks} chunks for doc_id={doc_id} into collection '{collection}'")
+        print(f"  Document hash: {doc_hash[:16]}...")
+        if result["previous_hash"]:
+            print(f"  Previous hash: {result['previous_hash'][:16]}...")
+    else:  # status == "ingested"
+        print(f"Ingested {chunks} chunks for doc_id={doc_id} into collection '{collection}'")
+        print(f"  Document hash: {doc_hash[:16]}...")
+
     if model:
         print(f"  Using embedding model: {model}")
     if dimension:
@@ -726,6 +741,27 @@ def cmd_rag_query(
             print(
                 f"  [model: {r.get('embedding_model')}, score: {r.get('score', 0):.3f}]"
             )
+    return 0
+
+
+def cmd_rag_info(doc_id: str, collection: str = "default") -> int:
+    store = CassandraVectorStore(collection=collection)
+    try:
+        info = store.get_document_info(doc_id)
+    finally:
+        store.close()
+
+    if not info:
+        print(f"Document '{doc_id}' not found in collection '{collection}'")
+        return 1
+
+    print(f"Document: {info['doc_id']}")
+    print(f"  Collection: {collection}")
+    print(f"  Chunks: {info['chunks']}")
+    print(f"  Embedding model: {info['embedding_model'] or 'N/A'}")
+    print(f"  Document hash: {info['doc_hash'] or 'N/A'}")
+    print(f"  Ingested at: {info['ingested_at'] or 'N/A'}")
+    print(f"  Updated at: {info['updated_at'] or 'N/A'}")
     return 0
 
 
@@ -1116,6 +1152,12 @@ def cli(argv: list[str] | None = None) -> int:
         "--collection", default="default", help="Collection name (default: default)"
     )
 
+    info_p = rag_sub.add_parser("info", help="Show document version information")
+    info_p.add_argument("doc_id", help="Document ID to inspect")
+    info_p.add_argument(
+        "--collection", default="default", help="Collection name (default: default)"
+    )
+
     _ = rag_sub.add_parser("collections", help="List all available collections")
 
     compare_p = rag_sub.add_parser(
@@ -1288,6 +1330,8 @@ def cli(argv: list[str] | None = None) -> int:
             )
         if args.rag_cmd == "list":
             return cmd_rag_list(collection=args.collection)
+        if args.rag_cmd == "info":
+            return cmd_rag_info(args.doc_id, collection=args.collection)
         if args.rag_cmd == "collections":
             return cmd_rag_collections()
         if args.rag_cmd == "compare":

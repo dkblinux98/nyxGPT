@@ -7,6 +7,7 @@ import json
 import time
 import uuid
 import statistics
+import hashlib
 
 from mygpt.config import (
     load_config,
@@ -161,6 +162,18 @@ def _chunking_cfg() -> ChunkingConfig:
 # ----------------------------
 
 
+def compute_document_hash(text: str) -> str:
+    """Compute SHA-256 hash of document content for change detection.
+
+    Args:
+        text: Document text content
+
+    Returns:
+        Hex-encoded SHA-256 hash
+    """
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+
 def chunk_text(text: str) -> list[str]:
     """Chunk text in a word-safe, paragraph-aware way.
 
@@ -301,12 +314,20 @@ def ingest_document(
     collection: str = "default",
     embedding_model: str | None = None,
     embedding_dim: int | None = None,
-) -> int:
-    """Chunk, embed, and store a document in the vector store.
+    force_update: bool = False,
+) -> dict:
+    """Chunk, embed, and store a document in the vector store with update detection.
 
     This is the primary ingestion pipeline for adding documents to your
     RAG knowledge base. It handles all the complexity of chunking,
-    embedding generation, and storage.
+    embedding generation, storage, and automatic update detection.
+
+    **Update Detection:**
+
+    Uses SHA-256 content hashing to detect document changes:
+    - If document doesn't exist, it's ingested
+    - If document exists but content changed, stale chunks are deleted and new ones added
+    - If document exists with same content, ingestion is skipped (unless force_update=True)
 
     **Multi-Model Support:**
 
@@ -316,26 +337,33 @@ def ingest_document(
 
     **Pipeline Steps:**
 
-    1. **Chunking**: Text is split into semantic chunks using paragraph-aware
-       chunking with configurable overlap.
-
-    2. **Embedding**: Each chunk is converted to a vector embedding using
-       the specified embedding model (or config default).
-
-    3. **Storage**: Chunks and embeddings are stored in Cassandra with
-       upsert semantics (existing doc_id is replaced).
+    1. **Change Detection**: Compute document hash and check if update needed
+    2. **Chunking**: Text is split into semantic chunks using paragraph-aware
+       chunking with configurable overlap
+    3. **Embedding**: Each chunk is converted to a vector embedding using
+       the specified embedding model (or config default)
+    4. **Cleanup**: For updates, delete stale chunks from previous version
+    5. **Storage**: Chunks and embeddings are stored in Cassandra with
+       version tracking metadata
 
     **Usage Examples:**
 
-        # Basic document ingestion (uses default collection)
-        >>> n = ingest_document(
+        # Basic document ingestion with automatic update detection
+        >>> result = ingest_document(
         ...     doc_id="user-guide-v2.1",
         ...     text=documentation_text
         ... )
-        >>> print(f"Ingested {n} chunks")
+        >>> print(f"Status: {result['status']}, Chunks: {result['chunks_ingested']}")
+
+        # Force re-ingestion even if content unchanged
+        >>> result = ingest_document(
+        ...     doc_id="api-reference",
+        ...     text=api_docs,
+        ...     force_update=True
+        ... )
 
         # Use a specific embedding model (multi-model support)
-        >>> n = ingest_document(
+        >>> result = ingest_document(
         ...     doc_id="api-reference",
         ...     text=api_docs,
         ...     collection="all-minilm",
@@ -344,14 +372,14 @@ def ingest_document(
         ... )
 
         # With metadata for filtering
-        >>> n = ingest_document(
+        >>> result = ingest_document(
         ...     doc_id="api-reference",
         ...     text=api_docs,
         ...     metadata={"type": "api", "version": "1.0"}
         ... )
 
         # First-time setup (creates schema)
-        >>> n = ingest_document(
+        >>> result = ingest_document(
         ...     doc_id="first-doc",
         ...     text=content,
         ...     ensure_schema=True  # Only needed once per collection
@@ -359,8 +387,8 @@ def ingest_document(
 
     **Important Notes:**
 
-    - Documents with the same `doc_id` are replaced (upsert semantics)
-    - Empty text returns 0 without error
+    - Documents with the same `doc_id` are replaced on content change
+    - Empty text returns status "skipped" with 0 chunks
     - Embedding dimension is inferred from first embedding if ensure_schema=True
     - Cassandra connection is opened and closed within this function
     - Each collection maintains its own vector index with appropriate dimensions
@@ -374,44 +402,107 @@ def ingest_document(
         collection: Collection name for multi-model support (default: "default")
         embedding_model: Override embedding model (default: from config)
         embedding_dim: Override embedding dimension (default: from config)
+        force_update: If True, re-ingest even if content hash matches (default: False)
 
     Returns:
-        Number of chunks successfully ingested
+        Dict with:
+            - status: "ingested", "updated", or "skipped"
+            - chunks_ingested: Number of chunks processed
+            - doc_hash: Content hash of the document
+            - previous_hash: Previous hash if it was an update (None otherwise)
 
     Raises:
         RAGError: If chunking configuration is invalid
         Exception: If Cassandra connection or embedding generation fails
     """
-    chunks = chunk_text(text)
-    if not chunks:
-        return 0
+    if not text or not text.strip():
+        return {
+            "status": "skipped",
+            "chunks_ingested": 0,
+            "doc_hash": None,
+            "previous_hash": None,
+        }
 
-    embeddings_result = embed_texts(
-        chunks, model=embedding_model, dimension=embedding_dim
-    )
-    # embed_texts returns list[list[float]] when collect_metrics=False (default)
-    # Type narrowing: we didn't pass collect_metrics, so it's always the list form
-    embeddings: list[list[float]] = (
-        embeddings_result
-        if isinstance(embeddings_result, list)
-        else embeddings_result[0]
-    )
-
-    # Get the actual model and dimension from embeddings config
-    from mygpt.rag.embeddings import _embedding_cfg
-
-    ecfg = _embedding_cfg(model=embedding_model, dimension=embedding_dim)
-    actual_model = ecfg.model
-    actual_dim = len(embeddings[0]) if embeddings else ecfg.dimension
-
-    metas = [metadata or {} for _ in chunks]
+    # Compute content hash for change detection
+    doc_hash = compute_document_hash(text)
 
     store = CassandraVectorStore(collection=collection)
     try:
         if ensure_schema:
-            # embedding dimension inferred from first vector
-            store.ensure_schema(actual_dim, collection=collection)
+            # Need to chunk and embed first to infer dimension
+            chunks = chunk_text(text)
+            if not chunks:
+                return {
+                    "status": "skipped",
+                    "chunks_ingested": 0,
+                    "doc_hash": doc_hash,
+                    "previous_hash": None,
+                }
 
+            embeddings_result = embed_texts(
+                chunks, model=embedding_model, dimension=embedding_dim
+            )
+            embeddings: list[list[float]] = (
+                embeddings_result
+                if isinstance(embeddings_result, list)
+                else embeddings_result[0]
+            )
+
+            # Get the actual model and dimension from embeddings config
+            from mygpt.rag.embeddings import _embedding_cfg
+
+            ecfg = _embedding_cfg(model=embedding_model, dimension=embedding_dim)
+            actual_dim = len(embeddings[0]) if embeddings else ecfg.dimension
+            store.ensure_schema(actual_dim, collection=collection)
+        else:
+            # Check if document needs update
+            if not force_update and not store.document_needs_update(doc_id, doc_hash):
+                log.info(f"Document {doc_id} unchanged, skipping re-ingestion")
+                return {
+                    "status": "skipped",
+                    "chunks_ingested": 0,
+                    "doc_hash": doc_hash,
+                    "previous_hash": doc_hash,
+                }
+
+            # Document needs update - chunk and embed
+            chunks = chunk_text(text)
+            if not chunks:
+                return {
+                    "status": "skipped",
+                    "chunks_ingested": 0,
+                    "doc_hash": doc_hash,
+                    "previous_hash": None,
+                }
+
+            embeddings_result = embed_texts(
+                chunks, model=embedding_model, dimension=embedding_dim
+            )
+            embeddings = (
+                embeddings_result
+                if isinstance(embeddings_result, list)
+                else embeddings_result[0]
+            )
+
+        # Get existing document info
+        previous_hash = store.get_document_hash(doc_id)
+        is_update = previous_hash is not None
+
+        # Delete stale chunks if this is an update
+        if is_update:
+            log.info(f"Updating document {doc_id}: deleting stale chunks")
+            store.delete_doc(doc_id)
+
+        # Get the actual model and dimension from embeddings config
+        from mygpt.rag.embeddings import _embedding_cfg
+
+        ecfg = _embedding_cfg(model=embedding_model, dimension=embedding_dim)
+        actual_model = ecfg.model
+        actual_dim = len(embeddings[0]) if embeddings else ecfg.dimension
+
+        metas = [metadata or {} for _ in chunks]
+
+        # Upsert chunks with version tracking
         store.upsert_chunks(
             doc_id=doc_id,
             texts=chunks,
@@ -419,11 +510,20 @@ def ingest_document(
             metadatas=metas,
             embedding_model=actual_model,
             embedding_dim=actual_dim,
+            doc_hash=doc_hash,
         )
+
+        status = "updated" if is_update else "ingested"
+        log.info(f"Document {doc_id} {status}: {len(chunks)} chunks")
+
+        return {
+            "status": status,
+            "chunks_ingested": len(chunks),
+            "doc_hash": doc_hash,
+            "previous_hash": previous_hash,
+        }
     finally:
         store.close()
-
-    return len(chunks)
 
 
 # ----------------------------

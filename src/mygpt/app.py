@@ -37,6 +37,7 @@ from mygpt.api_models import (
     ChatRequest,
     ChatResponse,
     RagChunkInfo,
+    RagDocumentInfo,
     ToolTextResponse,
     ToolLsRequest,
     ToolCatRequest,
@@ -1536,15 +1537,40 @@ def tool_grep(req: ToolGrepRequest) -> ToolTextResponse:
 @api.post("/rag/ingest", response_model=RagIngestResponse)
 def rag_ingest(request: Request, req: RagIngestRequest) -> RagIngestResponse:
     try:
-        n = ingest_document(
+        result = ingest_document(
             doc_id=req.doc_id,
             text=req.text,
             metadata=req.metadata,
             ensure_schema=req.ensure_schema,
         )
-        return RagIngestResponse(doc_id=req.doc_id, chunks_ingested=n)
+        return RagIngestResponse(
+            doc_id=req.doc_id,
+            chunks_ingested=result["chunks_ingested"],
+            status=result["status"],
+            doc_hash=result["doc_hash"],
+            previous_hash=result["previous_hash"],
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@api.get("/rag/documents/{doc_id}", response_model=RagDocumentInfo)
+def rag_document_info(request: Request, doc_id: str, collection: str = "default") -> RagDocumentInfo:
+    """Get document version and metadata information."""
+    from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+    store = CassandraVectorStore(collection=collection)
+    try:
+        info = store.get_document_info(doc_id)
+        if not info:
+            raise HTTPException(status_code=404, detail=f"Document '{doc_id}' not found in collection '{collection}'")
+        return RagDocumentInfo(**info)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        store.close()
 
 
 @api.post("/rag/query", response_model=RagQueryResponse)

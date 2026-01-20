@@ -50,7 +50,8 @@ Quick reference of all 42 available endpoints:
 | `/api/v1/tools/ls` | POST | List files |
 | `/api/v1/tools/cat` | POST | Read file |
 | `/api/v1/tools/grep` | POST | Search files |
-| `/api/v1/rag/ingest` | POST | Ingest text document |
+| `/api/v1/rag/ingest` | POST | Ingest text document (with update detection) |
+| `/api/v1/rag/documents/{doc_id}` | GET | Get document version information |
 | `/api/v1/rag/query` | POST | Query RAG vector store |
 | `/api/v1/rag/metrics/query` | POST | Query RAG with evaluation metrics |
 | `/api/v1/rag/upload` | POST | Upload and ingest file |
@@ -1240,6 +1241,8 @@ curl http://127.0.0.1:8000/api/v1/sessions \
 
 #### RAG Ingest Request
 
+Ingest documents with automatic update detection:
+
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/rag/ingest \
   -H "Content-Type: application/json" \
@@ -1249,6 +1252,42 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/ingest \
     "text": "This is important documentation.",
     "ensure_schema": true
   }'
+```
+
+**Response:**
+```json
+{
+  "doc_id": "doc123",
+  "chunks_ingested": 5,
+  "status": "ingested",
+  "doc_hash": "8f4e2a1b3c9d8f2a...",
+  "previous_hash": null
+}
+```
+
+Status values:
+- `"ingested"`: New document added
+- `"updated"`: Existing document with changed content
+- `"skipped"`: Existing document with unchanged content
+
+#### Get Document Information
+
+Retrieve version tracking information:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/rag/documents/doc123?collection=default
+```
+
+**Response:**
+```json
+{
+  "doc_id": "doc123",
+  "doc_hash": "8f4e2a1b3c9d8f2a...",
+  "ingested_at": "2026-01-20T10:30:45",
+  "updated_at": "2026-01-20T14:15:22",
+  "chunks": 5,
+  "embedding_model": "nomic-embed-text:latest"
+}
 ```
 
 ### Error Responses

@@ -155,6 +155,18 @@ class RagIngestRequest(BaseModel):
 class RagIngestResponse(BaseModel):
     doc_id: str
     chunks_ingested: int
+    status: str = Field(description="Ingestion status: 'ingested', 'updated', or 'skipped'")
+    doc_hash: str | None = Field(None, description="SHA-256 hash of document content")
+    previous_hash: str | None = Field(None, description="Previous hash if document was updated")
+
+
+class RagDocumentInfo(BaseModel):
+    doc_id: str
+    doc_hash: str | None = Field(None, description="SHA-256 hash of document content")
+    ingested_at: str | None = Field(None, description="Timestamp when document was first ingested")
+    updated_at: str | None = Field(None, description="Timestamp when document was last updated")
+    chunks: int = Field(description="Number of chunks in document")
+    embedding_model: str | None = Field(None, description="Embedding model used for this document")
 
 
 class RagQueryRequest(BaseModel):
