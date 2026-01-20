@@ -910,8 +910,12 @@ class MyGPTTUI(App):
         await self.push_screen_wait(HelpOverlayScreen())
         log.info("Help overlay closed")
 
-    async def action_command_palette(self) -> None:
+    def action_command_palette(self) -> None:
         """Show the command palette and execute selected command."""
+        self.run_worker(self._command_palette_worker(), exclusive=True)
+
+    async def _command_palette_worker(self) -> None:
+        """Worker to handle async command palette logic."""
         command_key = await self.push_screen_wait(CommandPaletteScreen())
 
         if command_key:
