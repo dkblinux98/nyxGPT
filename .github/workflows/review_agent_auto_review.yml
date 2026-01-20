@@ -278,14 +278,39 @@ jobs:
             exit 1
           fi
 
-          # Validate presence of Critical or Medium issues sections
-          if ! echo "$REVIEW_BODY" | grep -qE "^### (Critical|Medium) Issues"; then
-            echo "WARNING: Review comment has no Critical or Medium issues sections"
+          # Validate presence of Critical or Medium issues sections OR CI/test failures
+          # REQUEST_CHANGES can be for code issues OR test failures
+          HAS_CODE_ISSUES=$(echo "$REVIEW_BODY" | grep -qE "^### (Critical|Medium) Issues" && echo "true" || echo "false")
+          HAS_CI_FAILURES=$(echo "$REVIEW_BODY" | grep -qiE "(test.*fail|mypy.*fail|ruff.*fail|black.*fail|CI.*fail|linter.*fail)" && echo "true" || echo "false")
+
+          if [[ "$HAS_CODE_ISSUES" == "false" && "$HAS_CI_FAILURES" == "false" ]]; then
+            echo "WARNING: Review has no Critical/Medium issues and no CI/test failures mentioned"
             echo "This may be a malformed review - skipping auto-fix"
-            gh pr comment "$PR" --body "⚠️ **Review Agent**: Auto-fix skipped - review comment appears malformed (no Critical/Medium issues found).
+            gh pr comment "$PR" --body "⚠️ **Review Agent**: Auto-fix skipped - review comment appears malformed (no Critical/Medium issues or CI failures found).
 
           @${{ vars.HUMAN_OWNER }} Please review manually."
             exit 1
+          fi
+
+          # If only CI failures (no code issues), skip auto-fix - developer must fix tests
+          if [[ "$HAS_CODE_ISSUES" == "false" && "$HAS_CI_FAILURES" == "true" ]]; then
+            echo "Review indicates CI/test failures only (no code issues)"
+            echo "Auto-fix cannot resolve test failures - developer intervention required"
+
+            ISSUE=$(gh pr view "$PR" --json body -q '.body' | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
+
+            if [[ -n "$ISSUE" ]]; then
+              gh pr comment "$PR" --body "⚠️ **Review Agent**: Auto-fix skipped - review indicates CI/test failures only.
+
+          Issue #$ISSUE has been set to 'In Progress' and assigned to developer-agent to fix test failures.
+
+          Code issues were resolved, but tests are still failing. Developer must investigate and fix test failures."
+            else
+              gh pr comment "$PR" --body "⚠️ **Review Agent**: Auto-fix skipped - review indicates CI/test failures only.
+
+          Developer must fix test failures before merge."
+            fi
+            exit 0
           fi
 
           # Use GitHub runner temp directory instead of /tmp for security
