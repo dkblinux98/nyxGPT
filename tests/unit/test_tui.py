@@ -2093,6 +2093,168 @@ def test_session_picker_action_select_no_highlight() -> None:
 
 
 # ============================================================================
+# Clear Output Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_action_clear_output(tmp_path: Path) -> None:
+    """Test that clear output action clears the buffer."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test-session")
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+    app.output.clear = MagicMock()
+
+    await app.action_clear_output()
+
+    # Verify output was cleared
+    app.output.clear.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_action_clear_output_handles_exception(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that clear output action handles exceptions gracefully."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test-session")
+
+    # Mock output widget to raise exception
+    app.output = MagicMock(spec=ChatOutput)
+    app.output.clear = MagicMock(side_effect=RuntimeError("Clear failed"))
+
+    with caplog.at_level(logging.ERROR, logger="mygpt.tui"):
+        await app.action_clear_output()
+
+    # Verify error was logged
+    assert "Failed to clear output" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_handle_command_clear(tmp_path: Path) -> None:
+    """Test that /clear command triggers clear action."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test-session")
+
+    # Mock action_clear_output
+    with patch.object(app, "action_clear_output", new=AsyncMock()) as mock_clear:
+        await app._handle_command("clear")
+
+    # Verify clear action was called
+    mock_clear.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_command_unknown(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that unknown commands show error message."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test-session")
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    with caplog.at_level(logging.WARNING, logger="mygpt.tui"):
+        await app._handle_command("unknown")
+
+    # Verify error message was appended to output
+    app.output.append.assert_called_once()
+    assert "Unknown command" in app.output.append.call_args[0][0]
+    assert "/unknown" in app.output.append.call_args[0][0]
+
+    # Verify warning was logged
+    assert "Unknown command: /unknown" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_input_submitted_with_slash_command(tmp_path: Path) -> None:
+    """Test that input starting with / triggers command handler."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test-session")
+
+    # Mock widgets
+    app.prompt = MagicMock(spec=Input)
+    app.prompt.value = "/clear"
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock _handle_command
+    with patch.object(app, "_handle_command", new=AsyncMock()) as mock_handle:
+        # Create event
+        event = MagicMock()
+        event.value = "/clear"
+
+        await app.on_input_submitted(event)
+
+    # Verify command handler was called with "clear"
+    mock_handle.assert_called_once_with("clear")
+
+    # Verify prompt was cleared
+    assert app.prompt.value == ""
+
+
+@pytest.mark.asyncio
+async def test_input_submitted_with_slash_command_not_locked(tmp_path: Path) -> None:
+    """Test that prompt is not locked when submitting slash commands."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="test-session")
+
+    # Mock widgets
+    app.prompt = MagicMock(spec=Input)
+    app.prompt.value = "/clear"
+    app.prompt.disabled = False
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock _handle_command
+    with patch.object(app, "_handle_command", new=AsyncMock()):
+        event = MagicMock()
+        event.value = "/clear"
+
+        await app.on_input_submitted(event)
+
+    # Verify prompt was NOT locked (commands don't lock prompt)
+    assert app.prompt.disabled is False
+
+
+# ============================================================================
 # Search Results Screen Additional Tests
 # ============================================================================
 
