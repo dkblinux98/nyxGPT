@@ -184,6 +184,10 @@ mygpt tui
 The TUI streams responses, persists sessions, and supports RAG‑assisted chat. The status bar displays current session information including session name, message count, active model, and RAG status.
 
 **Keybindings:**
+- `Ctrl+H` / `F1` - Show help overlay with all shortcuts
+- `Ctrl+P` - Command palette (quick command access with search)
+- `Tab` - Navigate to next pane
+- `Shift+Tab` - Navigate to previous pane
 - `Ctrl+S` - Session picker (search and switch)
 - `Ctrl+F` - Search messages across sessions
 - `Ctrl+R` - Toggle RAG for current session
