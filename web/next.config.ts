@@ -13,10 +13,11 @@ const nextConfig: NextConfig = {
     "http://192.168.86.21:3000",
   ],
 
-  // Position dev indicator in top-right to avoid covering app UI
+  // Disable dev indicators to avoid covering app UI
+  // The indicator position in Next.js 16 is not reliably configurable
   devIndicators: {
-    buildActivity: true,
-    buildActivityPosition: 'top-right',
+    buildActivity: false,
+    buildActivityPosition: 'top-right' as any,
   },
 };
 
