@@ -200,9 +200,12 @@ def test_retrieve_context_with_collection(monkeypatch: pytest.MonkeyPatch) -> No
             embedding_model = kwargs.get("embedding_model")
             store_calls.append({"query": {"k": k, "embedding_model": embedding_model}})
             return [
-                {"text": "result 1", "score": 0.9, "embedding_model": embedding_model},
-                {"text": "result 2", "score": 0.8, "embedding_model": embedding_model},
+                {"text": "result 1", "score": 0.9, "embedding_model": embedding_model, "doc_id": "doc1", "chunk_id": 0},
+                {"text": "result 2", "score": 0.8, "embedding_model": embedding_model, "doc_id": "doc2", "chunk_id": 0},
             ]
+
+        def list_docs(self):
+            return []
 
         def close(self):
             pass

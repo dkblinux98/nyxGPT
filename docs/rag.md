@@ -400,3 +400,225 @@ For **multi-model setups**, use collections to avoid re-ingestion (see "Multiple
 - Cassandra is used only for vector storage; no full‑text search is required.
 - RAG latency depends on embedding generation and vector search performance.
 - Multiple embedding models are supported via collections (separate tables per model).
+
+---
+
+## Hybrid Search (Keyword + Vector)
+
+**New in v1.0:** myGPT now supports hybrid search that combines BM25 keyword search with vector similarity search for improved retrieval quality.
+
+### Why Hybrid Search?
+
+Pure vector search excels at semantic understanding but can miss exact keyword matches. Pure keyword search (BM25) excels at exact term matching but lacks semantic understanding. Hybrid search combines both:
+
+1. **Keyword Precision**: BM25 finds documents with exact term matches that vectors might miss
+2. **Semantic Understanding**: Vector search captures meaning and context
+3. **Complementary Strengths**: Documents matching both signals rank higher
+4. **Better Recall**: Retrieves relevant docs that only match one signal
+
+### How It Works
+
+1. **Vector Search**: Generate query embedding and search Cassandra vector index
+2. **Keyword Search (BM25)**: Tokenize query and rank documents by term frequency/IDF
+3. **Fusion**: Merge rankings using Reciprocal Rank Fusion (RRF) or weighted fusion
+4. **Filtering**: Apply min_score and max_chunks limits
+5. **Return**: Top-k fused results
+
+### Configuration
+
+Add to `~/.myGPT/config.ini`:
+
+```ini
+[rag]
+# Enable hybrid search (default: true)
+enable_hybrid_search = true
+
+# BM25 parameters
+bm25_k1 = 1.5          # Term frequency saturation (typical: 1.2-2.0)
+bm25_b = 0.75          # Length normalization (typical: 0.0-1.0)
+
+# Reciprocal Rank Fusion parameter
+rrf_k = 60             # Rank weighting constant (typical: 60)
+
+# Alternative: weighted fusion (overrides RRF when set)
+# hybrid_alpha = 0.5   # Weight: 1.0=vector only, 0.0=keyword only
+```
+
+### BM25 Parameters
+
+**k1 (term frequency saturation)**:
+- Controls how much additional occurrences of a term increase the score
+- Low k1 (1.2): Diminishing returns after a few occurrences
+- High k1 (2.0): More weight to term frequency
+- Default: 1.5
+
+**b (length normalization)**:
+- Controls how much document length affects scoring
+- b=0.0: No length normalization (longer docs not penalized)
+- b=1.0: Full length normalization (longer docs penalized more)
+- Default: 0.75
+
+### Fusion Methods
+
+**Reciprocal Rank Fusion (RRF)** - Default:
+- Combines rankings without needing score normalization
+- Formula: `score = Σ(1 / (k + rank))` for each system
+- Robust to score scale differences between vector and keyword search
+- No tuning required (k=60 is standard)
+
+**Weighted Fusion** - Alternative:
+- Directly combines normalized scores: `score = α * vector + (1-α) * keyword`
+- Requires setting `hybrid_alpha` in config
+- α=1.0: Vector search only (semantic)
+- α=0.5: Equal weight (balanced)
+- α=0.0: Keyword search only (exact matching)
+
+### Usage
+
+Hybrid search is enabled by default. No code changes required.
+
+**Python API:**
+
+```python
+from mygpt.rag.rag import retrieve_context
+
+# Hybrid search automatically enabled (if configured)
+results = retrieve_context("Cassandra vector search", top_k=5)
+
+# With debug info to see fusion method
+results, debug_info = retrieve_context(
+    "Cassandra vector search",
+    top_k=5,
+    debug_mode=True
+)
+
+print(f"Fusion method: {debug_info.fusion_method}")
+print(f"Vector results: {debug_info.vector_results_count}")
+print(f"Keyword results: {debug_info.keyword_results_count}")
+```
+
+**CLI:**
+
+```bash
+# RAG query uses hybrid search automatically
+mygpt rag query "Cassandra vector search"
+
+# Debug mode shows fusion details
+mygpt rag query "Cassandra vector search" --debug
+```
+
+**REST API:**
+
+```bash
+# Query with hybrid search (default)
+curl -X POST http://127.0.0.1:8000/api/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Cassandra vector search", "top_k": 5, "debug_mode": true}'
+
+# Response includes hybrid search metrics
+{
+  "results": [...],
+  "debug_info": {
+    "hybrid_enabled": true,
+    "fusion_method": "reciprocal_rank_fusion",
+    "vector_results_count": 5,
+    "keyword_results_count": 5,
+    "keyword_search_time_ms": 12.3,
+    "fusion_time_ms": 0.5,
+    ...
+  }
+}
+```
+
+### Disabling Hybrid Search
+
+To revert to vector-only search:
+
+```ini
+[rag]
+enable_hybrid_search = false
+```
+
+### Performance Considerations
+
+**Memory:**
+- BM25 index is built in-memory from Cassandra documents
+- Memory usage: O(N * V) where N=docs, V=vocabulary size
+- For large corpora (>10k docs), consider caching or disk-based indices
+
+**Latency:**
+- Adds keyword search + fusion time (typically 10-50ms)
+- Vector search remains the dominant latency factor
+- BM25 index is rebuilt per query (no caching yet)
+
+**Optimization Tips:**
+1. Reduce `chat_top_k` if querying large corpora
+2. Use `min_score` to filter low-quality matches early
+3. Consider vector-only mode for latency-critical applications
+4. Profile with `debug_mode=True` to identify bottlenecks
+
+### When to Use Hybrid vs. Vector-Only
+
+**Use Hybrid Search (default) when:**
+- Queries contain specific terminology or product names
+- Exact keyword matches are important
+- Documents have distinct vocabulary (technical, legal, medical)
+- You want maximum recall (find all relevant docs)
+
+**Use Vector-Only when:**
+- Queries are conversational/semantic
+- Low latency is critical (<100ms)
+- Corpus has consistent vocabulary
+- Keyword ambiguity is high (same word, different meanings)
+
+### Examples
+
+**Example 1: Technical Terminology**
+
+Query: "Cassandra SAI index"
+
+- Vector search: Finds docs about "database indexing", "search optimization"
+- Keyword search: Finds docs containing exactly "SAI" and "Cassandra"
+- Hybrid: Ranks highest docs with both "Cassandra SAI" terms AND semantic relevance
+
+**Example 2: Product Names**
+
+Query: "iPhone 15 battery life"
+
+- Vector search: Finds docs about "smartphone batteries", "mobile power"
+- Keyword search: Finds docs containing exactly "iPhone 15"
+- Hybrid: Correctly finds iPhone 15 battery docs, not generic phone articles
+
+**Example 3: Acronyms**
+
+Query: "RAG implementation"
+
+- Vector search: Finds docs about "retrieval augmented generation", "AI systems"
+- Keyword search: Finds docs containing "RAG" (exact acronym match)
+- Hybrid: Finds both explicit "RAG" mentions and semantic retrieval discussions
+
+### Troubleshooting
+
+**Problem: Hybrid search not improving results**
+
+Check:
+- Is `enable_hybrid_search = true` in config?
+- Run with `debug_mode=True` to see `keyword_results_count`
+- If keyword_results_count=0, BM25 found no matches (normal for very semantic queries)
+
+**Problem: Keyword results dominating**
+
+- Increase `hybrid_alpha` toward 1.0 (more weight to vectors)
+- Or adjust `bm25_k1` and `bm25_b` parameters
+
+**Problem: High latency**
+
+- Check `keyword_search_time_ms` and `fusion_time_ms` in debug output
+- If `keyword_search_time_ms` is high, corpus may be large
+- Consider `enable_hybrid_search = false` for latency-critical use
+
+**Problem: Unexpected rankings**
+
+- Use `debug_mode=True` to inspect scores from each system
+- Verify both vector and keyword searches return expected results independently
+- Try adjusting fusion method (RRF vs. weighted)
