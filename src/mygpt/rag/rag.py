@@ -39,7 +39,6 @@ class ChunkingConfig:
 
 
 @dataclass
-@dataclass
 class RAGDebugInfo:
     """Complete debug information for RAG operations."""
 
@@ -493,12 +492,18 @@ def ingest_document(
                 else embeddings_result[0]
             )
 
-        # Get existing document info
+        # Get existing document info (including ingested_at for preservation)
         previous_hash = store.get_document_hash(doc_id)
         is_update = previous_hash is not None
+        original_ingested_at = None
 
-        # Delete stale chunks if this is an update
+        # Delete stale chunks if this is an update (but preserve original ingested_at)
         if is_update:
+            doc_info = store.get_document_info(doc_id)
+            if doc_info and doc_info.get("ingested_at"):
+                from datetime import datetime
+
+                original_ingested_at = datetime.fromisoformat(doc_info["ingested_at"])
             log.info(f"Updating document {doc_id}: deleting stale chunks")
             store.delete_doc(doc_id)
 
@@ -520,6 +525,7 @@ def ingest_document(
             embedding_model=actual_model,
             embedding_dim=actual_dim,
             doc_hash=doc_hash,
+            original_ingested_at=original_ingested_at,
         )
 
         status = "updated" if is_update else "ingested"

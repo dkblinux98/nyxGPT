@@ -208,6 +208,7 @@ class CassandraVectorStore:
         embedding_model: str | None = None,
         embedding_dim: int | None = None,
         doc_hash: str | None = None,
+        original_ingested_at: datetime | None = None,
     ) -> None:
         """Upsert document chunks with embeddings.
 
@@ -219,6 +220,7 @@ class CassandraVectorStore:
             embedding_model: Embedding model name (for multi-model support)
             embedding_dim: Embedding dimension (for multi-model support)
             doc_hash: Document content hash (for update detection)
+            original_ingested_at: Original ingestion timestamp (preserved on updates)
         """
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
@@ -251,10 +253,8 @@ class CassandraVectorStore:
         )
 
         for idx, (text, emb, meta) in enumerate(zip(texts_l, embs_l, metas_l)):
-            # For updates, use ingested_at from existing doc; for new docs, use current time
-            ingested_at = (
-                now if not is_update else now
-            )  # Will be set properly in get_document_info
+            # For updates, preserve original ingested_at; for new docs, use current time
+            ingested_at = original_ingested_at if original_ingested_at else now
             self.session.execute(
                 stmt,
                 (
@@ -361,26 +361,28 @@ class CassandraVectorStore:
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
+        # Cassandra only supports GROUP BY on PRIMARY KEY columns.
+        # We fetch all doc_id, embedding_model pairs and aggregate in Python.
         stmt = SimpleStatement(
-            f"""
-            SELECT doc_id, embedding_model, count(*) as chunks
-            FROM {self.table_name}
-            GROUP BY doc_id, embedding_model
-            """,
+            f"SELECT doc_id, embedding_model FROM {self.table_name}",
         )
 
         rows = self.session.execute(stmt)
-        out: list[dict] = []
+        # Aggregate: count chunks per doc_id and capture embedding_model
+        doc_info: dict[str, dict] = {}
         for r in rows:
-            out.append(
-                {
-                    "doc_id": r.doc_id,
-                    "chunks": int(r.chunks),
+            doc_id = r.doc_id
+            if doc_id not in doc_info:
+                doc_info[doc_id] = {
+                    "doc_id": doc_id,
+                    "chunks": 0,
                     "embedding_model": r.embedding_model
                     if hasattr(r, "embedding_model")
                     else None,
                 }
-            )
+            doc_info[doc_id]["chunks"] += 1
+
+        out = list(doc_info.values())
         # Sort for stable output
         out.sort(key=lambda x: x["doc_id"])
         return out
@@ -464,33 +466,36 @@ class CassandraVectorStore:
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
+        # Cassandra only supports GROUP BY on PRIMARY KEY columns.
+        # We fetch all rows for doc_id and aggregate in Python.
         stmt = SimpleStatement(
             f"""
-            SELECT doc_id, doc_hash, ingested_at, updated_at, embedding_model, count(*) as chunks
+            SELECT doc_id, doc_hash, ingested_at, updated_at, embedding_model
             FROM {self.table_name}
             WHERE doc_id = %s
-            GROUP BY doc_id, doc_hash, ingested_at, updated_at, embedding_model
             """
         )
 
-        rows = self.session.execute(stmt, (doc_id,))
-        row = rows.one()
-        if row:
-            return {
-                "doc_id": row.doc_id,
-                "doc_hash": row.doc_hash if hasattr(row, "doc_hash") else None,
-                "ingested_at": row.ingested_at.isoformat()
-                if hasattr(row, "ingested_at") and row.ingested_at
-                else None,
-                "updated_at": row.updated_at.isoformat()
-                if hasattr(row, "updated_at") and row.updated_at
-                else None,
-                "chunks": int(row.chunks),
-                "embedding_model": row.embedding_model
-                if hasattr(row, "embedding_model")
-                else None,
-            }
-        return None
+        rows = list(self.session.execute(stmt, (doc_id,)))
+        if not rows:
+            return None
+
+        # All chunks should have the same metadata, take from first row
+        row = rows[0]
+        return {
+            "doc_id": row.doc_id,
+            "doc_hash": row.doc_hash if hasattr(row, "doc_hash") else None,
+            "ingested_at": row.ingested_at.isoformat()
+            if hasattr(row, "ingested_at") and row.ingested_at
+            else None,
+            "updated_at": row.updated_at.isoformat()
+            if hasattr(row, "updated_at") and row.updated_at
+            else None,
+            "chunks": len(rows),
+            "embedding_model": row.embedding_model
+            if hasattr(row, "embedding_model")
+            else None,
+        }
 
     def document_needs_update(self, doc_id: str, new_hash: str) -> bool:
         """Check if a document needs to be updated based on content hash.
