@@ -76,17 +76,28 @@ USE mygpt;
 CREATE TABLE IF NOT EXISTS rag_chunks (
   doc_id text,
   chunk_id int,
-  embedding vector<float, 768>,
   text text,
+  metadata text,
+  embedding vector<float, 768>,
+  embedding_model text,
+  embedding_dim int,
+  doc_hash text,
+  ingested_at timestamp,
+  updated_at timestamp,
   PRIMARY KEY (doc_id, chunk_id)
 );
 
 CREATE CUSTOM INDEX IF NOT EXISTS rag_embedding_idx
 ON rag_chunks (embedding)
 USING 'org.apache.cassandra.index.sai.StorageAttachedIndex';
+
+CREATE INDEX IF NOT EXISTS rag_model_idx
+ON rag_chunks (embedding_model);
 ```
 
 > ⚠️ The `embedding` dimension **must match** the configured embedding model.
+>
+> **Note:** The schema now includes version tracking fields (`doc_hash`, `ingested_at`, `updated_at`) for automatic update detection.
 
 ---
 
@@ -110,30 +121,116 @@ cassandra_table = rag_chunks
 
 ---
 
+## Document Update Detection
+
+myGPT now includes automatic document update detection using SHA-256 content hashing. This feature:
+
+- **Detects Changes**: Automatically detects when document content has changed
+- **Skips Unnecessary Work**: Avoids re-ingesting unchanged documents
+- **Incremental Updates**: Only re-indexes when content actually changes
+- **Stale Chunk Cleanup**: Automatically deletes old chunks when updating documents
+- **Version Tracking**: Tracks ingestion and update timestamps for each document
+
+### How It Works
+
+1. **Hash Computation**: When ingesting a document, myGPT computes a SHA-256 hash of the content
+2. **Change Detection**: Before re-ingesting, compares new hash with stored hash
+3. **Smart Re-indexing**:
+   - If hashes match → skip re-ingestion (no-op)
+   - If hashes differ → delete old chunks and ingest new version
+   - If document doesn't exist → ingest normally
+4. **Version Metadata**: Stores `doc_hash`, `ingested_at`, and `updated_at` timestamps
+
+### Example Workflow
+
+```bash
+# First ingestion
+mygpt rag ingest mydoc.txt my-doc-id
+# Output: Ingested 5 chunks for doc_id=my-doc-id
+
+# Re-ingest without changes
+mygpt rag ingest mydoc.txt my-doc-id
+# Output: Document my-doc-id unchanged (hash: 8f4e2a1b...), skipped re-ingestion
+
+# Edit mydoc.txt then re-ingest
+mygpt rag ingest mydoc.txt my-doc-id
+# Output: Updated 7 chunks for doc_id=my-doc-id
+#         Document hash: 3c9d8f2a...
+#         Previous hash: 8f4e2a1b...
+```
+
+### Force Re-indexing
+
+To force re-ingestion even when content hasn't changed (useful for testing or after config changes):
+
+```python
+from mygpt.rag.rag import ingest_document
+
+result = ingest_document(
+    doc_id="my-doc",
+    text=content,
+    force_update=True  # Bypass hash check
+)
+```
+
+---
+
 ## CLI commands
 
 ### Ingest a document
 
 ```bash
-mygpt rag ingest README.md --doc-id readme-v1
+mygpt rag ingest <doc_id> <path> [--ensure-schema] [--collection default]
+```
+
+Example:
+```bash
+mygpt rag ingest readme-v1 README.md --ensure-schema
+```
+
+The command now outputs update detection status:
+- **Ingested**: New document added
+- **Updated**: Existing document with changed content
+- **Skipped**: Existing document with unchanged content
+
+### Show document information
+
+Get version tracking info for a specific document:
+
+```bash
+mygpt rag info <doc_id> [--collection default]
+```
+
+Example:
+```bash
+mygpt rag info readme-v1
+
+# Output:
+# Document: readme-v1
+#   Collection: default
+#   Chunks: 15
+#   Embedding model: nomic-embed-text:latest
+#   Document hash: 8f4e2a1b3c9d8f2a...
+#   Ingested at: 2026-01-20T10:30:45
+#   Updated at: 2026-01-20T14:15:22
 ```
 
 ### List ingested documents
 
 ```bash
-mygpt rag list
+mygpt rag list [--collection default]
 ```
 
 ### Delete a document
 
 ```bash
-mygpt rag delete readme-v1
+mygpt rag delete <doc_id> [--collection default]
 ```
 
 ### Wipe all RAG data (development only)
 
 ```bash
-mygpt rag wipe --yes-really
+mygpt rag wipe --yes-really [--collection default]
 ```
 
 ---

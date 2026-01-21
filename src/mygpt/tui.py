@@ -533,13 +533,41 @@ class CommandPaletteScreen(ModalScreen[str | None]):
     def __init__(self) -> None:
         super().__init__()
         self.all_commands = [
-            {"key": "pick_session", "label": "Session Picker", "description": "Browse and switch sessions"},
-            {"key": "search_messages", "label": "Search Messages", "description": "Search across all sessions"},
-            {"key": "toggle_rag", "label": "Toggle RAG", "description": "Enable/disable RAG for current session"},
-            {"key": "models_manager", "label": "Models Manager", "description": "Manage Ollama models"},
-            {"key": "rename_session", "label": "Rename Session", "description": "Rename current session"},
-            {"key": "clear_output", "label": "Clear Output", "description": "Clear chat output buffer"},
-            {"key": "show_help", "label": "Show Help", "description": "Display keyboard shortcuts"},
+            {
+                "key": "pick_session",
+                "label": "Session Picker",
+                "description": "Browse and switch sessions",
+            },
+            {
+                "key": "search_messages",
+                "label": "Search Messages",
+                "description": "Search across all sessions",
+            },
+            {
+                "key": "toggle_rag",
+                "label": "Toggle RAG",
+                "description": "Enable/disable RAG for current session",
+            },
+            {
+                "key": "models_manager",
+                "label": "Models Manager",
+                "description": "Manage Ollama models",
+            },
+            {
+                "key": "rename_session",
+                "label": "Rename Session",
+                "description": "Rename current session",
+            },
+            {
+                "key": "clear_output",
+                "label": "Clear Output",
+                "description": "Clear chat output buffer",
+            },
+            {
+                "key": "show_help",
+                "label": "Show Help",
+                "description": "Display keyboard shortcuts",
+            },
             {"key": "quit", "label": "Quit", "description": "Exit the application"},
         ]
         self.filtered_commands = self.all_commands.copy()
@@ -571,7 +599,8 @@ class CommandPaletteScreen(ModalScreen[str | None]):
         else:
             # Simple fuzzy search: match if query chars appear in order
             self.filtered_commands = [
-                cmd for cmd in self.all_commands
+                cmd
+                for cmd in self.all_commands
                 if query in cmd["label"].lower() or query in cmd["description"].lower()
             ]
 
@@ -597,7 +626,9 @@ class CommandPaletteScreen(ModalScreen[str | None]):
             return
 
         command_key = event.item.name
-        command = next((c for c in self.filtered_commands if c["key"] == command_key), None)
+        command = next(
+            (c for c in self.filtered_commands if c["key"] == command_key), None
+        )
 
         if command:
             desc_label = self.query_one("#command-description", Label)
