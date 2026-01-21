@@ -7,6 +7,11 @@ import httpx
 import pytest
 
 
+def _unique_doc_id(prefix: str) -> str:
+    """Generate a unique doc_id for testing to avoid hash-based skip."""
+    return f"{prefix}-{uuid.uuid4().hex[:10]}"
+
+
 @pytest.mark.integration
 def test_rag_api_ingest_and_query(
     api_base_url: str, require_ollama: None, require_cassandra: None
@@ -110,11 +115,16 @@ def test_rag_upload_text_file(
     test_content = "This is a test document for RAG upload testing. It contains important information."
     test_file.write_text(test_content)
 
+    # Use unique doc_id to avoid hash-based skip from previous test runs
+    doc_id = _unique_doc_id("txt-upload")
+
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
-        # Upload the file
+        # Upload the file with unique doc_id
         with open(test_file, "rb") as f:
             files = {"file": ("test_upload.txt", f, "text/plain")}
-            upload_resp = client.post("/api/v1/rag/upload", files=files)
+            upload_resp = client.post(
+                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
+            )
 
         assert upload_resp.status_code == 200
         upload_data = upload_resp.json()
@@ -166,11 +176,16 @@ More content for testing RAG ingestion.
 """
     test_file.write_text(markdown_content)
 
+    # Use unique doc_id to avoid hash-based skip from previous test runs
+    doc_id = _unique_doc_id("md-upload")
+
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
-        # Upload the markdown file
+        # Upload the markdown file with unique doc_id
         with open(test_file, "rb") as f:
             files = {"file": ("test.md", f, "text/markdown")}
-            upload_resp = client.post("/api/v1/rag/upload", files=files)
+            upload_resp = client.post(
+                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
+            )
 
         assert upload_resp.status_code == 200
         upload_data = upload_resp.json()

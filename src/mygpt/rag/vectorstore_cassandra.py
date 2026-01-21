@@ -332,26 +332,28 @@ class CassandraVectorStore:
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
+        # Cassandra only supports GROUP BY on PRIMARY KEY columns.
+        # We fetch all doc_id, embedding_model pairs and aggregate in Python.
         stmt = SimpleStatement(
-            f"""
-            SELECT doc_id, embedding_model, count(*) as chunks
-            FROM {self.table_name}
-            GROUP BY doc_id, embedding_model
-            """,
+            f"SELECT doc_id, embedding_model FROM {self.table_name}",
         )
 
         rows = self.session.execute(stmt)
-        out: list[dict] = []
+        # Aggregate: count chunks per doc_id and capture embedding_model
+        doc_info: dict[str, dict] = {}
         for r in rows:
-            out.append(
-                {
-                    "doc_id": r.doc_id,
-                    "chunks": int(r.chunks),
+            doc_id = r.doc_id
+            if doc_id not in doc_info:
+                doc_info[doc_id] = {
+                    "doc_id": doc_id,
+                    "chunks": 0,
                     "embedding_model": r.embedding_model
                     if hasattr(r, "embedding_model")
                     else None,
                 }
-            )
+            doc_info[doc_id]["chunks"] += 1
+
+        out = list(doc_info.values())
         # Sort for stable output
         out.sort(key=lambda x: x["doc_id"])
         return out

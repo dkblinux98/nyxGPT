@@ -431,16 +431,21 @@ def test_cassandra_vectorstore_list_docs(monkeypatch: pytest.MonkeyPatch) -> Non
         "mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg
     )
 
-    mock_row1 = Mock()
-    mock_row1.doc_id = "doc_b"
-    mock_row1.chunks = 5
+    # After GROUP BY fix, list_docs fetches individual rows and aggregates in Python
+    # So we mock individual chunk rows instead of pre-aggregated results
+    def make_row(doc_id: str, embedding_model: str = "test-model") -> Mock:
+        row = Mock()
+        row.doc_id = doc_id
+        row.embedding_model = embedding_model
+        return row
 
-    mock_row2 = Mock()
-    mock_row2.doc_id = "doc_a"
-    mock_row2.chunks = 3
+    # doc_b has 5 chunks, doc_a has 3 chunks
+    mock_rows = [make_row("doc_b") for _ in range(5)] + [
+        make_row("doc_a") for _ in range(3)
+    ]
 
     mock_session = Mock()
-    mock_session.execute.return_value = [mock_row1, mock_row2]
+    mock_session.execute.return_value = mock_rows
 
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
@@ -641,7 +646,7 @@ def test_chunk_text_whitespace_normalization(monkeypatch: pytest.MonkeyPatch) ->
 
 @pytest.mark.unit
 def test_ingest_document_empty_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ingest_document with empty text should return 0."""
+    """ingest_document with empty text should return 0 chunks."""
     cfg = ConfigParser()
     cfg["rag"] = {"chunk_size": "100", "chunk_overlap": "10"}
 
@@ -1136,8 +1141,6 @@ def test_compute_evaluation_metrics_with_results() -> None:
         keyword_results_count=None,
         vector_results_count=3,
         fusion_method=None,
-        vector_results_count=None,
-        fusion_method=None,
         reranking_enabled=False,
         reranker_model=None,
         num_candidates_reranked=None,
@@ -1220,8 +1223,6 @@ def test_compute_evaluation_metrics_empty_results() -> None:
         hybrid_enabled=False,
         keyword_results_count=None,
         vector_results_count=0,
-        fusion_method=None,
-        vector_results_count=None,
         fusion_method=None,
         reranking_enabled=False,
         reranker_model=None,
@@ -1555,8 +1556,6 @@ def test_compute_evaluation_metrics_score_percentiles() -> None:
         hybrid_enabled=False,
         keyword_results_count=None,
         vector_results_count=5,
-        fusion_method=None,
-        vector_results_count=None,
         fusion_method=None,
         reranking_enabled=False,
         reranker_model=None,
