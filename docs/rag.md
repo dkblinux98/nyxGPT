@@ -285,7 +285,7 @@ Disable RAG for a specific session.
 
 Upload and ingest a document for RAG.
 
-**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf`
+**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf`, `.pptx` (PowerPoint presentations)
 
 **Request:**
 ```bash
@@ -302,11 +302,13 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
 }
 ```
 
-**Markdown Files:**
-- Extracts YAML frontmatter (title, author, tags, etc.)
-- Preserves headers hierarchy
-- Handles code blocks
-- Falls back to plain text if parsing libraries unavailable
+**File Type Handling:**
+
+- **Markdown (`.md`)**: Extracts YAML frontmatter (title, author, tags, etc.), preserves headers hierarchy, handles code blocks
+- **PDF (`.pdf`)**: Extracts text from all pages
+- **PowerPoint (`.pptx`)**: Extracts slide text, speaker notes, preserves slide order
+- **JSON (`.json`)**: Formatted with indentation for readability
+- **Plain text (`.txt`)**: UTF-8 encoded text
 
 **PDF Files:**
 - Extracts document metadata (title, author, subject, creator, dates)
@@ -319,7 +321,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
 **Error (unsupported file type):**
 ```json
 {
-  "detail": "File type .exe not supported. Allowed: {'.txt', '.md', '.json', '.pdf'}"
+  "detail": "File type .exe not supported. Allowed: {'.txt', '.md', '.json', '.pdf', '.pptx'}"
 }
 ```
 

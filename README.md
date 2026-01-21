@@ -451,6 +451,7 @@ myGPT supports per-session RAG to inject relevant context from uploaded document
 - `.md` - Markdown with frontmatter parsing
 - `.json` - JSON data files
 - `.pdf` - PDF documents with improved extraction (tables, formatting, multi-column layouts, metadata)
+- `.pptx` - (PowerPoint presentations with speaker notes)
 
 #### Web UI
 
