@@ -1822,7 +1822,7 @@ async def rag_upload_file(
 ) -> RagIngestResponse:
     """Upload and ingest a document for RAG with proper markdown parsing."""
     # Validate file type
-    allowed_types = {".txt", ".md", ".json", ".pdf"}
+    allowed_types = {".txt", ".md", ".json", ".pdf", ".pptx"}
     file_ext = Path(file.filename or "").suffix.lower()
     if file_ext not in allowed_types:
         raise HTTPException(
@@ -1896,6 +1896,53 @@ async def rag_upload_file(
             text = json.dumps(data, indent=2, ensure_ascii=False)
         except json.JSONDecodeError as e:
             raise HTTPException(status_code=400, detail=f"Invalid JSON file: {e}")
+
+    elif file_ext == ".pptx":
+        # Handle PowerPoint presentations
+        try:
+            from pptx import Presentation
+
+            prs = Presentation(io.BytesIO(content))
+            text_parts = []
+
+            # Process each slide in order
+            for slide_num, slide in enumerate(prs.slides, start=1):
+                slide_texts = []
+
+                # Extract text from all shapes in the slide
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text.strip():
+                        slide_texts.append(shape.text.strip())
+
+                # Extract speaker notes if present
+                if slide.has_notes_slide:
+                    notes_slide = slide.notes_slide
+                    if hasattr(notes_slide, "notes_text_frame") and notes_slide.notes_text_frame:
+                        notes_text = notes_slide.notes_text_frame.text.strip()
+                        if notes_text:
+                            slide_texts.append(f"[Speaker Notes]\n{notes_text}")
+
+                # Add slide content if any text was found
+                if slide_texts:
+                    slide_content = f"[Slide {slide_num}]\n" + "\n\n".join(slide_texts)
+                    text_parts.append(slide_content)
+
+            # Join all slides with double newlines
+            text = "\n\n".join(text_parts) if text_parts else ""
+
+            if not text:
+                raise HTTPException(
+                    status_code=400,
+                    detail="PPTX file contains no extractable text"
+                )
+
+        except ImportError:
+            raise HTTPException(
+                status_code=400,
+                detail="PPTX support not available. Install python-pptx: pip install python-pptx",
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"PPTX parsing failed: {e}")
 
     else:
         # Plain text

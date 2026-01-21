@@ -202,6 +202,187 @@ More content for testing RAG ingestion.
 
 
 @pytest.mark.integration
+def test_rag_upload_pptx_file(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test RAG file upload endpoint with .pptx file."""
+    pytest.importorskip("pptx", reason="python-pptx not installed")
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+
+    # Create a test PowerPoint file
+    test_file = tmp_path / "test_presentation.pptx"
+    prs = Presentation()
+
+    # Slide 1: Title slide
+    slide1 = prs.slides.add_slide(prs.slide_layouts[0])
+    title1 = slide1.shapes.title
+    subtitle1 = slide1.placeholders[1]
+    title1.text = "Test Presentation"
+    subtitle1.text = "Integration Testing for PPTX Support"
+
+    # Slide 2: Content slide with bullet points
+    slide2 = prs.slides.add_slide(prs.slide_layouts[1])
+    title2 = slide2.shapes.title
+    body2 = slide2.placeholders[1]
+    title2.text = "Key Features"
+    tf2 = body2.text_frame
+    tf2.text = "First feature: text extraction"
+    p2 = tf2.add_paragraph()
+    p2.text = "Second feature: slide order preservation"
+    p2.level = 0
+    p3 = tf2.add_paragraph()
+    p3.text = "Third feature: speaker notes support"
+    p3.level = 0
+
+    # Slide 3: Slide with speaker notes
+    slide3 = prs.slides.add_slide(prs.slide_layouts[1])
+    title3 = slide3.shapes.title
+    title3.text = "Technical Architecture"
+    # Add speaker notes
+    notes_slide3 = slide3.notes_slide
+    notes_tf3 = notes_slide3.notes_text_frame
+    notes_tf3.text = "This slide discusses the technical architecture of the RAG system."
+
+    prs.save(str(test_file))
+
+    # Use unique doc_id to avoid hash-based skip from previous test runs
+    doc_id = _unique_doc_id("pptx-upload")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        # Upload the PPTX file with unique doc_id
+        with open(test_file, "rb") as f:
+            files = {"file": ("test_presentation.pptx", f, "application/vnd.openxmlformats-officedocument.presentationml.presentation")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "doc_id" in upload_data
+        assert "chunks_ingested" in upload_data
+        assert upload_data["chunks_ingested"] > 0
+
+        # Give Cassandra indexing a moment
+        time.sleep(2.0)
+
+        # Verify we can query the uploaded content
+        query_resp = client.post(
+            "/api/v1/rag/query", json={"query": "presentation features", "top_k": 5}
+        )
+        assert query_resp.status_code == 200
+        results = query_resp.json()["results"]
+        assert len(results) > 0
+
+
+@pytest.mark.integration
+def test_rag_upload_pptx_with_speaker_notes(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test that PPTX upload correctly extracts speaker notes."""
+    pytest.importorskip("pptx", reason="python-pptx not installed")
+    from pptx import Presentation
+
+    # Create a test PowerPoint file with specific speaker notes
+    test_file = tmp_path / "notes_test.pptx"
+    prs = Presentation()
+
+    slide1 = prs.slides.add_slide(prs.slide_layouts[0])
+    title1 = slide1.shapes.title
+    title1.text = "Speaker Notes Test"
+
+    # Add unique speaker notes text
+    notes_slide1 = slide1.notes_slide
+    notes_tf1 = notes_slide1.notes_text_frame
+    unique_note_text = "This unique speaker note should be extracted and searchable in RAG."
+    notes_tf1.text = unique_note_text
+
+    prs.save(str(test_file))
+
+    # Use unique doc_id
+    doc_id = _unique_doc_id("pptx-notes")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        # Upload the PPTX file
+        with open(test_file, "rb") as f:
+            files = {"file": ("notes_test.pptx", f, "application/vnd.openxmlformats-officedocument.presentationml.presentation")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+
+        assert upload_resp.status_code == 200
+
+        # Give Cassandra indexing a moment
+        time.sleep(2.0)
+
+        # Query for the speaker notes content
+        query_resp = client.post(
+            "/api/v1/rag/query", json={"query": "unique speaker note searchable", "top_k": 5}
+        )
+        assert query_resp.status_code == 200
+        results = query_resp.json()["results"]
+        assert len(results) > 0
+        # Verify speaker notes were extracted
+        found_note = any(unique_note_text.lower() in result["text"].lower() for result in results)
+        assert found_note, "Speaker notes were not extracted"
+
+
+@pytest.mark.integration
+def test_rag_upload_pptx_slide_order(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test that PPTX upload preserves slide order."""
+    pytest.importorskip("pptx", reason="python-pptx not installed")
+    from pptx import Presentation
+
+    # Create a test PowerPoint file with numbered slides
+    test_file = tmp_path / "order_test.pptx"
+    prs = Presentation()
+
+    for i in range(1, 4):
+        slide = prs.slides.add_slide(prs.slide_layouts[0])
+        title = slide.shapes.title
+        title.text = f"Slide {i}: Content in order"
+
+    prs.save(str(test_file))
+
+    # Use unique doc_id
+    doc_id = _unique_doc_id("pptx-order")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        # Upload the PPTX file
+        with open(test_file, "rb") as f:
+            files = {"file": ("order_test.pptx", f, "application/vnd.openxmlformats-officedocument.presentationml.presentation")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert upload_data["chunks_ingested"] > 0
+
+
+@pytest.mark.integration
+def test_rag_upload_empty_pptx(api_base_url: str, tmp_path) -> None:
+    """Test that uploading empty PPTX file is handled gracefully."""
+    pytest.importorskip("pptx", reason="python-pptx not installed")
+    from pptx import Presentation
+
+    # Create an empty PowerPoint file
+    test_file = tmp_path / "empty.pptx"
+    prs = Presentation()
+    # Add a slide but with no text content
+    prs.slides.add_slide(prs.slide_layouts[6])  # Blank layout
+    prs.save(str(test_file))
+
+    with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
+        # Upload the empty PPTX file
+        with open(test_file, "rb") as f:
+            files = {"file": ("empty.pptx", f, "application/vnd.openxmlformats-officedocument.presentationml.presentation")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files)
+
+        # Should reject with 400 for no extractable text
+        assert upload_resp.status_code == 400
+        error_data = upload_resp.json()
+        assert "error" in error_data
+        assert "no extractable text" in error_data["error"]["message"].lower()
+
+
+@pytest.mark.integration
 def test_rag_upload_invalid_file_type(api_base_url: str, tmp_path) -> None:
     """Test that uploading unsupported file types is rejected."""
     # Create a test file with unsupported extension
