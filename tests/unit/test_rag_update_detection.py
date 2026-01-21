@@ -179,7 +179,7 @@ def test_document_info_not_found(cassandra_test_setup):
 @pytest.mark.integration
 def test_stale_chunks_deletion(cassandra_test_setup):
     """Test that old chunks are deleted when document is updated."""
-    doc_id = "test-doc-stale-chunks"
+    doc_id = _unique_doc_id("test-doc-stale-chunks")
     text1 = "Short text."
     text2 = "This is a much longer text that will create more chunks than the first version."
 
