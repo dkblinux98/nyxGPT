@@ -1822,7 +1822,7 @@ async def rag_upload_file(
 ) -> RagIngestResponse:
     """Upload and ingest a document for RAG with proper markdown parsing."""
     # Validate file type
-    allowed_types = {".txt", ".md", ".json", ".pdf"}
+    allowed_types = {".txt", ".md", ".json", ".pdf", ".docx"}
     file_ext = Path(file.filename or "").suffix.lower()
     if file_ext not in allowed_types:
         raise HTTPException(
@@ -1856,6 +1856,43 @@ async def rag_upload_file(
             )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"PDF parsing failed: {e}")
+
+    elif file_ext == ".docx":
+        # Handle DOCX (Microsoft Word)
+        try:
+            from docx import Document
+
+            doc = Document(io.BytesIO(content))
+            text_parts = []
+
+            for para in doc.paragraphs:
+                para_text = para.text.strip()
+                if para_text:
+                    # Preserve heading structure
+                    if para.style.name.startswith('Heading'):
+                        text_parts.append(f"\n## {para_text}\n")
+                    else:
+                        text_parts.append(para_text)
+
+            # Handle tables
+            for table in doc.tables:
+                table_text = []
+                for row in table.rows:
+                    row_text = " | ".join(cell.text.strip() for cell in row.cells)
+                    if row_text:
+                        table_text.append(row_text)
+                if table_text:
+                    text_parts.append("\n[Table]\n" + "\n".join(table_text) + "\n")
+
+            text = "\n\n".join(text_parts)
+
+        except ImportError:
+            raise HTTPException(
+                status_code=400,
+                detail="DOCX support not available. Install python-docx: pip install python-docx",
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"DOCX parsing failed: {e}")
 
     elif file_ext == ".md":
         # Handle Markdown with proper parsing (#2667)

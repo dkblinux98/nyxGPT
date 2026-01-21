@@ -202,6 +202,70 @@ More content for testing RAG ingestion.
 
 
 @pytest.mark.integration
+def test_rag_upload_docx_file(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test RAG file upload endpoint with .docx file (Microsoft Word)."""
+    # Create a test DOCX file
+    try:
+        from docx import Document
+    except ImportError:
+        pytest.skip("python-docx not available, skipping DOCX test")
+
+    test_file = tmp_path / "test.docx"
+    doc = Document()
+
+    # Add heading
+    doc.add_heading("Test Document Title", level=1)
+
+    # Add paragraphs
+    doc.add_paragraph("This is a test Word document for RAG upload testing.")
+    doc.add_paragraph("It contains important information about DOCX support.")
+
+    # Add a heading and more content
+    doc.add_heading("Section 1", level=2)
+    doc.add_paragraph("This section tests heading preservation in DOCX files.")
+
+    # Add a table
+    table = doc.add_table(rows=3, cols=2)
+    table.rows[0].cells[0].text = "Feature"
+    table.rows[0].cells[1].text = "Status"
+    table.rows[1].cells[0].text = "Text extraction"
+    table.rows[1].cells[1].text = "Working"
+    table.rows[2].cells[0].text = "Table support"
+    table.rows[2].cells[1].text = "Working"
+
+    # Save the document
+    doc.save(test_file)
+
+    # Use unique doc_id to avoid hash-based skip from previous test runs
+    doc_id = _unique_doc_id("docx-upload")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        # Upload the DOCX file with unique doc_id
+        with open(test_file, "rb") as f:
+            files = {"file": ("test.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "doc_id" in upload_data
+        assert "chunks_ingested" in upload_data
+        assert upload_data["chunks_ingested"] > 0
+
+        # Give Cassandra indexing a moment
+        time.sleep(2.0)
+
+        # Verify we can query the uploaded content
+        query_resp = client.post(
+            "/api/v1/rag/query", json={"query": "Word document DOCX", "top_k": 5}
+        )
+        assert query_resp.status_code == 200
+        results = query_resp.json()["results"]
+        assert len(results) > 0
+
+
+@pytest.mark.integration
 def test_rag_upload_invalid_file_type(api_base_url: str, tmp_path) -> None:
     """Test that uploading unsupported file types is rejected."""
     # Create a test file with unsupported extension
