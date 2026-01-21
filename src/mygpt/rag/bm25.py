@@ -195,7 +195,9 @@ class BM25Index:
         )
 
         # Compute document frequencies (number of docs containing each term)
-        self.doc_freqs = {term: len(doc_set) for term, doc_set in doc_freq_counter.items()}
+        self.doc_freqs = {
+            term: len(doc_set) for term, doc_set in doc_freq_counter.items()
+        }
 
     def _idf(self, term: str) -> float:
         """Compute IDF (Inverse Document Frequency) for a term.

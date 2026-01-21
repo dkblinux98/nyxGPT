@@ -100,7 +100,7 @@ def test_hybrid_search_end_to_end(
 def test_hybrid_search_keyword_dominance(
     api_base_url: str, require_ollama: None, require_cassandra: None
 ) -> None:
-    """Test that hybrid search finds documents with keyword matches."""
+    """Test that hybrid search improves keyword matching over vector-only."""
     # Use unique keyword to avoid pollution from previous test runs
     unique_keyword = f"zxqkw{uuid.uuid4().hex[:8]}"
 
@@ -129,7 +129,7 @@ def test_hybrid_search_keyword_dominance(
         # Query with the unique keyword
         query_resp = client.post(
             "/api/v1/rag/query",
-            json={"query": unique_keyword, "top_k": 10},
+            json={"query": unique_keyword, "top_k": 5},
         )
         assert query_resp.status_code == 200
 

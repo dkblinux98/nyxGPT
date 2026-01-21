@@ -128,6 +128,15 @@ def test_ingest_document_with_collection(monkeypatch: pytest.MonkeyPatch) -> Non
         def ensure_schema(self, dim, collection="default"):
             pass
 
+        def document_needs_update(self, doc_id, doc_hash):
+            return True
+
+        def get_document_hash(self, doc_id):
+            return None
+
+        def delete_doc(self, doc_id):
+            pass
+
         def upsert_chunks(self, **kwargs):
             store_calls.append({"upsert": kwargs})
 
@@ -147,7 +156,7 @@ def test_ingest_document_with_collection(monkeypatch: pytest.MonkeyPatch) -> Non
     from mygpt.rag.rag import ingest_document
 
     # Ingest with custom collection
-    n = ingest_document(
+    result = ingest_document(
         doc_id="test-doc",
         text="Hello world. This is a test.",
         collection="all-minilm",
@@ -155,7 +164,7 @@ def test_ingest_document_with_collection(monkeypatch: pytest.MonkeyPatch) -> Non
         embedding_dim=384,
     )
 
-    assert n > 0
+    assert result["chunks_ingested"] > 0
     assert any(call.get("collection") == "all-minilm" for call in store_calls)
     upsert_call = next((call for call in store_calls if "upsert" in call), None)
     assert upsert_call is not None

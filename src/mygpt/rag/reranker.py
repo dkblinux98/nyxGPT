@@ -51,6 +51,7 @@ class SearchResult(TypedDict, total=False):
     from the reranker. Not all fields are required in input results.
     Additional fields beyond those listed here may be present.
     """
+
     text: str  # Document text (required for reranking)
     score: float | None  # Relevance score (updated by reranking, may be None)
     original_score: float | None  # Original score before reranking (added by reranker)
@@ -96,8 +97,8 @@ def _reranker_cfg() -> RerankerConfig:
     base_url = get_ollama_base_url(cfg).rstrip("/")
 
     # Reranker can use a dedicated model or fall back to default
-    model = (
-        cfg.get("rag", "reranker_model", fallback="").strip() or get_default_model(cfg)
+    model = cfg.get("rag", "reranker_model", fallback="").strip() or get_default_model(
+        cfg
     )
 
     timeout = cfg.getint("rag", "reranker_timeout_seconds", fallback=30)
@@ -113,9 +114,7 @@ def _reranker_cfg() -> RerankerConfig:
     )
 
 
-def _score_relevance(
-    query: str, document: str, config: RerankerConfig
-) -> float:
+def _score_relevance(query: str, document: str, config: RerankerConfig) -> float:
     """Score relevance of a document to a query using Ollama.
 
     Uses a prompt-based approach to score relevance from 0.0 to 1.0.

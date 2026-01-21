@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Iterable, List
 from cassandra.cluster import Cluster
@@ -78,11 +79,10 @@ class CassandraVectorStore:
         self._ensure_schema_migrated()
 
     def _ensure_schema_migrated(self) -> None:
-        """Ensure table schema includes multi-model support columns.
+        """Ensure table schema includes multi-model support and version tracking columns.
 
-        This migration adds embedding_model and embedding_dim columns to existing
-        tables that were created before the multi-model feature. It runs once per
-        instance and is idempotent.
+        This migration adds embedding_model, embedding_dim, doc_hash, ingested_at,
+        and updated_at columns to existing tables. It runs once per instance and is idempotent.
         """
         if self._migration_checked:
             return
@@ -92,21 +92,29 @@ class CassandraVectorStore:
         tbl = self.table_name
 
         try:
-            # Check if embedding_model column exists
+            # Check which columns exist
             result = self.session.execute(
                 f"SELECT column_name FROM system_schema.columns "
-                f"WHERE keyspace_name = '{ks}' AND table_name = '{tbl}' "
-                f"AND column_name = 'embedding_model'"
+                f"WHERE keyspace_name = '{ks}' AND table_name = '{tbl}'"
             )
-            if not list(result):
-                # Columns don't exist, add them
+            existing_columns = {row.column_name for row in result}
+
+            # Add missing columns
+            if "embedding_model" not in existing_columns:
                 self.session.execute(f"ALTER TABLE {tbl} ADD embedding_model text")
+            if "embedding_dim" not in existing_columns:
                 self.session.execute(f"ALTER TABLE {tbl} ADD embedding_dim int")
-                # Also create the index on embedding_model
-                self.session.execute(
-                    f"CREATE INDEX IF NOT EXISTS {tbl}_model_idx "
-                    f"ON {tbl}(embedding_model)"
-                )
+            if "doc_hash" not in existing_columns:
+                self.session.execute(f"ALTER TABLE {tbl} ADD doc_hash text")
+            if "ingested_at" not in existing_columns:
+                self.session.execute(f"ALTER TABLE {tbl} ADD ingested_at timestamp")
+            if "updated_at" not in existing_columns:
+                self.session.execute(f"ALTER TABLE {tbl} ADD updated_at timestamp")
+
+            # Also create the index on embedding_model
+            self.session.execute(
+                f"CREATE INDEX IF NOT EXISTS {tbl}_model_idx ON {tbl}(embedding_model)"
+            )
         except Exception:
             # Migration might fail if table doesn't exist yet (first run)
             # or if columns already exist (race condition in concurrent access)
@@ -163,6 +171,9 @@ class CassandraVectorStore:
               embedding VECTOR<FLOAT, {int(embedding_dim)}>,
               embedding_model text,
               embedding_dim int,
+              doc_hash text,
+              ingested_at timestamp,
+              updated_at timestamp,
               PRIMARY KEY (doc_id, chunk_id)
             );
             """
@@ -196,6 +207,8 @@ class CassandraVectorStore:
         *,
         embedding_model: str | None = None,
         embedding_dim: int | None = None,
+        doc_hash: str | None = None,
+        original_ingested_at: datetime | None = None,
     ) -> None:
         """Upsert document chunks with embeddings.
 
@@ -206,6 +219,8 @@ class CassandraVectorStore:
             metadatas: Optional metadata dicts
             embedding_model: Embedding model name (for multi-model support)
             embedding_dim: Embedding dimension (for multi-model support)
+            doc_hash: Document content hash (for update detection)
+            original_ingested_at: Original ingestion timestamp (preserved on updates)
         """
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
@@ -221,14 +236,25 @@ class CassandraVectorStore:
         if embedding_dim is None and embs_l:
             embedding_dim = len(embs_l[0])
 
+        # Check if document already exists and get its hash
+        is_update = False
+        if doc_hash:
+            existing_hash = self.get_document_hash(doc_id)
+            is_update = existing_hash is not None
+
+        # Current timestamp
+        now = datetime.utcnow()
+
         stmt = self.session.prepare(
             f"""
-            INSERT INTO {self.table_name} (doc_id, chunk_id, text, metadata, embedding, embedding_model, embedding_dim)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO {self.table_name} (doc_id, chunk_id, text, metadata, embedding, embedding_model, embedding_dim, doc_hash, ingested_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
         )
 
         for idx, (text, emb, meta) in enumerate(zip(texts_l, embs_l, metas_l)):
+            # For updates, preserve original ingested_at; for new docs, use current time
+            ingested_at = original_ingested_at if original_ingested_at else now
             self.session.execute(
                 stmt,
                 (
@@ -239,6 +265,9 @@ class CassandraVectorStore:
                     emb,
                     embedding_model,
                     embedding_dim,
+                    doc_hash,
+                    ingested_at,
+                    now,
                 ),
             )
 
@@ -402,3 +431,83 @@ class CassandraVectorStore:
                 collections.append(collection_name)
         collections.sort()
         return collections
+
+    def get_document_hash(self, doc_id: str) -> str | None:
+        """Get the content hash for a document.
+
+        Args:
+            doc_id: Document identifier
+
+        Returns:
+            Document hash if it exists, None otherwise
+        """
+        if not self._keyspace_ready:
+            self._ensure_keyspace_selected()
+
+        stmt = SimpleStatement(
+            f"SELECT doc_hash FROM {self.table_name} WHERE doc_id = %s LIMIT 1"
+        )
+
+        rows = self.session.execute(stmt, (doc_id,))
+        row = rows.one()
+        if row and hasattr(row, "doc_hash"):
+            return str(row.doc_hash) if row.doc_hash is not None else None
+        return None
+
+    def get_document_info(self, doc_id: str) -> dict | None:
+        """Get document version information.
+
+        Args:
+            doc_id: Document identifier
+
+        Returns:
+            Dict with doc_hash, ingested_at, updated_at, chunks count, or None if not found
+        """
+        if not self._keyspace_ready:
+            self._ensure_keyspace_selected()
+
+        # Cassandra only supports GROUP BY on PRIMARY KEY columns.
+        # We fetch all rows for doc_id and aggregate in Python.
+        stmt = SimpleStatement(
+            f"""
+            SELECT doc_id, doc_hash, ingested_at, updated_at, embedding_model
+            FROM {self.table_name}
+            WHERE doc_id = %s
+            """
+        )
+
+        rows = list(self.session.execute(stmt, (doc_id,)))
+        if not rows:
+            return None
+
+        # All chunks should have the same metadata, take from first row
+        row = rows[0]
+        return {
+            "doc_id": row.doc_id,
+            "doc_hash": row.doc_hash if hasattr(row, "doc_hash") else None,
+            "ingested_at": row.ingested_at.isoformat()
+            if hasattr(row, "ingested_at") and row.ingested_at
+            else None,
+            "updated_at": row.updated_at.isoformat()
+            if hasattr(row, "updated_at") and row.updated_at
+            else None,
+            "chunks": len(rows),
+            "embedding_model": row.embedding_model
+            if hasattr(row, "embedding_model")
+            else None,
+        }
+
+    def document_needs_update(self, doc_id: str, new_hash: str) -> bool:
+        """Check if a document needs to be updated based on content hash.
+
+        Args:
+            doc_id: Document identifier
+            new_hash: New content hash to compare
+
+        Returns:
+            True if document doesn't exist or hash differs, False otherwise
+        """
+        existing_hash = self.get_document_hash(doc_id)
+        if existing_hash is None:
+            return True  # Document doesn't exist, needs ingestion
+        return existing_hash != new_hash

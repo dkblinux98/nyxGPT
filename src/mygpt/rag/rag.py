@@ -7,6 +7,7 @@ import json
 import time
 import uuid
 import statistics
+import hashlib
 
 from mygpt.config import (
     load_config,
@@ -286,6 +287,18 @@ def _extract_heading_level(line: str) -> int:
 # ----------------------------
 # Chunking
 # ----------------------------
+
+
+def compute_document_hash(text: str) -> str:
+    """Compute SHA-256 hash of document content for change detection.
+
+    Args:
+        text: Document text content
+
+    Returns:
+        Hex-encoded SHA-256 hash
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def chunk_text(text: str) -> list[str]:
@@ -580,12 +593,20 @@ def ingest_document(
     collection: str = "default",
     embedding_model: str | None = None,
     embedding_dim: int | None = None,
-) -> int:
-    """Chunk, embed, and store a document in the vector store.
+    force_update: bool = False,
+) -> dict:
+    """Chunk, embed, and store a document in the vector store with update detection.
 
     This is the primary ingestion pipeline for adding documents to your
     RAG knowledge base. It handles all the complexity of chunking,
-    embedding generation, and storage.
+    embedding generation, storage, and automatic update detection.
+
+    **Update Detection:**
+
+    Uses SHA-256 content hashing to detect document changes:
+    - If document doesn't exist, it's ingested
+    - If document exists but content changed, stale chunks are deleted and new ones added
+    - If document exists with same content, ingestion is skipped (unless force_update=True)
 
     **Multi-Model Support:**
 
@@ -595,26 +616,33 @@ def ingest_document(
 
     **Pipeline Steps:**
 
-    1. **Chunking**: Text is split into semantic chunks using paragraph-aware
-       chunking with configurable overlap.
-
-    2. **Embedding**: Each chunk is converted to a vector embedding using
-       the specified embedding model (or config default).
-
-    3. **Storage**: Chunks and embeddings are stored in Cassandra with
-       upsert semantics (existing doc_id is replaced).
+    1. **Change Detection**: Compute document hash and check if update needed
+    2. **Chunking**: Text is split into semantic chunks using paragraph-aware
+       chunking with configurable overlap
+    3. **Embedding**: Each chunk is converted to a vector embedding using
+       the specified embedding model (or config default)
+    4. **Cleanup**: For updates, delete stale chunks from previous version
+    5. **Storage**: Chunks and embeddings are stored in Cassandra with
+       version tracking metadata
 
     **Usage Examples:**
 
-        # Basic document ingestion (uses default collection)
-        >>> n = ingest_document(
+        # Basic document ingestion with automatic update detection
+        >>> result = ingest_document(
         ...     doc_id="user-guide-v2.1",
         ...     text=documentation_text
         ... )
-        >>> print(f"Ingested {n} chunks")
+        >>> print(f"Status: {result['status']}, Chunks: {result['chunks_ingested']}")
+
+        # Force re-ingestion even if content unchanged
+        >>> result = ingest_document(
+        ...     doc_id="api-reference",
+        ...     text=api_docs,
+        ...     force_update=True
+        ... )
 
         # Use a specific embedding model (multi-model support)
-        >>> n = ingest_document(
+        >>> result = ingest_document(
         ...     doc_id="api-reference",
         ...     text=api_docs,
         ...     collection="all-minilm",
@@ -623,14 +651,14 @@ def ingest_document(
         ... )
 
         # With metadata for filtering
-        >>> n = ingest_document(
+        >>> result = ingest_document(
         ...     doc_id="api-reference",
         ...     text=api_docs,
         ...     metadata={"type": "api", "version": "1.0"}
         ... )
 
         # First-time setup (creates schema)
-        >>> n = ingest_document(
+        >>> result = ingest_document(
         ...     doc_id="first-doc",
         ...     text=content,
         ...     ensure_schema=True  # Only needed once per collection
@@ -638,8 +666,8 @@ def ingest_document(
 
     **Important Notes:**
 
-    - Documents with the same `doc_id` are replaced (upsert semantics)
-    - Empty text returns 0 without error
+    - Documents with the same `doc_id` are replaced on content change
+    - Empty text returns status "skipped" with 0 chunks
     - Embedding dimension is inferred from first embedding if ensure_schema=True
     - Cassandra connection is opened and closed within this function
     - Each collection maintains its own vector index with appropriate dimensions
@@ -653,44 +681,113 @@ def ingest_document(
         collection: Collection name for multi-model support (default: "default")
         embedding_model: Override embedding model (default: from config)
         embedding_dim: Override embedding dimension (default: from config)
+        force_update: If True, re-ingest even if content hash matches (default: False)
 
     Returns:
-        Number of chunks successfully ingested
+        Dict with:
+            - status: "ingested", "updated", or "skipped"
+            - chunks_ingested: Number of chunks processed
+            - doc_hash: Content hash of the document
+            - previous_hash: Previous hash if it was an update (None otherwise)
 
     Raises:
         RAGError: If chunking configuration is invalid
         Exception: If Cassandra connection or embedding generation fails
     """
-    chunks = chunk_text(text)
-    if not chunks:
-        return 0
+    if not text or not text.strip():
+        return {
+            "status": "skipped",
+            "chunks_ingested": 0,
+            "doc_hash": None,
+            "previous_hash": None,
+        }
 
-    embeddings_result = embed_texts(
-        chunks, model=embedding_model, dimension=embedding_dim
-    )
-    # embed_texts returns list[list[float]] when collect_metrics=False (default)
-    # Type narrowing: we didn't pass collect_metrics, so it's always the list form
-    embeddings: list[list[float]] = (
-        embeddings_result
-        if isinstance(embeddings_result, list)
-        else embeddings_result[0]
-    )
-
-    # Get the actual model and dimension from embeddings config
-    from mygpt.rag.embeddings import _embedding_cfg
-
-    ecfg = _embedding_cfg(model=embedding_model, dimension=embedding_dim)
-    actual_model = ecfg.model
-    actual_dim = len(embeddings[0]) if embeddings else ecfg.dimension
-
-    metas = [metadata or {} for _ in chunks]
+    # Compute content hash for change detection
+    doc_hash = compute_document_hash(text)
 
     store = CassandraVectorStore(collection=collection)
     try:
         if ensure_schema:
-            # embedding dimension inferred from first vector
-            store.ensure_schema(actual_dim, collection=collection)
+            # Need to chunk and embed first to infer dimension
+            chunks = chunk_text(text)
+            if not chunks:
+                return {
+                    "status": "skipped",
+                    "chunks_ingested": 0,
+                    "doc_hash": doc_hash,
+                    "previous_hash": None,
+                }
 
+            embeddings_result = embed_texts(
+                chunks, model=embedding_model, dimension=embedding_dim
+            )
+            embeddings: list[list[float]] = (
+                embeddings_result
+                if isinstance(embeddings_result, list)
+                else embeddings_result[0]
+            )
+
+            # Get the actual model and dimension from embeddings config
+            from mygpt.rag.embeddings import _embedding_cfg
+
+            ecfg = _embedding_cfg(model=embedding_model, dimension=embedding_dim)
+            actual_dim = len(embeddings[0]) if embeddings else ecfg.dimension
+            store.ensure_schema(actual_dim, collection=collection)
+        else:
+            # Check if document needs update
+            if not force_update and not store.document_needs_update(doc_id, doc_hash):
+                log.info(f"Document {doc_id} unchanged, skipping re-ingestion")
+                return {
+                    "status": "skipped",
+                    "chunks_ingested": 0,
+                    "doc_hash": doc_hash,
+                    "previous_hash": doc_hash,
+                }
+
+            # Document needs update - chunk and embed
+            chunks = chunk_text(text)
+            if not chunks:
+                return {
+                    "status": "skipped",
+                    "chunks_ingested": 0,
+                    "doc_hash": doc_hash,
+                    "previous_hash": None,
+                }
+
+            embeddings_result = embed_texts(
+                chunks, model=embedding_model, dimension=embedding_dim
+            )
+            embeddings = (
+                embeddings_result
+                if isinstance(embeddings_result, list)
+                else embeddings_result[0]
+            )
+
+        # Get existing document info (including ingested_at for preservation)
+        previous_hash = store.get_document_hash(doc_id)
+        is_update = previous_hash is not None
+        original_ingested_at = None
+
+        # Delete stale chunks if this is an update (but preserve original ingested_at)
+        if is_update:
+            doc_info = store.get_document_info(doc_id)
+            if doc_info and doc_info.get("ingested_at"):
+                from datetime import datetime
+
+                original_ingested_at = datetime.fromisoformat(doc_info["ingested_at"])
+            log.info(f"Updating document {doc_id}: deleting stale chunks")
+            store.delete_doc(doc_id)
+
+        # Get the actual model and dimension from embeddings config
+        from mygpt.rag.embeddings import _embedding_cfg
+
+        ecfg = _embedding_cfg(model=embedding_model, dimension=embedding_dim)
+        actual_model = ecfg.model
+        actual_dim = len(embeddings[0]) if embeddings else ecfg.dimension
+
+        metas = [metadata or {} for _ in chunks]
+
+        # Upsert chunks with version tracking
         store.upsert_chunks(
             doc_id=doc_id,
             texts=chunks,
@@ -698,11 +795,21 @@ def ingest_document(
             metadatas=metas,
             embedding_model=actual_model,
             embedding_dim=actual_dim,
+            doc_hash=doc_hash,
+            original_ingested_at=original_ingested_at,
         )
+
+        status = "updated" if is_update else "ingested"
+        log.info(f"Document {doc_id} {status}: {len(chunks)} chunks")
+
+        return {
+            "status": status,
+            "chunks_ingested": len(chunks),
+            "doc_hash": doc_hash,
+            "previous_hash": previous_hash,
+        }
     finally:
         store.close()
-
-    return len(chunks)
 
 
 # ----------------------------
@@ -986,8 +1093,12 @@ def retrieve_context(
                         "chunk_id": r.chunk_id,
                         "text": text,
                         "metadata": json.loads(r.metadata) if r.metadata else {},
-                        "embedding_model": r.embedding_model if hasattr(r, "embedding_model") else None,
-                        "embedding_dim": r.embedding_dim if hasattr(r, "embedding_dim") else None,
+                        "embedding_model": r.embedding_model
+                        if hasattr(r, "embedding_model")
+                        else None,
+                        "embedding_dim": r.embedding_dim
+                        if hasattr(r, "embedding_dim")
+                        else None,
                     }
             except Exception as e:
                 log.warning("Failed to fetch chunks for doc %s: %s", doc_id, e)
@@ -1026,21 +1137,23 @@ def retrieve_context(
         vector_ranking = sorted(
             [(k, r["score"]) for k, r in vector_results_map.items()],
             key=lambda x: x[1],
-            reverse=True
+            reverse=True,
         )
 
         # Keyword results: sorted by score descending
         keyword_ranking = sorted(
             [(k, r["score"]) for k, r in keyword_results_map.items()],
             key=lambda x: x[1],
-            reverse=True
+            reverse=True,
         )
 
         # Decide fusion method
         if hybrid_alpha is not None:
             # Use weighted fusion
             fusion_method = f"weighted(alpha={hybrid_alpha})"
-            fused_ranking = weighted_fusion(vector_ranking, keyword_ranking, alpha=hybrid_alpha)
+            fused_ranking = weighted_fusion(
+                vector_ranking, keyword_ranking, alpha=hybrid_alpha
+            )
         else:
             # Use RRF (default)
             fusion_method = "reciprocal_rank_fusion"
@@ -1064,9 +1177,7 @@ def retrieve_context(
         # No hybrid search, use vector results only
         fusion_method = "vector_only"
         all_results = sorted(
-            vector_results_map.values(),
-            key=lambda r: r.get("score", 0.0),
-            reverse=True
+            vector_results_map.values(), key=lambda r: r.get("score", 0.0), reverse=True
         )
 
     # ======================================================================
@@ -1078,17 +1189,19 @@ def retrieve_context(
     if reranking_enabled and all_results:
         log.debug("Applying reranking to %d results", len(all_results))
         if collect_debug:
-            rerank_result = rerank_results(
-                query, all_results, collect_metrics=True
-            )
+            rerank_result = rerank_results(query, all_results, collect_metrics=True)
             # Type narrowing: collect_metrics=True returns tuple
-            assert isinstance(rerank_result, tuple), "Expected tuple when collect_metrics=True"
+            assert isinstance(rerank_result, tuple), (
+                "Expected tuple when collect_metrics=True"
+            )
             reranked_results, reranking_metrics = rerank_result
             all_results = reranked_results
         else:
             rerank_result = rerank_results(query, all_results)
             # Type narrowing: collect_metrics=False returns list
-            assert isinstance(rerank_result, list), "Expected list when collect_metrics=False"
+            assert isinstance(rerank_result, list), (
+                "Expected list when collect_metrics=False"
+            )
             all_results = rerank_result
 
     # ======================================================================
@@ -1147,7 +1260,9 @@ def retrieve_context(
         else 0.0,
         keyword_search_time_ms=keyword_search_time_ms,
         fusion_time_ms=fusion_time_ms,
-        reranking_time_ms=reranking_metrics.reranking_time_ms if reranking_metrics else None,
+        reranking_time_ms=reranking_metrics.reranking_time_ms
+        if reranking_metrics
+        else None,
         filtering_time_ms=filtering_time_ms,
         composition_time_ms=0.0,  # compose_context is called separately
         original_query=query,
@@ -1171,8 +1286,12 @@ def retrieve_context(
         fusion_method=fusion_method,
         reranking_enabled=reranking_enabled,
         reranker_model=reranking_metrics.reranker_model if reranking_metrics else None,
-        num_candidates_reranked=reranking_metrics.num_candidates if reranking_metrics else None,
-        num_results_after_rerank=reranking_metrics.num_reranked if reranking_metrics else None,
+        num_candidates_reranked=reranking_metrics.num_candidates
+        if reranking_metrics
+        else None,
+        num_results_after_rerank=reranking_metrics.num_reranked
+        if reranking_metrics
+        else None,
         after_min_score_filter=after_min_score,
         after_dedupe_filter=after_dedupe,
         after_max_chunks_filter=after_max_chunks,
@@ -1208,9 +1327,15 @@ def compute_evaluation_metrics(
         sorted_scores = sorted(scores)
         score_distribution = {
             "p50": statistics.median(sorted_scores),
-            "p75": statistics.quantiles(sorted_scores, n=4)[2] if len(sorted_scores) >= 2 else sorted_scores[-1],
-            "p95": statistics.quantiles(sorted_scores, n=20)[18] if len(sorted_scores) >= 2 else sorted_scores[-1],
-            "p99": statistics.quantiles(sorted_scores, n=100)[98] if len(sorted_scores) >= 2 else sorted_scores[-1],
+            "p75": statistics.quantiles(sorted_scores, n=4)[2]
+            if len(sorted_scores) >= 2
+            else sorted_scores[-1],
+            "p95": statistics.quantiles(sorted_scores, n=20)[18]
+            if len(sorted_scores) >= 2
+            else sorted_scores[-1],
+            "p99": statistics.quantiles(sorted_scores, n=100)[98]
+            if len(sorted_scores) >= 2
+            else sorted_scores[-1],
         }
 
     # Retrieval accuracy metrics
@@ -1245,9 +1370,7 @@ def compute_evaluation_metrics(
     # Score statistics
     avg_top_score = scores[0] if scores else None
     above_threshold = sum(1 for s in scores if s >= min_score)
-    score_above_threshold_rate = (
-        float(above_threshold) / len(scores) if scores else 0.0
-    )
+    score_above_threshold_rate = float(above_threshold) / len(scores) if scores else 0.0
 
     hit_rate = HitRateMetrics(
         query_success_rate=query_success_rate,

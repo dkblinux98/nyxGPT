@@ -440,7 +440,9 @@ def test_cassandra_vectorstore_list_docs(monkeypatch: pytest.MonkeyPatch) -> Non
         return row
 
     # doc_b has 5 chunks, doc_a has 3 chunks
-    mock_rows = [make_row("doc_b") for _ in range(5)] + [
+    mock_rows = [
+        make_row("doc_b") for _ in range(5)
+    ] + [
         make_row("doc_a") for _ in range(3)
     ]
 
@@ -654,8 +656,8 @@ def test_ingest_document_empty_text(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from mygpt.rag.rag import ingest_document
 
-    count = ingest_document("doc1", "")
-    assert count == 0
+    result = ingest_document("doc1", "")
+    assert result == {"status": "skipped", "chunks_ingested": 0, "doc_hash": None, "previous_hash": None}
 
 
 @pytest.mark.unit
@@ -670,6 +672,11 @@ def test_ingest_document_with_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     mock_store = Mock()
+    # Configure mock for update detection methods (document doesn't exist yet)
+    mock_store.document_needs_update.return_value = True
+    mock_store.get_document_hash.return_value = None  # New document
+    mock_store.get_document_info.return_value = None  # Not an update
+
     monkeypatch.setattr(
         "mygpt.rag.rag.CassandraVectorStore", lambda **kwargs: mock_store
     )
