@@ -122,7 +122,9 @@ def test_rag_upload_text_file(
         # Upload the file with unique doc_id
         with open(test_file, "rb") as f:
             files = {"file": ("test_upload.txt", f, "text/plain")}
-            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+            upload_resp = client.post(
+                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
+            )
 
         assert upload_resp.status_code == 200
         upload_data = upload_resp.json()
@@ -181,7 +183,9 @@ More content for testing RAG ingestion.
         # Upload the markdown file with unique doc_id
         with open(test_file, "rb") as f:
             files = {"file": ("test.md", f, "text/markdown")}
-            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+            upload_resp = client.post(
+                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
+            )
 
         assert upload_resp.status_code == 200
         upload_data = upload_resp.json()
