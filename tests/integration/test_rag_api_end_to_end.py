@@ -249,6 +249,27 @@ def test_rag_upload_docx_file(
         # Upload the DOCX file with unique doc_id
         with open(test_file, "rb") as f:
             files = {"file": ("test.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "doc_id" in upload_data
+        assert "chunks_ingested" in upload_data
+        assert upload_data["chunks_ingested"] > 0
+
+        # Give Cassandra indexing a moment
+        time.sleep(2.0)
+
+        # Verify we can query the uploaded content
+        query_resp = client.post(
+            "/api/v1/rag/query", json={"query": "Word document DOCX", "top_k": 5}
+        )
+        assert query_resp.status_code == 200
+        results = query_resp.json()["results"]
+        assert len(results) > 0
+
+
+@pytest.mark.integration
 def test_rag_upload_pptx_file(
     api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
 ) -> None:
@@ -313,7 +334,6 @@ def test_rag_upload_pptx_file(
         # Verify we can query the uploaded content
         query_resp = client.post(
             "/api/v1/rag/query", json={"query": "Word document DOCX", "top_k": 5}
-            "/api/v1/rag/query", json={"query": "presentation features", "top_k": 5}
         )
         assert query_resp.status_code == 200
         results = query_resp.json()["results"]
@@ -405,6 +425,15 @@ def test_rag_upload_docx_only_text(
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         with open(test_file, "rb") as f:
             files = {"file": ("only_text.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "chunks_ingested" in upload_data
+        assert upload_data["chunks_ingested"] > 0
+
+
+@pytest.mark.integration
 def test_rag_upload_pptx_with_speaker_notes(
     api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
 ) -> None:
