@@ -11,6 +11,7 @@ dependencies = [
   "markdown>=3.5",
   "beautifulsoup4>=4.12",
   "pypdf>=3.17",
+  "pdfplumber>=0.11.0",
   "python-multipart>=0.0.6",
   "tiktoken>=0.5.0",
 ]
@@ -31,6 +32,7 @@ dev = [
   "mypy>=1.8",
   "ruff>=0.1",
   "types-Markdown",
+  "reportlab>=4.0",
 ]
 
 [project.scripts]
@@ -76,6 +78,7 @@ module = [
     "frontmatter",
     "cassandra.*",
     "textual.*",
+    "pdfplumber",
 ]
 ignore_missing_imports = true
 

@@ -446,7 +446,11 @@ Search API response includes:
 
 myGPT supports per-session RAG to inject relevant context from uploaded documents into chat conversations.
 
-**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf`
+**Supported file types:**
+- `.txt` - Plain text files
+- `.md` - Markdown with frontmatter parsing
+- `.json` - JSON data files
+- `.pdf` - PDF documents with improved extraction (tables, formatting, multi-column layouts, metadata)
 
 #### Web UI
 

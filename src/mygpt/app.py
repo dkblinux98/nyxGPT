@@ -1843,16 +1843,62 @@ async def rag_upload_file(
 
     # Parse based on file type
     if file_ext == ".pdf":
-        # Handle PDF (if pypdf available)
+        # Handle PDF with improved extraction (#2663)
         try:
+            import pdfplumber
             from pypdf import PdfReader
 
+            # Extract metadata using pypdf
             reader = PdfReader(io.BytesIO(content))
-            text = "\n\n".join(page.extract_text() for page in reader.pages)
-        except ImportError:
+            metadata = {}
+            if reader.metadata:
+                # Extract common metadata fields
+                for key in ['/Title', '/Author', '/Subject', '/Creator', '/Producer', '/CreationDate', '/ModDate']:
+                    if key in reader.metadata:
+                        clean_key = key.lstrip('/')
+                        metadata[clean_key] = str(reader.metadata[key])
+
+            # Extract text with better formatting using pdfplumber
+            text_parts = []
+
+            # Add metadata section if available
+            if metadata:
+                meta_str = "\n".join(f"{k}: {v}" for k, v in metadata.items())
+                text_parts.append(f"[Metadata]\n{meta_str}\n")
+
+            # Process each page with pdfplumber for better extraction
+            with pdfplumber.open(io.BytesIO(content)) as pdf:
+                for page_num, page in enumerate(pdf.pages, 1):
+                    page_content = []
+
+                    # Extract tables with preserved structure
+                    tables = page.extract_tables()
+                    if tables:
+                        for table in tables:
+                            # Format table as text grid
+                            table_text = "\n".join(
+                                " | ".join(str(cell) if cell else "" for cell in row)
+                                for row in table
+                            )
+                            page_content.append(f"[Table]\n{table_text}\n")
+
+                    # Extract text with layout preservation
+                    # Use layout mode to preserve formatting and multi-column layouts
+                    page_text = page.extract_text(layout=True)
+                    if page_text:
+                        page_content.append(page_text.strip())
+
+                    # Combine page content
+                    if page_content:
+                        text_parts.append("\n\n".join(page_content))
+
+            text = "\n\n".join(text_parts)
+
+        except ImportError as e:
+            missing_lib = "pdfplumber" if "pdfplumber" in str(e) else "pypdf"
             raise HTTPException(
                 status_code=400,
-                detail="PDF support not available. Install pypdf: pip install pypdf",
+                detail=f"PDF support not available. Install {missing_lib}: pip install {missing_lib}",
             )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"PDF parsing failed: {e}")
