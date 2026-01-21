@@ -945,6 +945,8 @@ class MyGPTTUI(App):
         await self.push_screen_wait(HelpOverlayScreen())
         log.info("Help overlay closed")
 
+    # Textual supports async action methods overriding sync parent methods.
+    # The action system detects coroutines and awaits them.
     async def action_command_palette(self) -> None:  # type: ignore[override]
         """Show the command palette and execute selected command."""
         import inspect

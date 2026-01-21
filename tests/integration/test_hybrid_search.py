@@ -139,9 +139,25 @@ def test_hybrid_search_keyword_dominance(
         # Should get at least one result
         assert len(results) > 0
 
-        # Doc1 with exact keyword match should be in the results
+        # Doc1 with exact keyword match should rank highly.
+        # In theory, BM25 scoring should rank the exact keyword match first.
+        # However, in integration tests with Cassandra:
+        # - Indexing is eventually consistent
+        # - Vector embeddings and RRF fusion can affect final ranking
+        # - Timing variations can cause non-deterministic ordering
+        #
+        # We verify Doc1 appears in top 2 results, which confirms keyword
+        # matching is working (without the keyword match, Doc1 would likely
+        # not appear at all since Doc2 is semantically related to the query).
+        #
+        # TODO: Add a deterministic unit test for BM25 scoring that verifies
+        # exact keyword matches rank first when vector scores are equal.
         result_doc_ids = [r["doc_id"] for r in results]
-        assert doc1_id in result_doc_ids, f"Doc1 {doc1_id} should be in results: {result_doc_ids}"
+        top_doc_ids = [r["doc_id"] for r in results[:2]]
+        assert doc1_id in top_doc_ids, (
+            f"Doc1 with exact keyword match should be in top 2 results, "
+            f"but got: {top_doc_ids}. All results: {result_doc_ids}"
+        )
 
         # Verify the doc1's text contains our unique keyword
         doc1_results = [r for r in results if r["doc_id"] == doc1_id]
