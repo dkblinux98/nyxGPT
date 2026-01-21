@@ -36,6 +36,9 @@ log = logging.getLogger(__name__)
 class ChunkingConfig:
     chunk_size: int
     overlap: int
+    overlap_strategy: str  # "trailing", "sentence", "semantic"
+    preserve_headings: bool
+    sentence_aware: bool
 
 
 @dataclass
@@ -160,9 +163,125 @@ def _chunking_cfg() -> ChunkingConfig:
     cfg = load_config(None)
     size = cfg.getint("rag", "chunk_size", fallback=800)
     overlap = cfg.getint("rag", "chunk_overlap", fallback=100)
+    overlap_strategy = cfg.get("rag", "overlap_strategy", fallback="trailing")
+    preserve_headings = cfg.getboolean("rag", "preserve_headings", fallback=True)
+    sentence_aware = cfg.getboolean("rag", "sentence_aware", fallback=True)
     if overlap >= size:
         raise RAGError("chunk_overlap must be smaller than chunk_size")
-    return ChunkingConfig(chunk_size=size, overlap=overlap)
+    return ChunkingConfig(
+        chunk_size=size,
+        overlap=overlap,
+        overlap_strategy=overlap_strategy,
+        preserve_headings=preserve_headings,
+        sentence_aware=sentence_aware
+    )
+
+
+# ----------------------------
+# Chunking Utilities
+# ----------------------------
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split text into sentences using heuristic rules.
+
+    Handles common sentence boundaries while preserving abbreviations
+    and avoiding false splits on periods in numbers/URLs.
+
+    Args:
+        text: The text to split into sentences
+
+    Returns:
+        List of sentences (with trailing whitespace stripped)
+    """
+    import re
+
+    # Common abbreviations to avoid splitting on
+    abbrevs = {
+        'dr', 'mr', 'mrs', 'ms', 'prof', 'sr', 'jr',
+        'vs', 'etc', 'al', 'inc', 'ltd', 'co', 'mt',
+        'e.g', 'i.e', 'u.s', 'u.k', 'st', 'ave', 'blvd'
+    }
+
+    # Pattern to match sentence boundaries
+    # Matches: period/question/exclamation followed by space and capital letter
+    sentence_endings = re.compile(
+        r'([.!?]+)'  # Sentence ending punctuation
+        r'(?:\s+|\n+)'  # Followed by whitespace
+        r'(?=[A-Z])'  # Lookahead for capital letter
+    )
+
+    sentences: list[str] = []
+    last_end = 0
+
+    for match in sentence_endings.finditer(text):
+        end_pos = match.end()
+        sentence = text[last_end:end_pos].strip()
+
+        # Check if this is an abbreviation (avoid false splits)
+        if sentence:
+            # Get the last word before the punctuation
+            words = sentence.split()
+            if words:
+                last_word = words[-1].rstrip('.!?').lower()
+                # If last word is an abbreviation, skip this split
+                if last_word in abbrevs:
+                    continue
+
+            sentences.append(sentence)
+            last_end = end_pos
+
+    # Add remaining text if any
+    if last_end < len(text):
+        remaining = text[last_end:].strip()
+        if remaining:
+            sentences.append(remaining)
+
+    return sentences if sentences else [text.strip()] if text.strip() else []
+
+
+def _is_heading(line: str) -> bool:
+    """Check if a line is a Markdown heading.
+
+    Detects both ATX-style (# Heading) and Setext-style headings.
+
+    Args:
+        line: A single line of text
+
+    Returns:
+        True if the line appears to be a heading
+    """
+    import re
+
+    line = line.strip()
+    if not line:
+        return False
+
+    # ATX-style: # Heading, ## Heading, etc.
+    if re.match(r'^#{1,6}\s+.+', line):
+        return True
+
+    # Could also check for Setext-style (underlined with === or ---)
+    # but that requires looking at the next line, so we skip for simplicity
+
+    return False
+
+
+def _extract_heading_level(line: str) -> int:
+    """Extract heading level from a Markdown heading line.
+
+    Args:
+        line: A heading line (e.g., "## Heading")
+
+    Returns:
+        Heading level (1-6), or 0 if not a heading
+    """
+    import re
+
+    match = re.match(r'^(#{1,6})\s+', line.strip())
+    if match:
+        return len(match.group(1))
+    return 0
 
 
 # ----------------------------
@@ -183,48 +302,63 @@ def compute_document_hash(text: str) -> str:
 
 
 def chunk_text(text: str) -> list[str]:
-    """Chunk text in a word-safe, paragraph-aware way.
+    """Chunk text with semantic boundary optimization.
 
-    This function implements a sophisticated text chunking algorithm designed
-    to maximize the quality of retrieval-augmented generation (RAG) results.
-    Unlike naive character-based chunking, this approach preserves semantic
-    boundaries and ensures chunks are human-readable.
+    This function implements an advanced text chunking algorithm designed
+    to maximize the quality of retrieval-augmented generation (RAG) results
+    with support for:
+    - Sentence boundary awareness
+    - Heading-aware splitting (preserves Markdown heading structure)
+    - Configurable overlap strategies
+    - Semantic chunking (preserves paragraphs and sentences)
 
     **Why This Approach?**
 
-    1. **Semantic Preservation**: Splitting on paragraph boundaries keeps
-       related ideas together, improving retrieval relevance.
+    1. **Semantic Preservation**: Splitting on sentence and paragraph boundaries
+       keeps related ideas together, improving retrieval relevance.
 
-    2. **Readability**: Word-safe cutting means retrieved chunks don't have
-       mid-word breaks like "The quick brown f" which confuse both humans
-       and LLMs.
+    2. **Heading Awareness**: Markdown headings are preserved with their content,
+       ensuring context hierarchy is maintained.
 
-    3. **Context Continuity**: Overlap between chunks means even if the most
-       relevant sentence is at a chunk boundary, surrounding context is
+    3. **Readability**: Chunks respect natural text boundaries (sentences, paragraphs)
+       so retrieved content is human-readable and coherent.
+
+    4. **Context Continuity**: Configurable overlap strategies ensure that even if
+       the most relevant sentence is at a chunk boundary, surrounding context is
        preserved.
 
     **Algorithm Overview:**
 
-    Phase 1 - Paragraph-based chunking:
-      - Split on blank lines (paragraph boundaries).
-      - Build chunks by concatenating paragraphs until `chunk_size` would be exceeded.
-      - For paragraphs longer than `chunk_size`, fall back to word-safe wrapping.
+    Phase 1 - Heading-aware section extraction (if enabled):
+      - Detect Markdown headings (# Heading format)
+      - Group content under each heading as a logical section
+      - Preserve heading-content relationships
 
-    Phase 2 - Overlap application:
-      - Apply `chunk_overlap` as an overlap of trailing characters (word-safe) between chunks.
-      - Ensures overlap starts at word boundary for readability.
+    Phase 2 - Semantic chunking:
+      - Split sections into paragraphs (blank line boundaries)
+      - If sentence-aware mode enabled, split long paragraphs into sentences
+      - Build chunks by concatenating semantic units until chunk_size reached
+      - Prefer breaking at sentence boundaries over word boundaries
+
+    Phase 3 - Overlap application (configurable strategies):
+      - "trailing": Overlap with trailing characters from previous chunk (legacy)
+      - "sentence": Overlap with complete sentences from previous chunk
+      - "semantic": Overlap with complete paragraphs/sections when possible
 
     **Configuration:**
 
     Controlled by `[rag]` section in config.ini:
     - `chunk_size`: Target maximum characters per chunk (default: 800)
     - `chunk_overlap`: Characters to overlap between chunks (default: 100)
+    - `overlap_strategy`: "trailing", "sentence", or "semantic" (default: "trailing")
+    - `preserve_headings`: Keep headings with content (default: true)
+    - `sentence_aware`: Use sentence boundaries (default: true)
 
     **Common Issues:**
 
     - If `chunk_overlap >= chunk_size`, raises RAGError
     - Empty or whitespace-only input returns empty list
-    - Very long paragraphs are word-wrapped to fit chunk_size
+    - Very long sentences may exceed chunk_size slightly to preserve completeness
 
     Args:
         text: The text to chunk (any length, any format)
@@ -241,71 +375,208 @@ def chunk_text(text: str) -> list[str]:
     if not raw:
         return []
 
-    # Normalize newlines and split into paragraphs.
+    # Normalize newlines
     raw = raw.replace("\r\n", "\n").replace("\r", "\n")
-    paras = [p.strip() for p in raw.split("\n\n") if p.strip()]
 
-    def _wrap_long_paragraph(p: str) -> list[str]:
-        # Word-safe wrapping for a single very long paragraph.
-        words = p.split()
-        out: list[str] = []
-        cur: list[str] = []
-        cur_len = 0
-        for w in words:
-            # +1 for a space if not first word
-            add = len(w) + (1 if cur else 0)
-            if cur and cur_len + add > cfg.chunk_size:
-                out.append(" ".join(cur))
-                cur = [w]
-                cur_len = len(w)
+    # Phase 1: Extract heading-aware sections if enabled
+    sections: list[tuple[str | None, str]] = []  # (heading, content)
+
+    if cfg.preserve_headings:
+        lines = raw.split("\n")
+        current_heading: str | None = None
+        current_content: list[str] = []
+
+        for line in lines:
+            if _is_heading(line):
+                # Save previous section
+                if current_content or current_heading:
+                    content_text = "\n".join(current_content).strip()
+                    if content_text or current_heading:
+                        sections.append((current_heading, content_text))
+                # Start new section
+                current_heading = line
+                current_content = []
             else:
-                cur.append(w)
-                cur_len += add
-        if cur:
-            out.append(" ".join(cur))
-        return out
+                current_content.append(line)
 
-    # First pass: build chunks from paragraphs.
+        # Save final section
+        if current_content or current_heading:
+            content_text = "\n".join(current_content).strip()
+            if content_text or current_heading:
+                sections.append((current_heading, content_text))
+
+        # If no headings found, treat whole text as one section
+        if not sections:
+            sections = [(None, raw)]
+    else:
+        sections = [(None, raw)]
+
+    # Phase 2: Build semantic chunks from sections
+    def _process_text_unit(unit: str, max_size: int) -> list[str]:
+        """Process a text unit (paragraph or sentence) into sub-chunks if needed."""
+        if len(unit) <= max_size:
+            return [unit]
+
+        # If sentence-aware and unit is too long, try splitting into sentences
+        if cfg.sentence_aware:
+            sentences = _split_sentences(unit)
+            if len(sentences) > 1:
+                # Recursively chunk the sentences
+                result: list[str] = []
+                current: list[str] = []
+                current_len = 0
+
+                for sent in sentences:
+                    sent_len = len(sent)
+                    sep_len = 1 if current else 0  # space separator
+
+                    if current and current_len + sep_len + sent_len > max_size:
+                        # Flush current chunk
+                        result.append(" ".join(current))
+                        current = [sent]
+                        current_len = sent_len
+                    else:
+                        current.append(sent)
+                        current_len += sep_len + sent_len
+
+                if current:
+                    result.append(" ".join(current))
+                return result
+
+        # Fall back to word-safe wrapping for very long units
+        words = unit.split()
+        result = []
+        current = []
+        current_len = 0
+
+        for word in words:
+            word_len = len(word)
+            sep_len = 1 if current else 0
+
+            if current and current_len + sep_len + word_len > max_size:
+                result.append(" ".join(current))
+                current = [word]
+                current_len = word_len
+            else:
+                current.append(word)
+                current_len += sep_len + word_len
+
+        if current:
+            result.append(" ".join(current))
+        return result
+
     chunks: list[str] = []
-    cur_parts: list[str] = []
-    cur_len = 0
 
-    def _flush_current() -> None:
-        nonlocal cur_parts, cur_len
-        if cur_parts:
-            chunks.append("\n\n".join(cur_parts).strip())
-        cur_parts = []
-        cur_len = 0
+    for heading, content in sections:
+        # Split content into paragraphs
+        paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
 
-    for p in paras:
-        parts = [p] if len(p) <= cfg.chunk_size else _wrap_long_paragraph(p)
-        for part in parts:
-            sep = 2 if cur_parts else 0  # \n\n
-            if cur_parts and cur_len + sep + len(part) > cfg.chunk_size:
-                _flush_current()
-            cur_parts.append(part)
-            cur_len = (cur_len + sep + len(part)) if cur_len else len(part)
+        # Build chunks from this section
+        current_chunk: list[str] = []
+        current_len = 0
 
-    _flush_current()
+        # Include heading in first chunk of section if present
+        if heading:
+            current_chunk.append(heading)
+            current_len = len(heading) + 2  # +2 for \n\n separator
 
-    # Second pass: apply overlap as trailing characters from the previous chunk.
+        for para in paragraphs:
+            # Process paragraph into sub-chunks if needed
+            para_chunks = _process_text_unit(para, cfg.chunk_size)
+
+            for para_chunk in para_chunks:
+                para_len = len(para_chunk)
+                sep_len = 2 if current_chunk else 0  # \n\n separator
+
+                # Check if adding this would exceed chunk_size
+                if current_chunk and current_len + sep_len + para_len > cfg.chunk_size:
+                    # Flush current chunk
+                    chunks.append("\n\n".join(current_chunk))
+                    current_chunk = [para_chunk]
+                    current_len = para_len
+                else:
+                    current_chunk.append(para_chunk)
+                    current_len += sep_len + para_len if current_len else para_len
+
+        # Flush remaining content
+        if current_chunk:
+            chunks.append("\n\n".join(current_chunk))
+
+    if not chunks:
+        return []
+
+    # Phase 3: Apply overlap strategy
     if cfg.overlap <= 0 or len(chunks) <= 1:
         return chunks
 
-    overlapped: list[str] = [chunks[0]]
-    for i in range(1, len(chunks)):
-        prev = overlapped[-1]
-        tail = prev[-cfg.overlap :]
-        # Make overlap word-safe: start at next whitespace boundary.
-        if tail and not tail[0].isspace():
-            j = 0
-            while j < len(tail) and not tail[j].isspace():
-                j += 1
-            tail = tail[j:].lstrip()
-        combined = (tail + "\n\n" + chunks[i]).strip() if tail else chunks[i]
-        overlapped.append(combined)
+    if cfg.overlap_strategy == "sentence":
+        # Overlap with complete sentences
+        overlapped: list[str] = [chunks[0]]
+        for i in range(1, len(chunks)):
+            prev = overlapped[-1]
+            # Extract sentences from previous chunk
+            prev_sentences = _split_sentences(prev)
+            # Find sentences that fit within overlap budget
+            overlap_parts: list[str] = []
+            overlap_len = 0
+            for sent in reversed(prev_sentences):
+                sent_len = len(sent)
+                sep_len = 1 if overlap_parts else 0
+                if overlap_len + sep_len + sent_len <= cfg.overlap:
+                    overlap_parts.insert(0, sent)
+                    overlap_len += sep_len + sent_len
+                else:
+                    break
+            # Combine with current chunk
+            if overlap_parts:
+                overlap_text = " ".join(overlap_parts)
+                combined = (overlap_text + "\n\n" + chunks[i]).strip()
+            else:
+                combined = chunks[i]
+            overlapped.append(combined)
+        return overlapped
 
-    return overlapped
+    elif cfg.overlap_strategy == "semantic":
+        # Overlap with complete paragraphs/sections
+        overlapped = [chunks[0]]
+        for i in range(1, len(chunks)):
+            prev = overlapped[-1]
+            # Extract paragraphs from previous chunk
+            prev_paras = [p.strip() for p in prev.split("\n\n") if p.strip()]
+            # Find paragraphs that fit within overlap budget
+            overlap_parts = []
+            overlap_len = 0
+            for para in reversed(prev_paras):
+                para_len = len(para)
+                sep_len = 2 if overlap_parts else 0
+                if overlap_len + sep_len + para_len <= cfg.overlap:
+                    overlap_parts.insert(0, para)
+                    overlap_len += sep_len + para_len
+                else:
+                    break
+            # Combine with current chunk
+            if overlap_parts:
+                overlap_text = "\n\n".join(overlap_parts)
+                combined = (overlap_text + "\n\n" + chunks[i]).strip()
+            else:
+                combined = chunks[i]
+            overlapped.append(combined)
+        return overlapped
+
+    else:  # "trailing" strategy (legacy behavior)
+        overlapped = [chunks[0]]
+        for i in range(1, len(chunks)):
+            prev = overlapped[-1]
+            tail = prev[-cfg.overlap :]
+            # Make overlap word-safe: start at next whitespace boundary
+            if tail and not tail[0].isspace():
+                j = 0
+                while j < len(tail) and not tail[j].isspace():
+                    j += 1
+                tail = tail[j:].lstrip()
+            combined = (tail + "\n\n" + chunks[i]).strip() if tail else chunks[i]
+            overlapped.append(combined)
+        return overlapped
 
 
 # ----------------------------
