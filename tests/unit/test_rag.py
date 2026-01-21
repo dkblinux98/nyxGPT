@@ -431,16 +431,23 @@ def test_cassandra_vectorstore_list_docs(monkeypatch: pytest.MonkeyPatch) -> Non
         "mygpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg
     )
 
-    mock_row1 = Mock()
-    mock_row1.doc_id = "doc_b"
-    mock_row1.chunks = 5
+    # After GROUP BY fix, list_docs fetches individual rows and aggregates in Python
+    # So we mock individual chunk rows instead of pre-aggregated results
+    def make_row(doc_id: str, embedding_model: str = "test-model") -> Mock:
+        row = Mock()
+        row.doc_id = doc_id
+        row.embedding_model = embedding_model
+        return row
 
-    mock_row2 = Mock()
-    mock_row2.doc_id = "doc_a"
-    mock_row2.chunks = 3
+    # doc_b has 5 chunks, doc_a has 3 chunks
+    mock_rows = [
+        make_row("doc_b") for _ in range(5)
+    ] + [
+        make_row("doc_a") for _ in range(3)
+    ]
 
     mock_session = Mock()
-    mock_session.execute.return_value = [mock_row1, mock_row2]
+    mock_session.execute.return_value = mock_rows
 
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
@@ -665,6 +672,11 @@ def test_ingest_document_with_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     mock_store = Mock()
+    # Configure mock for update detection methods (document doesn't exist yet)
+    mock_store.document_needs_update.return_value = True
+    mock_store.get_document_hash.return_value = None  # New document
+    mock_store.get_document_info.return_value = None  # Not an update
+
     monkeypatch.setattr(
         "mygpt.rag.rag.CassandraVectorStore", lambda **kwargs: mock_store
     )
