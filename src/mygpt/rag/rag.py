@@ -27,6 +27,7 @@ from mygpt.rag.vectorstore_cassandra import (
 )
 from mygpt.rag.bm25 import BM25Index
 from mygpt.rag.fusion import reciprocal_rank_fusion, weighted_fusion
+from mygpt.rag.reranker import rerank_results, RerankerDebugMetrics
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class RAGDebugInfo:
     vector_search_time_ms: float
     keyword_search_time_ms: float | None
     fusion_time_ms: float | None
+    reranking_time_ms: float | None
     filtering_time_ms: float
     composition_time_ms: float
 
@@ -74,6 +76,12 @@ class RAGDebugInfo:
     keyword_results_count: int | None
     vector_results_count: int | None
     fusion_method: str | None
+
+    # Reranking details
+    reranking_enabled: bool
+    reranker_model: str | None
+    num_candidates_reranked: int | None
+    num_results_after_rerank: int | None
 
     # Filtering stats
     after_min_score_filter: int
@@ -892,6 +900,28 @@ def retrieve_context(
         )
 
     # ======================================================================
+    # RERANKING
+    # ======================================================================
+    reranking_metrics: RerankerDebugMetrics | None = None
+    reranking_enabled = cfg.getboolean("rag", "enable_reranking", fallback=False)
+
+    if reranking_enabled and all_results:
+        log.debug("Applying reranking to %d results", len(all_results))
+        if collect_debug:
+            rerank_result = rerank_results(
+                query, all_results, collect_metrics=True
+            )
+            # Type narrowing: collect_metrics=True returns tuple
+            assert isinstance(rerank_result, tuple), "Expected tuple when collect_metrics=True"
+            reranked_results, reranking_metrics = rerank_result
+            all_results = reranked_results
+        else:
+            rerank_result = rerank_results(query, all_results)
+            # Type narrowing: collect_metrics=False returns list
+            assert isinstance(rerank_result, list), "Expected list when collect_metrics=False"
+            all_results = rerank_result
+
+    # ======================================================================
     # FILTERING
     # ======================================================================
     filter_start = time.perf_counter() if collect_debug else None
@@ -947,6 +977,7 @@ def retrieve_context(
         else 0.0,
         keyword_search_time_ms=keyword_search_time_ms,
         fusion_time_ms=fusion_time_ms,
+        reranking_time_ms=reranking_metrics.reranking_time_ms if reranking_metrics else None,
         filtering_time_ms=filtering_time_ms,
         composition_time_ms=0.0,  # compose_context is called separately
         original_query=query,
@@ -968,6 +999,10 @@ def retrieve_context(
         keyword_results_count=keyword_results_count,
         vector_results_count=vector_results_count,
         fusion_method=fusion_method,
+        reranking_enabled=reranking_enabled,
+        reranker_model=reranking_metrics.reranker_model if reranking_metrics else None,
+        num_candidates_reranked=reranking_metrics.num_candidates if reranking_metrics else None,
+        num_results_after_rerank=reranking_metrics.num_reranked if reranking_metrics else None,
         after_min_score_filter=after_min_score,
         after_dedupe_filter=after_dedupe,
         after_max_chunks_filter=after_max_chunks,

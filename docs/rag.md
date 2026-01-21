@@ -874,3 +874,170 @@ Check:
 - Use `debug_mode=True` to inspect scores from each system
 - Verify both vector and keyword searches return expected results independently
 - Try adjusting fusion method (RRF vs. weighted)
+
+---
+
+## Reranking (Cross-Encoder)
+
+Reranking is an optional second-pass scoring step that improves retrieval precision by re-scoring initial results with a more sophisticated relevance model.
+
+### Why Reranking?
+
+**First-pass retrieval** (vector/hybrid search) is optimized for speed and recall:
+- Embeds query into a single vector
+- Compares against millions of documents in milliseconds
+- Fast but may miss subtle relevance signals
+
+**Reranking** uses cross-encoder scoring for precision:
+- Scores each query-document pair individually
+- Captures fine-grained relevance signals
+- More expensive, applied only to top candidates
+
+**When to Use Reranking:**
+- Precision is critical (top-3 results must be highly relevant)
+- You have many similar documents in your corpus
+- Initial retrieval returns too many marginally relevant results
+- Latency budget allows for additional processing
+
+**When to Skip Reranking:**
+- Real-time applications requiring <200ms latency
+- Small corpus (<100 documents) where initial retrieval is already precise
+- Resource-constrained environments
+
+### Configuration
+
+Enable reranking in `~/.myGPT/config.ini`:
+
+```ini
+[rag]
+# Enable reranking (disabled by default)
+enable_reranking = true
+
+# Model to use for reranking (defaults to mygpt.default_model)
+# Use a fast model for better performance
+reranker_model = qwen2.5:0.5b
+
+# Number of results to return after reranking
+# Smaller values focus on top precision
+rerank_top_n = 3
+
+# Timeout for each reranking request (seconds)
+# Total reranking time = timeout * num_candidates
+reranker_timeout_seconds = 30
+```
+
+### How It Works
+
+**Pipeline:**
+
+1. **First-pass retrieval**: Hybrid search returns top-K candidates (e.g., 10-20 results)
+2. **Reranking**: Each candidate is scored using cross-encoder approach
+3. **Top-N selection**: Return only the top-N highest-scoring results (e.g., 3)
+
+**Scoring:**
+
+Unlike embeddings (bi-encoder) which encode query and document separately, reranking uses a cross-encoder approach:
+- Sends both query and document together to the LLM
+- LLM scores relevance from 0.0 (irrelevant) to 1.0 (highly relevant)
+- More context-aware than vector similarity alone
+
+**Performance:**
+
+- First-pass (10 candidates): ~50-100ms
+- Reranking (10 scores): ~300-500ms per candidate = 3-5 seconds total
+- Use fast models (qwen2.5:0.5b) to minimize latency
+- Adjust `rerank_top_n` to control cost vs. quality trade-off
+
+### Example: Impact on Precision
+
+**Query:** "How do I configure Cassandra replication?"
+
+**Without reranking (vector similarity only):**
+1. "Cassandra replication strategies" (0.87) ✓
+2. "Database replication concepts" (0.84) ✗ (too general)
+3. "Cassandra configuration guide" (0.81) ~ (relevant but not specific)
+
+**With reranking (cross-encoder scoring):**
+1. "Cassandra replication strategies" (0.95) ✓✓
+2. "Configuring Cassandra replication_factor" (0.91) ✓✓
+3. "Cassandra cluster setup tutorial" (0.78) ✓
+
+Reranking correctly identifies the most specific, actionable results.
+
+### Debug Mode
+
+Use `debug_mode=True` to inspect reranking metrics:
+
+```python
+from mygpt.rag import retrieve_context
+
+results, debug_info = retrieve_context(
+    "Cassandra replication",
+    top_k=10,
+    debug_mode=True
+)
+
+print(f"Reranking enabled: {debug_info.reranking_enabled}")
+print(f"Reranker model: {debug_info.reranker_model}")
+print(f"Candidates reranked: {debug_info.num_candidates_reranked}")
+print(f"Results after rerank: {debug_info.num_results_after_rerank}")
+print(f"Reranking time: {debug_info.reranking_time_ms:.2f}ms")
+```
+
+### Troubleshooting
+
+**Problem: Reranking is too slow**
+
+Solutions:
+- Use a faster reranker model (e.g., `qwen2.5:0.5b` instead of larger models)
+- Reduce `rerank_top_n` (fewer results = faster)
+- Reduce first-pass `chat_top_k` (fewer candidates to rerank)
+- Increase `reranker_timeout_seconds` if hitting timeouts
+
+**Problem: Reranked results don't seem better**
+
+Check:
+- Is `enable_reranking=true` in config?
+- Run with `debug_mode=True` to verify reranking is active
+- Check `num_candidates_reranked` and `reranking_time_ms`
+- Try a different `reranker_model` for better scoring quality
+
+**Problem: All reranking scores are similar**
+
+This can happen when:
+- Documents are all highly relevant (good problem to have!)
+- Reranker model is too small/simple (try a larger model)
+- Query is too vague (reranker can't distinguish relevance)
+
+**Problem: Reranking sometimes fails**
+
+Check logs for reranking errors. Common causes:
+- Ollama timeout (increase `reranker_timeout_seconds`)
+- Ollama model not loaded (pull model first: `mygpt models pull qwen2.5:0.5b`)
+- Invalid JSON response from LLM (model needs better instruction following)
+
+Reranking failures are non-fatal - failed results keep their original scores and ranking.
+
+### Performance Tuning
+
+**For maximum precision:**
+```ini
+enable_reranking = true
+reranker_model = qwen2.5:7b  # Larger model
+rerank_top_n = 3
+chat_top_k = 20  # More candidates
+```
+
+**For balanced speed/quality:**
+```ini
+enable_reranking = true
+reranker_model = qwen2.5:0.5b  # Fast model
+rerank_top_n = 5
+chat_top_k = 10
+```
+
+**For maximum speed (disable reranking):**
+```ini
+enable_reranking = false
+chat_top_k = 5
+```
