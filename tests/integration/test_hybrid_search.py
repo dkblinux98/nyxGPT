@@ -150,8 +150,9 @@ def test_hybrid_search_keyword_dominance(
         # matching is working (without the keyword match, Doc1 would likely
         # not appear at all since Doc2 is semantically related to the query).
         #
-        # TODO: Add a deterministic unit test for BM25 scoring that verifies
-        # exact keyword matches rank first when vector scores are equal.
+        # Note: Deterministic unit tests for BM25 ranking behavior are in
+        # tests/unit/test_fusion.py (see test_rrf_exact_keyword_match_ranks_first_*
+        # and test_weighted_fusion_exact_keyword_match_ranks_first_*).
         result_doc_ids = [r["doc_id"] for r in results]
         top_doc_ids = [r["doc_id"] for r in results[:2]]
         assert doc1_id in top_doc_ids, (

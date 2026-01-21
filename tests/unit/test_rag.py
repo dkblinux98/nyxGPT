@@ -1145,7 +1145,8 @@ def test_compute_evaluation_metrics_with_results() -> None:
         score_max=0.95,
         score_mean=0.85,
         hybrid_enabled=False,
-        keyword_results_count=None,
+        keyword_results_count=None,  # None because hybrid search is disabled
+        # vector_results_count matches raw_results_count (3) for vector-only search
         vector_results_count=3,
         fusion_method=None,
         reranking_enabled=False,
@@ -1228,7 +1229,8 @@ def test_compute_evaluation_metrics_empty_results() -> None:
         score_max=None,
         score_mean=None,
         hybrid_enabled=False,
-        keyword_results_count=None,
+        keyword_results_count=None,  # None because hybrid search is disabled
+        # vector_results_count is 0 because no results were returned
         vector_results_count=0,
         fusion_method=None,
         reranking_enabled=False,
@@ -1561,7 +1563,8 @@ def test_compute_evaluation_metrics_score_percentiles() -> None:
         score_max=0.9,
         score_mean=0.7,
         hybrid_enabled=False,
-        keyword_results_count=None,
+        keyword_results_count=None,  # None because hybrid search is disabled
+        # vector_results_count matches raw_results_count (5) for vector-only search
         vector_results_count=5,
         fusion_method=None,
         reranking_enabled=False,
