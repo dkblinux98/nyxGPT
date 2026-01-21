@@ -212,7 +212,6 @@ def test_rag_upload_pptx_file(
     """Test RAG file upload endpoint with .pptx file."""
     pytest.importorskip("pptx", reason="python-pptx not installed")
     from pptx import Presentation
-    from pptx.util import Inches, Pt
 
     # Create a test PowerPoint file
     test_file = tmp_path / "test_presentation.pptx"

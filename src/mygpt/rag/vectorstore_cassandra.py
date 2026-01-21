@@ -236,12 +236,6 @@ class CassandraVectorStore:
         if embedding_dim is None and embs_l:
             embedding_dim = len(embs_l[0])
 
-        # Check if document already exists and get its hash
-        is_update = False
-        if doc_hash:
-            existing_hash = self.get_document_hash(doc_id)
-            is_update = existing_hash is not None
-
         # Current timestamp
         now = datetime.utcnow()
 
