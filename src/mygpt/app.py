@@ -1555,7 +1555,9 @@ def rag_ingest(request: Request, req: RagIngestRequest) -> RagIngestResponse:
 
 
 @api.get("/rag/documents/{doc_id}", response_model=RagDocumentInfo)
-def rag_document_info(request: Request, doc_id: str, collection: str = "default") -> RagDocumentInfo:
+def rag_document_info(
+    request: Request, doc_id: str, collection: str = "default"
+) -> RagDocumentInfo:
     """Get document version and metadata information."""
     from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -1563,7 +1565,10 @@ def rag_document_info(request: Request, doc_id: str, collection: str = "default"
     try:
         info = store.get_document_info(doc_id)
         if not info:
-            raise HTTPException(status_code=404, detail=f"Document '{doc_id}' not found in collection '{collection}'")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document '{doc_id}' not found in collection '{collection}'",
+            )
         return RagDocumentInfo(**info)
     except HTTPException:
         raise
@@ -1733,7 +1738,9 @@ def rag_metrics_query(
         ]
 
         return RagMetricsQueryResponse(
-            results=out, debug_info=api_debug_info, evaluation_metrics=evaluation_metrics
+            results=out,
+            debug_info=api_debug_info,
+            evaluation_metrics=evaluation_metrics,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -180,7 +180,7 @@ def compute_document_hash(text: str) -> str:
     Returns:
         Hex-encoded SHA-256 hash
     """
-    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def chunk_text(text: str) -> list[str]:
@@ -816,8 +816,12 @@ def retrieve_context(
                         "chunk_id": r.chunk_id,
                         "text": text,
                         "metadata": json.loads(r.metadata) if r.metadata else {},
-                        "embedding_model": r.embedding_model if hasattr(r, "embedding_model") else None,
-                        "embedding_dim": r.embedding_dim if hasattr(r, "embedding_dim") else None,
+                        "embedding_model": r.embedding_model
+                        if hasattr(r, "embedding_model")
+                        else None,
+                        "embedding_dim": r.embedding_dim
+                        if hasattr(r, "embedding_dim")
+                        else None,
                     }
             except Exception as e:
                 log.warning("Failed to fetch chunks for doc %s: %s", doc_id, e)
@@ -856,21 +860,23 @@ def retrieve_context(
         vector_ranking = sorted(
             [(k, r["score"]) for k, r in vector_results_map.items()],
             key=lambda x: x[1],
-            reverse=True
+            reverse=True,
         )
 
         # Keyword results: sorted by score descending
         keyword_ranking = sorted(
             [(k, r["score"]) for k, r in keyword_results_map.items()],
             key=lambda x: x[1],
-            reverse=True
+            reverse=True,
         )
 
         # Decide fusion method
         if hybrid_alpha is not None:
             # Use weighted fusion
             fusion_method = f"weighted(alpha={hybrid_alpha})"
-            fused_ranking = weighted_fusion(vector_ranking, keyword_ranking, alpha=hybrid_alpha)
+            fused_ranking = weighted_fusion(
+                vector_ranking, keyword_ranking, alpha=hybrid_alpha
+            )
         else:
             # Use RRF (default)
             fusion_method = "reciprocal_rank_fusion"
@@ -894,9 +900,7 @@ def retrieve_context(
         # No hybrid search, use vector results only
         fusion_method = "vector_only"
         all_results = sorted(
-            vector_results_map.values(),
-            key=lambda r: r.get("score", 0.0),
-            reverse=True
+            vector_results_map.values(), key=lambda r: r.get("score", 0.0), reverse=True
         )
 
     # ======================================================================
@@ -908,17 +912,19 @@ def retrieve_context(
     if reranking_enabled and all_results:
         log.debug("Applying reranking to %d results", len(all_results))
         if collect_debug:
-            rerank_result = rerank_results(
-                query, all_results, collect_metrics=True
-            )
+            rerank_result = rerank_results(query, all_results, collect_metrics=True)
             # Type narrowing: collect_metrics=True returns tuple
-            assert isinstance(rerank_result, tuple), "Expected tuple when collect_metrics=True"
+            assert isinstance(rerank_result, tuple), (
+                "Expected tuple when collect_metrics=True"
+            )
             reranked_results, reranking_metrics = rerank_result
             all_results = reranked_results
         else:
             rerank_result = rerank_results(query, all_results)
             # Type narrowing: collect_metrics=False returns list
-            assert isinstance(rerank_result, list), "Expected list when collect_metrics=False"
+            assert isinstance(rerank_result, list), (
+                "Expected list when collect_metrics=False"
+            )
             all_results = rerank_result
 
     # ======================================================================
@@ -977,7 +983,9 @@ def retrieve_context(
         else 0.0,
         keyword_search_time_ms=keyword_search_time_ms,
         fusion_time_ms=fusion_time_ms,
-        reranking_time_ms=reranking_metrics.reranking_time_ms if reranking_metrics else None,
+        reranking_time_ms=reranking_metrics.reranking_time_ms
+        if reranking_metrics
+        else None,
         filtering_time_ms=filtering_time_ms,
         composition_time_ms=0.0,  # compose_context is called separately
         original_query=query,
@@ -1001,8 +1009,12 @@ def retrieve_context(
         fusion_method=fusion_method,
         reranking_enabled=reranking_enabled,
         reranker_model=reranking_metrics.reranker_model if reranking_metrics else None,
-        num_candidates_reranked=reranking_metrics.num_candidates if reranking_metrics else None,
-        num_results_after_rerank=reranking_metrics.num_reranked if reranking_metrics else None,
+        num_candidates_reranked=reranking_metrics.num_candidates
+        if reranking_metrics
+        else None,
+        num_results_after_rerank=reranking_metrics.num_reranked
+        if reranking_metrics
+        else None,
         after_min_score_filter=after_min_score,
         after_dedupe_filter=after_dedupe,
         after_max_chunks_filter=after_max_chunks,
@@ -1038,9 +1050,15 @@ def compute_evaluation_metrics(
         sorted_scores = sorted(scores)
         score_distribution = {
             "p50": statistics.median(sorted_scores),
-            "p75": statistics.quantiles(sorted_scores, n=4)[2] if len(sorted_scores) >= 2 else sorted_scores[-1],
-            "p95": statistics.quantiles(sorted_scores, n=20)[18] if len(sorted_scores) >= 2 else sorted_scores[-1],
-            "p99": statistics.quantiles(sorted_scores, n=100)[98] if len(sorted_scores) >= 2 else sorted_scores[-1],
+            "p75": statistics.quantiles(sorted_scores, n=4)[2]
+            if len(sorted_scores) >= 2
+            else sorted_scores[-1],
+            "p95": statistics.quantiles(sorted_scores, n=20)[18]
+            if len(sorted_scores) >= 2
+            else sorted_scores[-1],
+            "p99": statistics.quantiles(sorted_scores, n=100)[98]
+            if len(sorted_scores) >= 2
+            else sorted_scores[-1],
         }
 
     # Retrieval accuracy metrics
@@ -1075,9 +1093,7 @@ def compute_evaluation_metrics(
     # Score statistics
     avg_top_score = scores[0] if scores else None
     above_threshold = sum(1 for s in scores if s >= min_score)
-    score_above_threshold_rate = (
-        float(above_threshold) / len(scores) if scores else 0.0
-    )
+    score_above_threshold_rate = float(above_threshold) / len(scores) if scores else 0.0
 
     hit_rate = HitRateMetrics(
         query_success_rate=query_success_rate,

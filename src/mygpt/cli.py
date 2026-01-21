@@ -697,14 +697,20 @@ def cmd_rag_ingest(
     doc_hash = result["doc_hash"]
 
     if status == "skipped":
-        print(f"Document {doc_id} unchanged (hash: {doc_hash[:16]}...), skipped re-ingestion")
+        print(
+            f"Document {doc_id} unchanged (hash: {doc_hash[:16]}...), skipped re-ingestion"
+        )
     elif status == "updated":
-        print(f"Updated {chunks} chunks for doc_id={doc_id} into collection '{collection}'")
+        print(
+            f"Updated {chunks} chunks for doc_id={doc_id} into collection '{collection}'"
+        )
         print(f"  Document hash: {doc_hash[:16]}...")
         if result["previous_hash"]:
             print(f"  Previous hash: {result['previous_hash'][:16]}...")
     else:  # status == "ingested"
-        print(f"Ingested {chunks} chunks for doc_id={doc_id} into collection '{collection}'")
+        print(
+            f"Ingested {chunks} chunks for doc_id={doc_id} into collection '{collection}'"
+        )
         print(f"  Document hash: {doc_hash[:16]}...")
 
     if model:

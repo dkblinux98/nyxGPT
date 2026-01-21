@@ -100,21 +100,20 @@ class CassandraVectorStore:
             existing_columns = {row.column_name for row in result}
 
             # Add missing columns
-            if 'embedding_model' not in existing_columns:
+            if "embedding_model" not in existing_columns:
                 self.session.execute(f"ALTER TABLE {tbl} ADD embedding_model text")
-            if 'embedding_dim' not in existing_columns:
+            if "embedding_dim" not in existing_columns:
                 self.session.execute(f"ALTER TABLE {tbl} ADD embedding_dim int")
-            if 'doc_hash' not in existing_columns:
+            if "doc_hash" not in existing_columns:
                 self.session.execute(f"ALTER TABLE {tbl} ADD doc_hash text")
-            if 'ingested_at' not in existing_columns:
+            if "ingested_at" not in existing_columns:
                 self.session.execute(f"ALTER TABLE {tbl} ADD ingested_at timestamp")
-            if 'updated_at' not in existing_columns:
+            if "updated_at" not in existing_columns:
                 self.session.execute(f"ALTER TABLE {tbl} ADD updated_at timestamp")
 
             # Also create the index on embedding_model
             self.session.execute(
-                f"CREATE INDEX IF NOT EXISTS {tbl}_model_idx "
-                f"ON {tbl}(embedding_model)"
+                f"CREATE INDEX IF NOT EXISTS {tbl}_model_idx ON {tbl}(embedding_model)"
             )
         except Exception:
             # Migration might fail if table doesn't exist yet (first run)
@@ -253,7 +252,9 @@ class CassandraVectorStore:
 
         for idx, (text, emb, meta) in enumerate(zip(texts_l, embs_l, metas_l)):
             # For updates, use ingested_at from existing doc; for new docs, use current time
-            ingested_at = now if not is_update else now  # Will be set properly in get_document_info
+            ingested_at = (
+                now if not is_update else now
+            )  # Will be set properly in get_document_info
             self.session.execute(
                 stmt,
                 (
@@ -447,7 +448,7 @@ class CassandraVectorStore:
 
         rows = self.session.execute(stmt, (doc_id,))
         row = rows.one()
-        if row and hasattr(row, 'doc_hash'):
+        if row and hasattr(row, "doc_hash"):
             return str(row.doc_hash) if row.doc_hash is not None else None
         return None
 
@@ -477,11 +478,17 @@ class CassandraVectorStore:
         if row:
             return {
                 "doc_id": row.doc_id,
-                "doc_hash": row.doc_hash if hasattr(row, 'doc_hash') else None,
-                "ingested_at": row.ingested_at.isoformat() if hasattr(row, 'ingested_at') and row.ingested_at else None,
-                "updated_at": row.updated_at.isoformat() if hasattr(row, 'updated_at') and row.updated_at else None,
+                "doc_hash": row.doc_hash if hasattr(row, "doc_hash") else None,
+                "ingested_at": row.ingested_at.isoformat()
+                if hasattr(row, "ingested_at") and row.ingested_at
+                else None,
+                "updated_at": row.updated_at.isoformat()
+                if hasattr(row, "updated_at") and row.updated_at
+                else None,
                 "chunks": int(row.chunks),
-                "embedding_model": row.embedding_model if hasattr(row, 'embedding_model') else None,
+                "embedding_model": row.embedding_model
+                if hasattr(row, "embedding_model")
+                else None,
             }
         return None
 
