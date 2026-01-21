@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,14 @@ import logging
 
 from mygpt.config import load_config
 from mygpt.logging import configure_logging, get_log_dir
+
+
+def _can_connect(host: str, port: int, timeout: float = 1.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -168,5 +177,29 @@ def _ensure_test_logging_works():
         logger = logging.getLogger(logger_name)
         logger.setLevel(logging.DEBUG)
         logger.propagate = True
+
+    yield
+
+
+@pytest.fixture
+def cassandra_test_setup():
+    """Fixture for tests that require Cassandra connection.
+
+    Skips the test if Cassandra is not available.
+    """
+    try:
+        cfg = load_config(None)
+        host = (
+            cfg.get("rag", "cassandra_host", fallback=None)
+            or cfg.get("rag", "cassandra_hosts", fallback="127.0.0.1").split(",")[0].strip()
+            or "127.0.0.1"
+        )
+        port = int(cfg.get("rag", "cassandra_port", fallback="9042"))
+    except Exception:
+        host = "127.0.0.1"
+        port = 9042
+
+    if not _can_connect(host, port, timeout=2.0):
+        pytest.skip(f"Cassandra not reachable at {host}:{port}")
 
     yield

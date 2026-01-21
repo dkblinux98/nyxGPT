@@ -1,7 +1,14 @@
 """Tests for RAG document update detection."""
+import uuid
+
 import pytest
 from mygpt.rag.rag import compute_document_hash, ingest_document
 from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+
+def _unique_doc_id(prefix: str) -> str:
+    """Generate a unique doc_id for testing to avoid test pollution."""
+    return f"{prefix}-{uuid.uuid4().hex[:10]}"
 
 
 def test_compute_document_hash():
@@ -26,7 +33,7 @@ def test_compute_document_hash():
 @pytest.mark.integration
 def test_document_ingestion_with_hash(cassandra_test_setup):
     """Test document ingestion includes hash tracking."""
-    doc_id = "test-doc-hash"
+    doc_id = _unique_doc_id("test-doc-hash")
     text = "This is a test document for hash tracking."
 
     result = ingest_document(
@@ -45,7 +52,7 @@ def test_document_ingestion_with_hash(cassandra_test_setup):
 @pytest.mark.integration
 def test_document_update_detection_unchanged(cassandra_test_setup):
     """Test that unchanged documents are skipped on re-ingestion."""
-    doc_id = "test-doc-unchanged"
+    doc_id = _unique_doc_id("test-doc-unchanged")
     text = "This document will not change."
 
     # First ingestion
@@ -73,7 +80,7 @@ def test_document_update_detection_unchanged(cassandra_test_setup):
 @pytest.mark.integration
 def test_document_update_detection_changed(cassandra_test_setup):
     """Test that changed documents are re-ingested."""
-    doc_id = "test-doc-changed"
+    doc_id = _unique_doc_id("test-doc-changed")
     text1 = "This is the original text."
     text2 = "This is the updated text with different content."
 
@@ -103,7 +110,7 @@ def test_document_update_detection_changed(cassandra_test_setup):
 @pytest.mark.integration
 def test_document_update_force_reindex(cassandra_test_setup):
     """Test force_update flag bypasses hash check."""
-    doc_id = "test-doc-force"
+    doc_id = _unique_doc_id("test-doc-force")
     text = "This document will be force re-indexed."
 
     # First ingestion
@@ -132,7 +139,7 @@ def test_document_update_force_reindex(cassandra_test_setup):
 @pytest.mark.integration
 def test_document_info_retrieval(cassandra_test_setup):
     """Test retrieving document version information."""
-    doc_id = "test-doc-info"
+    doc_id = _unique_doc_id("test-doc-info")
     text = "This document has version info."
 
     # Ingest document
