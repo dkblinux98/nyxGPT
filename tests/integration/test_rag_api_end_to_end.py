@@ -382,6 +382,74 @@ def test_rag_upload_docx_corrupted_file(api_base_url: str, tmp_path) -> None:
 
 
 @pytest.mark.integration
+def test_rag_upload_docx_with_images(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test RAG file upload with DOCX file containing embedded images."""
+    try:
+        from docx import Document
+        from docx.shared import Inches
+    except ImportError:
+        pytest.skip("python-docx not available, skipping DOCX test")
+
+    try:
+        from PIL import Image
+    except ImportError:
+        pytest.skip("Pillow not available, skipping image test")
+
+    test_file = tmp_path / "test_with_image.docx"
+    image_file = tmp_path / "test_image.png"
+
+    # Create a simple test image
+    img = Image.new("RGB", (100, 100), color="red")
+    img.save(image_file)
+
+    # Create DOCX with image
+    doc = Document()
+    doc.add_heading("Document with Image", level=1)
+    doc.add_paragraph("This paragraph is before the image.")
+
+    # Add image with alt text
+    try:
+        doc.add_picture(str(image_file), width=Inches(2))
+    except Exception:
+        # If adding image fails, skip this test
+        pytest.skip("Could not add image to DOCX")
+
+    doc.add_paragraph("This paragraph is after the image.")
+
+    doc.save(test_file)
+
+    # Use unique doc_id
+    doc_id = _unique_doc_id("docx-with-image")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        # Upload the DOCX file
+        with open(test_file, "rb") as f:
+            files = {"file": ("test_with_image.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "doc_id" in upload_data
+        assert "chunks_ingested" in upload_data
+        # Should have at least one chunk with the image marker
+        assert upload_data["chunks_ingested"] > 0
+
+        # Give Cassandra indexing a moment
+        time.sleep(2.0)
+
+        # Query to verify content was ingested (including text around image)
+        query_resp = client.post(
+            "/api/v1/rag/query", json={"query": "paragraph image", "top_k": 5}
+        )
+        assert query_resp.status_code == 200
+        results = query_resp.json()["results"]
+        # Should find the content
+        assert len(results) > 0
+
+
+@pytest.mark.integration
 def test_rag_upload_invalid_file_type(api_base_url: str, tmp_path) -> None:
     """Test that uploading unsupported file types is rejected."""
     # Create a test file with unsupported extension

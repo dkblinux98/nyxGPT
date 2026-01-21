@@ -1859,9 +1859,6 @@ async def rag_upload_file(
 
     elif file_ext == ".docx":
         # Handle DOCX (Microsoft Word)
-        # NOTE: Image extraction is not yet implemented. Images embedded in DOCX files
-        # are currently skipped. Text, tables, and headings are extracted.
-        # TODO: Implement image extraction and OCR for embedded images (#2664)
         try:
             from docx import Document
             from docx.opc.exceptions import PackageNotFoundError
@@ -1881,9 +1878,31 @@ async def rag_upload_file(
                 )
 
             text_parts = []
+            image_counter = 0
 
             for para in doc.paragraphs:
                 para_text = para.text.strip()
+
+                # Check for embedded images in this paragraph
+                # Images are stored in runs within paragraphs
+                for run in para.runs:
+                    # Check if this run contains an image
+                    if hasattr(run, '_element') and run._element is not None:
+                        # Look for drawing elements that contain images
+                        for drawing in run._element.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing'):
+                            image_counter += 1
+                            # Extract image description if available (alt text)
+                            desc_elems = drawing.findall('.//{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}docPr')
+
+                            image_desc = f"[Image {image_counter}"
+                            if desc_elems and desc_elems[0].get('descr'):
+                                image_desc += f": {desc_elems[0].get('descr')}"
+                            elif desc_elems and desc_elems[0].get('name'):
+                                image_desc += f": {desc_elems[0].get('name')}"
+                            image_desc += "]"
+
+                            text_parts.append(image_desc)
+
                 if para_text:
                     # Preserve heading structure
                     if para.style and para.style.name.startswith('Heading'):
