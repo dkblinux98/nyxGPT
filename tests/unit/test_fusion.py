@@ -370,3 +370,113 @@ def test_weighted_fusion_sorting():
     # Should be sorted descending
     for i in range(len(scores) - 1):
         assert scores[i] >= scores[i + 1]
+
+
+# =============================================================================
+# BM25 Keyword Ranking Tests (for Hybrid Search)
+# =============================================================================
+
+
+@pytest.mark.unit
+def test_rrf_exact_keyword_match_ranks_first_with_equal_vector_scores():
+    """When vector scores are equal, BM25 exact match should rank first.
+
+    This test verifies that when all documents have equal vector similarity
+    scores (e.g., all embeddings are equally similar to the query), the
+    BM25 keyword ranking determines the final order. An exact keyword match
+    should rank higher than partial or semantic-only matches.
+
+    This is a deterministic unit test for the behavior described in the
+    integration test at tests/integration/test_hybrid_search.py (see
+    test_hybrid_search_keyword_dominance).
+    """
+    # Simulate BM25 keyword search results:
+    # - doc_exact: Contains the exact query term (highest BM25 score)
+    # - doc_partial: Contains related terms (medium BM25 score)
+    # - doc_none: No keyword match (not in BM25 results)
+    keyword_results = [
+        ("doc_exact", 15.0),  # Exact keyword match, highest BM25 score
+        ("doc_partial", 8.0),  # Partial match, medium BM25 score
+    ]
+
+    # Simulate vector search results with equal scores:
+    # All three documents have identical vector similarity scores
+    vector_results = [
+        ("doc_exact", 0.85),
+        ("doc_partial", 0.85),
+        ("doc_none", 0.85),  # Semantically similar but no keyword match
+    ]
+
+    # Use RRF to fuse the results
+    result = reciprocal_rank_fusion([vector_results, keyword_results], k=60.0)
+
+    # Extract document IDs in ranking order
+    ranked_doc_ids = [doc_id for doc_id, score in result]
+
+    # doc_exact should rank first because:
+    # - It appears in both rankings (rank 1 in keyword, rank 1 in vector)
+    # - RRF score = 1/(60+1) + 1/(60+1) = 2/61
+    assert ranked_doc_ids[0] == "doc_exact", (
+        f"Exact keyword match should rank first, but got: {ranked_doc_ids}"
+    )
+
+    # doc_partial should rank second because:
+    # - It appears in both rankings (rank 2 in keyword, rank 2 in vector)
+    # - RRF score = 1/(60+2) + 1/(60+2) = 2/62
+    assert ranked_doc_ids[1] == "doc_partial", (
+        f"Partial keyword match should rank second, but got: {ranked_doc_ids}"
+    )
+
+    # doc_none should rank last because:
+    # - It only appears in vector ranking (rank 3)
+    # - RRF score = 1/(60+3) = 1/63
+    assert ranked_doc_ids[2] == "doc_none", (
+        f"No keyword match should rank last, but got: {ranked_doc_ids}"
+    )
+
+
+@pytest.mark.unit
+def test_weighted_fusion_exact_keyword_match_ranks_first_with_equal_vector_scores():
+    """When vector scores are equal, BM25 exact match should rank first.
+
+    This test is the weighted_fusion counterpart to the RRF test above.
+    When all vector scores are identical, they normalize to 0, so only
+    the keyword (BM25) scores determine the final ranking.
+    """
+    # Simulate BM25 keyword search results:
+    # - doc_exact: Contains the exact query term (highest BM25 score)
+    # - doc_partial: Contains related terms (medium BM25 score)
+    keyword_results = [
+        ("doc_exact", 15.0),  # Exact keyword match, highest BM25 score
+        ("doc_partial", 8.0),  # Partial match, medium BM25 score
+    ]
+
+    # Simulate vector search results with identical scores:
+    # When all scores are the same, normalization results in 0 for all
+    vector_results = [
+        ("doc_exact", 0.85),
+        ("doc_partial", 0.85),
+        ("doc_none", 0.85),  # Semantically similar but no keyword match
+    ]
+
+    # Use weighted fusion (alpha=0.5 for equal weight)
+    result = weighted_fusion(vector_results, keyword_results, alpha=0.5)
+
+    # Extract document IDs in ranking order
+    ranked_doc_ids = [doc_id for doc_id, score in result]
+
+    # When vector scores are identical (all normalize to 0), only keyword
+    # scores matter. doc_exact has the highest keyword score.
+    assert ranked_doc_ids[0] == "doc_exact", (
+        f"Exact keyword match should rank first, but got: {ranked_doc_ids}"
+    )
+
+    # doc_partial has the second highest keyword score
+    assert ranked_doc_ids[1] == "doc_partial", (
+        f"Partial keyword match should rank second, but got: {ranked_doc_ids}"
+    )
+
+    # doc_none has no keyword score (defaults to 0)
+    assert ranked_doc_ids[2] == "doc_none", (
+        f"No keyword match should rank last, but got: {ranked_doc_ids}"
+    )

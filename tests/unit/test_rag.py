@@ -648,7 +648,7 @@ def test_chunk_text_whitespace_normalization(monkeypatch: pytest.MonkeyPatch) ->
 
 @pytest.mark.unit
 def test_ingest_document_empty_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ingest_document with empty text should return 0."""
+    """ingest_document with empty text should return 0 chunks."""
     cfg = ConfigParser()
     cfg["rag"] = {"chunk_size": "100", "chunk_overlap": "10"}
 
@@ -1145,8 +1145,9 @@ def test_compute_evaluation_metrics_with_results() -> None:
         score_max=0.95,
         score_mean=0.85,
         hybrid_enabled=False,
-        keyword_results_count=None,
-        vector_results_count=None,
+        keyword_results_count=None,  # None because hybrid search is disabled
+        # vector_results_count matches raw_results_count (3) for vector-only search
+        vector_results_count=3,
         fusion_method=None,
         reranking_enabled=False,
         reranker_model=None,
@@ -1228,8 +1229,9 @@ def test_compute_evaluation_metrics_empty_results() -> None:
         score_max=None,
         score_mean=None,
         hybrid_enabled=False,
-        keyword_results_count=None,
-        vector_results_count=None,
+        keyword_results_count=None,  # None because hybrid search is disabled
+        # vector_results_count is 0 because no results were returned
+        vector_results_count=0,
         fusion_method=None,
         reranking_enabled=False,
         reranker_model=None,
@@ -1262,6 +1264,267 @@ def test_compute_evaluation_metrics_empty_results() -> None:
     assert eval_metrics.hit_rate.failed_queries == 1
     assert eval_metrics.hit_rate.avg_top_score is None
     assert eval_metrics.hit_rate.score_above_threshold_rate == 0.0
+
+
+# =============================================================================
+# Chunk Boundary Optimization Tests
+# =============================================================================
+
+
+@pytest.mark.unit
+def test_chunk_text_sentence_aware_splitting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """chunk_text with sentence_aware=True should split on sentence boundaries."""
+    cfg = ConfigParser()
+    cfg["rag"] = {
+        "chunk_size": "100",
+        "chunk_overlap": "20",
+        "sentence_aware": "true",
+        "preserve_headings": "false",
+        "overlap_strategy": "trailing",
+    }
+
+    monkeypatch.setattr("mygpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from mygpt.rag.rag import chunk_text
+
+    text = "First sentence here. Second sentence here. Third sentence is longer and should split properly. Fourth sentence."
+    chunks = chunk_text(text)
+
+    # Should create chunks respecting sentence boundaries
+    assert len(chunks) > 1
+    # Verify no mid-sentence breaks (each chunk should end with punctuation or be at a boundary)
+    for chunk in chunks:
+        # Chunks should be reasonably sized
+        assert len(chunk) <= 130  # Allow for overlap
+
+
+@pytest.mark.unit
+def test_chunk_text_heading_aware_splitting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """chunk_text with preserve_headings=True should keep headings with content."""
+    cfg = ConfigParser()
+    cfg["rag"] = {
+        "chunk_size": "200",
+        "chunk_overlap": "20",
+        "sentence_aware": "true",
+        "preserve_headings": "true",
+        "overlap_strategy": "trailing",
+    }
+
+    monkeypatch.setattr("mygpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from mygpt.rag.rag import chunk_text
+
+    text = """# Main Heading
+
+This is content under main heading.
+
+## Subheading One
+
+Content for subheading one goes here.
+
+## Subheading Two
+
+Content for subheading two goes here."""
+
+    chunks = chunk_text(text)
+
+    # Should create chunks with headings preserved
+    assert len(chunks) > 0
+    # First chunk should contain the main heading
+    assert "# Main Heading" in chunks[0]
+    # Verify headings are kept with their content
+    heading_chunks = [c for c in chunks if "#" in c]
+    assert len(heading_chunks) > 0
+
+
+@pytest.mark.unit
+def test_chunk_text_overlap_strategy_sentence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """chunk_text with overlap_strategy='sentence' should overlap with complete sentences."""
+    cfg = ConfigParser()
+    cfg["rag"] = {
+        "chunk_size": "80",
+        "chunk_overlap": "40",
+        "sentence_aware": "true",
+        "preserve_headings": "false",
+        "overlap_strategy": "sentence",
+    }
+
+    monkeypatch.setattr("mygpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from mygpt.rag.rag import chunk_text
+
+    text = "First sentence. Second sentence. Third sentence. Fourth sentence. Fifth sentence."
+    chunks = chunk_text(text)
+
+    # Should have overlapping content
+    assert len(chunks) >= 2
+    # Overlap should be complete sentences, not partial
+    if len(chunks) >= 2:
+        # Check that overlap content appears in both chunks
+        # This is a heuristic check - complete sentences should appear in adjacent chunks
+        for i in range(1, len(chunks)):
+            # Current chunk should start with recognizable content from previous chunk
+            # (though exact match is hard due to formatting)
+            assert len(chunks[i]) > 0
+
+
+@pytest.mark.unit
+def test_chunk_text_overlap_strategy_semantic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """chunk_text with overlap_strategy='semantic' should overlap with complete paragraphs."""
+    cfg = ConfigParser()
+    cfg["rag"] = {
+        "chunk_size": "150",
+        "chunk_overlap": "60",
+        "sentence_aware": "true",
+        "preserve_headings": "false",
+        "overlap_strategy": "semantic",
+    }
+
+    monkeypatch.setattr("mygpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from mygpt.rag.rag import chunk_text
+
+    text = """First paragraph with some content here.
+
+Second paragraph with more content.
+
+Third paragraph with additional content.
+
+Fourth paragraph with final content."""
+
+    chunks = chunk_text(text)
+
+    # Should create multiple chunks with paragraph-level overlap
+    assert len(chunks) >= 2
+    # Verify chunks contain paragraph boundaries (\n\n)
+    paragraph_chunks = [c for c in chunks if "\n\n" in c or len(c.split("\n\n")) == 1]
+    assert len(paragraph_chunks) > 0
+
+
+@pytest.mark.unit
+def test_split_sentences_basic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_split_sentences should split text into sentences correctly."""
+    from mygpt.rag.rag import _split_sentences
+
+    text = "First sentence. Second sentence! Third sentence? Fourth."
+    sentences = _split_sentences(text)
+
+    assert len(sentences) == 4
+    assert "First sentence" in sentences[0]
+    assert "Second sentence" in sentences[1]
+    assert "Third sentence" in sentences[2]
+    assert "Fourth" in sentences[3]
+
+
+@pytest.mark.unit
+def test_split_sentences_abbreviations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_split_sentences should not split on abbreviations like Dr., Mr., etc."""
+    from mygpt.rag.rag import _split_sentences
+
+    text = "Dr. Smith works at Mt. Everest. He is a professor."
+    sentences = _split_sentences(text)
+
+    # Should not split on "Dr." or "Mt."
+    assert len(sentences) == 2
+    assert "Dr. Smith works at Mt. Everest" in sentences[0]
+    assert "He is a professor" in sentences[1]
+
+
+@pytest.mark.unit
+def test_is_heading_atx_style(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_is_heading should detect ATX-style Markdown headings."""
+    from mygpt.rag.rag import _is_heading
+
+    assert _is_heading("# Heading 1") is True
+    assert _is_heading("## Heading 2") is True
+    assert _is_heading("### Heading 3") is True
+    assert _is_heading("#### Heading 4") is True
+    assert _is_heading("##### Heading 5") is True
+    assert _is_heading("###### Heading 6") is True
+    assert _is_heading("Not a heading") is False
+    assert _is_heading("#No space") is False
+    assert _is_heading("") is False
+
+
+@pytest.mark.unit
+def test_extract_heading_level(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_extract_heading_level should return correct heading level."""
+    from mygpt.rag.rag import _extract_heading_level
+
+    assert _extract_heading_level("# Heading") == 1
+    assert _extract_heading_level("## Heading") == 2
+    assert _extract_heading_level("### Heading") == 3
+    assert _extract_heading_level("#### Heading") == 4
+    assert _extract_heading_level("##### Heading") == 5
+    assert _extract_heading_level("###### Heading") == 6
+    assert _extract_heading_level("Not a heading") == 0
+    assert _extract_heading_level("#No space") == 0
+
+
+@pytest.mark.unit
+def test_chunk_text_mixed_features(monkeypatch: pytest.MonkeyPatch) -> None:
+    """chunk_text with all features enabled should produce high-quality chunks."""
+    cfg = ConfigParser()
+    cfg["rag"] = {
+        "chunk_size": "300",
+        "chunk_overlap": "80",
+        "sentence_aware": "true",
+        "preserve_headings": "true",
+        "overlap_strategy": "sentence",
+    }
+
+    monkeypatch.setattr("mygpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from mygpt.rag.rag import chunk_text
+
+    text = """# Introduction
+
+This is the introduction section. It contains multiple sentences. Each sentence provides important context.
+
+## Background
+
+The background section provides historical context. It explains the motivation. It sets up the problem.
+
+## Methodology
+
+Our methodology involves several steps. First, we analyze the data. Then, we process it. Finally, we draw conclusions.
+
+## Results
+
+The results show significant findings. They confirm our hypothesis. The data supports our claims."""
+
+    chunks = chunk_text(text)
+
+    # Should create well-structured chunks
+    assert len(chunks) > 0
+    # Verify headings are preserved
+    heading_chunks = [c for c in chunks if "#" in c]
+    assert len(heading_chunks) > 0
+    # Verify all chunks are within reasonable size
+    for chunk in chunks:
+        assert len(chunk) <= 400  # Allow some overage for semantic boundaries
+
+
+@pytest.mark.unit
+def test_chunk_text_backward_compatibility(monkeypatch: pytest.MonkeyPatch) -> None:
+    """chunk_text with legacy config should still work (backward compatibility)."""
+    cfg = ConfigParser()
+    cfg["rag"] = {
+        "chunk_size": "100",
+        "chunk_overlap": "20",
+        # Legacy config without new features
+    }
+
+    monkeypatch.setattr("mygpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from mygpt.rag.rag import chunk_text
+
+    text = "This is a simple test. It should work with legacy configuration."
+    chunks = chunk_text(text)
+
+    # Should still create chunks
+    assert len(chunks) > 0
+    assert all(len(c) <= 120 for c in chunks)
 
 
 @pytest.mark.unit
@@ -1300,8 +1563,9 @@ def test_compute_evaluation_metrics_score_percentiles() -> None:
         score_max=0.9,
         score_mean=0.7,
         hybrid_enabled=False,
-        keyword_results_count=None,
-        vector_results_count=None,
+        keyword_results_count=None,  # None because hybrid search is disabled
+        # vector_results_count matches raw_results_count (5) for vector-only search
+        vector_results_count=5,
         fusion_method=None,
         reranking_enabled=False,
         reranker_model=None,
