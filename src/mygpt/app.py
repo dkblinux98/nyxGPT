@@ -1859,17 +1859,34 @@ async def rag_upload_file(
 
     elif file_ext == ".docx":
         # Handle DOCX (Microsoft Word)
+        # NOTE: Image extraction is not yet implemented. Images embedded in DOCX files
+        # are currently skipped. Text, tables, and headings are extracted.
+        # TODO: Implement image extraction and OCR for embedded images (#2664)
         try:
             from docx import Document
+            from docx.opc.exceptions import PackageNotFoundError
+            import zipfile
 
-            doc = Document(io.BytesIO(content))
+            try:
+                doc = Document(io.BytesIO(content))
+            except PackageNotFoundError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid DOCX file: file is corrupted or not a valid Word document",
+                )
+            except zipfile.BadZipFile:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid DOCX file: file structure is corrupted (not a valid ZIP archive)",
+                )
+
             text_parts = []
 
             for para in doc.paragraphs:
                 para_text = para.text.strip()
                 if para_text:
                     # Preserve heading structure
-                    if para.style.name.startswith('Heading'):
+                    if para.style and para.style.name.startswith('Heading'):
                         text_parts.append(f"\n## {para_text}\n")
                     else:
                         text_parts.append(para_text)
@@ -1886,11 +1903,21 @@ async def rag_upload_file(
 
             text = "\n\n".join(text_parts)
 
+            # Check if document is empty
+            if not text.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="DOCX file is empty or contains no extractable text",
+                )
+
         except ImportError:
             raise HTTPException(
                 status_code=400,
                 detail="DOCX support not available. Install python-docx: pip install python-docx",
             )
+        except HTTPException:
+            # Re-raise HTTP exceptions (our specific error messages)
+            raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"DOCX parsing failed: {e}")
 

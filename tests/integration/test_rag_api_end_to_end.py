@@ -270,6 +270,118 @@ def test_rag_upload_docx_file(
 
 
 @pytest.mark.integration
+def test_rag_upload_docx_empty_file(api_base_url: str, tmp_path) -> None:
+    """Test RAG file upload endpoint with empty .docx file."""
+    try:
+        from docx import Document
+    except ImportError:
+        pytest.skip("python-docx not available, skipping DOCX test")
+
+    test_file = tmp_path / "empty.docx"
+    doc = Document()
+    # Save empty document with no content
+    doc.save(test_file)
+
+    with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("empty.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files)
+
+        # Should reject empty file with 400
+        assert upload_resp.status_code == 400
+        error_data = upload_resp.json()
+        assert "error" in error_data
+        assert "empty" in error_data["error"].lower()
+
+
+@pytest.mark.integration
+def test_rag_upload_docx_only_table(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test RAG file upload endpoint with .docx file containing only tables."""
+    try:
+        from docx import Document
+    except ImportError:
+        pytest.skip("python-docx not available, skipping DOCX test")
+
+    test_file = tmp_path / "only_table.docx"
+    doc = Document()
+
+    # Add only a table, no paragraphs
+    table = doc.add_table(rows=2, cols=2)
+    table.rows[0].cells[0].text = "Column A"
+    table.rows[0].cells[1].text = "Column B"
+    table.rows[1].cells[0].text = "Data 1"
+    table.rows[1].cells[1].text = "Data 2"
+
+    doc.save(test_file)
+
+    doc_id = _unique_doc_id("docx-only-table")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("only_table.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "chunks_ingested" in upload_data
+        assert upload_data["chunks_ingested"] > 0
+
+
+@pytest.mark.integration
+def test_rag_upload_docx_only_text(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test RAG file upload endpoint with .docx file containing only text (no tables)."""
+    try:
+        from docx import Document
+    except ImportError:
+        pytest.skip("python-docx not available, skipping DOCX test")
+
+    test_file = tmp_path / "only_text.docx"
+    doc = Document()
+
+    # Add only paragraphs, no tables
+    doc.add_paragraph("This is a simple DOCX file.")
+    doc.add_paragraph("It contains only plain text paragraphs.")
+    doc.add_paragraph("No tables or other complex formatting.")
+
+    doc.save(test_file)
+
+    doc_id = _unique_doc_id("docx-only-text")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("only_text.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "chunks_ingested" in upload_data
+        assert upload_data["chunks_ingested"] > 0
+
+
+@pytest.mark.integration
+def test_rag_upload_docx_corrupted_file(api_base_url: str, tmp_path) -> None:
+    """Test RAG file upload endpoint with corrupted .docx file."""
+    test_file = tmp_path / "corrupted.docx"
+    # Write invalid content that's not a valid DOCX/ZIP file
+    test_file.write_bytes(b"This is not a valid DOCX file content")
+
+    with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("corrupted.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files)
+
+        # Should reject corrupted file with 400
+        assert upload_resp.status_code == 400
+        error_data = upload_resp.json()
+        assert "error" in error_data
+        assert "corrupted" in error_data["error"].lower() or "invalid" in error_data["error"].lower()
+
+
+@pytest.mark.integration
 def test_rag_upload_invalid_file_type(api_base_url: str, tmp_path) -> None:
     """Test that uploading unsupported file types is rejected."""
     # Create a test file with unsupported extension
