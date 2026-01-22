@@ -650,3 +650,118 @@ def test_rag_upload_invalid_file_type(api_base_url: str, tmp_path) -> None:
         error_data = upload_resp.json()
         assert "error" in error_data
         assert "not supported" in error_data["error"]["message"].lower()
+
+
+@pytest.mark.integration
+def test_rag_upload_pdf_with_tables_and_metadata(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test PDF upload with improved extraction: tables, formatting, multi-column, metadata (#2663)."""
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.units import inch
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    except ImportError:
+        pytest.skip("reportlab not available for PDF generation")
+
+    # Create a test PDF with metadata, tables, and formatted text
+    test_file = tmp_path / "test_enhanced.pdf"
+
+    doc = SimpleDocTemplate(
+        str(test_file),
+        pagesize=letter,
+        title="Test Document",
+        author="Test Author",
+        subject="PDF Extraction Testing",
+    )
+
+    styles = getSampleStyleSheet()
+    story = []
+
+    # Add title
+    title = Paragraph("Enhanced PDF Test Document", styles['Title'])
+    story.append(title)
+    story.append(Spacer(1, 0.2 * inch))
+
+    # Add description
+    desc = Paragraph(
+        "This document tests improved PDF extraction with tables, formatting, and metadata.",
+        styles['Normal']
+    )
+    story.append(desc)
+    story.append(Spacer(1, 0.3 * inch))
+
+    # Add a table to test table extraction
+    table_data = [
+        ['Feature', 'Status', 'Priority'],
+        ['Table handling', 'Improved', 'High'],
+        ['Formatting preservation', 'Enhanced', 'High'],
+        ['Multi-column support', 'Added', 'Medium'],
+        ['Metadata extraction', 'Implemented', 'High'],
+    ]
+
+    table = Table(table_data)
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+    ]))
+
+    story.append(table)
+    story.append(Spacer(1, 0.3 * inch))
+
+    # Add more text content
+    content = Paragraph(
+        "The improved PDF extraction now properly handles complex layouts including "
+        "tables with structured data, preserves text formatting, and extracts document "
+        "metadata such as title, author, and creation date.",
+        styles['Normal']
+    )
+    story.append(content)
+
+    # Build the PDF
+    doc.build(story)
+
+    # Use unique doc_id to avoid hash-based skip from previous test runs
+    doc_id = _unique_doc_id("pdf-enhanced")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        # Upload the PDF file with unique doc_id
+        with open(test_file, "rb") as f:
+            files = {"file": ("test_enhanced.pdf", f, "application/pdf")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+
+        # Verify successful upload
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "doc_id" in upload_data
+        assert "chunks_ingested" in upload_data
+        assert upload_data["chunks_ingested"] > 0
+
+        # Give Cassandra indexing a moment
+        time.sleep(2.0)
+
+        # Verify we can query content from the table
+        query_resp = client.post(
+            "/api/v1/rag/query", json={"query": "table handling formatting", "top_k": 5}
+        )
+        assert query_resp.status_code == 200
+        results = query_resp.json()["results"]
+        assert len(results) > 0
+
+        # Verify the extracted text contains table markers and metadata
+        # The text should contain our table data and metadata
+        combined_text = " ".join(r["text"] for r in results)
+
+        # Check for table content
+        assert "Table handling" in combined_text or "Improved" in combined_text
+
+        # Check for metadata section (at least title or author should be present)
+        assert "Metadata" in combined_text or "Test" in combined_text

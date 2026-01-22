@@ -310,6 +310,14 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
 - **JSON (`.json`)**: Formatted with indentation for readability
 - **Plain text (`.txt`)**: UTF-8 encoded text
 
+**PDF Files:**
+- Extracts document metadata (title, author, subject, creator, dates)
+- Improved table handling with preserved structure
+- Layout-aware text extraction for multi-column documents
+- Formatting preservation for better context quality
+- Tables are marked with `[Table]` headers in extracted text
+- Metadata is prepended as `[Metadata]` section
+
 **Error (unsupported file type):**
 ```json
 {
