@@ -285,7 +285,7 @@ Disable RAG for a specific session.
 
 Upload and ingest a document for RAG.
 
-**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf`, `.pptx` (PowerPoint presentations)
+**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf`, `.pptx` (PowerPoint presentations), `.docx` (Microsoft Word), `.epub` (eBooks)
 
 **Request:**
 ```bash
@@ -307,6 +307,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
 - **Markdown (`.md`)**: Extracts YAML frontmatter (title, author, tags, etc.), preserves headers hierarchy, handles code blocks
 - **PDF (`.pdf`)**: Extracts text from all pages
 - **PowerPoint (`.pptx`)**: Extracts slide text, speaker notes, preserves slide order
+- **Microsoft Word (`.docx`)**: Extracts paragraphs, headings, tables, and embedded image markers
+- **ePUB (`.epub`)**: Extracts metadata (title, author, publisher, etc.), chapter structure, and clean text content
 - **JSON (`.json`)**: Formatted with indentation for readability
 - **Plain text (`.txt`)**: UTF-8 encoded text
 
@@ -318,10 +320,17 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
 - Tables are marked with `[Table]` headers in extracted text
 - Metadata is prepended as `[Metadata]` section
 
+**ePUB Files:**
+- Extracts rich metadata (title, author, publisher, description, date, language)
+- Preserves chapter structure with chapter markers
+- Cleans HTML content to plain text while maintaining semantic structure
+- Removes boilerplate (scripts, styles) for cleaner text
+- Handles multi-chapter books with proper organization
+
 **Error (unsupported file type):**
 ```json
 {
-  "detail": "File type .exe not supported. Allowed: {'.txt', '.md', '.json', '.pdf', '.pptx'}"
+  "detail": "File type .exe not supported. Allowed: {'.txt', '.md', '.json', '.pdf', '.pptx', '.docx', '.epub'}"
 }
 ```
 

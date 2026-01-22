@@ -1851,7 +1851,7 @@ async def rag_upload_file(
 ) -> RagIngestResponse:
     """Upload and ingest a document for RAG with proper markdown parsing."""
     # Validate file type
-    allowed_types = {".txt", ".md", ".json", ".pdf", ".pptx", ".docx"}
+    allowed_types = {".txt", ".md", ".json", ".pdf", ".pptx", ".docx", ".epub"}
     file_ext = Path(file.filename or "").suffix.lower()
     if file_ext not in allowed_types:
         raise HTTPException(
@@ -2125,6 +2125,112 @@ async def rag_upload_file(
             )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"PPTX parsing failed: {e}")
+
+    elif file_ext == ".epub":
+        # Handle ePUB eBooks
+        try:
+            import ebooklib
+            from ebooklib import epub
+            from bs4 import BeautifulSoup
+
+            try:
+                book = epub.read_epub(io.BytesIO(content))
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid ePUB file: {e}"
+                )
+
+            text_parts = []
+
+            # Extract metadata
+            metadata = {}
+            if book.get_metadata('DC', 'title'):
+                metadata['Title'] = ', '.join(book.get_metadata('DC', 'title'))
+            if book.get_metadata('DC', 'creator'):
+                metadata['Author'] = ', '.join(book.get_metadata('DC', 'creator'))
+            if book.get_metadata('DC', 'description'):
+                metadata['Description'] = ', '.join(book.get_metadata('DC', 'description'))
+            if book.get_metadata('DC', 'publisher'):
+                metadata['Publisher'] = ', '.join(book.get_metadata('DC', 'publisher'))
+            if book.get_metadata('DC', 'date'):
+                metadata['Date'] = ', '.join(book.get_metadata('DC', 'date'))
+            if book.get_metadata('DC', 'language'):
+                metadata['Language'] = ', '.join(book.get_metadata('DC', 'language'))
+
+            # Add metadata section if available
+            if metadata:
+                meta_str = "\n".join(f"{k}: {v}" for k, v in metadata.items())
+                text_parts.append(f"[Metadata]\n{meta_str}\n")
+
+            # Process all items in the book
+            chapter_num = 0
+            for item in book.get_items():
+                # Only process document items (XHTML content)
+                if item.get_type() == ebooklib.ITEM_DOCUMENT:
+                    chapter_num += 1
+
+                    # Parse HTML content
+                    html_content = item.get_body_content()
+                    if html_content:
+                        soup = BeautifulSoup(html_content, 'html.parser')
+
+                        # Remove script and style elements
+                        for script in soup(["script", "style"]):
+                            script.decompose()
+
+                        # Extract text with some structure preservation
+                        chapter_texts = []
+
+                        # Process headings to preserve structure
+                        for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                            heading_text = heading.get_text(strip=True)
+                            if heading_text:
+                                level = heading.name[1]  # Extract number from h1, h2, etc.
+                                chapter_texts.append(f"{'#' * int(level)} {heading_text}")
+
+                        # Extract all text content
+                        text_content = soup.get_text(separator="\n")
+
+                        # Clean up excessive whitespace while preserving paragraph breaks
+                        lines = [line.strip() for line in text_content.splitlines()]
+                        # Remove empty lines and duplicates from heading extraction
+                        cleaned_lines = []
+                        prev_line = ""
+                        for line in lines:
+                            if line and line != prev_line:
+                                cleaned_lines.append(line)
+                                prev_line = line
+
+                        chapter_text = "\n\n".join(cleaned_lines)
+
+                        if chapter_text.strip():
+                            # Add chapter marker for multi-chapter books
+                            if chapter_num > 1 or len(list(book.get_items_of_type(ebooklib.ITEM_DOCUMENT))) > 1:
+                                text_parts.append(f"[Chapter {chapter_num}]\n{chapter_text}")
+                            else:
+                                text_parts.append(chapter_text)
+
+            # Join all parts with double newlines
+            text = "\n\n".join(text_parts) if text_parts else ""
+
+            # Validate extracted content
+            if not text or not text.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="ePUB extraction produced no text. The file may be empty, image-only, or malformed."
+                )
+
+        except ImportError:
+            raise HTTPException(
+                status_code=400,
+                detail="ePUB support not available. Install ebooklib: pip install ebooklib",
+            )
+        except HTTPException:
+            # Re-raise HTTP exceptions without wrapping
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"ePUB parsing failed: {e}")
 
     else:
         # Plain text

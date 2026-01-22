@@ -766,3 +766,277 @@ def test_rag_upload_pdf_with_tables_and_metadata(
 
         # Check for metadata section (at least title or author should be present)
         assert "Metadata" in combined_text or "Test" in combined_text
+
+
+@pytest.mark.integration
+def test_rag_upload_epub_file(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test RAG file upload endpoint with .epub file."""
+    pytest.importorskip("ebooklib", reason="ebooklib not installed")
+    from ebooklib import epub
+
+    # Create a test ePUB file
+    test_file = tmp_path / "test_book.epub"
+    book = epub.EpubBook()
+
+    # Set metadata
+    book.set_identifier("test-epub-123")
+    book.set_title("Test ePUB Book")
+    book.set_language("en")
+    book.add_author("Test Author")
+
+    # Create chapters
+    c1 = epub.EpubHtml(title="Introduction", file_name="chap_01.xhtml", lang="en")
+    c1.content = """
+    <html>
+    <head><title>Introduction</title></head>
+    <body>
+    <h1>Introduction</h1>
+    <p>This is a test ePUB document for RAG upload testing.</p>
+    <p>It contains important information about ePUB support.</p>
+    </body>
+    </html>
+    """
+
+    c2 = epub.EpubHtml(title="Chapter 1", file_name="chap_02.xhtml", lang="en")
+    c2.content = """
+    <html>
+    <head><title>Chapter 1</title></head>
+    <body>
+    <h1>Chapter 1: The Beginning</h1>
+    <p>This chapter tests content extraction from ePUB files.</p>
+    <p>ePUB is a standard format for electronic books.</p>
+    </body>
+    </html>
+    """
+
+    # Add chapters to book
+    book.add_item(c1)
+    book.add_item(c2)
+
+    # Add table of contents
+    book.toc = (
+        epub.Link("chap_01.xhtml", "Introduction", "intro"),
+        epub.Link("chap_02.xhtml", "Chapter 1", "chap1"),
+    )
+
+    # Add navigation files
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+
+    # Define spine (reading order)
+    book.spine = ["nav", c1, c2]
+
+    # Write the ePUB file
+    epub.write_epub(str(test_file), book)
+
+    # Use unique doc_id to avoid hash-based skip from previous test runs
+    doc_id = _unique_doc_id("epub-upload")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        # Upload the ePUB file with unique doc_id
+        with open(test_file, "rb") as f:
+            files = {"file": ("test_book.epub", f, "application/epub+zip")}
+            upload_resp = client.post(
+                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
+            )
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "doc_id" in upload_data
+        assert "chunks_ingested" in upload_data
+        assert upload_data["chunks_ingested"] > 0
+
+        # Give Cassandra indexing a moment
+        time.sleep(2.0)
+
+        # Verify we can query the uploaded content
+        query_resp = client.post(
+            "/api/v1/rag/query", json={"query": "ePUB electronic books", "top_k": 5}
+        )
+        assert query_resp.status_code == 200
+        results = query_resp.json()["results"]
+        assert len(results) > 0
+
+
+@pytest.mark.integration
+def test_rag_upload_epub_with_metadata(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test that ePUB upload correctly extracts metadata."""
+    pytest.importorskip("ebooklib", reason="ebooklib not installed")
+    from ebooklib import epub
+
+    # Create a test ePUB file with rich metadata
+    test_file = tmp_path / "metadata_book.epub"
+    book = epub.EpubBook()
+
+    # Set comprehensive metadata
+    book.set_identifier("metadata-test-456")
+    book.set_title("Complete Metadata Test")
+    book.set_language("en")
+    book.add_author("Jane Doe")
+    book.add_author("John Smith")
+    book.add_metadata("DC", "publisher", "Test Publisher")
+    book.add_metadata("DC", "description", "A test book for metadata extraction")
+    book.add_metadata("DC", "date", "2024-01-01")
+
+    # Create a simple chapter
+    c1 = epub.EpubHtml(title="Content", file_name="content.xhtml", lang="en")
+    c1.content = """
+    <html>
+    <body>
+    <h1>Test Content</h1>
+    <p>This tests metadata extraction from ePUB files.</p>
+    </body>
+    </html>
+    """
+
+    book.add_item(c1)
+    book.toc = (epub.Link("content.xhtml", "Content", "content"),)
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav", c1]
+
+    epub.write_epub(str(test_file), book)
+
+    doc_id = _unique_doc_id("epub-metadata")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("metadata_book.epub", f, "application/epub+zip")}
+            upload_resp = client.post(
+                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
+            )
+
+        assert upload_resp.status_code == 200
+
+        # Give Cassandra indexing a moment
+        time.sleep(2.0)
+
+        # Query for metadata content
+        query_resp = client.post(
+            "/api/v1/rag/query", json={"query": "metadata test", "top_k": 5}
+        )
+        assert query_resp.status_code == 200
+        results = query_resp.json()["results"]
+        assert len(results) > 0
+
+
+@pytest.mark.integration
+def test_rag_upload_epub_empty_file(api_base_url: str, tmp_path) -> None:
+    """Test that uploading empty ePUB file is handled gracefully."""
+    pytest.importorskip("ebooklib", reason="ebooklib not installed")
+    from ebooklib import epub
+
+    # Create an ePUB with no content chapters
+    test_file = tmp_path / "empty.epub"
+    book = epub.EpubBook()
+    book.set_identifier("empty-test")
+    book.set_title("Empty Book")
+    book.set_language("en")
+
+    # Add navigation but no content chapters
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav"]
+
+    epub.write_epub(str(test_file), book)
+
+    with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("empty.epub", f, "application/epub+zip")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files)
+
+        # Should reject with 400 for no extractable text
+        assert upload_resp.status_code == 400
+        error_data = upload_resp.json()
+        assert "error" in error_data
+        error_msg = error_data["error"]["message"].lower()
+        assert "no text" in error_msg or "empty" in error_msg or "malformed" in error_msg
+
+
+@pytest.mark.integration
+def test_rag_upload_epub_corrupted_file(api_base_url: str, tmp_path) -> None:
+    """Test RAG file upload endpoint with corrupted .epub file."""
+    test_file = tmp_path / "corrupted.epub"
+    # Write invalid content that's not a valid ePUB file
+    test_file.write_bytes(b"This is not a valid ePUB file content")
+
+    with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("corrupted.epub", f, "application/epub+zip")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files)
+
+        # Should reject corrupted file with 400
+        assert upload_resp.status_code == 400
+        error_data = upload_resp.json()
+        assert "error" in error_data
+        error_msg = error_data["error"]["message"].lower()
+        assert any(term in error_msg for term in ("invalid", "failed", "corrupted", "parsing"))
+
+
+@pytest.mark.integration
+def test_rag_upload_epub_multi_chapter(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test that ePUB upload preserves chapter structure for multi-chapter books."""
+    pytest.importorskip("ebooklib", reason="ebooklib not installed")
+    from ebooklib import epub
+
+    # Create a multi-chapter ePUB
+    test_file = tmp_path / "multi_chapter.epub"
+    book = epub.EpubBook()
+
+    book.set_identifier("multi-chapter-789")
+    book.set_title("Multi-Chapter Test Book")
+    book.set_language("en")
+
+    # Create multiple chapters
+    chapters = []
+    for i in range(1, 4):
+        c = epub.EpubHtml(title=f"Chapter {i}", file_name=f"chap_{i:02d}.xhtml", lang="en")
+        c.content = f"""
+        <html>
+        <body>
+        <h1>Chapter {i}</h1>
+        <p>Content for chapter {i} goes here.</p>
+        <p>This is part {i} of the multi-chapter book.</p>
+        </body>
+        </html>
+        """
+        book.add_item(c)
+        chapters.append(c)
+
+    book.toc = tuple(epub.Link(f"chap_{i:02d}.xhtml", f"Chapter {i}", f"chap{i}") for i in range(1, 4))
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav"] + chapters
+
+    epub.write_epub(str(test_file), book)
+
+    doc_id = _unique_doc_id("epub-multi-chapter")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("multi_chapter.epub", f, "application/epub+zip")}
+            upload_resp = client.post(
+                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
+            )
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "chunks_ingested" in upload_data
+        assert upload_data["chunks_ingested"] > 0
+
+        # Give Cassandra indexing a moment
+        time.sleep(2.0)
+
+        # Verify content from different chapters can be queried
+        query_resp = client.post(
+            "/api/v1/rag/query", json={"query": "multi-chapter book", "top_k": 5}
+        )
+        assert query_resp.status_code == 200
+        results = query_resp.json()["results"]
+        assert len(results) > 0
