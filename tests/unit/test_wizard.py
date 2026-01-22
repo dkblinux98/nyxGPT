@@ -248,6 +248,7 @@ def test_run_wizard_success_minimal(tmp_path: Path, capsys: pytest.CaptureFixtur
     inputs = [
         "http://127.0.0.1:11434",  # Ollama URL
         "1",  # Select first model
+        "",  # System prompt (empty)
         "n",  # Disable RAG
     ]
 
@@ -279,6 +280,7 @@ def test_run_wizard_success_with_rag(
     inputs = [
         "http://127.0.0.1:11434",  # Ollama URL
         "",  # Select first model (default)
+        "",  # System prompt (empty)
         "y",  # Enable RAG
         "n",  # Don't customize RAG settings
     ]

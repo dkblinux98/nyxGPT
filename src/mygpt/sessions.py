@@ -467,7 +467,12 @@ def init_session(
 
 
 def persist_after_exchange(
-    session_file: Path, meta_file: Path, messages: list[dict[str, str]], *, model: str
+    session_file: Path,
+    meta_file: Path,
+    messages: list[dict[str, str]],
+    *,
+    model: str,
+    cfg: Any = None,
 ) -> str:
     """Persist session messages and metadata after a chat exchange.
 
@@ -478,6 +483,7 @@ def persist_after_exchange(
         meta_file: Path to metadata JSON file
         messages: List of chat messages
         model: Model name to store in metadata
+        cfg: Optional config object. If not provided, loads global config.
 
     Returns:
         Session name (possibly updated if filename was synced)
@@ -493,7 +499,9 @@ def persist_after_exchange(
     sessions_dir = session_file.parent
 
     # Auto-summarization trigger
-    cfg = load_config(None)
+    # Use passed config if provided, otherwise load global config
+    if cfg is None:
+        cfg = load_config(None)
     try:
         auto_summarize_enabled = cfg.getboolean(
             "mygpt", "auto_summarize_enabled", fallback=False
@@ -594,7 +602,7 @@ def save_session(
 
     chosen_model = model or str(state.meta.get("model") or get_default_model(cfg))
     new_name = persist_after_exchange(
-        state.session_file, state.meta_file, state.messages, model=chosen_model
+        state.session_file, state.meta_file, state.messages, model=chosen_model, cfg=cfg
     )
 
     # Update SessionState if name changed (due to filename sync)

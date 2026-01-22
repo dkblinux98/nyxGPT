@@ -157,6 +157,7 @@ def _generate_config_ini(
     model: str,
     ollama_base_url: str,
     rag_config: dict[str, Any],
+    system_prompt: str = "",
 ) -> None:
     """Generate config.ini file from wizard responses.
 
@@ -165,6 +166,7 @@ def _generate_config_ini(
         model: Selected default model
         ollama_base_url: Ollama base URL
         rag_config: RAG configuration dictionary
+        system_prompt: Default system prompt (empty string for none)
     """
     config = ConfigParser()
 
@@ -177,6 +179,7 @@ def _generate_config_ini(
     config.set("mygpt", "auto_summarize_enabled", "true")
     config.set("mygpt", "auto_summarize_after_messages", "5")
     config.set("mygpt", "auto_sync_filename", "true")
+    config.set("mygpt", "system_prompt", system_prompt)
 
     # [logging] section
     config.add_section("logging")
@@ -314,20 +317,34 @@ def run_wizard(output_path: Path | None = None) -> int:
     default_model = _select_model(models)
     print(f"\n✅ Selected model: {default_model}")
 
+    # System prompt configuration
+    print("\n" + "=" * 60)
+    print("Step 3: System Prompt (Optional)")
+    print("=" * 60)
+    print("\nA system prompt provides initial instructions to the LLM.")
+    print("Leave empty for no default system prompt, or enter a custom one.")
+    print("Examples: 'You are a helpful coding assistant.' or 'Respond concisely.'")
+
+    system_prompt = _prompt("Default system prompt (leave empty for none)", "")
+    if system_prompt:
+        print(f"\n✅ System prompt set: {system_prompt[:50]}{'...' if len(system_prompt) > 50 else ''}")
+    else:
+        print("\n✅ No default system prompt (empty)")
+
     # Configure RAG
     print("\n" + "=" * 60)
-    print("Step 3: RAG Configuration")
+    print("Step 4: RAG Configuration")
     print("=" * 60)
 
     rag_config = _configure_rag()
 
     # Generate config
     print("\n" + "=" * 60)
-    print("Step 4: Generating Configuration")
+    print("Step 5: Generating Configuration")
     print("=" * 60)
 
     try:
-        _generate_config_ini(output_path, default_model, ollama_base_url, rag_config)
+        _generate_config_ini(output_path, default_model, ollama_base_url, rag_config, system_prompt)
         print(f"\n✅ Configuration saved to: {output_path}")
         print("   Permissions: 600 (owner read/write only)")
 

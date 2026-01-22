@@ -930,7 +930,8 @@ def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
     system = req.get("system")
     if not isinstance(system, str) or not system:
-        system = "You are a helpful assistant."
+        # Use config default (empty string if not set)
+        system = cfg.get("mygpt", "system_prompt", fallback="")
 
     model = req.get("model")
     if not isinstance(model, str) or not model:
@@ -1386,6 +1387,7 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
                         score=chunk_data.get("score", 0.0),
                         doc_id=chunk_data.get("doc_id"),
                         chunk_id=chunk_data.get("chunk_id"),
+                        similarity_score=chunk_data.get("similarity_score"),
                     )
                 )
 
@@ -1652,6 +1654,7 @@ def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
                 chunk_id=int(r.get("chunk_id", 0)),
                 text=str(r.get("text", "")),
                 score=float(r.get("score", 0.0)),
+                similarity_score=r.get("similarity_score"),
             )
             for r in results
         ]
@@ -1758,6 +1761,7 @@ def rag_metrics_query(
                 chunk_id=int(r.get("chunk_id", 0)),
                 text=str(r.get("text", "")),
                 score=float(r.get("score", 0.0)),
+                similarity_score=r.get("similarity_score"),
             )
             for r in results
         ]
@@ -1926,8 +1930,8 @@ async def rag_upload_file(
                 if metadata:
                     meta_str = "\n".join(f"{k}: {v}" for k, v in metadata.items())
                     text_parts.append(f"[Metadata]\n{meta_str}\n")
-                for page in reader.pages:
-                    page_text = page.extract_text()
+                for pdf_page in reader.pages:
+                    page_text = pdf_page.extract_text()
                     if page_text:
                         text_parts.append(page_text)
 
@@ -2006,9 +2010,9 @@ async def rag_upload_file(
                         text_parts.append(para_text)
 
             # Handle tables
-            for table in doc.tables:
+            for doc_table in doc.tables:
                 table_rows: list[str] = []
-                for row in table.rows:
+                for row in doc_table.rows:
                     row_text = " | ".join(cell.text.strip() for cell in row.cells)
                     if row_text:
                         table_rows.append(row_text)

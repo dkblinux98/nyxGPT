@@ -17,6 +17,9 @@ def _cfg_with_sessions_dir(sessions_dir: Path) -> configparser.ConfigParser:
     cfg["mygpt"] = {
         "sessions_dir": str(sessions_dir),
         "default_model": "llama3.1:8b",
+        # Disable auto-summarization and auto-sync to prevent session renaming during tests
+        "auto_summarize_enabled": "false",
+        "auto_sync_filename": "false",
     }
     return cfg
 

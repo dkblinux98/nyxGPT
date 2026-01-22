@@ -135,11 +135,83 @@ def tmp_sessions_dir(tmp_path):
 
 
 @pytest.fixture(scope="session", autouse=True)
+def cleanup_test_rag_documents(api_base_url):
+    """Clean up test RAG documents after all integration tests complete.
+
+    This fixture runs at the end of the test session and deletes any RAG documents
+    that were created during the test run (identified by test prefixes or not existing
+    before tests started).
+    """
+    # Test document prefixes that should always be cleaned up
+    TEST_DOC_PREFIXES = (
+        "disable-test-",
+        "empty-query-",
+        "hybrid-test-",
+        "itest-",
+        "keyword-test-",
+        "md-upload-",
+        "test-doc-",
+        "tf-test-",
+        "txt-upload-",
+        "api-smoke",
+        "test-auto-",
+        "test_",
+        "test.",
+    )
+
+    # Record RAG documents that exist before tests run
+    try:
+        from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+        store = CassandraVectorStore(collection="default")
+        existing_docs = {doc["doc_id"] for doc in store.list_docs()}
+        store.close()
+    except Exception as e:
+        print(f"\n[INTEGRATION TESTS] Could not list RAG docs before tests: {e}")
+        existing_docs = set()
+
+    print(f"\n[INTEGRATION TESTS] Found {len(existing_docs)} existing RAG documents before tests")
+
+    yield  # Run all tests
+
+    # Clean up RAG documents created during tests
+    print("\n[INTEGRATION TESTS] Cleaning up test RAG documents...")
+
+    try:
+        from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+        store = CassandraVectorStore(collection="default")
+        current_docs = store.list_docs()
+
+        deleted_count = 0
+        for doc in current_docs:
+            doc_id = doc["doc_id"]
+
+            # Skip documents that existed before tests
+            if doc_id in existing_docs:
+                continue
+
+            # Delete new documents OR documents matching test prefixes
+            if doc_id.startswith(TEST_DOC_PREFIXES):
+                try:
+                    store.delete_doc(doc_id)
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"[INTEGRATION TESTS] Failed to delete RAG doc {doc_id}: {e}")
+
+        store.close()
+        print(f"[INTEGRATION TESTS] RAG cleanup complete: {deleted_count} documents deleted")
+
+    except Exception as e:
+        print(f"[INTEGRATION TESTS] RAG document cleanup failed: {e}")
+
+
+@pytest.fixture(scope="session", autouse=True)
 def cleanup_test_sessions(api_base_url):
     """Clean up test sessions after all integration tests complete.
 
     This fixture runs at the end of the test session and deletes any sessions
-    that appear to be test sessions (matching common test naming patterns).
+    that were created during the test run (not existing before tests started).
     """
     import requests
 
@@ -152,6 +224,8 @@ def cleanup_test_sessions(api_base_url):
             existing_sessions = set()
     except Exception:
         existing_sessions = set()
+
+    print(f"\n[INTEGRATION TESTS] Found {len(existing_sessions)} existing sessions before tests")
 
     yield  # Run all tests
 
@@ -166,44 +240,38 @@ def cleanup_test_sessions(api_base_url):
 
         current_sessions = resp.json().get("sessions", [])
 
-        # Test session patterns to clean up
-        test_patterns = [
-            "test-",
-            "test_",
-            "integration-test",
-            "smoke-test",
-            "api-test",
-            "rag-test",
-            "pytest-",
-            "tmp-",
-        ]
+        # Protected session names that should never be deleted
+        protected_sessions = {"default"}
 
         deleted_count = 0
+        skipped_count = 0
         for session in current_sessions:
             name = session.get("name", "")
 
-            # Skip sessions that existed before tests
-            if name in existing_sessions:
+            # Skip protected sessions
+            if name in protected_sessions:
                 continue
 
-            # Check if it matches a test pattern
-            is_test_session = any(name.lower().startswith(p) for p in test_patterns)
+            # Skip sessions that existed before tests
+            if name in existing_sessions:
+                skipped_count += 1
+                continue
 
-            if is_test_session:
-                try:
-                    del_resp = requests.delete(
-                        f"{api_base_url}/api/v1/sessions/{name}",
-                        timeout=5
-                    )
-                    if del_resp.ok:
-                        deleted_count += 1
-                except Exception as e:
-                    print(f"[INTEGRATION TESTS] Failed to delete session {name}: {e}")
+            # Delete any session created during tests
+            try:
+                del_resp = requests.delete(
+                    f"{api_base_url}/api/v1/sessions/{name}",
+                    timeout=5
+                )
+                if del_resp.ok:
+                    deleted_count += 1
+                    print(f"[INTEGRATION TESTS] Deleted: {name}")
+                else:
+                    print(f"[INTEGRATION TESTS] Failed to delete {name}: {del_resp.status_code}")
+            except Exception as e:
+                print(f"[INTEGRATION TESTS] Failed to delete session {name}: {e}")
 
-        if deleted_count > 0:
-            print(f"[INTEGRATION TESTS] Cleaned up {deleted_count} test sessions")
-        else:
-            print("[INTEGRATION TESTS] No test sessions to clean up")
+        print(f"[INTEGRATION TESTS] Cleanup complete: {deleted_count} deleted, {skipped_count} preserved")
 
     except Exception as e:
         print(f"[INTEGRATION TESTS] Session cleanup failed: {e}")

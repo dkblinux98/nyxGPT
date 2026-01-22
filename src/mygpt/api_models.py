@@ -106,6 +106,7 @@ class RagChunkInfo(BaseModel):
     score: float
     doc_id: str | None = None
     chunk_id: int | None = None
+    similarity_score: float | None = None  # Original vector similarity (0-1) for UI display
 
 
 class ChatResponse(BaseModel):
@@ -193,6 +194,7 @@ class RagQueryResult(BaseModel):
     chunk_id: int
     text: str
     score: float
+    similarity_score: float | None = None  # Original vector similarity (0-1) for UI display
 
 
 class RagDebugInfo(BaseModel):

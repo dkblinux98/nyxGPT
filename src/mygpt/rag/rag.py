@@ -1165,10 +1165,14 @@ def retrieve_context(
             # Get result from either vector or keyword results
             if chunk_key in vector_results_map:
                 fused_result = vector_results_map[chunk_key].copy()
+                # Preserve original vector similarity score for UI display
+                fused_result["similarity_score"] = fused_result.get("score")
             else:
+                # Keyword-only result - no vector similarity available
                 fused_result = keyword_results_map[chunk_key].copy()
+                fused_result["similarity_score"] = None
 
-            # Update score to fused score
+            # Update score to fused score (used for ranking)
             fused_result["score"] = fused_score
             all_results.append(fused_result)
 

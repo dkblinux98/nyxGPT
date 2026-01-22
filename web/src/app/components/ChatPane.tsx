@@ -149,6 +149,7 @@ type ChatMessage = {
 type RagChunk = {
   text: string;
   score: number;
+  similarity_score?: number | null;  // Original vector similarity (0-1), used for UI display
   doc_id?: string | null;
   chunk_id?: number | null;
 };
@@ -202,17 +203,13 @@ function RagCitationsCollapsible({
     const newExpanded = !expanded;
     setExpanded(newExpanded);
 
-    // Lazy load chunks and config on first expand if not already loaded
+    // Lazy load chunks on first expand if not already loaded
     if (newExpanded && !chunks && !loading) {
       setLoading(true);
       setError(null);
 
       try {
-        // Fetch chunks and config in parallel
-        const [chunksRes, configRes] = await Promise.all([
-          fetch(`/api/sessions/${encodeURIComponent(sessionName)}/messages/${messageIndex}/rag`),
-          fetch('/api/v1/rag/config'),
-        ]);
+        const chunksRes = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/messages/${messageIndex}/rag`);
 
         if (!chunksRes.ok) {
           throw new Error(`Failed to load RAG chunks: ${chunksRes.status}`);
@@ -221,12 +218,6 @@ function RagCitationsCollapsible({
         const data = await chunksRes.json();
         const loadedChunks = data.chunks || [];
         setChunks(loadedChunks);
-
-        // Load config (non-critical, don't error if it fails)
-        if (configRes.ok) {
-          const configData = await configRes.json();
-          setRagConfig(configData);
-        }
 
         // Notify parent to cache the loaded chunks
         if (onChunksLoaded) {
@@ -238,6 +229,19 @@ function RagCitationsCollapsible({
         console.error('Failed to load RAG chunks:', err);
       } finally {
         setLoading(false);
+      }
+    }
+
+    // Fetch config separately if not yet loaded (retry on each expand if missing)
+    if (newExpanded && !ragConfig) {
+      try {
+        const configRes = await fetch('/api/v1/rag/config');
+        if (configRes.ok) {
+          const configData = await configRes.json();
+          setRagConfig(configData);
+        }
+      } catch {
+        // Config fetch is non-critical, ignore errors
       }
     }
   };
@@ -304,7 +308,13 @@ function RagCitationsCollapsible({
           </div>
 
           {chunks.map((chunk, idx) => {
-            const scoreInfo = getScoreQuality(chunk.score, ragConfig);
+            // Use similarity_score for display (original vector score)
+            // If null, result was found by keyword search only
+            const hasVectorScore = chunk.similarity_score != null;
+            const displayScore = chunk.similarity_score ?? chunk.score;
+            const scoreInfo = hasVectorScore
+              ? getScoreQuality(displayScore, ragConfig)
+              : { quality: 'keyword', color: '#6366f1', label: 'Keyword' }; // indigo for keyword-only
             return (
               <div
                 key={idx}
@@ -335,7 +345,7 @@ function RagCitationsCollapsible({
                       {scoreInfo.label}
                     </span>
                     <span style={{ color: 'var(--foreground)', opacity: 0.6, fontSize: 12 }}>
-                      {chunk.score.toFixed(3)}
+                      {displayScore.toFixed(3)}
                     </span>
                   </div>
                 </div>
@@ -814,13 +824,10 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         try {
           // Create a title from the first ~50 chars of the user's message
           const autoTitle = text.length > 50 ? text.substring(0, 47) + '...' : text;
-          await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/rename`, {
+          await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/title`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              new_name: autoTitle,
-              sync_filename: false, // Don't change the filename, just the title
-            }),
+            body: JSON.stringify({ title: autoTitle }),
           });
         } catch (titleErr) {
           // Non-critical error, just log it

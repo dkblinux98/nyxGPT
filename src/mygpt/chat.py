@@ -33,7 +33,7 @@ class ChatResult:
     reply: str
     rag_used: bool
     rag_chunks: int
-    rag_context: list[dict] | None = None  # List of {text, score, doc_id, chunk_id}
+    rag_context: list[dict] | None = None  # List of {text, score, doc_id, chunk_id, similarity_score}
 
 
 @dataclass
@@ -455,6 +455,7 @@ def _persist_chat_turn(
                 "score": chunk.get("score", 0.0),
                 "doc_id": chunk.get("doc_id"),
                 "chunk_id": chunk.get("chunk_id"),
+                "similarity_score": chunk.get("similarity_score"),
             }
             for chunk in (context.rag_context or [])
         ]
@@ -563,6 +564,7 @@ def chat_stream(
                     "score": chunk.get("score", 0.0),
                     "doc_id": chunk.get("doc_id"),
                     "chunk_id": chunk.get("chunk_id"),
+                    "similarity_score": chunk.get("similarity_score"),
                 }
                 for chunk in context.rag_context
             ],
