@@ -17,6 +17,7 @@ from mygpt.tui import (
     SessionStatusBar,
     HelpOverlayScreen,
     CommandPaletteScreen,
+    DeleteConfirmationScreen,
 )
 
 pytestmark = pytest.mark.unit
@@ -2568,3 +2569,259 @@ async def test_command_palette_screen_action_close() -> None:
 
     # Verify screen was dismissed with None
     mock_dismiss.assert_called_once_with(None)
+
+
+# ============================================================================
+# Delete Session Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_delete_confirmation_screen_confirm() -> None:
+    """Test DeleteConfirmationScreen confirms deletion."""
+
+    screen = DeleteConfirmationScreen("test-session")
+
+    # Mock dismiss
+    with patch.object(screen, "dismiss") as mock_dismiss:
+        await screen.action_confirm()
+
+    # Verify screen was dismissed with True
+    mock_dismiss.assert_called_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_delete_confirmation_screen_cancel() -> None:
+    """Test DeleteConfirmationScreen cancels deletion."""
+
+    screen = DeleteConfirmationScreen("test-session")
+
+    # Mock dismiss
+    with patch.object(screen, "dismiss") as mock_dismiss:
+        await screen.action_cancel()
+
+    # Verify screen was dismissed with False
+    mock_dismiss.assert_called_once_with(False)
+
+
+@pytest.mark.asyncio
+async def test_delete_session_action_success(tmp_path: Path) -> None:
+    """Test action_delete_session successfully deletes session and switches to another."""
+    # Create config
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    # Create test sessions
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    (sessions_dir / "session1.json").write_text("[]")
+    (sessions_dir / "session2.json").write_text("[]")
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="session1", config_path=str(config_file))
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock list_sessions to return multiple sessions
+    mock_sessions = [
+        {"name": "session1", "messages": 0},
+        {"name": "session2", "messages": 0},
+    ]
+
+    # Mock push_screen_wait to return True (confirmed)
+    with patch.object(
+        app, "push_screen_wait", new=AsyncMock(return_value=True)
+    ):
+        with patch("mygpt.tui.list_sessions", side_effect=[mock_sessions, [{"name": "session2", "messages": 0}]]):
+            with patch("mygpt.tui.delete_session", return_value=True):
+                with patch.object(app, "_update_session_status", new=AsyncMock()):
+                    await app._delete_session_worker()
+
+    # Verify session was switched
+    assert app.session == "session2"
+
+    # Verify output was updated
+    app.output.clear.assert_called_once()
+    app.output.append.assert_called()
+    assert "deleted" in app.output.append.call_args[0][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_delete_session_action_cancelled(tmp_path: Path) -> None:
+    """Test action_delete_session handles cancellation."""
+    # Create config
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    # Create test sessions
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    (sessions_dir / "session1.json").write_text("[]")
+    (sessions_dir / "session2.json").write_text("[]")
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="session1", config_path=str(config_file))
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock list_sessions to return multiple sessions
+    mock_sessions = [
+        {"name": "session1", "messages": 0},
+        {"name": "session2", "messages": 0},
+    ]
+
+    # Mock push_screen_wait to return False (cancelled)
+    with patch.object(
+        app, "push_screen_wait", new=AsyncMock(return_value=False)
+    ):
+        with patch("mygpt.tui.list_sessions", return_value=mock_sessions):
+            with patch("mygpt.tui.delete_session", return_value=True) as mock_delete:
+                await app._delete_session_worker()
+
+    # Verify session was NOT switched
+    assert app.session == "session1"
+
+    # Verify delete was NOT called
+    mock_delete.assert_not_called()
+
+    # Verify output was NOT modified
+    app.output.clear.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_session_action_last_session(tmp_path: Path) -> None:
+    """Test action_delete_session prevents deletion of last session."""
+    # Create config
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    # Create single test session
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    (sessions_dir / "session1.json").write_text("[]")
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="session1", config_path=str(config_file))
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock list_sessions to return only one session
+    mock_sessions = [{"name": "session1", "messages": 0}]
+
+    with patch("mygpt.tui.list_sessions", return_value=mock_sessions):
+        with patch("mygpt.tui.delete_session", return_value=True) as mock_delete:
+            await app._delete_session_worker()
+
+    # Verify delete was NOT called
+    mock_delete.assert_not_called()
+
+    # Verify error message was shown
+    app.output.append.assert_called()
+    assert "cannot delete the last remaining session" in app.output.append.call_args[0][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_delete_session_action_not_found(tmp_path: Path) -> None:
+    """Test action_delete_session handles session not found error."""
+    # Create config
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    # Create test sessions
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    (sessions_dir / "session1.json").write_text("[]")
+    (sessions_dir / "session2.json").write_text("[]")
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="session1", config_path=str(config_file))
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock list_sessions to return multiple sessions
+    mock_sessions = [
+        {"name": "session1", "messages": 0},
+        {"name": "session2", "messages": 0},
+    ]
+
+    # Mock push_screen_wait to return True (confirmed)
+    with patch.object(
+        app, "push_screen_wait", new=AsyncMock(return_value=True)
+    ):
+        with patch("mygpt.tui.list_sessions", return_value=mock_sessions):
+            # Mock delete_session to return False (not found)
+            with patch("mygpt.tui.delete_session", return_value=False):
+                await app._delete_session_worker()
+
+    # Verify error message was shown
+    app.output.append.assert_called()
+    assert "session not found" in app.output.append.call_args[0][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_delete_session_action_exception(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test action_delete_session handles exceptions gracefully."""
+    # Create config
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    # Create test sessions
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    (sessions_dir / "session1.json").write_text("[]")
+    (sessions_dir / "session2.json").write_text("[]")
+
+    with patch("mygpt.tui.load_config", return_value=cfg):
+        app = MyGPTTUI(session="session1", config_path=str(config_file))
+
+    # Mock output widget
+    app.output = MagicMock(spec=ChatOutput)
+
+    # Mock list_sessions to return multiple sessions
+    mock_sessions = [
+        {"name": "session1", "messages": 0},
+        {"name": "session2", "messages": 0},
+    ]
+
+    # Mock push_screen_wait to return True (confirmed)
+    with patch.object(
+        app, "push_screen_wait", new=AsyncMock(return_value=True)
+    ):
+        with patch("mygpt.tui.list_sessions", return_value=mock_sessions):
+            # Mock delete_session to raise exception
+            with patch("mygpt.tui.delete_session", side_effect=RuntimeError("Delete failed")):
+                with caplog.at_level(logging.ERROR, logger="mygpt.tui"):
+                    await app._delete_session_worker()
+
+    # Verify error was logged
+    assert "Failed to delete session" in caplog.text
+
+    # Verify error message was shown
+    app.output.append.assert_called()
+    assert "failed to delete session" in app.output.append.call_args[0][0].lower()

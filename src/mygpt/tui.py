@@ -29,7 +29,7 @@ from textual.binding import Binding
 from textual.screen import Screen, ModalScreen
 
 from mygpt.config import load_config
-from mygpt.sessions import list_sessions
+from mygpt.sessions import list_sessions, delete_session, get_sessions_dir
 
 log = logging.getLogger(__name__)
 
@@ -501,6 +501,7 @@ class HelpOverlayScreen(ModalScreen[None]):
             yield Label("\n[bold]Sessions:[/bold]")
             yield Label("  Ctrl+S         - Session picker")
             yield Label("  Ctrl+N         - Rename session")
+            yield Label("  Ctrl+D         - Delete session")
 
             # Features
             yield Label("\n[bold]Features:[/bold]")
@@ -519,6 +520,47 @@ class HelpOverlayScreen(ModalScreen[None]):
     async def action_close(self) -> None:
         """Close the help overlay."""
         self.dismiss(None)
+
+
+class DeleteConfirmationScreen(ModalScreen[bool]):
+    """Modal screen for confirming session deletion."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        ("ctrl+c", "cancel", "Cancel"),
+        ("enter", "confirm", "Confirm"),
+        ("y", "confirm", "Yes"),
+        ("n", "cancel", "No"),
+    ]
+
+    def __init__(self, session_name: str) -> None:
+        super().__init__()
+        self.session_name = session_name
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container(id="delete-confirm-dialog"):
+            yield Label(f"Delete session '{self.session_name}'?")
+            yield Label("[bold red]This cannot be undone.[/bold red]")
+            with Container(classes="confirm-buttons"):
+                yield Button("Delete", variant="error", id="confirm-btn")
+                yield Button("Cancel", id="cancel-btn")
+        yield Footer()
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button press."""
+        if event.button.id == "confirm-btn":
+            self.dismiss(True)
+        elif event.button.id == "cancel-btn":
+            self.dismiss(False)
+
+    async def action_confirm(self) -> None:
+        """Confirm deletion."""
+        self.dismiss(True)
+
+    async def action_cancel(self) -> None:
+        """Cancel deletion."""
+        self.dismiss(False)
 
 
 class CommandPaletteScreen(ModalScreen[str | None]):
@@ -557,6 +599,11 @@ class CommandPaletteScreen(ModalScreen[str | None]):
                 "key": "rename_session",
                 "label": "Rename Session",
                 "description": "Rename current session",
+            },
+            {
+                "key": "delete_session",
+                "label": "Delete Session",
+                "description": "Delete current session",
             },
             {
                 "key": "clear_output",
@@ -660,6 +707,7 @@ class MyGPTTUI(App):
         ("ctrl+r", "toggle_rag", "Toggle RAG"),
         ("ctrl+m", "models_manager", "Models"),
         ("ctrl+n", "rename_session", "Rename"),
+        ("ctrl+d", "delete_session", "Delete"),
         ("ctrl+l", "clear_output", "Clear"),
     ]
 
@@ -932,6 +980,68 @@ class MyGPTTUI(App):
             log.error(f"Failed to rename session: {type(e).__name__}: {e}")
             self.output.append(f"\n[error] Failed to rename session: {e}\n\n")
 
+    def action_delete_session(self) -> None:
+        """Delete the current session with confirmation."""
+        self.run_worker(self._delete_session_worker())
+
+    async def _delete_session_worker(self) -> None:
+        """Worker to handle async delete session logic."""
+        # Check if this is the last session
+        cfg = load_config(self.config_path)
+        sessions_dir = get_sessions_dir(cfg)
+        all_sessions = list_sessions(cfg)
+
+        if len(all_sessions) <= 1:
+            self.output.append("\n[error] Cannot delete the last remaining session.\n\n")
+            log.warning("Attempted to delete last session")
+            return
+
+        # Show confirmation dialog
+        confirmed = await self.push_screen_wait(
+            DeleteConfirmationScreen(self.session)
+        )
+
+        if not confirmed:
+            log.info(f"Session deletion cancelled for {self.session}")
+            return
+
+        # Delete the session
+        session_to_delete = self.session
+        try:
+            success = delete_session(session_to_delete, sessions_dir)
+            if not success:
+                self.output.append(
+                    f"\n[error] Failed to delete session: Session not found.\n\n"
+                )
+                log.error(f"Session not found: {session_to_delete}")
+                return
+
+            # Switch to another session (first available after refresh)
+            updated_sessions = list_sessions(cfg)
+            if updated_sessions:
+                # Switch to first available session
+                new_session = updated_sessions[0]["name"]
+                self.session = new_session
+                self.output.clear()
+                self.output.append(
+                    f"Session '{session_to_delete}' deleted.\nSwitched to session: {new_session}\n\n"
+                )
+                # Update status bar for new session
+                await self._update_session_status()
+                log.info(
+                    f"Session deleted: {session_to_delete}, switched to {new_session}"
+                )
+            else:
+                # This should not happen as we checked for last session, but handle defensively
+                self.output.append(
+                    f"\n[error] Session deleted but no sessions remaining.\n\n"
+                )
+                log.error("No sessions remaining after delete")
+
+        except Exception as e:
+            log.error(f"Failed to delete session: {type(e).__name__}: {e}")
+            self.output.append(f"\n[error] Failed to delete session: {e}\n\n")
+
     def action_clear_output(self) -> None:
         """Clear the chat output buffer."""
         try:
@@ -962,6 +1072,7 @@ class MyGPTTUI(App):
                 "toggle_rag": self.action_toggle_rag,
                 "models_manager": self.action_models_manager,
                 "rename_session": self.action_rename_session,
+                "delete_session": self.action_delete_session,
                 "clear_output": self.action_clear_output,
                 "show_help": self.action_show_help,
                 "quit": self.action_quit,
