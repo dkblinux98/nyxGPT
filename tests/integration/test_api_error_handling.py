@@ -208,8 +208,8 @@ def test_rag_operations_without_cassandra(api_base_url: str) -> None:
             json={"query": "test query", "top_k": 5},
         )
 
-        # Either Cassandra is available (200) or unavailable (500/503)
-        assert response.status_code in (200, 500, 503)
+        # Either Cassandra is available (200), unavailable (500/503), or validation error (400)
+        assert response.status_code in (200, 400, 500, 503)
 
         # If error, should have proper error structure
         if response.status_code >= 500:

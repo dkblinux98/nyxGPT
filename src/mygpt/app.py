@@ -1822,7 +1822,7 @@ async def rag_upload_file(
 ) -> RagIngestResponse:
     """Upload and ingest a document for RAG with proper markdown parsing."""
     # Validate file type
-    allowed_types = {".txt", ".md", ".json", ".pdf", ".pptx"}
+    allowed_types = {".txt", ".md", ".json", ".pdf", ".pptx", ".docx"}
     file_ext = Path(file.filename or "").suffix.lower()
     if file_ext not in allowed_types:
         raise HTTPException(
@@ -1856,6 +1856,89 @@ async def rag_upload_file(
             )
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"PDF parsing failed: {e}")
+
+    elif file_ext == ".docx":
+        # Handle DOCX (Microsoft Word)
+        try:
+            from docx import Document  # type: ignore[import-not-found]
+            from docx.opc.exceptions import PackageNotFoundError  # type: ignore[import-not-found]
+            import zipfile
+
+            try:
+                doc = Document(io.BytesIO(content))
+            except PackageNotFoundError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid DOCX file: file is corrupted or not a valid Word document",
+                )
+            except zipfile.BadZipFile:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid DOCX file: file structure is corrupted (not a valid ZIP archive)",
+                )
+
+            text_parts = []
+            image_counter = 0
+
+            for para in doc.paragraphs:
+                para_text = para.text.strip()
+
+                # Check for embedded images in this paragraph
+                # Images are stored in runs within paragraphs
+                for run in para.runs:
+                    # Check if this run contains an image
+                    if hasattr(run, '_element') and run._element is not None:
+                        # Look for drawing elements that contain images
+                        for drawing in run._element.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing'):
+                            image_counter += 1
+                            # Extract image description if available (alt text)
+                            desc_elems = drawing.findall('.//{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}docPr')
+
+                            image_desc = f"[Image {image_counter}"
+                            if desc_elems and desc_elems[0].get('descr'):
+                                image_desc += f": {desc_elems[0].get('descr')}"
+                            elif desc_elems and desc_elems[0].get('name'):
+                                image_desc += f": {desc_elems[0].get('name')}"
+                            image_desc += "]"
+
+                            text_parts.append(image_desc)
+
+                if para_text:
+                    # Preserve heading structure
+                    if para.style and para.style.name.startswith('Heading'):
+                        text_parts.append(f"\n## {para_text}\n")
+                    else:
+                        text_parts.append(para_text)
+
+            # Handle tables
+            for table in doc.tables:
+                table_text = []
+                for row in table.rows:
+                    row_text = " | ".join(cell.text.strip() for cell in row.cells)
+                    if row_text:
+                        table_text.append(row_text)
+                if table_text:
+                    text_parts.append("\n[Table]\n" + "\n".join(table_text) + "\n")
+
+            text = "\n\n".join(text_parts)
+
+            # Check if document is empty
+            if not text.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="DOCX file is empty or contains no extractable text",
+                )
+
+        except ImportError:
+            raise HTTPException(
+                status_code=400,
+                detail="DOCX support not available. Install python-docx: pip install python-docx",
+            )
+        except HTTPException:
+            # Re-raise HTTP exceptions (our specific error messages)
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"DOCX parsing failed: {e}")
 
     elif file_ext == ".md":
         # Handle Markdown with proper parsing (#2667)
@@ -1900,7 +1983,7 @@ async def rag_upload_file(
     elif file_ext == ".pptx":
         # Handle PowerPoint presentations
         try:
-            from pptx import Presentation
+            from pptx import Presentation  # type: ignore[import-not-found]
 
             prs = Presentation(io.BytesIO(content))
             text_parts = []
