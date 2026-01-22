@@ -1,9 +1,8 @@
 'use client';
 
-import { Component, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Component, useCallback, useEffect, useRef, useState } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import LoadingSpinner from '../../components/LoadingSpinner';
-import ErrorMessage from '../../components/ErrorMessage';
 import { useToast } from '../../contexts/ToastContext';
 
 // Error Boundary for Virtuoso rendering
@@ -158,6 +157,7 @@ type Props = {
   sessionName: string;
   onSessionUpdated?: () => void;
   scrollToMessageIndex?: number | null;
+  releaseVersion?: string | null;
 };
 
 function RagCitationsCollapsible({
@@ -300,7 +300,7 @@ function RagCitationsCollapsible({
   );
 }
 
-export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessageIndex }: Props) {
+export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessageIndex, releaseVersion }: Props) {
   const toast = useToast();
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -309,15 +309,15 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   const [lastError, setLastError] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
+  const [showModelDropdown, setShowModelDropdown] = useState<boolean>(false);
   const isStreamingRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const [highlightedMessageIndex, setHighlightedMessageIndex] = useState<number | null>(null);
 
-  // Track scroll state to prevent infinite re-renders and maintain position on edits
+  // Track scroll state to prevent infinite re-renders
   const lastMessageCountRef = useRef(0);
   const isAtBottomRef = useRef(true);
-  const scrollStateRef = useRef<{ index: number; offset: number } | null>(null);
 
   // RAG state
   const [ragEnabled, setRagEnabled] = useState<boolean>(false);
@@ -325,13 +325,16 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   const [ragError, setRagError] = useState<string | null>(null);
   const [ragChunksCache, setRagChunksCache] = useState<Map<number, RagChunk[]>>(new Map());
 
+  // Upload menu state
+  const [showUploadMenu, setShowUploadMenu] = useState<boolean>(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // Rename state
   const [sessionTitle, setSessionTitle] = useState<string>('');
   const [renaming, setRenaming] = useState<boolean>(false);
 
-  // Edit/Regenerate state
+  // Edit state
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
-  const [editContent, setEditContent] = useState<string>('');
 
   // Pagination state
   const [totalMessages, setTotalMessages] = useState<number>(0);
@@ -340,8 +343,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   const [hasMore, setHasMore] = useState<boolean>(true);
   const [firstItemIndex, setFirstItemIndex] = useState<number>(0);
   const PAGE_SIZE = 50;
-
-  const title = useMemo(() => sessionTitle || `Session: ${sessionName}`, [sessionTitle, sessionName]);
 
   // Fetch available models on mount
   useEffect(() => {
@@ -475,6 +476,33 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       }, 100);
     }
   }, [scrollToMessageIndex, loadedOffset]);
+
+  // Close model dropdown on Escape
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && showModelDropdown) {
+        setShowModelDropdown(false);
+      }
+    };
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, [showModelDropdown]);
+
+  // Close upload menu on click outside or Escape
+  useEffect(() => {
+    const handleClick = () => setShowUploadMenu(false);
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowUploadMenu(false);
+    };
+    if (showUploadMenu) {
+      document.addEventListener('click', handleClick);
+      document.addEventListener('keydown', handleEscape);
+      return () => {
+        document.removeEventListener('click', handleClick);
+        document.removeEventListener('keydown', handleEscape);
+      };
+    }
+  }, [showUploadMenu]);
 
   // Load older messages function
   // Helper to reset pagination state (Medium Issue 6: Called after message mutations)
@@ -616,6 +644,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     const text = input.trim();
     if (!text || isStreamingRef.current) return;
 
+    // Clear edit state if we were editing
+    if (editingIndex !== null) {
+      setEditingIndex(null);
+    }
+
+    // Check if this is the first message (for auto-titling)
+    const isFirstMessage = messages.length === 0;
+
     // Optimistic append user message
     setMessages((prev) => [...prev, { role: 'user', content: text }, { role: 'assistant', content: '' }]);
     setStatus('connecting');
@@ -704,6 +740,25 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         }
       }
 
+      // Auto-title the session based on first user message
+      if (isFirstMessage) {
+        try {
+          // Create a title from the first ~50 chars of the user's message
+          const autoTitle = text.length > 50 ? text.substring(0, 47) + '...' : text;
+          await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/rename`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              new_name: autoTitle,
+              sync_filename: false, // Don't change the filename, just the title
+            }),
+          });
+        } catch (titleErr) {
+          // Non-critical error, just log it
+          console.warn('Failed to auto-title session:', titleErr);
+        }
+      }
+
       // Notify parent that session was updated (model metadata may have changed)
       onSessionUpdated?.();
     } catch (e) {
@@ -737,154 +792,198 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     isStreamingRef.current = false;
   }
 
-  async function handleEditMessage(index: number) {
+  function handleEditMessage(index: number) {
     const message = messages[index];
     setEditingIndex(index);
-    setEditContent(message.content);
-  }
-
-  async function saveEdit(index: number) {
-    if (!editContent.trim()) {
-      toast.error('Edit content cannot be empty');
-      return;
-    }
-
-    try {
-      // Capture scroll state before edit to restore after reload
-      const scrollState = await virtuosoRef.current?.getState();
-      if (scrollState) {
-        scrollStateRef.current = scrollState;
-      }
-
-      const res = await fetch(`/api/v1/sessions/${sessionName}/messages/${index}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: editContent, fork: true }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({ detail: 'Edit failed' }));
-        throw new Error(errData.detail || 'Edit failed');
-      }
-
-      // Reload session to get updated messages
-      const reloadRes = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionName)}`);
-      if (reloadRes.ok) {
-        const data = await reloadRes.json();
-        if (data.messages && Array.isArray(data.messages)) {
-          setMessages(data.messages);
-
-          // Reset pagination state after edit (Medium Issue 6)
-          resetPaginationState(data.messages);
-
-          // Restore scroll position after messages update
-          setTimeout(() => {
-            if (scrollStateRef.current) {
-              virtuosoRef.current?.restoreStateFrom(scrollStateRef.current);
-              scrollStateRef.current = null;
-            }
-          }, 100);
-        }
-      }
-
-      setEditingIndex(null);
-      setEditContent('');
-      toast.success('Message edited');
-      onSessionUpdated?.();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      toast.error(`Failed to edit message: ${msg}`);
-    }
+    setInput(message.content);
   }
 
   function cancelEdit() {
     setEditingIndex(null);
-    setEditContent('');
+    setInput('');
+  }
+
+  async function handleRegenerate(assistantIndex: number) {
+    if (isStreamingRef.current) return;
+
+    // Find the preceding user message
+    let userMessageIndex = -1;
+    for (let i = assistantIndex - 1; i >= 0; i--) {
+      if (messages[i].role === 'user') {
+        userMessageIndex = i;
+        break;
+      }
+    }
+
+    if (userMessageIndex === -1) {
+      toast.error('No user message found to regenerate from');
+      return;
+    }
+
+    const userMessage = messages[userMessageIndex];
+    const prompt = userMessage.content;
+
+    // Truncate messages: keep everything up to and including the user message, then add empty assistant
+    setMessages((prev) => [
+      ...prev.slice(0, userMessageIndex + 1),
+      { role: 'assistant', content: '' },
+    ]);
+
+    setStatus('connecting');
+    setIsStreaming(true);
+    isStreamingRef.current = true;
+    setLastError(null);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const res = await fetch('/api/chat/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session: sessionName,
+          prompt: prompt,
+          model: selectedModel || undefined,
+          rag_enabled: ragEnabled,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      if (!res.body) {
+        throw new Error('No response body (streaming not supported)');
+      }
+
+      setStatus('streaming');
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      let accumulatedText = '';
+      let ragChunks: RagChunk[] | undefined = undefined;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        accumulatedText += chunk;
+
+        // Check for RAG metadata in accumulated text
+        if (!ragChunks && accumulatedText.includes('__RAG_START__')) {
+          const ragEndIndex = accumulatedText.indexOf('__RAG_END__');
+          if (ragEndIndex !== -1) {
+            const ragStartIndex = accumulatedText.indexOf('__RAG_START__') + '__RAG_START__'.length;
+            const ragJson = accumulatedText.substring(ragStartIndex, ragEndIndex);
+            try {
+              const ragData = JSON.parse(ragJson);
+              if (ragData.type === 'rag_metadata' && Array.isArray(ragData.chunks)) {
+                ragChunks = ragData.chunks;
+              }
+            } catch (e) {
+              console.error('Failed to parse RAG metadata:', e);
+            }
+            accumulatedText = accumulatedText.substring(ragEndIndex + '__RAG_END__'.length);
+            setMessages((prev) => {
+              if (prev.length === 0) return prev;
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last?.role === 'assistant') {
+                next[next.length - 1] = { ...last, ragChunks: ragChunks, content: accumulatedText.trimStart() };
+              }
+              return next;
+            });
+            continue;
+          }
+        }
+
+        // Append chunk to last assistant message
+        if (!accumulatedText.includes('__RAG_START__') || ragChunks !== undefined) {
+          setMessages((prev) => {
+            if (prev.length === 0) return prev;
+            const next = [...prev];
+            const last = next[next.length - 1];
+            if (last?.role === 'assistant') {
+              next[next.length - 1] = { ...last, content: (last.content ?? '') + chunk };
+            }
+            return next;
+          });
+        }
+      }
+
+      onSessionUpdated?.();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setLastError(msg);
+      setStatus('error');
+
+      setMessages((prev) => {
+        if (prev.length === 0) {
+          return [{ role: 'assistant', content: `[error] ${msg}` }];
+        }
+        const next = [...prev];
+        const last = next[next.length - 1];
+        if (last?.role === 'assistant') {
+          next[next.length - 1] = { ...last, content: (last.content ?? '') + `\n\n[error] ${msg}` };
+          return next;
+        }
+        return [...next, { role: 'assistant', content: `\n\n[error] ${msg}` }];
+      });
+    } finally {
+      setIsStreaming(false);
+      isStreamingRef.current = false;
+      if (status !== 'error') setStatus('idle');
+      abortRef.current = null;
+    }
   }
 
   // Memoized message renderer for error boundary fallback
   const renderMessageItem = useCallback(
-    (idx: number, m: ChatMessage) => (
-      <div
-        data-message-index={idx}
-        style={{
-          padding: '12px',
-          marginBottom: 12,
-          background: highlightedMessageIndex === idx ? 'var(--highlight)' : 'transparent',
-          borderRadius: highlightedMessageIndex === idx ? 8 : 0,
-          transition: 'all 0.3s ease',
-        }}
-      >
-        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 4, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <strong>{m.role}</strong>
-          {m.edited_at && <span style={{ fontSize: 10, opacity: 0.6 }}>(edited)</span>}
-        </div>
-        {/* Show RAG citations if available (streaming) or persisted (loaded from session) */}
-        {((m.ragChunks && m.ragChunks.length > 0) || (m.rag_chunks && m.rag_chunks.length > 0)) && (
-          <RagCitationsCollapsible
-            sessionName={sessionName}
-            messageIndex={idx}
-            initialChunks={m.ragChunks || m.rag_chunks || ragChunksCache.get(idx)}
-            onChunksLoaded={(chunks) => {
-              setRagChunksCache((prev) => {
-                const next = new Map(prev);
-                next.set(idx, chunks);
-                return next;
-              });
+    (idx: number, m: ChatMessage) => {
+      const isUser = m.role === 'user';
+      const isEditing = editingIndex === idx;
+
+      return (
+        <div
+          data-message-index={idx}
+          className="message-bubble"
+          style={{
+            padding: '8px 12px',
+            marginBottom: 16,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: isUser ? 'flex-end' : 'flex-start',
+            transition: 'all 0.3s ease',
+          }}
+        >
+          <div
+            style={{
+              maxWidth: isUser ? '80%' : '100%',
+              padding: isUser ? '12px 16px' : '8px 0',
+              borderRadius: isUser ? 18 : 0,
+              background: isUser
+                ? (highlightedMessageIndex === idx ? 'var(--highlight)' : '#FDDCC8')
+                : (highlightedMessageIndex === idx ? 'var(--highlight)' : 'transparent'),
+              color: isUser ? '#1a1a1a' : 'var(--foreground)',
             }}
-          />
-        )}
-        {editingIndex === idx ? (
-          <div>
-            <textarea
-              value={editContent}
-              onChange={(e) => setEditContent(e.target.value)}
-              style={{
-                width: '100%',
-                minHeight: 80,
-                padding: 8,
-                borderRadius: 6,
-                border: '1px solid var(--border)',
-                background: 'var(--input-bg)',
-                color: 'var(--foreground)',
-                fontFamily: 'inherit',
-                fontSize: 14,
-                resize: 'vertical',
-              }}
-            />
-            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-              <button
-                onClick={() => saveEdit(idx)}
-                style={{
-                  padding: '4px 8px',
-                  fontSize: 12,
-                  borderRadius: 4,
-                  border: '1px solid var(--border)',
-                  background: 'var(--success)',
-                  color: 'white',
-                  cursor: 'pointer',
+          >
+            {/* Show RAG citations if available (streaming) or persisted (loaded from session) */}
+            {((m.ragChunks && m.ragChunks.length > 0) || (m.rag_chunks && m.rag_chunks.length > 0)) && (
+              <RagCitationsCollapsible
+                sessionName={sessionName}
+                messageIndex={idx}
+                initialChunks={m.ragChunks || m.rag_chunks || ragChunksCache.get(idx)}
+                onChunksLoaded={(chunks) => {
+                  setRagChunksCache((prev) => {
+                    const next = new Map(prev);
+                    next.set(idx, chunks);
+                    return next;
+                  });
                 }}
-              >
-                Save
-              </button>
-              <button
-                onClick={cancelEdit}
-                style={{
-                  padding: '4px 8px',
-                  fontSize: 12,
-                  borderRadius: 4,
-                  border: '1px solid var(--border)',
-                  background: 'var(--button-hover)',
-                  color: 'var(--foreground)',
-                  cursor: 'pointer',
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div>
+              />
+            )}
+
             <div style={{ whiteSpace: 'pre-wrap' }}>
               {m.role === 'assistant' && !m.content && status === 'connecting' ? (
                 <span style={{ opacity: 0.5 }}>⋯</span>
@@ -892,170 +991,227 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 m.content
               )}
             </div>
-            {!isStreaming && (
-              <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                <button
-                  onClick={() => handleEditMessage(idx)}
-                  style={{
-                    padding: '4px 8px',
-                    fontSize: 11,
-                    borderRadius: 4,
-                    border: '1px solid var(--border)',
-                    background: 'transparent',
-                    color: 'var(--foreground)',
-                    cursor: 'pointer',
-                    opacity: 0.7,
-                  }}
-                  title="Edit message"
-                >
-                  ✏️ Edit
-                </button>
-                {m.role === 'user' && (
-                  <button
-                    onClick={() => handleRegenerateResponse(idx)}
-                    style={{
-                      padding: '4px 8px',
-                      fontSize: 11,
-                      borderRadius: 4,
-                      border: '1px solid var(--border)',
-                      background: 'transparent',
-                      color: 'var(--foreground)',
-                      cursor: 'pointer',
-                      opacity: 0.7,
-                    }}
-                    title="Regenerate response from this message"
-                  >
-                    🔄 Regenerate
-                  </button>
-                )}
-              </div>
-            )}
           </div>
-        )}
-      </div>
-    ),
+
+          {/* Action buttons below user message */}
+          {isUser && !isStreaming && !isEditing && (
+            <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+              {/* Copy button */}
+              <button
+                className="edit-icon"
+                onClick={() => {
+                  navigator.clipboard.writeText(m.content);
+                  toast.success('Copied to clipboard');
+                }}
+                title="Copy message"
+                style={{
+                  padding: 4,
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  opacity: 0,
+                  transition: 'opacity 0.2s',
+                  color: '#666',
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              </button>
+              {/* Edit button */}
+              <button
+                className="edit-icon"
+                onClick={() => handleEditMessage(idx)}
+                title="Edit message"
+                style={{
+                  padding: 4,
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  opacity: 0,
+                  transition: 'opacity 0.2s',
+                  color: '#666',
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+                </svg>
+              </button>
+            </div>
+          )}
+
+          {/* Action buttons below assistant message */}
+          {!isUser && !isStreaming && m.content && (
+            <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+              {/* Copy button */}
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(m.content);
+                  toast.success('Copied to clipboard');
+                }}
+                title="Copy response"
+                style={{
+                  padding: 4,
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  opacity: 0.5,
+                  transition: 'opacity 0.2s',
+                  color: '#666',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.5'; }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                </svg>
+              </button>
+              {/* Regenerate button */}
+              <button
+                onClick={() => handleRegenerate(idx)}
+                title="Regenerate response"
+                style={{
+                  padding: 4,
+                  background: 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  opacity: 0.5,
+                  transition: 'opacity 0.2s',
+                  color: '#666',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.5'; }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 2v6h-6" />
+                  <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+                  <path d="M3 22v-6h6" />
+                  <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+                </svg>
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    },
     [
       highlightedMessageIndex,
       sessionName,
       ragChunksCache,
-      editingIndex,
-      editContent,
       status,
+      editingIndex,
       isStreaming,
+      toast,
     ]
   );
 
-  async function handleRegenerateResponse(index: number) {
-    const message = messages[index];
-    if (message.role !== 'user') {
-      toast.error('Can only regenerate from user messages');
-      return;
-    }
-
-    try {
-      // Capture scroll state before regeneration to restore after reload
-      const scrollState = await virtuosoRef.current?.getState();
-      if (scrollState) {
-        scrollStateRef.current = scrollState;
-      }
-
-      setIsStreaming(true);
-      setStatus('connecting');
-
-      const res = await fetch(`/api/v1/sessions/${sessionName}/messages/${index}/regenerate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: selectedModel }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({ detail: 'Regenerate failed' }));
-        throw new Error(errData.detail || 'Regenerate failed');
-      }
-
-      const data = await res.json();
-
-      // Reload session to get the new response
-      const reloadRes = await fetch(`/api/v1/sessions/${encodeURIComponent(sessionName)}`);
-      if (reloadRes.ok) {
-        const reloadData = await reloadRes.json();
-        if (reloadData.messages && Array.isArray(reloadData.messages)) {
-          setMessages(reloadData.messages);
-
-          // Reset pagination state after regeneration (Medium Issue 6)
-          resetPaginationState(reloadData.messages);
-
-          // Restore scroll position after messages update
-          setTimeout(() => {
-            if (scrollStateRef.current) {
-              virtuosoRef.current?.restoreStateFrom(scrollStateRef.current);
-              scrollStateRef.current = null;
-            }
-          }, 100);
-        }
-      }
-
-      toast.success('Response regenerated');
-      onSessionUpdated?.();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      toast.error(`Failed to regenerate: ${msg}`);
-      setStatus('error');
-    } finally {
-      setIsStreaming(false);
-      setStatus('idle');
-    }
-  }
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-        <div>
-          <h2 style={{ margin: 0 }}>{title}</h2>
-          <div style={{ marginTop: 4, fontSize: 12, opacity: 0.7, display: 'flex', alignItems: 'center', gap: 8 }}>
-            {(status === 'connecting' || status === 'streaming') && <LoadingSpinner size="small" />}
-            <span>Status: <strong>{status}</strong></span>
-            {lastError ? <span style={{ marginLeft: 8, color: 'red' }}>({lastError})</span> : null}
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {isStreaming && (
-            <button onClick={stop} style={{ padding: '6px 10px', cursor: 'pointer' }}>
-              Stop
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Model selector */}
-      <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-        <label htmlFor="model-select" style={{ fontSize: 14, fontWeight: 500 }}>
-          Model:
-        </label>
-        <select
-          id="model-select"
-          value={selectedModel}
-          onChange={(e) => setSelectedModel(e.target.value)}
+      {/* Model selector - ChatGPT style */}
+      <div style={{ position: 'relative', marginBottom: 8 }}>
+        <button
+          onClick={() => !isStreaming && setShowModelDropdown(!showModelDropdown)}
           disabled={isStreaming}
           style={{
-            padding: '6px 10px',
-            borderRadius: 6,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            padding: '8px 12px',
+            background: 'var(--background)',
             border: '1px solid var(--border)',
+            borderRadius: 20,
             fontSize: 14,
+            fontWeight: 500,
             cursor: isStreaming ? 'not-allowed' : 'pointer',
-            background: isStreaming ? 'var(--button-hover)' : 'var(--input-bg)',
+            color: 'var(--foreground)',
+            transition: 'background 0.2s ease',
+          }}
+          onMouseEnter={(e) => {
+            if (!isStreaming) e.currentTarget.style.background = 'var(--button-hover)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'var(--background)';
           }}
         >
-          {availableModels.length === 0 ? (
-            <option value="">Loading models...</option>
-          ) : (
-            availableModels.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))
-          )}
-        </select>
+          <span style={{ fontWeight: 600 }}>myGPT</span>
+          <span style={{ opacity: 0.6 }}>{releaseVersion || ''}</span>
+          <span style={{ opacity: 0.5, fontSize: 12, marginLeft: 2 }}>›</span>
+        </button>
+
+        {showModelDropdown && (
+          <>
+            {/* Backdrop to close dropdown */}
+            <div
+              style={{
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                zIndex: 999,
+              }}
+              onClick={() => setShowModelDropdown(false)}
+            />
+            {/* Dropdown menu */}
+            <div
+              style={{
+                position: 'absolute',
+                top: '100%',
+                left: 0,
+                marginTop: 4,
+                background: 'var(--sidebar-bg)',
+                border: '1px solid var(--border)',
+                borderRadius: 8,
+                boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                zIndex: 1000,
+                minWidth: 200,
+                maxHeight: 300,
+                overflowY: 'auto',
+              }}
+            >
+              {availableModels.length === 0 ? (
+                <div style={{ padding: '12px 16px', fontSize: 14, opacity: 0.6 }}>
+                  Loading models...
+                </div>
+              ) : (
+                availableModels.map((model) => (
+                  <button
+                    key={model}
+                    onClick={() => {
+                      setSelectedModel(model);
+                      setShowModelDropdown(false);
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      width: '100%',
+                      padding: '10px 16px',
+                      background: model === selectedModel ? 'var(--button-hover)' : 'transparent',
+                      border: 'none',
+                      fontSize: 14,
+                      cursor: 'pointer',
+                      color: 'var(--foreground)',
+                      textAlign: 'left',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (model !== selectedModel) e.currentTarget.style.background = 'var(--button-hover)';
+                    }}
+                    onMouseLeave={(e) => {
+                      if (model !== selectedModel) e.currentTarget.style.background = 'transparent';
+                    }}
+                  >
+                    {model}
+                    {model === selectedModel && (
+                      <span style={{ marginLeft: 'auto', opacity: 0.6 }}>✓</span>
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
+          </>
+        )}
       </div>
 
       <div
@@ -1110,43 +1266,73 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         )}
       </div>
 
-      {/* RAG Controls */}
-      <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
-        <button
-          onClick={() => void toggleRag()}
-          disabled={isStreaming}
-          style={{
-            padding: '6px 10px',
-            borderRadius: 6,
-            border: '1px solid var(--border)',
-            background: ragEnabled ? 'var(--success)' : 'var(--button-hover)',
-            color: ragEnabled ? 'white' : 'var(--foreground)',
-            cursor: isStreaming ? 'not-allowed' : 'pointer',
-            fontSize: 12,
-            fontWeight: 500,
-          }}
-        >
-          RAG: {ragEnabled ? 'ON' : 'OFF'}
-        </button>
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".txt,.md,.json,.pdf,.docx,.pptx"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) void uploadFile(file);
+          e.target.value = ''; // Reset so same file can be selected again
+        }}
+        style={{ display: 'none' }}
+      />
 
-        <label style={{ fontSize: 12, cursor: isStreaming || ragStatus === 'uploading' ? 'not-allowed' : 'pointer' }}>
-          <input
-            type="file"
-            accept=".txt,.md,.json,.pdf"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void uploadFile(file);
+      {/* Message input box - two lines */}
+      <div
+        style={{
+          marginTop: 12,
+          border: '1px solid var(--border)',
+          borderRadius: 10,
+          background: 'var(--input-bg)',
+          overflow: 'hidden',
+        }}
+      >
+        {/* Edit header - shown when editing a message */}
+        {editingIndex !== null && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '8px 12px',
+              borderBottom: '1px solid var(--border)',
+              background: 'var(--button-hover)',
             }}
-            disabled={isStreaming || ragStatus === 'uploading'}
-            style={{ fontSize: 12 }}
-          />
-        </label>
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--foreground)' }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+              </svg>
+              <span style={{ fontSize: 13, fontWeight: 500 }}>Edit</span>
+            </div>
+            <button
+              onClick={cancelEdit}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                padding: 4,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--foreground)',
+                opacity: 0.6,
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.6'; }}
+              title="Cancel edit"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" />
+                <line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+        )}
 
-        {ragStatus === 'uploading' && <span style={{ fontSize: 12, color: 'var(--foreground)', opacity: 0.6 }}>Uploading...</span>}
-        {ragError && <span style={{ fontSize: 12, color: 'red' }}>{ragError}</span>}
-      </div>
-
-      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        {/* Line 1: Text input */}
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -1159,30 +1345,205 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
           placeholder="Type your message…"
           disabled={isStreaming}
           style={{
-            flex: 1,
-            padding: '10px 12px',
-            borderRadius: 10,
-            border: '1px solid var(--border)',
+            width: '100%',
+            padding: '12px',
+            border: 'none',
+            outline: 'none',
+            background: 'transparent',
+            fontSize: 14,
+            color: 'var(--foreground)',
           }}
         />
-        <button
-          onClick={() => void send()}
-          disabled={isStreaming || !input.trim()}
+
+        {/* Line 2: Controls row */}
+        <div
           style={{
-            padding: '10px 14px',
-            borderRadius: 10,
-            border: '1px solid var(--border)',
-            background: isStreaming ? 'var(--button-hover)' : 'var(--input-bg)',
-            cursor: isStreaming ? 'not-allowed' : 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '8px 12px',
+            borderTop: '1px solid var(--border)',
           }}
         >
-          Send
-        </button>
+          {/* Left side: Upload button and RAG toggle */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/* Upload menu button */}
+            <div style={{ position: 'relative' }}>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowUploadMenu(!showUploadMenu);
+                }}
+                disabled={isStreaming}
+                style={{
+                  width: 32,
+                  height: 32,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  borderRadius: 8,
+                  border: 'none',
+                  background: 'transparent',
+                  cursor: isStreaming ? 'not-allowed' : 'pointer',
+                  color: 'var(--foreground)',
+                  opacity: isStreaming ? 0.4 : 0.6,
+                  transition: 'opacity 0.15s, background 0.15s',
+                }}
+                onMouseEnter={(e) => {
+                  if (!isStreaming) {
+                    e.currentTarget.style.opacity = '1';
+                    e.currentTarget.style.background = 'var(--button-hover)';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.opacity = isStreaming ? '0.4' : '0.6';
+                  e.currentTarget.style.background = 'transparent';
+                }}
+                title="Upload file"
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+              </button>
+
+              {/* Upload dropdown menu */}
+              {showUploadMenu && (
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    position: 'absolute',
+                    bottom: '100%',
+                    left: 0,
+                    marginBottom: 8,
+                    background: 'var(--sidebar-bg)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                    zIndex: 1000,
+                    minWidth: 160,
+                  }}
+                >
+                  <button
+                    onClick={() => {
+                      fileInputRef.current?.click();
+                      setShowUploadMenu(false);
+                    }}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      width: '100%',
+                      padding: '10px 14px',
+                      background: 'transparent',
+                      border: 'none',
+                      fontSize: 14,
+                      cursor: 'pointer',
+                      color: 'var(--foreground)',
+                      textAlign: 'left',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'var(--button-hover)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'transparent';
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                    </svg>
+                    Upload file
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* RAG toggle */}
+            <button
+              onClick={() => void toggleRag()}
+              disabled={isStreaming}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 6,
+                border: '1px solid var(--border)',
+                background: ragEnabled ? '#E45801' : 'var(--button-hover)',
+                color: ragEnabled ? 'white' : 'var(--foreground)',
+                cursor: isStreaming ? 'not-allowed' : 'pointer',
+                fontSize: 12,
+                fontWeight: 500,
+              }}
+            >
+              RAG: {ragEnabled ? 'ON' : 'OFF'}
+            </button>
+
+            {ragStatus === 'uploading' && <span style={{ fontSize: 12, color: 'var(--foreground)', opacity: 0.6 }}>Uploading...</span>}
+            {ragError && <span style={{ fontSize: 12, color: 'red' }}>{ragError}</span>}
+          </div>
+
+          {/* Right side: Send/Stop button */}
+          {isStreaming ? (
+            <button
+              onClick={stop}
+              title="Stop generating"
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                border: 'none',
+                background: '#dc2626',
+                color: 'white',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              onClick={() => void send()}
+              disabled={!input.trim()}
+              title="Send message"
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                border: 'none',
+                background: input.trim() ? '#E45801' : 'var(--button-hover)',
+                color: 'white',
+                cursor: input.trim() ? 'pointer' : 'not-allowed',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+                opacity: input.trim() ? 1 : 0.5,
+                transition: 'background 0.2s, opacity 0.2s',
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="12" y1="19" x2="12" y2="5" />
+                <polyline points="5 12 12 5 19 12" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
 
-      <div style={{ marginTop: 8, fontSize: 12, opacity: 0.65 }}>
-        Streaming via <code>/api/chat/stream</code>
-      </div>
+      {(status === 'connecting' || status === 'streaming') && (
+        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <LoadingSpinner size="small" />
+          <span>{status === 'connecting' ? 'Connecting...' : 'Streaming...'}</span>
+        </div>
+      )}
+      {lastError && (
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--error)' }}>
+          Error: {lastError}
+        </div>
+      )}
     </div>
   );
 }

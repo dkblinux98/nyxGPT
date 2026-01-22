@@ -13,6 +13,12 @@ type LogFile = {
 
 type LogLevel = 'ALL' | 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
 
+type BackendInfo = {
+  ollama_base_url: string;
+  default_model: string;
+  sessions_dir: string;
+};
+
 export default function LogsPage() {
   const [files, setFiles] = useState<LogFile[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -21,6 +27,7 @@ export default function LogsPage() {
   const [loadingContent, setLoadingContent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
+  const [backendInfo, setBackendInfo] = useState<BackendInfo | null>(null);
 
   // Filter states
   const [logLevel, setLogLevel] = useState<LogLevel>('ALL');
@@ -35,6 +42,22 @@ export default function LogsPage() {
   // Load log files on mount
   useEffect(() => {
     loadLogFiles();
+  }, []);
+
+  // Load backend info on mount
+  useEffect(() => {
+    async function fetchBackendInfo() {
+      try {
+        const res = await fetch('/api/info');
+        if (res.ok) {
+          const data = await res.json();
+          setBackendInfo(data);
+        }
+      } catch (e) {
+        console.error('Failed to load backend info:', e);
+      }
+    }
+    fetchBackendInfo();
   }, []);
 
   // Auto-refresh effect
@@ -160,12 +183,39 @@ export default function LogsPage() {
 
   return (
     <main style={{ padding: '2rem', maxWidth: 1400, margin: '0 auto' }}>
-      <div style={{ marginBottom: '2rem' }}>
+      <div style={{ marginBottom: '1.5rem' }}>
         <h1 style={{ margin: 0, marginBottom: 8 }}>Log Viewer</h1>
-        <a href="/admin" style={{ color: '#0066cc', textDecoration: 'none' }}>
-          ← Back to Admin
+        <a href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
+          ← Back to Chat
         </a>
       </div>
+
+      {/* Backend Info */}
+      {backendInfo && (
+        <div
+          style={{
+            marginBottom: '1.5rem',
+            padding: '1rem',
+            border: '1px solid var(--border)',
+            borderRadius: 8,
+            background: 'var(--background)',
+            fontSize: 14,
+          }}
+        >
+          <h2 style={{ margin: 0, marginBottom: '0.75rem', fontSize: '1rem' }}>Backend</h2>
+          <ul style={{ margin: 0, paddingLeft: '1.25rem', display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <li>
+              <strong>Ollama base URL:</strong> {backendInfo.ollama_base_url}
+            </li>
+            <li>
+              <strong>Default model:</strong> {backendInfo.default_model}
+            </li>
+            <li>
+              <strong>Sessions dir:</strong> {backendInfo.sessions_dir}
+            </li>
+          </ul>
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: '1.5rem' }}>
         {/* Sidebar: File list */}

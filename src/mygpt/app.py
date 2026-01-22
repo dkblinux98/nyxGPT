@@ -474,6 +474,8 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
 
     parser = ConfigParser()
+    # Preserve key case (ConfigParser lowercases by default)
+    parser.optionxform = str  # type: ignore[assignment]
     if cfg_path.exists():
         parser.read(cfg_path)
 
@@ -609,10 +611,12 @@ def health() -> dict[str, str]:
 @api.get("/info", response_model=InfoResponse)
 def info(request: Request) -> InfoResponse:
     cfg = _req_cfg(request)
+    release_version = cfg.get("github", "RELEASE_BRANCH", fallback=None)
     return InfoResponse(
         ollama_base_url=get_ollama_base_url(cfg),
         default_model=get_default_model(cfg),
         sessions_dir=str(get_sessions_dir(cfg)),
+        release_version=release_version,
     )
 
 

@@ -59,12 +59,16 @@ cd "$REPO_DIR/web"
 
 # Clear Next.js cache to ensure fresh routes are recognized
 # This prevents 404 errors when new routes are added
+# Note: In launchd context, Dropbox-synced directories may be protected
 if [[ -d ".next" ]]; then
-  echo "Clearing Next.js cache (.next directory)..."
-  # Remove extended attributes (Dropbox, etc.) that prevent deletion
-  xattr -rc .next 2>/dev/null || true
-  # Don't fail if rm fails (Dropbox might prevent deletion)
-  rm -rf .next || echo "Warning: Could not clear .next cache (may be protected by Dropbox)" >&2
+  # Test if we can write to the directory before attempting deletion
+  if touch ".next/.mygpt-test" 2>/dev/null; then
+    rm -f ".next/.mygpt-test"
+    echo "Clearing Next.js cache (.next directory)..."
+    xattr -rc .next 2>/dev/null || true
+    rm -rf .next 2>/dev/null || true
+  fi
+  # If we can't write, silently skip cache clearing - Next.js will work fine
 fi
 
 exec "$NPM_BIN" run dev

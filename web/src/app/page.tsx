@@ -9,15 +9,17 @@ import ErrorMessage from '../components/ErrorMessage';
 import { SessionListSkeleton } from '../components/SkeletonLoader';
 import { SessionListErrorBoundary } from '../components/SessionListErrorBoundary';
 import { SessionCacheErrorBoundary } from '../components/SessionCacheErrorBoundary';
-import { SearchModal } from '../components/SearchModal';
+import { UnifiedSearch, UnifiedSearchRef } from '../components/UnifiedSearch';
 import { VirtualizedSessionList } from '../components/VirtualizedSessionList';
 import { useToast } from '../contexts/ToastContext';
+import { useTheme } from '../contexts/ThemeContext';
 import { useSessionCache } from '../hooks/useSessionCache';
 
 type Info = {
   ollama_base_url: string;
   default_model: string;
   sessions_dir: string;
+  release_version: string | null;
 };
 
 type SessionsResponse = {
@@ -36,7 +38,9 @@ type SessionsResponse = {
 
 function Home() {
   const toast = useToast();
+  const { theme, setTheme } = useTheme();
   const [info, setInfo] = useState<Info | null>(null);
+  const [showSettingsMenu, setShowSettingsMenu] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [loadingInfo, setLoadingInfo] = useState<boolean>(true);
   const [retryingInfo, setRetryingInfo] = useState<boolean>(false);
@@ -60,11 +64,9 @@ function Home() {
   const [sidebarVisible, setSidebarVisible] = useState<boolean>(true);
 
   // Message search state
-  const [showSearchModal, setShowSearchModal] = useState<boolean>(false);
   const [scrollToMessageIndex, setScrollToMessageIndex] = useState<number | null>(null);
 
-  // Search and filter state
-  const [searchText, setSearchText] = useState<string>('');
+  // Filter state
   const [filterModel, setFilterModel] = useState<string>('');
   const [filterPinned, setFilterPinned] = useState<string>('all'); // 'all', 'pinned', 'unpinned'
   const [filterTags, setFilterTags] = useState<string>('');
@@ -82,7 +84,7 @@ function Home() {
   const [pendingSessions, setPendingSessions] = useState<Set<string>>(new Set());
 
   // Refs for keyboard shortcuts
-  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchRef = useRef<UnifiedSearchRef>(null);
   const feedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const srTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -135,16 +137,8 @@ function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Filter and search sessions
+  // Filter sessions
   const filteredSessions = sessions.filter((session) => {
-    // Text search across name, title, and summary
-    const searchLower = searchText.toLowerCase();
-    const matchesSearch =
-      !searchText ||
-      session.name.toLowerCase().includes(searchLower) ||
-      session.title?.toLowerCase().includes(searchLower) ||
-      session.summary?.toLowerCase().includes(searchLower);
-
     // Model filter
     const matchesModel = !filterModel || session.model === filterModel;
 
@@ -159,7 +153,7 @@ function Home() {
       !filterTags ||
       session.tags?.some((tag) => tag.toLowerCase().includes(filterTags.toLowerCase()));
 
-    return matchesSearch && matchesModel && matchesPinned && matchesTags;
+    return matchesModel && matchesPinned && matchesTags;
   });
 
   // Get unique models for filter dropdown
@@ -169,7 +163,6 @@ function Home() {
 
   // Clear all filters
   const clearFilters = () => {
-    setSearchText('');
     setFilterModel('');
     setFilterPinned('all');
     setFilterTags('');
@@ -187,47 +180,49 @@ function Home() {
 
   // Create new chat with optimistic update
   const createNewChat = useCallback(async () => {
+    // Generate automatic session name based on timestamp
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-    const defaultName = `session-${timestamp}`;
-    const sessionName = prompt('Enter session name:', defaultName);
-
-    if (!sessionName || !sessionName.trim()) return;
-
-    const trimmedName = sessionName.trim();
+    const sessionName = `chat-${timestamp}`;
     const previousSelection = selectedSession;
 
     // Optimistic update: add new session to cache immediately
     const newSession = {
-      name: trimmedName,
+      name: sessionName,
       messages: 0,
       pinned: false,
       tags: [],
-      title: trimmedName,
+      title: 'New Chat',
       modified: new Date().toISOString(),
     };
 
     const { rollback, revalidate } = mutateSessions((sessions) => [newSession, ...sessions]);
-    setSelectedSession(trimmedName);
+    setSelectedSession(sessionName);
 
     try {
-      // Create the session on the backend
+      // Create the session on the backend (no system prompt - backend handles defaults)
       const res = await fetch('/api/sessions/init', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: trimmedName,
-          system: 'You are a helpful assistant.',
+          name: sessionName,
         }),
       });
 
       if (!res.ok) {
-        const errorData = await res.json().catch(() => ({ detail: 'Unknown error' }));
-        throw new Error(errorData.detail || `HTTP ${res.status}`);
+        const errorData = await res.json().catch(() => ({ error: { message: 'Unknown error' } }));
+        // Handle wrapped error format {"error": {"message": "..."}} or legacy {"detail": "..."}
+        const detail = errorData.error?.message
+          || (typeof errorData.detail === 'string' ? errorData.detail : null)
+          || (Array.isArray(errorData.detail)
+            ? errorData.detail.map((e: { msg?: string }) => e.msg || JSON.stringify(e)).join(', ')
+            : null)
+          || `HTTP ${res.status}`;
+        console.error('Session init error:', errorData);
+        throw new Error(detail);
       }
 
       // Revalidate the cache to get actual server state
       await revalidate();
-      toast.success('New chat created successfully');
     } catch (e) {
       // Rollback on failure: restore previous cache state
       rollback();
@@ -252,7 +247,6 @@ function Home() {
       }
 
       setDeletingSession(sessionName);
-      announce(`Deleting session ${sessionName}`);
 
       const previousSelection = selectedSession;
 
@@ -276,7 +270,6 @@ function Home() {
           const error = await res.text();
           throw new Error(error || 'Delete failed');
         }
-        announce(`Session ${sessionName} deleted successfully`);
         toast.success(`Session deleted successfully`);
         // Revalidate to ensure consistency
         await revalidate();
@@ -286,16 +279,13 @@ function Home() {
         setSelectedSession(previousSelection);
         const errorMsg = `Failed to delete session: ${e instanceof Error ? e.message : String(e)}`;
         toast.error(errorMsg);
-        announce(errorMsg);
       } finally {
         setDeletingSession(null);
       }
     } catch (error) {
       // Catch any unexpected errors in state updates or operations
       console.error('Unexpected error in deleteSession:', error);
-      const unexpectedErrorMsg = 'An unexpected error occurred while deleting the session. Please refresh the page.';
-      toast.error(unexpectedErrorMsg);
-      announce(unexpectedErrorMsg);
+      toast.error('An unexpected error occurred while deleting the session. Please refresh the page.');
     }
   };
 
@@ -317,11 +307,7 @@ function Home() {
       }
 
       // Mark as pending for visual feedback
-      setPendingSessions((prev) => {
-        const next = new Set(prev).add(sessionName);
-        announce(`Renaming session ${sessionName} to ${newName.trim()}`);
-        return next;
-      });
+      setPendingSessions((prev) => new Set(prev).add(sessionName));
 
       const previousSelection = selectedSession;
 
@@ -354,7 +340,6 @@ function Home() {
           setSelectedSession(data.new_name);
         }
 
-        announce(`Session renamed successfully to ${newName.trim()}`);
         toast.success('Session renamed successfully');
         // Revalidate to ensure consistency
         await revalidate();
@@ -362,9 +347,7 @@ function Home() {
         // Rollback on failure: restore previous cache state
         rollback();
         setSelectedSession(previousSelection);
-        const errorMsg = `Failed to rename session: ${e instanceof Error ? e.message : String(e)}`;
-        toast.error(errorMsg);
-        announce(errorMsg);
+        toast.error(`Failed to rename session: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
         // Remove pending state
         setPendingSessions((prev) => {
@@ -376,9 +359,7 @@ function Home() {
     } catch (error) {
       // Catch any unexpected errors in state updates or operations
       console.error('Unexpected error in renameSession:', error);
-      const unexpectedErrorMsg = 'An unexpected error occurred while renaming the session. Please refresh the page.';
-      toast.error(unexpectedErrorMsg);
-      announce(unexpectedErrorMsg);
+      toast.error('An unexpected error occurred while renaming the session. Please refresh the page.');
     }
   };
 
@@ -439,11 +420,7 @@ function Home() {
       const action = isPinned ? 'unpin' : 'pin';
 
       // Mark as pending for visual feedback
-      setPendingSessions((prev) => {
-        const next = new Set(prev).add(sessionName);
-        announce(`${action === 'pin' ? 'Pinning' : 'Unpinning'} session ${sessionName}`);
-        return next;
-      });
+      setPendingSessions((prev) => new Set(prev).add(sessionName));
 
       // Optimistic update: toggle pin status in cache immediately
       const { rollback, revalidate } = mutateSessions((sessions) =>
@@ -458,16 +435,13 @@ function Home() {
         });
 
         if (!res.ok) throw new Error(`Failed to ${action} session`);
-        announce(`Session ${sessionName} ${action === 'pin' ? 'pinned' : 'unpinned'} successfully`);
         toast.success(`Session ${action === 'pin' ? 'pinned' : 'unpinned'} successfully`);
         // Revalidate to ensure consistency
         await revalidate();
       } catch (e) {
         // Rollback on failure: restore previous cache state
         rollback();
-        const errorMsg = `Failed to ${action} session: ${e instanceof Error ? e.message : String(e)}`;
-        toast.error(errorMsg);
-        announce(errorMsg);
+        toast.error(`Failed to ${action} session: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
         // Remove pending state
         setPendingSessions((prev) => {
@@ -479,9 +453,7 @@ function Home() {
     } catch (error) {
       // Catch any unexpected errors in state updates or operations
       console.error('Unexpected error in togglePin:', error);
-      const unexpectedErrorMsg = 'An unexpected error occurred while toggling pin status. Please refresh the page.';
-      toast.error(unexpectedErrorMsg);
-      announce(unexpectedErrorMsg);
+      toast.error('An unexpected error occurred while toggling pin status. Please refresh the page.');
     }
   };
 
@@ -501,6 +473,23 @@ function Home() {
       };
     }
   }, [contextMenu]);
+
+  // Close settings menu when clicking outside
+  useEffect(() => {
+    const handleClick = () => setShowSettingsMenu(false);
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowSettingsMenu(false);
+    };
+
+    if (showSettingsMenu) {
+      document.addEventListener('click', handleClick);
+      document.addEventListener('keydown', handleEscape);
+      return () => {
+        document.removeEventListener('click', handleClick);
+        document.removeEventListener('keydown', handleEscape);
+      };
+    }
+  }, [showSettingsMenu]);
 
   // Helper function to announce actions to screen readers
   const announce = useCallback((message: string) => {
@@ -567,11 +556,11 @@ function Home() {
         return;
       }
 
-      // Cmd/Ctrl + F: Open search modal
+      // Cmd/Ctrl + F: Focus search
       if (isMod && e.key === 'f') {
         e.preventDefault();
-        setShowSearchModal(true);
-        announce('Search modal opened');
+        searchRef.current?.focus();
+        announce('Search focused');
         return;
       }
 
@@ -589,7 +578,7 @@ function Home() {
       // / key: Focus search (when not typing in input)
       if (e.key === '/' && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
         e.preventDefault();
-        searchInputRef.current?.focus();
+        searchRef.current?.focus();
         announce('Search focused');
         return;
       }
@@ -696,131 +685,33 @@ function Home() {
             overflow: 'hidden',
           }}
         >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
           <Image
-            src="/mygpt-logo.svg"
+            src="/myGPT-logo.png"
             alt="myGPT logo"
-            width={40}
-            height={40}
+            width={200}
+            height={100}
             priority
-            style={{ flexShrink: 0 }}
+            style={{ objectFit: 'contain' }}
           />
-          <div>
-            <h1 style={{ margin: 0, lineHeight: 1.2 }}>myGPT</h1>
-            <p style={{ margin: 0, marginTop: 2, opacity: 0.8, fontSize: 12 }}>
-              Local web UI (early)
-            </p>
-          </div>
-        </div>
-
-        {/* Theme Toggle */}
-        <div style={{ marginBottom: 12 }}>
-          <ThemeToggle />
-        </div>
-
-        {/* New Chat button */}
-        <button
-          onClick={() => void createNewChat()}
-          aria-label={`Create new chat (${modKey}+K)`}
-          title={`Create new chat (${modKey}+K)`}
-          style={{
-            width: '100%',
-            padding: '10px 12px',
-            marginBottom: 12,
-            background: 'var(--success)',
-            color: 'white',
-            border: 'none',
-            borderRadius: 6,
-            fontSize: 14,
-            fontWeight: 600,
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 8,
-            outline: '2px solid transparent',
-            outlineOffset: 2,
-            transition: 'outline 0.2s ease',
-          }}
-          onFocus={(e) => {
-            e.currentTarget.style.outline = '2px solid var(--foreground)';
-          }}
-          onBlur={(e) => {
-            e.currentTarget.style.outline = '2px solid transparent';
-          }}
-        >
-          <span style={{ fontSize: 16 }}>+</span> New Chat
-        </button>
-
-        {/* Search Messages button */}
-        <button
-          onClick={() => setShowSearchModal(true)}
-          aria-label={`Search messages (${modKey}+F)`}
-          title={`Search messages (${modKey}+F)`}
-          style={{
-            width: '100%',
-            padding: '10px 12px',
-            marginBottom: 12,
-            background: 'var(--background)',
-            color: 'var(--foreground)',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            fontSize: 14,
-            fontWeight: 500,
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 8,
-            outline: '2px solid transparent',
-            outlineOffset: 2,
-            transition: 'outline 0.2s ease, background 0.2s ease',
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'var(--hover-bg)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'var(--background)';
-          }}
-          onFocus={(e) => {
-            e.currentTarget.style.outline = '2px solid var(--foreground)';
-          }}
-          onBlur={(e) => {
-            e.currentTarget.style.outline = '2px solid transparent';
-          }}
-        >
-          <span style={{ fontSize: 16 }}>🔍</span> Search Messages
-          <span style={{ fontSize: 11, opacity: 0.6, marginLeft: 'auto' }}>
-            {modKey}+F
-          </span>
-        </button>
-
-        {/* Navigation Menu */}
-        <nav style={{ marginBottom: 16 }} aria-label="Main navigation">
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 4,
-              background: 'var(--input-bg)',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              padding: 8,
-            }}
-          >
-            <a
-              href="/admin"
+          <div style={{ display: 'flex', gap: 8 }}>
+            {/* Toggle Sidebar button */}
+            <button
+              onClick={() => setSidebarVisible((prev) => !prev)}
+              aria-label={`Toggle sidebar (${modKey}+/)`}
+              title={`Toggle sidebar (${modKey}+/)`}
               style={{
+                padding: 8,
+                background: 'transparent',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
-                gap: 8,
-                padding: '8px 12px',
-                textDecoration: 'none',
-                color: 'var(--foreground)',
-                fontSize: 13,
-                fontWeight: 500,
-                borderRadius: 4,
-                transition: 'background 0.2s ease',
+                justifyContent: 'center',
+                outline: '2px solid transparent',
+                outlineOffset: 2,
+                transition: 'outline 0.2s ease, background 0.2s ease',
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = 'var(--button-hover)';
@@ -828,23 +719,50 @@ function Home() {
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = 'transparent';
               }}
+              onFocus={(e) => {
+                e.currentTarget.style.outline = '2px solid var(--foreground)';
+              }}
+              onBlur={(e) => {
+                e.currentTarget.style.outline = '2px solid transparent';
+              }}
             >
-              <span>⚙️</span>
-              <span>Settings</span>
-            </a>
-            <a
-              href="/models"
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ color: 'var(--foreground)' }}
+              >
+                {/* Outer rectangle */}
+                <rect x="3" y="3" width="18" height="18" rx="2" />
+                {/* Vertical divider */}
+                <line x1="9" y1="3" x2="9" y2="21" />
+                {/* Horizontal lines in left panel */}
+                <line x1="5" y1="8" x2="7" y2="8" />
+                <line x1="5" y1="12" x2="7" y2="12" />
+              </svg>
+            </button>
+            {/* New Chat icon button */}
+            <button
+              onClick={() => void createNewChat()}
+              aria-label={`Create new chat (${modKey}+K)`}
+              title={`Create new chat (${modKey}+K)`}
               style={{
+                padding: 8,
+                background: 'transparent',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
-                gap: 8,
-                padding: '8px 12px',
-                textDecoration: 'none',
-                color: 'var(--foreground)',
-                fontSize: 13,
-                fontWeight: 500,
-                borderRadius: 4,
-                transition: 'background 0.2s ease',
+                justifyContent: 'center',
+                outline: '2px solid transparent',
+                outlineOffset: 2,
+                transition: 'outline 0.2s ease, background 0.2s ease',
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = 'var(--button-hover)';
@@ -852,42 +770,38 @@ function Home() {
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = 'transparent';
               }}
+              onFocus={(e) => {
+                e.currentTarget.style.outline = '2px solid var(--foreground)';
+              }}
+              onBlur={(e) => {
+                e.currentTarget.style.outline = '2px solid transparent';
+              }}
             >
-              <span>🤖</span>
-              <span>Manage Models</span>
-            </a>
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ color: 'var(--foreground)' }}
+              >
+                <path d="M12 20h9" />
+                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+              </svg>
+            </button>
           </div>
-        </nav>
+        </div>
 
-        {/* Search input */}
-        <input
-          ref={searchInputRef}
-          type="text"
-          placeholder="Search sessions..."
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-          aria-label="Search sessions (press / to focus)"
-          title="Search sessions (press / to focus)"
-          style={{
-            width: '100%',
-            padding: '8px 10px',
-            marginBottom: 8,
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            fontSize: 14,
-            boxSizing: 'border-box',
-            outline: '2px solid transparent',
-            outlineOffset: 2,
-            transition: 'outline 0.2s ease',
-            background: 'var(--input-bg)',
-            color: 'var(--foreground)',
-          }}
-          onFocus={(e) => {
-            e.currentTarget.style.outline = '2px solid var(--success)';
-          }}
-          onBlur={(e) => {
-            e.currentTarget.style.outline = '2px solid transparent';
-          }}
+        {/* Unified Search */}
+        <UnifiedSearch
+          ref={searchRef}
+          sessions={sessions}
+          onSelectSession={setSelectedSession}
+          onMessageClick={handleSearchResultClick}
+          modKey={modKey}
         />
 
         {/* Filter controls */}
@@ -944,7 +858,7 @@ function Home() {
             }}
           />
 
-          {(searchText || filterModel || filterPinned !== 'all' || filterTags) && (
+          {(filterModel || filterPinned !== 'all' || filterTags) && (
             <button
               onClick={clearFilters}
               style={{
@@ -1007,7 +921,6 @@ function Home() {
                   selectedSession={selectedSession}
                   onSelectSession={setSelectedSession}
                   onContextMenu={handleContextMenu}
-                  searchText={searchText}
                   pendingSessions={pendingSessions}
                   highlightText={highlightText}
                 />
@@ -1197,10 +1110,181 @@ function Home() {
           </div>
         )}
 
+        {/* Settings menu */}
+        <div style={{ position: 'relative', marginTop: 16 }}>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowSettingsMenu(!showSettingsMenu);
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '8px 12px',
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--foreground)',
+              fontSize: 13,
+              fontWeight: 500,
+              borderRadius: 4,
+              cursor: 'pointer',
+              width: '100%',
+              transition: 'background 0.2s ease',
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = 'var(--button-hover)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent';
+            }}
+          >
+            <span>⚙️</span>
+            <span>Settings</span>
+          </button>
+
+          {showSettingsMenu && (
+            <div
+              style={{
+                position: 'absolute',
+                bottom: '100%',
+                left: 0,
+                marginBottom: 4,
+                background: 'var(--sidebar-bg)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                minWidth: 180,
+                padding: '6px 0',
+                zIndex: 1000,
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Configuration Wizard */}
+              <a
+                href="/admin"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '8px 16px',
+                  textDecoration: 'none',
+                  color: 'var(--foreground)',
+                  fontSize: 14,
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={() => setShowSettingsMenu(false)}
+              >
+                <span>🧙</span>
+                <span>Configuration Wizard</span>
+              </a>
+
+              {/* View Logs */}
+              <a
+                href="/admin/logs"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '8px 16px',
+                  textDecoration: 'none',
+                  color: 'var(--foreground)',
+                  fontSize: 14,
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={() => setShowSettingsMenu(false)}
+              >
+                <span>📋</span>
+                <span>View Logs</span>
+              </a>
+
+              {/* Manage Models */}
+              <a
+                href="/models"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '8px 16px',
+                  textDecoration: 'none',
+                  color: 'var(--foreground)',
+                  fontSize: 14,
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={() => setShowSettingsMenu(false)}
+              >
+                <span>🤖</span>
+                <span>Manage Models</span>
+              </a>
+
+              {/* Divider */}
+              <div style={{ height: 1, background: 'var(--border-light)', margin: '6px 0' }} />
+
+              {/* Theme submenu */}
+              <div style={{ padding: '4px 16px', fontSize: 12, opacity: 0.7, fontWeight: 600 }}>
+                Theme
+              </div>
+              <button
+                onClick={() => {
+                  setTheme('light');
+                  setShowSettingsMenu(false);
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '8px 16px',
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--foreground)',
+                  fontSize: 14,
+                  cursor: 'pointer',
+                  width: '100%',
+                  textAlign: 'left',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              >
+                <span>☀️</span>
+                <span>Light</span>
+                {theme === 'light' && <span style={{ marginLeft: 'auto' }}>✓</span>}
+              </button>
+              <button
+                onClick={() => {
+                  setTheme('dark');
+                  setShowSettingsMenu(false);
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '8px 16px',
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--foreground)',
+                  fontSize: 14,
+                  cursor: 'pointer',
+                  width: '100%',
+                  textAlign: 'left',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              >
+                <span>🌙</span>
+                <span>Dark</span>
+                {theme === 'dark' && <span style={{ marginLeft: 'auto' }}>✓</span>}
+              </button>
+            </div>
+          )}
+        </div>
+
         {/* Keyboard shortcuts help */}
         <div
           style={{
-            marginTop: 16,
+            marginTop: 8,
             paddingTop: 12,
             borderTop: '1px solid var(--border-light)',
             fontSize: 11,
@@ -1219,11 +1303,6 @@ function Home() {
             </div>
             <div>
               <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3, minWidth: 48, display: 'inline-block' }}>{modKey}+F</kbd> Search
-              messages
-            </div>
-            <div>
-              <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3, minWidth: 48, display: 'inline-block' }}>/</kbd> Filter
-              sessions
             </div>
             <div>
               <kbd style={{ background: 'var(--button-hover)', padding: '2px 4px', borderRadius: 3, minWidth: 48, display: 'inline-block' }}>Esc</kbd> Close
@@ -1246,7 +1325,7 @@ function Home() {
               top: 16,
               left: 16,
               padding: '8px 12px',
-              background: 'var(--success)',
+              background: '#E45801',
               color: 'white',
               border: 'none',
               borderRadius: 6,
@@ -1272,56 +1351,16 @@ function Home() {
           </button>
         )}
 
-        <h2 style={{ marginTop: 0 }}>Backend</h2>
-
-        {error && (
-          <ErrorMessage
-            title="Failed to load backend info"
-            message={error}
-            onRetry={() => void fetchInfo(true)}
-            retrying={retryingInfo}
-          />
-        )}
-
-        {loadingInfo && !error && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '1rem 0' }}>
-            <LoadingSpinner size="small" />
-            <span style={{ fontSize: 14, opacity: 0.7 }}>Loading API info…</span>
-          </div>
-        )}
-
-        {info && !loadingInfo && (
-          <ul>
-            <li>
-              <strong>Ollama base URL:</strong> {info.ollama_base_url}
-            </li>
-            <li>
-              <strong>Default model:</strong> {info.default_model}
-            </li>
-            <li>
-              <strong>Sessions dir:</strong> {info.sessions_dir}
-            </li>
-          </ul>
-        )}
-
-        <hr style={{ margin: '1.5rem 0' }} />
-
-        <h2>Chat</h2>
-        <div style={{ height: 'calc(100vh - 220px)' }}>
+        <div style={{ height: 'calc(100vh - 80px)' }}>
           <ChatPane
             sessionName={selectedSession}
             onSessionUpdated={refreshSessions}
             scrollToMessageIndex={scrollToMessageIndex}
+            releaseVersion={info?.release_version}
           />
         </div>
       </section>
 
-      {/* Search Modal */}
-      <SearchModal
-        isOpen={showSearchModal}
-        onClose={() => setShowSearchModal(false)}
-        onResultClick={handleSearchResultClick}
-      />
     </main>
   );
 }

@@ -27,6 +27,7 @@ class InfoResponse(BaseModel):
     ollama_base_url: str
     default_model: str
     sessions_dir: str
+    release_version: str | None = None
 
 
 class SessionsListResponse(BaseModel):

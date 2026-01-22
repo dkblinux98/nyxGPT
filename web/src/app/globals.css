@@ -27,7 +27,7 @@
   --muted-foreground: #71717a;
   --skeleton-base: #e5e5e5;
   --skeleton-shimmer: #f0f0f0;
-  --toast-success-bg: #10b981;
+  --toast-success-bg: #E45801;
   --toast-error-bg: #ef4444;
   --toast-warning-bg: #f59e0b;
   --toast-info-bg: #3b82f6;
@@ -63,7 +63,7 @@
   --muted-foreground: #a1a1aa;
   --skeleton-base: #2a2a2a;
   --skeleton-shimmer: #333;
-  --toast-success-bg: #059669;
+  --toast-success-bg: #E45801;
   --toast-error-bg: #dc2626;
   --toast-warning-bg: #d97706;
   --toast-info-bg: #2563eb;
@@ -144,4 +144,13 @@ html.no-transition * {
     opacity: 0;
     transform: translateY(20px);
   }
+}
+
+/* Message bubble edit icon - show on hover */
+.message-bubble:hover .edit-icon {
+  opacity: 1 !important;
+}
+
+.edit-icon:hover {
+  color: #E45801 !important;
 }

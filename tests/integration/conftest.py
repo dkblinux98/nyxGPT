@@ -132,3 +132,79 @@ def tmp_sessions_dir(tmp_path):
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(exist_ok=True)
     return sessions_dir
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_test_sessions(api_base_url):
+    """Clean up test sessions after all integration tests complete.
+
+    This fixture runs at the end of the test session and deletes any sessions
+    that appear to be test sessions (matching common test naming patterns).
+    """
+    import requests
+    from pathlib import Path
+
+    # Record sessions that exist before tests run
+    try:
+        resp = requests.get(f"{api_base_url}/api/v1/sessions", timeout=5)
+        if resp.ok:
+            existing_sessions = {s.get("name") for s in resp.json().get("sessions", [])}
+        else:
+            existing_sessions = set()
+    except Exception:
+        existing_sessions = set()
+
+    yield  # Run all tests
+
+    # Clean up sessions created during tests
+    print("\n[INTEGRATION TESTS] Cleaning up test sessions...")
+
+    try:
+        resp = requests.get(f"{api_base_url}/api/v1/sessions", timeout=5)
+        if not resp.ok:
+            print("[INTEGRATION TESTS] Could not fetch sessions for cleanup")
+            return
+
+        current_sessions = resp.json().get("sessions", [])
+
+        # Test session patterns to clean up
+        test_patterns = [
+            "test-",
+            "test_",
+            "integration-test",
+            "smoke-test",
+            "api-test",
+            "rag-test",
+            "pytest-",
+            "tmp-",
+        ]
+
+        deleted_count = 0
+        for session in current_sessions:
+            name = session.get("name", "")
+
+            # Skip sessions that existed before tests
+            if name in existing_sessions:
+                continue
+
+            # Check if it matches a test pattern
+            is_test_session = any(name.lower().startswith(p) for p in test_patterns)
+
+            if is_test_session:
+                try:
+                    del_resp = requests.delete(
+                        f"{api_base_url}/api/v1/sessions/{name}",
+                        timeout=5
+                    )
+                    if del_resp.ok:
+                        deleted_count += 1
+                except Exception as e:
+                    print(f"[INTEGRATION TESTS] Failed to delete session {name}: {e}")
+
+        if deleted_count > 0:
+            print(f"[INTEGRATION TESTS] Cleaned up {deleted_count} test sessions")
+        else:
+            print("[INTEGRATION TESTS] No test sessions to clean up")
+
+    except Exception as e:
+        print(f"[INTEGRATION TESTS] Session cleanup failed: {e}")
