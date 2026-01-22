@@ -153,12 +153,33 @@ type RagChunk = {
   chunk_id?: number | null;
 };
 
+type RagConfig = {
+  min_score: number;
+  good_score_threshold: number;
+  medium_score_threshold: number;
+};
+
 type Props = {
   sessionName: string;
   onSessionUpdated?: () => void;
   scrollToMessageIndex?: number | null;
   releaseVersion?: string | null;
 };
+
+// Helper function to get score quality and color
+function getScoreQuality(score: number, config: RagConfig | null): { quality: string; color: string; label: string } {
+  if (!config) {
+    return { quality: 'unknown', color: '#6b7280', label: 'N/A' };
+  }
+
+  if (score >= config.good_score_threshold) {
+    return { quality: 'high', color: '#10b981', label: 'High' }; // green
+  } else if (score >= config.medium_score_threshold) {
+    return { quality: 'medium', color: '#f59e0b', label: 'Medium' }; // yellow/orange
+  } else {
+    return { quality: 'low', color: '#ef4444', label: 'Low' }; // red
+  }
+}
 
 function RagCitationsCollapsible({
   sessionName,
@@ -175,28 +196,37 @@ function RagCitationsCollapsible({
   const [chunks, setChunks] = useState<RagChunk[] | null>(initialChunks || null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ragConfig, setRagConfig] = useState<RagConfig | null>(null);
 
   const handleToggle = async () => {
     const newExpanded = !expanded;
     setExpanded(newExpanded);
 
-    // Lazy load chunks on first expand if not already loaded
+    // Lazy load chunks and config on first expand if not already loaded
     if (newExpanded && !chunks && !loading) {
       setLoading(true);
       setError(null);
 
       try {
-        const res = await fetch(
-          `/api/sessions/${encodeURIComponent(sessionName)}/messages/${messageIndex}/rag`
-        );
+        // Fetch chunks and config in parallel
+        const [chunksRes, configRes] = await Promise.all([
+          fetch(`/api/sessions/${encodeURIComponent(sessionName)}/messages/${messageIndex}/rag`),
+          fetch('/api/v1/rag/config'),
+        ]);
 
-        if (!res.ok) {
-          throw new Error(`Failed to load RAG chunks: ${res.status}`);
+        if (!chunksRes.ok) {
+          throw new Error(`Failed to load RAG chunks: ${chunksRes.status}`);
         }
 
-        const data = await res.json();
+        const data = await chunksRes.json();
         const loadedChunks = data.chunks || [];
         setChunks(loadedChunks);
+
+        // Load config (non-critical, don't error if it fails)
+        if (configRes.ok) {
+          const configData = await configRes.json();
+          setRagConfig(configData);
+        }
 
         // Notify parent to cache the loaded chunks
         if (onChunksLoaded) {
@@ -252,36 +282,75 @@ function RagCitationsCollapsible({
 
       {expanded && !loading && !error && chunks && (
         <div style={{ marginTop: 8 }}>
-          {chunks.map((chunk, idx) => (
-            <div
-              key={idx}
-              style={{
-                marginTop: idx > 0 ? 8 : 0,
-                padding: 8,
-                background: 'var(--input-bg)',
-                borderRadius: 4,
-                border: '1px solid #e0f2fe',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ fontWeight: 500, color: 'var(--rag-text)' }}>
-                  Source {idx + 1}
-                </span>
-                <span style={{ color: 'var(--foreground)', opacity: 0.6 }}>
-                  Score: {chunk.score.toFixed(3)}
-                </span>
-              </div>
-              {chunk.doc_id && (
-                <div style={{ fontSize: 11, color: 'var(--foreground)', opacity: 0.6, marginBottom: 4 }}>
-                  Doc: {chunk.doc_id}
-                  {chunk.chunk_id !== null && chunk.chunk_id !== undefined && ` (chunk ${chunk.chunk_id})`}
+          {/* Score explanation */}
+          <div style={{
+            fontSize: 11,
+            color: 'var(--foreground)',
+            opacity: 0.7,
+            marginBottom: 8,
+            padding: '6px 8px',
+            background: 'var(--background)',
+            borderRadius: 4,
+            border: '1px solid var(--border)',
+          }}>
+            <strong>Confidence scores:</strong> Higher scores indicate stronger relevance.
+            {ragConfig && (
+              <span>
+                {' '}≥{ragConfig.good_score_threshold.toFixed(1)} = <span style={{ color: '#10b981', fontWeight: 500 }}>High</span>,
+                {' '}≥{ragConfig.medium_score_threshold.toFixed(1)} = <span style={{ color: '#f59e0b', fontWeight: 500 }}>Medium</span>,
+                {' '}&lt;{ragConfig.medium_score_threshold.toFixed(1)} = <span style={{ color: '#ef4444', fontWeight: 500 }}>Low</span>
+              </span>
+            )}
+          </div>
+
+          {chunks.map((chunk, idx) => {
+            const scoreInfo = getScoreQuality(chunk.score, ragConfig);
+            return (
+              <div
+                key={idx}
+                style={{
+                  marginTop: idx > 0 ? 8 : 0,
+                  padding: 8,
+                  background: 'var(--input-bg)',
+                  borderRadius: 4,
+                  border: '1px solid #e0f2fe',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <span style={{ fontWeight: 500, color: 'var(--rag-text)' }}>
+                    Source {idx + 1}
+                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span
+                      style={{
+                        color: 'white',
+                        background: scoreInfo.color,
+                        padding: '2px 6px',
+                        borderRadius: 4,
+                        fontSize: 11,
+                        fontWeight: 600,
+                      }}
+                      title={`Confidence: ${scoreInfo.label}`}
+                    >
+                      {scoreInfo.label}
+                    </span>
+                    <span style={{ color: 'var(--foreground)', opacity: 0.6, fontSize: 12 }}>
+                      {chunk.score.toFixed(3)}
+                    </span>
+                  </div>
                 </div>
-              )}
-              <div style={{ color: 'var(--foreground)', whiteSpace: 'pre-wrap' }}>
-                {chunk.text.length > 200 ? chunk.text.substring(0, 200) + '...' : chunk.text}
+                {chunk.doc_id && (
+                  <div style={{ fontSize: 11, color: 'var(--foreground)', opacity: 0.6, marginBottom: 4 }}>
+                    Doc: {chunk.doc_id}
+                    {chunk.chunk_id !== null && chunk.chunk_id !== undefined && ` (chunk ${chunk.chunk_id})`}
+                  </div>
+                )}
+                <div style={{ color: 'var(--foreground)', whiteSpace: 'pre-wrap' }}>
+                  {chunk.text.length > 200 ? chunk.text.substring(0, 200) + '...' : chunk.text}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

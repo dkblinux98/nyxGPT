@@ -325,6 +325,43 @@ def get_rag_debug_mode(cfg: ConfigParser) -> bool:
         return False
 
 
+def get_rag_good_score_threshold(cfg: ConfigParser) -> float:
+    """Get the threshold for 'good' RAG similarity scores.
+
+    Scores >= this threshold are considered high confidence and displayed
+    with green visual indicators in the UI.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Good score threshold (default: 0.7)
+    """
+    try:
+        return cfg.getfloat("rag", "good_score_threshold", fallback=0.7)
+    except Exception:
+        return 0.7
+
+
+def get_rag_medium_score_threshold(cfg: ConfigParser) -> float:
+    """Get the threshold for 'medium' RAG similarity scores.
+
+    Scores >= this threshold but < good_score_threshold are considered
+    medium confidence and displayed with yellow visual indicators in the UI.
+    Scores < this threshold are considered low confidence (red).
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Medium score threshold (default: 0.4)
+    """
+    try:
+        return cfg.getfloat("rag", "medium_score_threshold", fallback=0.4)
+    except Exception:
+        return 0.4
+
+
 def get_rate_limit_enabled(cfg: ConfigParser) -> bool:
     """Get rate limiting enabled flag.
 
