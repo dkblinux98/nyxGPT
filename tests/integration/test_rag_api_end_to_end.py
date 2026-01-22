@@ -333,7 +333,7 @@ def test_rag_upload_pptx_file(
 
         # Verify we can query the uploaded content
         query_resp = client.post(
-            "/api/v1/rag/query", json={"query": "Word document DOCX", "top_k": 5}
+            "/api/v1/rag/query", json={"query": "presentation features", "top_k": 5}
         )
         assert query_resp.status_code == 200
         results = query_resp.json()["results"]
@@ -604,6 +604,9 @@ def test_rag_upload_docx_with_images(
         results = query_resp.json()["results"]
         # Should find the content
         assert len(results) > 0
+
+
+@pytest.mark.integration
 def test_rag_upload_empty_pptx(api_base_url: str, tmp_path) -> None:
     """Test that uploading empty PPTX file is handled gracefully."""
     pytest.importorskip("pptx", reason="python-pptx not installed")
