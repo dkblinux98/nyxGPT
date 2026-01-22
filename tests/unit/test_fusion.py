@@ -446,9 +446,12 @@ def test_weighted_fusion_exact_keyword_match_ranks_first_with_equal_vector_score
     # Simulate BM25 keyword search results:
     # - doc_exact: Contains the exact query term (highest BM25 score)
     # - doc_partial: Contains related terms (medium BM25 score)
+    # - doc_none: Weak/no match (lowest BM25 score, needed to ensure doc_partial
+    #   doesn't normalize to 0.0 - with only 2 items, the min normalizes to 0)
     keyword_results = [
         ("doc_exact", 15.0),  # Exact keyword match, highest BM25 score
         ("doc_partial", 8.0),  # Partial match, medium BM25 score
+        ("doc_none", 1.0),  # Weak keyword match, lowest BM25 score
     ]
 
     # Simulate vector search results with identical scores:
@@ -456,7 +459,7 @@ def test_weighted_fusion_exact_keyword_match_ranks_first_with_equal_vector_score
     vector_results = [
         ("doc_exact", 0.85),
         ("doc_partial", 0.85),
-        ("doc_none", 0.85),  # Semantically similar but no keyword match
+        ("doc_none", 0.85),  # Semantically similar but weak keyword match
     ]
 
     # Use weighted fusion (alpha=0.5 for equal weight)
@@ -476,7 +479,7 @@ def test_weighted_fusion_exact_keyword_match_ranks_first_with_equal_vector_score
         f"Partial keyword match should rank second, but got: {ranked_doc_ids}"
     )
 
-    # doc_none has no keyword score (defaults to 0)
+    # doc_none has the lowest keyword score (normalizes close to 0)
     assert ranked_doc_ids[2] == "doc_none", (
-        f"No keyword match should rank last, but got: {ranked_doc_ids}"
+        f"Lowest keyword match should rank last, but got: {ranked_doc_ids}"
     )

@@ -206,6 +206,70 @@ More content for testing RAG ingestion.
 
 
 @pytest.mark.integration
+def test_rag_upload_docx_file(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test RAG file upload endpoint with .docx file (Microsoft Word)."""
+    # Create a test DOCX file
+    try:
+        from docx import Document
+    except ImportError:
+        pytest.skip("python-docx not available, skipping DOCX test")
+
+    test_file = tmp_path / "test.docx"
+    doc = Document()
+
+    # Add heading
+    doc.add_heading("Test Document Title", level=1)
+
+    # Add paragraphs
+    doc.add_paragraph("This is a test Word document for RAG upload testing.")
+    doc.add_paragraph("It contains important information about DOCX support.")
+
+    # Add a heading and more content
+    doc.add_heading("Section 1", level=2)
+    doc.add_paragraph("This section tests heading preservation in DOCX files.")
+
+    # Add a table
+    table = doc.add_table(rows=3, cols=2)
+    table.rows[0].cells[0].text = "Feature"
+    table.rows[0].cells[1].text = "Status"
+    table.rows[1].cells[0].text = "Text extraction"
+    table.rows[1].cells[1].text = "Working"
+    table.rows[2].cells[0].text = "Table support"
+    table.rows[2].cells[1].text = "Working"
+
+    # Save the document
+    doc.save(test_file)
+
+    # Use unique doc_id to avoid hash-based skip from previous test runs
+    doc_id = _unique_doc_id("docx-upload")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        # Upload the DOCX file with unique doc_id
+        with open(test_file, "rb") as f:
+            files = {"file": ("test.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "doc_id" in upload_data
+        assert "chunks_ingested" in upload_data
+        assert upload_data["chunks_ingested"] > 0
+
+        # Give Cassandra indexing a moment
+        time.sleep(2.0)
+
+        # Verify we can query the uploaded content
+        query_resp = client.post(
+            "/api/v1/rag/query", json={"query": "Word document DOCX", "top_k": 5}
+        )
+        assert query_resp.status_code == 200
+        results = query_resp.json()["results"]
+        assert len(results) > 0
+
+
+@pytest.mark.integration
 def test_rag_upload_pptx_file(
     api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
 ) -> None:
@@ -274,6 +338,99 @@ def test_rag_upload_pptx_file(
         assert query_resp.status_code == 200
         results = query_resp.json()["results"]
         assert len(results) > 0
+
+
+@pytest.mark.integration
+def test_rag_upload_docx_empty_file(api_base_url: str, tmp_path) -> None:
+    """Test RAG file upload endpoint with empty .docx file."""
+    try:
+        from docx import Document
+    except ImportError:
+        pytest.skip("python-docx not available, skipping DOCX test")
+
+    test_file = tmp_path / "empty.docx"
+    doc = Document()
+    # Save empty document with no content
+    doc.save(test_file)
+
+    with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("empty.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files)
+
+        # Should reject empty file with 400
+        assert upload_resp.status_code == 400
+        error_data = upload_resp.json()
+        assert "error" in error_data
+        assert "empty" in error_data["error"].lower()
+
+
+@pytest.mark.integration
+def test_rag_upload_docx_only_table(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test RAG file upload endpoint with .docx file containing only tables."""
+    try:
+        from docx import Document
+    except ImportError:
+        pytest.skip("python-docx not available, skipping DOCX test")
+
+    test_file = tmp_path / "only_table.docx"
+    doc = Document()
+
+    # Add only a table, no paragraphs
+    table = doc.add_table(rows=2, cols=2)
+    table.rows[0].cells[0].text = "Column A"
+    table.rows[0].cells[1].text = "Column B"
+    table.rows[1].cells[0].text = "Data 1"
+    table.rows[1].cells[1].text = "Data 2"
+
+    doc.save(test_file)
+
+    doc_id = _unique_doc_id("docx-only-table")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("only_table.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "chunks_ingested" in upload_data
+        assert upload_data["chunks_ingested"] > 0
+
+
+@pytest.mark.integration
+def test_rag_upload_docx_only_text(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test RAG file upload endpoint with .docx file containing only text (no tables)."""
+    try:
+        from docx import Document
+    except ImportError:
+        pytest.skip("python-docx not available, skipping DOCX test")
+
+    test_file = tmp_path / "only_text.docx"
+    doc = Document()
+
+    # Add only paragraphs, no tables
+    doc.add_paragraph("This is a simple DOCX file.")
+    doc.add_paragraph("It contains only plain text paragraphs.")
+    doc.add_paragraph("No tables or other complex formatting.")
+
+    doc.save(test_file)
+
+    doc_id = _unique_doc_id("docx-only-text")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("only_text.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "chunks_ingested" in upload_data
+        assert upload_data["chunks_ingested"] > 0
 
 
 @pytest.mark.integration
@@ -356,7 +513,97 @@ def test_rag_upload_pptx_slide_order(
 
         assert upload_resp.status_code == 200
         upload_data = upload_resp.json()
+        assert "chunks_ingested" in upload_data
         assert upload_data["chunks_ingested"] > 0
+
+
+@pytest.mark.integration
+def test_rag_upload_docx_corrupted_file(api_base_url: str, tmp_path) -> None:
+    """Test RAG file upload endpoint with corrupted .docx file."""
+    test_file = tmp_path / "corrupted.docx"
+    # Write invalid content that's not a valid DOCX/ZIP file
+    test_file.write_bytes(b"This is not a valid DOCX file content")
+
+    with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("corrupted.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files)
+
+        # Should reject corrupted file with 400
+        assert upload_resp.status_code == 400
+        error_data = upload_resp.json()
+        assert "error" in error_data
+        error_msg = error_data["error"]["message"].lower()
+        # Accept: corrupted/invalid file errors, or docx support not available
+        assert any(term in error_msg for term in ("corrupted", "invalid", "not available", "not supported"))
+
+
+@pytest.mark.integration
+def test_rag_upload_docx_with_images(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test RAG file upload with DOCX file containing embedded images."""
+    try:
+        from docx import Document
+        from docx.shared import Inches
+    except ImportError:
+        pytest.skip("python-docx not available, skipping DOCX test")
+
+    try:
+        from PIL import Image
+    except ImportError:
+        pytest.skip("Pillow not available, skipping image test")
+
+    test_file = tmp_path / "test_with_image.docx"
+    image_file = tmp_path / "test_image.png"
+
+    # Create a simple test image
+    img = Image.new("RGB", (100, 100), color="red")
+    img.save(image_file)
+
+    # Create DOCX with image
+    doc = Document()
+    doc.add_heading("Document with Image", level=1)
+    doc.add_paragraph("This paragraph is before the image.")
+
+    # Add image with alt text
+    try:
+        doc.add_picture(str(image_file), width=Inches(2))
+    except Exception:
+        # If adding image fails, skip this test
+        pytest.skip("Could not add image to DOCX")
+
+    doc.add_paragraph("This paragraph is after the image.")
+
+    doc.save(test_file)
+
+    # Use unique doc_id
+    doc_id = _unique_doc_id("docx-with-image")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        # Upload the DOCX file
+        with open(test_file, "rb") as f:
+            files = {"file": ("test_with_image.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "doc_id" in upload_data
+        assert "chunks_ingested" in upload_data
+        # Should have at least one chunk with the image marker
+        assert upload_data["chunks_ingested"] > 0
+
+        # Give Cassandra indexing a moment
+        time.sleep(2.0)
+
+        # Query to verify content was ingested (including text around image)
+        query_resp = client.post(
+            "/api/v1/rag/query", json={"query": "paragraph image", "top_k": 5}
+        )
+        assert query_resp.status_code == 200
+        results = query_resp.json()["results"]
+        # Should find the content
+        assert len(results) > 0
 
 
 @pytest.mark.integration
