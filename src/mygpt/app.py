@@ -1926,7 +1926,7 @@ async def rag_upload_file(
                 if metadata:
                     meta_str = "\n".join(f"{k}: {v}" for k, v in metadata.items())
                     text_parts.append(f"[Metadata]\n{meta_str}\n")
-                for page in reader.pages:  # type: ignore[assignment]
+                for page in reader.pages:
                     page_text = page.extract_text()
                     if page_text:
                         text_parts.append(page_text)
@@ -2006,9 +2006,9 @@ async def rag_upload_file(
                         text_parts.append(para_text)
 
             # Handle tables
-            for table in doc.tables:  # type: ignore[assignment]
+            for table in doc.tables:
                 table_rows: list[str] = []
-                for row in table.rows:  # type: ignore[attr-defined]
+                for row in table.rows:
                     row_text = " | ".join(cell.text.strip() for cell in row.cells)
                     if row_text:
                         table_rows.append(row_text)
