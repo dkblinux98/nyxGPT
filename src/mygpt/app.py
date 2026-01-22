@@ -1845,7 +1845,7 @@ async def rag_upload_file(
     if file_ext == ".pdf":
         # Handle PDF with improved extraction (#2663)
         try:
-            import pdfplumber
+            import pdfplumber  # type: ignore[import-not-found]
             from pypdf import PdfReader
 
             # Extract metadata using pypdf
@@ -1982,13 +1982,13 @@ async def rag_upload_file(
 
             # Handle tables
             for table in doc.tables:
-                table_text = []
+                table_rows: list[str] = []
                 for row in table.rows:
                     row_text = " | ".join(cell.text.strip() for cell in row.cells)
                     if row_text:
-                        table_text.append(row_text)
-                if table_text:
-                    text_parts.append("\n[Table]\n" + "\n".join(table_text) + "\n")
+                        table_rows.append(row_text)
+                if table_rows:
+                    text_parts.append("\n[Table]\n" + "\n".join(table_rows) + "\n")
 
             text = "\n\n".join(text_parts)
 
