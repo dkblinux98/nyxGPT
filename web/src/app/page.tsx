@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import Image from 'next/image';
 import ChatPane from './components/ChatPane';
 import ThemeToggle from '../components/ThemeToggle';
 import LoadingSpinner from '../components/LoadingSpinner';
@@ -695,10 +696,22 @@ function Home() {
             overflow: 'hidden',
           }}
         >
-        <h1 style={{ margin: 0 }}>myGPT</h1>
-        <p style={{ marginTop: 6, marginBottom: 8, opacity: 0.8 }}>
-          Local web UI (early)
-        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+          <Image
+            src="/mygpt-logo.svg"
+            alt="myGPT logo"
+            width={40}
+            height={40}
+            priority
+            style={{ flexShrink: 0 }}
+          />
+          <div>
+            <h1 style={{ margin: 0, lineHeight: 1.2 }}>myGPT</h1>
+            <p style={{ margin: 0, marginTop: 2, opacity: 0.8, fontSize: 12 }}>
+              Local web UI (early)
+            </p>
+          </div>
+        </div>
 
         {/* Theme Toggle */}
         <div style={{ marginBottom: 12 }}>
