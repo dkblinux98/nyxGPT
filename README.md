@@ -193,7 +193,7 @@ The TUI streams responses, persists sessions, and supports RAG‑assisted chat. 
 - `Ctrl+R` - Toggle RAG for current session
 - `Ctrl+M` - Manage models
 - `Ctrl+N` - Rename current session
-- `Ctrl+D` - Delete current session (with confirmation)
+- `Ctrl+D` - Delete current session  (with confirmation)
 - `Ctrl+L` - Clear output buffer
 - `Ctrl+C` - Quit
 
