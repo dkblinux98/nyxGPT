@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
 import pytest
 from textual.widgets import Input
 
-from mygpt.tui import (
+from mygpt.tui import (  # type: ignore[import-untyped]
     ChatOutput,
     MyGPTTUI,
     SessionMetadataPreview,

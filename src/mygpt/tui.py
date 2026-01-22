@@ -1011,7 +1011,7 @@ class MyGPTTUI(App):
             success = delete_session(session_to_delete, sessions_dir)
             if not success:
                 self.output.append(
-                    f"\n[error] Failed to delete session: Session not found.\n\n"
+                    "\n[error] Failed to delete session: Session not found.\n\n"
                 )
                 log.error(f"Session not found: {session_to_delete}")
                 return
@@ -1034,7 +1034,7 @@ class MyGPTTUI(App):
             else:
                 # This should not happen as we checked for last session, but handle defensively
                 self.output.append(
-                    f"\n[error] Session deleted but no sessions remaining.\n\n"
+                    "\n[error] Session deleted but no sessions remaining.\n\n"
                 )
                 log.error("No sessions remaining after delete")
 
