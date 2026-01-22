@@ -142,7 +142,6 @@ def cleanup_test_sessions(api_base_url):
     that appear to be test sessions (matching common test naming patterns).
     """
     import requests
-    from pathlib import Path
 
     # Record sessions that exist before tests run
     try:
