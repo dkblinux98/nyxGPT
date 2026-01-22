@@ -82,6 +82,8 @@ module = [
     "textual.*",
     "pdfplumber",
     "reportlab.*",
+    "docx.*",
+    "pptx.*",
 ]
 ignore_missing_imports = true
 

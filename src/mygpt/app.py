@@ -1845,7 +1845,7 @@ async def rag_upload_file(
     if file_ext == ".pdf":
         # Handle PDF with improved extraction (#2663)
         try:
-            import pdfplumber  # type: ignore[import-not-found]
+            import pdfplumber
             from pypdf import PdfReader
 
             # Extract metadata using pypdf
