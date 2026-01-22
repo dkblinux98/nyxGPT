@@ -533,7 +533,8 @@ def test_rag_upload_docx_corrupted_file(api_base_url: str, tmp_path) -> None:
         assert upload_resp.status_code == 400
         error_data = upload_resp.json()
         assert "error" in error_data
-        assert "corrupted" in error_data["error"].lower() or "invalid" in error_data["error"].lower()
+        error_msg = error_data["error"]["message"].lower()
+        assert "corrupted" in error_msg or "invalid" in error_msg
 
 
 @pytest.mark.integration
