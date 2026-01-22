@@ -1860,8 +1860,8 @@ async def rag_upload_file(
     elif file_ext == ".docx":
         # Handle DOCX (Microsoft Word)
         try:
-            from docx import Document  # type: ignore[import-not-found]
-            from docx.opc.exceptions import PackageNotFoundError  # type: ignore[import-not-found]
+            from docx import Document
+            from docx.opc.exceptions import PackageNotFoundError
             import zipfile
 
             try:
@@ -1983,7 +1983,7 @@ async def rag_upload_file(
     elif file_ext == ".pptx":
         # Handle PowerPoint presentations
         try:
-            from pptx import Presentation  # type: ignore[import-not-found]
+            from pptx import Presentation
 
             prs = Presentation(io.BytesIO(content))
             text_parts = []

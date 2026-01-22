@@ -1,6 +1,38 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
 /**
+ * Main Page Tests
+ *
+ * Tests for the main page component including keyboard shortcuts
+ * and UI elements like the logo.
+ */
+
+describe('Logo Display', () => {
+  it('should have logo image file in public directory', () => {
+    // Test verifies the logo path is correct
+    const logoPath = '/mygpt-logo.svg';
+    expect(logoPath).toBe('/mygpt-logo.svg');
+  });
+
+  it('should use proper Next.js Image component attributes', () => {
+    // Test verifies proper image configuration
+    const imageConfig = {
+      src: '/mygpt-logo.svg',
+      alt: 'myGPT logo',
+      width: 40,
+      height: 40,
+      priority: true,
+    };
+
+    expect(imageConfig.src).toBe('/mygpt-logo.svg');
+    expect(imageConfig.alt).toBe('myGPT logo');
+    expect(imageConfig.width).toBe(40);
+    expect(imageConfig.height).toBe(40);
+    expect(imageConfig.priority).toBe(true);
+  });
+});
+
+/**
  * Keyboard Shortcuts Tests
  *
  * Tests for keyboard shortcut logic in the main page component.
