@@ -57,6 +57,9 @@ from mygpt.config import (
     get_sessions_dir,
     get_rate_limit_enabled,
     get_rate_limit_config,
+    get_rag_min_score,
+    get_rag_good_score_threshold,
+    get_rag_medium_score_threshold,
     load_config,
 )
 import mygpt.config
@@ -1580,6 +1583,24 @@ def rag_document_info(
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         store.close()
+
+
+@api.get("/rag/config")
+def rag_config(request: Request) -> dict[str, Any]:
+    """Get RAG configuration including score thresholds for visual indicators.
+
+    Returns:
+        Dictionary containing:
+        - min_score: Minimum score threshold for retrieval
+        - good_score_threshold: Threshold for high-confidence results (green)
+        - medium_score_threshold: Threshold for medium-confidence results (yellow)
+    """
+    cfg = _req_cfg(request)
+    return {
+        "min_score": get_rag_min_score(cfg),
+        "good_score_threshold": get_rag_good_score_threshold(cfg),
+        "medium_score_threshold": get_rag_medium_score_threshold(cfg),
+    }
 
 
 @api.post("/rag/query", response_model=RagQueryResponse)

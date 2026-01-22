@@ -11,6 +11,8 @@ from mygpt.config import (
     get_prompt_mode_enabled,
     get_prompt_mode_short_threshold,
     get_prompt_mode_long_threshold,
+    get_rag_good_score_threshold,
+    get_rag_medium_score_threshold,
 )
 
 pytestmark = pytest.mark.unit
@@ -462,3 +464,81 @@ long_threshold = not_a_number
 
     assert threshold == 10
     assert "Invalid prompt.long_threshold" in caplog.text
+
+
+def test_get_rag_good_score_threshold_default(tmp_path: Path) -> None:
+    """get_rag_good_score_threshold should return default value."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_rag_good_score_threshold(cfg) == 0.7
+
+
+def test_get_rag_good_score_threshold_configured(tmp_path: Path) -> None:
+    """get_rag_good_score_threshold should return configured value."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[rag]
+good_score_threshold = 0.8
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_rag_good_score_threshold(cfg) == 0.8
+
+
+def test_get_rag_medium_score_threshold_default(tmp_path: Path) -> None:
+    """get_rag_medium_score_threshold should return default value."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_rag_medium_score_threshold(cfg) == 0.4
+
+
+def test_get_rag_medium_score_threshold_configured(tmp_path: Path) -> None:
+    """get_rag_medium_score_threshold should return configured value."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[mygpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[rag]
+medium_score_threshold = 0.5
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_rag_medium_score_threshold(cfg) == 0.5

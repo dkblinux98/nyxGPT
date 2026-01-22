@@ -223,6 +223,8 @@ preserve_headings = true
 sentence_aware = true
 chat_top_k = 5
 min_score = 0.0
+good_score_threshold = 0.7
+medium_score_threshold = 0.4
 max_chunks = 6
 chat_context_max_chars = 2400
 dedupe = true
@@ -251,6 +253,8 @@ cassandra_table = rag_chunks
 | `chat_top_k` | Number of candidate chunks to retrieve from vector store |
 | `top_k` | **Legacy alias** for `chat_top_k` (deprecated, use `chat_top_k` instead) |
 | `min_score` | Minimum similarity score required for chunk inclusion |
+| `good_score_threshold` | Threshold for high-confidence scores (green visual indicator in UI, default: 0.7) |
+| `medium_score_threshold` | Threshold for medium-confidence scores (yellow visual indicator in UI, default: 0.4) |
 | `max_chunks` | Hard cap on number of chunks injected into prompt |
 | `chat_context_max_chars` | Maximum total characters of retrieved context |
 | `dedupe` | Remove duplicate or near-duplicate chunks before injection |

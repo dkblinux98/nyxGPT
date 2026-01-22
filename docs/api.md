@@ -50,6 +50,7 @@ Quick reference of all 42 available endpoints:
 | `/api/v1/tools/ls` | POST | List files |
 | `/api/v1/tools/cat` | POST | Read file |
 | `/api/v1/tools/grep` | POST | Search files |
+| `/api/v1/rag/config` | GET | Get RAG configuration (score thresholds) |
 | `/api/v1/rag/ingest` | POST | Ingest text document (with update detection) |
 | `/api/v1/rag/documents/{doc_id}` | GET | Get document version information |
 | `/api/v1/rag/query` | POST | Query RAG vector store |
