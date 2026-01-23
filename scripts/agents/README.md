@@ -1,4 +1,4 @@
-# Agent Scripts (myGPT)
+# Agent Scripts (nyxGPT)
 
 These scripts implement the **explicit workflow plumbing** for:
 - scrummaster-agent
@@ -16,15 +16,15 @@ They update GitHub Projects v2 fields via GraphQL and perform common operations 
 Scripts read defaults from environment variables (see `env.example`):
 
 - `REPO_OWNER` (default: `dkblinux98`)
-- `REPO_NAME`  (default: `myGPT`)
+- `REPO_NAME`  (default: `nyxGPT`)
 - `PROJECT_OWNER` (default: `dkblinux98`)  # user login that owns Project v2
 - `PROJECT_NUMBER` (default: `2`)
 - `RELEASE_BRANCH` (default: autodetected; falls back to `release/latest`)
 
 Agent usernames:
-- `DEV_AGENT` (default: `mygpt-developer-agent`)
-- `REVIEW_AGENT` (default: `mygpt-review-agent`)
-- `SCRUM_AGENT` (default: `mygpt-scrummaster-agent`)
+- `DEV_AGENT` (default: `nyxgpt-developer-agent`)
+- `REVIEW_AGENT` (default: `nyxgpt-review-agent`)
+- `SCRUM_AGENT` (default: `nyxgpt-scrummaster-agent`)
 - `HUMAN_OWNER` (default: `dkblinux98`)
 
 Field names (must match your Project fields):

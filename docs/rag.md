@@ -2,9 +2,9 @@
 
 # Retrieval‑Augmented Generation (RAG)
 
-myGPT supports optional Retrieval‑Augmented Generation using **Apache Cassandra 5.0** as a vector database.
+nyxGPT supports optional Retrieval‑Augmented Generation using **Apache Cassandra 5.0** as a vector database.
 
-RAG allows myGPT to:
+RAG allows nyxGPT to:
 - ingest documents
 - store embeddings persistently
 - retrieve relevant context at query time
@@ -35,7 +35,7 @@ RAG allows myGPT to:
 
 ```bash
 docker run -d \
-  --name mygpt-cassandra \
+  --name nyxgpt-cassandra \
   -p 9042:9042 \
   cassandra:5.0
 ```
@@ -47,14 +47,14 @@ Wait several minutes for Cassandra to finish starting.
 To persist data across container restarts:
 
 ```bash
-docker volume create mygpt_cassandra_data
+docker volume create nyxgpt_cassandra_data
 
-docker rm -f mygpt-cassandra
+docker rm -f nyxgpt-cassandra
 
 docker run -d \
-  --name mygpt-cassandra \
+  --name nyxgpt-cassandra \
   -p 9042:9042 \
-  -v mygpt_cassandra_data:/var/lib/cassandra \
+  -v nyxgpt_cassandra_data:/var/lib/cassandra \
   cassandra:5.0
 ```
 
@@ -65,13 +65,13 @@ docker run -d \
 Create the keyspace and table:
 
 ```sql
-CREATE KEYSPACE IF NOT EXISTS mygpt
+CREATE KEYSPACE IF NOT EXISTS nyxgpt
 WITH replication = {
   'class': 'SimpleStrategy',
   'replication_factor': 1
 };
 
-USE mygpt;
+USE nyxgpt;
 
 CREATE TABLE IF NOT EXISTS rag_chunks (
   doc_id text,
@@ -115,7 +115,7 @@ chat_top_k = 3
 chat_context_max_chars = 4000
 cassandra_hosts = 127.0.0.1
 cassandra_port = 9042
-cassandra_keyspace = mygpt
+cassandra_keyspace = nyxgpt
 cassandra_table = rag_chunks
 ```
 
@@ -123,7 +123,7 @@ cassandra_table = rag_chunks
 
 ## Document Update Detection
 
-myGPT now includes automatic document update detection using SHA-256 content hashing. This feature:
+nyxGPT now includes automatic document update detection using SHA-256 content hashing. This feature:
 
 - **Detects Changes**: Automatically detects when document content has changed
 - **Skips Unnecessary Work**: Avoids re-ingesting unchanged documents
@@ -133,7 +133,7 @@ myGPT now includes automatic document update detection using SHA-256 content has
 
 ### How It Works
 
-1. **Hash Computation**: When ingesting a document, myGPT computes a SHA-256 hash of the content
+1. **Hash Computation**: When ingesting a document, nyxGPT computes a SHA-256 hash of the content
 2. **Change Detection**: Before re-ingesting, compares new hash with stored hash
 3. **Smart Re-indexing**:
    - If hashes match → skip re-ingestion (no-op)
@@ -145,15 +145,15 @@ myGPT now includes automatic document update detection using SHA-256 content has
 
 ```bash
 # First ingestion
-mygpt rag ingest mydoc.txt my-doc-id
+nyxgpt rag ingest mydoc.txt my-doc-id
 # Output: Ingested 5 chunks for doc_id=my-doc-id
 
 # Re-ingest without changes
-mygpt rag ingest mydoc.txt my-doc-id
+nyxgpt rag ingest mydoc.txt my-doc-id
 # Output: Document my-doc-id unchanged (hash: 8f4e2a1b...), skipped re-ingestion
 
 # Edit mydoc.txt then re-ingest
-mygpt rag ingest mydoc.txt my-doc-id
+nyxgpt rag ingest mydoc.txt my-doc-id
 # Output: Updated 7 chunks for doc_id=my-doc-id
 #         Document hash: 3c9d8f2a...
 #         Previous hash: 8f4e2a1b...
@@ -164,7 +164,7 @@ mygpt rag ingest mydoc.txt my-doc-id
 To force re-ingestion even when content hasn't changed (useful for testing or after config changes):
 
 ```python
-from mygpt.rag.rag import ingest_document
+from nyxgpt.rag.rag import ingest_document
 
 result = ingest_document(
     doc_id="my-doc",
@@ -180,12 +180,12 @@ result = ingest_document(
 ### Ingest a document
 
 ```bash
-mygpt rag ingest <doc_id> <path> [--ensure-schema] [--collection default]
+nyxgpt rag ingest <doc_id> <path> [--ensure-schema] [--collection default]
 ```
 
 Example:
 ```bash
-mygpt rag ingest readme-v1 README.md --ensure-schema
+nyxgpt rag ingest readme-v1 README.md --ensure-schema
 ```
 
 The command now outputs update detection status:
@@ -198,12 +198,12 @@ The command now outputs update detection status:
 Get version tracking info for a specific document:
 
 ```bash
-mygpt rag info <doc_id> [--collection default]
+nyxgpt rag info <doc_id> [--collection default]
 ```
 
 Example:
 ```bash
-mygpt rag info readme-v1
+nyxgpt rag info readme-v1
 
 # Output:
 # Document: readme-v1
@@ -218,19 +218,19 @@ mygpt rag info readme-v1
 ### List ingested documents
 
 ```bash
-mygpt rag list [--collection default]
+nyxgpt rag list [--collection default]
 ```
 
 ### Delete a document
 
 ```bash
-mygpt rag delete <doc_id> [--collection default]
+nyxgpt rag delete <doc_id> [--collection default]
 ```
 
 ### Wipe all RAG data (development only)
 
 ```bash
-mygpt rag wipe --yes-really [--collection default]
+nyxgpt rag wipe --yes-really [--collection default]
 ```
 
 ---
@@ -341,7 +341,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
 When enabled globally or per-session, retrieved context is injected automatically during chat:
 
 ```bash
-mygpt chat "What does Cassandra support for vector search?"
+nyxgpt chat "What does Cassandra support for vector search?"
 ```
 
 The retrieved context is prepended as a system message.
@@ -352,7 +352,7 @@ The retrieved context is prepended as a system message.
 
 ## Multiple Embedding Models
 
-**New in v1.0:** myGPT now supports using multiple embedding models simultaneously via collections.
+**New in v1.0:** nyxGPT now supports using multiple embedding models simultaneously via collections.
 
 ### Why Multiple Models?
 
@@ -374,7 +374,7 @@ Each collection:
 #### 1. Ingest documents with different models
 
 ```python
-from mygpt.rag.rag import ingest_document
+from nyxgpt.rag.rag import ingest_document
 
 # Default collection (nomic-embed-text, 768d)
 n = ingest_document(
@@ -407,7 +407,7 @@ n = ingest_document(
 #### 2. Query specific collections
 
 ```python
-from mygpt.rag.rag import retrieve_context
+from nyxgpt.rag.rag import retrieve_context
 
 # Query default collection
 results = retrieve_context("test query")
@@ -432,7 +432,7 @@ results = retrieve_context(
 #### 3. Compare model performance
 
 ```python
-from mygpt.rag.model_compare import compare_models, print_comparison_table
+from nyxgpt.rag.model_compare import compare_models, print_comparison_table
 
 models = [
     ("nomic-embed-text", 768, "default"),
@@ -480,7 +480,7 @@ You can switch between models **without re-indexing** by using collections:
 ### List Available Collections
 
 ```python
-from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
 store = CassandraVectorStore()
 collections = store.list_collections()
@@ -516,7 +516,7 @@ For **multi-model setups**, use collections to avoid re-ingestion (see "Multiple
 
 ### Overview
 
-myGPT implements advanced text chunking that goes beyond simple character-based splitting:
+nyxGPT implements advanced text chunking that goes beyond simple character-based splitting:
 
 - **Sentence Boundary Awareness**: Splits on sentence boundaries rather than arbitrary character positions
 - **Heading-Aware Splitting**: Preserves Markdown heading structure with content
@@ -533,7 +533,7 @@ Better chunk boundaries lead to:
 
 ### Configuration Options
 
-Add to `~/.myGPT/config.ini` under `[rag]`:
+Add to `~/.nyxGPT/config.ini` under `[rag]`:
 
 ```ini
 [rag]
@@ -623,7 +623,7 @@ Chunk 2: "This is the second sentence. This is the third sentence."
 
 ## RAG Evaluation Metrics
 
-**New in v1.0:** myGPT now provides comprehensive evaluation metrics to assess RAG quality.
+**New in v1.0:** nyxGPT now provides comprehensive evaluation metrics to assess RAG quality.
 
 ### Overview
 
@@ -787,7 +787,7 @@ debug_mode = true  # Enables debug_info in standard /rag/query endpoint
 
 ## Hybrid Search (Keyword + Vector)
 
-**New in v1.0:** myGPT now supports hybrid search that combines BM25 keyword search with vector similarity search for improved retrieval quality.
+**New in v1.0:** nyxGPT now supports hybrid search that combines BM25 keyword search with vector similarity search for improved retrieval quality.
 
 ### Why Hybrid Search?
 
@@ -808,7 +808,7 @@ Pure vector search excels at semantic understanding but can miss exact keyword m
 
 ### Configuration
 
-Add to `~/.myGPT/config.ini`:
+Add to `~/.nyxGPT/config.ini`:
 
 ```ini
 [rag]
@@ -862,7 +862,7 @@ Hybrid search is enabled by default. No code changes required.
 **Python API:**
 
 ```python
-from mygpt.rag.rag import retrieve_context
+from nyxgpt.rag.rag import retrieve_context
 
 # Hybrid search automatically enabled (if configured)
 results = retrieve_context("Cassandra vector search", top_k=5)
@@ -883,10 +883,10 @@ print(f"Keyword results: {debug_info.keyword_results_count}")
 
 ```bash
 # RAG query uses hybrid search automatically
-mygpt rag query "Cassandra vector search"
+nyxgpt rag query "Cassandra vector search"
 
 # Debug mode shows fusion details
-mygpt rag query "Cassandra vector search" --debug
+nyxgpt rag query "Cassandra vector search" --debug
 ```
 
 **REST API:**
@@ -1036,14 +1036,14 @@ Reranking is an optional second-pass scoring step that improves retrieval precis
 
 ### Configuration
 
-Enable reranking in `~/.myGPT/config.ini`:
+Enable reranking in `~/.nyxGPT/config.ini`:
 
 ```ini
 [rag]
 # Enable reranking (disabled by default)
 enable_reranking = true
 
-# Model to use for reranking (defaults to mygpt.default_model)
+# Model to use for reranking (defaults to nyxgpt.default_model)
 # Use a fast model for better performance
 reranker_model = qwen2.5:0.5b
 
@@ -1099,7 +1099,7 @@ Reranking correctly identifies the most specific, actionable results.
 Use `debug_mode=True` to inspect reranking metrics:
 
 ```python
-from mygpt.rag import retrieve_context
+from nyxgpt.rag import retrieve_context
 
 results, debug_info = retrieve_context(
     "Cassandra replication",
@@ -1143,7 +1143,7 @@ This can happen when:
 
 Check logs for reranking errors. Common causes:
 - Ollama timeout (increase `reranker_timeout_seconds`)
-- Ollama model not loaded (pull model first: `mygpt models pull qwen2.5:0.5b`)
+- Ollama model not loaded (pull model first: `nyxgpt models pull qwen2.5:0.5b`)
 - Invalid JSON response from LLM (model needs better instruction following)
 
 Reranking failures are non-fatal - failed results keep their original scores and ranking.

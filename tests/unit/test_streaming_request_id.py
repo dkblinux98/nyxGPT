@@ -7,8 +7,8 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch
 
-from mygpt.app import app
-from mygpt.logging import request_id_var, RequestIdFilter
+from nyxgpt.app import app
+from nyxgpt.logging import request_id_var, RequestIdFilter
 
 pytestmark = pytest.mark.unit
 
@@ -29,7 +29,7 @@ def test_streaming_endpoint_captures_request_id():
         yield " "
         yield "World"
 
-    with patch("mygpt.app.chat_stream", side_effect=mock_chat_stream):
+    with patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream):
         # Make streaming request
         with client.stream(
             "POST",
@@ -67,7 +67,7 @@ def test_legacy_streaming_endpoint_captures_request_id():
         request_ids_seen.append(request_id_var.get())
         yield "Test"
 
-    with patch("mygpt.app.chat_stream", side_effect=mock_chat_stream):
+    with patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream):
         with client.stream(
             "POST",
             "/api/chat/stream",  # Legacy endpoint (no v1)
@@ -96,7 +96,7 @@ def test_streaming_endpoint_with_auto_generated_request_id():
         request_ids_seen.append(request_id_var.get())
         yield "Test"
 
-    with patch("mygpt.app.chat_stream", side_effect=mock_chat_stream):
+    with patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream):
         with client.stream(
             "POST",
             "/api/v1/chat/stream",
@@ -131,7 +131,7 @@ def test_streaming_request_id_propagates_to_logged_function(caplog):
 
     # Install RequestIdFilter to add request ID to all log records
     _ = RequestIdFilter()
-    logger = logging.getLogger("mygpt.test")
+    logger = logging.getLogger("nyxgpt.test")
     logger.setLevel(logging.DEBUG)
 
     captured_request_id = []
@@ -145,7 +145,7 @@ def test_streaming_request_id_propagates_to_logged_function(caplog):
         logger.info(f"Test log from within chat_stream, request_id={req_id}")
         yield "Test response"
 
-    with patch("mygpt.app.chat_stream", side_effect=mock_chat_stream):
+    with patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream):
         with client.stream(
             "POST",
             "/api/v1/chat/stream",
@@ -186,7 +186,7 @@ def test_streaming_auto_generated_request_id_propagates_to_logs(caplog):
         captured_context_id.append(req_id)
         yield "Test"
 
-    with patch("mygpt.app.chat_stream", side_effect=mock_chat_stream):
+    with patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream):
         with client.stream(
             "POST",
             "/api/v1/chat/stream",
@@ -237,7 +237,7 @@ def test_real_chat_stream_logs_have_request_id(caplog):
         yield " Ollama"
 
     # Mock at Ollama layer, not chat_stream - this lets the real function run
-    with patch("mygpt.chat.ollama_chat_stream_tokens", side_effect=mock_ollama_stream):
+    with patch("nyxgpt.chat.ollama_chat_stream_tokens", side_effect=mock_ollama_stream):
         with client.stream(
             "POST",
             "/api/v1/chat/stream",
@@ -280,7 +280,7 @@ def test_real_chat_stream_with_auto_generated_request_id_in_logs():
         yield "Test"
 
     # Mock Ollama, not chat_stream - exercises real implementation
-    with patch("mygpt.chat.ollama_chat_stream_tokens", side_effect=mock_ollama_stream):
+    with patch("nyxgpt.chat.ollama_chat_stream_tokens", side_effect=mock_ollama_stream):
         with client.stream(
             "POST",
             "/api/v1/chat/stream",

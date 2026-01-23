@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CFG="$RUNNER_TEMP/mygpt-config.ini"
+          CFG="$RUNNER_TEMP/nyxgpt-config.ini"
 
           cat > "$CFG" <<EOF
           REPO_OWNER=${{ vars.REPO_OWNER }}

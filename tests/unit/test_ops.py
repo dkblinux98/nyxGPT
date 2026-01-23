@@ -2,7 +2,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from mygpt import ops
+from nyxgpt import ops
 
 
 @pytest.mark.unit
@@ -58,8 +58,8 @@ def test_ops_restart_all_ok(capsys):
 
         # ensure we attempted expected components
         assert rb.call_count == 3  # api, web, ollama
-        rd.assert_called_once_with("mygpt-cassandra")
-        rl.assert_called_once_with("com.mygpt.cassandra-logs")
+        rd.assert_called_once_with("nyxgpt-cassandra")
+        rl.assert_called_once_with("com.nyxgpt.cassandra-logs")
 
         out = capsys.readouterr().out
         assert "[OK]" in out
@@ -97,7 +97,7 @@ def test_ops_restart_single_target_only_restarts_that_component(capsys):
         rc = ops.restart(args)
         assert rc == 0
 
-        rb.assert_called_once_with("mygpt-api")
+        rb.assert_called_once_with("nyxgpt-api")
         rd.assert_not_called()
         rl.assert_not_called()
 
@@ -116,11 +116,11 @@ def test_ops_status_smoke(monkeypatch, capsys):
 
     def fake_run(cmd, check=True):
         if cmd[:3] == ["brew", "services", "list"]:
-            return CP(stdout="Name Status User File\nmygpt-web started user plist\n")
+            return CP(stdout="Name Status User File\nnyxgpt-web started user plist\n")
         if cmd[:2] == ["launchctl", "list"]:
-            return CP(stdout="123 com.mygpt.cassandra-logs\n")
+            return CP(stdout="123 com.nyxgpt.cassandra-logs\n")
         if cmd[:3] == ["docker", "ps", "--format"]:
-            return CP(stdout="mygpt-cassandra\n")
+            return CP(stdout="nyxgpt-cassandra\n")
         return CP(stdout="")
 
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
@@ -130,14 +130,14 @@ def test_ops_status_smoke(monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "Homebrew services" in out
-    assert "com.mygpt.cassandra-logs" in out
-    assert "mygpt-cassandra" in out
+    assert "com.nyxgpt.cassandra-logs" in out
+    assert "nyxgpt-cassandra" in out
 
 
 @pytest.mark.unit
 def test_ops_doctor_ok(monkeypatch, capsys, tmp_path):
-    # Pretend config exists at ~/.myGPT/config.ini (as ops.doctor expects)
-    cfg_dir = tmp_path / ".myGPT"
+    # Pretend config exists at ~/.nyxGPT/config.ini (as ops.doctor expects)
+    cfg_dir = tmp_path / ".nyxGPT"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     cfg = cfg_dir / "config.ini"
     cfg.write_text("[project]\nname=myGPT\n", encoding="utf-8")
@@ -160,7 +160,7 @@ def test_ops_doctor_ok(monkeypatch, capsys, tmp_path):
 @pytest.mark.unit
 def test_ops_doctor_warns_when_web_deps_missing(monkeypatch, capsys, tmp_path):
     # Pretend config exists
-    cfg_dir = tmp_path / ".myGPT"
+    cfg_dir = tmp_path / ".nyxGPT"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     (cfg_dir / "config.ini").write_text("[project]\nname=myGPT\n", encoding="utf-8")
 

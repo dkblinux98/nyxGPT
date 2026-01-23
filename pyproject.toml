@@ -1,5 +1,5 @@
 [project]
-name = "myGPT"
+name = "nyxGPT"
 version = "1.0.0"
 description = "Local ChatGPT-style system"
 requires-python = ">=3.11"
@@ -39,7 +39,7 @@ dev = [
 ]
 
 [project.scripts]
-mygpt = "mygpt.cli:cli"
+nyxgpt = "nyxgpt.cli:cli"
 
 # By default, run all tests. Use -m unit or -m integration to filter.
 [tool.pytest.ini_options]

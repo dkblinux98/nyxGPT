@@ -8,7 +8,7 @@ from typing import Iterable, List
 from cassandra.cluster import Cluster
 from cassandra.query import SimpleStatement
 
-from mygpt.config import load_config
+from nyxgpt.config import load_config
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ def _cassandra_cfg() -> CassandraConfig:
     hosts_raw = cfg.get("rag", "cassandra_hosts", fallback="127.0.0.1")
     hosts = [h.strip() for h in hosts_raw.split(",") if h.strip()]
     port = cfg.getint("rag", "cassandra_port", fallback=9042)
-    keyspace = cfg.get("rag", "cassandra_keyspace", fallback="mygpt")
+    keyspace = cfg.get("rag", "cassandra_keyspace", fallback="nyxgpt")
     table = cfg.get("rag", "cassandra_table", fallback="rag_chunks")
 
     return CassandraConfig(hosts=hosts, port=port, keyspace=keyspace, table=table)

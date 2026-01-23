@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from configparser import ConfigParser
 
-from mygpt.rag.fusion import reciprocal_rank_fusion, weighted_fusion, _rrf_cfg
+from nyxgpt.rag.fusion import reciprocal_rank_fusion, weighted_fusion, _rrf_cfg
 
 
 # =============================================================================
@@ -18,7 +18,7 @@ def test_rrf_cfg_defaults(monkeypatch: pytest.MonkeyPatch):
     """_rrf_cfg should return default values when not configured."""
     cfg = ConfigParser()
     cfg["rag"] = {}
-    monkeypatch.setattr("mygpt.rag.fusion.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.fusion.load_config", lambda *_a, **_k: cfg)
 
     result = _rrf_cfg()
     assert result.k == 60.0
@@ -29,7 +29,7 @@ def test_rrf_cfg_custom(monkeypatch: pytest.MonkeyPatch):
     """_rrf_cfg should use custom values when configured."""
     cfg = ConfigParser()
     cfg["rag"] = {"rrf_k": "100.0"}
-    monkeypatch.setattr("mygpt.rag.fusion.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.fusion.load_config", lambda *_a, **_k: cfg)
 
     result = _rrf_cfg()
     assert result.k == 100.0

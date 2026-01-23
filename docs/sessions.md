@@ -1,6 +1,6 @@
 # Sessions & Memory
 
-myGPT persists conversations using **sessions**. Sessions allow conversations to continue across CLI and API invocations and form the basis for future memory features.
+nyxGPT persists conversations using **sessions**. Sessions allow conversations to continue across CLI and API invocations and form the basis for future memory features.
 
 ---
 
@@ -20,7 +20,7 @@ Sessions are stored on disk as JSON files and are automatically created on first
 By default, sessions are stored under:
 
 ```
-~/.myGPT/sessions
+~/.nyxGPT/sessions
 ```
 
 Each session consists of:
@@ -40,8 +40,8 @@ research.meta.json
 The location can be changed via configuration:
 
 ```ini
-[mygpt]
-sessions_dir = ~/.myGPT/sessions
+[nyxgpt]
+sessions_dir = ~/.nyxGPT/sessions
 ```
 
 ---
@@ -51,7 +51,7 @@ sessions_dir = ~/.myGPT/sessions
 ### Start or continue a session
 
 ```bash
-mygpt chat "Hello" --session default
+nyxgpt chat "Hello" --session default
 ```
 
 If the session does not exist, it is created automatically.
@@ -61,7 +61,7 @@ If the session does not exist, it is created automatically.
 ### List sessions
 
 ```bash
-mygpt sessions list
+nyxgpt sessions list
 ```
 
 Example output:
@@ -78,7 +78,7 @@ research    4         2025-01-11
 ### Show session details
 
 ```bash
-mygpt sessions show default
+nyxgpt sessions show default
 ```
 
 Displays message count, timestamps, and metadata.
@@ -88,7 +88,7 @@ Displays message count, timestamps, and metadata.
 ### Delete a session
 
 ```bash
-mygpt sessions delete default
+nyxgpt sessions delete default
 ```
 
 Deletes both the message and metadata files.
@@ -101,16 +101,16 @@ Export session conversations to various formats:
 
 ```bash
 # Export to markdown (default)
-mygpt sessions export default
+nyxgpt sessions export default
 
 # Export to JSON
-mygpt sessions export default --format json
+nyxgpt sessions export default --format json
 
 # Export to HTML
-mygpt sessions export default --format html
+nyxgpt sessions export default --format html
 
 # Save to file instead of stdout
-mygpt sessions export default --format markdown --output session.md
+nyxgpt sessions export default --format markdown --output session.md
 ```
 
 Supported export formats:
@@ -155,10 +155,10 @@ Sessions can automatically generate titles, summaries, and tags using the LLM:
 
 ```bash
 # Manual summarization
-mygpt sessions summarize default
+nyxgpt sessions summarize default
 
 # Auto-summarization (configured in config.ini)
-[mygpt]
+[nyxgpt]
 auto_summarize_enabled = true
 auto_summarize_after_messages = 5
 ```
@@ -171,10 +171,10 @@ Pin important sessions to keep them at the top of your session list:
 
 ```bash
 # Pin a session
-mygpt sessions pin default
+nyxgpt sessions pin default
 
 # Unpin a session
-mygpt sessions unpin default
+nyxgpt sessions unpin default
 ```
 
 ### Tags
@@ -183,14 +183,14 @@ Organize sessions with user-defined tags:
 
 ```bash
 # Add tags
-mygpt sessions tag-add default python debugging tutorial
+nyxgpt sessions tag-add default python debugging tutorial
 
 # Remove tags
-mygpt sessions tag-rm default tutorial
+nyxgpt sessions tag-rm default tutorial
 
 # Batch tag operations
-mygpt sessions batch-tag-add python debugging -- session1 session2 session3
-mygpt sessions batch-tag-rm tutorial -- session1 session2
+nyxgpt sessions batch-tag-add python debugging -- session1 session2 session3
+nyxgpt sessions batch-tag-rm tutorial -- session1 session2
 ```
 
 ### Session titles
@@ -199,7 +199,7 @@ Set custom titles for your sessions:
 
 ```bash
 # Set title
-mygpt sessions title default "Python Debugging Session"
+nyxgpt sessions title default "Python Debugging Session"
 ```
 
 ### Filename sync
@@ -208,10 +208,10 @@ Sync session filenames with their titles for better organization:
 
 ```bash
 # Manual sync
-mygpt sessions sync-filename default
+nyxgpt sessions sync-filename default
 
 # Auto-sync (configured in config.ini)
-[mygpt]
+[nyxgpt]
 auto_sync_filename = true
 ```
 
@@ -222,7 +222,7 @@ When enabled, session filenames automatically update to match their titles (sani
 View detailed statistics about a session:
 
 ```bash
-mygpt sessions stats default
+nyxgpt sessions stats default
 ```
 
 **Output includes:**
@@ -238,19 +238,19 @@ Search for messages across all sessions or within specific sessions:
 
 ```bash
 # Search all sessions
-mygpt sessions search "python error"
+nyxgpt sessions search "python error"
 
 # Search specific session
-mygpt sessions search "function" --session default
+nyxgpt sessions search "function" --session default
 
 # Filter by role
-mygpt sessions search "help" --role user
+nyxgpt sessions search "help" --role user
 
 # Case-sensitive search
-mygpt sessions search "ValueError" --case-sensitive
+nyxgpt sessions search "ValueError" --case-sensitive
 
 # Limit results
-mygpt sessions search "debug" --limit 10
+nyxgpt sessions search "debug" --limit 10
 ```
 
 ---
@@ -264,7 +264,7 @@ Perform operations on multiple sessions at once for efficient management.
 Delete multiple sessions in one command:
 
 ```bash
-mygpt sessions batch-delete -- session1 session2 session3
+nyxgpt sessions batch-delete -- session1 session2 session3
 ```
 
 **Note:** The `--` separator is required to distinguish session names from flags.
@@ -275,16 +275,16 @@ Export multiple sessions simultaneously:
 
 ```bash
 # Export to markdown (default)
-mygpt sessions batch-export -- session1 session2 session3
+nyxgpt sessions batch-export -- session1 session2 session3
 
 # Export to JSON
-mygpt sessions batch-export --format json -- session1 session2
+nyxgpt sessions batch-export --format json -- session1 session2
 
 # Export to HTML
-mygpt sessions batch-export --format html -- session1 session2
+nyxgpt sessions batch-export --format html -- session1 session2
 
 # Specify output directory
-mygpt sessions batch-export --output-dir ./exports -- session1 session2
+nyxgpt sessions batch-export --output-dir ./exports -- session1 session2
 ```
 
 ### Batch pin/unpin
@@ -293,10 +293,10 @@ Pin or unpin multiple sessions:
 
 ```bash
 # Pin multiple sessions
-mygpt sessions batch-pin -- important1 important2 important3
+nyxgpt sessions batch-pin -- important1 important2 important3
 
 # Unpin multiple sessions
-mygpt sessions batch-unpin -- old1 old2 old3
+nyxgpt sessions batch-unpin -- old1 old2 old3
 ```
 
 ### Batch tag operations
@@ -305,10 +305,10 @@ Add or remove tags from multiple sessions:
 
 ```bash
 # Add tags to multiple sessions
-mygpt sessions batch-tag-add python tutorial -- session1 session2 session3
+nyxgpt sessions batch-tag-add python tutorial -- session1 session2 session3
 
 # Remove tags from multiple sessions
-mygpt sessions batch-tag-rm outdated -- session1 session2 session3
+nyxgpt sessions batch-tag-rm outdated -- session1 session2 session3
 ```
 
 ### Batch metadata update
@@ -317,13 +317,13 @@ Update model or RAG settings for multiple sessions:
 
 ```bash
 # Update model for multiple sessions
-mygpt sessions batch-update-meta --model llama3.1:8b -- session1 session2
+nyxgpt sessions batch-update-meta --model llama3.1:8b -- session1 session2
 
 # Enable RAG for multiple sessions
-mygpt sessions batch-update-meta --rag-enabled true -- session1 session2
+nyxgpt sessions batch-update-meta --rag-enabled true -- session1 session2
 
 # Disable RAG for multiple sessions
-mygpt sessions batch-update-meta --rag-enabled false -- session1 session2
+nyxgpt sessions batch-update-meta --rag-enabled false -- session1 session2
 ```
 
 ---

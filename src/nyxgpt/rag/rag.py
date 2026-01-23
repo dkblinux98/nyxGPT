@@ -9,7 +9,7 @@ import uuid
 import statistics
 import hashlib
 
-from mygpt.config import (
+from nyxgpt.config import (
     load_config,
     get_rag_chat_top_k,
     get_rag_min_score,
@@ -20,14 +20,14 @@ from mygpt.config import (
     get_rag_include_headers,
     get_rag_debug_mode,
 )
-from mygpt.rag.embeddings import embed_text, embed_texts, EmbeddingDebugMetrics
-from mygpt.rag.vectorstore_cassandra import (
+from nyxgpt.rag.embeddings import embed_text, embed_texts, EmbeddingDebugMetrics
+from nyxgpt.rag.vectorstore_cassandra import (
     CassandraVectorStore,
     VectorSearchDebugMetrics,
 )
-from mygpt.rag.bm25 import BM25Index
-from mygpt.rag.fusion import reciprocal_rank_fusion, weighted_fusion
-from mygpt.rag.reranker import rerank_results, RerankerDebugMetrics
+from nyxgpt.rag.bm25 import BM25Index
+from nyxgpt.rag.fusion import reciprocal_rank_fusion, weighted_fusion
+from nyxgpt.rag.reranker import rerank_results, RerankerDebugMetrics
 
 log = logging.getLogger(__name__)
 
@@ -728,7 +728,7 @@ def ingest_document(
             )
 
             # Get the actual model and dimension from embeddings config
-            from mygpt.rag.embeddings import _embedding_cfg
+            from nyxgpt.rag.embeddings import _embedding_cfg
 
             ecfg = _embedding_cfg(model=embedding_model, dimension=embedding_dim)
             actual_dim = len(embeddings[0]) if embeddings else ecfg.dimension
@@ -779,7 +779,7 @@ def ingest_document(
             store.delete_doc(doc_id)
 
         # Get the actual model and dimension from embeddings config
-        from mygpt.rag.embeddings import _embedding_cfg
+        from nyxgpt.rag.embeddings import _embedding_cfg
 
         ecfg = _embedding_cfg(model=embedding_model, dimension=embedding_dim)
         actual_model = ecfg.model
@@ -846,8 +846,8 @@ def expand_query(query: str, max_expansions: int = 3) -> list[str]:
         return [query]
 
     try:
-        from mygpt.config import get_ollama_base_url, get_default_model
-        from mygpt.ollama_client import ollama_chat
+        from nyxgpt.config import get_ollama_base_url, get_default_model
+        from nyxgpt.ollama_client import ollama_chat
 
         base_url = get_ollama_base_url(cfg)
         model = cfg.get("rag", "expansion_model", fallback=None) or get_default_model(
@@ -945,7 +945,7 @@ def retrieve_context(
     collect_debug = debug_mode if debug_mode is not None else get_rag_debug_mode(cfg)
 
     # Get the actual model that will be used for embedding
-    from mygpt.rag.embeddings import _embedding_cfg
+    from nyxgpt.rag.embeddings import _embedding_cfg
 
     ecfg = _embedding_cfg(model=embedding_model, dimension=embedding_dim)
     actual_model = ecfg.model

@@ -687,8 +687,8 @@ function Home() {
         >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
           <Image
-            src="/myGPT-logo.png"
-            alt="myGPT logo"
+            src="/nyxGPT-logo.png"
+            alt="nyxGPT logo"
             width={200}
             height={100}
             priority

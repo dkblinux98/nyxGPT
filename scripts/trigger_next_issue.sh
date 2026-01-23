@@ -15,7 +15,7 @@ Example:
   trigger_next_issue.sh 2843
 
 This will:
-  1. Post "@myGPT-scrummaster-agent READY_FOR_NEXT_ISSUE" to issue #2843
+  1. Post "@nyxGPT-scrummaster-agent READY_FOR_NEXT_ISSUE" to issue #2843
   2. Trigger the scrummaster workflow to select the next backlog issue
   3. Auto-implement the selected issue via developer agent
 
@@ -63,7 +63,7 @@ fi
 echo "Posting trigger comment to issue #$ISSUE in $REPO..."
 
 # Post the comment
-gh issue comment "$ISSUE" --repo "$REPO" --body "@myGPT-scrummaster-agent READY_FOR_NEXT_ISSUE"
+gh issue comment "$ISSUE" --repo "$REPO" --body "@nyxGPT-scrummaster-agent READY_FOR_NEXT_ISSUE"
 
 echo "✅ Successfully posted trigger comment to issue #$ISSUE"
 echo ""

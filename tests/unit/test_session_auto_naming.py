@@ -1,7 +1,7 @@
 """Unit tests for automatic session naming and filename sync functionality."""
 
 import pytest
-from mygpt.sessions import (
+from nyxgpt.sessions import (
     sanitize_title_for_filename,
     sync_filename_with_title,
     save_session_messages,
@@ -138,7 +138,7 @@ def test_sync_filename_with_title_renames(tmp_path):
     assert new_mf.exists()
 
     # Verify content preserved
-    from mygpt.sessions import load_session_messages
+    from nyxgpt.sessions import load_session_messages
 
     loaded_messages = load_session_messages(new_sf)
     assert loaded_messages == messages
@@ -187,21 +187,21 @@ def test_sync_filename_with_title_disabled_by_config(tmp_path, monkeypatch):
     save_session_meta(mf, {"title": "Python Tips"})
 
     # Create config with auto_sync disabled
-    config_content = "[mygpt]\nauto_sync_filename = no\n"
+    config_content = "[nyxgpt]\nauto_sync_filename = no\n"
     config_dir = tmp_path / ".myGPT"
     config_dir.mkdir()
     config_file = config_dir / "config.ini"
     config_file.write_text(config_content)
 
     # Monkeypatch DEFAULT_CONFIG_PATH to use temp directory
-    import mygpt.config
+    import nyxgpt.config
 
-    monkeypatch.setattr(mygpt.config, "DEFAULT_CONFIG_PATH", config_file)
+    monkeypatch.setattr(nyxgpt.config, "DEFAULT_CONFIG_PATH", config_file)
 
     # Clear config cache to force reload
-    mygpt.config._CACHED_CFG = None
-    mygpt.config._CACHED_PATH = None
-    mygpt.config._CACHED_MTIME_NS = None
+    nyxgpt.config._CACHED_CFG = None
+    nyxgpt.config._CACHED_PATH = None
+    nyxgpt.config._CACHED_MTIME_NS = None
 
     # Should not rename (disabled)
     success, message, new_name = sync_filename_with_title(
@@ -227,21 +227,21 @@ def test_sync_filename_with_title_force_override_config(tmp_path, monkeypatch):
     save_session_meta(mf, {"title": "Python Tips"})
 
     # Create config with auto_sync disabled
-    config_content = "[mygpt]\nauto_sync_filename = no\n"
+    config_content = "[nyxgpt]\nauto_sync_filename = no\n"
     config_dir = tmp_path / ".myGPT"
     config_dir.mkdir()
     config_file = config_dir / "config.ini"
     config_file.write_text(config_content)
 
     # Monkeypatch DEFAULT_CONFIG_PATH to use temp directory
-    import mygpt.config
+    import nyxgpt.config
 
-    monkeypatch.setattr(mygpt.config, "DEFAULT_CONFIG_PATH", config_file)
+    monkeypatch.setattr(nyxgpt.config, "DEFAULT_CONFIG_PATH", config_file)
 
     # Clear config cache to force reload
-    mygpt.config._CACHED_CFG = None
-    mygpt.config._CACHED_PATH = None
-    mygpt.config._CACHED_MTIME_NS = None
+    nyxgpt.config._CACHED_CFG = None
+    nyxgpt.config._CACHED_PATH = None
+    nyxgpt.config._CACHED_MTIME_NS = None
 
     # Should rename anyway (force=True)
     success, message, new_name = sync_filename_with_title(

@@ -5,7 +5,7 @@ Tests verify the end-to-end flow of filesystem tools API endpoints:
 - POST /api/v1/tools/cat (read file)
 - POST /api/v1/tools/grep (search in file/directory)
 
-Related: src/mygpt/app.py (lines 1367-1389), src/mygpt/tools_fs.py
+Related: src/nyxgpt/app.py (lines 1367-1389), src/nyxgpt/tools_fs.py
 """
 
 from __future__ import annotations

@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 import pytest
-from mygpt.config import (
+from nyxgpt.config import (
     load_config,
     validate_config,
     get_api_port,
@@ -27,7 +27,7 @@ def test_load_config_defaults_exist() -> None:
     cfg = load_config(None)
 
     assert cfg.get("ollama", "base_url", fallback=None)
-    assert cfg.get("mygpt", "default_model", fallback=None)
+    assert cfg.get("nyxgpt", "default_model", fallback=None)
 
 
 def test_load_config_from_explicit_path(tmp_path: Path) -> None:
@@ -35,7 +35,7 @@ def test_load_config_from_explicit_path(tmp_path: Path) -> None:
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -44,7 +44,7 @@ base_url = http://127.0.0.1:11434
     )
 
     cfg = load_config(str(ini))
-    assert cfg.get("mygpt", "default_model") == "llama3.1:8b"
+    assert cfg.get("nyxgpt", "default_model") == "llama3.1:8b"
     assert cfg.get("ollama", "base_url") == "http://127.0.0.1:11434"
 
 
@@ -65,13 +65,13 @@ def test_load_config_expands_tilde_home(
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 """.lstrip(),
     )
 
     cfg = load_config("~/.myGPT/config.ini")
-    assert cfg.get("mygpt", "default_model") == "llama3.1:8b"
+    assert cfg.get("nyxgpt", "default_model") == "llama3.1:8b"
 
 
 def test_default_log_dir_is_under_home(
@@ -82,9 +82,9 @@ def test_default_log_dir_is_under_home(
     monkeypatch.setenv("HOME", str(fake_home))
 
     cfg = load_config(None)
-    # We will implement mygpt.log_dir; until then, this uses fallback.
+    # We will implement nyxgpt.log_dir; until then, this uses fallback.
     log_dir = cfg.get(
-        "mygpt", "log_dir", fallback=str(Path("~/.myGPT/logs").expanduser())
+        "nyxgpt", "log_dir", fallback=str(Path("~/.nyxGPT/logs").expanduser())
     )
 
     # Must resolve under fake HOME
@@ -97,13 +97,13 @@ def test_config_allows_overriding_log_dir(tmp_path: Path) -> None:
     _write(
         ini,
         f"""
-[mygpt]
+[nyxgpt]
 log_dir = {tmp_path / "logs"}
 """.lstrip(),
     )
 
     cfg = load_config(str(ini))
-    assert cfg.get("mygpt", "log_dir") == str(tmp_path / "logs")
+    assert cfg.get("nyxgpt", "log_dir") == str(tmp_path / "logs")
 
 
 def test_chat_timeout_default_can_be_read(tmp_path: Path) -> None:
@@ -111,13 +111,13 @@ def test_chat_timeout_default_can_be_read(tmp_path: Path) -> None:
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 chat_timeout_seconds = 180
 """.lstrip(),
     )
 
     cfg = load_config(str(ini))
-    assert cfg.getint("mygpt", "chat_timeout_seconds") == 180
+    assert cfg.getint("nyxgpt", "chat_timeout_seconds") == 180
 
 
 def test_load_config_missing_file_raises_error() -> None:
@@ -195,7 +195,7 @@ port = invalid
 
     cfg = load_config(str(ini))
     # Should return default port (8000) and log a warning
-    caplog.set_level(logging.WARNING, logger="mygpt.config")
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
     port = get_api_port(cfg)
 
     assert port == 8000
@@ -208,7 +208,7 @@ def test_get_prompt_mode_enabled_default(tmp_path: Path) -> None:
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -226,7 +226,7 @@ def test_get_prompt_mode_enabled_true(tmp_path: Path) -> None:
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -247,7 +247,7 @@ def test_get_prompt_mode_enabled_false(tmp_path: Path) -> None:
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -270,7 +270,7 @@ def test_get_prompt_mode_enabled_invalid_value(
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -282,7 +282,7 @@ adaptive_mode_enabled = not_a_boolean
     )
 
     cfg = load_config(str(ini))
-    caplog.set_level(logging.WARNING, logger="mygpt.config")
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
     enabled = get_prompt_mode_enabled(cfg)
 
     assert enabled is False
@@ -295,7 +295,7 @@ def test_get_prompt_mode_short_threshold_default(tmp_path: Path) -> None:
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -313,7 +313,7 @@ def test_get_prompt_mode_short_threshold_configured(tmp_path: Path) -> None:
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -334,7 +334,7 @@ def test_get_prompt_mode_short_threshold_minimum_value(tmp_path: Path) -> None:
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -357,7 +357,7 @@ def test_get_prompt_mode_short_threshold_invalid_value(
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -369,7 +369,7 @@ short_threshold = not_a_number
     )
 
     cfg = load_config(str(ini))
-    caplog.set_level(logging.WARNING, logger="mygpt.config")
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
     threshold = get_prompt_mode_short_threshold(cfg)
 
     assert threshold == 3
@@ -382,7 +382,7 @@ def test_get_prompt_mode_long_threshold_default(tmp_path: Path) -> None:
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -400,7 +400,7 @@ def test_get_prompt_mode_long_threshold_configured(tmp_path: Path) -> None:
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -422,7 +422,7 @@ def test_get_prompt_mode_long_threshold_enforces_minimum(tmp_path: Path) -> None
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -447,7 +447,7 @@ def test_get_prompt_mode_long_threshold_invalid_value(
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -459,7 +459,7 @@ long_threshold = not_a_number
     )
 
     cfg = load_config(str(ini))
-    caplog.set_level(logging.WARNING, logger="mygpt.config")
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
     threshold = get_prompt_mode_long_threshold(cfg)
 
     assert threshold == 10
@@ -472,7 +472,7 @@ def test_get_rag_good_score_threshold_default(tmp_path: Path) -> None:
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -490,7 +490,7 @@ def test_get_rag_good_score_threshold_configured(tmp_path: Path) -> None:
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -511,7 +511,7 @@ def test_get_rag_medium_score_threshold_default(tmp_path: Path) -> None:
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]
@@ -529,7 +529,7 @@ def test_get_rag_medium_score_threshold_configured(tmp_path: Path) -> None:
     _write(
         ini,
         """
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 
 [ollama]

@@ -5,8 +5,8 @@ import logging
 import pytest
 from fastapi.testclient import TestClient
 
-from mygpt.logging import RequestIdFilter, request_id_var
-from mygpt.app import app
+from nyxgpt.logging import RequestIdFilter, request_id_var
+from nyxgpt.app import app
 
 pytestmark = pytest.mark.unit
 

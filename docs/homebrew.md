@@ -2,10 +2,10 @@
 
 # Homebrew Services
 
-myGPT provides two persistent background services using **Homebrew services**:
+nyxGPT provides two persistent background services using **Homebrew services**:
 
-1. **mygpt-api** - FastAPI backend (REST API)
-2. **mygpt-web** - Next.js web UI
+1. **nyxgpt-api** - FastAPI backend (REST API)
+2. **nyxgpt-web** - Next.js web UI
 
 This is the recommended way to keep both services running locally without keeping terminals open.
 
@@ -15,22 +15,22 @@ This is the recommended way to keep both services running locally without keepin
 
 - macOS
 - Homebrew installed
-- Python environment already set up for myGPT
+- Python environment already set up for nyxGPT
 
 ---
 
 ## Homebrew tap
 
-The myGPT Homebrew formula lives in a custom tap:
+The nyxGPT Homebrew formula lives in a custom tap:
 
 ```
-dkblinux98/mygpt-local
+dkblinux98/nyxgpt-local
 ```
 
 Add the tap:
 
 ```bash
-brew tap dkblinux98/mygpt-local
+brew tap dkblinux98/nyxgpt-local
 ```
 
 ---
@@ -41,11 +41,11 @@ Install both service formulas:
 
 ```bash
 # Add the tap (if not already added)
-brew tap dkblinux98/mygpt-local
+brew tap dkblinux98/nyxgpt-local
 
 # Install both services
-brew install mygpt-api
-brew install mygpt-web
+brew install nyxgpt-api
+brew install nyxgpt-web
 ```
 
 Each service installs:
@@ -54,20 +54,20 @@ Each service installs:
 
 ---
 
-## Managing the API service (mygpt-api)
+## Managing the API service (nyxgpt-api)
 
 ### Start the API
 
 Start the FastAPI backend as a background service:
 
 ```bash
-brew services start mygpt-api
+brew services start nyxgpt-api
 ```
 
 Verify status:
 
 ```bash
-brew services info mygpt-api
+brew services info nyxgpt-api
 ```
 
 ### Restart and stop
@@ -75,13 +75,13 @@ brew services info mygpt-api
 Restart the API service:
 
 ```bash
-brew services restart mygpt-api
+brew services restart nyxgpt-api
 ```
 
 Stop the API service:
 
 ```bash
-brew services stop mygpt-api
+brew services stop nyxgpt-api
 ```
 
 ### API logs
@@ -89,33 +89,33 @@ brew services stop mygpt-api
 Service logs are written to:
 
 ```
-~/.myGPT/logs/mygpt.log
+~/.nyxGPT/logs/nyxgpt.log
 ```
 
 Tail logs in real time:
 
 ```bash
-tail -f ~/.myGPT/logs/mygpt.log
+tail -f ~/.nyxGPT/logs/nyxgpt.log
 ```
 
 If the service fails to start, check these logs first.
 
 ---
 
-## Managing the Web UI service (mygpt-web)
+## Managing the Web UI service (nyxgpt-web)
 
 ### Start the Web UI
 
 Start the Next.js web UI as a background service:
 
 ```bash
-brew services start mygpt-web
+brew services start nyxgpt-web
 ```
 
 Verify status:
 
 ```bash
-brew services info mygpt-web
+brew services info nyxgpt-web
 ```
 
 The web UI will be available at: `http://127.0.0.1:3000`
@@ -125,13 +125,13 @@ The web UI will be available at: `http://127.0.0.1:3000`
 Restart the web service:
 
 ```bash
-brew services restart mygpt-web
+brew services restart nyxgpt-web
 ```
 
 Stop the web service:
 
 ```bash
-brew services stop mygpt-web
+brew services stop nyxgpt-web
 ```
 
 ### Web UI logs
@@ -139,18 +139,18 @@ brew services stop mygpt-web
 Service logs are written to:
 
 ```
-~/.myGPT/logs/mygpt-web.log
-~/.myGPT/logs/mygpt-web.err.log
+~/.nyxGPT/logs/nyxgpt-web.log
+~/.nyxGPT/logs/nyxgpt-web.err.log
 ```
 
 Tail logs in real time:
 
 ```bash
 # Standard output logs
-tail -f ~/.myGPT/logs/mygpt-web.log
+tail -f ~/.nyxGPT/logs/nyxgpt-web.log
 
 # Error logs
-tail -f ~/.myGPT/logs/mygpt-web.err.log
+tail -f ~/.nyxGPT/logs/nyxgpt-web.err.log
 ```
 
 ---
@@ -160,34 +160,34 @@ tail -f ~/.myGPT/logs/mygpt-web.err.log
 ### Start both services
 
 ```bash
-brew services start mygpt-api
-brew services start mygpt-web
+brew services start nyxgpt-api
+brew services start nyxgpt-web
 ```
 
-Or use the `mygpt ops restart` command for a coordinated restart:
+Or use the `nyxgpt ops restart` command for a coordinated restart:
 
 ```bash
-mygpt ops restart
+nyxgpt ops restart
 ```
 
 ### Stop both services
 
 ```bash
-brew services stop mygpt-api
-brew services stop mygpt-web
+brew services stop nyxgpt-api
+brew services stop nyxgpt-web
 ```
 
 ### Check status of all services
 
 ```bash
-brew services list | grep mygpt
+brew services list | grep nyxgpt
 ```
 
 Example output:
 
 ```
-mygpt-api  started username ~/Library/LaunchAgents/homebrew.mxcl.mygpt-api.plist
-mygpt-web  started username ~/Library/LaunchAgents/homebrew.mxcl.mygpt-web.plist
+nyxgpt-api  started username ~/Library/LaunchAgents/homebrew.mxcl.nyxgpt-api.plist
+nyxgpt-web  started username ~/Library/LaunchAgents/homebrew.mxcl.nyxgpt-web.plist
 ```
 
 ---
@@ -196,16 +196,16 @@ mygpt-web  started username ~/Library/LaunchAgents/homebrew.mxcl.mygpt-web.plist
 
 **Important:** The Web UI depends on the API service.
 
-- **mygpt-api** must be running for the Web UI to function
+- **nyxgpt-api** must be running for the Web UI to function
 - Start the API before starting the Web UI
 - If the API is down, the Web UI will show connection errors
 
 Recommended startup order:
 
 ```bash
-brew services start mygpt-api
+brew services start nyxgpt-api
 # Wait a few seconds for API to be ready
-brew services start mygpt-web
+brew services start nyxgpt-web
 ```
 
 ---
@@ -215,7 +215,7 @@ brew services start mygpt-web
 Both Homebrew services use the same configuration file as the CLI:
 
 ```
-~/.myGPT/config.ini
+~/.nyxGPT/config.ini
 ```
 
 ### API configuration
@@ -251,13 +251,13 @@ Other changes require service restart:
 
 ```bash
 # Restart API service
-brew services restart mygpt-api
+brew services restart nyxgpt-api
 
 # Restart Web UI service
-brew services restart mygpt-web
+brew services restart nyxgpt-web
 
 # Restart both
-mygpt ops restart
+nyxgpt ops restart
 ```
 
 ---
@@ -282,18 +282,18 @@ After starting both services:
 
 1. Verify API is running:
    ```bash
-   brew services list | grep mygpt-api
+   brew services list | grep nyxgpt-api
    curl http://127.0.0.1:8000/health
    ```
 
 2. Check API logs:
    ```bash
-   tail -f ~/.myGPT/logs/mygpt.log
+   tail -f ~/.nyxGPT/logs/nyxgpt.log
    ```
 
 3. Restart API service:
    ```bash
-   brew services restart mygpt-api
+   brew services restart nyxgpt-api
    ```
 
 ### Service won't start
@@ -304,13 +304,13 @@ After starting both services:
 
 1. Check logs for errors:
    ```bash
-   tail -f ~/.myGPT/logs/mygpt.log
-   tail -f ~/.myGPT/logs/mygpt-web.err.log
+   tail -f ~/.nyxGPT/logs/nyxgpt.log
+   tail -f ~/.nyxGPT/logs/nyxgpt-web.err.log
    ```
 
 2. Verify configuration is valid:
    ```bash
-   cat ~/.myGPT/config.ini
+   cat ~/.nyxGPT/config.ini
    ```
 
 3. Check port conflicts:
@@ -319,9 +319,9 @@ After starting both services:
    lsof -i :3000  # Web UI port
    ```
 
-4. Run `mygpt ops doctor` for health checks:
+4. Run `nyxgpt ops doctor` for health checks:
    ```bash
-   mygpt ops doctor
+   nyxgpt ops doctor
    ```
 
 ### Node.js not found (Web UI)
@@ -345,7 +345,7 @@ After starting both services:
 
 3. Restart web service:
    ```bash
-   brew services restart mygpt-web
+   brew services restart nyxgpt-web
    ```
 
 ---
@@ -356,4 +356,4 @@ After starting both services:
 - The API is bound to `127.0.0.1` by default and is not exposed publicly
 - The Web UI is also bound to `127.0.0.1` for local-only access
 - Homebrew services automatically restart both services on login
-- Use `mygpt ops` commands for easier service management
+- Use `nyxgpt ops` commands for easier service management

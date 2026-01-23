@@ -27,8 +27,8 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.status import HTTP_401_UNAUTHORIZED
-from mygpt import api_models
-from mygpt.api_models import (
+from nyxgpt import api_models
+from nyxgpt.api_models import (
     InfoResponse,
     SessionsListResponse,
     TitleRequest,
@@ -51,7 +51,7 @@ from mygpt.api_models import (
     RagMetricsQueryResponse,
 )
 
-from mygpt.config import (
+from nyxgpt.config import (
     get_default_model,
     get_ollama_base_url,
     get_sessions_dir,
@@ -62,21 +62,21 @@ from mygpt.config import (
     get_rag_medium_score_threshold,
     load_config,
 )
-import mygpt.config
-from mygpt import chat as chat_module
-from mygpt.chat import chat as run_chat, chat_stream
-from mygpt import sessions
-from mygpt import tools_fs
-from mygpt import models
+import nyxgpt.config
+from nyxgpt import chat as chat_module
+from nyxgpt.chat import chat as run_chat, chat_stream
+from nyxgpt import sessions
+from nyxgpt import tools_fs
+from nyxgpt import models
 
-from mygpt.rag.rag import ingest_document, retrieve_context
-from mygpt.logging import configure_logging, request_id_var, get_log_dir
-from mygpt.rate_limiter import RateLimiter
+from nyxgpt.rag.rag import ingest_document, retrieve_context
+from nyxgpt.logging import configure_logging, request_id_var, get_log_dir
+from nyxgpt.rate_limiter import RateLimiter
 
 
 import logging
 
-log = logging.getLogger("mygpt.api")
+log = logging.getLogger("nyxgpt.api")
 
 # Global rate limiter instance (initialized at startup if enabled)
 _rate_limiter: RateLimiter | None = None
@@ -489,8 +489,8 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
 
     if "default_model" in updates and isinstance(updates.get("default_model"), str):
-        ensure_section("mygpt")
-        parser.set("mygpt", "default_model", updates["default_model"].strip())
+        ensure_section("nyxgpt")
+        parser.set("nyxgpt", "default_model", updates["default_model"].strip())
         out["default_model"] = updates["default_model"].strip()
 
     if "rag_enabled" in updates:
@@ -511,9 +511,9 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
 
     # Invalidate config cache to force reload on next access
     # This ensures mtime-based caching works even for rapid writes/reads
-    mygpt.config._CACHED_CFG = None
-    mygpt.config._CACHED_PATH = None
-    mygpt.config._CACHED_MTIME_NS = None
+    nyxgpt.config._CACHED_CFG = None
+    nyxgpt.config._CACHED_PATH = None
+    nyxgpt.config._CACHED_MTIME_NS = None
 
     # Hot-apply logging changes immediately
     try:
@@ -931,7 +931,7 @@ def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
     system = req.get("system")
     if not isinstance(system, str) or not system:
         # Use config default (empty string if not set)
-        system = cfg.get("mygpt", "system_prompt", fallback="")
+        system = cfg.get("nyxgpt", "system_prompt", fallback="")
 
     model = req.get("model")
     if not isinstance(model, str) or not model:
@@ -1436,7 +1436,7 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
     try:
         # Validate session name early, before creating generator
         # This ensures validation errors are caught and return 422 instead of failing during streaming
-        from mygpt.sessions import validate_session_name
+        from nyxgpt.sessions import validate_session_name
 
         try:
             validate_session_name(req.session)
@@ -1568,7 +1568,7 @@ def rag_document_info(
     request: Request, doc_id: str, collection: str = "default"
 ) -> RagDocumentInfo:
     """Get document version and metadata information."""
-    from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
     store = CassandraVectorStore(collection=collection)
     try:
@@ -1612,11 +1612,11 @@ def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
 
         if req.debug_mode:
             # Type narrowing: debug_mode=True means result is tuple[list[dict], RAGDebugInfo]
-            from mygpt.rag.rag import RAGDebugInfo
+            from nyxgpt.rag.rag import RAGDebugInfo
 
             results, debug_info = cast(tuple[list[dict], RAGDebugInfo], result)
             # Convert RAGDebugInfo to RagDebugInfo (API model)
-            from mygpt.api_models import RagDebugInfo
+            from nyxgpt.api_models import RagDebugInfo
 
             api_debug_info = RagDebugInfo(
                 total_time_ms=debug_info.total_time_ms,
@@ -1677,18 +1677,18 @@ def rag_metrics_query(
     Requires debug_mode=True to collect metrics.
     """
     try:
-        from mygpt.config import get_rag_min_score
+        from nyxgpt.config import get_rag_min_score
 
         # Force debug mode to collect metrics
         result = retrieve_context(req.query, top_k=req.top_k, debug_mode=True)
 
         # Type narrowing: debug_mode=True means result is tuple[list[dict], RAGDebugInfo]
-        from mygpt.rag.rag import RAGDebugInfo, compute_evaluation_metrics
+        from nyxgpt.rag.rag import RAGDebugInfo, compute_evaluation_metrics
 
         results, debug_info = cast(tuple[list[dict], RAGDebugInfo], result)
 
         # Convert RAGDebugInfo to RagDebugInfo (API model)
-        from mygpt.api_models import (
+        from nyxgpt.api_models import (
             RagDebugInfo,
             RagEvaluationMetrics as ApiRagEvaluationMetrics,
             RetrievalAccuracyMetrics as ApiRetrievalAccuracyMetrics,
@@ -2299,7 +2299,7 @@ def logs_view_file(
     View log file contents with optional filtering.
 
     Args:
-        filename: Name of the log file (e.g., "mygpt.log")
+        filename: Name of the log file (e.g., "nyxgpt.log")
         tail: Number of lines to return from the end (default: all)
         level: Filter by log level (DEBUG, INFO, WARNING, ERROR)
         search: Search string to filter lines

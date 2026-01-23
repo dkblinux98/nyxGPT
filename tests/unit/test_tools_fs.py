@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from mygpt.tools_fs import ls, cat, grep
+from nyxgpt.tools_fs import ls, cat, grep
 
 pytestmark = pytest.mark.unit
 

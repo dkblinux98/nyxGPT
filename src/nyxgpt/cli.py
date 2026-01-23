@@ -6,24 +6,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
-from mygpt.config import (
+from nyxgpt.config import (
     load_config,
     get_default_model,
     get_ollama_base_url,
     get_sessions_dir,
 )
-from mygpt import sessions
-from mygpt import tools_fs
-from mygpt import models
-from mygpt.chat import chat, chat_stream
-from mygpt.logging import configure_logging
-from mygpt.rag.rag import ingest_document, retrieve_context
-from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
-from mygpt.tui import MyGPTTUI
-from mygpt.wizard import run_wizard
+from nyxgpt import sessions
+from nyxgpt import tools_fs
+from nyxgpt import models
+from nyxgpt.chat import chat, chat_stream
+from nyxgpt.logging import configure_logging
+from nyxgpt.rag.rag import ingest_document, retrieve_context
+from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+from nyxgpt.tui import MyGPTTUI
+from nyxgpt.wizard import run_wizard
 
 # Ops implementation lives in a separate module for testability.
-from mygpt import ops as ops_mod
+from nyxgpt import ops as ops_mod
 
 
 def _list_sessions_in_dir(sessions_dir: Path) -> list[dict[str, object]]:
@@ -61,7 +61,7 @@ def cmd_info(cfg_path: Path | None) -> int:
     base_url = get_ollama_base_url(cfg)
     model = get_default_model(cfg)
 
-    print("myGPT OK")
+    print("nyxGPT OK")
     print(f"Ollama base_url: {base_url}")
     print(f"Default model: {model}")
     return 0
@@ -819,7 +819,7 @@ def cmd_rag_compare(
         test_file: Path to text file for testing
         models_spec: List of model specifications in format "model:dim:collection"
     """
-    from mygpt.rag.model_compare import compare_models, print_comparison_table
+    from nyxgpt.rag.model_compare import compare_models, print_comparison_table
 
     # Parse model specs
     models = []
@@ -1004,11 +1004,11 @@ def cmd_models_show(name: str) -> int:
 
 
 def cli(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="mygpt")
+    parser = argparse.ArgumentParser(prog="nyxgpt")
     parser.add_argument(
         "--config",
         type=Path,
-        help="Path to config.ini (defaults to ~/.myGPT/config.ini)",
+        help="Path to config.ini (defaults to ~/.nyxGPT/config.ini)",
     )
 
     sub = parser.add_subparsers(dest="command")

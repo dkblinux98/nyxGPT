@@ -12,12 +12,12 @@ def test_rerank_results_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """rerank_results should return original results when disabled."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["mygpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
     cfg["rag"] = {"enable_reranking": "false"}
 
-    monkeypatch.setattr("mygpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
-    from mygpt.rag.reranker import rerank_results
+    from nyxgpt.rag.reranker import rerank_results
 
     results = [
         {"text": "Result 1", "score": 0.8},
@@ -34,12 +34,12 @@ def test_rerank_results_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
     """rerank_results should handle empty list."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["mygpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
     cfg["rag"] = {"enable_reranking": "true"}
 
-    monkeypatch.setattr("mygpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
-    from mygpt.rag.reranker import rerank_results
+    from nyxgpt.rag.reranker import rerank_results
 
     output = rerank_results("test query", [])
     assert output == []
@@ -50,14 +50,14 @@ def test_rerank_results_with_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
     """rerank_results should return metrics when requested."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["mygpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
     cfg["rag"] = {
         "enable_reranking": "true",
         "rerank_top_n": "2",
         "reranker_timeout_seconds": "30",
     }
 
-    monkeypatch.setattr("mygpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
     # Mock _score_relevance to return deterministic scores
     def mock_score_relevance(query: str, document: str, config):
@@ -71,10 +71,10 @@ def test_rerank_results_with_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
         return 0.5
 
     monkeypatch.setattr(
-        "mygpt.rag.reranker._score_relevance", mock_score_relevance
+        "nyxgpt.rag.reranker._score_relevance", mock_score_relevance
     )
 
-    from mygpt.rag.reranker import rerank_results
+    from nyxgpt.rag.reranker import rerank_results
 
     results = [
         {"text": "Result 1", "score": 0.8},
@@ -103,22 +103,22 @@ def test_rerank_results_preserves_original_score(monkeypatch: pytest.MonkeyPatch
     """rerank_results should preserve original score in metadata."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["mygpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
     cfg["rag"] = {
         "enable_reranking": "true",
         "rerank_top_n": "3",
     }
 
-    monkeypatch.setattr("mygpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
     def mock_score_relevance(query: str, document: str, config):
         return 0.75
 
     monkeypatch.setattr(
-        "mygpt.rag.reranker._score_relevance", mock_score_relevance
+        "nyxgpt.rag.reranker._score_relevance", mock_score_relevance
     )
 
-    from mygpt.rag.reranker import rerank_results
+    from nyxgpt.rag.reranker import rerank_results
 
     results = [
         {"text": "Result 1", "score": 0.8},
@@ -135,15 +135,15 @@ def test_rerank_results_handles_failure_gracefully(monkeypatch: pytest.MonkeyPat
     """rerank_results should handle scoring failures gracefully."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["mygpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
     cfg["rag"] = {
         "enable_reranking": "true",
         "rerank_top_n": "3",
     }
 
-    monkeypatch.setattr("mygpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
-    from mygpt.rag.reranker import RerankError
+    from nyxgpt.rag.reranker import RerankError
 
     def mock_score_relevance(query: str, document: str, config):
         # Fail for first result, succeed for others
@@ -152,10 +152,10 @@ def test_rerank_results_handles_failure_gracefully(monkeypatch: pytest.MonkeyPat
         return 0.7
 
     monkeypatch.setattr(
-        "mygpt.rag.reranker._score_relevance", mock_score_relevance
+        "nyxgpt.rag.reranker._score_relevance", mock_score_relevance
     )
 
-    from mygpt.rag.reranker import rerank_results
+    from nyxgpt.rag.reranker import rerank_results
 
     results = [
         {"text": "Result 1", "score": 0.8},
@@ -178,11 +178,11 @@ def test_score_relevance_json_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
     """_score_relevance should parse various JSON formats."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["mygpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
 
-    monkeypatch.setattr("mygpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
-    from mygpt.rag.reranker import _score_relevance, RerankerConfig
+    from nyxgpt.rag.reranker import _score_relevance, RerankerConfig
 
     config = RerankerConfig(
         base_url="http://localhost:11434",
@@ -218,11 +218,11 @@ def test_score_relevance_clamps_to_range(monkeypatch: pytest.MonkeyPatch) -> Non
     """_score_relevance should clamp scores to [0.0, 1.0]."""
     cfg = ConfigParser()
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
-    cfg["mygpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
 
-    monkeypatch.setattr("mygpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
-    from mygpt.rag.reranker import _score_relevance, RerankerConfig
+    from nyxgpt.rag.reranker import _score_relevance, RerankerConfig
 
     config = RerankerConfig(
         base_url="http://localhost:11434",

@@ -1,7 +1,7 @@
 """Tests for RAG lazy loading feature."""
 
 from pathlib import Path
-from mygpt import sessions
+from nyxgpt import sessions
 
 
 def test_rag_chunks_persisted_with_message(tmp_path: Path):

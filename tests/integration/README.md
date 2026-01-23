@@ -14,20 +14,20 @@ Integration tests require the following services to be running:
 
 2. **Cassandra** (for RAG/vector store tests, if applicable)
    - Default connection: `localhost:9042`
-   - Database: `mygpt`
+   - Database: `nyxgpt`
 
 ## Setup
 
 ### Quick Start
 
-Use the myGPT ops command to install and start all services:
+Use the nyxGPT ops command to install and start all services:
 
 ```bash
 # Install and start all required services
-mygpt ops install
+nyxgpt ops install
 
 # Verify services are running
-mygpt ops status
+nyxgpt ops status
 ```
 
 ### Manual Setup
@@ -52,7 +52,7 @@ ollama pull llama3.1:8b
 ```bash
 # Start Cassandra via Docker
 docker run -d \
-  --name mygpt-cassandra \
+  --name nyxgpt-cassandra \
   -p 9042:9042 \
   cassandra:latest
 ```
@@ -66,7 +66,7 @@ docker run -d \
 pytest -m integration -v
 
 # Run with coverage
-pytest -m integration --cov=src/mygpt
+pytest -m integration --cov=src/nyxgpt
 ```
 
 ### Run Specific Test Files
@@ -124,14 +124,14 @@ Each test module checks for required services before running:
 
 ### Tests Hang or Timeout
 
-- Check service health: `mygpt ops doctor`
-- Restart services: `mygpt ops restart`
-- Check logs in `~/.myGPT/logs/`
+- Check service health: `nyxgpt ops doctor`
+- Restart services: `nyxgpt ops restart`
+- Check logs in `~/.nyxGPT/logs/`
 
 ### Connection Refused
 
 - Ensure service ports are not blocked by firewall
-- Verify services are running: `mygpt ops status`
+- Verify services are running: `nyxgpt ops status`
 - Check Docker containers (for Cassandra): `docker ps`
 
 ## Configuration
@@ -154,7 +154,7 @@ json={
 If running services on non-default ports, update configuration:
 
 ```bash
-# Edit ~/.myGPT/config.ini
+# Edit ~/.nyxGPT/config.ini
 [ollama]
 base_url = http://localhost:YOUR_PORT
 ```

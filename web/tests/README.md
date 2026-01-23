@@ -1,6 +1,6 @@
 # Web UI Test Infrastructure
 
-This directory contains the test infrastructure for the myGPT web UI (Next.js application).
+This directory contains the test infrastructure for the nyxGPT web UI (Next.js application).
 
 ## Overview
 

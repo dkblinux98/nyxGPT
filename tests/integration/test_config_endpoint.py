@@ -175,7 +175,7 @@ def test_config_endpoint_format_matches_frontend_expectations(
     response = r.json()
 
     # Frontend expects response with "updated" and "effective" fields
-    # (implied by backend implementation src/mygpt/app.py:610-623)
+    # (implied by backend implementation src/nyxgpt/app.py:610-623)
     assert "updated" in response
     assert "effective" in response
 

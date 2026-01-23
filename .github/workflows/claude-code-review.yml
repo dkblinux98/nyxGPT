@@ -141,7 +141,7 @@ jobs:
           DOCS_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^(docs/|README\.md|.*\.md$)' || echo "")
 
           # Check if this is a user-facing change (API, CLI, config)
-          USER_FACING=$(echo "$CHANGED_FILES" | grep -E '^(src/mygpt/(api|cli|app)\.py|example\.config\.ini)' || echo "")
+          USER_FACING=$(echo "$CHANGED_FILES" | grep -E '^(src/nyxgpt/(api|cli|app)\.py|example\.config\.ini)' || echo "")
 
           if [[ -n "$CODE_CHANGED" ]]; then
             echo "code_changed=true" >> "$GITHUB_OUTPUT"

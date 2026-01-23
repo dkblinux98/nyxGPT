@@ -39,7 +39,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CFG="$RUNNER_TEMP/mygpt-config.ini"
+          CFG="$RUNNER_TEMP/nyxgpt-config.ini"
 
           cat > "$CFG" <<EOF
           REPO_OWNER=${{ vars.REPO_OWNER }}
@@ -265,8 +265,8 @@ jobs:
               * DO NOT commit code with failing tests under ANY circumstances
               * Verify test success by checking the pytest output shows "passed" with no "FAILED" or "ERROR"
             - **MANDATORY DOCUMENTATION**: Update documentation for ALL user-facing changes:
-              * If you modify src/mygpt/api.py or src/mygpt/app.py → Update docs/api.md
-              * If you modify src/mygpt/cli.py → Update docs/configuration.md or README.md CLI section
+              * If you modify src/nyxgpt/api.py or src/nyxgpt/app.py → Update docs/api.md
+              * If you modify src/nyxgpt/cli.py → Update docs/configuration.md or README.md CLI section
               * If you add/change config options → Update example.config.ini AND docs/configuration.md
               * If you add new features → Update README.md feature list
               * For ANY code change, check if docs/ files need updates

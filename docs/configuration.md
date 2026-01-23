@@ -1,20 +1,20 @@
 # Configuration
 
-myGPT is configured via an INI file, typically located at:
+nyxGPT is configured via an INI file, typically located at:
 
 ```
-~/.myGPT/config.ini
+~/.nyxGPT/config.ini
 ```
 
 ---
 
 ## Configuration file location
 
-- Default: `~/.myGPT/config.ini`
+- Default: `~/.nyxGPT/config.ini`
 - Override per invocation:
 
 ```bash
-mygpt chat --config /path/to/config.ini
+nyxgpt chat --config /path/to/config.ini
 ```
 
 The same configuration file is used by:
@@ -24,15 +24,15 @@ The same configuration file is used by:
 
 ---
 
-## `[mygpt]` section
+## `[nyxgpt]` section
 
 General application behavior.
 
 ```ini
-[mygpt]
+[nyxgpt]
 default_model = qwen2.5:0.5b
-sessions_dir = ~/.myGPT/sessions
-vectorstore_dir = ~/.myGPT/vectorstore
+sessions_dir = ~/.nyxGPT/sessions
+vectorstore_dir = ~/.nyxGPT/vectorstore
 chat_timeout_seconds = 60
 auto_summarize_enabled = true
 auto_summarize_after_messages = 5
@@ -68,9 +68,9 @@ default_model = qwen2.5:latest
 | Key | Description |
 |---|---|
 | `base_url` | Base URL of the Ollama HTTP API |
-| `default_model` | Default model for Ollama (optional override of `mygpt.default_model`) |
+| `default_model` | Default model for Ollama (optional override of `nyxgpt.default_model`) |
 
-**Note:** If `default_model` is not set, myGPT uses `mygpt.default_model` instead.
+**Note:** If `default_model` is not set, nyxGPT uses `nyxgpt.default_model` instead.
 
 ---
 
@@ -93,20 +93,20 @@ port = 8000
 
 ## `[logging]` section
 
-Centralized logging configuration. This is the **single source of truth** for all logging settings, managed by `src/mygpt/logging.py`.
+Centralized logging configuration. This is the **single source of truth** for all logging settings, managed by `src/nyxgpt/logging.py`.
 
 ```ini
 [logging]
 level = INFO
-dir = ~/.myGPT/logs
+dir = ~/.nyxGPT/logs
 ```
 
 | Key | Description |
 |---|---|
 | `level` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, etc.) |
-| `dir` | Directory where logs are written (default: `~/.myGPT/logs`) |
+| `dir` | Directory where logs are written (default: `~/.nyxGPT/logs`) |
 
-All components (CLI, API, tests) use this centralized configuration. Logs are written to `{dir}/mygpt.log` with automatic rotation.
+All components (CLI, API, tests) use this centralized configuration. Logs are written to `{dir}/nyxgpt.log` with automatic rotation.
 
 **Note:** Changes to the logging `level` are **applied at runtime without restart**.
 
@@ -162,8 +162,8 @@ header = X-API-Key
 
 **Security best practices:**
 - Generate strong, random keys using `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`
-- Restrict file permissions: `chmod 600 ~/.myGPT/config.ini`
-- Never commit `~/.myGPT/config.ini` to version control
+- Restrict file permissions: `chmod 600 ~/.nyxGPT/config.ini`
+- Never commit `~/.nyxGPT/config.ini` to version control
 - Rotate keys regularly and immediately if compromise is suspected
 
 **Note:** Authentication configuration is **hot-reloadable** and takes effect immediately without restart.
@@ -233,7 +233,7 @@ include_scores = false
 include_headers = true
 cassandra_hosts = 127.0.0.1
 cassandra_port = 9042
-cassandra_keyspace = mygpt
+cassandra_keyspace = nyxgpt
 cassandra_table = rag_chunks
 ```
 
@@ -259,7 +259,7 @@ cassandra_table = rag_chunks
 | `chat_context_max_chars` | Maximum total characters of retrieved context |
 | `dedupe` | Remove duplicate or near-duplicate chunks before injection |
 | `enable_query_expansion` | Generate alternative phrasings to improve retrieval |
-| `expansion_model` | Model for query expansion (optional, defaults to mygpt.default_model) |
+| `expansion_model` | Model for query expansion (optional, defaults to nyxgpt.default_model) |
 | `include_scores` | Include similarity scores in context headers (debugging only) |
 | `include_headers` | Include per-chunk headers like "[Context 1]" in injected context |
 | `cassandra_hosts` | Cassandra host(s) |
@@ -311,15 +311,15 @@ Absolute paths for operational components.
 
 ```ini
 [paths]
-repo_dir = /path/to/myGPT
-venv_python = /path/to/myGPT/.venv/bin/python
+repo_dir = /path/to/nyxGPT
+venv_python = /path/to/nyxGPT/.venv/bin/python
 node_bin = /opt/homebrew/bin/node
 npm_bin = /opt/homebrew/bin/npm
 ```
 
 | Key | Description |
 |---|---|
-| `repo_dir` | Absolute path to the myGPT repository |
+| `repo_dir` | Absolute path to the nyxGPT repository |
 | `venv_python` | Path to the Python executable in the project venv |
 | `node_bin` | Path to Node.js executable |
 | `npm_bin` | Path to npm executable |
@@ -346,7 +346,7 @@ api_key =
 
 **Security best practices:**
 - Keep your API key confidential - never commit it to version control
-- Restrict file permissions: `chmod 600 ~/.myGPT/config.ini`
+- Restrict file permissions: `chmod 600 ~/.nyxGPT/config.ini`
 - Monitor usage at: https://platform.openai.com/usage
 - Rotate keys regularly
 
@@ -364,9 +364,9 @@ repo_owner = your-username
 repo_name = your-repo-name
 project_owner = your-username
 project_number = 1
-dev_agent = myGPT-developer-agent
-review_agent = myGPT-review-agent
-scrum_agent = myGPT-scrummaster-agent
+dev_agent = nyxGPT-developer-agent
+review_agent = nyxGPT-review-agent
+scrum_agent = nyxGPT-scrummaster-agent
 human_owner = your-username
 status_field = Status
 status_backlog = Backlog
@@ -442,7 +442,7 @@ claude_code_oauth_token =
 
 ## Hot-reloadable settings
 
-- `mygpt.default_model`
+- `nyxgpt.default_model`
 - `logging.level`
 - `rag.enabled`
 - `auth.enabled`, `auth.api_key`, `auth.header`

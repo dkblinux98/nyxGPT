@@ -10,22 +10,22 @@ import { describe, it, expect, beforeEach } from 'vitest';
 describe('Logo Display', () => {
   it('should have logo image file in public directory', () => {
     // Test verifies the logo path is correct
-    const logoPath = '/mygpt-logo.svg';
-    expect(logoPath).toBe('/mygpt-logo.svg');
+    const logoPath = '/nyxgpt-logo.png';
+    expect(logoPath).toBe('/nyxgpt-logo.png');
   });
 
   it('should use proper Next.js Image component attributes', () => {
     // Test verifies proper image configuration
     const imageConfig = {
-      src: '/mygpt-logo.svg',
-      alt: 'myGPT logo',
+      src: '/nyxgpt-logo.png',
+      alt: 'nyxGPT logo',
       width: 40,
       height: 40,
       priority: true,
     };
 
-    expect(imageConfig.src).toBe('/mygpt-logo.svg');
-    expect(imageConfig.alt).toBe('myGPT logo');
+    expect(imageConfig.src).toBe('/nyxgpt-logo.png');
+    expect(imageConfig.alt).toBe('nyxGPT logo');
     expect(imageConfig.width).toBe(40);
     expect(imageConfig.height).toBe(40);
     expect(imageConfig.priority).toBe(true);

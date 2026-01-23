@@ -10,8 +10,8 @@ import time
 from dataclasses import dataclass
 from typing import List, cast
 
-from mygpt.rag.embeddings import embed_texts, EmbeddingError
-from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+from nyxgpt.rag.embeddings import embed_texts, EmbeddingError
+from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
 
 @dataclass

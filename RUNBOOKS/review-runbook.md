@@ -119,13 +119,13 @@ Controls whether the automated fix loop is active.
 **How to change:**
 ```bash
 # Enable auto-fix loop
-gh variable set REVIEW_AUTO_FIX_ENABLED --body "true" --repo dkblinux98/myGPT
+gh variable set REVIEW_AUTO_FIX_ENABLED --body "true" --repo dkblinux98/nyxGPT
 
 # Disable auto-fix loop (revert to manual workflow)
-gh variable set REVIEW_AUTO_FIX_ENABLED --body "false" --repo dkblinux98/myGPT
+gh variable set REVIEW_AUTO_FIX_ENABLED --body "false" --repo dkblinux98/nyxGPT
 
 # Check current value
-gh variable list --repo dkblinux98/myGPT | grep REVIEW_AUTO_FIX_ENABLED
+gh variable list --repo dkblinux98/nyxGPT | grep REVIEW_AUTO_FIX_ENABLED
 ```
 
 ### Required Secrets

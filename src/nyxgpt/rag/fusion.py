@@ -61,7 +61,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from mygpt.config import load_config
+from nyxgpt.config import load_config
 
 log = logging.getLogger(__name__)
 

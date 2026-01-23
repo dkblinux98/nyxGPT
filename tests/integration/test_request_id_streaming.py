@@ -5,7 +5,7 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
-from mygpt.app import app
+from nyxgpt.app import app
 
 
 # Mark all tests in this module as integration tests

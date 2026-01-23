@@ -4,13 +4,13 @@ from pathlib import Path
 from typing import Any
 import configparser
 import pytest
-from mygpt.chat import (
+from nyxgpt.chat import (
     chat,
     _detect_prompt_mode,
     _get_prompt_template,
     _prepare_chat_context,
 )
-from mygpt.config import (
+from nyxgpt.config import (
     get_prompt_mode_enabled,
     get_prompt_mode_short_threshold,
     get_prompt_mode_long_threshold,
@@ -28,7 +28,7 @@ def _cfg(
 ) -> configparser.ConfigParser:
     """Create test config with prompt mode settings."""
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {
+    cfg["nyxgpt"] = {
         "default_model": "llama3.1:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
@@ -46,7 +46,7 @@ def _cfg(
 def test_get_prompt_mode_config_defaults() -> None:
     """Test default values for prompt mode config."""
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {}
+    cfg["nyxgpt"] = {}
     cfg["ollama"] = {}
 
     # Defaults should be used when section is missing
@@ -133,8 +133,8 @@ def test_chat_uses_short_mode_for_new_session(
 ) -> None:
     """Test that new sessions use short mode when adaptive mode is enabled."""
     cfg = _cfg(tmp_path, adaptive_enabled=True)
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
 
     # Capture messages sent to ollama
     sent: dict[str, Any] = {}
@@ -143,7 +143,7 @@ def test_chat_uses_short_mode_for_new_session(
         sent["messages"] = messages
         return "response"
 
-    monkeypatch.setattr("mygpt.chat.ollama_chat", fake_ollama_chat)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
 
     # Chat in a new session
     result = chat("hello", session="test-new", new=True, config_path=None)
@@ -161,8 +161,8 @@ def test_chat_uses_long_mode_for_long_session(
 ) -> None:
     """Test that long sessions use long mode when adaptive mode is enabled."""
     cfg = _cfg(tmp_path, adaptive_enabled=True, short_threshold=3, long_threshold=10)
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
 
     # Capture messages sent to ollama
     sent: dict[str, Any] = {}
@@ -171,11 +171,11 @@ def test_chat_uses_long_mode_for_long_session(
         sent["messages"] = messages
         return "response"
 
-    monkeypatch.setattr("mygpt.chat.ollama_chat", fake_ollama_chat)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
 
     # Mock a session with 12 messages (triggers long mode)
     def fake_load_session(*args, **kwargs):
-        from mygpt.sessions import SessionState
+        from nyxgpt.sessions import SessionState
         from pathlib import Path
 
         state = SessionState(
@@ -191,7 +191,7 @@ def test_chat_uses_long_mode_for_long_session(
             state.messages.append({"role": "assistant", "content": f"answer {i}"})
         return state
 
-    monkeypatch.setattr("mygpt.chat.load_session", fake_load_session)
+    monkeypatch.setattr("nyxgpt.chat.load_session", fake_load_session)
 
     # Chat in session with history
     result = chat("another question", session="test-long", config_path=None)
@@ -210,8 +210,8 @@ def test_chat_respects_custom_system_prompt_over_adaptive_mode(
 ) -> None:
     """Test that explicit system prompt overrides adaptive mode."""
     cfg = _cfg(tmp_path, adaptive_enabled=True)
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
 
     # Capture messages sent to ollama
     sent: dict[str, Any] = {}
@@ -220,7 +220,7 @@ def test_chat_respects_custom_system_prompt_over_adaptive_mode(
         sent["messages"] = messages
         return "response"
 
-    monkeypatch.setattr("mygpt.chat.ollama_chat", fake_ollama_chat)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
 
     custom_prompt = "You are a pirate assistant. Speak like a pirate."
 
@@ -243,10 +243,10 @@ def test_chat_with_adaptive_mode_disabled_uses_config_system_prompt(
 ) -> None:
     """Test that when adaptive mode is disabled, config system_prompt is used."""
     cfg = _cfg(tmp_path, adaptive_enabled=False)
-    cfg["mygpt"]["system_prompt"] = "You are a test assistant."
+    cfg["nyxgpt"]["system_prompt"] = "You are a test assistant."
 
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
 
     # Capture messages sent to ollama
     sent: dict[str, Any] = {}
@@ -255,7 +255,7 @@ def test_chat_with_adaptive_mode_disabled_uses_config_system_prompt(
         sent["messages"] = messages
         return "response"
 
-    monkeypatch.setattr("mygpt.chat.ollama_chat", fake_ollama_chat)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
 
     # Chat with adaptive mode disabled
     result = chat("hello", session="test-disabled", new=True, config_path=None)
@@ -272,12 +272,12 @@ def test_prepare_chat_context_with_adaptive_mode(
 ) -> None:
     """Test _prepare_chat_context applies adaptive prompts correctly."""
     cfg = _cfg(tmp_path, adaptive_enabled=True, short_threshold=3, long_threshold=10)
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
 
     # Mock a session with 5 messages (medium mode)
     def fake_load_session(*args, **kwargs):
-        from mygpt.sessions import SessionState
+        from nyxgpt.sessions import SessionState
         from pathlib import Path
 
         state = SessionState(
@@ -294,7 +294,7 @@ def test_prepare_chat_context_with_adaptive_mode(
             )
         return state
 
-    monkeypatch.setattr("mygpt.chat.load_session", fake_load_session)
+    monkeypatch.setattr("nyxgpt.chat.load_session", fake_load_session)
 
     # Prepare context
     context = _prepare_chat_context(

@@ -1,6 +1,6 @@
 # UI
 
-This document describes the local UI surfaces provided by **myGPT**:
+This document describes the local UI surfaces provided by **nyxGPT**:
 
 - **Terminal UI (TUI)** — a rich terminal-based chat interface
 - **Local Web UI** — a lightweight Next.js application backed by FastAPI
@@ -13,17 +13,17 @@ Both UIs depend on the FastAPI backend and its streaming chat endpoints.
 
 Both UIs require the FastAPI backend to be running.
 
-The backend is normally managed via the `mygpt ops` command:
+The backend is normally managed via the `nyxgpt ops` command:
 
 ```bash
 # Install and start all services (including API)
-mygpt ops install
+nyxgpt ops install
 
 # Restart just the API service
-mygpt ops restart api
+nyxgpt ops restart api
 
 # Check system health
-mygpt ops doctor
+nyxgpt ops doctor
 ```
 
 Verify the API is running:
@@ -46,7 +46,7 @@ open http://127.0.0.1:8000/docs
 Start the terminal UI with:
 
 ```bash
-mygpt tui
+nyxgpt tui
 ```
 
 The TUI:
@@ -142,19 +142,19 @@ UI clients must treat this response as a stream, not as a single JSON payload.
 
 The local web UI is a Next.js application located in `web/`.
 
-### Running via mygpt ops (recommended)
+### Running via nyxgpt ops (recommended)
 
-The web UI can be launched via the `mygpt ops` command:
+The web UI can be launched via the `nyxgpt ops` command:
 
 ```bash
 # Install and start all services (including web UI)
-mygpt ops install
+nyxgpt ops install
 
 # Restart just the web UI
-mygpt ops restart web
+nyxgpt ops restart web
 
 # Check system health
-mygpt ops doctor
+nyxgpt ops doctor
 ```
 
 Once running, open:
@@ -463,14 +463,14 @@ This ensures tests verify that virtualization prevents rendering all 1000+ items
 For reliable UI operation, ensure the following are active:
 
 - **Docker Desktop** (required for Cassandra)
-- **Cassandra container** (`mygpt-cassandra`)
-- **FastAPI backend** (`mygpt-api`)
-- **Web UI service** (`mygpt-web`)
+- **Cassandra container** (`nyxgpt-cassandra`)
+- **FastAPI backend** (`nyxgpt-api`)
+- **Web UI service** (`nyxgpt-web`)
 
 Logs from all components are available under:
 
 ```text
-~/.myGPT/logs
+~/.nyxGPT/logs
 ```
 
 For installation, startup, and diagnostics, see:

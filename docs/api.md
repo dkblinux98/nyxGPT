@@ -1,6 +1,6 @@
 # FastAPI Backend
 
-myGPT provides a local FastAPI backend that exposes chat, RAG, session, and health endpoints. The API is intended for:
+nyxGPT provides a local FastAPI backend that exposes chat, RAG, session, and health endpoints. The API is intended for:
 
 - the CLI (primary consumer today)
 - future local TUI and web UI
@@ -67,13 +67,13 @@ Quick reference of all 42 available endpoints:
 ### Development (manual)
 
 ```bash
-mygpt api
+nyxgpt api
 ```
 
 or, if running directly:
 
 ```bash
-uvicorn mygpt.app:app --reload
+uvicorn nyxgpt.app:app --reload
 ```
 
 ### As a background service (Homebrew)
@@ -92,7 +92,7 @@ By default, the API listens on:
 http://127.0.0.1:8000
 ```
 
-Configuration lives in `~/.myGPT/config.ini` under the `[api]` section.
+Configuration lives in `~/.nyxGPT/config.ini` under the `[api]` section.
 
 ---
 
@@ -262,8 +262,8 @@ curl http://127.0.0.1:8000/api/v1/info \
 **Log entries with request ID:**
 
 ```
-2026-01-03 12:34:56 INFO [550e8400-e29b-41d4-a716-446655440000] mygpt.api: Chat request received
-2026-01-03 12:34:57 INFO [550e8400-e29b-41d4-a716-446655440000] mygpt.api: Chat request completed
+2026-01-03 12:34:56 INFO [550e8400-e29b-41d4-a716-446655440000] nyxgpt.api: Chat request received
+2026-01-03 12:34:57 INFO [550e8400-e29b-41d4-a716-446655440000] nyxgpt.api: Chat request completed
 ```
 
 ### Benefits
@@ -287,7 +287,7 @@ Returns basic runtime configuration details.
 {
   "ollama_base_url": "http://127.0.0.1:11434",
   "default_model": "llama3.1:8b",
-  "sessions_dir": "/Users/you/.myGPT/sessions"
+  "sessions_dir": "/Users/you/.nyxGPT/sessions"
 }
 ```
 
@@ -951,7 +951,7 @@ Send a chat prompt and receive a model response.
 
 ### RAG prompt & context optimization
 
-When RAG-assisted chat is enabled, retrieved context injected into the prompt is governed by configuration settings in `~/.myGPT/config.ini` under the `[rag]` section.
+When RAG-assisted chat is enabled, retrieved context injected into the prompt is governed by configuration settings in `~/.nyxGPT/config.ini` under the `[rag]` section.
 
 Key controls include:
 
@@ -1048,13 +1048,13 @@ List available log files with metadata.
 {
   "files": [
     {
-      "name": "mygpt.log",
-      "path": "/home/user/.myGPT/logs/mygpt.log",
+      "name": "nyxgpt.log",
+      "path": "/home/user/.nyxGPT/logs/nyxgpt.log",
       "size": 1024000,
       "modified": 1704067200.0
     }
   ],
-  "log_dir": "/home/user/.myGPT/logs"
+  "log_dir": "/home/user/.nyxGPT/logs"
 }
 ```
 
@@ -1072,23 +1072,23 @@ View log file contents with optional filtering.
 
 ```bash
 # Get last 100 lines
-curl "http://127.0.0.1:8000/api/v1/logs/view/mygpt.log?tail=100"
+curl "http://127.0.0.1:8000/api/v1/logs/view/nyxgpt.log?tail=100"
 
 # Filter by log level
-curl "http://127.0.0.1:8000/api/v1/logs/view/mygpt.log?level=ERROR"
+curl "http://127.0.0.1:8000/api/v1/logs/view/nyxgpt.log?level=ERROR"
 
 # Search for specific text
-curl "http://127.0.0.1:8000/api/v1/logs/view/mygpt.log?search=session"
+curl "http://127.0.0.1:8000/api/v1/logs/view/nyxgpt.log?search=session"
 
 # Combine filters
-curl "http://127.0.0.1:8000/api/v1/logs/view/mygpt.log?tail=50&level=INFO&search=chat"
+curl "http://127.0.0.1:8000/api/v1/logs/view/nyxgpt.log?tail=50&level=INFO&search=chat"
 ```
 
 **Response:**
 
 ```json
 {
-  "filename": "mygpt.log",
+  "filename": "nyxgpt.log",
   "lines": ["2024-01-01 12:00:00 INFO ...", "..."],
   "total_lines": 1000,
   "filtered_lines": 50
@@ -1108,10 +1108,10 @@ Stream log file contents with optional filtering. Useful for real-time log viewi
 
 ```bash
 # Stream all logs
-curl "http://127.0.0.1:8000/api/v1/logs/stream/mygpt.log"
+curl "http://127.0.0.1:8000/api/v1/logs/stream/nyxgpt.log"
 
 # Stream only ERROR logs
-curl "http://127.0.0.1:8000/api/v1/logs/stream/mygpt.log?level=ERROR"
+curl "http://127.0.0.1:8000/api/v1/logs/stream/nyxgpt.log?level=ERROR"
 ```
 
 **Response:** Text stream (Content-Type: text/plain)
@@ -1126,7 +1126,7 @@ curl "http://127.0.0.1:8000/api/v1/logs/stream/mygpt.log?level=ERROR"
 
 ## Authentication
 
-myGPT API supports optional API key authentication. Authentication is **disabled by default** for local-only usage and can be enabled via configuration when additional security is needed.
+nyxGPT API supports optional API key authentication. Authentication is **disabled by default** for local-only usage and can be enabled via configuration when additional security is needed.
 
 ### Overview
 
@@ -1139,7 +1139,7 @@ When authentication is enabled:
 
 ### Configuration
 
-Authentication is configured in `~/.myGPT/config.ini` under the `[auth]` section.
+Authentication is configured in `~/.nyxGPT/config.ini` under the `[auth]` section.
 
 #### Configuration Keys
 
@@ -1338,11 +1338,11 @@ curl http://127.0.0.1:8000/api/v1/info \
 
 ### Hot-Reload Support
 
-Authentication configuration is hot-reloaded on every request. Changes to `~/.myGPT/config.ini` take effect immediately without restarting the API:
+Authentication configuration is hot-reloaded on every request. Changes to `~/.nyxGPT/config.ini` take effect immediately without restarting the API:
 
 ```bash
 # 1. Edit config to enable auth
-vim ~/.myGPT/config.ini
+vim ~/.nyxGPT/config.ini
 
 # 2. Save changes
 # [auth]
@@ -1360,7 +1360,7 @@ curl http://127.0.0.1:8000/api/v1/info \
 
 API keys are compared using `secrets.compare_digest()` to prevent timing attacks. This ensures that attackers cannot determine the correct API key by measuring response times.
 
-**Implementation** (from `src/mygpt/app.py:349`):
+**Implementation** (from `src/nyxgpt/app.py:349`):
 
 ```python
 auth_valid = secrets.compare_digest(expected, provided)
@@ -1383,7 +1383,7 @@ All authentication failures include a request ID in the error response and logs,
 Check logs for details:
 
 ```bash
-grep "550e8400-e29b-41d4-a716-446655440000" ~/.myGPT/logs/mygpt.log
+grep "550e8400-e29b-41d4-a716-446655440000" ~/.nyxGPT/logs/nyxgpt.log
 ```
 
 #### Exempt Endpoints
@@ -1443,8 +1443,8 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
    - Never reuse keys across systems
 
 2. **Store Keys Securely**
-   - Never commit `~/.myGPT/config.ini` to version control
-   - Restrict file permissions: `chmod 600 ~/.myGPT/config.ini`
+   - Never commit `~/.nyxGPT/config.ini` to version control
+   - Restrict file permissions: `chmod 600 ~/.nyxGPT/config.ini`
    - Never log or expose API keys
 
 3. **Rotate Keys Regularly**
@@ -1474,7 +1474,7 @@ API key authentication provides a basic access control layer but is **not a subs
 
 #### Production Deployment Considerations
 
-myGPT is designed for **local, single-user use**. For production or multi-user deployments, consider:
+nyxGPT is designed for **local, single-user use**. For production or multi-user deployments, consider:
 
 1. **HTTPS/TLS termination** via reverse proxy (nginx, caddy)
 2. **Per-user authentication** instead of shared API keys
@@ -1483,7 +1483,7 @@ myGPT is designed for **local, single-user use**. For production or multi-user d
 5. **Comprehensive audit logging**
 6. **DDoS protection and rate limiting**
 
-These features are beyond the scope of myGPT's current design but can be layered on top using standard infrastructure tools.
+These features are beyond the scope of nyxGPT's current design but can be layered on top using standard infrastructure tools.
 
 ### Troubleshooting
 
@@ -1495,17 +1495,17 @@ These features are beyond the scope of myGPT's current design but can be layered
 
 1. Verify config file location:
    ```bash
-   cat ~/.myGPT/config.ini
+   cat ~/.nyxGPT/config.ini
    ```
 
 2. Check for syntax errors in config:
    ```bash
-   python3 -c "from configparser import ConfigParser; c = ConfigParser(); c.read('$HOME/.myGPT/config.ini'); print(c.getboolean('auth', 'enabled'))"
+   python3 -c "from configparser import ConfigParser; c = ConfigParser(); c.read('$HOME/.nyxGPT/config.ini'); print(c.getboolean('auth', 'enabled'))"
    ```
 
 3. Check API logs for authentication status:
    ```bash
-   tail -f ~/.myGPT/logs/mygpt.log | grep auth
+   tail -f ~/.nyxGPT/logs/nyxgpt.log | grep auth
    ```
 
 #### Can't Access API After Enabling Auth
@@ -1522,18 +1522,18 @@ These features are beyond the scope of myGPT's current design but can be layered
 
 2. Check header name matches config:
    ```bash
-   grep "^header" ~/.myGPT/config.ini
+   grep "^header" ~/.nyxGPT/config.ini
    ```
 
 3. Verify API key matches config exactly (no extra spaces):
    ```bash
-   grep "^api_key" ~/.myGPT/config.ini
+   grep "^api_key" ~/.nyxGPT/config.ini
    ```
 
 4. Temporarily disable auth to verify API is working:
    ```bash
    # Edit config
-   vim ~/.myGPT/config.ini
+   vim ~/.nyxGPT/config.ini
    # Set: enabled = false
    # Test
    curl http://127.0.0.1:8000/api/v1/info
@@ -1541,13 +1541,13 @@ These features are beyond the scope of myGPT's current design but can be layered
 
 #### Web UI Authentication
 
-The Next.js web UI reads the same `~/.myGPT/config.ini` file and automatically includes the API key in requests to the FastAPI backend. No additional configuration is needed.
+The Next.js web UI reads the same `~/.nyxGPT/config.ini` file and automatically includes the API key in requests to the FastAPI backend. No additional configuration is needed.
 
 **Verification**:
 
 ```bash
 # Check web UI proxy configuration
-grep -A 3 "\[auth\]" ~/.myGPT/config.ini
+grep -A 3 "\[auth\]" ~/.nyxGPT/config.ini
 ```
 
 The web UI will automatically detect when authentication is enabled and include the configured API key in all backend requests.
@@ -1556,7 +1556,7 @@ The web UI will automatically detect when authentication is enabled and include 
 
 ## Operational Tasks
 
-These tasks cover keeping myGPT services and supporting infrastructure running reliably across reboots.
+These tasks cover keeping nyxGPT services and supporting infrastructure running reliably across reboots.
 
 ### Docker Desktop startup (required)
 
@@ -1581,7 +1581,7 @@ The Cassandra container should be created with an auto-restart policy so it surv
 Verify restart policy:
 
 ```bash
-docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' mygpt-cassandra
+docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' nyxgpt-cassandra
 ```
 
 Expected output:
@@ -1591,30 +1591,30 @@ unless-stopped
 ```
 ```bash
 # verify Cassandra data is on a named volume (persistence)
-docker inspect mygpt-cassandra \
+docker inspect nyxgpt-cassandra \
   --format '{{ range .Mounts }}{{ .Name }} -> {{ .Destination }}{{ println }}{{ end }}'
 ```
 
 Expected output should include something like:
 
 ```
-mygpt_cassandra_data -> /var/lib/cassandra
+nyxgpt_cassandra_data -> /var/lib/cassandra
 ```
 
 If not set correctly, recreate the container:
 
 ```bash
-docker rm -f mygpt-cassandra
+docker rm -f nyxgpt-cassandra
 
 # create the named volume (safe if it already exists)
-docker volume create mygpt_cassandra_data
+docker volume create nyxgpt_cassandra_data
 
 docker run -d \
-  --name mygpt-cassandra \
+  --name nyxgpt-cassandra \
   --restart unless-stopped \
   -p 9042:9042 \
-  -e CASSANDRA_CLUSTER_NAME=mygpt \
-  -v mygpt_cassandra_data:/var/lib/cassandra \
+  -e CASSANDRA_CLUSTER_NAME=nyxgpt \
+  -v nyxgpt_cassandra_data:/var/lib/cassandra \
   cassandra:5.0
 ```
 
@@ -1629,15 +1629,15 @@ cqlsh 127.0.0.1 9042 -e "DESCRIBE KEYSPACES;"
 
 ### Centralized logs
 
-myGPT consolidates logs under:
+nyxGPT consolidates logs under:
 
 ```
-~/.myGPT/logs
+~/.nyxGPT/logs
 ```
 
 This includes:
 
-- myGPT application logs
+- nyxGPT application logs
 - test logs
 - streamed Cassandra logs
 - Ollama logs (symlinked)
@@ -1646,51 +1646,51 @@ This includes:
 
 ### Cassandra logs via Docker (LaunchAgent)
 
-Cassandra logs are streamed from Docker into `~/.myGPT/logs` using a macOS LaunchAgent.
+Cassandra logs are streamed from Docker into `~/.nyxGPT/logs` using a macOS LaunchAgent.
 
 Installed files (tracked in the repo):
 
 - `follow-cassandra-logs.sh`
-- `com.mygpt.cassandra-logs.plist`
+- `com.nyxgpt.cassandra-logs.plist`
 
 Install and activate:
 
 ```bash
-mygpt ops install
+nyxgpt ops install
 # optional:
-# mygpt ops install --repo-dir /path/to/myGPT
-# mygpt ops install --force
+# nyxgpt ops install --repo-dir /path/to/nyxGPT
+# nyxgpt ops install --force
 ```
 
 Verify the agent is loaded:
 
 ```bash
-launchctl list | grep com.mygpt.cassandra-logs
+launchctl list | grep com.nyxgpt.cassandra-logs
 ```
 
 Verify logs:
 
 ```bash
-tail -f ~/.myGPT/logs/cassandra-logfollower.out.log
-tail -f ~/.myGPT/logs/cassandra-logfollower.err.log
+tail -f ~/.nyxGPT/logs/cassandra-logfollower.out.log
+tail -f ~/.nyxGPT/logs/cassandra-logfollower.err.log
 ```
 
 This survives reboots.
 
 ---
 
-### mygpt ops commands
+### nyxgpt ops commands
 
-`mygpt` provides built-in operational checks so you don’t have to remember Docker, LaunchAgent, and API details by hand.
+`nyxgpt` provides built-in operational checks so you don’t have to remember Docker, LaunchAgent, and API details by hand.
 
-#### `mygpt ops install`
+#### `nyxgpt ops install`
 Installs the Cassandra log follower LaunchAgent and prepares local log directories.
 
 ```bash
-mygpt ops install
+nyxgpt ops install
 # optional:
-# mygpt ops install --repo-dir /path/to/myGPT
-# mygpt ops install --force
+# nyxgpt ops install --repo-dir /path/to/nyxGPT
+# nyxgpt ops install --force
 ```
 
 This command is safe to re-run.
@@ -1698,7 +1698,7 @@ This command is safe to re-run.
 - Exit code `0` → all install steps succeeded
 - Exit code `2` → one or more steps failed (details are printed)
 
-#### `mygpt ops status`
+#### `nyxgpt ops status`
 Shows the current health of local dependencies and services:
 
 - Docker daemon reachable
@@ -1706,20 +1706,20 @@ Shows the current health of local dependencies and services:
 - Restart policy (`unless-stopped`)
 - Cassandra data mounted to `/var/lib/cassandra`
 - Cassandra log LaunchAgent loaded
-- Expected log files present under `~/.myGPT/logs`
+- Expected log files present under `~/.nyxGPT/logs`
 - FastAPI `/health` endpoint reachable
 
 ```bash
-mygpt ops status
+nyxgpt ops status
 ```
 
 This command always exits `0` and is informational.
 
-#### `mygpt ops doctor`
+#### `nyxgpt ops doctor`
 Runs the same checks as `status` but **fails fast** if anything is broken.
 
 ```bash
-mygpt ops doctor
+nyxgpt ops doctor
 echo "exit=$?"
 ```
 
@@ -1727,9 +1727,9 @@ echo "exit=$?"
 - Exit code `2` → one or more checks failed (details are printed)
 
 ---
-#### `mygpt ops restart`
+#### `nyxgpt ops restart`
 
-Restart one or more myGPT-managed services without calling `brew`, `docker`,
+Restart one or more nyxGPT-managed services without calling `brew`, `docker`,
 or `launchctl` directly.
 
 This is the recommended way to apply configuration changes or recover from
@@ -1738,7 +1738,7 @@ transient failures.
 **Usage:**
 
 ```bash
-mygpt ops restart
+nyxgpt ops restart
 ```
 
 ### Ollama logs
@@ -1750,14 +1750,14 @@ Common locations:
 - Intel Homebrew: `/usr/local/var/log/ollama.log`
 - Apple Silicon Homebrew: `/opt/homebrew/var/log/ollama.log`
 
-You can symlink whichever exists into `~/.myGPT/logs`:
+You can symlink whichever exists into `~/.nyxGPT/logs`:
 
 ```bash
-mkdir -p ~/.myGPT/logs
+mkdir -p ~/.nyxGPT/logs
 for p in /usr/local/var/log/ollama.log /opt/homebrew/var/log/ollama.log; do
   if [[ -f "$p" ]]; then
-    ln -sf "$p" ~/.myGPT/logs/ollama.log
-    echo "linked $p -> ~/.myGPT/logs/ollama.log"
+    ln -sf "$p" ~/.nyxGPT/logs/ollama.log
+    echo "linked $p -> ~/.nyxGPT/logs/ollama.log"
     break
   fi
 done
@@ -1766,7 +1766,7 @@ done
 Verify:
 
 ```bash
-tail -f ~/.myGPT/logs/ollama.log
+tail -f ~/.nyxGPT/logs/ollama.log
 ```
 
 If you don’t see output, confirm Ollama is running:
@@ -1785,9 +1785,9 @@ The local web UI is a small Next.js application that connects to the FastAPI bac
 It is intended to run:
 - locally only
 - as a background service
-- using the same configuration file as the rest of myGPT
+- using the same configuration file as the rest of nyxGPT
 
-Configuration is read from `~/.myGPT/config.ini` under the `[web]` and `[paths]` sections.
+Configuration is read from `~/.nyxGPT/config.ini` under the `[web]` and `[paths]` sections.
 
 #### Runtime configuration keys
 
@@ -1804,7 +1804,7 @@ api_base_url =
 
 The web UI is launched using a small wrapper script that reads this configuration.
 
-Note: Homebrew/launchd services run with a minimal `PATH`. The web wrapper (`mygpt-web`) and `~/.myGPT/scripts/run-web.sh` ensure `node` is discoverable (via `[paths] node_bin` / `npm_bin`) so `npm` can run reliably in the background.
+Note: Homebrew/launchd services run with a minimal `PATH`. The web wrapper (`nyxgpt-web`) and `~/.nyxGPT/scripts/run-web.sh` ensure `node` is discoverable (via `[paths] node_bin` / `npm_bin`) so `npm` can run reliably in the background.
 
 ---
 
@@ -1815,26 +1815,26 @@ The web UI is managed via Homebrew services, similar to the FastAPI backend.
 Install the service:
 
 ```bash
-mygpt ops install
+nyxgpt ops install
 ```
 
 Verify status:
 
 ```bash
-brew services list | grep mygpt-web
+brew services list | grep nyxgpt-web
 ```
 
 Start manually if needed:
 
 ```bash
-brew services start mygpt-web
+brew services start nyxgpt-web
 ```
 
 Logs are written to:
 
 ```
-~/.myGPT/logs/mygpt-web.log
-~/.myGPT/logs/mygpt-web.err.log
+~/.nyxGPT/logs/nyxgpt-web.log
+~/.nyxGPT/logs/nyxgpt-web.err.log
 ```
 
 ---
@@ -1858,13 +1858,13 @@ http://127.0.0.1:3000
 Ollama logs are symlinked into the same directory:
 
 ```bash
-ln -sf /opt/homebrew/var/log/ollama.log ~/.myGPT/logs/ollama.log
+ln -sf /opt/homebrew/var/log/ollama.log ~/.nyxGPT/logs/ollama.log
 ```
 
 Verify:
 
 ```bash
-tail -f ~/.myGPT/logs/ollama.log
+tail -f ~/.nyxGPT/logs/ollama.log
 ```
 
 ---
@@ -1876,13 +1876,13 @@ The FastAPI backend is expected to run via Homebrew services.
 Verify status:
 
 ```bash
-brew services list | grep mygpt-api
+brew services list | grep nyxgpt-api
 ```
 
 Start if needed:
 
 ```bash
-brew services start mygpt-api
+brew services start nyxgpt-api
 ```
 
 ---
@@ -1892,8 +1892,8 @@ brew services start mygpt-api
 After reboot:
 
 ```bash
-docker ps | grep mygpt-cassandra
-brew services list | grep mygpt-api
+docker ps | grep nyxgpt-cassandra
+brew services list | grep nyxgpt-api
 curl http://127.0.0.1:8000/health
 ```
 
@@ -1909,7 +1909,7 @@ Expected:
 
 - All errors return JSON
 - HTTP status codes are used consistently
-- Internal errors are logged to `~/.myGPT/logs/mygpt.log`
+- Internal errors are logged to `~/.nyxGPT/logs/nyxgpt.log`
 
 ---
 

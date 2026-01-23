@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from mygpt import sessions
-from mygpt.cli import cli
+from nyxgpt import sessions
+from nyxgpt.cli import cli
 
 pytestmark = pytest.mark.unit
 
@@ -1208,7 +1208,7 @@ def test_info_command(capsys: pytest.CaptureFixture[str]) -> None:
 
     assert exit_code == 0
     captured = capsys.readouterr()
-    assert "myGPT OK" in captured.out
+    assert "nyxGPT OK" in captured.out
     assert "Ollama base_url:" in captured.out
     assert "Default model:" in captured.out
 
@@ -1219,7 +1219,7 @@ def test_models_list(
 ) -> None:
     """Test models list command."""
     # Mock the models.list_models function
-    import mygpt.models as models_mod
+    import nyxgpt.models as models_mod
 
     def mock_list_models():
         return [
@@ -1249,7 +1249,7 @@ def test_models_list_empty(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Test models list when no models exist."""
-    import mygpt.models as models_mod
+    import nyxgpt.models as models_mod
 
     monkeypatch.setattr(models_mod, "list_models", lambda: [])
 
@@ -1264,7 +1264,7 @@ def test_models_pull(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Test models pull command."""
-    import mygpt.models as models_mod
+    import nyxgpt.models as models_mod
 
     def mock_pull_model(name, progress_callback=None):
         if progress_callback:
@@ -1284,7 +1284,7 @@ def test_models_delete_with_force(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Test models delete command with force flag."""
-    import mygpt.models as models_mod
+    import nyxgpt.models as models_mod
 
     monkeypatch.setattr(models_mod, "delete_model", lambda name: None)
 
@@ -1299,7 +1299,7 @@ def test_models_show(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Test models show command."""
-    import mygpt.models as models_mod
+    import nyxgpt.models as models_mod
 
     def mock_show_model(name):
         return {

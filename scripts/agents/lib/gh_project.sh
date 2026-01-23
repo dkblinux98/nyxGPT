@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ============================================================
-# Shared library for myGPT agent scripts
+# Shared library for nyxGPT agent scripts
 # - SAFE TO SOURCE: no work is executed at import time
 # - NO self-sourcing
 # ============================================================
@@ -35,9 +35,9 @@ require_gh_auth() {
 }
 
 # -------------------------
-# Config (from ~/.myGPT/config.ini)
+# Config (from ~/.nyxGPT/config.ini)
 # -------------------------
-CONFIG_FILE="${MYGPT_CONFIG_FILE:-$HOME/.myGPT/config.ini}"
+CONFIG_FILE="${MYGPT_CONFIG_FILE:-$HOME/.nyxGPT/config.ini}"
 
 load_config() {
   [[ -f "$CONFIG_FILE" ]] || _die "Config file not found: $CONFIG_FILE"

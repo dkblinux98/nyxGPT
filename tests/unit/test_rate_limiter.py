@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from mygpt.rate_limiter import RateLimiter, ClientBucket
+from nyxgpt.rate_limiter import RateLimiter, ClientBucket
 
 pytestmark = pytest.mark.unit
 

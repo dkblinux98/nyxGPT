@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterator, cast
 from configparser import ConfigParser
 
-from mygpt.config import (
+from nyxgpt.config import (
     load_config,
     get_context_window_size,
     get_context_warning_threshold,
@@ -18,10 +18,10 @@ from mygpt.config import (
     get_prompt_mode_short_threshold,
     get_prompt_mode_long_threshold,
 )
-from mygpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
-from mygpt.rag.rag import retrieve_context, compose_context
-from mygpt.sessions import load_session, save_session
-from mygpt.token_counter import count_message_tokens
+from nyxgpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
+from nyxgpt.rag.rag import retrieve_context, compose_context
+from nyxgpt.sessions import load_session, save_session
+from nyxgpt.token_counter import count_message_tokens
 
 logger = logging.getLogger(__name__)
 

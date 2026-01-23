@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from mygpt.config import get_ollama_base_url, load_config
-from mygpt.ollama_client import delete_json, post_json, post_json_lines
+from nyxgpt.config import get_ollama_base_url, load_config
+from nyxgpt.ollama_client import delete_json, post_json, post_json_lines
 
 
 def list_models(base_url: str | None = None) -> list[dict[str, Any]]:

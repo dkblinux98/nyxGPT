@@ -1,6 +1,6 @@
-# myGPT
+# nyxGPT
 
-**myGPT** is a local-first, private, extensible ChatGPT-style system designed to run entirely on your own machine.
+**nyxGPT** is a local-first, private, extensible ChatGPT-style system designed to run entirely on your own machine.
 
 It uses **Ollama** for local LLM inference, supports persistent **conversation sessions**, optional **Retrieval‑Augmented Generation (RAG)** backed by **Apache Cassandra**, a powerful **CLI**, a **FastAPI backend**, a rich **terminal UI (TUI)**, and a lightweight **local web UI** built with Next.js.
 
@@ -8,7 +8,7 @@ Your data stays on your machine. No cloud dependency is required.
 
 ---
 
-## Why myGPT?
+## Why nyxGPT?
 
 - Local‑only by default (no cloud calls)
 - Your prompts, sessions, and embeddings never leave your machine
@@ -68,46 +68,46 @@ All runtime configuration lives **outside the repository**.
 Run the interactive configuration wizard for guided setup:
 
 ```bash
-mygpt wizard
+nyxgpt wizard
 ```
 
 The wizard will:
 - Test your Ollama connection and detect available models
 - Help you select a default model
 - Configure RAG settings (optional)
-- Generate a production-ready `~/.myGPT/config.ini`
+- Generate a production-ready `~/.nyxGPT/config.ini`
 
 #### Option 2: Manual Configuration
 
 Manually create the config file from the example template:
 
 ```bash
-mkdir -p ~/.myGPT
-cp example.config.ini ~/.myGPT/config.ini
-chmod 600 ~/.myGPT/config.ini
+mkdir -p ~/.nyxGPT
+cp example.config.ini ~/.nyxGPT/config.ini
+chmod 600 ~/.nyxGPT/config.ini
 ```
 
-Edit `~/.myGPT/config.ini` to select models, logging options, RAG settings, and service paths.
+Edit `~/.nyxGPT/config.ini` to select models, logging options, RAG settings, and service paths.
 
 ---
 
-## Running myGPT
+## Running nyxGPT
 
 ### First-time Setup
 
 1. **Run the configuration wizard** (interactive setup):
    ```bash
-   mygpt wizard
+   nyxgpt wizard
    ```
 
 2. **Install services** (API, web UI, logs, Cassandra helpers):
    ```bash
-   mygpt ops install
+   nyxgpt ops install
    ```
 
 3. **Check system health**:
    ```bash
-   mygpt ops doctor
+   nyxgpt ops doctor
    ```
 
 ---
@@ -116,40 +116,40 @@ Edit `~/.myGPT/config.ini` to select models, logging options, RAG settings, and 
 
 **Chat:**
 ```bash
-mygpt chat "Hello"
+nyxgpt chat "Hello"
 ```
 
 **Model Management:**
 ```bash
 # List available models
-mygpt models list
+nyxgpt models list
 
 # Pull (download) a model
-mygpt models pull llama3.1:8b
+nyxgpt models pull llama3.1:8b
 
 # Delete a model
-mygpt models delete mistral:7b
+nyxgpt models delete mistral:7b
 
 # Show detailed model information
-mygpt models show llama3.1:8b
+nyxgpt models show llama3.1:8b
 ```
 
 **Message Search:**
 ```bash
 # Search across all sessions for message content
-mygpt sessions search "Python programming"
+nyxgpt sessions search "Python programming"
 
 # Case-sensitive search
-mygpt sessions search "Python" --case-sensitive
+nyxgpt sessions search "Python" --case-sensitive
 
 # Filter by role (user, assistant, or system)
-mygpt sessions search "error" --role user
+nyxgpt sessions search "error" --role user
 
 # Search within a specific session
-mygpt sessions search "database" specific-session-name
+nyxgpt sessions search "database" specific-session-name
 
 # Limit number of results
-mygpt sessions search "test" --limit 10
+nyxgpt sessions search "test" --limit 10
 ```
 
 The search command finds messages containing the query text and displays:
@@ -161,7 +161,7 @@ The search command finds messages containing the query text and displays:
 **Session Statistics:**
 ```bash
 # View detailed statistics for a session
-mygpt sessions stats my-session-name
+nyxgpt sessions stats my-session-name
 ```
 
 The stats command displays comprehensive session information:
@@ -178,7 +178,7 @@ The stats command displays comprehensive session information:
 ### Terminal UI (TUI)
 
 ```bash
-mygpt tui
+nyxgpt tui
 ```
 
 The TUI streams responses, persists sessions, and supports RAG‑assisted chat. The status bar displays current session information including session name, message count, active model, and RAG status.
@@ -204,7 +204,7 @@ The TUI streams responses, persists sessions, and supports RAG‑assisted chat. 
 
 ### Session Management
 
-myGPT automatically organizes your conversations with intelligent session management:
+nyxGPT automatically organizes your conversations with intelligent session management:
 
 **Automatic Session Naming:**
 - After 5 messages (configurable), sessions are auto‑named using your local LLM
@@ -217,18 +217,18 @@ myGPT automatically organizes your conversations with intelligent session manage
 - **API**: Use `POST /api/v1/sessions/{name}/rename`
 
 **Batch Operations:**
-- **Batch Delete**: `mygpt sessions batch-delete session1 session2 session3`
-- **Batch Tag**: `mygpt sessions batch-tag-add "tag1 tag2" session1 session2`
-- **Batch Tag Remove**: `mygpt sessions batch-tag-rm "tag1" session1 session2`
-- **Batch Export**: `mygpt sessions batch-export --output /path/to/dir --format markdown session1 session2`
-- **Batch Pin**: `mygpt sessions batch-pin session1 session2`
-- **Batch Unpin**: `mygpt sessions batch-unpin session1 session2`
-- **Batch Update Metadata**: `mygpt sessions batch-update-meta --model mistral:7b --rag-enabled true session1 session2`
+- **Batch Delete**: `nyxgpt sessions batch-delete session1 session2 session3`
+- **Batch Tag**: `nyxgpt sessions batch-tag-add "tag1 tag2" session1 session2`
+- **Batch Tag Remove**: `nyxgpt sessions batch-tag-rm "tag1" session1 session2`
+- **Batch Export**: `nyxgpt sessions batch-export --output /path/to/dir --format markdown session1 session2`
+- **Batch Pin**: `nyxgpt sessions batch-pin session1 session2`
+- **Batch Unpin**: `nyxgpt sessions batch-unpin session1 session2`
+- **Batch Update Metadata**: `nyxgpt sessions batch-update-meta --model mistral:7b --rag-enabled true session1 session2`
 
-**Configuration** (in `~/.myGPT/config.ini`):
+**Configuration** (in `~/.nyxGPT/config.ini`):
 
 ```ini
-[mygpt]
+[nyxgpt]
 # Enable/disable automatic session naming
 auto_summarize_enabled = true
 
@@ -240,9 +240,9 @@ auto_sync_filename = true
 ```
 
 **How it works:**
-1. After the configured number of messages, myGPT automatically generates a title
+1. After the configured number of messages, nyxGPT automatically generates a title
 2. The session filename is updated to match the sanitized title using atomic operations with file locking
-3. Sessions remain easily browsable in `~/.myGPT/sessions/`
+3. Sessions remain easily browsable in `~/.nyxGPT/sessions/`
 
 **Safety:** File renames use exclusive file locks to prevent race conditions during concurrent access. If a session is actively being written when a rename is triggered, the rename will wait up to 10 seconds for the lock or fail gracefully with a "Session is busy" message.
 
@@ -250,16 +250,16 @@ auto_sync_filename = true
 
 ### FastAPI backend
 
-The API service is managed via the `mygpt ops` command. Start all services (including the API):
+The API service is managed via the `nyxgpt ops` command. Start all services (including the API):
 
 ```bash
-mygpt ops install
+nyxgpt ops install
 ```
 
 Or restart just the API:
 
 ```bash
-mygpt ops restart api
+nyxgpt ops restart api
 ```
 
 Verify:
@@ -279,7 +279,7 @@ open http://127.0.0.1:8000/docs
 
 The FastAPI backend includes optional rate limiting to protect against abuse and DoS attacks. **Disabled by default** for localhost-only usage.
 
-To enable rate limiting, edit `~/.myGPT/config.ini`:
+To enable rate limiting, edit `~/.nyxGPT/config.ini`:
 
 ```ini
 [rate_limit]
@@ -310,10 +310,10 @@ If the limit is exceeded, the API returns a `429 Too Many Requests` error:
 
 ### Local Web UI (Next.js)
 
-The web UI is managed via the `mygpt ops` command:
+The web UI is managed via the `nyxgpt ops` command:
 
 ```bash
-mygpt ops restart web
+nyxgpt ops restart web
 ```
 
 Open in your browser:
@@ -364,7 +364,7 @@ The web UI includes a step-by-step configuration wizard for easy system setup. A
   - `Enter` - Advance to next step or save configuration
 
 **Configuration Changes:**
-The wizard updates your `~/.myGPT/config.ini` file with the following settings:
+The wizard updates your `~/.nyxGPT/config.ini` file with the following settings:
 - `default_model` - Default LLM model for new sessions
 - `rag_enabled` - Enable/disable RAG globally
 - `log_level` - Logging verbosity (DEBUG, INFO, WARNING, ERROR)
@@ -372,7 +372,7 @@ The wizard updates your `~/.myGPT/config.ini` file with the following settings:
 Changes take effect immediately without requiring a service restart.
 
 **Prerequisites:**
-- FastAPI backend must be running (`mygpt ops install` or `mygpt ops restart api`)
+- FastAPI backend must be running (`nyxgpt ops install` or `nyxgpt ops restart api`)
 - If configuration fails to load, verify API is accessible at `http://127.0.0.1:8000/health`
 - See **Troubleshooting** section in docs/troubleshooting.md for common issues
 
@@ -380,7 +380,7 @@ Changes take effect immediately without requiring a service restart.
 
 ### Message Editing and Regeneration
 
-myGPT allows you to edit messages and regenerate responses, enabling you to explore different conversation paths.
+nyxGPT allows you to edit messages and regenerate responses, enabling you to explore different conversation paths.
 
 #### Web UI
 
@@ -445,7 +445,7 @@ Search API response includes:
 
 ### RAG (Retrieval-Augmented Generation) Controls
 
-myGPT supports per-session RAG to inject relevant context from uploaded documents into chat conversations.
+nyxGPT supports per-session RAG to inject relevant context from uploaded documents into chat conversations.
 
 **Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf`, `.pptx` (PowerPoint presentations with speaker notes), `.docx` (Microsoft Word), `.epub` (eBooks with metadata and chapter structure)
 
@@ -467,7 +467,7 @@ Press `Ctrl+R` to toggle RAG on/off for the current session. The RAG status is d
 
 #### CLI / API
 
-Enable RAG globally via config (`~/.myGPT/config.ini`):
+Enable RAG globally via config (`~/.nyxGPT/config.ini`):
 
 ```ini
 [rag]
@@ -493,23 +493,23 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
 
 #### Multi-Model Embedding Support
 
-myGPT supports using different embedding models for RAG by organizing documents into collections. Each collection can use its own embedding model and dimension, allowing you to compare model performance and choose the best fit for your use case.
+nyxGPT supports using different embedding models for RAG by organizing documents into collections. Each collection can use its own embedding model and dimension, allowing you to compare model performance and choose the best fit for your use case.
 
 **Ingest documents with different models:**
 
 ```bash
 # Default collection (uses config default: nomic-embed-text 768d)
-mygpt rag ingest doc1 document.txt --ensure-schema
+nyxgpt rag ingest doc1 document.txt --ensure-schema
 
 # Use a smaller, faster model
-mygpt rag ingest doc2 document.txt \
+nyxgpt rag ingest doc2 document.txt \
   --collection all-minilm \
   --model all-minilm:latest \
   --dimension 384 \
   --ensure-schema
 
 # Use a high-quality model
-mygpt rag ingest doc3 document.txt \
+nyxgpt rag ingest doc3 document.txt \
   --collection mxbai \
   --model mxbai-embed-large:latest \
   --dimension 1024 \
@@ -520,10 +520,10 @@ mygpt rag ingest doc3 document.txt \
 
 ```bash
 # Query the default collection
-mygpt rag query "What is the architecture?"
+nyxgpt rag query "What is the architecture?"
 
 # Query a specific collection
-mygpt rag query "What is the architecture?" \
+nyxgpt rag query "What is the architecture?" \
   --collection all-minilm \
   --model all-minilm:latest \
   --dimension 384
@@ -532,19 +532,19 @@ mygpt rag query "What is the architecture?" \
 **List available collections:**
 
 ```bash
-mygpt rag collections
+nyxgpt rag collections
 ```
 
 **List documents in a collection:**
 
 ```bash
-mygpt rag list --collection all-minilm
+nyxgpt rag list --collection all-minilm
 ```
 
 **Compare embedding models:**
 
 ```bash
-mygpt rag compare test-doc.txt \
+nyxgpt rag compare test-doc.txt \
   nomic-embed-text:768:default \
   all-minilm:latest:384:all-minilm \
   mxbai-embed-large:latest:1024:mxbai
@@ -556,7 +556,7 @@ The compare command benchmarks embedding speed and query performance, helping yo
 
 RAG debug mode provides detailed troubleshooting metrics for performance tuning and understanding retrieval behavior.
 
-**Enable via config** (`~/.myGPT/config.ini`):
+**Enable via config** (`~/.nyxGPT/config.ini`):
 
 ```ini
 [rag]
@@ -588,7 +588,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/query \
 All runtime state lives under:
 
 ```text
-~/.myGPT/
+~/.nyxGPT/
 ```
 
 Including:
@@ -674,8 +674,8 @@ For details, see **docs/development.md** and **RUNBOOKS/**.
 
 ## Project notes
 
-- Distribution name: **myGPT**
-- Python package name: **mygpt**
+- Distribution name: **nyxGPT**
+- Python package name: **nyxgpt**
 - Runtime data is always externalized
 - Build artifacts such as `*.egg-info/` must not be committed
 

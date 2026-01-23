@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Iterable
 from itertools import islice
 
-from mygpt.config import get_default_model, get_ollama_base_url, load_config
+from nyxgpt.config import get_default_model, get_ollama_base_url, load_config
 
 
 @dataclass(frozen=True)

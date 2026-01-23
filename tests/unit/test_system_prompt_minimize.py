@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 import configparser
 import pytest
-from mygpt.chat import _minimize_system_prompt, chat
+from nyxgpt.chat import _minimize_system_prompt, chat
 
 pytestmark = pytest.mark.unit
 
@@ -127,7 +127,7 @@ def test_chat_with_minimize_disabled(
 ) -> None:
     """Test that chat works normally when minimization is disabled."""
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {
+    cfg["nyxgpt"] = {
         "default_model": "llama3.1:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
@@ -137,7 +137,7 @@ def test_chat_with_minimize_disabled(
     cfg["ollama"] = {"base_url": "http://example"}
     cfg["rag"] = {"enable_chat_context": "false"}
 
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
 
     # Capture messages sent to ollama
     sent: dict[str, Any] = {}
@@ -146,7 +146,7 @@ def test_chat_with_minimize_disabled(
         sent["messages"] = messages
         return "response"
 
-    monkeypatch.setattr("mygpt.chat.ollama_chat", fake_ollama_chat)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
 
     result = chat("test", config_path=None, system="You are a helpful assistant.")
     assert result.reply == "response"
@@ -162,7 +162,7 @@ def test_chat_with_minimize_enabled(
 ) -> None:
     """Test that chat applies minimization when enabled."""
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {
+    cfg["nyxgpt"] = {
         "default_model": "llama3.1:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
@@ -172,7 +172,7 @@ def test_chat_with_minimize_enabled(
     cfg["ollama"] = {"base_url": "http://example"}
     cfg["rag"] = {"enable_chat_context": "false"}
 
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
 
     # Capture messages sent to ollama
     sent: dict[str, Any] = {}
@@ -181,7 +181,7 @@ def test_chat_with_minimize_enabled(
         sent["messages"] = messages
         return "response"
 
-    monkeypatch.setattr("mygpt.chat.ollama_chat", fake_ollama_chat)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
 
     result = chat("test", config_path=None, system="You are a helpful assistant.")
     assert result.reply == "response"

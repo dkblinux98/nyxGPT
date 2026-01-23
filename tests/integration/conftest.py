@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import pytest
 
-from mygpt.config import load_config
+from nyxgpt.config import load_config
 
 
 def _can_connect(host: str, port: int, timeout: float = 1.0) -> bool:
@@ -24,7 +24,7 @@ def _can_connect(host: str, port: int, timeout: float = 1.0) -> bool:
 def ensure_api_server_current():
     """Restart API server before integration tests to ensure latest code is running.
 
-    This fixture automatically restarts the mygpt-api service before integration tests
+    This fixture automatically restarts the nyxgpt-api service before integration tests
     run, ensuring tests always execute against the most recent code changes. This
     prevents the common issue where code changes aren't reflected in test results
     because an old server instance is still running.
@@ -43,7 +43,7 @@ def ensure_api_server_current():
     print("\n[INTEGRATION TESTS] Restarting API server to ensure latest code...")
     try:
         result = subprocess.run(
-            ["mygpt", "ops", "restart", "api"],
+            ["nyxgpt", "ops", "restart", "api"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -75,7 +75,7 @@ def ensure_api_server_current():
         )
     except FileNotFoundError:
         print(
-            "[INTEGRATION TESTS] WARNING: 'mygpt' command not found (tests may use stale code)"
+            "[INTEGRATION TESTS] WARNING: 'nyxgpt' command not found (tests may use stale code)"
         )
     except Exception as e:
         print(
@@ -161,7 +161,7 @@ def cleanup_test_rag_documents(api_base_url):
 
     # Record RAG documents that exist before tests run
     try:
-        from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+        from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
         store = CassandraVectorStore(collection="default")
         existing_docs = {doc["doc_id"] for doc in store.list_docs()}
@@ -178,7 +178,7 @@ def cleanup_test_rag_documents(api_base_url):
     print("\n[INTEGRATION TESTS] Cleaning up test RAG documents...")
 
     try:
-        from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+        from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
         store = CassandraVectorStore(collection="default")
         current_docs = store.list_docs()

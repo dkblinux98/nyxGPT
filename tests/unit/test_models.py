@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from unittest.mock import patch
-from mygpt import models
+from nyxgpt import models
 
 
 @pytest.mark.unit
@@ -44,9 +44,9 @@ def test_format_model_size_negative():
 
 
 @pytest.mark.unit
-@patch("mygpt.models.post_json")
-@patch("mygpt.models.load_config")
-@patch("mygpt.models.get_ollama_base_url")
+@patch("nyxgpt.models.post_json")
+@patch("nyxgpt.models.load_config")
+@patch("nyxgpt.models.get_ollama_base_url")
 def test_list_models(mock_get_url, mock_load_config, mock_post_json):
     """Test list_models function."""
     mock_get_url.return_value = "http://localhost:11434"
@@ -66,7 +66,7 @@ def test_list_models(mock_get_url, mock_load_config, mock_post_json):
 
 
 @pytest.mark.unit
-@patch("mygpt.models.post_json")
+@patch("nyxgpt.models.post_json")
 def test_pull_model_without_progress(mock_post_json):
     """Test pull_model without progress callback."""
     mock_post_json.return_value = {"status": "success"}
@@ -92,7 +92,7 @@ def test_pull_model_empty_name():
 
 
 @pytest.mark.unit
-@patch("mygpt.models.delete_json")
+@patch("nyxgpt.models.delete_json")
 def test_delete_model(mock_delete_json):
     """Test delete_model function."""
     base_url = "http://localhost:11434"
@@ -116,7 +116,7 @@ def test_delete_model_empty_name():
 
 
 @pytest.mark.unit
-@patch("mygpt.models.post_json")
+@patch("nyxgpt.models.post_json")
 def test_show_model(mock_post_json):
     """Test show_model function."""
     mock_post_json.return_value = {

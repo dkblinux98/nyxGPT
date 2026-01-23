@@ -1,4 +1,4 @@
-# Agent Roles and Responsibilities (myGPT)
+# Agent Roles and Responsibilities (nyxGPT)
 
 This document defines the only valid responsibilities and allowed actions
 for each machine agent in this repository.

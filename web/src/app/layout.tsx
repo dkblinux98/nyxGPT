@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "myGPT",
+  title: "nyxGPT",
   description: "Your private AI assistant powered by local LLMs",
   icons: {
     icon: "/stone-soup-creative-logo.png",

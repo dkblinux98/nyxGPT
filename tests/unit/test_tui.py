@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
 import pytest
 from textual.widgets import Input
 
-from mygpt.tui import (  # type: ignore[import-untyped]
+from nyxgpt.tui import (  # type: ignore[import-untyped]
     ChatOutput,
     MyGPTTUI,
     SessionMetadataPreview,
@@ -192,7 +192,7 @@ def test_tui_initialization_default(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test-session")
 
     assert app.session == "test-session"
@@ -207,7 +207,7 @@ def test_tui_initialization_custom_api_url(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="custom-session", api_base_url="http://localhost:9000")
 
     assert app.session == "custom-session"
@@ -222,7 +222,7 @@ def test_tui_initialization_fallback_url(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI()
 
     assert app.api_base_url == "http://127.0.0.1:8000"
@@ -243,14 +243,14 @@ def test_unlock_prompt_success(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI()
 
     # Mock the prompt widget
     app.prompt = MagicMock(spec=Input)
     app.prompt.disabled = True
 
-    with caplog.at_level(logging.DEBUG, logger="mygpt.tui"):
+    with caplog.at_level(logging.DEBUG, logger="nyxgpt.tui"):
         app._unlock_prompt()
 
     # Verify prompt was enabled and focused
@@ -271,12 +271,12 @@ def test_unlock_prompt_attribute_error(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI()
 
     # Don't set app.prompt - will cause AttributeError
 
-    with caplog.at_level(logging.WARNING, logger="mygpt.tui"):
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.tui"):
         # Should not raise exception
         app._unlock_prompt()
 
@@ -294,7 +294,7 @@ def test_unlock_prompt_other_exception(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI()
 
     # Mock prompt to raise RuntimeError when accessing disabled
@@ -303,7 +303,7 @@ def test_unlock_prompt_other_exception(
         side_effect=RuntimeError("Textual shutdown")
     )
 
-    with caplog.at_level(logging.WARNING, logger="mygpt.tui"):
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.tui"):
         # Should not raise exception
         app._unlock_prompt()
 
@@ -324,7 +324,7 @@ def test_compose_creates_widgets(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI()
 
     # Instead of calling compose() which requires Textual context,
@@ -354,7 +354,7 @@ async def test_on_mount_calls_unlock_prompt(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI()
 
     # Mock _unlock_prompt and _update_session_status
@@ -380,7 +380,7 @@ async def test_input_submitted_empty_string_ignored(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI()
 
     # Mock prompt widget
@@ -413,7 +413,7 @@ async def test_input_submitted_locks_prompt(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI()
 
     # Mock prompt widget
@@ -429,7 +429,7 @@ async def test_input_submitted_locks_prompt(
     event.value = "Hello"
 
     with patch("asyncio.create_task") as mock_create_task:
-        with caplog.at_level(logging.DEBUG, logger="mygpt.tui"):
+        with caplog.at_level(logging.DEBUG, logger="nyxgpt.tui"):
             await app.on_input_submitted(event)
 
     # Verify prompt was cleared and locked
@@ -461,7 +461,7 @@ async def test_stream_chat_success(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test")
 
     # Mock output widget
@@ -519,7 +519,7 @@ async def test_stream_chat_error_handling(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test")
 
     # Mock output widget
@@ -534,7 +534,7 @@ async def test_stream_chat_error_handling(
     mock_client.__aenter__ = AsyncMock(side_effect=Exception("Connection error"))
 
     with patch("httpx.AsyncClient", return_value=mock_client):
-        with caplog.at_level(logging.ERROR, logger="mygpt.tui"):
+        with caplog.at_level(logging.ERROR, logger="nyxgpt.tui"):
             await app._stream_chat("Test prompt")
 
     # Verify error was logged
@@ -560,7 +560,7 @@ async def test_stream_chat_unlock_on_exception(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI()
 
     # Mock widgets
@@ -647,11 +647,11 @@ def test_session_picker_initialization(tmp_path: Path) -> None:
     """Test SessionPickerScreen initializes correctly."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["nyxgpt"] = {"sessions_dir": str(tmp_path / "sessions")}
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         screen = SessionPickerScreen(str(config_file))
 
     assert screen.all_sessions == []
@@ -663,7 +663,7 @@ async def test_session_picker_load_sessions(tmp_path: Path) -> None:
     """Test SessionPickerScreen loads sessions on mount."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["nyxgpt"] = {"sessions_dir": str(tmp_path / "sessions")}
     with open(config_file, "w") as f:
         cfg.write(f)
 
@@ -682,8 +682,8 @@ async def test_session_picker_load_sessions(tmp_path: Path) -> None:
         },
     ]
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
-        with patch("mygpt.tui.list_sessions", return_value=mock_sessions):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
             screen = SessionPickerScreen(str(config_file))
 
             # Mock update_session_list
@@ -699,7 +699,7 @@ async def test_session_picker_search_filter(tmp_path: Path) -> None:
     """Test SessionPickerScreen filters sessions based on search."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["nyxgpt"] = {"sessions_dir": str(tmp_path / "sessions")}
     with open(config_file, "w") as f:
         cfg.write(f)
 
@@ -724,8 +724,8 @@ async def test_session_picker_search_filter(tmp_path: Path) -> None:
         },
     ]
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
-        with patch("mygpt.tui.list_sessions", return_value=mock_sessions):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
             screen = SessionPickerScreen(str(config_file))
             screen.all_sessions = mock_sessions
             screen.filtered_sessions = mock_sessions
@@ -751,7 +751,7 @@ async def test_session_picker_search_empty_query(tmp_path: Path) -> None:
     """Test SessionPickerScreen shows all sessions when search is empty."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["nyxgpt"] = {"sessions_dir": str(tmp_path / "sessions")}
     with open(config_file, "w") as f:
         cfg.write(f)
 
@@ -760,7 +760,7 @@ async def test_session_picker_search_empty_query(tmp_path: Path) -> None:
         {"name": "session2", "messages": 3, "modified": "2024-01-02", "meta": {}},
     ]
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         screen = SessionPickerScreen(str(config_file))
         screen.all_sessions = mock_sessions
         screen.filtered_sessions = []
@@ -785,7 +785,7 @@ def test_session_picker_action_cancel(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         screen = SessionPickerScreen(str(config_file))
 
     # Mock dismiss method
@@ -809,7 +809,7 @@ def test_tui_initialization_with_config_path(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test", config_path=str(config_file))
 
     assert app.config_path == str(config_file)
@@ -824,7 +824,7 @@ async def test_tui_action_pick_session(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="original-session", config_path=str(config_file))
 
     # Mock output widget
@@ -855,7 +855,7 @@ async def test_tui_action_pick_session_cancel(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="original-session", config_path=str(config_file))
 
     # Mock output widget
@@ -887,7 +887,7 @@ async def test_stream_chat_with_retry_markers(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test")
 
     # Mock output widget
@@ -941,7 +941,7 @@ async def test_stream_chat_with_rag_markers_ignored(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test")
 
     # Mock output widget
@@ -1003,7 +1003,7 @@ async def test_stream_chat_partial_retry_marker_split_across_chunks(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
@@ -1060,7 +1060,7 @@ async def test_stream_chat_partial_marker_at_chunk_boundary(tmp_path: Path) -> N
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
@@ -1123,7 +1123,7 @@ async def test_stream_chat_multiple_markers_in_single_chunk(tmp_path: Path) -> N
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
@@ -1182,7 +1182,7 @@ async def test_stream_chat_partial_marker_at_end_of_stream(tmp_path: Path) -> No
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
@@ -1233,7 +1233,7 @@ async def test_stream_chat_malformed_marker_removed(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
@@ -1289,7 +1289,7 @@ async def test_stream_chat_buffer_flush_threshold_exceeded(tmp_path: Path) -> No
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
@@ -1343,7 +1343,7 @@ async def test_stream_chat_mixed_partial_retry_and_rag_markers(tmp_path: Path) -
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
@@ -1413,7 +1413,7 @@ async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
@@ -1471,7 +1471,7 @@ async def test_tui_action_search_messages_opens_screen(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test-session", config_path=str(config_file))
 
     # Mock push_screen_wait to return None (user cancelled)
@@ -1495,7 +1495,7 @@ async def test_tui_action_search_messages_switches_session(tmp_path: Path) -> No
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="original-session", config_path=str(config_file))
 
     # Mock output widget
@@ -1537,7 +1537,7 @@ async def test_tui_action_search_messages_same_session(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="current-session", config_path=str(config_file))
 
     # Mock output widget
@@ -1766,7 +1766,7 @@ async def test_tui_update_session_status_success(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test-session")
 
     # Mock the status_bar widget
@@ -1819,7 +1819,7 @@ async def test_tui_update_session_status_api_error(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test-session")
 
     # Mock httpx to raise exception
@@ -1829,7 +1829,7 @@ async def test_tui_update_session_status_api_error(
     mock_client.get = AsyncMock(side_effect=Exception("Connection failed"))
 
     with patch("httpx.AsyncClient", return_value=mock_client):
-        with caplog.at_level(logging.WARNING, logger="mygpt.tui"):
+        with caplog.at_level(logging.WARNING, logger="nyxgpt.tui"):
             await app._update_session_status()
 
     # Verify RAG status defaults to False on error
@@ -1848,7 +1848,7 @@ async def test_tui_action_toggle_rag_enable(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test-session")
 
     # Start with RAG disabled
@@ -1866,7 +1866,7 @@ async def test_tui_action_toggle_rag_enable(
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         with patch.object(app, "_update_session_status", new=AsyncMock()):
-            with caplog.at_level(logging.INFO, logger="mygpt.tui"):
+            with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
                 await app.action_toggle_rag()
 
     # Verify RAG was enabled
@@ -1890,7 +1890,7 @@ async def test_tui_action_toggle_rag_disable(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test-session")
 
     # Start with RAG enabled
@@ -1908,7 +1908,7 @@ async def test_tui_action_toggle_rag_disable(
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         with patch.object(app, "_update_session_status", new=AsyncMock()):
-            with caplog.at_level(logging.INFO, logger="mygpt.tui"):
+            with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
                 await app.action_toggle_rag()
 
     # Verify RAG was disabled
@@ -1931,7 +1931,7 @@ async def test_tui_action_toggle_rag_error(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test-session")
 
     app.rag_enabled = False
@@ -1943,7 +1943,7 @@ async def test_tui_action_toggle_rag_error(
     mock_client.post = AsyncMock(side_effect=Exception("Connection failed"))
 
     with patch("httpx.AsyncClient", return_value=mock_client):
-        with caplog.at_level(logging.ERROR, logger="mygpt.tui"):
+        with caplog.at_level(logging.ERROR, logger="nyxgpt.tui"):
             await app.action_toggle_rag()
 
     # Verify error was logged
@@ -1969,14 +1969,14 @@ async def test_tui_action_models_manager(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test", config_path=str(config_file))
 
     # Mock push_screen_wait
     with patch.object(
         app, "push_screen_wait", new=AsyncMock(return_value=None)
     ) as mock_push:
-        with caplog.at_level(logging.INFO, logger="mygpt.tui"):
+        with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
             await app.action_models_manager()
 
     # Verify ModelsManagerScreen was shown
@@ -1987,7 +1987,7 @@ async def test_tui_action_models_manager(
 @pytest.mark.asyncio
 async def test_models_manager_initialization() -> None:
     """Test ModelsManagerScreen initializes correctly."""
-    from mygpt.tui import ModelsManagerScreen
+    from nyxgpt.tui import ModelsManagerScreen
 
     screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
 
@@ -1998,7 +1998,7 @@ async def test_models_manager_initialization() -> None:
 @pytest.mark.asyncio
 async def test_models_manager_refresh_models_success() -> None:
     """Test ModelsManagerScreen refreshes models successfully."""
-    from mygpt.tui import ModelsManagerScreen
+    from nyxgpt.tui import ModelsManagerScreen
 
     screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
 
@@ -2044,7 +2044,7 @@ async def test_models_manager_refresh_models_error(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Test ModelsManagerScreen handles refresh errors."""
-    from mygpt.tui import ModelsManagerScreen
+    from nyxgpt.tui import ModelsManagerScreen
 
     screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
 
@@ -2057,7 +2057,7 @@ async def test_models_manager_refresh_models_error(
         mock_client.get = AsyncMock(side_effect=Exception("Connection failed"))
 
         with patch("httpx.AsyncClient", return_value=mock_client):
-            with caplog.at_level(logging.ERROR, logger="mygpt.tui"):
+            with caplog.at_level(logging.ERROR, logger="nyxgpt.tui"):
                 await screen.refresh_models()
 
     # Verify error was logged
@@ -2067,7 +2067,7 @@ async def test_models_manager_refresh_models_error(
 @pytest.mark.asyncio
 async def test_models_manager_action_refresh() -> None:
     """Test ModelsManagerScreen refresh action."""
-    from mygpt.tui import ModelsManagerScreen
+    from nyxgpt.tui import ModelsManagerScreen
 
     screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
 
@@ -2081,7 +2081,7 @@ async def test_models_manager_action_refresh() -> None:
 
 def test_models_manager_action_quit_screen() -> None:
     """Test ModelsManagerScreen quit action."""
-    from mygpt.tui import ModelsManagerScreen
+    from nyxgpt.tui import ModelsManagerScreen
 
     screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
 
@@ -2100,13 +2100,13 @@ def test_models_manager_action_quit_screen() -> None:
 
 def test_session_picker_action_select() -> None:
     """Test SessionPickerScreen select action."""
-    from mygpt.tui import SessionPickerScreen
+    from nyxgpt.tui import SessionPickerScreen
 
     config_file = Path("/tmp/test_config.ini")
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {"sessions_dir": "/tmp/sessions"}
+    cfg["nyxgpt"] = {"sessions_dir": "/tmp/sessions"}
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         screen = SessionPickerScreen(str(config_file))
 
     # Mock the ListView with a highlighted item
@@ -2125,12 +2125,12 @@ def test_session_picker_action_select() -> None:
 
 def test_session_picker_action_select_no_highlight() -> None:
     """Test SessionPickerScreen select action with no highlight."""
-    from mygpt.tui import SessionPickerScreen
+    from nyxgpt.tui import SessionPickerScreen
 
     config_file = Path("/tmp/test_config.ini")
     cfg = configparser.ConfigParser()
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         screen = SessionPickerScreen(str(config_file))
 
     # Mock the ListView with no highlighted item
@@ -2158,7 +2158,7 @@ def test_action_clear_output(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test-session")
 
     # Mock output widget
@@ -2181,14 +2181,14 @@ def test_action_clear_output_handles_exception(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test-session")
 
     # Mock output widget to raise exception
     app.output = MagicMock(spec=ChatOutput)
     app.output.clear = MagicMock(side_effect=RuntimeError("Clear failed"))
 
-    with caplog.at_level(logging.ERROR, logger="mygpt.tui"):
+    with caplog.at_level(logging.ERROR, logger="nyxgpt.tui"):
         app.action_clear_output()
 
     # Verify error was logged
@@ -2204,7 +2204,7 @@ async def test_handle_command_clear(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test-session")
 
     # Mock action_clear_output
@@ -2226,13 +2226,13 @@ async def test_handle_command_unknown(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test-session")
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
 
-    with caplog.at_level(logging.WARNING, logger="mygpt.tui"):
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.tui"):
         await app._handle_command("unknown")
 
     # Verify error message was appended to output
@@ -2253,7 +2253,7 @@ async def test_input_submitted_with_slash_command(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test-session")
 
     # Mock widgets
@@ -2285,7 +2285,7 @@ async def test_input_submitted_with_slash_command_not_locked(tmp_path: Path) -> 
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test-session")
 
     # Mock widgets
@@ -2372,14 +2372,14 @@ async def test_action_show_help(tmp_path: Path, caplog: pytest.LogCaptureFixture
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test", config_path=str(config_file))
 
     # Mock push_screen_wait
     with patch.object(
         app, "push_screen_wait", new=AsyncMock(return_value=None)
     ) as mock_push:
-        with caplog.at_level(logging.INFO, logger="mygpt.tui"):
+        with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
             await app.action_show_help()
 
     # Verify HelpOverlayScreen was shown
@@ -2398,7 +2398,7 @@ async def test_action_command_palette_execute_command(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test", config_path=str(config_file))
 
     # Mock push_screen_wait to return a command key
@@ -2407,7 +2407,7 @@ async def test_action_command_palette_execute_command(
     ):
         # Mock action_clear_output
         with patch.object(app, "action_clear_output", new=AsyncMock()) as mock_clear:
-            with caplog.at_level(logging.INFO, logger="mygpt.tui"):
+            with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
                 await app.action_command_palette()
 
     # Verify command was executed
@@ -2424,7 +2424,7 @@ async def test_action_command_palette_cancel(tmp_path: Path) -> None:
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test", config_path=str(config_file))
 
     # Mock push_screen_wait to return None (cancel)
@@ -2446,14 +2446,14 @@ async def test_action_command_palette_unknown_command(
     with open(config_file, "w") as f:
         cfg.write(f)
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="test", config_path=str(config_file))
 
     # Mock push_screen_wait to return an unknown command key
     with patch.object(
         app, "push_screen_wait", new=AsyncMock(return_value="unknown_command")
     ):
-        with caplog.at_level(logging.WARNING, logger="mygpt.tui"):
+        with caplog.at_level(logging.WARNING, logger="nyxgpt.tui"):
             await app.action_command_palette()
 
     # Verify warning was logged
@@ -2610,7 +2610,7 @@ async def test_delete_session_action_success(tmp_path: Path) -> None:
     # Create config
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["nyxgpt"] = {"sessions_dir": str(tmp_path / "sessions")}
     cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
     with open(config_file, "w") as f:
         cfg.write(f)
@@ -2621,7 +2621,7 @@ async def test_delete_session_action_success(tmp_path: Path) -> None:
     (sessions_dir / "session1.json").write_text("[]")
     (sessions_dir / "session2.json").write_text("[]")
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="session1", config_path=str(config_file))
 
     # Mock output widget
@@ -2637,8 +2637,8 @@ async def test_delete_session_action_success(tmp_path: Path) -> None:
     with patch.object(
         app, "push_screen_wait", new=AsyncMock(return_value=True)
     ):
-        with patch("mygpt.tui.list_sessions", side_effect=[mock_sessions, [{"name": "session2", "messages": 0}]]):
-            with patch("mygpt.tui.delete_session", return_value=True):
+        with patch("nyxgpt.tui.list_sessions", side_effect=[mock_sessions, [{"name": "session2", "messages": 0}]]):
+            with patch("nyxgpt.tui.delete_session", return_value=True):
                 with patch.object(app, "_update_session_status", new=AsyncMock()):
                     await app._delete_session_worker()
 
@@ -2657,7 +2657,7 @@ async def test_delete_session_action_cancelled(tmp_path: Path) -> None:
     # Create config
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["nyxgpt"] = {"sessions_dir": str(tmp_path / "sessions")}
     cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
     with open(config_file, "w") as f:
         cfg.write(f)
@@ -2668,7 +2668,7 @@ async def test_delete_session_action_cancelled(tmp_path: Path) -> None:
     (sessions_dir / "session1.json").write_text("[]")
     (sessions_dir / "session2.json").write_text("[]")
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="session1", config_path=str(config_file))
 
     # Mock output widget
@@ -2684,8 +2684,8 @@ async def test_delete_session_action_cancelled(tmp_path: Path) -> None:
     with patch.object(
         app, "push_screen_wait", new=AsyncMock(return_value=False)
     ):
-        with patch("mygpt.tui.list_sessions", return_value=mock_sessions):
-            with patch("mygpt.tui.delete_session", return_value=True) as mock_delete:
+        with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
+            with patch("nyxgpt.tui.delete_session", return_value=True) as mock_delete:
                 await app._delete_session_worker()
 
     # Verify session was NOT switched
@@ -2704,7 +2704,7 @@ async def test_delete_session_action_last_session(tmp_path: Path) -> None:
     # Create config
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["nyxgpt"] = {"sessions_dir": str(tmp_path / "sessions")}
     cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
     with open(config_file, "w") as f:
         cfg.write(f)
@@ -2714,7 +2714,7 @@ async def test_delete_session_action_last_session(tmp_path: Path) -> None:
     sessions_dir.mkdir()
     (sessions_dir / "session1.json").write_text("[]")
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="session1", config_path=str(config_file))
 
     # Mock output widget
@@ -2723,8 +2723,8 @@ async def test_delete_session_action_last_session(tmp_path: Path) -> None:
     # Mock list_sessions to return only one session
     mock_sessions = [{"name": "session1", "messages": 0}]
 
-    with patch("mygpt.tui.list_sessions", return_value=mock_sessions):
-        with patch("mygpt.tui.delete_session", return_value=True) as mock_delete:
+    with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
+        with patch("nyxgpt.tui.delete_session", return_value=True) as mock_delete:
             await app._delete_session_worker()
 
     # Verify delete was NOT called
@@ -2741,7 +2741,7 @@ async def test_delete_session_action_not_found(tmp_path: Path) -> None:
     # Create config
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["nyxgpt"] = {"sessions_dir": str(tmp_path / "sessions")}
     cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
     with open(config_file, "w") as f:
         cfg.write(f)
@@ -2752,7 +2752,7 @@ async def test_delete_session_action_not_found(tmp_path: Path) -> None:
     (sessions_dir / "session1.json").write_text("[]")
     (sessions_dir / "session2.json").write_text("[]")
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="session1", config_path=str(config_file))
 
     # Mock output widget
@@ -2768,9 +2768,9 @@ async def test_delete_session_action_not_found(tmp_path: Path) -> None:
     with patch.object(
         app, "push_screen_wait", new=AsyncMock(return_value=True)
     ):
-        with patch("mygpt.tui.list_sessions", return_value=mock_sessions):
+        with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
             # Mock delete_session to return False (not found)
-            with patch("mygpt.tui.delete_session", return_value=False):
+            with patch("nyxgpt.tui.delete_session", return_value=False):
                 await app._delete_session_worker()
 
     # Verify error message was shown
@@ -2786,7 +2786,7 @@ async def test_delete_session_action_exception(
     # Create config
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["nyxgpt"] = {"sessions_dir": str(tmp_path / "sessions")}
     cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
     with open(config_file, "w") as f:
         cfg.write(f)
@@ -2797,7 +2797,7 @@ async def test_delete_session_action_exception(
     (sessions_dir / "session1.json").write_text("[]")
     (sessions_dir / "session2.json").write_text("[]")
 
-    with patch("mygpt.tui.load_config", return_value=cfg):
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = MyGPTTUI(session="session1", config_path=str(config_file))
 
     # Mock output widget
@@ -2813,10 +2813,10 @@ async def test_delete_session_action_exception(
     with patch.object(
         app, "push_screen_wait", new=AsyncMock(return_value=True)
     ):
-        with patch("mygpt.tui.list_sessions", return_value=mock_sessions):
+        with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
             # Mock delete_session to raise exception
-            with patch("mygpt.tui.delete_session", side_effect=RuntimeError("Delete failed")):
-                with caplog.at_level(logging.ERROR, logger="mygpt.tui"):
+            with patch("nyxgpt.tui.delete_session", side_effect=RuntimeError("Delete failed")):
+                with caplog.at_level(logging.ERROR, logger="nyxgpt.tui"):
                     await app._delete_session_worker()
 
     # Verify error was logged

@@ -1,11 +1,87 @@
 from __future__ import annotations
 import os
+import re
+import shutil
 import sys
 
 from configparser import ConfigParser
 from pathlib import Path
 
-DEFAULT_CONFIG_PATH = Path.home() / ".myGPT" / "config.ini"
+_MIGRATION_DONE = False
+
+
+def _migrate_from_mygpt() -> None:
+    """Migrate user data from ~/.myGPT/ to ~/.nyxGPT/ if needed.
+
+    This migration runs once per process and handles:
+    - Moving the config directory from ~/.myGPT to ~/.nyxGPT
+    - Updating [mygpt] section name to [nyxgpt] in config.ini
+
+    The migration only runs in interactive TTY environments and skips
+    automatically in non-interactive contexts (CI, pytest, etc.).
+    """
+    global _MIGRATION_DONE
+    if _MIGRATION_DONE:
+        return
+    _MIGRATION_DONE = True
+
+    old_dir = Path.home() / ".myGPT"
+    new_dir = Path.home() / ".nyxGPT"
+
+    # Only migrate if old exists and new doesn't
+    if not (old_dir.exists() and not new_dir.exists()):
+        return
+
+    # Skip in non-interactive environments (CI, pytest, piped input)
+    if not sys.stdin.isatty() or os.environ.get("CI") or os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+
+    print(f"\n{'=' * 60}")
+    print("nyxGPT Migration Notice")
+    print("=" * 60)
+    print(f"\nFound existing data at: {old_dir}")
+    print(f"Would you like to migrate to: {new_dir}?")
+    print("\nThis will move your sessions, logs, config, and vectorstore data.")
+
+    try:
+        response = input("\nMigrate now? [Y/n]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\nMigration skipped.")
+        return
+
+    if response in ("", "y", "yes"):
+        try:
+            shutil.move(str(old_dir), str(new_dir))
+            print(f"\nMoved {old_dir} -> {new_dir}")
+
+            # Update config.ini section name from [mygpt] to [nyxgpt]
+            config_path = new_dir / "config.ini"
+            if config_path.exists():
+                content = config_path.read_text(encoding="utf-8")
+                # Replace section name
+                updated = re.sub(
+                    r"^\[mygpt\]",
+                    "[nyxgpt]",
+                    content,
+                    flags=re.MULTILINE | re.IGNORECASE,
+                )
+                if updated != content:
+                    config_path.write_text(updated, encoding="utf-8")
+                    print("Updated [mygpt] -> [nyxgpt] in config.ini")
+
+            print("\nMigration complete!")
+        except Exception as e:
+            print(f"\nMigration failed: {e}")
+            print("You can manually move the directory later.")
+    else:
+        print("\nMigration skipped. You can manually move files later with:")
+        print(f"  mv {old_dir} {new_dir}")
+
+
+# Run migration check on module import
+_migrate_from_mygpt()
+
+DEFAULT_CONFIG_PATH = Path.home() / ".nyxGPT" / "config.ini"
 
 _CACHED_CFG: ConfigParser | None = None
 _CACHED_PATH: Path | None = None
@@ -35,7 +111,7 @@ def validate_config(cfg: ConfigParser) -> list[str]:
     errors: list[str] = []
 
     # Check required sections
-    required_sections = ["mygpt", "ollama"]
+    required_sections = ["nyxgpt", "ollama"]
     for section in required_sections:
         if not cfg.has_section(section):
             errors.append(f"Missing required section: [{section}]")
@@ -117,13 +193,13 @@ def load_config(path: str | Path | None = None) -> ConfigParser:
     if isinstance(raw, Path):
         config_path = raw.expanduser()
     else:
-        # Allow callers to pass strings (e.g., "~/.myGPT/config.ini").
+        # Allow callers to pass strings (e.g., "~/.nyxGPT/config.ini").
         config_path = Path(os.path.expandvars(raw)).expanduser()
 
     if not config_path.exists():
         raise FileNotFoundError(
             f"Missing config file: {config_path}\n"
-            "Create it at ~/.myGPT/config.ini using example.config.ini as a template."
+            "Create it at ~/.nyxGPT/config.ini using example.config.ini as a template."
         )
 
     try:
@@ -174,7 +250,7 @@ def get_default_model(cfg: ConfigParser) -> str:
 
     This setting is hot-reloadable via config.ini changes.
     """
-    return cfg.get("mygpt", "default_model", fallback="llama3.1:8b").strip()
+    return cfg.get("nyxgpt", "default_model", fallback="llama3.1:8b").strip()
 
 
 def get_ollama_base_url(cfg: ConfigParser) -> str:
@@ -187,14 +263,14 @@ def _expand_path(value: str) -> Path:
 
 def get_sessions_dir(cfg: ConfigParser) -> Path:
     val = cfg.get(
-        "mygpt", "sessions_dir", fallback=str(Path.home() / ".myGPT" / "sessions")
+        "nyxgpt", "sessions_dir", fallback=str(Path.home() / ".nyxGPT" / "sessions")
     )
     return _expand_path(val)
 
 
 def get_vectorstore_dir(cfg: ConfigParser) -> Path:
     val = cfg.get(
-        "mygpt", "vectorstore_dir", fallback=str(Path.home() / ".myGPT" / "vectorstore")
+        "nyxgpt", "vectorstore_dir", fallback=str(Path.home() / ".nyxGPT" / "vectorstore")
     )
     return _expand_path(val)
 
@@ -476,7 +552,7 @@ def get_system_prompt_minimize(cfg: ConfigParser) -> bool:
         True if minimization is enabled, False otherwise (default)
     """
     try:
-        return cfg.getboolean("mygpt", "system_prompt_minimize", fallback=False)
+        return cfg.getboolean("nyxgpt", "system_prompt_minimize", fallback=False)
     except Exception:
         return False
 

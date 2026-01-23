@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mygpt.ollama_client import (
+from nyxgpt.ollama_client import (
     _is_connection_error,
     _retry_with_backoff,
     post_json_lines,

@@ -28,8 +28,8 @@ from textual.containers import Vertical, Container
 from textual.binding import Binding
 from textual.screen import Screen, ModalScreen
 
-from mygpt.config import load_config
-from mygpt.sessions import list_sessions, delete_session, get_sessions_dir
+from nyxgpt.config import load_config
+from nyxgpt.sessions import list_sessions, delete_session, get_sessions_dir
 
 log = logging.getLogger(__name__)
 

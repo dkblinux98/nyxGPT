@@ -41,7 +41,7 @@ describe('Logs API Routes', () => {
 
   describe('GET /api/v1/logs/view/:filename', () => {
     it('should return log file contents', async () => {
-      const response = await fetch('/api/v1/logs/view/mygpt.log');
+      const response = await fetch('/api/v1/logs/view/nyxgpt.log');
       expect(response.status).toBe(200);
 
       const data = await response.json();
@@ -51,7 +51,7 @@ describe('Logs API Routes', () => {
     });
 
     it('should include line count metadata', async () => {
-      const response = await fetch('/api/v1/logs/view/mygpt.log');
+      const response = await fetch('/api/v1/logs/view/nyxgpt.log');
       const data = await response.json();
 
       expect(data).toHaveProperty('total_lines');
@@ -61,14 +61,14 @@ describe('Logs API Routes', () => {
     });
 
     it('should support tail parameter', async () => {
-      const response = await fetch('/api/v1/logs/view/mygpt.log?tail=2');
+      const response = await fetch('/api/v1/logs/view/nyxgpt.log?tail=2');
       const data = await response.json();
 
       expect(data.lines.length).toBe(2);
     });
 
     it('should support level filter parameter', async () => {
-      const response = await fetch('/api/v1/logs/view/mygpt.log?level=ERROR');
+      const response = await fetch('/api/v1/logs/view/nyxgpt.log?level=ERROR');
       const data = await response.json();
 
       // All returned lines should contain 'ERROR'
@@ -78,7 +78,7 @@ describe('Logs API Routes', () => {
     });
 
     it('should support search parameter', async () => {
-      const response = await fetch('/api/v1/logs/view/mygpt.log?search=Server');
+      const response = await fetch('/api/v1/logs/view/nyxgpt.log?search=Server');
       const data = await response.json();
 
       // All returned lines should contain the search term
@@ -88,7 +88,7 @@ describe('Logs API Routes', () => {
     });
 
     it('should support combined filters', async () => {
-      const response = await fetch('/api/v1/logs/view/mygpt.log?level=INFO&tail=1');
+      const response = await fetch('/api/v1/logs/view/nyxgpt.log?level=INFO&tail=1');
       const data = await response.json();
 
       expect(data.lines.length).toBeLessThanOrEqual(1);
@@ -100,7 +100,7 @@ describe('Logs API Routes', () => {
 
   describe('GET /api/v1/logs/stream/:filename', () => {
     it('should return log file as plain text', async () => {
-      const response = await fetch('/api/v1/logs/stream/mygpt.log');
+      const response = await fetch('/api/v1/logs/stream/nyxgpt.log');
       expect(response.status).toBe(200);
 
       const contentType = response.headers.get('Content-Type');
@@ -108,22 +108,22 @@ describe('Logs API Routes', () => {
     });
 
     it('should include Content-Disposition header', async () => {
-      const response = await fetch('/api/v1/logs/stream/mygpt.log');
+      const response = await fetch('/api/v1/logs/stream/nyxgpt.log');
 
       const disposition = response.headers.get('Content-Disposition');
       expect(disposition).toBeTruthy();
-      expect(disposition).toContain('mygpt.log');
+      expect(disposition).toContain('nyxgpt.log');
     });
 
     it('should include security header', async () => {
-      const response = await fetch('/api/v1/logs/stream/mygpt.log');
+      const response = await fetch('/api/v1/logs/stream/nyxgpt.log');
 
       const nosniff = response.headers.get('X-Content-Type-Options');
       expect(nosniff).toBe('nosniff');
     });
 
     it('should return log content as text', async () => {
-      const response = await fetch('/api/v1/logs/stream/mygpt.log');
+      const response = await fetch('/api/v1/logs/stream/nyxgpt.log');
       const text = await response.text();
 
       expect(typeof text).toBe('string');
@@ -143,7 +143,7 @@ describe('Logs API Routes', () => {
     it('should properly encode search parameter with special characters', async () => {
       const search = 'test & query';
       const response = await fetch(
-        `/api/v1/logs/view/mygpt.log?search=${encodeURIComponent(search)}`
+        `/api/v1/logs/view/nyxgpt.log?search=${encodeURIComponent(search)}`
       );
 
       expect(response.status).toBe(200);

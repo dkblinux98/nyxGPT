@@ -14,12 +14,12 @@ def test_rag_ingest_with_collection_flag(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Test rag ingest command with --collection flag."""
-    from mygpt.cli import cli
+    from nyxgpt.cli import cli
 
     test_file = tmp_path / "test.txt"
     test_file.write_text("Test document content for embedding.")
 
-    with patch("mygpt.cli.ingest_document") as mock_ingest:
+    with patch("nyxgpt.cli.ingest_document") as mock_ingest:
         mock_ingest.return_value = {"status": "ingested", "chunks_ingested": 5, "doc_hash": "abc123", "previous_hash": None}
 
         exit_code = cli(
@@ -52,9 +52,9 @@ def test_rag_ingest_with_collection_flag(
 
 def test_rag_query_with_collection_flag(capsys: pytest.CaptureFixture[str]) -> None:
     """Test rag query command with --collection flag."""
-    from mygpt.cli import cli
+    from nyxgpt.cli import cli
 
-    with patch("mygpt.cli.retrieve_context") as mock_retrieve:
+    with patch("nyxgpt.cli.retrieve_context") as mock_retrieve:
         mock_retrieve.return_value = [
             {"text": "Result 1", "score": 0.9, "embedding_model": "all-minilm:latest"},
             {"text": "Result 2", "score": 0.8, "embedding_model": "all-minilm:latest"},
@@ -89,9 +89,9 @@ def test_rag_query_with_collection_flag(capsys: pytest.CaptureFixture[str]) -> N
 
 def test_rag_list_with_collection_flag(capsys: pytest.CaptureFixture[str]) -> None:
     """Test rag list command with --collection flag."""
-    from mygpt.cli import cli
+    from nyxgpt.cli import cli
 
-    with patch("mygpt.cli.CassandraVectorStore") as MockStore:
+    with patch("nyxgpt.cli.CassandraVectorStore") as MockStore:
         mock_store = Mock()
         mock_store.list_docs.return_value = [
             {"doc_id": "doc1", "chunks": 10, "embedding_model": "all-minilm:latest"},
@@ -114,9 +114,9 @@ def test_rag_list_with_collection_flag(capsys: pytest.CaptureFixture[str]) -> No
 
 def test_rag_collections_command(capsys: pytest.CaptureFixture[str]) -> None:
     """Test rag collections command."""
-    from mygpt.cli import cli
+    from nyxgpt.cli import cli
 
-    with patch("mygpt.cli.CassandraVectorStore") as MockStore:
+    with patch("nyxgpt.cli.CassandraVectorStore") as MockStore:
         mock_store = Mock()
         mock_store.list_collections.return_value = ["default", "all-minilm", "nomic768"]
         MockStore.return_value = mock_store
@@ -138,7 +138,7 @@ def test_rag_compare_command(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Test rag compare command."""
-    from mygpt.cli import cli
+    from nyxgpt.cli import cli
 
     test_file = tmp_path / "test.txt"
     test_file.write_text(
@@ -147,10 +147,10 @@ def test_rag_compare_command(
 
     # Mock the imports from model_compare module where they're used
     with (
-        patch("mygpt.rag.model_compare.compare_models") as mock_compare,
-        patch("mygpt.rag.model_compare.print_comparison_table") as mock_print_table,
+        patch("nyxgpt.rag.model_compare.compare_models") as mock_compare,
+        patch("nyxgpt.rag.model_compare.print_comparison_table") as mock_print_table,
     ):
-        from mygpt.rag.model_compare import ModelPerformanceMetrics
+        from nyxgpt.rag.model_compare import ModelPerformanceMetrics
 
         mock_compare.return_value = [
             ModelPerformanceMetrics("nomic-embed-text", 768, 10.5, 5.2, None, None),
@@ -180,7 +180,7 @@ def test_rag_compare_command(
 
 def test_rag_compare_invalid_spec(capsys: pytest.CaptureFixture[str]) -> None:
     """Test rag compare with invalid model spec."""
-    from mygpt.cli import cli
+    from nyxgpt.cli import cli
     from pathlib import Path
     import tempfile
 
@@ -207,9 +207,9 @@ def test_rag_compare_invalid_spec(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_rag_delete_with_collection_flag(capsys: pytest.CaptureFixture[str]) -> None:
     """Test rag delete command with --collection flag."""
-    from mygpt.cli import cli
+    from nyxgpt.cli import cli
 
-    with patch("mygpt.cli.CassandraVectorStore") as MockStore:
+    with patch("nyxgpt.cli.CassandraVectorStore") as MockStore:
         mock_store = Mock()
         MockStore.return_value = mock_store
 
@@ -227,9 +227,9 @@ def test_rag_delete_with_collection_flag(capsys: pytest.CaptureFixture[str]) -> 
 
 def test_rag_wipe_with_collection_flag(capsys: pytest.CaptureFixture[str]) -> None:
     """Test rag wipe command with --collection flag."""
-    from mygpt.cli import cli
+    from nyxgpt.cli import cli
 
-    with patch("mygpt.cli.CassandraVectorStore") as MockStore:
+    with patch("nyxgpt.cli.CassandraVectorStore") as MockStore:
         mock_store = Mock()
         MockStore.return_value = mock_store
 

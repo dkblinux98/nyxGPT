@@ -419,7 +419,7 @@ export default function AdminPage() {
               <strong>ℹ️ Note:</strong> RAG requires Apache Cassandra to be running. You can toggle RAG per-session
               in the chat interface or configure advanced settings in{' '}
               <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
-                ~/.myGPT/config.ini
+                ~/.nyxGPT/config.ini
               </code>
             </div>
           </div>
@@ -482,7 +482,7 @@ export default function AdminPage() {
                 }}
               />
               <div id="ollama-url-hint" style={{ fontSize: 12, color: '#666', marginTop: 4 }}>
-                Read-only. Edit in <code>~/.myGPT/config.ini</code> to change.
+                Read-only. Edit in <code>~/.nyxGPT/config.ini</code> to change.
               </div>
             </div>
 

@@ -2,8 +2,8 @@
 import uuid
 
 import pytest
-from mygpt.rag.rag import compute_document_hash, ingest_document
-from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+from nyxgpt.rag.rag import compute_document_hash, ingest_document
+from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
 
 def _unique_doc_id(prefix: str) -> str:

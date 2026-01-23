@@ -6,7 +6,7 @@
 
 ## Summary
 
-Comprehensive audit of all `file_lock()` usage in the myGPT codebase to ensure consistent alphabetical lock ordering is followed everywhere to prevent deadlock scenarios.
+Comprehensive audit of all `file_lock()` usage in the nyxGPT codebase to ensure consistent alphabetical lock ordering is followed everywhere to prevent deadlock scenarios.
 
 **Result**: ✅ **PASS** - All file locking follows correct ordering requirements.
 
@@ -21,7 +21,7 @@ Searched for:
 
 ### Production Code
 
-#### src/mygpt/sessions.py
+#### src/nyxgpt/sessions.py
 
 **Lock Ordering Documentation** (lines 23-34):
 - ✅ Clear documentation of alphabetical ordering requirement
@@ -53,7 +53,7 @@ Searched for:
 **Single Lock Usage**:
 - ✅ All other `file_lock()` calls acquire only one lock (no ordering concerns)
 
-#### src/mygpt/rate_limiter.py
+#### src/nyxgpt/rate_limiter.py
 
 **Thread Locks** (lines 64, 73, 140):
 - Type: `threading.Lock` (in-memory synchronization)
@@ -143,14 +143,14 @@ No critical violations found. All file locking follows documented alphabetical o
 
 **Audit Status**: ✅ **COMPLETE**
 
-All `file_lock()` usage in the myGPT codebase follows correct alphabetical lock ordering requirements. The single location with multiple locks (`sync_filename_with_title`) correctly sorts files before acquisition, preventing deadlock scenarios.
+All `file_lock()` usage in the nyxGPT codebase follows correct alphabetical lock ordering requirements. The single location with multiple locks (`sync_filename_with_title`) correctly sorts files before acquisition, preventing deadlock scenarios.
 
 **No violations found.**
 
 ---
 
 **References**:
-- Lock ordering documentation: `src/mygpt/sessions.py:23-34`
-- Multiple lock implementation: `src/mygpt/sessions.py:946-982`
+- Lock ordering documentation: `src/nyxgpt/sessions.py:23-34`
+- Multiple lock implementation: `src/nyxgpt/sessions.py:946-982`
 - Parent issue: #2801
 - Sub-issues: #2837, #2838, #2839

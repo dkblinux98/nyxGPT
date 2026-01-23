@@ -1,7 +1,7 @@
 # VISION.md
 
 ## Purpose
-myGPT is a **local-first, developer-controlled** personal GPT system. It should be practical to run, modify, and extend on a single developer workstation while remaining operable and testable.
+nyxGPT is a **local-first, developer-controlled** personal GPT system. It should be practical to run, modify, and extend on a single developer workstation while remaining operable and testable.
 
 ## Non‑negotiables
 - Local-first by default; external services are opt-in and explicitly configured.

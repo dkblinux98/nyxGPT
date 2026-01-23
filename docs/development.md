@@ -108,14 +108,14 @@ For complex tasks or when you need help:
 pip install -e .
 
 # Copy config template
-mkdir -p ~/.myGPT
-cp example.config.ini ~/.myGPT/config.ini
+mkdir -p ~/.nyxGPT
+cp example.config.ini ~/.nyxGPT/config.ini
 
 # Install services (Ollama, Cassandra, web UI)
-mygpt ops install
+nyxgpt ops install
 
 # Verify health
-mygpt ops doctor
+nyxgpt ops doctor
 ```
 
 ### Running Tests
@@ -127,7 +127,7 @@ pytest -m unit
 pytest -m integration
 
 # Coverage report
-pytest --cov=src/mygpt --cov-report=term-missing
+pytest --cov=src/nyxgpt --cov-report=term-missing
 ```
 
 ### Code Quality Checks

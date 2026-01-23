@@ -13,7 +13,7 @@ pytestmark = pytest.mark.unit
 
 def test_count_tokens_basic() -> None:
     """Test basic token counting functionality."""
-    from mygpt.token_counter import count_tokens
+    from nyxgpt.token_counter import count_tokens
 
     # Empty string
     assert count_tokens("") == 0
@@ -31,14 +31,14 @@ def test_count_tokens_basic() -> None:
 
 def test_count_message_tokens_empty() -> None:
     """Test token counting with empty message list."""
-    from mygpt.token_counter import count_message_tokens
+    from nyxgpt.token_counter import count_message_tokens
 
     assert count_message_tokens([]) == 0
 
 
 def test_count_message_tokens_single_message() -> None:
     """Test token counting with single message."""
-    from mygpt.token_counter import count_message_tokens
+    from nyxgpt.token_counter import count_message_tokens
 
     messages = [{"role": "user", "content": "Hello"}]
     result = count_message_tokens(messages)
@@ -50,7 +50,7 @@ def test_count_message_tokens_single_message() -> None:
 
 def test_count_message_tokens_conversation() -> None:
     """Test token counting with multi-turn conversation."""
-    from mygpt.token_counter import count_message_tokens
+    from nyxgpt.token_counter import count_message_tokens
 
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
@@ -69,7 +69,7 @@ def test_count_message_tokens_conversation() -> None:
 
 def test_count_message_tokens_with_empty_content() -> None:
     """Test token counting handles empty content gracefully."""
-    from mygpt.token_counter import count_message_tokens
+    from nyxgpt.token_counter import count_message_tokens
 
     messages = [
         {"role": "user", "content": ""},
@@ -83,7 +83,7 @@ def test_count_message_tokens_with_empty_content() -> None:
 def _cfg(tmp_path: Path, *, context_window: int = 100) -> configparser.ConfigParser:
     """Create test config with specified context window size."""
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {
+    cfg["nyxgpt"] = {
         "default_model": "llama3.1:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
@@ -101,13 +101,13 @@ def test_chat_with_context_budget_enforcement(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Test that chat enforces context window budget."""
-    from mygpt.chat import chat
+    from nyxgpt.chat import chat
 
     # Set very small context window to trigger truncation
     cfg = _cfg(tmp_path, context_window=50)
 
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
 
     # Track messages sent to ollama
     sent: dict[str, Any] = {}
@@ -116,10 +116,10 @@ def test_chat_with_context_budget_enforcement(
         sent["messages"] = messages
         return "response"
 
-    monkeypatch.setattr("mygpt.chat.ollama_chat", fake_ollama_chat)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
 
     # Create a session with long history
-    from mygpt.sessions import SessionState
+    from nyxgpt.sessions import SessionState
 
     state = SessionState(
         name="test",
@@ -137,8 +137,8 @@ def test_chat_with_context_budget_enforcement(
     def fake_load_session(*_: Any, **__: Any) -> SessionState:
         return state
 
-    monkeypatch.setattr("mygpt.chat.load_session", fake_load_session)
-    monkeypatch.setattr("mygpt.chat.save_session", lambda *a, **k: None)
+    monkeypatch.setattr("nyxgpt.chat.load_session", fake_load_session)
+    monkeypatch.setattr("nyxgpt.chat.save_session", lambda *a, **k: None)
 
     # Chat with new message
     result = chat("New prompt", config_path=None)
@@ -153,20 +153,20 @@ def test_chat_warns_when_approaching_limit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Test that chat warns when approaching context limit."""
-    from mygpt.chat import chat
+    from nyxgpt.chat import chat
 
     # Set context window where we'll be at ~85% capacity
     cfg = _cfg(tmp_path, context_window=100)
 
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
 
     def fake_ollama_chat(**_: Any) -> str:
         return "response"
 
-    monkeypatch.setattr("mygpt.chat.ollama_chat", fake_ollama_chat)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
 
-    from mygpt.sessions import SessionState
+    from nyxgpt.sessions import SessionState
 
     # Create content that will be close to limit
     state = SessionState(
@@ -183,13 +183,13 @@ def test_chat_warns_when_approaching_limit(
     def fake_load_session(*_: Any, **__: Any) -> SessionState:
         return state
 
-    monkeypatch.setattr("mygpt.chat.load_session", fake_load_session)
-    monkeypatch.setattr("mygpt.chat.save_session", lambda *a, **k: None)
+    monkeypatch.setattr("nyxgpt.chat.load_session", fake_load_session)
+    monkeypatch.setattr("nyxgpt.chat.save_session", lambda *a, **k: None)
 
     # Enable logging to capture warnings
     import logging
 
-    caplog.set_level(logging.WARNING, logger="mygpt.chat")
+    caplog.set_level(logging.WARNING, logger="nyxgpt.chat")
 
     result = chat("New prompt", config_path=None)
     assert result.reply == "response"
@@ -202,7 +202,7 @@ def test_chat_warns_when_approaching_limit(
 
 def test_config_get_context_window_size_default() -> None:
     """Test getting default context window size."""
-    from mygpt.config import get_context_window_size
+    from nyxgpt.config import get_context_window_size
 
     cfg = configparser.ConfigParser()
     cfg["context"] = {}
@@ -214,7 +214,7 @@ def test_config_get_context_window_size_default() -> None:
 
 def test_config_get_context_window_size_custom() -> None:
     """Test getting custom context window size."""
-    from mygpt.config import get_context_window_size
+    from nyxgpt.config import get_context_window_size
 
     cfg = configparser.ConfigParser()
     cfg["context"] = {"default_window_size": "16384"}
@@ -225,7 +225,7 @@ def test_config_get_context_window_size_custom() -> None:
 
 def test_config_get_context_window_size_model_specific() -> None:
     """Test getting model-specific context window size."""
-    from mygpt.config import get_context_window_size
+    from nyxgpt.config import get_context_window_size
 
     cfg = configparser.ConfigParser()
     cfg["context"] = {
@@ -244,7 +244,7 @@ def test_config_get_context_window_size_model_specific() -> None:
 
 def test_config_get_context_warning_threshold() -> None:
     """Test getting context warning threshold."""
-    from mygpt.config import get_context_warning_threshold
+    from nyxgpt.config import get_context_warning_threshold
 
     cfg = configparser.ConfigParser()
     cfg["context"] = {"warning_threshold": "0.9"}
@@ -255,7 +255,7 @@ def test_config_get_context_warning_threshold() -> None:
 
 def test_config_get_context_warning_threshold_default() -> None:
     """Test getting default context warning threshold."""
-    from mygpt.config import get_context_warning_threshold
+    from nyxgpt.config import get_context_warning_threshold
 
     cfg = configparser.ConfigParser()
     cfg["context"] = {}
@@ -266,7 +266,7 @@ def test_config_get_context_warning_threshold_default() -> None:
 
 def test_config_get_context_warning_threshold_clamped() -> None:
     """Test that warning threshold is clamped to valid range."""
-    from mygpt.config import get_context_warning_threshold
+    from nyxgpt.config import get_context_warning_threshold
 
     cfg = configparser.ConfigParser()
 

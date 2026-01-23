@@ -4,14 +4,14 @@ from pathlib import Path
 from typing import Any
 import configparser
 import pytest
-from mygpt.chat import chat, chat_stream
+from nyxgpt.chat import chat, chat_stream
 
 pytestmark = pytest.mark.unit
 
 
 def _cfg(tmp_path: Path, *, rag_enabled: bool) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {
+    cfg["nyxgpt"] = {
         "default_model": "llama3.1:8b",
         "sessions_dir": str(tmp_path / "sessions"),
         "chat_timeout_seconds": "5",
@@ -29,13 +29,13 @@ def test_chat_without_rag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     cfg = _cfg(tmp_path, rag_enabled=False)
 
     # Ensure chat() uses our in-memory config
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
 
     # Mock ollama_chat
     def fake_ollama_chat(*args: Any, **kwargs: Any) -> str:
         return "hello"
 
-    monkeypatch.setattr("mygpt.chat.ollama_chat", fake_ollama_chat)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
 
     result = chat("hi", config_path=None)
     assert result.reply == "hello"
@@ -47,12 +47,12 @@ def test_chat_with_rag_injects_context(
     cfg = _cfg(tmp_path, rag_enabled=True)
 
     # Ensure chat() and sessions use our in-memory config
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
 
     # Mock RAG retrieval
     monkeypatch.setattr(
-        "mygpt.chat.retrieve_context",
+        "nyxgpt.chat.retrieve_context",
         lambda *a, **k: [
             {"text": "RAG CONTEXT HERE", "score": 0.9},
         ],
@@ -65,7 +65,7 @@ def test_chat_with_rag_injects_context(
         sent["messages"] = messages
         return "rag reply"
 
-    monkeypatch.setattr("mygpt.chat.ollama_chat", fake_ollama_chat)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
 
     result = chat("question", config_path=None)
     assert result.reply == "rag reply"
@@ -86,7 +86,7 @@ def test_chat_rag_disabled_does_not_call_retrieve(
     cfg = _cfg(tmp_path, rag_enabled=False)
 
     # Ensure chat() uses our in-memory config
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
 
     called = {"count": 0}
 
@@ -94,8 +94,8 @@ def test_chat_rag_disabled_does_not_call_retrieve(
         called["count"] += 1
         return "SHOULD NOT BE USED"
 
-    monkeypatch.setattr("mygpt.chat.retrieve_context", fake_retrieve)
-    monkeypatch.setattr("mygpt.chat.ollama_chat", lambda **_: "ok")
+    monkeypatch.setattr("nyxgpt.chat.retrieve_context", fake_retrieve)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", lambda **_: "ok")
 
     result = chat("hi", config_path=None)
     assert result.reply == "ok"
@@ -109,7 +109,7 @@ def test_chat_stream_yields_chunks_and_persists(
     cfg = _cfg(tmp_path, rag_enabled=False)
 
     # Ensure chat_stream() uses our in-memory config
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
 
     # Fake streaming tokens from Ollama
     def fake_stream_tokens(*args: Any, **kwargs: Any):
@@ -117,7 +117,7 @@ def test_chat_stream_yields_chunks_and_persists(
         yield "lo"
 
     monkeypatch.setattr(
-        "mygpt.chat.ollama_chat_stream_tokens",
+        "nyxgpt.chat.ollama_chat_stream_tokens",
         fake_stream_tokens,
     )
 
@@ -127,7 +127,7 @@ def test_chat_stream_yields_chunks_and_persists(
     def fake_save_session(state, *_a, **_k):
         saved["messages"] = list(state.messages)
 
-    monkeypatch.setattr("mygpt.chat.save_session", fake_save_session)
+    monkeypatch.setattr("nyxgpt.chat.save_session", fake_save_session)
 
     # Run streaming chat
     chunks = list(chat_stream("hi", config_path=None))
@@ -147,16 +147,16 @@ def test_chat_with_rag_returns_chunk_metadata(
     """chat() should return RAG chunk metadata when RAG is enabled."""
     cfg = _cfg(tmp_path, rag_enabled=True)
 
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
 
     # Mock RAG retrieval with full chunk structure
     fake_chunks = [
         {"text": "Chunk 1 text", "score": 0.95, "doc_id": "doc1", "chunk_id": 0},
         {"text": "Chunk 2 text", "score": 0.87, "doc_id": "doc1", "chunk_id": 1},
     ]
-    monkeypatch.setattr("mygpt.chat.retrieve_context", lambda *a, **k: fake_chunks)
-    monkeypatch.setattr("mygpt.chat.ollama_chat", lambda **_: "answer")
+    monkeypatch.setattr("nyxgpt.chat.retrieve_context", lambda *a, **k: fake_chunks)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", lambda **_: "answer")
 
     result = chat("question", config_path=None)
 
@@ -177,21 +177,21 @@ def test_chat_stream_emits_rag_metadata(
     """chat_stream should emit RAG metadata as first chunk when RAG is enabled."""
     cfg = _cfg(tmp_path, rag_enabled=True)
 
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
 
     # Mock RAG retrieval
     fake_chunks = [
         {"text": "Context text", "score": 0.92, "doc_id": "testdoc", "chunk_id": 5},
     ]
-    monkeypatch.setattr("mygpt.chat.retrieve_context", lambda *a, **k: fake_chunks)
+    monkeypatch.setattr("nyxgpt.chat.retrieve_context", lambda *a, **k: fake_chunks)
 
     # Fake streaming tokens
     def fake_stream_tokens(*args: Any, **kwargs: Any):
         yield "answer"
 
-    monkeypatch.setattr("mygpt.chat.ollama_chat_stream_tokens", fake_stream_tokens)
-    monkeypatch.setattr("mygpt.chat.save_session", lambda *a, **k: None)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat_stream_tokens", fake_stream_tokens)
+    monkeypatch.setattr("nyxgpt.chat.save_session", lambda *a, **k: None)
 
     # Run streaming chat
     chunks = list(chat_stream("question", config_path=None))
@@ -230,15 +230,15 @@ def test_chat_with_rag_enabled_but_no_chunks_found(
     """When RAG is enabled but no chunks are found, rag_chunks should be empty array (not absent)."""
     cfg = _cfg(tmp_path, rag_enabled=True)
 
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
 
     # Mock RAG retrieval returning empty list
-    monkeypatch.setattr("mygpt.chat.retrieve_context", lambda *a, **k: [])
+    monkeypatch.setattr("nyxgpt.chat.retrieve_context", lambda *a, **k: [])
 
     # Mock ollama response
     monkeypatch.setattr(
-        "mygpt.chat.ollama_chat", lambda **_: "answer without RAG context"
+        "nyxgpt.chat.ollama_chat", lambda **_: "answer without RAG context"
     )
 
     # Track what gets saved
@@ -247,7 +247,7 @@ def test_chat_with_rag_enabled_but_no_chunks_found(
     def fake_save_session(state, *_a, **_k):
         saved["messages"] = list(state.messages)
 
-    monkeypatch.setattr("mygpt.chat.save_session", fake_save_session)
+    monkeypatch.setattr("nyxgpt.chat.save_session", fake_save_session)
 
     # Run chat with RAG enabled but no results
     result = chat("question", config_path=None)
@@ -281,12 +281,12 @@ def test_chat_with_custom_rag_templates(
     cfg["rag"]["instruction_template"] = "CUSTOM INSTRUCTION: {context}"
     cfg["rag"]["context_format"] = "[[CUSTOM FORMAT: {context}]]"
 
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
 
     # Mock RAG retrieval
     monkeypatch.setattr(
-        "mygpt.chat.retrieve_context",
+        "nyxgpt.chat.retrieve_context",
         lambda *a, **k: [{"text": "TEST CONTEXT", "score": 0.9}],
     )
 
@@ -297,7 +297,7 @@ def test_chat_with_custom_rag_templates(
         sent["messages"] = messages
         return "answer"
 
-    monkeypatch.setattr("mygpt.chat.ollama_chat", fake_ollama_chat)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
 
     result = chat("question", config_path=None)
     assert result.reply == "answer"
@@ -322,12 +322,12 @@ def test_chat_rag_templates_default_backward_compatible(
     cfg = _cfg(tmp_path, rag_enabled=True)
 
     # Don't set custom templates - should use defaults
-    monkeypatch.setattr("mygpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr("mygpt.sessions.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
 
     # Mock RAG retrieval
     monkeypatch.setattr(
-        "mygpt.chat.retrieve_context",
+        "nyxgpt.chat.retrieve_context",
         lambda *a, **k: [{"text": "CONTEXT TEXT", "score": 0.9}],
     )
 
@@ -338,7 +338,7 @@ def test_chat_rag_templates_default_backward_compatible(
         sent["messages"] = messages
         return "answer"
 
-    monkeypatch.setattr("mygpt.chat.ollama_chat", fake_ollama_chat)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
 
     result = chat("question", config_path=None)
     assert result.reply == "answer"

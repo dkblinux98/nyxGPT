@@ -15,13 +15,13 @@ Each agent bot account needs a classic Personal Access Token with these scopes:
 
 **Important:** Each bot account must be added as a collaborator to the project with admin access:
 - Go to: https://github.com/users/dkblinux98/projects/2/settings/access
-- Invite each bot account: `myGPT-scrummaster-agent`, `myGPT-developer-agent`, `myGPT-review-agent`
+- Invite each bot account: `nyxGPT-scrummaster-agent`, `nyxGPT-developer-agent`, `nyxGPT-review-agent`
 
 | Secret Name | Bot Account | Used By |
 |------------|-------------|---------|
-| `SCRUMMASTER_AGENT_TOKEN` | `myGPT-scrummaster-agent` | notify_scrum_ready.yml, assign_backlog.yml |
-| `DEVELOPER_AGENT_TOKEN` | `myGPT-developer-agent` | developer_auto_implement.yml |
-| `REVIEW_AGENT_TOKEN` | `myGPT-review-agent` | review_agent_auto_review.yml |
+| `SCRUMMASTER_AGENT_TOKEN` | `nyxGPT-scrummaster-agent` | notify_scrum_ready.yml, assign_backlog.yml |
+| `DEVELOPER_AGENT_TOKEN` | `nyxGPT-developer-agent` | developer_auto_implement.yml |
+| `REVIEW_AGENT_TOKEN` | `nyxGPT-review-agent` | review_agent_auto_review.yml |
 
 ### Other Tokens
 
@@ -39,12 +39,12 @@ Configure these in: **Settings → Secrets and variables → Actions → Variabl
 | `DEV_AUTO_IMPLEMENT_ENABLED` | `true` | Enable developer auto-implementation |
 | `CLAUDE_REVIEW_ENABLED` | `true` | Enable automated Claude code reviews |
 | `REPO_OWNER` | `dkblinux98` | GitHub repository owner |
-| `REPO_NAME` | `myGPT` | GitHub repository name |
+| `REPO_NAME` | `nyxGPT` | GitHub repository name |
 | `PROJECT_OWNER` | `dkblinux98` | GitHub project owner (user or org) |
 | `PROJECT_NUMBER` | `2` | GitHub project number |
-| `DEV_AGENT` | `myGPT-developer-agent` | Developer bot username |
-| `REVIEW_AGENT` | `myGPT-review-agent` | Review bot username |
-| `SCRUM_AGENT` | `myGPT-scrummaster-agent` | Scrummaster bot username |
+| `DEV_AGENT` | `nyxGPT-developer-agent` | Developer bot username |
+| `REVIEW_AGENT` | `nyxGPT-review-agent` | Review bot username |
+| `SCRUM_AGENT` | `nyxGPT-scrummaster-agent` | Scrummaster bot username |
 | `HUMAN_OWNER` | `dkblinux98` | Human repository owner |
 | `STATUS_FIELD` | `Status` | Project status field name |
 | `STATUS_BACKLOG` | `Backlog` | Backlog status value |
@@ -87,7 +87,7 @@ The token should show the required scopes and be able to access the private proj
 For each bot account:
 1. Go to: https://github.com/users/dkblinux98/projects/2/settings/access
 2. Click "Invite collaborators"
-3. Enter bot username (e.g., `myGPT-scrummaster-agent`)
+3. Enter bot username (e.g., `nyxGPT-scrummaster-agent`)
 4. Grant admin or write access
 5. Bot will receive invitation (may need to accept from bot account)
 

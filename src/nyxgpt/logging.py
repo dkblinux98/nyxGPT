@@ -96,7 +96,7 @@ def _coerce_cfg(cfg: Optional[ConfigParser]) -> ConfigParser:
     """
     if cfg is not None:
         return cfg
-    from mygpt.config import load_config  # local import to avoid circular dependency
+    from nyxgpt.config import load_config  # local import to avoid circular dependency
 
     return load_config(None)
 

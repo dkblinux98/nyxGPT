@@ -1,14 +1,14 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="mygpt-cassandra" type="docker-deploy" factoryName="docker-image" server-name="Docker">
+  <configuration default="false" name="nyxgpt-cassandra" type="docker-deploy" factoryName="docker-image" server-name="Docker">
     <deployment type="docker-image">
       <settings>
         <option name="imageTag" value="cassandra:5.0" />
-        <option name="containerName" value="mygpt-cassandra" />
+        <option name="containerName" value="nyxgpt-cassandra" />
         <option name="envVars">
           <list>
             <DockerEnvVarImpl>
               <option name="name" value="CASSANDRA_CLUSTER_NAME" />
-              <option name="value" value="mygpt" />
+              <option name="value" value="nyxgpt" />
             </DockerEnvVarImpl>
           </list>
         </option>
@@ -24,7 +24,7 @@
           <list>
             <DockerVolumeBindingImpl>
               <option name="containerPath" value="/var/lib/cassandra" />
-              <option name="hostPath" value="mygpt_cassandra_data" />
+              <option name="hostPath" value="nyxgpt_cassandra_data" />
             </DockerVolumeBindingImpl>
           </list>
         </option>

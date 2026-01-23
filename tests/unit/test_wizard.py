@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from mygpt.wizard import (
+from nyxgpt.wizard import (
     _configure_rag,
     _generate_config_ini,
     _select_model,
@@ -24,7 +24,7 @@ def test_validate_ollama_connection_success():
         {"name": "qwen2.5:0.5b", "size": 500000000},
     ]
 
-    with patch("mygpt.wizard.list_models", return_value=mock_models):
+    with patch("nyxgpt.wizard.list_models", return_value=mock_models):
         success, message, models = _validate_ollama_connection("http://127.0.0.1:11434")
 
         assert success is True
@@ -34,7 +34,7 @@ def test_validate_ollama_connection_success():
 
 def test_validate_ollama_connection_no_models():
     """Test Ollama connection with no models available."""
-    with patch("mygpt.wizard.list_models", return_value=[]):
+    with patch("nyxgpt.wizard.list_models", return_value=[]):
         success, message, models = _validate_ollama_connection("http://127.0.0.1:11434")
 
         assert success is False
@@ -45,7 +45,7 @@ def test_validate_ollama_connection_no_models():
 def test_validate_ollama_connection_failure():
     """Test Ollama connection failure."""
     with patch(
-        "mygpt.wizard.list_models", side_effect=RuntimeError("Failed to reach Ollama")
+        "nyxgpt.wizard.list_models", side_effect=RuntimeError("Failed to reach Ollama")
     ):
         success, message, models = _validate_ollama_connection("http://127.0.0.1:11434")
 
@@ -153,7 +153,7 @@ def test_generate_config_ini_basic(tmp_path: Path):
 
     # Read and verify content
     content = output_path.read_text()
-    assert "[mygpt]" in content
+    assert "[nyxgpt]" in content
     assert "default_model = qwen2.5:0.5b" in content
     assert "[ollama]" in content
     assert "base_url = http://127.0.0.1:11434" in content
@@ -201,7 +201,7 @@ def test_run_wizard_cancelled_on_existing_config(
 ):
     """Test wizard exits when user refuses to overwrite existing config."""
     output_path = tmp_path / "config.ini"
-    output_path.write_text("[mygpt]\ndefault_model = test\n")
+    output_path.write_text("[nyxgpt]\ndefault_model = test\n")
 
     with patch("builtins.input", return_value="n"):
         exit_code = run_wizard(output_path=output_path)
@@ -225,7 +225,7 @@ def test_run_wizard_ollama_connection_failure(
 
     with patch("builtins.input", side_effect=inputs):
         with patch(
-            "mygpt.wizard.list_models",
+            "nyxgpt.wizard.list_models",
             side_effect=RuntimeError("Failed to reach Ollama"),
         ):
             exit_code = run_wizard(output_path=output_path)
@@ -253,7 +253,7 @@ def test_run_wizard_success_minimal(tmp_path: Path, capsys: pytest.CaptureFixtur
     ]
 
     with patch("builtins.input", side_effect=inputs):
-        with patch("mygpt.wizard.list_models", return_value=mock_models):
+        with patch("nyxgpt.wizard.list_models", return_value=mock_models):
             exit_code = run_wizard(output_path=output_path)
 
             assert exit_code == 0
@@ -286,7 +286,7 @@ def test_run_wizard_success_with_rag(
     ]
 
     with patch("builtins.input", side_effect=inputs):
-        with patch("mygpt.wizard.list_models", return_value=mock_models):
+        with patch("nyxgpt.wizard.list_models", return_value=mock_models):
             exit_code = run_wizard(output_path=output_path)
 
             assert exit_code == 0

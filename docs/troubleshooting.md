@@ -1,6 +1,6 @@
 # Troubleshooting Guide
 
-This guide covers common issues and their solutions when running myGPT.
+This guide covers common issues and their solutions when running nyxGPT.
 
 ---
 
@@ -9,7 +9,7 @@ This guide covers common issues and their solutions when running myGPT.
 Before troubleshooting, run the built-in health check:
 
 ```bash
-mygpt ops doctor
+nyxgpt ops doctor
 ```
 
 This command verifies:
@@ -46,7 +46,7 @@ This command verifies:
    systemctl start ollama
 
    # Or use ops command
-   mygpt ops install  # Installs and starts Ollama
+   nyxgpt ops install  # Installs and starts Ollama
    ```
 
 2. **Check Ollama base URL in config:**
@@ -88,7 +88,7 @@ This command verifies:
 
    If not running:
    ```bash
-   mygpt ops install  # Installs and starts Cassandra
+   nyxgpt ops install  # Installs and starts Cassandra
    ```
 
 2. **Check connection settings:**
@@ -96,22 +96,22 @@ This command verifies:
    [rag]
    cassandra_host = 127.0.0.1
    cassandra_port = 9042
-   keyspace = mygpt
+   keyspace = nyxgpt
    ```
 
 3. **Verify keyspace and table exist:**
    ```bash
-   docker exec -it mygpt-cassandra cqlsh -e "DESCRIBE KEYSPACE mygpt;"
+   docker exec -it nyxgpt-cassandra cqlsh -e "DESCRIBE KEYSPACE nyxgpt;"
    ```
 
    If missing, create schema:
    ```bash
-   mygpt rag init  # Creates keyspace and table
+   nyxgpt rag init  # Creates keyspace and table
    ```
 
 4. **Check Cassandra logs:**
    ```bash
-   docker logs mygpt-cassandra
+   docker logs nyxgpt-cassandra
    ```
 
 5. **Disable RAG if not needed:**
@@ -135,12 +135,12 @@ This command verifies:
 
 1. **Check configuration file location:**
    ```bash
-   ls -la ~/.myGPT/config.ini
+   ls -la ~/.nyxGPT/config.ini
    ```
 
    If missing, create from example:
    ```bash
-   cp example.config.ini ~/.myGPT/config.ini
+   cp example.config.ini ~/.nyxGPT/config.ini
    ```
 
 2. **Validate configuration syntax:**
@@ -150,16 +150,16 @@ This command verifies:
 
    **Valid:**
    ```ini
-   [mygpt]
+   [nyxgpt]
    default_model = llama3.1:8b
-   sessions_dir = ~/.myGPT/sessions
+   sessions_dir = ~/.nyxGPT/sessions
    ```
 
    **Invalid:**
    ```ini
-   [mygpt]
+   [nyxgpt]
    default_model: "llama3.1:8b"  # Wrong: uses colon, has quotes
-   sessions dir = ~/.myGPT/sessions  # Wrong: space in key name
+   sessions dir = ~/.nyxGPT/sessions  # Wrong: space in key name
    ```
 
 3. **Check for type mismatches:**
@@ -169,18 +169,18 @@ This command verifies:
 
 4. **Review logs for specific validation errors:**
    ```bash
-   grep WARNING ~/.myGPT/logs/mygpt.log | grep config
+   grep WARNING ~/.nyxGPT/logs/nyxgpt.log | grep config
    ```
 
 5. **Verify file permissions:**
    ```bash
-   chmod 600 ~/.myGPT/config.ini
+   chmod 600 ~/.nyxGPT/config.ini
    ```
 
 ### Hot-Reloadable Settings Not Taking Effect
 
 **Hot-reloadable settings:**
-- `mygpt.default_model`
+- `nyxgpt.default_model`
 - `logging.level`
 - `rag.enabled`
 - `auth.enabled`, `auth.api_key`, `auth.header`
@@ -188,7 +188,7 @@ This command verifies:
 **If changes don't take effect:**
 
 1. Wait 1-2 seconds for the next request (no restart needed)
-2. Verify you edited `~/.myGPT/config.ini` (not `example.config.ini`)
+2. Verify you edited `~/.nyxGPT/config.ini` (not `example.config.ini`)
 3. Check logs for configuration reload messages
 4. Ensure no syntax errors in the config section
 
@@ -217,13 +217,13 @@ This command verifies:
 
    Update config:
    ```ini
-   [mygpt]
+   [nyxgpt]
    default_model = qwen2.5:0.5b
    ```
 
 2. **Increase timeout:**
    ```ini
-   [mygpt]
+   [nyxgpt]
    chat_timeout_seconds = 180  # Default is 60
    ```
 
@@ -263,21 +263,21 @@ This command verifies:
 
 2. **Limit session history:**
    - Longer conversations consume more context
-   - Start new sessions periodically: `mygpt chat --new`
+   - Start new sessions periodically: `nyxgpt chat --new`
 
 3. **Check for session accumulation:**
    ```bash
-   ls -lh ~/.myGPT/sessions/
+   ls -lh ~/.nyxGPT/sessions/
    ```
 
    Delete old sessions:
    ```bash
-   mygpt sessions delete <session-name>
+   nyxgpt sessions delete <session-name>
    ```
 
 4. **Monitor Cassandra memory (if using RAG):**
    ```bash
-   docker stats mygpt-cassandra
+   docker stats nyxgpt-cassandra
    ```
 
 ### API Response Delays
@@ -307,12 +307,12 @@ This command verifies:
 
 3. **Review API logs:**
    ```bash
-   grep ERROR ~/.myGPT/logs/mygpt.log
+   grep ERROR ~/.nyxGPT/logs/nyxgpt.log
    ```
 
 4. **Increase worker processes (production):**
    ```bash
-   uvicorn mygpt.app:app --workers 4
+   uvicorn nyxgpt.app:app --workers 4
    ```
 
 ---
@@ -322,7 +322,7 @@ This command verifies:
 ### No Results from RAG Queries
 
 **Symptoms:**
-- `mygpt rag query "search term"` returns empty results
+- `nyxgpt rag query "search term"` returns empty results
 - Chat doesn't use RAG context even when enabled
 - Logs show "Retrieved 0 chunks"
 
@@ -336,12 +336,12 @@ This command verifies:
 
 2. **Check if documents are ingested:**
    ```bash
-   docker exec -it mygpt-cassandra cqlsh -e "SELECT COUNT(*) FROM mygpt.rag_chunks;"
+   docker exec -it nyxgpt-cassandra cqlsh -e "SELECT COUNT(*) FROM nyxgpt.rag_chunks;"
    ```
 
    If count is 0, ingest documents:
    ```bash
-   mygpt rag ingest --file documents.txt --doc-id my-doc
+   nyxgpt rag ingest --file documents.txt --doc-id my-doc
    ```
 
 3. **Verify embedding model is available:**
@@ -389,14 +389,14 @@ This command verifies:
 
    If changed, re-create table and re-ingest:
    ```bash
-   docker exec -it mygpt-cassandra cqlsh -e "DROP TABLE IF EXISTS mygpt.rag_chunks;"
-   mygpt rag init
-   mygpt rag ingest --file documents.txt --doc-id my-doc
+   docker exec -it nyxgpt-cassandra cqlsh -e "DROP TABLE IF EXISTS nyxgpt.rag_chunks;"
+   nyxgpt rag init
+   nyxgpt rag ingest --file documents.txt --doc-id my-doc
    ```
 
 3. **Inspect retrieved results:**
    ```bash
-   mygpt rag query "test query" -k 5
+   nyxgpt rag query "test query" -k 5
    ```
 
    Check similarity scores - should be > 0.5 for relevant results
@@ -450,18 +450,18 @@ level = DEBUG  # Most verbose
 
 **Default location:**
 ```bash
-~/.myGPT/logs/mygpt.log
+~/.nyxGPT/logs/nyxgpt.log
 ```
 
 **View recent logs:**
 ```bash
-tail -f ~/.myGPT/logs/mygpt.log
+tail -f ~/.nyxGPT/logs/nyxgpt.log
 ```
 
 **Search for errors:**
 ```bash
-grep ERROR ~/.myGPT/logs/mygpt.log
-grep WARNING ~/.myGPT/logs/mygpt.log
+grep ERROR ~/.nyxGPT/logs/nyxgpt.log
+grep WARNING ~/.nyxGPT/logs/nyxgpt.log
 ```
 
 ### Common Log Patterns
@@ -469,44 +469,44 @@ grep WARNING ~/.myGPT/logs/mygpt.log
 **Request ID tracking:**
 All requests have a unique ID for tracing:
 ```
-2026-01-03 10:15:30 INFO mygpt.app: Chat request received [request_id=abc123]
-2026-01-03 10:15:32 INFO mygpt.chat: Starting chat stream [request_id=abc123]
-2026-01-03 10:15:35 INFO mygpt.app: Chat completed [request_id=abc123]
+2026-01-03 10:15:30 INFO nyxgpt.app: Chat request received [request_id=abc123]
+2026-01-03 10:15:32 INFO nyxgpt.chat: Starting chat stream [request_id=abc123]
+2026-01-03 10:15:35 INFO nyxgpt.app: Chat completed [request_id=abc123]
 ```
 
 **Configuration reloads:**
 ```
-2026-01-03 10:20:00 INFO mygpt.config: Configuration reloaded
+2026-01-03 10:20:00 INFO nyxgpt.config: Configuration reloaded
 ```
 
 **Service health checks:**
 ```
-2026-01-03 10:00:00 INFO mygpt.app: Health check passed
+2026-01-03 10:00:00 INFO nyxgpt.app: Health check passed
 ```
 
 ### Error Signatures
 
 **Connection errors:**
 ```
-ERROR mygpt.ollama_client: Connection refused to http://127.0.0.1:11434
+ERROR nyxgpt.ollama_client: Connection refused to http://127.0.0.1:11434
 → Solution: Start Ollama service
 ```
 
 **Validation errors:**
 ```
-WARNING mygpt.sessions: Invalid session name: ../etc/passwd
+WARNING nyxgpt.sessions: Invalid session name: ../etc/passwd
 → Solution: Use valid session names (alphanumeric, dash, underscore only)
 ```
 
 **Timeout errors:**
 ```
-ERROR mygpt.chat: Chat timeout after 60 seconds
+ERROR nyxgpt.chat: Chat timeout after 60 seconds
 → Solution: Increase chat_timeout_seconds or use smaller model
 ```
 
 **Authentication errors:**
 ```
-WARNING mygpt.app: Invalid API key from 192.168.1.100
+WARNING nyxgpt.app: Invalid API key from 192.168.1.100
 → Solution: Verify API key in request header
 ```
 
@@ -514,17 +514,17 @@ WARNING mygpt.app: Invalid API key from 192.168.1.100
 
 1. **Find failing request ID:**
    ```bash
-   grep ERROR ~/.myGPT/logs/mygpt.log | grep "request_id"
+   grep ERROR ~/.nyxGPT/logs/nyxgpt.log | grep "request_id"
    ```
 
 2. **Trace full request lifecycle:**
    ```bash
-   grep "request_id=abc123" ~/.myGPT/logs/mygpt.log
+   grep "request_id=abc123" ~/.nyxGPT/logs/nyxgpt.log
    ```
 
 3. **Analyze timing:**
    ```bash
-   grep "request_id=abc123" ~/.myGPT/logs/mygpt.log | awk '{print $1, $2, $NF}'
+   grep "request_id=abc123" ~/.nyxGPT/logs/nyxgpt.log | awk '{print $1, $2, $NF}'
    ```
 
 ---
@@ -541,33 +541,33 @@ WARNING mygpt.app: Invalid API key from 192.168.1.100
 
 1. **List available sessions:**
    ```bash
-   mygpt sessions list
+   nyxgpt sessions list
    ```
 
 2. **Verify session file exists:**
    ```bash
-   ls ~/.myGPT/sessions/<session-name>.json
-   ls ~/.myGPT/sessions/<session-name>.meta.json
+   ls ~/.nyxGPT/sessions/<session-name>.json
+   ls ~/.nyxGPT/sessions/<session-name>.meta.json
    ```
 
 3. **Check file permissions:**
    ```bash
-   ls -la ~/.myGPT/sessions/
+   ls -la ~/.nyxGPT/sessions/
    ```
 
    Fix if needed:
    ```bash
-   chmod 644 ~/.myGPT/sessions/*.json
+   chmod 644 ~/.nyxGPT/sessions/*.json
    ```
 
 4. **Inspect session file for corruption:**
    ```bash
-   cat ~/.myGPT/sessions/<session-name>.json | jq .
+   cat ~/.nyxGPT/sessions/<session-name>.json | jq .
    ```
 
    If invalid JSON, restore from backup or delete:
    ```bash
-   rm ~/.myGPT/sessions/<session-name>*.json
+   rm ~/.nyxGPT/sessions/<session-name>*.json
    ```
 
 ### Session Name Validation Errors
@@ -595,7 +595,7 @@ WARNING mygpt.app: Invalid API key from 192.168.1.100
 
 **Solutions:**
 
-myGPT uses atomic writes to prevent corruption during concurrent access, but:
+nyxGPT uses atomic writes to prevent corruption during concurrent access, but:
 
 1. **Avoid concurrent writes to same session:**
    - Use unique session names per client/user
@@ -603,8 +603,8 @@ myGPT uses atomic writes to prevent corruption during concurrent access, but:
 
 2. **If corruption occurs, delete and restart:**
    ```bash
-   mygpt sessions delete <session-name>
-   mygpt chat --session <session-name> --new "Hello"
+   nyxgpt sessions delete <session-name>
+   nyxgpt chat --session <session-name> --new "Hello"
    ```
 
 ---
@@ -640,7 +640,7 @@ myGPT uses atomic writes to prevent corruption during concurrent access, but:
 
 1. **Check API logs:**
    ```bash
-   grep ERROR ~/.myGPT/logs/mygpt.log | tail -20
+   grep ERROR ~/.nyxGPT/logs/nyxgpt.log | tail -20
    ```
 
 2. **Common causes:**
@@ -656,7 +656,7 @@ myGPT uses atomic writes to prevent corruption during concurrent access, but:
 
    Then search logs:
    ```bash
-   grep "abc123" ~/.myGPT/logs/mygpt.log
+   grep "abc123" ~/.nyxGPT/logs/nyxgpt.log
    ```
 
 ### CORS Issues (Web UI)
@@ -688,20 +688,20 @@ If you're still stuck after following this guide:
 
 1. **Check existing issues:**
    ```bash
-   gh issue list --repo dkblinux98/myGPT
+   gh issue list --repo dkblinux98/nyxGPT
    ```
 
 2. **Gather diagnostic info:**
    ```bash
-   mygpt ops doctor > diagnostic.txt
-   tail -100 ~/.myGPT/logs/mygpt.log >> diagnostic.txt
+   nyxgpt ops doctor > diagnostic.txt
+   tail -100 ~/.nyxGPT/logs/nyxgpt.log >> diagnostic.txt
    ```
 
 3. **Create an issue:**
    - Include diagnostic output
    - Describe expected vs actual behavior
    - Include error messages and request IDs
-   - Specify myGPT version: `mygpt --version`
+   - Specify nyxGPT version: `nyxgpt --version`
 
 4. **Check documentation:**
    - [Configuration Guide](configuration.md)

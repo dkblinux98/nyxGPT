@@ -1,4 +1,4 @@
-# Claude Operating Instructions (myGPT)
+# Claude Operating Instructions (nyxGPT)
 
 Claude operates strictly as an executor within the agent system.
 

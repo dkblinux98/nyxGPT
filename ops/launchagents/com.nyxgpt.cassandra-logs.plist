@@ -5,18 +5,18 @@
 	<key>KeepAlive</key>
 	<true/>
 	<key>Label</key>
-	<string>com.mygpt.cassandra-logs</string>
+	<string>com.nyxgpt.cassandra-logs</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>/bin/bash</string>
 		<string>-lc</string>
-		<string>/Users/darlabaker/.myGPT/scripts/follow-cassandra-logs.sh</string>
+		<string>/Users/darlabaker/.nyxGPT/scripts/follow-cassandra-logs.sh</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StandardErrorPath</key>
-	<string>/Users/darlabaker/.myGPT/logs/cassandra-logfollower.err.log</string>
+	<string>/Users/darlabaker/.nyxGPT/logs/cassandra-logfollower.err.log</string>
 	<key>StandardOutPath</key>
-	<string>/Users/darlabaker/.myGPT/logs/cassandra-logfollower.out.log</string>
+	<string>/Users/darlabaker/.nyxGPT/logs/cassandra-logfollower.out.log</string>
 </dict>
 </plist>

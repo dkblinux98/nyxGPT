@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from mygpt.app import app
+from nyxgpt.app import app
 
 pytestmark = pytest.mark.unit
 

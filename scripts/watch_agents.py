@@ -26,8 +26,8 @@ GRAY = "\033[90m"
 
 
 def load_config() -> Dict[str, str]:
-    """Load configuration from .myGPT/config.ini"""
-    config_path = os.path.expanduser("~/.myGPT/config.ini")
+    """Load configuration from .nyxGPT/config.ini"""
+    config_path = os.path.expanduser("~/.nyxGPT/config.ini")
     config = {}
 
     with open(config_path, 'r') as f:

@@ -1,6 +1,6 @@
 # Testing
 
-myGPT uses **pytest** with explicit markers to separate fast unit tests from slower integration tests.
+nyxGPT uses **pytest** with explicit markers to separate fast unit tests from slower integration tests.
 
 ## Test categories
 
@@ -46,7 +46,7 @@ pytest -m integration
 All test runs (unit and integration) write logs to:
 
 ```text
-~/.myGPT/logs/tests.log
+~/.nyxGPT/logs/tests.log
 ```
 
 The log file is **truncated at the start of each pytest run**, so it always reflects the most recent execution.

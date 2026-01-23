@@ -10,8 +10,8 @@ import threading
 
 import pytest
 
-from mygpt import sessions
-from mygpt.config import load_config
+from nyxgpt import sessions
+from nyxgpt.config import load_config
 
 
 @pytest.fixture
@@ -27,7 +27,7 @@ def test_config(tmp_path):
     """Create a minimal test config."""
     config_path = tmp_path / "config.ini"
     config_path.write_text(
-        "[mygpt]\n"
+        "[nyxgpt]\n"
         "default_model = llama3.1:8b\n"
         f"sessions_dir = {tmp_path / 'sessions'}\n"
     )

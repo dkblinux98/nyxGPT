@@ -1211,7 +1211,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
             e.currentTarget.style.background = 'var(--background)';
           }}
         >
-          <span style={{ fontWeight: 600 }}>myGPT</span>
+          <span style={{ fontWeight: 600 }}>nyxGPT</span>
           <span style={{ opacity: 0.6 }}>{releaseVersion || ''}</span>
           <span style={{ opacity: 0.5, fontSize: 12, marginLeft: 2 }}>›</span>
         </button>

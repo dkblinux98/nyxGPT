@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from configparser import ConfigParser
 
-from mygpt.rag.bm25 import BM25Index, tokenize, _bm25_cfg
+from nyxgpt.rag.bm25 import BM25Index, tokenize, _bm25_cfg
 
 
 # =============================================================================
@@ -58,7 +58,7 @@ def test_bm25_cfg_defaults(monkeypatch: pytest.MonkeyPatch):
     """_bm25_cfg should return default values when not configured."""
     cfg = ConfigParser()
     cfg["rag"] = {}
-    monkeypatch.setattr("mygpt.rag.bm25.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.bm25.load_config", lambda *_a, **_k: cfg)
 
     result = _bm25_cfg()
     assert result.k1 == 1.5
@@ -70,7 +70,7 @@ def test_bm25_cfg_custom(monkeypatch: pytest.MonkeyPatch):
     """_bm25_cfg should use custom values when configured."""
     cfg = ConfigParser()
     cfg["rag"] = {"bm25_k1": "2.0", "bm25_b": "0.5"}
-    monkeypatch.setattr("mygpt.rag.bm25.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.bm25.load_config", lambda *_a, **_k: cfg)
 
     result = _bm25_cfg()
     assert result.k1 == 2.0

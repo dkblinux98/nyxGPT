@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# myGPT web runner
-# Starts the Next.js dev server using ~/.myGPT/config.ini
+# nyxGPT web runner
+# Starts the Next.js dev server using ~/.nyxGPT/config.ini
 
-CONFIG="$HOME/.myGPT/config.ini"
+CONFIG="$HOME/.nyxGPT/config.ini"
 if [[ ! -f "$CONFIG" ]]; then
   echo "Missing config: $CONFIG" >&2
   exit 1
@@ -62,8 +62,8 @@ cd "$REPO_DIR/web"
 # Note: In launchd context, Dropbox-synced directories may be protected
 if [[ -d ".next" ]]; then
   # Test if we can write to the directory before attempting deletion
-  if touch ".next/.mygpt-test" 2>/dev/null; then
-    rm -f ".next/.mygpt-test"
+  if touch ".next/.nyxgpt-test" 2>/dev/null; then
+    rm -f ".next/.nyxgpt-test"
     echo "Clearing Next.js cache (.next directory)..."
     xattr -rc .next 2>/dev/null || true
     rm -rf .next 2>/dev/null || true

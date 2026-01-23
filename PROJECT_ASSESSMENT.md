@@ -1,4 +1,4 @@
-# Project Assessment: myGPT (Phases 0-2)
+# Project Assessment: nyxGPT (Phases 0-2)
 
 **Assessment Date:** January 15, 2026
 **Project Duration:** December 20, 2025 - January 15, 2026 (26 days)

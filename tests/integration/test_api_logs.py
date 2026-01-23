@@ -105,7 +105,7 @@ def test_logs_view_file_with_search(api_base_url: str) -> None:
     first_file = files[0]["name"]
 
     # View with search filter
-    search_term = "mygpt"
+    search_term = "nyxgpt"
     r = httpx.get(
         f"{api_base_url}/api/v1/logs/view/{first_file}?search={search_term}",
         timeout=5.0,

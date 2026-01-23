@@ -28,7 +28,7 @@ Outputs:
 
 Notes:
   - Must be run from the feature branch (not master/release branch).
-  - Requires ~/.myGPT/config.ini (or $MYGPT_CONFIG_FILE) and gh auth.
+  - Requires ~/.nyxGPT/config.ini (or $MYGPT_CONFIG_FILE) and gh auth.
 
 EOF
 }

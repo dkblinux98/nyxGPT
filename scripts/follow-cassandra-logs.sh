@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# myGPT Cassandra log follower
-# Continuously appends Docker container logs to ~/.myGPT/logs/cassandra.log
+# nyxGPT Cassandra log follower
+# Continuously appends Docker container logs to ~/.nyxGPT/logs/cassandra.log
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker is not available in PATH; cannot follow Cassandra logs" >&2
   exit 1
 fi
 
-LOG_DIR="$HOME/.myGPT/logs"
+LOG_DIR="$HOME/.nyxGPT/logs"
 LOG_FILE="$LOG_DIR/cassandra.log"
-CONTAINER_NAME="mygpt-cassandra"
+CONTAINER_NAME="nyxgpt-cassandra"
 
 mkdir -p "$LOG_DIR"
 touch "$LOG_FILE"

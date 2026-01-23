@@ -1,12 +1,12 @@
 # Architecture
 
-This document describes the high-level architecture of **myGPT**, how its components fit together, and the design principles guiding the project.
+This document describes the high-level architecture of **nyxGPT**, how its components fit together, and the design principles guiding the project.
 
 ---
 
 ## Design goals
 
-myGPT is designed to be:
+nyxGPT is designed to be:
 
 - **Local-first** — runs entirely on your machine by default
 - **Private** — no required external APIs or cloud services
@@ -21,13 +21,13 @@ myGPT is designed to be:
 ```
 +------------------+
 |  CLI / Clients  |
-|  (mygpt chat)   |
+|  (nyxgpt chat)   |
 +--------+---------+
          |
          v
 +------------------+
 |   FastAPI API   |
-|  (mygpt.app)   |
+|  (nyxgpt.app)   |
 +--------+---------+
          |
          v
@@ -50,7 +50,7 @@ myGPT is designed to be:
 
 ## CLI
 
-The CLI (`mygpt`) is the primary user interface today.
+The CLI (`nyxgpt`) is the primary user interface today.
 
 Responsibilities:
 - Parse user input
@@ -66,7 +66,7 @@ The CLI communicates:
 
 ## FastAPI backend
 
-The FastAPI application (`mygpt.app`) provides a local HTTP interface over the same core services used by the CLI.
+The FastAPI application (`nyxgpt.app`) provides a local HTTP interface over the same core services used by the CLI.
 
 Responsibilities:
 - Expose chat and RAG endpoints
@@ -147,7 +147,7 @@ Streaming is exposed consistently across:
 
 - All components load configuration from a single INI file
 - Logging is centralized and shared across CLI, API, and tests
-- Logs are written to `~/.myGPT/logs`
+- Logs are written to `~/.nyxGPT/logs`
 
 ---
 
@@ -172,7 +172,7 @@ Code coverage is collected using `pytest-cov` (a pytest plugin for `coverage.py`
 - **sqlite3 is part of Python's standard library** — included by default with Python
 - **Embedded database** — no daemon, server process, or configuration files
 - **Direct file access** — coverage.py opens `.coverage` file directly using `sqlite3.connect()`
-- **No `mygpt ops` integration needed** — works out of the box
+- **No `nyxgpt ops` integration needed** — works out of the box
 
 **What is the `.coverage` file?**
 
@@ -229,7 +229,7 @@ The TUI provides:
 - Markdown rendering
 - Works entirely in the terminal
 
-Launch with `mygpt tui`.
+Launch with `nyxgpt tui`.
 
 ---
 

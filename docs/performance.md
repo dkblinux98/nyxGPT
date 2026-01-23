@@ -1,6 +1,6 @@
 # Performance Tuning Guide
 
-This guide covers optimization strategies for myGPT to improve response times, reduce resource usage, and enhance overall system performance.
+This guide covers optimization strategies for nyxGPT to improve response times, reduce resource usage, and enhance overall system performance.
 
 ---
 
@@ -29,7 +29,7 @@ The choice of LLM model has the **largest impact** on performance.
 
 **Examples**:
 ```ini
-[mygpt]
+[nyxgpt]
 default_model = qwen2.5:0.5b
 ```
 
@@ -48,7 +48,7 @@ default_model = qwen2.5:0.5b
 
 **Examples**:
 ```ini
-[mygpt]
+[nyxgpt]
 default_model = llama3.2:3b
 # or
 default_model = qwen2.5:7b
@@ -69,7 +69,7 @@ default_model = qwen2.5:7b
 
 **Examples**:
 ```ini
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 # or
 default_model = qwen2.5:14b
@@ -97,7 +97,7 @@ System prompts can be optimized to reduce token usage and improve response times
 ### System Prompt Minimization
 
 ```ini
-[mygpt]
+[nyxgpt]
 system_prompt_minimize = false    # Default
 ```
 
@@ -234,7 +234,7 @@ embedding_batch_size = 16    # Default
 - **Medium (12-20)**: Balanced
 - **Higher (24-48)**: Faster ingestion, more memory
 
-**Performance impact**: Only affects `mygpt rag ingest` speed, not chat performance.
+**Performance impact**: Only affects `nyxgpt rag ingest` speed, not chat performance.
 
 #### Embedding Model Selection
 
@@ -300,19 +300,19 @@ The SAI (Storage Attached Index) is automatically optimized by Cassandra, but yo
 1. **Ensure sufficient memory**: Cassandra caches index data
    ```bash
    # Check Cassandra memory usage
-   docker stats mygpt-cassandra
+   docker stats nyxgpt-cassandra
    ```
 
 2. **Increase Docker memory limit** if needed:
    ```bash
-   docker update mygpt-cassandra --memory=4g
+   docker update nyxgpt-cassandra --memory=4g
    ```
 
 3. **Monitor query performance**:
    ```sql
    -- In cqlsh
    TRACING ON;
-   SELECT * FROM mygpt.rag_chunks ORDER BY embedding ANN OF [...] LIMIT 5;
+   SELECT * FROM nyxgpt.rag_chunks ORDER BY embedding ANN OF [...] LIMIT 5;
    ```
 
 ### Keyspace Configuration
@@ -320,7 +320,7 @@ The SAI (Storage Attached Index) is automatically optimized by Cassandra, but yo
 For production, consider adjusting replication:
 
 ```sql
-ALTER KEYSPACE mygpt
+ALTER KEYSPACE nyxgpt
 WITH replication = {
   'class': 'NetworkTopologyStrategy',
   'datacenter1': 3
@@ -361,7 +361,7 @@ By default, FastAPI runs a single worker. For production:
 
 ```bash
 # In production (not recommended for local use)
-uvicorn mygpt.app:app --workers 4
+uvicorn nyxgpt.app:app --workers 4
 ```
 
 **Note**: Multiple workers require careful session management due to file locking.
@@ -374,11 +374,11 @@ Increase if you're ingesting large document sets:
 
 ```bash
 docker run -d \
-  --name mygpt-cassandra \
+  --name nyxgpt-cassandra \
   --memory=4g \
   --cpus=2 \
   -p 9042:9042 \
-  -v mygpt_cassandra_data:/var/lib/cassandra \
+  -v nyxgpt_cassandra_data:/var/lib/cassandra \
   cassandra:5.0
 ```
 
@@ -422,7 +422,7 @@ embedding_batch_size = 16    # Default
 Adjust timeouts for slow hardware:
 
 ```ini
-[mygpt]
+[nyxgpt]
 chat_timeout_seconds = 180    # Default
 
 [rag]
@@ -446,7 +446,7 @@ embedding_timeout_seconds = 120    # Default
 1. **Response time**:
    ```bash
    # Enable request ID logging
-   tail -f ~/.myGPT/logs/mygpt.log | grep "request_id"
+   tail -f ~/.nyxGPT/logs/nyxgpt.log | grep "request_id"
    ```
 
 2. **Resource usage**:
@@ -455,7 +455,7 @@ embedding_timeout_seconds = 120    # Default
    ollama ps
 
    # Cassandra
-   docker stats mygpt-cassandra
+   docker stats nyxgpt-cassandra
 
    # System
    top
@@ -479,7 +479,7 @@ level = DEBUG
 Then check logs:
 
 ```bash
-tail -f ~/.myGPT/logs/mygpt.log
+tail -f ~/.nyxGPT/logs/nyxgpt.log
 ```
 
 Look for:
@@ -495,10 +495,10 @@ Look for:
 
 ```bash
 # Test without RAG
-echo "[rag]\nenabled = false" >> ~/.myGPT/config.ini
+echo "[rag]\nenabled = false" >> ~/.nyxGPT/config.ini
 
 # Run test query
-time mygpt chat "Hello, how are you?"
+time nyxgpt chat "Hello, how are you?"
 
 # Note: Response time and memory usage
 ```
@@ -516,10 +516,10 @@ Make one change at a time and measure impact:
 
 ```bash
 # Example: Switch to smaller model
-sed -i '' 's/default_model = .*/default_model = qwen2.5:0.5b/' ~/.myGPT/config.ini
+sed -i '' 's/default_model = .*/default_model = qwen2.5:0.5b/' ~/.nyxGPT/config.ini
 
 # Test
-time mygpt chat "Hello, how are you?"
+time nyxgpt chat "Hello, how are you?"
 
 # Compare to baseline
 ```
@@ -535,7 +535,7 @@ Continue tuning until performance meets requirements.
 ### Minimal Resource (< 8GB RAM, CPU-only)
 
 ```ini
-[mygpt]
+[nyxgpt]
 default_model = qwen2.5:0.5b
 chat_timeout_seconds = 120
 
@@ -552,7 +552,7 @@ enabled = false
 ### Balanced (8-16GB RAM, CPU-only)
 
 ```ini
-[mygpt]
+[nyxgpt]
 default_model = llama3.2:3b
 chat_timeout_seconds = 180
 
@@ -567,7 +567,7 @@ embedding_batch_size = 16
 ### High Performance (16GB+ RAM, GPU available)
 
 ```ini
-[mygpt]
+[nyxgpt]
 default_model = llama3.1:8b
 chat_timeout_seconds = 300
 
@@ -617,7 +617,7 @@ vm_stat      # macOS
 **Diagnosis**:
 ```bash
 # Check Cassandra stats
-docker stats mygpt-cassandra
+docker stats nyxgpt-cassandra
 ```
 
 **Solutions**:
@@ -632,7 +632,7 @@ docker stats mygpt-cassandra
 ```bash
 # Monitor during ingestion
 ollama ps
-docker stats mygpt-cassandra
+docker stats nyxgpt-cassandra
 ```
 
 **Solutions**:
@@ -673,13 +673,13 @@ Track performance over time:
 
 ```bash
 # Simple benchmark
-time mygpt chat "What is the capital of France?"
+time nyxgpt chat "What is the capital of France?"
 
 # With RAG
-time mygpt chat "Based on the documentation, how does myGPT handle sessions?"
+time nyxgpt chat "Based on the documentation, how does nyxGPT handle sessions?"
 
 # Measure ingestion
-time mygpt rag ingest README.md --doc-id readme
+time nyxgpt rag ingest README.md --doc-id readme
 ```
 
 Create a benchmark script:
@@ -690,11 +690,11 @@ Create a benchmark script:
 
 echo "Testing small model..."
 echo "default_model = qwen2.5:0.5b" > /tmp/test-config.ini
-time mygpt chat --config /tmp/test-config.ini "Write a haiku"
+time nyxgpt chat --config /tmp/test-config.ini "Write a haiku"
 
 echo "Testing medium model..."
 echo "default_model = llama3.2:3b" > /tmp/test-config.ini
-time mygpt chat --config /tmp/test-config.ini "Write a haiku"
+time nyxgpt chat --config /tmp/test-config.ini "Write a haiku"
 ```
 
 ---

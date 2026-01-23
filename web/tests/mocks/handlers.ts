@@ -131,19 +131,19 @@ export const handlers = [
     return HttpResponse.json({
       files: [
         {
-          name: 'mygpt.log',
-          path: '/home/user/.myGPT/logs/mygpt.log',
+          name: 'nyxgpt.log',
+          path: '/home/user/.nyxGPT/logs/nyxgpt.log',
           size: 1024,
           modified: Date.now() / 1000,
         },
         {
           name: 'api.log',
-          path: '/home/user/.myGPT/logs/api.log',
+          path: '/home/user/.nyxGPT/logs/api.log',
           size: 2048,
           modified: Date.now() / 1000 - 3600,
         },
       ],
-      log_dir: '/home/user/.myGPT/logs',
+      log_dir: '/home/user/.nyxGPT/logs',
     });
   }),
 

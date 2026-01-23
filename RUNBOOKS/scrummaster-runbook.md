@@ -33,7 +33,7 @@ Example:
 **Option 2: Manual comment**
 Post a comment containing `READY_FOR_NEXT_ISSUE` in the **Release tracking issue**:
 ```
-@myGPT-scrummaster-agent READY_FOR_NEXT_ISSUE
+@nyxGPT-scrummaster-agent READY_FOR_NEXT_ISSUE
 ```
 
 The workflow will:

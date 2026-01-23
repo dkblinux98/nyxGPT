@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from mygpt.rag.embeddings import _embedding_cfg
-from mygpt.rag.vectorstore_cassandra import CassandraVectorStore
+from nyxgpt.rag.embeddings import _embedding_cfg
+from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
 
 @pytest.mark.unit
@@ -14,19 +14,19 @@ def test_embedding_cfg_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
     from configparser import ConfigParser
 
     cfg = ConfigParser()
-    cfg["mygpt"] = {"default_model": "llama3.1:8b"}
+    cfg["nyxgpt"] = {"default_model": "llama3.1:8b"}
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
     cfg["rag"] = {
         "embedding_model": "nomic-embed-text",
         "embedding_dim": "768",
     }
 
-    monkeypatch.setattr("mygpt.rag.embeddings.load_config", lambda *_: cfg)
+    monkeypatch.setattr("nyxgpt.rag.embeddings.load_config", lambda *_: cfg)
     monkeypatch.setattr(
-        "mygpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b"
+        "nyxgpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b"
     )
     monkeypatch.setattr(
-        "mygpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434"
+        "nyxgpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434"
     )
 
     # Default config
@@ -51,19 +51,19 @@ def test_embedding_cfg_dimension_override(monkeypatch: pytest.MonkeyPatch) -> No
     from configparser import ConfigParser
 
     cfg = ConfigParser()
-    cfg["mygpt"] = {"default_model": "llama3.1:8b"}
+    cfg["nyxgpt"] = {"default_model": "llama3.1:8b"}
     cfg["ollama"] = {"base_url": "http://localhost:11434"}
     cfg["rag"] = {
         "embedding_model": "nomic-embed-text",
         "embedding_dim": "768",
     }
 
-    monkeypatch.setattr("mygpt.rag.embeddings.load_config", lambda *_: cfg)
+    monkeypatch.setattr("nyxgpt.rag.embeddings.load_config", lambda *_: cfg)
     monkeypatch.setattr(
-        "mygpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b"
+        "nyxgpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b"
     )
     monkeypatch.setattr(
-        "mygpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434"
+        "nyxgpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434"
     )
 
     # Default config
@@ -83,7 +83,7 @@ def test_cassandra_vectorstore_collection_table_name(monkeypatch: pytest.MonkeyP
     mock_cluster = MagicMock()
     mock_session = MagicMock()
     mock_cluster.connect.return_value = mock_session
-    monkeypatch.setattr("mygpt.rag.vectorstore_cassandra.Cluster", lambda *args, **kwargs: mock_cluster)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *args, **kwargs: mock_cluster)
 
     # Default collection
     store1 = CassandraVectorStore(collection="default")
@@ -107,7 +107,7 @@ def test_ingest_document_with_collection(monkeypatch: pytest.MonkeyPatch) -> Non
         "chunk_overlap": "100",
     }
 
-    monkeypatch.setattr("mygpt.rag.rag.load_config", lambda *_: cfg)
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_: cfg)
 
     # Mock embed_texts to return fake embeddings
     def fake_embed_texts(texts, **kwargs):
@@ -115,7 +115,7 @@ def test_ingest_document_with_collection(monkeypatch: pytest.MonkeyPatch) -> Non
         dimension = kwargs.get("dimension", 768)
         return [[0.1] * dimension for _ in texts]
 
-    monkeypatch.setattr("mygpt.rag.rag.embed_texts", fake_embed_texts)
+    monkeypatch.setattr("nyxgpt.rag.rag.embed_texts", fake_embed_texts)
 
     # Track calls to CassandraVectorStore
     store_calls = []
@@ -143,9 +143,9 @@ def test_ingest_document_with_collection(monkeypatch: pytest.MonkeyPatch) -> Non
         def close(self):
             pass
 
-    monkeypatch.setattr("mygpt.rag.rag.CassandraVectorStore", FakeStore)
+    monkeypatch.setattr("nyxgpt.rag.rag.CassandraVectorStore", FakeStore)
     monkeypatch.setattr(
-        "mygpt.rag.embeddings._embedding_cfg",
+        "nyxgpt.rag.embeddings._embedding_cfg",
         lambda **kw: type(
             "obj",
             (),
@@ -153,7 +153,7 @@ def test_ingest_document_with_collection(monkeypatch: pytest.MonkeyPatch) -> Non
         )(),
     )
 
-    from mygpt.rag.rag import ingest_document
+    from nyxgpt.rag.rag import ingest_document
 
     # Ingest with custom collection
     result = ingest_document(
@@ -185,12 +185,12 @@ def test_retrieve_context_with_collection(monkeypatch: pytest.MonkeyPatch) -> No
         "dedupe": "true",
     }
 
-    monkeypatch.setattr("mygpt.rag.rag.load_config", lambda *_: cfg)
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_: cfg)
 
     # Mock embed_text
-    monkeypatch.setattr("mygpt.rag.rag.embed_text", lambda *args, **kwargs: [0.1] * 384)
+    monkeypatch.setattr("nyxgpt.rag.rag.embed_text", lambda *args, **kwargs: [0.1] * 384)
     monkeypatch.setattr(
-        "mygpt.rag.embeddings._embedding_cfg",
+        "nyxgpt.rag.embeddings._embedding_cfg",
         lambda **kw: type(
             "obj",
             (),
@@ -219,9 +219,9 @@ def test_retrieve_context_with_collection(monkeypatch: pytest.MonkeyPatch) -> No
         def close(self):
             pass
 
-    monkeypatch.setattr("mygpt.rag.rag.CassandraVectorStore", FakeStore)
+    monkeypatch.setattr("nyxgpt.rag.rag.CassandraVectorStore", FakeStore)
 
-    from mygpt.rag.rag import retrieve_context
+    from nyxgpt.rag.rag import retrieve_context
 
     # Retrieve with custom collection
     results = retrieve_context(
@@ -243,7 +243,7 @@ def test_model_comparison_benchmark_embedding_speed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test benchmark_embedding_speed function."""
-    from mygpt.rag.model_compare import benchmark_embedding_speed
+    from nyxgpt.rag.model_compare import benchmark_embedding_speed
 
     # Mock embed_texts
     call_count = 0
@@ -255,7 +255,7 @@ def test_model_comparison_benchmark_embedding_speed(
         dimension = kwargs.get("dimension", 768)
         return [[0.1] * dimension for _ in texts]
 
-    monkeypatch.setattr("mygpt.rag.model_compare.embed_texts", fake_embed_texts)
+    monkeypatch.setattr("nyxgpt.rag.model_compare.embed_texts", fake_embed_texts)
 
     test_texts = ["hello", "world"]
     avg_time = benchmark_embedding_speed("test-model", 768, test_texts, num_runs=2)
@@ -267,11 +267,11 @@ def test_model_comparison_benchmark_embedding_speed(
 @pytest.mark.unit
 def test_model_comparison_compare_models(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test compare_models function."""
-    from mygpt.rag.model_compare import compare_models
+    from nyxgpt.rag.model_compare import compare_models
 
     # Mock benchmark functions
     monkeypatch.setattr(
-        "mygpt.rag.model_compare.benchmark_embedding_speed",
+        "nyxgpt.rag.model_compare.benchmark_embedding_speed",
         lambda model, dim, texts, num_runs=3: 10.0 if "nomic" in model else 5.0,
     )
 

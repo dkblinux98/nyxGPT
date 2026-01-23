@@ -39,7 +39,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
-from mygpt.config import get_default_model, get_ollama_base_url, load_config
+from nyxgpt.config import get_default_model, get_ollama_base_url, load_config
 
 log = logging.getLogger(__name__)
 

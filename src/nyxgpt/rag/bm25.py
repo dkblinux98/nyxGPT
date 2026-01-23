@@ -42,7 +42,7 @@ Controlled by `[rag]` section in config.ini:
 
 **Usage Example:**
 
-    >>> from mygpt.rag.bm25 import BM25Index
+    >>> from nyxgpt.rag.bm25 import BM25Index
     >>>
     >>> # Index documents
     >>> docs = ["Python programming guide", "Java tutorial", "Python API reference"]
@@ -65,7 +65,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Iterable
 
-from mygpt.config import load_config
+from nyxgpt.config import load_config
 
 log = logging.getLogger(__name__)
 

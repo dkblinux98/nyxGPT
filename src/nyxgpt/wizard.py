@@ -12,8 +12,8 @@ from configparser import ConfigParser
 from pathlib import Path
 from typing import Any
 
-from mygpt.config import DEFAULT_CONFIG_PATH
-from mygpt.models import list_models
+from nyxgpt.config import DEFAULT_CONFIG_PATH
+from nyxgpt.models import list_models
 
 
 def _prompt(question: str, default: str | None = None) -> str:
@@ -170,21 +170,21 @@ def _generate_config_ini(
     """
     config = ConfigParser()
 
-    # [mygpt] section
-    config.add_section("mygpt")
-    config.set("mygpt", "default_model", model)
-    config.set("mygpt", "chat_timeout_seconds", "180")
-    config.set("mygpt", "sessions_dir", "~/.myGPT/sessions")
-    config.set("mygpt", "vectorstore_dir", "~/.myGPT/vectorstore")
-    config.set("mygpt", "auto_summarize_enabled", "true")
-    config.set("mygpt", "auto_summarize_after_messages", "5")
-    config.set("mygpt", "auto_sync_filename", "true")
-    config.set("mygpt", "system_prompt", system_prompt)
+    # [nyxgpt] section
+    config.add_section("nyxgpt")
+    config.set("nyxgpt", "default_model", model)
+    config.set("nyxgpt", "chat_timeout_seconds", "180")
+    config.set("nyxgpt", "sessions_dir", "~/.nyxGPT/sessions")
+    config.set("nyxgpt", "vectorstore_dir", "~/.nyxGPT/vectorstore")
+    config.set("nyxgpt", "auto_summarize_enabled", "true")
+    config.set("nyxgpt", "auto_summarize_after_messages", "5")
+    config.set("nyxgpt", "auto_sync_filename", "true")
+    config.set("nyxgpt", "system_prompt", system_prompt)
 
     # [logging] section
     config.add_section("logging")
     config.set("logging", "level", "INFO")
-    config.set("logging", "dir", "~/.myGPT/logs")
+    config.set("logging", "dir", "~/.nyxGPT/logs")
 
     # [ollama] section
     config.add_section("ollama")
@@ -230,7 +230,7 @@ def _generate_config_ini(
         config.set(
             "rag", "cassandra_port", str(rag_config.get("cassandra_port", "9042"))
         )
-        config.set("rag", "cassandra_keyspace", "mygpt")
+        config.set("rag", "cassandra_keyspace", "nyxgpt")
         config.set("rag", "cassandra_table", "rag_chunks")
         config.set(
             "rag",
@@ -271,7 +271,7 @@ def run_wizard(output_path: Path | None = None) -> int:
     """Run the interactive configuration wizard.
 
     Args:
-        output_path: Optional output path for config.ini (defaults to ~/.myGPT/config.ini)
+        output_path: Optional output path for config.ini (defaults to ~/.nyxGPT/config.ini)
 
     Returns:
         Exit code (0 for success, non-zero for failure)
@@ -280,9 +280,9 @@ def run_wizard(output_path: Path | None = None) -> int:
         output_path = DEFAULT_CONFIG_PATH
 
     print("=" * 60)
-    print("🧙 myGPT Configuration Wizard")
+    print("🧙 nyxGPT Configuration Wizard")
     print("=" * 60)
-    print("\nThis wizard will help you set up myGPT.")
+    print("\nThis wizard will help you set up nyxGPT.")
     print(f"Configuration will be saved to: {output_path}")
 
     # Check if config already exists
@@ -354,18 +354,18 @@ def run_wizard(output_path: Path | None = None) -> int:
         print("=" * 60)
         print("\nNext steps:")
         print("  1. Test your setup:")
-        print("     mygpt info")
+        print("     nyxgpt info")
         print("  2. Start chatting:")
-        print("     mygpt chat")
+        print("     nyxgpt chat")
         print("  3. Launch the TUI:")
-        print("     mygpt tui")
+        print("     nyxgpt tui")
         print("  4. Start services:")
-        print("     mygpt ops install")
+        print("     nyxgpt ops install")
 
         if rag_config.get("enable_chat_context"):
             print("\nRAG is enabled. To use RAG features:")
-            print("  1. Start Cassandra: mygpt ops restart cassandra")
-            print("  2. Ingest documents: mygpt rag ingest <doc_id> <file>")
+            print("  1. Start Cassandra: nyxgpt ops restart cassandra")
+            print("  2. Ingest documents: nyxgpt rag ingest <doc_id> <file>")
             print("  3. Enable RAG in chat: Ctrl+R (TUI) or use WebUI toggle")
 
         return 0

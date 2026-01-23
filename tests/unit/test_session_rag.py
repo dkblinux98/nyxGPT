@@ -1,7 +1,7 @@
 """Unit tests for per-session RAG functionality."""
 
 import pytest
-from mygpt.sessions import SessionMetadata, ensure_meta_defaults
+from nyxgpt.sessions import SessionMetadata, ensure_meta_defaults
 
 
 @pytest.mark.unit

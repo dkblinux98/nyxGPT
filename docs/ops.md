@@ -1,6 +1,6 @@
-# myGPT Operations Guide
+# nyxGPT Operations Guide
 
-This document describes operational commands provided by `mygpt ops`. These commands manage local services and infrastructure required by myGPT, without requiring direct use of `brew`, `docker`, or `launchctl`.
+This document describes operational commands provided by `nyxgpt ops`. These commands manage local services and infrastructure required by nyxGPT, without requiring direct use of `brew`, `docker`, or `launchctl`.
 
 All commands are safe to run multiple times and are designed for local, single-user systems.
 
@@ -8,10 +8,10 @@ All commands are safe to run multiple times and are designed for local, single-u
 
 ## Overview
 
-`mygpt ops` manages:
+`nyxgpt ops` manages:
 
-- FastAPI backend (`mygpt-api`)
-- Local Web UI (`mygpt-web` / Next.js)
+- FastAPI backend (`nyxgpt-api`)
+- Local Web UI (`nyxgpt-web` / Next.js)
 - Ollama (via Homebrew)
 - Cassandra container (Docker)
 - Cassandra log follower (LaunchAgent)
@@ -19,13 +19,13 @@ All commands are safe to run multiple times and are designed for local, single-u
 Configuration lives outside the repository in:
 
 ```
-~/.myGPT/config.ini
+~/.nyxGPT/config.ini
 ```
 
 Logs default to:
 
 ```
-~/.myGPT/logs/
+~/.nyxGPT/logs/
 ```
 
 ---
@@ -33,21 +33,21 @@ Logs default to:
 ## Command Summary
 
 ```bash
-mygpt ops install
-mygpt ops status
-mygpt ops restart
-mygpt ops doctor
+nyxgpt ops install
+nyxgpt ops status
+nyxgpt ops restart
+nyxgpt ops doctor
 ```
 
 ---
 
-## `mygpt ops install`
+## `nyxgpt ops install`
 
 Installs and registers all required local services.
 
 This command:
 
-- Installs Homebrew formulas (`mygpt-api`, `mygpt-web`) if missing
+- Installs Homebrew formulas (`nyxgpt-api`, `nyxgpt-web`) if missing
 - Registers and loads required LaunchAgents
 - Verifies Docker availability
 - Ensures the Cassandra container exists
@@ -56,21 +56,21 @@ This command:
 Usage:
 
 ```bash
-mygpt ops install
+nyxgpt ops install
 ```
 
 This command is idempotent. Existing services are not reinstalled unnecessarily.
 
 ---
 
-## `mygpt ops status`
+## `nyxgpt ops status`
 
 Displays the current runtime status of all managed components.
 
 Usage:
 
 ```bash
-mygpt ops status
+nyxgpt ops status
 ```
 
 Reports:
@@ -83,9 +83,9 @@ This command does not modify system state.
 
 ---
 
-## `mygpt ops restart`
+## `nyxgpt ops restart`
 
-Gracefully restarts one or more myGPT-managed services.
+Gracefully restarts one or more nyxGPT-managed services.
 
 This is the recommended way to:
 
@@ -96,17 +96,17 @@ This is the recommended way to:
 ### Restart all components
 
 ```bash
-mygpt ops restart
+nyxgpt ops restart
 ```
 
 ### Restart individual components
 
 ```bash
-mygpt ops restart api
-mygpt ops restart web
-mygpt ops restart ollama
-mygpt ops restart cassandra
-mygpt ops restart cassandra-logs
+nyxgpt ops restart api
+nyxgpt ops restart web
+nyxgpt ops restart ollama
+nyxgpt ops restart cassandra
+nyxgpt ops restart cassandra-logs
 ```
 
 ### Behavior
@@ -124,24 +124,24 @@ mygpt ops restart cassandra-logs
 After restarting, it is recommended to run:
 
 ```bash
-mygpt ops doctor
+nyxgpt ops doctor
 ```
 
 ---
 
-## `mygpt ops doctor`
+## `nyxgpt ops doctor`
 
 Runs a comprehensive system health check.
 
 Usage:
 
 ```bash
-mygpt ops doctor
+nyxgpt ops doctor
 ```
 
 Checks include:
 
-- Required files under `~/.myGPT/`
+- Required files under `~/.nyxGPT/`
 - Homebrew availability
 - Running services
 - Docker daemon availability
@@ -154,18 +154,18 @@ Results are reported with clear PASS / FAIL indicators.
 
 ## Logs
 
-All myGPT-managed services write logs under:
+All nyxGPT-managed services write logs under:
 
 ```
-~/.myGPT/logs/
+~/.nyxGPT/logs/
 ```
 
 Typical files include:
 
-- `mygpt-api.log`
-- `mygpt-api.err.log`
-- `mygpt-web.log`
-- `mygpt-web.err.log`
+- `nyxgpt-api.log`
+- `nyxgpt-api.err.log`
+- `nyxgpt-web.log`
+- `nyxgpt-web.err.log`
 - `cassandra-logfollower.out.log`
 - `cassandra-logfollower.err.log`
 
@@ -182,7 +182,7 @@ Recommended configuration:
 --restart unless-stopped
 ```
 
-- myGPT services managed exclusively through `mygpt ops`
+- nyxGPT services managed exclusively through `nyxgpt ops`
 
 This ensures services survive reboots and recover cleanly.
 
@@ -194,12 +194,12 @@ If a service fails to start:
 
 1. Run:
    ```bash
-   mygpt ops status
+   nyxgpt ops status
    ```
-2. Inspect logs in `~/.myGPT/logs/`
+2. Inspect logs in `~/.nyxGPT/logs/`
 3. Run:
    ```bash
-   mygpt ops doctor
+   nyxgpt ops doctor
    ```
 
 Avoid manually invoking `brew services`, `docker run`, or `launchctl` unless explicitly debugging.
@@ -208,7 +208,7 @@ Avoid manually invoking `brew services`, `docker run`, or `launchctl` unless exp
 
 ## Design Notes
 
-- `mygpt ops` intentionally avoids destructive actions by default
+- `nyxgpt ops` intentionally avoids destructive actions by default
 - Data loss requires explicit user action
 - All operations are local and user-scoped
 

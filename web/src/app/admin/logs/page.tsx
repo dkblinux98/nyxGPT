@@ -80,7 +80,7 @@ export default function LogsPage() {
       const data = await res.json();
       setFiles(data.files || []);
 
-      // Auto-select the first file (usually mygpt.log)
+      // Auto-select the first file (usually nyxgpt.log)
       if (data.files && data.files.length > 0 && !selectedFile) {
         setSelectedFile(data.files[0].name);
         loadLogContent(data.files[0].name);

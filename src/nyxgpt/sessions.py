@@ -13,13 +13,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, TypedDict, NotRequired
 
-from mygpt.config import (
+from nyxgpt.config import (
     load_config,
     get_default_model,
     get_ollama_base_url,
     get_sessions_dir,
 )
-from mygpt.ollama_client import ollama_chat
+from nyxgpt.ollama_client import ollama_chat
 
 
 log = logging.getLogger(__name__)

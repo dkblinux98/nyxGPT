@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from mygpt import sessions
+from nyxgpt import sessions
 
 pytestmark = pytest.mark.unit
 
 
 def _cfg_with_sessions_dir(sessions_dir: Path) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
-    cfg["mygpt"] = {
+    cfg["nyxgpt"] = {
         "sessions_dir": str(sessions_dir),
         "default_model": "llama3.1:8b",
         # Disable auto-summarization and auto-sync to prevent session renaming during tests
@@ -173,7 +173,7 @@ def test_load_session_corrupted_json_file(
 
     # Per load_session_messages implementation (lines 121-144), corrupted JSON
     # is caught, logged as warning, and returns empty list
-    with caplog.at_level(logging.WARNING, logger="mygpt.sessions"):
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.sessions"):
         state = sessions.load_session("corrupted", cfg)
 
     # Should succeed with empty messages (not raise exception)
@@ -763,7 +763,7 @@ def test_metadata_file_deleted_between_checks(
                 mf.unlink()
         return original_file_lock(file_path, timeout)
 
-    monkeypatch.setattr("mygpt.sessions.file_lock", patched_file_lock)
+    monkeypatch.setattr("nyxgpt.sessions.file_lock", patched_file_lock)
 
     # Rename should succeed despite metadata file disappearing
     success, message, new_name = sessions.sync_filename_with_title(
@@ -1566,7 +1566,7 @@ def test_load_session_messages_paginated_corrupted(
     sf = sessions.session_file_for("corrupted", sessions_dir)
     sf.write_text("{invalid json")
 
-    with caplog.at_level(logging.WARNING, logger="mygpt.sessions"):
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.sessions"):
         msgs, total = sessions.load_session_messages_paginated(sf)
 
     assert msgs == []
@@ -1876,7 +1876,7 @@ def test_load_session_meta_corrupted_json(
     mf = sessions_dir / "test.meta.json"
     mf.write_text("{invalid json")
 
-    with caplog.at_level(logging.WARNING, logger="mygpt.sessions"):
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.sessions"):
         meta = sessions.load_session_meta(mf)
 
     assert meta == {}
@@ -1899,7 +1899,7 @@ def test_load_session_meta_io_error(
 
     monkeypatch.setattr("pathlib.Path.read_text", raise_io_error)
 
-    with caplog.at_level(logging.WARNING, logger="mygpt.sessions"):
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.sessions"):
         meta = sessions.load_session_meta(mf)
 
     assert meta == {}
@@ -1922,7 +1922,7 @@ def test_load_session_messages_io_error(
 
     monkeypatch.setattr("pathlib.Path.read_text", raise_io_error)
 
-    with caplog.at_level(logging.WARNING, logger="mygpt.sessions"):
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.sessions"):
         messages = sessions.load_session_messages(sf)
 
     assert messages == []
