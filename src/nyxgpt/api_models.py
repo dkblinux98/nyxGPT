@@ -89,6 +89,16 @@ class TagsRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class RagFilters(BaseModel):
+    """Metadata filters for RAG document selection."""
+
+    doc_ids: list[str] | None = Field(None, description="Filter by document IDs (OR logic)")
+    filename: str | None = Field(None, description="Filter by filename (partial match, case-insensitive)")
+    tags: list[str] | None = Field(None, description="Filter by tags (must have ALL tags)")
+    date_from: str | None = Field(None, description="Filter by ingestion date >= (ISO format)")
+    date_to: str | None = Field(None, description="Filter by ingestion date <= (ISO format)")
+
+
 class ChatRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     session: str = "default"
@@ -97,6 +107,7 @@ class ChatRequest(BaseModel):
     system: str | None = None
     sessions_dir: str | None = None
     rag_enabled: bool | None = None  # Override session RAG setting
+    rag_filters: RagFilters | None = None  # Metadata filters for RAG queries
 
 
 class RagChunkInfo(BaseModel):
