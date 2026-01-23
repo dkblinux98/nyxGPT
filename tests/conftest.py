@@ -203,3 +203,70 @@ def cassandra_test_setup():
         pytest.skip(f"Cassandra not reachable at {host}:{port}")
 
     yield
+
+
+# Test document prefixes that should always be cleaned up after tests
+_TEST_DOC_PREFIXES = (
+    "api-smoke",
+    "disable-test-",
+    "docx-only-table-",
+    "docx-only-text-",
+    "docx-upload-",
+    "docx-with-image-",
+    "empty-query-",
+    "epub-metadata-",
+    "epub-multi-chapter-",
+    "epub-upload-",
+    "hybrid-test-",
+    "itest-",
+    "keyword-test-",
+    "md-upload-",
+    "pdf-enhanced-",
+    "pptx-notes-",
+    "pptx-order-",
+    "pptx-upload-",
+    "test-auto-",
+    "test-doc-",
+    "test.",
+    "test_",
+    "tf-test-",
+    "txt-upload-",
+)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_test_rag_documents():
+    """Clean up test RAG documents after all tests complete.
+
+    This fixture runs at the end of the test session and deletes any RAG documents
+    that match test prefixes. This ensures test data doesn't accumulate in the
+    RAG database across test runs.
+    """
+    yield  # Run all tests first
+
+    # Clean up RAG documents created during tests
+    print("\n[TESTS] Cleaning up test RAG documents...")
+
+    try:
+        from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+        store = CassandraVectorStore(collection="default")
+        current_docs = store.list_docs()
+
+        deleted_count = 0
+        for doc in current_docs:
+            doc_id = doc["doc_id"]
+
+            # Delete ALL documents matching test prefixes
+            if doc_id.startswith(_TEST_DOC_PREFIXES) or doc_id == "empty.epub":
+                try:
+                    store.delete_doc(doc_id)
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"[TESTS] Failed to delete RAG doc {doc_id}: {e}")
+
+        store.close()
+        print(f"[TESTS] RAG cleanup complete: {deleted_count} documents deleted")
+
+    except Exception as e:
+        print(f"[TESTS] RAG document cleanup failed: {e}")

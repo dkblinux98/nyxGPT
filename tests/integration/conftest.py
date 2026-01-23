@@ -144,19 +144,30 @@ def cleanup_test_rag_documents(api_base_url):
     """
     # Test document prefixes that should always be cleaned up
     TEST_DOC_PREFIXES = (
+        "api-smoke",
         "disable-test-",
+        "docx-only-table-",
+        "docx-only-text-",
+        "docx-upload-",
+        "docx-with-image-",
         "empty-query-",
+        "epub-metadata-",
+        "epub-multi-chapter-",
+        "epub-upload-",
         "hybrid-test-",
         "itest-",
         "keyword-test-",
         "md-upload-",
+        "pdf-enhanced-",
+        "pptx-notes-",
+        "pptx-order-",
+        "pptx-upload-",
+        "test-auto-",
         "test-doc-",
+        "test.",
+        "test_",
         "tf-test-",
         "txt-upload-",
-        "api-smoke",
-        "test-auto-",
-        "test_",
-        "test.",
     )
 
     # Record RAG documents that exist before tests run
@@ -187,12 +198,9 @@ def cleanup_test_rag_documents(api_base_url):
         for doc in current_docs:
             doc_id = doc["doc_id"]
 
-            # Skip documents that existed before tests
-            if doc_id in existing_docs:
-                continue
-
-            # Delete new documents OR documents matching test prefixes
-            if doc_id.startswith(TEST_DOC_PREFIXES):
+            # Delete ALL documents matching test prefixes (regardless of whether they
+            # existed before - they're test artifacts that should be cleaned up)
+            if doc_id.startswith(TEST_DOC_PREFIXES) or doc_id == "empty.epub":
                 try:
                     store.delete_doc(doc_id)
                     deleted_count += 1
