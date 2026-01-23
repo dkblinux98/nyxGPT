@@ -1082,7 +1082,7 @@ class NyxGPTTUI(App):
         if command_key:
             log.info(f"Executing command from palette: {command_key}")
             # Execute the action
-            self.run_action(command_key)
+            await self.run_action(command_key)
 
     async def _handle_command(self, command: str) -> None:
         """Handle slash commands."""

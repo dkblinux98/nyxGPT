@@ -455,6 +455,12 @@ Use the RAG controls in the chat interface (left of the message input):
 - **RAG Toggle** button to enable/disable RAG for the current session
 - **File Upload** to ingest documents into the RAG database
 - RAG status displays current state (ON/OFF)
+- **Document Filters** button to filter which documents are searched (available when RAG is enabled):
+  - Select specific documents by checkbox
+  - Filter by filename (partial match, case-insensitive)
+  - Filter by date range (ingestion date)
+  - Filters persist across page reloads via session storage
+  - Active filter indicators show when filters are applied
 - **RAG Citations** displayed inline with responses showing:
   - Retrieved source chunks
   - Relevance scores
@@ -484,11 +490,33 @@ Or override per-request via the API:
 }
 ```
 
+**Filter RAG queries by document metadata:**
+
+```json
+{
+  "session": "my-session",
+  "prompt": "Your question here",
+  "rag_enabled": true,
+  "rag_filters": {
+    "doc_ids": ["README.md", "ARCHITECTURE.md"],
+    "filename": "README",
+    "date_from": "2025-01-01",
+    "date_to": "2025-12-31"
+  }
+}
+```
+
 Upload documents via API:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
   -F "file=@document.md"
+```
+
+**List available documents:**
+
+```bash
+curl http://127.0.0.1:8000/api/v1/rag/documents
 ```
 
 #### Document Metadata Filtering

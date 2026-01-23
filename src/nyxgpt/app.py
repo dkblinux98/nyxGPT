@@ -1474,6 +1474,12 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                     d["rag_enabled"] if rag_val is None else bool(rag_val)
                 )
 
+            if _maybe_kw(chat_stream, "rag_filters"):
+                rag_filters_val = getattr(req, "rag_filters", None)
+                if rag_filters_val:
+                    # Convert RagFilters model to dict
+                    kwargs["rag_filters"] = rag_filters_val.model_dump()
+
             for chunk in chat_stream(req.prompt, **kwargs):
                 yield chunk
 
@@ -1603,6 +1609,80 @@ def rag_config(request: Request) -> dict[str, Any]:
         "good_score_threshold": get_rag_good_score_threshold(cfg),
         "medium_score_threshold": get_rag_medium_score_threshold(cfg),
     }
+
+
+@api.get("/rag/documents")
+def rag_documents_list(
+    request: Request,
+    collection: str = Query("default", description="Vector store collection name"),
+) -> dict[str, Any]:
+    """List all documents in the RAG vector store.
+
+    Returns list of documents with metadata including:
+    - doc_id: Document identifier
+    - chunks: Number of chunks stored
+    - embedding_model: Model used for embeddings
+    - filename: Filename (from metadata if available)
+    - tags: Document tags (from metadata if available)
+    - ingested_at: Ingestion timestamp (from metadata if available)
+    """
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+    store = CassandraVectorStore(collection=collection)
+    try:
+        docs = store.list_docs()
+
+        # Enrich with metadata from individual chunks (get first chunk per doc)
+        enriched_docs = []
+        for doc in docs:
+            doc_id = doc["doc_id"]
+            # Query for one chunk to get metadata
+            try:
+                from cassandra.query import SimpleStatement
+
+                stmt = SimpleStatement(
+                    f"SELECT metadata, ingested_at FROM {store.table_name} WHERE doc_id = %s LIMIT 1"
+                )
+                rows = store.session.execute(stmt, (doc_id,))
+                row = next(iter(rows), None)
+
+                metadata = row.metadata if row and hasattr(row, "metadata") else {}
+                ingested_at = (
+                    row.ingested_at.isoformat()
+                    if row and hasattr(row, "ingested_at") and row.ingested_at
+                    else None
+                )
+
+                enriched_docs.append(
+                    {
+                        "doc_id": doc_id,
+                        "chunks": doc["chunks"],
+                        "embedding_model": doc.get("embedding_model"),
+                        "filename": metadata.get("filename") if metadata else None,
+                        "tags": metadata.get("tags") if metadata else None,
+                        "ingested_at": ingested_at,
+                    }
+                )
+            except Exception as e:
+                log.warning(f"Failed to enrich metadata for doc_id={doc_id}: {e}")
+                # Fallback: return basic info without metadata
+                enriched_docs.append(
+                    {
+                        "doc_id": doc_id,
+                        "chunks": doc["chunks"],
+                        "embedding_model": doc.get("embedding_model"),
+                        "filename": None,
+                        "tags": None,
+                        "ingested_at": None,
+                    }
+                )
+
+        return {"documents": enriched_docs}
+    except Exception as e:
+        log.error(f"Failed to list RAG documents: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        store.close()
 
 
 @api.post("/rag/query", response_model=RagQueryResponse)

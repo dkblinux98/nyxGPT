@@ -980,9 +980,28 @@ This endpoint is functionally equivalent to `/api/v1/chat` but returns the assis
 {
   "prompt": "Write a haiku about streaming",
   "session": "default",
-  "model": "llama3.1:8b"
+  "model": "llama3.1:8b",
+  "rag_enabled": true,
+  "rag_filters": {
+    "doc_ids": ["README.md"],
+    "filename": "README",
+    "date_from": "2025-01-01"
+  }
 }
 ```
+
+**Request Parameters:**
+- `prompt` (required) - User's message
+- `session` (optional) - Session name (default: "default")
+- `model` (optional) - Model override
+- `system` (optional) - System prompt override
+- `rag_enabled` (optional) - Enable/disable RAG for this request
+- `rag_filters` (optional) - Metadata filters for RAG document selection:
+  - `doc_ids` (list[str]) - Filter by specific document IDs
+  - `filename` (str) - Filter by filename (partial match, case-insensitive)
+  - `tags` (list[str]) - Filter by tags (must have ALL tags)
+  - `date_from` (str) - Filter by ingestion date >= (ISO format)
+  - `date_to` (str) - Filter by ingestion date <= (ISO format)
 
 **Response:**
 
@@ -1033,9 +1052,38 @@ At a high level, the API supports:
 - RAG-assisted chat
 - **metadata filtering** - filter queries by doc_id, filename, tags, or date range
 
+### `GET /api/v1/rag/documents`
+
+List all documents available in the RAG vector store with metadata.
+
+**Response:**
+
+```json
+{
+  "documents": [
+    {
+      "doc_id": "README.md",
+      "chunks": 42,
+      "embedding_model": "nomic-embed-text",
+      "filename": "README.md",
+      "tags": ["documentation"],
+      "ingested_at": "2025-01-23T10:30:00"
+    }
+  ]
+}
+```
+
+**Response Fields:**
+- `doc_id` - Document identifier
+- `chunks` - Number of chunks stored for this document
+- `embedding_model` - Model used for embeddings
+- `filename` - Original filename (from metadata)
+- `tags` - Document tags (from metadata)
+- `ingested_at` - Timestamp when document was ingested
+
 ### Metadata filtering
 
-The `/api/v1/rag/query` endpoint supports optional metadata filters to narrow search scope:
+The `/api/v1/rag/query` and `/api/v1/chat/stream` endpoints support optional metadata filters to narrow search scope:
 
 ```json
 {

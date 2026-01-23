@@ -297,6 +297,7 @@ def _prepare_chat_context(
     config_path: str | None = None,
     sessions_dir: str | None = None,
     rag_enabled: bool | None = None,
+    rag_filters: dict[str, Any] | None = None,
 ) -> ChatContext:
     """Prepare messages and context for a chat interaction.
 
@@ -312,6 +313,8 @@ def _prepare_chat_context(
         system: System prompt (overrides config default)
         config_path: Path to config file
         sessions_dir: Path to sessions directory
+        rag_enabled: Enable/disable RAG for this request
+        rag_filters: Metadata filters for RAG document selection
 
     Returns:
         ChatContext with all prepared data needed for the LLM call
@@ -366,8 +369,36 @@ def _prepare_chat_context(
     rag_rows = None  # Store raw RAG results
 
     if should_use_rag:
+        # Build metadata filter from rag_filters dict if provided
+        metadata_filter = None
+        if rag_filters:
+            from datetime import datetime
+            from nyxgpt.rag.vectorstore_cassandra import MetadataFilter
+
+            # Parse dates if provided
+            date_from_dt = None
+            date_to_dt = None
+            if rag_filters.get("date_from"):
+                try:
+                    date_from_dt = datetime.fromisoformat(rag_filters["date_from"])
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid date_from format: {rag_filters['date_from']}")
+            if rag_filters.get("date_to"):
+                try:
+                    date_to_dt = datetime.fromisoformat(rag_filters["date_to"])
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid date_to format: {rag_filters['date_to']}")
+
+            metadata_filter = MetadataFilter(
+                doc_ids=rag_filters.get("doc_ids"),
+                filename=rag_filters.get("filename"),
+                tags=rag_filters.get("tags"),
+                date_from=date_from_dt,
+                date_to=date_to_dt,
+            )
+
         # Disable debug mode for chat path - we don't need debug info here
-        rows_result = retrieve_context(prompt, debug_mode=False)
+        rows_result = retrieve_context(prompt, debug_mode=False, metadata_filter=metadata_filter)
         # Type narrowing: debug_mode=False means result is list[dict], not tuple
         rows = cast(list[dict], rows_result)
         rag_chunks = len(rows)
@@ -474,6 +505,7 @@ def chat(
     config_path: str | None = None,
     sessions_dir: str | None = None,
     rag_enabled: bool | None = None,
+    rag_filters: dict[str, Any] | None = None,
 ) -> ChatResult:
     """Run a chat turn, persisting session history. Optionally inject RAG context."""
 
@@ -486,6 +518,7 @@ def chat(
         config_path=config_path,
         sessions_dir=sessions_dir,
         rag_enabled=rag_enabled,
+        rag_filters=rag_filters,
     )
 
     reply = ollama_chat(
@@ -518,6 +551,7 @@ def chat_stream(
     config_path: str | None = None,
     sessions_dir: str | None = None,
     rag_enabled: bool | None = None,
+    rag_filters: dict[str, Any] | None = None,
     on_retry: Callable[[int, float, Exception], None] | None = None,
 ) -> Iterator[str]:
     """Yield assistant text chunks for a chat turn while persisting the final reply.
@@ -534,6 +568,7 @@ def chat_stream(
         config_path: Path to config file
         sessions_dir: Override sessions directory
         rag_enabled: Enable/disable RAG for this request
+        rag_filters: Metadata filters for RAG document selection
         on_retry: Optional callback(attempt, delay, error) for connection retries
     """
 
@@ -546,6 +581,7 @@ def chat_stream(
         config_path=config_path,
         sessions_dir=sessions_dir,
         rag_enabled=rag_enabled,
+        rag_filters=rag_filters,
     )
 
     logger.debug(

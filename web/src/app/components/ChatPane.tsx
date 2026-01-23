@@ -404,6 +404,23 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   const [ragError, setRagError] = useState<string | null>(null);
   const [ragChunksCache, setRagChunksCache] = useState<Map<number, RagChunk[]>>(new Map());
 
+  // RAG filters state
+  const [showRagFilters, setShowRagFilters] = useState<boolean>(false);
+  const [ragFilters, setRagFilters] = useState<{
+    doc_ids?: string[];
+    filename?: string;
+    tags?: string[];
+    date_from?: string;
+    date_to?: string;
+  }>({});
+  const [availableDocuments, setAvailableDocuments] = useState<Array<{
+    doc_id: string;
+    filename: string | null;
+    chunks: number;
+    tags: string[] | null;
+    ingested_at: string | null;
+  }>>([]);
+
   // Upload menu state
   const [showUploadMenu, setShowUploadMenu] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -460,6 +477,19 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     abortRef.current?.abort();
     abortRef.current = null;
 
+    // Load persisted RAG filters from session storage
+    try {
+      const savedFilters = sessionStorage.getItem(`rag_filters_${sessionName}`);
+      if (savedFilters) {
+        setRagFilters(JSON.parse(savedFilters));
+      } else {
+        setRagFilters({});
+      }
+    } catch (err) {
+      console.error('Failed to load RAG filters from session storage:', err);
+      setRagFilters({});
+    }
+
     // Fetch session metadata (RAG status, title, and model)
     fetch(`/api/sessions/${encodeURIComponent(sessionName)}/metadata`)
       .then(async (res) => {
@@ -469,6 +499,11 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
           setSessionTitle(data.title || '');
           setSelectedModel(data.model || '');
           setRagError(null);
+
+          // Fetch available documents if RAG is enabled
+          if (data.rag_enabled) {
+            fetchAvailableDocuments();
+          }
         }
       })
       .catch((err) => {
@@ -535,6 +570,19 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
 
     void loadInitialMessages();
   }, [sessionName, PAGE_SIZE]);
+
+  // Save RAG filters to session storage when they change
+  useEffect(() => {
+    try {
+      if (Object.keys(ragFilters).length > 0) {
+        sessionStorage.setItem(`rag_filters_${sessionName}`, JSON.stringify(ragFilters));
+      } else {
+        sessionStorage.removeItem(`rag_filters_${sessionName}`);
+      }
+    } catch (err) {
+      console.error('Failed to save RAG filters to session storage:', err);
+    }
+  }, [ragFilters, sessionName]);
 
   // Scroll to message when scrollToMessageIndex changes
   useEffect(() => {
@@ -642,6 +690,18 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     lastMessageCountRef.current = messages.length;
   }, [isStreaming, messages.length]);
 
+  async function fetchAvailableDocuments() {
+    try {
+      const res = await fetch('/api/v1/rag/documents');
+      if (res.ok) {
+        const data = await res.json();
+        setAvailableDocuments(data.documents || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch available documents:', err);
+    }
+  }
+
   async function toggleRag() {
     try {
       const endpoint = ragEnabled ? 'disable' : 'enable';
@@ -649,8 +709,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         method: 'POST',
       });
       if (!res.ok) throw new Error(`Failed to ${endpoint} RAG`);
-      setRagEnabled(!ragEnabled);
+      const newRagEnabled = !ragEnabled;
+      setRagEnabled(newRagEnabled);
       setRagError(null);
+
+      // Fetch available documents when enabling RAG
+      if (newRagEnabled) {
+        fetchAvailableDocuments();
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setRagError(msg);
@@ -743,15 +809,23 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     abortRef.current = controller;
 
     try {
+      // Build request body with optional rag_filters
+      const requestBody: any = {
+        session: sessionName,
+        prompt: text,
+        model: selectedModel || undefined,
+        rag_enabled: ragEnabled,
+      };
+
+      // Add rag_filters if any filters are set
+      if (ragEnabled && (ragFilters.doc_ids?.length || ragFilters.filename || ragFilters.tags?.length || ragFilters.date_from || ragFilters.date_to)) {
+        requestBody.rag_filters = ragFilters;
+      }
+
       const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session: sessionName,
-          prompt: text,
-          model: selectedModel || undefined,
-          rag_enabled: ragEnabled,
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
 
@@ -914,15 +988,23 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     abortRef.current = controller;
 
     try {
+      // Build request body with optional rag_filters
+      const requestBody: any = {
+        session: sessionName,
+        prompt: prompt,
+        model: selectedModel || undefined,
+        rag_enabled: ragEnabled,
+      };
+
+      // Add rag_filters if any filters are set
+      if (ragEnabled && (ragFilters.doc_ids?.length || ragFilters.filename || ragFilters.tags?.length || ragFilters.date_from || ragFilters.date_to)) {
+        requestBody.rag_filters = ragFilters;
+      }
+
       const res = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session: sessionName,
-          prompt: prompt,
-          model: selectedModel || undefined,
-          rag_enabled: ragEnabled,
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
 
@@ -1355,6 +1437,155 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         style={{ display: 'none' }}
       />
 
+      {/* RAG Filters Panel */}
+      {showRagFilters && ragEnabled && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: 12,
+            border: '1px solid var(--border)',
+            borderRadius: 10,
+            background: 'var(--input-bg)',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>RAG Document Filters</h3>
+            <button
+              onClick={() => setRagFilters({})}
+              style={{
+                padding: '4px 8px',
+                fontSize: 12,
+                border: '1px solid var(--border)',
+                borderRadius: 4,
+                background: 'transparent',
+                color: 'var(--foreground)',
+                cursor: 'pointer',
+              }}
+            >
+              Clear All
+            </button>
+          </div>
+
+          {/* Document selection */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 6 }}>
+              Select Documents
+            </label>
+            <div style={{ maxHeight: 150, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 6, padding: 8 }}>
+              {availableDocuments.length === 0 ? (
+                <div style={{ fontSize: 12, opacity: 0.6, textAlign: 'center', padding: 8 }}>
+                  No documents available
+                </div>
+              ) : (
+                availableDocuments.map((doc) => (
+                  <label
+                    key={doc.doc_id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      padding: '6px 8px',
+                      cursor: 'pointer',
+                      borderRadius: 4,
+                      fontSize: 12,
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--button-hover)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={ragFilters.doc_ids?.includes(doc.doc_id) || false}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setRagFilters((prev) => {
+                          const currentDocIds = prev.doc_ids || [];
+                          if (checked) {
+                            return { ...prev, doc_ids: [...currentDocIds, doc.doc_id] };
+                          } else {
+                            return { ...prev, doc_ids: currentDocIds.filter((id) => id !== doc.doc_id) };
+                          }
+                        });
+                      }}
+                      style={{ marginRight: 8 }}
+                    />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 500 }}>{doc.filename || doc.doc_id}</div>
+                      <div style={{ fontSize: 11, opacity: 0.7 }}>
+                        {doc.chunks} chunks
+                        {doc.tags && doc.tags.length > 0 && ` • ${doc.tags.join(', ')}`}
+                      </div>
+                    </div>
+                  </label>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Filename filter */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 6 }}>
+              Filename Search
+            </label>
+            <input
+              type="text"
+              value={ragFilters.filename || ''}
+              onChange={(e) => setRagFilters((prev) => ({ ...prev, filename: e.target.value || undefined }))}
+              placeholder="Filter by filename..."
+              style={{
+                width: '100%',
+                padding: '6px 10px',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                background: 'var(--background)',
+                color: 'var(--foreground)',
+                fontSize: 12,
+              }}
+            />
+          </div>
+
+          {/* Date range filter */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 6 }}>
+                From Date
+              </label>
+              <input
+                type="date"
+                value={ragFilters.date_from || ''}
+                onChange={(e) => setRagFilters((prev) => ({ ...prev, date_from: e.target.value || undefined }))}
+                style={{
+                  width: '100%',
+                  padding: '6px 10px',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  background: 'var(--background)',
+                  color: 'var(--foreground)',
+                  fontSize: 12,
+                }}
+              />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 6 }}>
+                To Date
+              </label>
+              <input
+                type="date"
+                value={ragFilters.date_to || ''}
+                onChange={(e) => setRagFilters((prev) => ({ ...prev, date_to: e.target.value || undefined }))}
+                style={{
+                  width: '100%',
+                  padding: '6px 10px',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                  background: 'var(--background)',
+                  color: 'var(--foreground)',
+                  fontSize: 12,
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Message input box - two lines */}
       <div
         style={{
@@ -1551,6 +1782,27 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
             >
               RAG: {ragEnabled ? 'ON' : 'OFF'}
             </button>
+
+            {/* RAG Filters toggle button */}
+            {ragEnabled && (
+              <button
+                onClick={() => setShowRagFilters(!showRagFilters)}
+                disabled={isStreaming}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  border: '1px solid var(--border)',
+                  background: showRagFilters ? 'var(--button-hover)' : 'transparent',
+                  color: 'var(--foreground)',
+                  cursor: isStreaming ? 'not-allowed' : 'pointer',
+                  fontSize: 12,
+                  fontWeight: 500,
+                }}
+                title="Filter RAG documents"
+              >
+                Filters {(ragFilters.doc_ids?.length || ragFilters.filename || ragFilters.tags?.length || ragFilters.date_from || ragFilters.date_to) ? '(active)' : ''}
+              </button>
+            )}
 
             {ragStatus === 'uploading' && <span style={{ fontSize: 12, color: 'var(--foreground)', opacity: 0.6 }}>Uploading...</span>}
             {ragError && <span style={{ fontSize: 12, color: 'red' }}>{ragError}</span>}
