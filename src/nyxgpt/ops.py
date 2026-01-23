@@ -12,7 +12,7 @@ from typing import Optional, Callable
 import tomllib
 
 
-# Repo root: .../myGPT/src/mygpt/ops.py -> parents[2] is repo root
+# Repo root: .../nyxGPT/src/nyxgpt/ops.py -> parents[2] is repo root
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -262,7 +262,44 @@ def _create_dist_tarball(tap_dir: Path, name: str, version: str) -> Path:
     return tar_path
 
 
-def _install_homebrew_web(tap: str = "dkblinux98/mygpt-local") -> list[OpsResult]:
+def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResult]:
+    results: list[OpsResult] = []
+    if _which("brew") is None:
+        return [OpsResult(False, "Homebrew not found", "")]
+
+    template = REPO_ROOT / "homebrew" / "nyxgpt-api.rb"
+    if not template.exists():
+        return [OpsResult(False, "Missing homebrew/nyxgpt-api.rb", str(template))]
+
+    tap_dir = _tap_repo(tap)
+    version = _read_project_version()
+
+    tar = _create_dist_tarball(tap_dir, "nyxgpt-api", version)
+    sha = _sha256_file(tar)
+
+    content = template.read_text(encoding="utf-8")
+    # Update the sha256 in the formula to match the generated tarball
+    import re
+    content = re.sub(
+        r'sha256 "[a-f0-9]+"',
+        f'sha256 "{sha}"',
+        content
+    )
+
+    formula_dir = tap_dir / "Formula"
+    _ensure_dir(formula_dir)
+    dst = formula_dir / "nyxgpt-api.rb"
+    dst.write_text(content, encoding="utf-8")
+    results.append(OpsResult(True, "Installed nyxgpt-api formula", str(dst)))
+
+    _run(["brew", "install", "--overwrite", f"{tap}/nyxgpt-api"], check=False)
+    _run(["brew", "services", "start", "nyxgpt-api"], check=False)
+    results.append(OpsResult(True, "Requested brew install/start nyxgpt-api", ""))
+
+    return results
+
+
+def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResult]:
     results: list[OpsResult] = []
     if _which("brew") is None:
         return [OpsResult(False, "Homebrew not found", "")]
@@ -279,8 +316,8 @@ def _install_homebrew_web(tap: str = "dkblinux98/mygpt-local") -> list[OpsResult
     url = f"file://{tar}"
 
     content = template.read_text(encoding="utf-8")
-    content = content.replace("__MYGPT_WEB_URL__", url)
-    content = content.replace("__MYGPT_WEB_SHA256__", sha)
+    content = content.replace("__NYXGPT_WEB_URL__", url)
+    content = content.replace("__NYXGPT_WEB_SHA256__", sha)
 
     formula_dir = tap_dir / "Formula"
     _ensure_dir(formula_dir)
@@ -475,6 +512,7 @@ def install(args) -> int:
         ("scripts", _install_scripts),
         ("web deps", _ensure_web_deps),
         ("cassandra launchagent", _install_cassandra_launchagent),
+        ("homebrew api", _install_homebrew_api),
         ("homebrew web", _install_homebrew_web),
         ("log symlinks", _ensure_log_symlinks),
     ]

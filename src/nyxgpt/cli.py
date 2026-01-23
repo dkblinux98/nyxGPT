@@ -19,7 +19,7 @@ from nyxgpt.chat import chat, chat_stream
 from nyxgpt.logging import configure_logging
 from nyxgpt.rag.rag import ingest_document, retrieve_context
 from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
-from nyxgpt.tui import MyGPTTUI
+from nyxgpt.tui import NyxGPTTUI
 from nyxgpt.wizard import run_wizard
 
 # Ops implementation lives in a separate module for testability.
@@ -116,7 +116,7 @@ def cmd_chat(
 
     # Interactive mode
     model = model_override or get_default_model(cfg)
-    print(f"myGPT chat (model: {model}, session: {session_name})")
+    print(f"nyxGPT chat (model: {model}, session: {session_name})")
     print("Type /exit to quit.")
 
     while True:
@@ -1215,7 +1215,7 @@ def cli(argv: list[str] | None = None) -> int:
     wizard_p.add_argument(
         "--output",
         type=Path,
-        help="Output path for config.ini (default: ~/.myGPT/config.ini)",
+        help="Output path for config.ini (default: ~/.nyxGPT/config.ini)",
     )
 
     # Add ops command
@@ -1223,7 +1223,7 @@ def cli(argv: list[str] | None = None) -> int:
     ops_sub = ops_p.add_subparsers(dest="ops_cmd", required=True)
 
     ops_install = ops_sub.add_parser("install", help="Install operational helpers")
-    ops_install.add_argument("--repo-dir", help="Path to myGPT repo root")
+    ops_install.add_argument("--repo-dir", help="Path to nyxGPT repo root")
     ops_install.add_argument(
         "--force", action="store_true", help="Overwrite existing files"
     )
@@ -1274,7 +1274,7 @@ def cli(argv: list[str] | None = None) -> int:
         return cmd_info(args.config)
 
     if cmd == "tui":
-        app = MyGPTTUI(session=args.session, api_base_url=args.api_url)
+        app = NyxGPTTUI(session=args.session, api_base_url=args.api_url)
         app.run()
         return 0
 

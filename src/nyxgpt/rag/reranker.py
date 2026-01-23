@@ -14,7 +14,7 @@ score query-document pairs, providing more accurate relevance scores.
 
 Unlike traditional cross-encoder systems that require sentence-transformers,
 this implementation uses Ollama to score relevance locally, maintaining
-the myGPT philosophy of zero external dependencies.
+the nyxGPT philosophy of zero external dependencies.
 
 **Performance:**
 

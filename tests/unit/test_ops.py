@@ -140,7 +140,7 @@ def test_ops_doctor_ok(monkeypatch, capsys, tmp_path):
     cfg_dir = tmp_path / ".nyxGPT"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     cfg = cfg_dir / "config.ini"
-    cfg.write_text("[project]\nname=myGPT\n", encoding="utf-8")
+    cfg.write_text("[project]\nname=nyxGPT\n", encoding="utf-8")
 
     # Make home dir resolve into tmp_path
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
@@ -162,7 +162,7 @@ def test_ops_doctor_warns_when_web_deps_missing(monkeypatch, capsys, tmp_path):
     # Pretend config exists
     cfg_dir = tmp_path / ".nyxGPT"
     cfg_dir.mkdir(parents=True, exist_ok=True)
-    (cfg_dir / "config.ini").write_text("[project]\nname=myGPT\n", encoding="utf-8")
+    (cfg_dir / "config.ini").write_text("[project]\nname=nyxGPT\n", encoding="utf-8")
 
     # Fake web dir without node_modules
     web_dir = tmp_path / "web"

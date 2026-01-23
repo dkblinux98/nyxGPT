@@ -10,7 +10,7 @@ from textual.widgets import Input
 
 from nyxgpt.tui import (  # type: ignore[import-untyped]
     ChatOutput,
-    MyGPTTUI,
+    NyxGPTTUI,
     SessionMetadataPreview,
     SessionPickerScreen,
     SearchResultsScreen,
@@ -180,7 +180,7 @@ def test_session_status_bar_refresh_display() -> None:
 
 
 # ============================================================================
-# MyGPTTUI Initialization Tests
+# NyxGPTTUI Initialization Tests
 # ============================================================================
 
 
@@ -193,7 +193,7 @@ def test_tui_initialization_default(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test-session")
+        app = NyxGPTTUI(session="test-session")
 
     assert app.session == "test-session"
     assert app.api_base_url == "http://127.0.0.1:8000"
@@ -208,7 +208,7 @@ def test_tui_initialization_custom_api_url(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="custom-session", api_base_url="http://localhost:9000")
+        app = NyxGPTTUI(session="custom-session", api_base_url="http://localhost:9000")
 
     assert app.session == "custom-session"
     assert app.api_base_url == "http://localhost:9000"
@@ -223,13 +223,13 @@ def test_tui_initialization_fallback_url(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI()
+        app = NyxGPTTUI()
 
     assert app.api_base_url == "http://127.0.0.1:8000"
 
 
 # ============================================================================
-# MyGPTTUI._unlock_prompt() Tests
+# NyxGPTTUI._unlock_prompt() Tests
 # ============================================================================
 
 
@@ -244,7 +244,7 @@ def test_unlock_prompt_success(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI()
+        app = NyxGPTTUI()
 
     # Mock the prompt widget
     app.prompt = MagicMock(spec=Input)
@@ -272,7 +272,7 @@ def test_unlock_prompt_attribute_error(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI()
+        app = NyxGPTTUI()
 
     # Don't set app.prompt - will cause AttributeError
 
@@ -295,7 +295,7 @@ def test_unlock_prompt_other_exception(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI()
+        app = NyxGPTTUI()
 
     # Mock prompt to raise RuntimeError when accessing disabled
     app.prompt = MagicMock(spec=Input)
@@ -312,7 +312,7 @@ def test_unlock_prompt_other_exception(
 
 
 # ============================================================================
-# MyGPTTUI.compose() Tests
+# NyxGPTTUI.compose() Tests
 # ============================================================================
 
 
@@ -325,7 +325,7 @@ def test_compose_creates_widgets(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI()
+        app = NyxGPTTUI()
 
     # Instead of calling compose() which requires Textual context,
     # just verify the method exists and would assign widgets
@@ -341,7 +341,7 @@ def test_compose_creates_widgets(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# MyGPTTUI.on_mount() Tests
+# NyxGPTTUI.on_mount() Tests
 # ============================================================================
 
 
@@ -355,7 +355,7 @@ async def test_on_mount_calls_unlock_prompt(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI()
+        app = NyxGPTTUI()
 
     # Mock _unlock_prompt and _update_session_status
     with patch.object(app, "_unlock_prompt") as mock_unlock:
@@ -367,7 +367,7 @@ async def test_on_mount_calls_unlock_prompt(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# MyGPTTUI.on_input_submitted() Tests
+# NyxGPTTUI.on_input_submitted() Tests
 # ============================================================================
 
 
@@ -381,7 +381,7 @@ async def test_input_submitted_empty_string_ignored(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI()
+        app = NyxGPTTUI()
 
     # Mock prompt widget
     app.prompt = MagicMock(spec=Input)
@@ -414,7 +414,7 @@ async def test_input_submitted_locks_prompt(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI()
+        app = NyxGPTTUI()
 
     # Mock prompt widget
     app.prompt = MagicMock(spec=Input)
@@ -448,7 +448,7 @@ async def test_input_submitted_locks_prompt(
 
 
 # ============================================================================
-# MyGPTTUI._stream_chat() Tests
+# NyxGPTTUI._stream_chat() Tests
 # ============================================================================
 
 
@@ -462,7 +462,7 @@ async def test_stream_chat_success(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test")
+        app = NyxGPTTUI(session="test")
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
@@ -520,7 +520,7 @@ async def test_stream_chat_error_handling(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test")
+        app = NyxGPTTUI(session="test")
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
@@ -561,7 +561,7 @@ async def test_stream_chat_unlock_on_exception(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI()
+        app = NyxGPTTUI()
 
     # Mock widgets
     app.output = MagicMock(spec=ChatOutput)
@@ -797,7 +797,7 @@ def test_session_picker_action_cancel(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# MyGPTTUI Session Picker Integration Tests
+# NyxGPTTUI Session Picker Integration Tests
 # ============================================================================
 
 
@@ -810,7 +810,7 @@ def test_tui_initialization_with_config_path(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test", config_path=str(config_file))
+        app = NyxGPTTUI(session="test", config_path=str(config_file))
 
     assert app.config_path == str(config_file)
 
@@ -825,7 +825,7 @@ async def test_tui_action_pick_session(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="original-session", config_path=str(config_file))
+        app = NyxGPTTUI(session="original-session", config_path=str(config_file))
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
@@ -856,7 +856,7 @@ async def test_tui_action_pick_session_cancel(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="original-session", config_path=str(config_file))
+        app = NyxGPTTUI(session="original-session", config_path=str(config_file))
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
@@ -874,7 +874,7 @@ async def test_tui_action_pick_session_cancel(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# MyGPTTUI Reconnection Tests
+# NyxGPTTUI Reconnection Tests
 # ============================================================================
 
 
@@ -888,7 +888,7 @@ async def test_stream_chat_with_retry_markers(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test")
+        app = NyxGPTTUI(session="test")
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
@@ -942,7 +942,7 @@ async def test_stream_chat_with_rag_markers_ignored(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test")
+        app = NyxGPTTUI(session="test")
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
@@ -984,7 +984,7 @@ async def test_stream_chat_with_rag_markers_ignored(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# MyGPTTUI Partial Marker Tests
+# NyxGPTTUI Partial Marker Tests
 # ============================================================================
 
 
@@ -1004,7 +1004,7 @@ async def test_stream_chat_partial_retry_marker_split_across_chunks(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test")
+        app = NyxGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
     app.prompt = MagicMock(spec=Input)
@@ -1061,7 +1061,7 @@ async def test_stream_chat_partial_marker_at_chunk_boundary(tmp_path: Path) -> N
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test")
+        app = NyxGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
     app.prompt = MagicMock(spec=Input)
@@ -1124,7 +1124,7 @@ async def test_stream_chat_multiple_markers_in_single_chunk(tmp_path: Path) -> N
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test")
+        app = NyxGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
     app.prompt = MagicMock(spec=Input)
@@ -1183,7 +1183,7 @@ async def test_stream_chat_partial_marker_at_end_of_stream(tmp_path: Path) -> No
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test")
+        app = NyxGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
     app.prompt = MagicMock(spec=Input)
@@ -1234,7 +1234,7 @@ async def test_stream_chat_malformed_marker_removed(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test")
+        app = NyxGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
     app.prompt = MagicMock(spec=Input)
@@ -1290,7 +1290,7 @@ async def test_stream_chat_buffer_flush_threshold_exceeded(tmp_path: Path) -> No
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test")
+        app = NyxGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
     app.prompt = MagicMock(spec=Input)
@@ -1344,7 +1344,7 @@ async def test_stream_chat_mixed_partial_retry_and_rag_markers(tmp_path: Path) -
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test")
+        app = NyxGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
     app.prompt = MagicMock(spec=Input)
@@ -1414,7 +1414,7 @@ async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test")
+        app = NyxGPTTUI(session="test")
 
     app.output = MagicMock(spec=ChatOutput)
     app.prompt = MagicMock(spec=Input)
@@ -1472,7 +1472,7 @@ async def test_tui_action_search_messages_opens_screen(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test-session", config_path=str(config_file))
+        app = NyxGPTTUI(session="test-session", config_path=str(config_file))
 
     # Mock push_screen_wait to return None (user cancelled)
     with patch.object(
@@ -1496,7 +1496,7 @@ async def test_tui_action_search_messages_switches_session(tmp_path: Path) -> No
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="original-session", config_path=str(config_file))
+        app = NyxGPTTUI(session="original-session", config_path=str(config_file))
 
     # Mock output widget
     mock_output = MagicMock(spec=ChatOutput)
@@ -1538,7 +1538,7 @@ async def test_tui_action_search_messages_same_session(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="current-session", config_path=str(config_file))
+        app = NyxGPTTUI(session="current-session", config_path=str(config_file))
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
@@ -1767,7 +1767,7 @@ async def test_tui_update_session_status_success(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test-session")
+        app = NyxGPTTUI(session="test-session")
 
     # Mock the status_bar widget
     app.status_bar = MagicMock(spec=SessionStatusBar)
@@ -1820,7 +1820,7 @@ async def test_tui_update_session_status_api_error(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test-session")
+        app = NyxGPTTUI(session="test-session")
 
     # Mock httpx to raise exception
     mock_client = AsyncMock()
@@ -1849,7 +1849,7 @@ async def test_tui_action_toggle_rag_enable(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test-session")
+        app = NyxGPTTUI(session="test-session")
 
     # Start with RAG disabled
     app.rag_enabled = False
@@ -1891,7 +1891,7 @@ async def test_tui_action_toggle_rag_disable(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test-session")
+        app = NyxGPTTUI(session="test-session")
 
     # Start with RAG enabled
     app.rag_enabled = True
@@ -1932,7 +1932,7 @@ async def test_tui_action_toggle_rag_error(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test-session")
+        app = NyxGPTTUI(session="test-session")
 
     app.rag_enabled = False
 
@@ -1970,7 +1970,7 @@ async def test_tui_action_models_manager(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test", config_path=str(config_file))
+        app = NyxGPTTUI(session="test", config_path=str(config_file))
 
     # Mock push_screen_wait
     with patch.object(
@@ -2159,7 +2159,7 @@ def test_action_clear_output(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test-session")
+        app = NyxGPTTUI(session="test-session")
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
@@ -2182,7 +2182,7 @@ def test_action_clear_output_handles_exception(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test-session")
+        app = NyxGPTTUI(session="test-session")
 
     # Mock output widget to raise exception
     app.output = MagicMock(spec=ChatOutput)
@@ -2205,7 +2205,7 @@ async def test_handle_command_clear(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test-session")
+        app = NyxGPTTUI(session="test-session")
 
     # Mock action_clear_output
     with patch.object(app, "action_clear_output", new=AsyncMock()) as mock_clear:
@@ -2227,7 +2227,7 @@ async def test_handle_command_unknown(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test-session")
+        app = NyxGPTTUI(session="test-session")
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
@@ -2254,7 +2254,7 @@ async def test_input_submitted_with_slash_command(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test-session")
+        app = NyxGPTTUI(session="test-session")
 
     # Mock widgets
     app.prompt = MagicMock(spec=Input)
@@ -2286,7 +2286,7 @@ async def test_input_submitted_with_slash_command_not_locked(tmp_path: Path) -> 
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test-session")
+        app = NyxGPTTUI(session="test-session")
 
     # Mock widgets
     app.prompt = MagicMock(spec=Input)
@@ -2373,7 +2373,7 @@ async def test_action_show_help(tmp_path: Path, caplog: pytest.LogCaptureFixture
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test", config_path=str(config_file))
+        app = NyxGPTTUI(session="test", config_path=str(config_file))
 
     # Mock push_screen_wait
     with patch.object(
@@ -2399,7 +2399,7 @@ async def test_action_command_palette_execute_command(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test", config_path=str(config_file))
+        app = NyxGPTTUI(session="test", config_path=str(config_file))
 
     # Mock push_screen_wait to return a command key
     with patch.object(
@@ -2425,7 +2425,7 @@ async def test_action_command_palette_cancel(tmp_path: Path) -> None:
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test", config_path=str(config_file))
+        app = NyxGPTTUI(session="test", config_path=str(config_file))
 
     # Mock push_screen_wait to return None (cancel)
     with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)):
@@ -2447,7 +2447,7 @@ async def test_action_command_palette_unknown_command(
         cfg.write(f)
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="test", config_path=str(config_file))
+        app = NyxGPTTUI(session="test", config_path=str(config_file))
 
     # Mock push_screen_wait to return an unknown command key
     with patch.object(
@@ -2622,7 +2622,7 @@ async def test_delete_session_action_success(tmp_path: Path) -> None:
     (sessions_dir / "session2.json").write_text("[]")
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="session1", config_path=str(config_file))
+        app = NyxGPTTUI(session="session1", config_path=str(config_file))
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
@@ -2669,7 +2669,7 @@ async def test_delete_session_action_cancelled(tmp_path: Path) -> None:
     (sessions_dir / "session2.json").write_text("[]")
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="session1", config_path=str(config_file))
+        app = NyxGPTTUI(session="session1", config_path=str(config_file))
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
@@ -2715,7 +2715,7 @@ async def test_delete_session_action_last_session(tmp_path: Path) -> None:
     (sessions_dir / "session1.json").write_text("[]")
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="session1", config_path=str(config_file))
+        app = NyxGPTTUI(session="session1", config_path=str(config_file))
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
@@ -2753,7 +2753,7 @@ async def test_delete_session_action_not_found(tmp_path: Path) -> None:
     (sessions_dir / "session2.json").write_text("[]")
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="session1", config_path=str(config_file))
+        app = NyxGPTTUI(session="session1", config_path=str(config_file))
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
@@ -2798,7 +2798,7 @@ async def test_delete_session_action_exception(
     (sessions_dir / "session2.json").write_text("[]")
 
     with patch("nyxgpt.tui.load_config", return_value=cfg):
-        app = MyGPTTUI(session="session1", config_path=str(config_file))
+        app = NyxGPTTUI(session="session1", config_path=str(config_file))
 
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)

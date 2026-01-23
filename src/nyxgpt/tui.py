@@ -1,5 +1,5 @@
 """
-Terminal UI (TUI) for myGPT.
+Terminal UI (TUI) for nyxGPT.
 
 This is an intentionally minimal Textual-based client that talks to the local
 FastAPI backend. It focuses on correctness and streaming, not visual polish.
@@ -693,7 +693,7 @@ class CommandPaletteScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class MyGPTTUI(App):
+class NyxGPTTUI(App):
     CSS_PATH = None
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
@@ -871,7 +871,7 @@ class MyGPTTUI(App):
                 # Switch to the session if different
                 if session_name != self.session:
                     self.session = session_name
-                    self.title = f"myGPT TUI - {session_name}"
+                    self.title = f"nyxGPT TUI - {session_name}"
                     # Clear current chat output
                     try:
                         output = self.query_one("#output", ChatOutput)
@@ -1250,4 +1250,4 @@ class MyGPTTUI(App):
 
 
 if __name__ == "__main__":
-    MyGPTTUI().run()
+    NyxGPTTUI().run()

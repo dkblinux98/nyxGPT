@@ -19,7 +19,7 @@ def test_rag_api_ingest_and_query(
     doc_id = f"itest-{uuid.uuid4().hex[:10]}"
     text = (
         "Cassandra 5.0 supports vector search with SAI indexes. "
-        "This sentence is used for myGPT integration testing."
+        "This sentence is used for nyxGPT integration testing."
     )
 
     with httpx.Client(base_url=api_base_url, timeout=60.0) as client:

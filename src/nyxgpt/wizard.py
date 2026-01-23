@@ -1,7 +1,7 @@
-"""Interactive configuration wizard for myGPT setup.
+"""Interactive configuration wizard for nyxGPT setup.
 
 This module provides an interactive CLI wizard that guides users through
-the initial configuration of myGPT, including Ollama validation, RAG setup,
+the initial configuration of nyxGPT, including Ollama validation, RAG setup,
 and config.ini generation.
 """
 
@@ -104,7 +104,7 @@ def _configure_rag() -> dict[str, Any]:
         Dictionary of RAG configuration options
     """
     print("\n📚 RAG (Retrieval-Augmented Generation) Configuration")
-    print("RAG allows myGPT to use external documents as context for responses.")
+    print("RAG allows nyxGPT to use external documents as context for responses.")
     print("Note: RAG requires Docker Desktop and Cassandra to be running.")
 
     enable_rag = _prompt_yes_no("Enable RAG support?", default=False)
@@ -253,8 +253,8 @@ def _generate_config_ini(
 
     # [paths] section
     config.add_section("paths")
-    config.set("paths", "repo_dir", "/path/to/myGPT")
-    config.set("paths", "venv_python", "/path/to/myGPT/.venv/bin/python")
+    config.set("paths", "repo_dir", "/path/to/nyxGPT")
+    config.set("paths", "venv_python", "/path/to/nyxGPT/.venv/bin/python")
     config.set("paths", "node_bin", "/opt/homebrew/bin/node")
     config.set("paths", "npm_bin", "/opt/homebrew/bin/npm")
 

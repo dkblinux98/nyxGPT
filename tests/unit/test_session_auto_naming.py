@@ -188,7 +188,7 @@ def test_sync_filename_with_title_disabled_by_config(tmp_path, monkeypatch):
 
     # Create config with auto_sync disabled
     config_content = "[nyxgpt]\nauto_sync_filename = no\n"
-    config_dir = tmp_path / ".myGPT"
+    config_dir = tmp_path / ".nyxGPT"
     config_dir.mkdir()
     config_file = config_dir / "config.ini"
     config_file.write_text(config_content)
@@ -228,7 +228,7 @@ def test_sync_filename_with_title_force_override_config(tmp_path, monkeypatch):
 
     # Create config with auto_sync disabled
     config_content = "[nyxgpt]\nauto_sync_filename = no\n"
-    config_dir = tmp_path / ".myGPT"
+    config_dir = tmp_path / ".nyxGPT"
     config_dir.mkdir()
     config_file = config_dir / "config.ini"
     config_file.write_text(config_content)

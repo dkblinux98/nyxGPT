@@ -1,5 +1,5 @@
 export async function POST(request: Request) {
-  const base = process.env.MYGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
+  const base = process.env.NYXGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
 
   let body;
   try {

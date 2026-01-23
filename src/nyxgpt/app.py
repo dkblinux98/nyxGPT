@@ -160,13 +160,13 @@ async def lifespan(_app: FastAPI):
 
 
 # Versioned API router
-app = FastAPI(title="myGPT", version="1.0.0.md", lifespan=lifespan)
+app = FastAPI(title="nyxGPT", version="1.0.0.md", lifespan=lifespan)
 api = APIRouter(prefix="/api/v1")
 
 
-# CORS: default to local-only origins (configurable via MYGPT_CORS_ORIGINS)
-# Example: export MYGPT_CORS_ORIGINS="http://127.0.0.1:3000,http://localhost:3000"
-_origins_env = os.environ.get("MYGPT_CORS_ORIGINS", "").strip()
+# CORS: default to local-only origins (configurable via NYXGPT_CORS_ORIGINS)
+# Example: export NYXGPT_CORS_ORIGINS="http://127.0.0.1:3000,http://localhost:3000"
+_origins_env = os.environ.get("NYXGPT_CORS_ORIGINS", "").strip()
 if _origins_env:
     allow_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
 else:
@@ -228,7 +228,7 @@ async def security_headers_middleware(request: Request, call_next):
     return response
 
 
-MAX_BODY_BYTES = int(os.environ.get("MYGPT_MAX_BODY_BYTES", "1048576"))  # 1 MiB default
+MAX_BODY_BYTES = int(os.environ.get("NYXGPT_MAX_BODY_BYTES", "1048576"))  # 1 MiB default
 
 
 # Middleware to load config and hot-apply logging on every request
@@ -236,7 +236,7 @@ MAX_BODY_BYTES = int(os.environ.get("MYGPT_MAX_BODY_BYTES", "1048576"))  # 1 MiB
 async def load_cfg_and_refresh_logging(request: Request, call_next):
     """Load config for this request and hot-apply logging level.
 
-    We want edits to ~/.myGPT/config.ini (model, rag enabled, log level, auth, etc.)
+    We want edits to ~/.nyxGPT/config.ini (model, rag enabled, log level, auth, etc.)
     to take effect without restarting the API process.
 
     The loaded config is stored on request.state.cfg for reuse by downstream
@@ -439,7 +439,7 @@ def _req_cfg(request: Request) -> ConfigParser:
     return cfg
 
 
-# Auth config is read on each request so ~/.myGPT/config.ini edits
+# Auth config is read on each request so ~/.nyxGPT/config.ini edits
 # take effect without restarting the API.
 def _auth_cfg(cfg: ConfigParser | None = None) -> dict[str, Any]:
     cfg = cfg or load_config(None)
@@ -458,11 +458,11 @@ def _auth_cfg(cfg: ConfigParser | None = None) -> dict[str, Any]:
 
 def _config_file_path() -> Path:
     # Canonical per-user config location
-    return Path.home() / ".myGPT" / "config.ini"
+    return Path.home() / ".nyxGPT" / "config.ini"
 
 
 def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
-    """Apply a small set of hot config updates to ~/.myGPT/config.ini.
+    """Apply a small set of hot config updates to ~/.nyxGPT/config.ini.
 
     Supported updates:
     - default_model (str) -> [ollama] default_model

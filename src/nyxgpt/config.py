@@ -1,85 +1,8 @@
 from __future__ import annotations
 import os
-import re
-import shutil
-import sys
 
 from configparser import ConfigParser
 from pathlib import Path
-
-_MIGRATION_DONE = False
-
-
-def _migrate_from_mygpt() -> None:
-    """Migrate user data from ~/.myGPT/ to ~/.nyxGPT/ if needed.
-
-    This migration runs once per process and handles:
-    - Moving the config directory from ~/.myGPT to ~/.nyxGPT
-    - Updating [mygpt] section name to [nyxgpt] in config.ini
-
-    The migration only runs in interactive TTY environments and skips
-    automatically in non-interactive contexts (CI, pytest, etc.).
-    """
-    global _MIGRATION_DONE
-    if _MIGRATION_DONE:
-        return
-    _MIGRATION_DONE = True
-
-    old_dir = Path.home() / ".myGPT"
-    new_dir = Path.home() / ".nyxGPT"
-
-    # Only migrate if old exists and new doesn't
-    if not (old_dir.exists() and not new_dir.exists()):
-        return
-
-    # Skip in non-interactive environments (CI, pytest, piped input)
-    if not sys.stdin.isatty() or os.environ.get("CI") or os.environ.get("PYTEST_CURRENT_TEST"):
-        return
-
-    print(f"\n{'=' * 60}")
-    print("nyxGPT Migration Notice")
-    print("=" * 60)
-    print(f"\nFound existing data at: {old_dir}")
-    print(f"Would you like to migrate to: {new_dir}?")
-    print("\nThis will move your sessions, logs, config, and vectorstore data.")
-
-    try:
-        response = input("\nMigrate now? [Y/n]: ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        print("\nMigration skipped.")
-        return
-
-    if response in ("", "y", "yes"):
-        try:
-            shutil.move(str(old_dir), str(new_dir))
-            print(f"\nMoved {old_dir} -> {new_dir}")
-
-            # Update config.ini section name from [mygpt] to [nyxgpt]
-            config_path = new_dir / "config.ini"
-            if config_path.exists():
-                content = config_path.read_text(encoding="utf-8")
-                # Replace section name
-                updated = re.sub(
-                    r"^\[mygpt\]",
-                    "[nyxgpt]",
-                    content,
-                    flags=re.MULTILINE | re.IGNORECASE,
-                )
-                if updated != content:
-                    config_path.write_text(updated, encoding="utf-8")
-                    print("Updated [mygpt] -> [nyxgpt] in config.ini")
-
-            print("\nMigration complete!")
-        except Exception as e:
-            print(f"\nMigration failed: {e}")
-            print("You can manually move the directory later.")
-    else:
-        print("\nMigration skipped. You can manually move files later with:")
-        print(f"  mv {old_dir} {new_dir}")
-
-
-# Run migration check on module import
-_migrate_from_mygpt()
 
 DEFAULT_CONFIG_PATH = Path.home() / ".nyxGPT" / "config.ini"
 
@@ -183,7 +106,7 @@ def load_config(path: str | Path | None = None) -> ConfigParser:
     effect without restarting the API.
 
     Hot-reloadable settings include:
-    - [mygpt] default_model
+    - [nyxgpt] default_model
     - [rag] enabled
     """
     global _CACHED_CFG, _CACHED_PATH, _CACHED_MTIME_NS
@@ -244,7 +167,7 @@ def get_default_model(cfg: ConfigParser) -> str:
     """Return the configured default chat model.
 
     Single source of truth:
-    - [mygpt] default_model
+    - [nyxgpt] default_model
 
     Falls back to a sane default if missing.
 

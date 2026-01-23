@@ -37,7 +37,7 @@ require_gh_auth() {
 # -------------------------
 # Config (from ~/.nyxGPT/config.ini)
 # -------------------------
-CONFIG_FILE="${MYGPT_CONFIG_FILE:-$HOME/.nyxGPT/config.ini}"
+CONFIG_FILE="${NYXGPT_CONFIG_FILE:-$HOME/.nyxGPT/config.ini}"
 
 load_config() {
   [[ -f "$CONFIG_FILE" ]] || _die "Config file not found: $CONFIG_FILE"

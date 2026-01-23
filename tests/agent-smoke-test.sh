@@ -88,8 +88,8 @@ need gh
 need jq
 need git
 
-export MYGPT_CONFIG_FILE="${MYGPT_CONFIG_FILE:-$HOME/.myGPT/config.ini}"
-[[ -f "$MYGPT_CONFIG_FILE" ]] || die "Config not found: $MYGPT_CONFIG_FILE"
+export NYXGPT_CONFIG_FILE="${NYXGPT_CONFIG_FILE:-$HOME/.nyxGPT/config.ini}"
+[[ -f "$NYXGPT_CONFIG_FILE" ]] || die "Config not found: $NYXGPT_CONFIG_FILE"
 
 # shellcheck source=/dev/null
 source scripts/agents/lib/gh_project.sh
@@ -262,7 +262,7 @@ ensure_clean_tree
 
 START_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 log "repo=$REPO_FULL base=$BASE_BRANCH start=$START_BRANCH"
-log "repo=$REPO_FULL base_branch=$BASE_BRANCH start_branch=$START_BRANCH config=$MYGPT_CONFIG_FILE"
+log "repo=$REPO_FULL base_branch=$BASE_BRANCH start_branch=$START_BRANCH config=$NYXGPT_CONFIG_FILE"
 pause
 
 if [[ -z "$ISSUE" ]]; then

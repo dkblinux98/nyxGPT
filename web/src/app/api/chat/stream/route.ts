@@ -3,8 +3,8 @@ import { Agent } from "undici";
 
 // Prefer explicit URL env var; keep backwards compatibility.
 const API_BASE =
-  process.env.MYGPT_API_BASE_URL ??
-  process.env.MYGPT_API_BASE ??
+  process.env.NYXGPT_API_BASE_URL ??
+  process.env.NYXGPT_API_BASE ??
   "http://127.0.0.1:8000";
 
 // Undici defaults can abort long-lived streaming responses.

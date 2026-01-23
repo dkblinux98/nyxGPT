@@ -504,10 +504,10 @@ def persist_after_exchange(
         cfg = load_config(None)
     try:
         auto_summarize_enabled = cfg.getboolean(
-            "mygpt", "auto_summarize_enabled", fallback=False
+            "nyxgpt", "auto_summarize_enabled", fallback=False
         )
         auto_summarize_after = cfg.getint(
-            "mygpt", "auto_summarize_after_messages", fallback=5
+            "nyxgpt", "auto_summarize_after_messages", fallback=5
         )
     except Exception:
         auto_summarize_enabled = False
@@ -1092,7 +1092,7 @@ def sync_filename_with_title(
     if not force:
         cfg = load_config(None)
         try:
-            auto_sync = cfg.getboolean("mygpt", "auto_sync_filename", fallback=False)
+            auto_sync = cfg.getboolean("nyxgpt", "auto_sync_filename", fallback=False)
         except Exception:
             auto_sync = False
 

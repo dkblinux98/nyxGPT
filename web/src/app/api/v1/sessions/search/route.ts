@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 
 const getBaseUrl = () =>
-  process.env.MYGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
+  process.env.NYXGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;

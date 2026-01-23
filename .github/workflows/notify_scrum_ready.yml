@@ -54,7 +54,7 @@ jobs:
           RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
           EOF
 
-          echo "MYGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
+          echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
           echo "Wrote ephemeral config at $CFG"
 
       - name: Verify config loads

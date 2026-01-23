@@ -7,7 +7,7 @@ export async function GET(
   const { filename } = await params;
 
   const base =
-    process.env.MYGPT_API_BASE_URL ??
+    process.env.NYXGPT_API_BASE_URL ??
     "http://127.0.0.1:8000";
   const searchParams = request.nextUrl.searchParams;
 

@@ -61,7 +61,7 @@ def test_load_config_expands_tilde_home(
     fake_home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(fake_home))
 
-    ini = fake_home / ".myGPT" / "config.ini"
+    ini = fake_home / ".nyxGPT" / "config.ini"
     _write(
         ini,
         """
@@ -70,14 +70,14 @@ default_model = llama3.1:8b
 """.lstrip(),
     )
 
-    cfg = load_config("~/.myGPT/config.ini")
+    cfg = load_config("~/.nyxGPT/config.ini")
     assert cfg.get("nyxgpt", "default_model") == "llama3.1:8b"
 
 
 def test_default_log_dir_is_under_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # This test encodes the desired default: ~/.myGPT/logs
+    # This test encodes the desired default: ~/.nyxGPT/logs
     fake_home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(fake_home))
 

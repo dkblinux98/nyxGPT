@@ -9,7 +9,7 @@ from typing import Optional
 
 from configparser import ConfigParser
 
-DEFAULT_LOGGER_NAME = "mygpt"
+DEFAULT_LOGGER_NAME = "nyxgpt"
 DEFAULT_FMT = "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"
 DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
@@ -111,11 +111,11 @@ def get_log_dir(cfg: Optional[ConfigParser] = None) -> Path:
     """Return the configured log directory.
 
     This is the single source of truth for where logs are stored.
-    Reads from [logging] dir, falls back to ~/.myGPT/logs.
+    Reads from [logging] dir, falls back to ~/.nyxGPT/logs.
     """
     cfg = _coerce_cfg(cfg)
     log_dir_str = cfg.get(
-        "logging", "dir", fallback=str(Path.home() / ".myGPT" / "logs")
+        "logging", "dir", fallback=str(Path.home() / ".nyxGPT" / "logs")
     )
     return Path(log_dir_str).expanduser()
 
@@ -172,7 +172,7 @@ def configure_logging(
     *,
     logger_name: str = DEFAULT_LOGGER_NAME,
     console: bool = True,
-    filename: str = "mygpt.log",
+    filename: str = "nyxgpt.log",
     max_bytes: int = 5 * 1024 * 1024,
     backups: int = 5,
 ) -> logging.Logger:
@@ -232,7 +232,7 @@ def configure_logging(
     for h in root.handlers:
         h.setLevel(level)
 
-    # Make mygpt logger propagate into root; do not attach extra handlers to avoid duplicates.
+    # Make nyxgpt logger propagate into root; do not attach extra handlers to avoid duplicates.
     logger = logging.getLogger(logger_name)
     logger.setLevel(level)
     logger.propagate = True

@@ -319,9 +319,9 @@ def _prepare_chat_context(
     cfg = _cfg(config_path)
 
     base_url = _get_str(cfg, "ollama", "base_url", "http://127.0.0.1:11434")
-    default_model = _get_str(cfg, "mygpt", "default_model", "llama3.1:8b")
+    default_model = _get_str(cfg, "nyxgpt", "default_model", "llama3.1:8b")
     chosen_model = model or default_model
-    chat_timeout_s = _get_int(cfg, "mygpt", "chat_timeout_seconds", 180)
+    chat_timeout_s = _get_int(cfg, "nyxgpt", "chat_timeout_seconds", 180)
 
     # Load session messages
     state = load_session(session, cfg, sessions_dir_override=sessions_dir)
@@ -331,7 +331,7 @@ def _prepare_chat_context(
     messages: list[dict[str, str]] = []
 
     # System prompt with adaptive mode
-    sys_msg = system or _get_str(cfg, "mygpt", "system_prompt", "")
+    sys_msg = system or _get_str(cfg, "nyxgpt", "system_prompt", "")
 
     # Apply adaptive prompt mode if enabled and no custom system prompt
     if not sys_msg.strip() and get_prompt_mode_enabled(cfg):

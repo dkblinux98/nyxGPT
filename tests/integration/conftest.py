@@ -32,10 +32,10 @@ def ensure_api_server_current():
     The restart is attempted but failures are logged rather than blocking tests,
     since the server might be managed differently in CI or development environments.
     """
-    # Only restart if MYGPT_SKIP_RESTART is not set (allows CI/custom setups to opt out)
-    if os.environ.get("MYGPT_SKIP_RESTART"):
+    # Only restart if NYXGPT_SKIP_RESTART is not set (allows CI/custom setups to opt out)
+    if os.environ.get("NYXGPT_SKIP_RESTART"):
         print(
-            "\n[INTEGRATION TESTS] Skipping API server restart (MYGPT_SKIP_RESTART set)"
+            "\n[INTEGRATION TESTS] Skipping API server restart (NYXGPT_SKIP_RESTART set)"
         )
         yield
         return
@@ -88,14 +88,14 @@ def ensure_api_server_current():
 @pytest.fixture(scope="session")
 def cfg() -> Any:
     # Allow overriding config for CI / alt setups:
-    #   export MYGPT_TEST_CONFIG=/path/to/config.ini
-    path = os.environ.get("MYGPT_TEST_CONFIG")
+    #   export NYXGPT_TEST_CONFIG=/path/to/config.ini
+    path = os.environ.get("NYXGPT_TEST_CONFIG")
     return load_config(path)
 
 
 @pytest.fixture(scope="session")
 def api_base_url() -> str:
-    return os.environ.get("MYGPT_TEST_API_BASE", "http://127.0.0.1:8000").rstrip("/")
+    return os.environ.get("NYXGPT_TEST_API_BASE", "http://127.0.0.1:8000").rstrip("/")
 
 
 @pytest.fixture(scope="session")

@@ -1,5 +1,5 @@
 const getBaseUrl = () =>
-  process.env.MYGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
+  process.env.NYXGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 export async function GET() {
   const r = await fetch(`${getBaseUrl()}/api/v1/rag/config`, {

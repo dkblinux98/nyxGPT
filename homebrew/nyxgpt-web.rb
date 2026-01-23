@@ -4,7 +4,7 @@ class NyxgptWeb < Formula
 
   # NOTE:
   # This file lives in the nyxGPT repo as the *source template*.
-  # The `mygpt ops install` command will copy it into your Homebrew tap at:
+  # The `nyxgpt ops install` command will copy it into your Homebrew tap at:
   #   $(brew --repo dkblinux98/nyxgpt-local)/Formula/nyxgpt-web.rb
   #
   # During that install step, ops should also replace the placeholders below
