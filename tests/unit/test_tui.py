@@ -830,12 +830,10 @@ async def test_tui_action_pick_session(tmp_path: Path) -> None:
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
 
-    # Mock push_screen_wait to return a selected session
-    with patch.object(
-        app, "push_screen_wait", new=AsyncMock(return_value="new-session")
-    ):
+    # Mock push_screen_wait to return selected session
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value="new-session")):
         with patch.object(app, "_update_session_status", new=AsyncMock()):
-            await app.action_pick_session()
+            await app._pick_session_worker()
 
     # Verify session was switched
     assert app.session == "new-session"
@@ -863,7 +861,7 @@ async def test_tui_action_pick_session_cancel(tmp_path: Path) -> None:
 
     # Mock push_screen_wait to return None (cancel)
     with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)):
-        await app.action_pick_session()
+        await app._pick_session_worker()
 
     # Verify session was NOT switched
     assert app.session == "original-session"
@@ -1475,12 +1473,10 @@ async def test_tui_action_search_messages_opens_screen(tmp_path: Path) -> None:
         app = NyxGPTTUI(session="test-session", config_path=str(config_file))
 
     # Mock push_screen_wait to return None (user cancelled)
-    with patch.object(
-        app, "push_screen_wait", new=AsyncMock(return_value=None)
-    ) as mock_push:
-        await app.action_search_messages()
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)) as mock_push:
+        await app._search_messages_worker()
 
-    # Verify SearchResultsScreen was shown
+    # Verify push_screen_wait was called
     mock_push.assert_called_once()
     # Verify the screen is a SearchResultsScreen instance
     assert isinstance(mock_push.call_args[0][0], SearchResultsScreen)
@@ -1501,18 +1497,16 @@ async def test_tui_action_search_messages_switches_session(tmp_path: Path) -> No
     # Mock output widget
     mock_output = MagicMock(spec=ChatOutput)
 
-    # Mock push_screen_wait to return a search result
+    # Search result to return
     search_result = {
         "session_name": "target-session",
         "message_index": 5,
     }
 
-    with patch.object(
-        app, "push_screen_wait", new=AsyncMock(return_value=search_result)
-    ):
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=search_result)):
         with patch.object(app, "query_one", return_value=mock_output):
             with patch.object(app, "notify") as mock_notify:
-                await app.action_search_messages()
+                await app._search_messages_worker()
 
     # Verify session was switched
     assert app.session == "target-session"
@@ -1543,17 +1537,15 @@ async def test_tui_action_search_messages_same_session(tmp_path: Path) -> None:
     # Mock output widget
     app.output = MagicMock(spec=ChatOutput)
 
-    # Mock push_screen_wait to return a search result in the same session
+    # Search result in the same session
     search_result = {
         "session_name": "current-session",
         "message_index": 3,
     }
 
-    with patch.object(
-        app, "push_screen_wait", new=AsyncMock(return_value=search_result)
-    ):
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=search_result)):
         with patch.object(app, "notify") as mock_notify:
-            await app.action_search_messages()
+            await app._search_messages_worker()
 
     # Verify session stayed the same
     assert app.session == "current-session"
@@ -1972,14 +1964,11 @@ async def test_tui_action_models_manager(
     with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = NyxGPTTUI(session="test", config_path=str(config_file))
 
-    # Mock push_screen_wait
-    with patch.object(
-        app, "push_screen_wait", new=AsyncMock(return_value=None)
-    ) as mock_push:
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)) as mock_push:
         with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
-            await app.action_models_manager()
+            await app._models_manager_worker()
 
-    # Verify ModelsManagerScreen was shown
+    # Verify push_screen_wait was called
     mock_push.assert_called_once()
     assert "Models manager closed" in caplog.text
 
@@ -2375,14 +2364,11 @@ async def test_action_show_help(tmp_path: Path, caplog: pytest.LogCaptureFixture
     with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = NyxGPTTUI(session="test", config_path=str(config_file))
 
-    # Mock push_screen_wait
-    with patch.object(
-        app, "push_screen_wait", new=AsyncMock(return_value=None)
-    ) as mock_push:
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)) as mock_push:
         with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
-            await app.action_show_help()
+            await app._show_help_worker()
 
-    # Verify HelpOverlayScreen was shown
+    # Verify push_screen_wait was called
     mock_push.assert_called_once()
     assert "Help overlay closed" in caplog.text
 
@@ -2401,17 +2387,13 @@ async def test_action_command_palette_execute_command(
     with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = NyxGPTTUI(session="test", config_path=str(config_file))
 
-    # Mock push_screen_wait to return a command key
-    with patch.object(
-        app, "push_screen_wait", new=AsyncMock(return_value="clear_output")
-    ):
-        # Mock action_clear_output
-        with patch.object(app, "action_clear_output", new=AsyncMock()) as mock_clear:
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value="clear_output")):
+        with patch.object(app, "run_action") as mock_run_action:
             with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
-                await app.action_command_palette()
+                await app._command_palette_worker()
 
-    # Verify command was executed
-    mock_clear.assert_called_once()
+    # Verify run_action was called with correct command
+    mock_run_action.assert_called_once_with("clear_output")
     assert "Executing command from palette: clear_output" in caplog.text
 
 
@@ -2427,19 +2409,19 @@ async def test_action_command_palette_cancel(tmp_path: Path) -> None:
     with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = NyxGPTTUI(session="test", config_path=str(config_file))
 
-    # Mock push_screen_wait to return None (cancel)
     with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)):
-        # No action should be called
-        await app.action_command_palette()
+        with patch.object(app, "run_action") as mock_run_action:
+            await app._command_palette_worker()
 
-    # Test passes if no exception raised
+    # Verify no action was executed
+    mock_run_action.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_action_command_palette_unknown_command(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Test action_command_palette handles unknown command key."""
+    """Test action_command_palette logs and executes unknown commands via run_action."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
     cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
@@ -2449,15 +2431,14 @@ async def test_action_command_palette_unknown_command(
     with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = NyxGPTTUI(session="test", config_path=str(config_file))
 
-    # Mock push_screen_wait to return an unknown command key
-    with patch.object(
-        app, "push_screen_wait", new=AsyncMock(return_value="unknown_command")
-    ):
-        with caplog.at_level(logging.WARNING, logger="nyxgpt.tui"):
-            await app.action_command_palette()
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value="unknown_command")):
+        with patch.object(app, "run_action") as mock_run_action:
+            with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
+                await app._command_palette_worker()
 
-    # Verify warning was logged
-    assert "Unknown command key: unknown_command" in caplog.text
+    # run_action is still called (Textual will handle unknown actions)
+    mock_run_action.assert_called_once_with("unknown_command")
+    assert "Executing command from palette: unknown_command" in caplog.text
 
 
 def test_help_overlay_screen_initialization() -> None:

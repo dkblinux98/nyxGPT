@@ -834,8 +834,12 @@ class NyxGPTTUI(App):
         except Exception as e:
             log.error(f"Failed to toggle RAG: {type(e).__name__}: {e}")
 
-    async def action_pick_session(self) -> None:
+    def action_pick_session(self) -> None:
         """Open the session picker and switch to the selected session."""
+        self.run_worker(self._pick_session_worker())
+
+    async def _pick_session_worker(self) -> None:
+        """Worker to handle session picker."""
         session_name = await self.push_screen_wait(
             SessionPickerScreen(self.config_path)
         )
@@ -851,13 +855,21 @@ class NyxGPTTUI(App):
             await self._update_session_status()
             log.info("Session switched", extra={"session": session_name})
 
-    async def action_models_manager(self) -> None:
+    def action_models_manager(self) -> None:
         """Open the models manager screen."""
+        self.run_worker(self._models_manager_worker())
+
+    async def _models_manager_worker(self) -> None:
+        """Worker to handle models manager."""
         await self.push_screen_wait(ModelsManagerScreen(self.api_base_url))
         log.info("Models manager closed")
 
-    async def action_search_messages(self) -> None:
+    def action_search_messages(self) -> None:
         """Open message search modal."""
+        self.run_worker(self._search_messages_worker())
+
+    async def _search_messages_worker(self) -> None:
+        """Worker to handle message search."""
         result = await self.push_screen_wait(
             SearchResultsScreen(self.api_base_url, self.session)
         )
@@ -1050,43 +1062,27 @@ class NyxGPTTUI(App):
         except Exception as e:
             log.error(f"Failed to clear output: {type(e).__name__}: {e}")
 
-    async def action_show_help(self) -> None:
+    def action_show_help(self) -> None:
         """Show the keyboard shortcuts help overlay."""
+        self.run_worker(self._show_help_worker())
+
+    async def _show_help_worker(self) -> None:
+        """Worker to handle help overlay."""
         await self.push_screen_wait(HelpOverlayScreen())
         log.info("Help overlay closed")
 
-    # Textual supports async action methods overriding sync parent methods.
-    # The action system detects coroutines and awaits them.
-    async def action_command_palette(self) -> None:  # type: ignore[override]
+    def action_command_palette(self) -> None:
         """Show the command palette and execute selected command."""
-        import inspect
+        self.run_worker(self._command_palette_worker())
 
+    async def _command_palette_worker(self) -> None:
+        """Worker to handle command palette."""
         command_key = await self.push_screen_wait(CommandPaletteScreen())
 
         if command_key:
             log.info(f"Executing command from palette: {command_key}")
-            # Map command key to action method
-            action_map = {
-                "pick_session": self.action_pick_session,
-                "search_messages": self.action_search_messages,
-                "toggle_rag": self.action_toggle_rag,
-                "models_manager": self.action_models_manager,
-                "rename_session": self.action_rename_session,
-                "delete_session": self.action_delete_session,
-                "clear_output": self.action_clear_output,
-                "show_help": self.action_show_help,
-                "quit": self.action_quit,
-            }
-
-            action = action_map.get(command_key)
-            if action:
-                # Handle both sync and async actions
-                if inspect.iscoroutinefunction(action):
-                    await action()
-                else:
-                    action()
-            else:
-                log.warning(f"Unknown command key: {command_key}")
+            # Execute the action
+            self.run_action(command_key)
 
     async def _handle_command(self, command: str) -> None:
         """Handle slash commands."""
