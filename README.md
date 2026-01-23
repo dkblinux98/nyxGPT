@@ -491,6 +491,20 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
   -F "file=@document.md"
 ```
 
+#### Document Metadata Filtering
+
+RAG queries can be filtered by document metadata to narrow search scope and retrieve context from specific documents. Metadata is automatically stored during ingestion (filename, upload date) and can be extended with custom tags.
+
+**Supported filters:**
+- **doc_ids**: Filter by specific document IDs (OR logic)
+- **filename**: Partial filename match (case-insensitive)
+- **tags**: Filter by tags (document must have ALL specified tags)
+- **date_from/date_to**: Filter by ingestion date range
+
+All filters use AND logic when combined. Metadata filtering is supported via CLI, API, and internally by `retrieve_context()`.
+
+**Note:** When uploading documents via the API (`/api/v1/rag/upload`), the filename is automatically stored in metadata. For CLI ingestion, metadata can be set programmatically by calling `ingest_document()` with a `metadata` dict parameter (e.g., `{"filename": "notes.txt", "tags": ["python", "tutorial"]}`).
+
 #### Multi-Model Embedding Support
 
 nyxGPT supports using different embedding models for RAG by organizing documents into collections. Each collection can use its own embedding model and dimension, allowing you to compare model performance and choose the best fit for your use case.
@@ -527,6 +541,28 @@ nyxgpt rag query "What is the architecture?" \
   --collection all-minilm \
   --model all-minilm:latest \
   --dimension 384
+```
+
+**Filter queries by document metadata:**
+
+```bash
+# Filter by document ID(s)
+nyxgpt rag query "What is RAG?" --doc-ids "doc1,doc2"
+
+# Filter by filename (partial match, case-insensitive)
+nyxgpt rag query "summarize notes" --filename "myGPT Notes"
+
+# Filter by tags (must have ALL specified tags)
+nyxgpt rag query "python tutorial" --tags "python,tutorial"
+
+# Filter by date range (ISO format: YYYY-MM-DD)
+nyxgpt rag query "recent updates" --date-from "2024-01-01" --date-to "2024-12-31"
+
+# Combine multiple filters
+nyxgpt rag query "database docs" \
+  --filename "database" \
+  --tags "documentation" \
+  --date-from "2024-06-01"
 ```
 
 **List available collections:**

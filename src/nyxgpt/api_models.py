@@ -187,6 +187,12 @@ class RagQueryRequest(BaseModel):
     debug_mode: bool = Field(
         False, description="Enable debug mode to return detailed metrics"
     )
+    # Metadata filters
+    doc_ids: list[str] | None = Field(None, description="Filter by document IDs (OR logic)")
+    filename: str | None = Field(None, description="Filter by filename (partial match, case-insensitive)")
+    tags: list[str] | None = Field(None, description="Filter by tags (must have ALL tags)")
+    date_from: str | None = Field(None, description="Filter by ingestion date >= (ISO format)")
+    date_to: str | None = Field(None, description="Filter by ingestion date <= (ISO format)")
 
 
 class RagQueryResult(BaseModel):
