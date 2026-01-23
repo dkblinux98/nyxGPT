@@ -302,7 +302,7 @@ def test_retrieve_context_with_metadata_filter():
 
         with patch('nyxgpt.rag.rag.embed_text', return_value=[0.1] * 768):
             metadata_filter = MetadataFilter(filename="test.txt")
-            results = retrieve_context(
+            _ = retrieve_context(
                 "test query",
                 top_k=5,
                 metadata_filter=metadata_filter,

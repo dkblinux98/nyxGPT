@@ -769,7 +769,7 @@ def cmd_rag_query(
     if model:
         print(f"  Using embedding model: {model}")
     if metadata_filter:
-        print(f"  Applied metadata filters:")
+        print("  Applied metadata filters:")
         if doc_ids:
             print(f"    doc_ids: {doc_ids}")
         if filename:
