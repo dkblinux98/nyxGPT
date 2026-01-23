@@ -4,7 +4,7 @@ import json
 import time
 from datetime import datetime
 from dataclasses import dataclass
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 from cassandra.cluster import Cluster
 from cassandra.query import SimpleStatement
 
@@ -17,6 +17,26 @@ class CassandraConfig:
     port: int
     keyspace: str
     table: str
+
+
+@dataclass
+class MetadataFilter:
+    """Filter criteria for RAG queries based on document metadata.
+
+    All filters are optional and combined with AND logic.
+
+    Attributes:
+        doc_ids: Filter by exact document IDs (OR logic within list)
+        filename: Filter by exact or partial filename match (case-insensitive)
+        tags: Filter by tags (doc must have ALL specified tags)
+        date_from: Filter by ingestion date >= this datetime
+        date_to: Filter by ingestion date <= this datetime
+    """
+    doc_ids: Optional[list[str]] = None
+    filename: Optional[str] = None
+    tags: Optional[list[str]] = None
+    date_from: Optional[datetime] = None
+    date_to: Optional[datetime] = None
 
 
 @dataclass
@@ -276,14 +296,16 @@ class CassandraVectorStore:
         *,
         collect_metrics: bool = False,
         embedding_model: str | None = None,
+        metadata_filter: Optional[MetadataFilter] = None,
     ) -> list[dict] | tuple[list[dict], VectorSearchDebugMetrics]:
-        """Query by embedding vector.
+        """Query by embedding vector with optional metadata filtering.
 
         Args:
             embedding: Query vector
             k: Number of results to return
             collect_metrics: If True, return tuple of (results, metrics)
             embedding_model: Filter results by embedding model (for multi-model support)
+            metadata_filter: Optional metadata filter criteria
 
         Returns:
             List of result dicts with doc_id, chunk_id, text, metadata, score, embedding_model.
@@ -294,18 +316,18 @@ class CassandraVectorStore:
 
         start_time = time.perf_counter()
 
-        # Build query with optional model filtering
+        # Build query - include ingested_at for date filtering
         stmt = SimpleStatement(
             f"""
-            SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim, similarity_cosine(embedding, %s) AS score
+            SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim, ingested_at, similarity_cosine(embedding, %s) AS score
             FROM {self.table_name}
             ORDER BY embedding ANN OF %s
             LIMIT %s
             """,
-            fetch_size=k,
+            fetch_size=k * 2 if metadata_filter else k,  # Fetch more if filtering
         )
 
-        rows = self.session.execute(stmt, (embedding, embedding, k))
+        rows = self.session.execute(stmt, (embedding, embedding, k * 2 if metadata_filter else k))
         out: list[dict] = []
         scores: list[float] = []
         for r in rows:
@@ -317,25 +339,60 @@ class CassandraVectorStore:
             ):
                 continue
 
+            # Parse metadata
+            metadata = json.loads(r.metadata) if r.metadata else {}
+
+            # Apply metadata filters
+            if metadata_filter:
+                # Filter by doc_ids (OR logic)
+                if metadata_filter.doc_ids and r.doc_id not in metadata_filter.doc_ids:
+                    continue
+
+                # Filter by filename (case-insensitive partial match)
+                if metadata_filter.filename:
+                    doc_filename = metadata.get("filename", "")
+                    if metadata_filter.filename.lower() not in doc_filename.lower():
+                        continue
+
+                # Filter by tags (doc must have ALL specified tags)
+                if metadata_filter.tags:
+                    doc_tags = metadata.get("tags", [])
+                    if not isinstance(doc_tags, list):
+                        continue
+                    if not all(tag in doc_tags for tag in metadata_filter.tags):
+                        continue
+
+                # Filter by date range
+                if metadata_filter.date_from or metadata_filter.date_to:
+                    if not hasattr(r, "ingested_at") or r.ingested_at is None:
+                        continue
+                    if metadata_filter.date_from and r.ingested_at < metadata_filter.date_from:
+                        continue
+                    if metadata_filter.date_to and r.ingested_at > metadata_filter.date_to:
+                        continue
+
             score = (
                 float(r.score) if hasattr(r, "score") and r.score is not None else 0.0
             )
-            out.append(
-                {
-                    "doc_id": r.doc_id,
-                    "chunk_id": r.chunk_id,
-                    "text": r.text,
-                    "metadata": json.loads(r.metadata) if r.metadata else {},
-                    "score": score,
-                    "embedding_model": r.embedding_model
-                    if hasattr(r, "embedding_model")
-                    else None,
-                    "embedding_dim": r.embedding_dim
-                    if hasattr(r, "embedding_dim")
-                    else None,
-                }
-            )
+            result = {
+                "doc_id": r.doc_id,
+                "chunk_id": r.chunk_id,
+                "text": r.text,
+                "metadata": metadata,
+                "score": score,
+                "embedding_model": r.embedding_model
+                if hasattr(r, "embedding_model")
+                else None,
+                "embedding_dim": r.embedding_dim
+                if hasattr(r, "embedding_dim")
+                else None,
+            }
+            out.append(result)
             scores.append(score)
+
+            # Stop if we have enough results
+            if len(out) >= k:
+                break
 
         if collect_metrics:
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0

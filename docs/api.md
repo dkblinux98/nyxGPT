@@ -53,7 +53,7 @@ Quick reference of all 42 available endpoints:
 | `/api/v1/rag/config` | GET | Get RAG configuration (score thresholds) |
 | `/api/v1/rag/ingest` | POST | Ingest text document (with update detection) |
 | `/api/v1/rag/documents/{doc_id}` | GET | Get document version information |
-| `/api/v1/rag/query` | POST | Query RAG vector store |
+| `/api/v1/rag/query` | POST | Query RAG vector store (supports metadata filters) |
 | `/api/v1/rag/metrics/query` | POST | Query RAG with evaluation metrics |
 | `/api/v1/rag/upload` | POST | Upload and ingest file |
 | `/api/v1/logs/files` | GET | List log files |
@@ -1031,6 +1031,32 @@ At a high level, the API supports:
 - document ingestion
 - vector search / retrieval
 - RAG-assisted chat
+- **metadata filtering** - filter queries by doc_id, filename, tags, or date range
+
+### Metadata filtering
+
+The `/api/v1/rag/query` endpoint supports optional metadata filters to narrow search scope:
+
+```json
+{
+  "query": "What is RAG?",
+  "top_k": 5,
+  "doc_ids": ["doc1", "doc2"],
+  "filename": "notes",
+  "tags": ["python", "tutorial"],
+  "date_from": "2024-01-01",
+  "date_to": "2024-12-31"
+}
+```
+
+**Filter parameters:**
+- `doc_ids` (list[str]): Filter by document IDs (OR logic)
+- `filename` (str): Partial filename match (case-insensitive)
+- `tags` (list[str]): Filter by tags (document must have ALL tags)
+- `date_from` (str): ISO date string, filter by ingestion date >=
+- `date_to` (str): ISO date string, filter by ingestion date <=
+
+All filters are optional and combined with AND logic when present.
 
 ---
 

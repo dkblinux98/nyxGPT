@@ -1608,7 +1608,30 @@ def rag_config(request: Request) -> dict[str, Any]:
 @api.post("/rag/query", response_model=RagQueryResponse)
 def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
     try:
-        result = retrieve_context(req.query, top_k=req.top_k, debug_mode=req.debug_mode)
+        from datetime import datetime
+        from nyxgpt.rag.vectorstore_cassandra import MetadataFilter
+
+        # Build metadata filter if any filter params are provided
+        metadata_filter = None
+        if any([req.doc_ids, req.filename, req.tags, req.date_from, req.date_to]):
+            # Parse dates
+            date_from_dt = datetime.fromisoformat(req.date_from) if req.date_from else None
+            date_to_dt = datetime.fromisoformat(req.date_to) if req.date_to else None
+
+            metadata_filter = MetadataFilter(
+                doc_ids=req.doc_ids,
+                filename=req.filename,
+                tags=req.tags,
+                date_from=date_from_dt,
+                date_to=date_to_dt,
+            )
+
+        result = retrieve_context(
+            req.query,
+            top_k=req.top_k,
+            debug_mode=req.debug_mode,
+            metadata_filter=metadata_filter,
+        )
 
         if req.debug_mode:
             # Type narrowing: debug_mode=True means result is tuple[list[dict], RAGDebugInfo]
