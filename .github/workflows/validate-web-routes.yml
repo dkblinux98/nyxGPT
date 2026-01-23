@@ -1,0 +1,34 @@
+name: Validate Web Routes
+
+on:
+  pull_request:
+    paths:
+      - 'web/src/**/*.ts'
+      - 'web/src/**/*.tsx'
+      - 'src/nyxgpt/app.py'
+  push:
+    branches:
+      - v1.0.0
+    paths:
+      - 'web/src/**/*.ts'
+      - 'web/src/**/*.tsx'
+      - 'src/nyxgpt/app.py'
+
+jobs:
+  validate-routes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate web proxy routes exist
+        run: |
+          chmod +x scripts/validate-web-routes.sh
+          ./scripts/validate-web-routes.sh
+
+      - name: Check for missing route documentation
+        run: |
+          echo "Checking if README documents web route creation..."
+          if ! grep -q "web/src/app/api" README.md docs/*.md 2>/dev/null; then
+            echo "⚠️  Warning: No documentation found for creating web proxy routes"
+            echo "   Consider adding a section to docs/api.md or CONTRIBUTING.md"
+          fi
