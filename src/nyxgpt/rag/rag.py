@@ -24,6 +24,7 @@ from nyxgpt.rag.embeddings import embed_text, embed_texts, EmbeddingDebugMetrics
 from nyxgpt.rag.vectorstore_cassandra import (
     CassandraVectorStore,
     VectorSearchDebugMetrics,
+    MetadataFilter,
 )
 from nyxgpt.rag.bm25 import BM25Index
 from nyxgpt.rag.fusion import reciprocal_rank_fusion, weighted_fusion
@@ -913,6 +914,7 @@ def retrieve_context(
     collection: str = "default",
     embedding_model: str | None = None,
     embedding_dim: int | None = None,
+    metadata_filter: "MetadataFilter | None" = None,
 ) -> list[dict] | tuple[list[dict], RAGDebugInfo]:
     """Retrieve relevant context for a query using hybrid search.
 
@@ -926,6 +928,11 @@ def retrieve_context(
     - Specify embedding_model to use a particular model for the query
     - Results are filtered by embedding_model to ensure compatibility
 
+    Metadata filtering:
+    - Filter results by doc_id, filename, tags, or date range
+    - All filters are combined with AND logic
+    - Filters are applied after vector search to preserve ranking quality
+
     Args:
         query: User's search query
         top_k: Number of results to return (uses config default if None)
@@ -933,6 +940,7 @@ def retrieve_context(
         collection: Collection name for multi-model support (default: "default")
         embedding_model: Override embedding model (default: from config)
         embedding_dim: Override embedding dimension (default: from config)
+        metadata_filter: Optional metadata filter criteria (see MetadataFilter)
 
     Returns:
         List of result dictionaries with text, score, and metadata.
@@ -1012,7 +1020,7 @@ def retrieve_context(
             # Filter by embedding_model to ensure we only get results from the same model
             if collect_debug:
                 vs_result = store.query_by_embedding(
-                    q_emb, k=k, collect_metrics=True, embedding_model=actual_model
+                    q_emb, k=k, collect_metrics=True, embedding_model=actual_model, metadata_filter=metadata_filter
                 )
                 # Type narrowing: vs_result is tuple[list[dict], VectorSearchDebugMetrics]
                 results, vs_metrics = cast(
@@ -1028,7 +1036,7 @@ def retrieve_context(
             else:
                 results = cast(
                     list[dict],
-                    store.query_by_embedding(q_emb, k=k, embedding_model=actual_model),
+                    store.query_by_embedding(q_emb, k=k, embedding_model=actual_model, metadata_filter=metadata_filter),
                 )
 
             for r in results:

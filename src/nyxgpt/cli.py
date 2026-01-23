@@ -726,7 +726,34 @@ def cmd_rag_query(
     collection: str = "default",
     model: str | None = None,
     dimension: int | None = None,
+    doc_ids: str | None = None,
+    filename: str | None = None,
+    tags: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> int:
+    from datetime import datetime
+    from nyxgpt.rag.vectorstore_cassandra import MetadataFilter
+
+    # Build metadata filter if any filter params are provided
+    metadata_filter = None
+    if any([doc_ids, filename, tags, date_from, date_to]):
+        # Parse doc_ids
+        doc_ids_list = [d.strip() for d in doc_ids.split(",")] if doc_ids else None
+        # Parse tags
+        tags_list = [t.strip() for t in tags.split(",")] if tags else None
+        # Parse dates
+        date_from_dt = datetime.fromisoformat(date_from) if date_from else None
+        date_to_dt = datetime.fromisoformat(date_to) if date_to else None
+
+        metadata_filter = MetadataFilter(
+            doc_ids=doc_ids_list,
+            filename=filename,
+            tags=tags_list,
+            date_from=date_from_dt,
+            date_to=date_to_dt,
+        )
+
     results_raw = retrieve_context(
         question,
         top_k=top_k,
@@ -734,12 +761,25 @@ def cmd_rag_query(
         collection=collection,
         embedding_model=model,
         embedding_dim=dimension,
+        metadata_filter=metadata_filter,
     )
     # Type narrowing: debug_mode=False means result is list[dict]
     results = cast(list[dict], results_raw)
     print(f"Results: {len(results)} (from collection '{collection}')")
     if model:
         print(f"  Using embedding model: {model}")
+    if metadata_filter:
+        print("  Applied metadata filters:")
+        if doc_ids:
+            print(f"    doc_ids: {doc_ids}")
+        if filename:
+            print(f"    filename: {filename}")
+        if tags:
+            print(f"    tags: {tags}")
+        if date_from:
+            print(f"    date_from: {date_from}")
+        if date_to:
+            print(f"    date_to: {date_to}")
     for i, r in enumerate(results, 1):
         print(f"--- {i} ---")
         print(r.get("text", ""))
@@ -747,6 +787,14 @@ def cmd_rag_query(
             print(
                 f"  [model: {r.get('embedding_model')}, score: {r.get('score', 0):.3f}]"
             )
+        # Show doc_id and metadata if filtering
+        if metadata_filter:
+            print(f"  [doc_id: {r.get('doc_id')}, chunk_id: {r.get('chunk_id')}]")
+            meta = r.get("metadata", {})
+            if meta.get("filename"):
+                print(f"  [filename: {meta.get('filename')}]")
+            if meta.get("tags"):
+                print(f"  [tags: {', '.join(meta.get('tags', []))}]")
     return 0
 
 
@@ -1152,6 +1200,26 @@ def cli(argv: list[str] | None = None) -> int:
         type=int,
         help="Override embedding dimension (default: from config)",
     )
+    query_p.add_argument(
+        "--doc-ids",
+        help="Filter by document IDs (comma-separated)",
+    )
+    query_p.add_argument(
+        "--filename",
+        help="Filter by filename (partial match)",
+    )
+    query_p.add_argument(
+        "--tags",
+        help="Filter by tags (comma-separated, must have ALL)",
+    )
+    query_p.add_argument(
+        "--date-from",
+        help="Filter by ingestion date >= (ISO format: YYYY-MM-DD)",
+    )
+    query_p.add_argument(
+        "--date-to",
+        help="Filter by ingestion date <= (ISO format: YYYY-MM-DD)",
+    )
 
     list_p = rag_sub.add_parser("list", help="List ingested documents")
     list_p.add_argument(
@@ -1333,6 +1401,11 @@ def cli(argv: list[str] | None = None) -> int:
                 collection=args.collection,
                 model=args.model,
                 dimension=args.dimension,
+                doc_ids=getattr(args, "doc_ids", None),
+                filename=getattr(args, "filename", None),
+                tags=getattr(args, "tags", None),
+                date_from=getattr(args, "date_from", None),
+                date_to=getattr(args, "date_to", None),
             )
         if args.rag_cmd == "list":
             return cmd_rag_list(collection=args.collection)
