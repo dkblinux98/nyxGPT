@@ -2143,20 +2143,37 @@ async def rag_upload_file(
 
             text_parts = []
 
+            # Helper to extract metadata values (handles tuple format from ebooklib)
+            def extract_metadata_values(items):
+                """Extract values from metadata items.
+
+                ebooklib returns metadata as tuples (namespace, value).
+                This helper extracts just the values.
+                """
+                values = []
+                for item in items:
+                    if isinstance(item, tuple):
+                        # Tuple format: (namespace, value)
+                        values.append(str(item[1] if len(item) > 1 else item[0]))
+                    else:
+                        # String format (fallback)
+                        values.append(str(item))
+                return values
+
             # Extract metadata
             metadata = {}
             if book.get_metadata('DC', 'title'):
-                metadata['Title'] = ', '.join(book.get_metadata('DC', 'title'))
+                metadata['Title'] = ', '.join(extract_metadata_values(book.get_metadata('DC', 'title')))
             if book.get_metadata('DC', 'creator'):
-                metadata['Author'] = ', '.join(book.get_metadata('DC', 'creator'))
+                metadata['Author'] = ', '.join(extract_metadata_values(book.get_metadata('DC', 'creator')))
             if book.get_metadata('DC', 'description'):
-                metadata['Description'] = ', '.join(book.get_metadata('DC', 'description'))
+                metadata['Description'] = ', '.join(extract_metadata_values(book.get_metadata('DC', 'description')))
             if book.get_metadata('DC', 'publisher'):
-                metadata['Publisher'] = ', '.join(book.get_metadata('DC', 'publisher'))
+                metadata['Publisher'] = ', '.join(extract_metadata_values(book.get_metadata('DC', 'publisher')))
             if book.get_metadata('DC', 'date'):
-                metadata['Date'] = ', '.join(book.get_metadata('DC', 'date'))
+                metadata['Date'] = ', '.join(extract_metadata_values(book.get_metadata('DC', 'date')))
             if book.get_metadata('DC', 'language'):
-                metadata['Language'] = ', '.join(book.get_metadata('DC', 'language'))
+                metadata['Language'] = ', '.join(extract_metadata_values(book.get_metadata('DC', 'language')))
 
             # Add metadata section if available
             if metadata:
@@ -2165,6 +2182,7 @@ async def rag_upload_file(
 
             # Process all items in the book
             chapter_num = 0
+            has_content = False  # Track if we found actual content (not just metadata)
             for item in book.get_items():
                 # Only process document items (XHTML content)
                 if item.get_type() == ebooklib.ITEM_DOCUMENT:
@@ -2204,22 +2222,25 @@ async def rag_upload_file(
 
                         chapter_text = "\n\n".join(cleaned_lines)
 
-                        if chapter_text.strip():
+                        # Only count as content if it has substantial text (>50 chars)
+                        # This filters out navigation-only items that just contain titles
+                        if chapter_text.strip() and len(chapter_text.strip()) > 50:
+                            has_content = True  # Found actual content
                             # Add chapter marker for multi-chapter books
                             if chapter_num > 1 or len(list(book.get_items_of_type(ebooklib.ITEM_DOCUMENT))) > 1:
                                 text_parts.append(f"[Chapter {chapter_num}]\n{chapter_text}")
                             else:
                                 text_parts.append(chapter_text)
 
-            # Join all parts with double newlines
-            text = "\n\n".join(text_parts) if text_parts else ""
-
-            # Validate extracted content
-            if not text or not text.strip():
+            # Validate that we have actual content, not just metadata
+            if not has_content:
                 raise HTTPException(
                     status_code=400,
                     detail="ePUB extraction produced no text. The file may be empty, image-only, or malformed."
                 )
+
+            # Join all parts with double newlines
+            text = "\n\n".join(text_parts) if text_parts else ""
 
         except ImportError:
             raise HTTPException(
