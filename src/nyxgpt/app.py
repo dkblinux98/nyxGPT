@@ -2654,7 +2654,6 @@ async def rag_upload_file(
                 try:
                     import pytesseract
                     from pdf2image import convert_from_bytes
-                    from PIL import Image
 
                     # Get OCR configuration
                     ocr_dpi = cfg.getint("pdf", "ocr_dpi", fallback=300)
