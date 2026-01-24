@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import httpx
+import json
 import logging
 from typing import Optional
 
@@ -1177,13 +1178,49 @@ class NyxGPTTUI(App):
                                 # Always remove the marker from buffer (whether parsing succeeded or failed)
                                 buffer = buffer[:start_idx] + buffer[end_idx:]
 
-                        # Check for RAG markers (existing functionality)
+                        # Check for RAG markers and display citation summary
                         if "__RAG_START__" in buffer and "__RAG_END__" in buffer:
                             start_idx = buffer.index("__RAG_START__")
                             end_idx = buffer.index("__RAG_END__") + len("__RAG_END__")
 
-                            # Skip RAG markers in TUI (they're for WebUI)
-                            buffer = buffer[:start_idx] + buffer[end_idx:]
+                            # Parse and display RAG citation summary
+                            try:
+                                rag_start = start_idx + len("__RAG_START__")
+                                rag_json = buffer[rag_start:buffer.index("__RAG_END__")]
+                                rag_data = json.loads(rag_json)
+
+                                if rag_data.get("type") == "rag_metadata" and isinstance(rag_data.get("chunks"), list):
+                                    chunks = rag_data["chunks"]
+                                    chunk_count = len(chunks)
+
+                                    # Display compact citation summary
+                                    citation_summary = f"\n[dim][RAG: {chunk_count} source{'s' if chunk_count != 1 else ''} retrieved][/dim]\n"
+                                    self.output.append(citation_summary)
+
+                                    # Display brief citation details (doc_id and score)
+                                    for idx, chunk in enumerate(chunks, 1):
+                                        doc_id = chunk.get("doc_id", "Unknown")
+                                        chunk_id = chunk.get("chunk_id")
+                                        score = chunk.get("similarity_score") or chunk.get("score", 0.0)
+
+                                        # Format score with color based on quality
+                                        if score >= 0.7:
+                                            score_style = "green"
+                                        elif score >= 0.5:
+                                            score_style = "yellow"
+                                        else:
+                                            score_style = "red"
+
+                                        chunk_ref = f"chunk {chunk_id}" if chunk_id is not None else "source"
+                                        citation_line = f"[dim]  [{idx}] {doc_id} ({chunk_ref}) - score: [{score_style}]{score:.3f}[/{score_style}][/dim]\n"
+                                        self.output.append(citation_line)
+
+                                    self.output.append("\n")
+                            except (json.JSONDecodeError, KeyError, ValueError) as parse_err:
+                                log.warning(f"Failed to parse RAG metadata: {parse_err}")
+                            finally:
+                                # Remove RAG markers from buffer
+                                buffer = buffer[:start_idx] + buffer[end_idx:]
 
                         # Yield any complete text that's not part of markers
                         # Keep potential partial markers in buffer

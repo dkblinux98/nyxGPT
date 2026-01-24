@@ -221,6 +221,8 @@ nyxGPT automatically organizes your conversations with intelligent session manag
 - **Batch Tag**: `nyxgpt sessions batch-tag-add "tag1 tag2" session1 session2`
 - **Batch Tag Remove**: `nyxgpt sessions batch-tag-rm "tag1" session1 session2`
 - **Batch Export**: `nyxgpt sessions batch-export --output /path/to/dir --format markdown session1 session2`
+  - Exports include RAG citations with source references and confidence scores
+  - Supported formats: `markdown`, `json`, `html`
 - **Batch Pin**: `nyxgpt sessions batch-pin session1 session2`
 - **Batch Unpin**: `nyxgpt sessions batch-unpin session1 session2`
 - **Batch Update Metadata**: `nyxgpt sessions batch-update-meta --model mistral:7b --rag-enabled true session1 session2`
@@ -462,14 +464,20 @@ Use the RAG controls in the chat interface (left of the message input):
   - Filters persist across page reloads via session storage
   - Active filter indicators show when filters are applied
 - **RAG Citations** displayed inline with responses showing:
-  - Retrieved source chunks
-  - Relevance scores
+  - Retrieved source chunks with click-to-expand for full text
+  - Relevance scores with quality indicators (High/Medium/Low)
   - Document IDs and chunk numbers
   - Expandable/collapsible citation view
+  - Export citations to separate files (JSON, Markdown)
 
 #### Terminal UI (TUI)
 
 Press `Ctrl+R` to toggle RAG on/off for the current session. The RAG status is displayed in the UI.
+
+**RAG Citations** are displayed inline when RAG is enabled:
+- Compact citation summary showing number of sources retrieved
+- Document IDs, chunk references, and confidence scores
+- Color-coded quality indicators (green/yellow/red based on score)
 
 #### CLI / API
 
@@ -518,6 +526,18 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
 ```bash
 curl http://127.0.0.1:8000/api/v1/rag/documents
 ```
+
+**Export session citations:**
+
+```bash
+# Export all citations in JSON format
+curl http://127.0.0.1:8000/api/v1/sessions/my-session/citations/export?format=json
+
+# Export citations as Markdown
+curl http://127.0.0.1:8000/api/v1/sessions/my-session/citations/export?format=markdown
+```
+
+The citations export endpoint extracts all RAG citations from assistant messages in a session, providing a complete bibliography of sources used. Useful for generating reference lists or tracking which documents contributed to responses.
 
 #### Document Metadata Filtering
 
