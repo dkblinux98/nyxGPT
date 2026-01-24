@@ -1807,7 +1807,7 @@ def rag_collection_create(
     """Create a new RAG collection.
 
     Creates a new empty collection with the specified embedding dimension.
-    Collection names must be alphanumeric with underscores/hyphens only.
+    Collection names must be alphanumeric with underscores only (no hyphens).
 
     Args:
         body: Collection creation request with name and embedding_dim
@@ -1827,11 +1827,11 @@ def rag_collection_create(
             detail="Cannot manually create 'default' collection. It is automatically managed.",
         )
 
-    # Validate name format (alphanumeric, underscores, hyphens only)
-    if not re.match(r'^[a-zA-Z0-9_-]+$', collection_name):
+    # Validate name format (alphanumeric and underscores only - no hyphens for Cassandra compatibility)
+    if not re.match(r'^[a-zA-Z0-9_]+$', collection_name):
         raise HTTPException(
             status_code=400,
-            detail="Collection name must contain only letters, numbers, underscores, and hyphens.",
+            detail="Collection name must contain only letters, numbers, and underscores.",
         )
 
     # Validate embedding dimension
@@ -2069,12 +2069,9 @@ def rag_collection_get_settings(
     """Get settings for a collection.
 
     Returns the current configuration for a collection, including:
-    - Embedding model(s) in use
-    - Default chunk size (from config)
-    - Default chunk overlap (from config)
-
-    Note: Per-collection settings are currently derived from actual data
-    in the collection, not stored separately.
+    - Embedding model (from stored settings or derived from documents)
+    - Default chunk size (from stored settings or global config)
+    - Default chunk overlap (from stored settings or global config)
 
     Args:
         collection_name: Name of collection
@@ -2094,21 +2091,28 @@ def rag_collection_get_settings(
                 detail=f"Collection '{collection_name}' not found.",
             )
 
-        # Get embedding models in use from documents
-        docs = store.list_docs()
-        embedding_models = list(set(
-            d["embedding_model"] for d in docs
-            if d.get("embedding_model")
-        ))
+        # Get stored settings (if any)
+        stored_settings = store.get_collection_settings()
 
-        # Get default chunk settings from config
+        # Get global defaults from config
         cfg = load_config(None)
-        chunk_size = cfg.getint("rag", "chunk_size", fallback=1000)
-        chunk_overlap = cfg.getint("rag", "chunk_overlap", fallback=200)
+        global_chunk_size = cfg.getint("rag", "chunk_size", fallback=1000)
+        global_chunk_overlap = cfg.getint("rag", "chunk_overlap", fallback=200)
 
-        # Build settings response
-        # embedding_model is first model if only one, otherwise None (indicates mixed)
-        embedding_model = embedding_models[0] if len(embedding_models) == 1 else None
+        # If no stored settings, derive embedding_model from documents
+        embedding_model = stored_settings.get("embedding_model")
+        if not embedding_model:
+            docs = store.list_docs()
+            embedding_models = list(set(
+                d["embedding_model"] for d in docs
+                if d.get("embedding_model")
+            ))
+            # Use first model if only one, otherwise None (indicates mixed)
+            embedding_model = embedding_models[0] if len(embedding_models) == 1 else None
+
+        # Use stored settings if available, otherwise fall back to global config
+        chunk_size = stored_settings.get("chunk_size") or global_chunk_size
+        chunk_overlap = stored_settings.get("chunk_overlap") or global_chunk_overlap
 
         return CollectionSettingsResponse(
             collection=collection_name,
@@ -2143,13 +2147,13 @@ def rag_collection_update_settings(
 ) -> CollectionSettingsResponse:
     """Update settings for a collection.
 
-    This would allow configuring per-collection settings like:
+    This allows configuring per-collection settings like:
     - Preferred embedding model
     - Default chunk size
     - Default chunk overlap
 
-    Note: This endpoint is not yet fully implemented. Per-collection settings
-    require schema enhancements to store configuration separately from documents.
+    Note: Settings are stored separately from documents and are used as defaults
+    when ingesting new documents to this collection.
 
     Args:
         collection_name: Name of collection
@@ -2170,22 +2174,27 @@ def rag_collection_update_settings(
                 detail=f"Collection '{collection_name}' not found.",
             )
 
-        # TODO: Implement per-collection settings storage
-        # This requires:
-        # 1. New Cassandra table: collection_settings
-        # 2. Schema: (collection_name, setting_key, setting_value)
-        # 3. Vectorstore methods: get_collection_settings(), update_collection_settings()
-        # 4. Apply settings during document ingestion (chunk_size, chunk_overlap, embedding_model)
-        #
-        # For now, raise 501 Not Implemented
-        raise HTTPException(
-            status_code=501,
-            detail="Updating collection settings is not yet implemented. This requires schema enhancements to store per-collection configuration. "
-                   "Currently, settings are global (from config file) and embedding models are determined during document ingestion.",
+        # Update collection settings
+        store.update_collection_settings(
+            embedding_model=body.embedding_model,
+            chunk_size=body.chunk_size,
+            chunk_overlap=body.chunk_overlap,
+        )
+
+        # Return updated settings
+        return CollectionSettingsResponse(
+            collection=collection_name,
+            settings=body,
         )
 
     except HTTPException:
         raise
+    except ImportError as e:
+        log.error(f"Cassandra driver import error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="RAG service unavailable: Cassandra driver not found"
+        )
     except Exception as e:
         log.error(f"Failed to update settings for collection '{collection_name}': {e}", exc_info=True)
         raise HTTPException(

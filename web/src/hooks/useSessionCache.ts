@@ -143,8 +143,9 @@ export function useSessionCache(config: CacheConfig = {}) {
       return data;
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
-        // Request was cancelled, don't update error state
-        throw e;
+        // Request was cancelled (cleanup or superseded), don't update error state
+        // Return cached data if available, otherwise empty array
+        return cacheRef.current?.data ?? [];
       }
       const errorMsg = e instanceof Error ? e.message : String(e);
       if (background) {

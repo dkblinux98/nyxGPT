@@ -83,10 +83,17 @@ class CassandraVectorStore:
 
     @property
     def table_name(self) -> str:
-        """Get the table name for the current collection."""
+        """Get the table name for the current collection.
+
+        Sanitizes collection name to ensure valid CQL identifier:
+        - Replaces hyphens with underscores
+        - Collection name should already be validated to contain only alphanumeric, hyphens, underscores
+        """
         if self.collection == "default":
             return self.cfg.table
-        return f"{self.cfg.table}_{self.collection}"
+        # Sanitize collection name for use in table name (replace hyphens with underscores)
+        sanitized_collection = self.collection.replace("-", "_")
+        return f"{self.cfg.table}_{sanitized_collection}"
 
     def _ensure_keyspace_selected(self) -> None:
         if self._keyspace_ready:
@@ -168,7 +175,9 @@ class CassandraVectorStore:
         ks = self.cfg.keyspace
         base_tbl = self.cfg.table
         # Each collection gets its own table with appropriate vector dimensions
-        tbl = f"{base_tbl}_{collection}" if collection != "default" else base_tbl
+        # Sanitize collection name for use in table name (replace hyphens with underscores)
+        sanitized_collection = collection.replace("-", "_")
+        tbl = f"{base_tbl}_{sanitized_collection}" if collection != "default" else base_tbl
 
         self.session.execute(
             f"""
@@ -213,6 +222,9 @@ class CassandraVectorStore:
             ON {tbl}(embedding_model);
             """
         )
+
+        # Ensure settings table exists
+        self.ensure_settings_table()
 
     # ----------------------------
     # Upsert
@@ -598,3 +610,85 @@ class CassandraVectorStore:
             })
 
         return chunks
+
+    # ----------------------------
+    # Collection Settings
+    # ----------------------------
+
+    def ensure_settings_table(self) -> None:
+        """Ensure the collection_settings table exists.
+
+        This table stores per-collection configuration like:
+        - Preferred embedding model
+        - Default chunk size
+        - Default chunk overlap
+
+        Note: This assumes keyspace is already selected or uses fully qualified table name.
+        """
+        # Use fully qualified table name to work in any context
+        self.session.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {self.cfg.keyspace}.collection_settings (
+                collection_name text PRIMARY KEY,
+                embedding_model text,
+                chunk_size int,
+                chunk_overlap int
+            );
+            """
+        )
+
+    def get_collection_settings(self) -> dict[str, Optional[str | int]]:
+        """Get settings for the current collection.
+
+        Returns:
+            Dict with keys: embedding_model, chunk_size, chunk_overlap
+            All values will be None if no settings have been saved.
+        """
+        self.ensure_settings_table()
+
+        query = f"""
+            SELECT embedding_model, chunk_size, chunk_overlap
+            FROM {self.cfg.keyspace}.collection_settings
+            WHERE collection_name = %s
+        """
+        result = self.session.execute(query, [self.collection])
+        row = result.one()
+
+        if row is None:
+            return {
+                "embedding_model": None,
+                "chunk_size": None,
+                "chunk_overlap": None,
+            }
+
+        return {
+            "embedding_model": row.embedding_model,
+            "chunk_size": row.chunk_size,
+            "chunk_overlap": row.chunk_overlap,
+        }
+
+    def update_collection_settings(
+        self,
+        *,
+        embedding_model: Optional[str] = None,
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
+    ) -> None:
+        """Update settings for the current collection.
+
+        Args:
+            embedding_model: Preferred embedding model (optional)
+            chunk_size: Default chunk size for documents (optional)
+            chunk_overlap: Chunk overlap in characters (optional)
+        """
+        self.ensure_settings_table()
+
+        query = f"""
+            INSERT INTO {self.cfg.keyspace}.collection_settings
+            (collection_name, embedding_model, chunk_size, chunk_overlap)
+            VALUES (%s, %s, %s, %s)
+        """
+        self.session.execute(
+            query,
+            [self.collection, embedding_model, chunk_size, chunk_overlap]
+        )

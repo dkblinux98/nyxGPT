@@ -131,7 +131,7 @@ def test_rag_collection_create_success(
     api_base_url: str, require_cassandra: None
 ) -> None:
     """Test successfully creating a new collection."""
-    collection_name = f"test-coll-{uuid.uuid4().hex[:8]}"
+    collection_name = f"test_coll_{uuid.uuid4().hex[:8]}"
 
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         # Create collection
@@ -185,7 +185,7 @@ def test_rag_collection_create_duplicate(
     api_base_url: str, require_cassandra: None
 ) -> None:
     """Test that creating a duplicate collection is rejected."""
-    collection_name = f"test-dup-{uuid.uuid4().hex[:8]}"
+    collection_name = f"test_dup_{uuid.uuid4().hex[:8]}"
 
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         # Create collection first time
@@ -265,20 +265,61 @@ def test_rag_collection_get_settings_nonexistent(
 
 
 @pytest.mark.integration
-def test_rag_collection_update_settings_not_implemented(
+def test_rag_collection_update_settings(
     api_base_url: str, require_cassandra: None
 ) -> None:
-    """Test that updating collection settings returns 501 Not Implemented."""
+    """Test updating collection settings."""
+    collection_name = f"test_settings_{uuid.uuid4().hex[:8]}"
+
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        # Create collection
+        create_resp = client.post(
+            "/api/v1/rag/collections",
+            json={"name": collection_name, "embedding_dim": 768},
+        )
+        assert create_resp.status_code == 201
+
+        # Update settings
         update_resp = client.put(
-            "/api/v1/rag/collections/default/settings",
+            f"/api/v1/rag/collections/{collection_name}/settings",
             json={
                 "embedding_model": "nomic-embed-text",
                 "chunk_size": 1000,
                 "chunk_overlap": 200,
             },
         )
-        assert update_resp.status_code == 501  # Not Implemented
+        assert update_resp.status_code == 200
+
+        update_data = update_resp.json()
+        assert update_data["collection"] == collection_name
+        assert update_data["settings"]["embedding_model"] == "nomic-embed-text"
+        assert update_data["settings"]["chunk_size"] == 1000
+        assert update_data["settings"]["chunk_overlap"] == 200
+
+        # Verify settings persisted by fetching them
+        get_resp = client.get(f"/api/v1/rag/collections/{collection_name}/settings")
+        assert get_resp.status_code == 200
+
+        get_data = get_resp.json()
+        assert get_data["settings"]["embedding_model"] == "nomic-embed-text"
+        assert get_data["settings"]["chunk_size"] == 1000
+        assert get_data["settings"]["chunk_overlap"] == 200
+
+        # Update with partial settings (only embedding_model)
+        partial_resp = client.put(
+            f"/api/v1/rag/collections/{collection_name}/settings",
+            json={"embedding_model": "all-MiniLM-L6-v2", "chunk_size": None, "chunk_overlap": None},
+        )
+        assert partial_resp.status_code == 200
+
+        # Verify partial update
+        get_resp2 = client.get(f"/api/v1/rag/collections/{collection_name}/settings")
+        assert get_resp2.status_code == 200
+        get_data2 = get_resp2.json()
+        assert get_data2["settings"]["embedding_model"] == "all-MiniLM-L6-v2"
+
+        # Cleanup
+        client.delete(f"/api/v1/rag/collections/{collection_name}")
 
 
 @pytest.mark.integration
@@ -286,8 +327,8 @@ def test_rag_collection_reindex_success(
     api_base_url: str, require_ollama: None, require_cassandra: None
 ) -> None:
     """Test re-indexing a collection with a different embedding model."""
-    collection_name = f"test-reindex-{uuid.uuid4().hex[:8]}"
-    doc_id = f"reindex-doc-{uuid.uuid4().hex[:8]}"
+    collection_name = f"test_reindex_{uuid.uuid4().hex[:8]}"
+    doc_id = f"reindex_doc_{uuid.uuid4().hex[:8]}"
 
     with httpx.Client(base_url=api_base_url, timeout=120.0) as client:
         # Create collection
@@ -314,6 +355,9 @@ def test_rag_collection_reindex_success(
         ingest_data = ingest_resp.json()
         chunks_ingested = ingest_data["chunks_ingested"]
         assert chunks_ingested > 0
+
+        # Wait for Cassandra to make data visible (eventual consistency)
+        time.sleep(0.5)
 
         # Re-index the collection (using same model but marking as "reindex")
         # In production, you'd use a different model, but for testing we use the same
@@ -342,7 +386,7 @@ def test_rag_collection_reindex_empty_collection(
     api_base_url: str, require_cassandra: None
 ) -> None:
     """Test re-indexing an empty collection."""
-    collection_name = f"test-reindex-empty-{uuid.uuid4().hex[:8]}"
+    collection_name = f"test_reindex_empty_{uuid.uuid4().hex[:8]}"
 
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         # Create collection

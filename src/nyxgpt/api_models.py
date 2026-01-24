@@ -346,7 +346,7 @@ class CollectionDeleteResponse(BaseModel):
 class CreateCollectionRequest(BaseModel):
     """Request model for creating a new collection."""
 
-    name: str = Field(..., description="Collection name (alphanumeric, underscores, hyphens)")
+    name: str = Field(..., description="Collection name (alphanumeric and underscores only)")
     embedding_dim: int = Field(..., description="Embedding dimension (e.g., 768, 1536)")
     embedding_model: Optional[str] = Field(
         None, description="Embedding model name (optional, for documentation)"

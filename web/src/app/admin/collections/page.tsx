@@ -27,6 +27,10 @@ export default function CollectionsPage() {
   const [viewingSettings, setViewingSettings] = useState<string | null>(null);
   const [collectionSettings, setCollectionSettings] = useState<any>(null);
   const [loadingSettings, setLoadingSettings] = useState(false);
+  const [editingSettings, setEditingSettings] = useState(false);
+  const [settingsEmbeddingModel, setSettingsEmbeddingModel] = useState('');
+  const [settingsChunkSize, setSettingsChunkSize] = useState('');
+  const [settingsChunkOverlap, setSettingsChunkOverlap] = useState('');
 
   async function loadCollections() {
     setLoading(true);
@@ -137,6 +141,11 @@ export default function CollectionsPage() {
 
       const data = await res.json();
       setCollectionSettings(data);
+
+      // Initialize edit state with current values
+      setSettingsEmbeddingModel(data.settings?.embedding_model || '');
+      setSettingsChunkSize(String(data.settings?.chunk_size || ''));
+      setSettingsChunkOverlap(String(data.settings?.chunk_overlap || ''));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(`Failed to load settings: ${msg}`);
@@ -146,9 +155,48 @@ export default function CollectionsPage() {
     }
   }
 
+  async function handleSaveSettings() {
+    if (!viewingSettings) return;
+
+    setEditingSettings(true);
+    setError(null);
+    try {
+      const chunkSize = settingsChunkSize.trim() ? parseInt(settingsChunkSize, 10) : null;
+      const chunkOverlap = settingsChunkOverlap.trim() ? parseInt(settingsChunkOverlap, 10) : null;
+
+      const res = await fetch(`/api/v1/rag/collections/${encodeURIComponent(viewingSettings)}/settings`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          embedding_model: settingsEmbeddingModel.trim() || null,
+          chunk_size: chunkSize,
+          chunk_overlap: chunkOverlap,
+        }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || errorData.detail || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      setCollectionSettings(data);
+      alert('Settings saved successfully');
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`Failed to save settings: ${msg}`);
+    } finally {
+      setEditingSettings(false);
+    }
+  }
+
   function closeSettingsModal() {
     setViewingSettings(null);
     setCollectionSettings(null);
+    setError(null);
+    setSettingsEmbeddingModel('');
+    setSettingsChunkSize('');
+    setSettingsChunkOverlap('');
   }
 
   useEffect(() => {
@@ -595,44 +643,84 @@ export default function CollectionsPage() {
             ) : collectionSettings ? (
               <div>
                 <div style={{ marginBottom: '1rem' }}>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
+                  <label style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', textTransform: 'uppercase', marginBottom: '0.5rem', display: 'block' }}>
                     Embedding Model
-                  </div>
-                  <div style={{ padding: '0.75rem', backgroundColor: 'var(--background-secondary)', borderRadius: '0.375rem', fontSize: '0.875rem' }}>
-                    {collectionSettings.settings?.embedding_model || (
-                      <span style={{ color: 'var(--foreground-muted)', fontStyle: 'italic' }}>
-                        Multiple models or not set
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <div style={{ marginBottom: '1rem' }}>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
-                    Chunk Size
-                  </div>
-                  <div style={{ padding: '0.75rem', backgroundColor: 'var(--background-secondary)', borderRadius: '0.375rem', fontSize: '0.875rem' }}>
-                    {collectionSettings.settings?.chunk_size || 'Not set'}
-                  </div>
-                </div>
-
-                <div style={{ marginBottom: '1.5rem' }}>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
-                    Chunk Overlap
-                  </div>
-                  <div style={{ padding: '0.75rem', backgroundColor: 'var(--background-secondary)', borderRadius: '0.375rem', fontSize: '0.875rem' }}>
-                    {collectionSettings.settings?.chunk_overlap || 'Not set'}
-                  </div>
-                </div>
-
-                <div style={{ padding: '1rem', backgroundColor: '#fef3c7', border: '1px solid #f59e0b', borderRadius: '0.375rem', marginBottom: '1rem' }}>
-                  <p style={{ fontSize: '0.875rem', color: '#92400e' }}>
-                    <strong>Note:</strong> Per-collection settings modification is not yet fully implemented.
-                    These settings are currently read-only and derived from the collection's actual data and global configuration.
+                  </label>
+                  <input
+                    type="text"
+                    value={settingsEmbeddingModel}
+                    onChange={(e) => setSettingsEmbeddingModel(e.target.value)}
+                    placeholder="e.g., nomic-embed-text"
+                    style={{
+                      width: '100%',
+                      padding: '0.75rem',
+                      backgroundColor: 'var(--background-secondary)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '0.375rem',
+                      fontSize: '0.875rem',
+                      color: 'var(--foreground)',
+                    }}
+                  />
+                  <p style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', marginTop: '0.25rem' }}>
+                    Optional: Preferred embedding model for this collection
                   </p>
                 </div>
 
-                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <div style={{ marginBottom: '1rem' }}>
+                  <label style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', textTransform: 'uppercase', marginBottom: '0.5rem', display: 'block' }}>
+                    Chunk Size
+                  </label>
+                  <input
+                    type="number"
+                    value={settingsChunkSize}
+                    onChange={(e) => setSettingsChunkSize(e.target.value)}
+                    placeholder="e.g., 800"
+                    style={{
+                      width: '100%',
+                      padding: '0.75rem',
+                      backgroundColor: 'var(--background-secondary)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '0.375rem',
+                      fontSize: '0.875rem',
+                      color: 'var(--foreground)',
+                    }}
+                  />
+                  <p style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', marginTop: '0.25rem' }}>
+                    Default chunk size for new documents (characters)
+                  </p>
+                </div>
+
+                <div style={{ marginBottom: '1.5rem' }}>
+                  <label style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', textTransform: 'uppercase', marginBottom: '0.5rem', display: 'block' }}>
+                    Chunk Overlap
+                  </label>
+                  <input
+                    type="number"
+                    value={settingsChunkOverlap}
+                    onChange={(e) => setSettingsChunkOverlap(e.target.value)}
+                    placeholder="e.g., 100"
+                    style={{
+                      width: '100%',
+                      padding: '0.75rem',
+                      backgroundColor: 'var(--background-secondary)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '0.375rem',
+                      fontSize: '0.875rem',
+                      color: 'var(--foreground)',
+                    }}
+                  />
+                  <p style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', marginTop: '0.25rem' }}>
+                    Chunk overlap for new documents (characters)
+                  </p>
+                </div>
+
+                <div style={{ padding: '1rem', backgroundColor: '#dbeafe', border: '1px solid #3b82f6', borderRadius: '0.375rem', marginBottom: '1rem' }}>
+                  <p style={{ fontSize: '0.875rem', color: '#1e40af' }}>
+                    <strong>Note:</strong> These settings are stored per-collection and will be used as defaults when ingesting new documents.
+                  </p>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
                   <button
                     onClick={closeSettingsModal}
                     style={{
@@ -645,6 +733,21 @@ export default function CollectionsPage() {
                     }}
                   >
                     Close
+                  </button>
+                  <button
+                    onClick={handleSaveSettings}
+                    disabled={editingSettings}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      backgroundColor: editingSettings ? 'var(--background-secondary)' : 'var(--primary-color, #3b82f6)',
+                      color: editingSettings ? 'var(--foreground-muted)' : 'white',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '0.375rem',
+                      cursor: editingSettings ? 'not-allowed' : 'pointer',
+                      fontSize: '0.875rem',
+                    }}
+                  >
+                    {editingSettings ? 'Saving...' : 'Save Settings'}
                   </button>
                 </div>
               </div>
