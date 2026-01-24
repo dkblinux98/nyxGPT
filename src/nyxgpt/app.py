@@ -49,6 +49,9 @@ from nyxgpt.api_models import (
     RagQueryResponse,
     RagMetricsQueryRequest,
     RagMetricsQueryResponse,
+    CollectionInfo,
+    CollectionsListResponse,
+    CollectionDeleteResponse,
 )
 
 from nyxgpt.config import (
@@ -1724,6 +1727,105 @@ def rag_config(request: Request) -> dict[str, Any]:
         "good_score_threshold": get_rag_good_score_threshold(cfg),
         "medium_score_threshold": get_rag_medium_score_threshold(cfg),
     }
+
+
+@api.get("/rag/collections", response_model=CollectionsListResponse)
+def rag_collections_list(request: Request) -> CollectionsListResponse:
+    """List all RAG collections with their statistics.
+
+    Returns information about each collection including:
+    - Collection name
+    - Number of documents
+    - Total number of chunks
+    - Embedding models used
+    """
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+    from nyxgpt.api_models import CollectionInfo, CollectionsListResponse
+
+    # Get list of all collections
+    temp_store = CassandraVectorStore()
+    try:
+        collection_names = temp_store.list_collections()
+    finally:
+        temp_store.close()
+
+    # Gather stats for each collection
+    collections_info = []
+    for coll_name in collection_names:
+        store = CassandraVectorStore(collection=coll_name)
+        try:
+            docs = store.list_docs()
+            doc_count = len(docs)
+            chunk_count = sum(d["chunks"] for d in docs)
+
+            # Get unique embedding models
+            embedding_models = list(set(
+                d["embedding_model"] for d in docs
+                if d.get("embedding_model")
+            ))
+            embedding_models.sort()
+
+            collections_info.append(
+                CollectionInfo(
+                    name=coll_name,
+                    doc_count=doc_count,
+                    chunk_count=chunk_count,
+                    embedding_models=embedding_models,
+                )
+            )
+        except Exception as e:
+            log.error(f"Failed to get stats for collection '{coll_name}': {e}", exc_info=True)
+            # Include collection with zero stats on error
+            collections_info.append(
+                CollectionInfo(
+                    name=coll_name,
+                    doc_count=0,
+                    chunk_count=0,
+                    embedding_models=[],
+                )
+            )
+        finally:
+            store.close()
+
+    return CollectionsListResponse(collections=collections_info)
+
+
+@api.delete("/rag/collections/{collection_name}", response_model=CollectionDeleteResponse)
+def rag_collection_delete(request: Request, collection_name: str) -> CollectionDeleteResponse:
+    """Delete a RAG collection (truncates all data in the collection).
+
+    WARNING: This operation cannot be undone. All documents and chunks in the
+    collection will be permanently deleted.
+
+    Note: This does not drop the Cassandra table, only truncates it.
+    To fully remove the table, use Cassandra admin tools.
+    """
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+    from nyxgpt.api_models import CollectionDeleteResponse
+
+    # Prevent deletion of default collection via more descriptive error
+    if collection_name == "default":
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete the 'default' collection. Use truncate endpoint to clear it.",
+        )
+
+    store = CassandraVectorStore(collection=collection_name)
+    try:
+        # Truncate the collection (remove all data)
+        store.truncate()
+        return CollectionDeleteResponse(
+            collection=collection_name,
+            status=f"Collection '{collection_name}' has been cleared (truncated)",
+        )
+    except Exception as e:
+        log.error(f"Failed to delete collection '{collection_name}': {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete collection: {str(e)}"
+        )
+    finally:
+        store.close()
 
 
 @api.get("/rag/documents")

@@ -333,6 +333,7 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
 - **Client-side session metadata cache** - Stale-while-revalidate pattern for faster UI updates with automatic background refresh
 - **Optimistic UI updates** for instant feedback on session operations (pin, rename, delete, create)
 - RAG document upload and toggle
+- **RAG Collections management** at `/admin/collections` for multi-model embedding support
 - **Configuration wizard** at `/admin` for step-by-step setup
 - **Log viewer** at `/admin/logs` for debugging and monitoring
 - Model management (pull, delete, list) at `/models`
@@ -635,6 +636,31 @@ nyxgpt rag compare test-doc.txt \
 ```
 
 The compare command benchmarks embedding speed and query performance, helping you choose the optimal model for your requirements.
+
+#### Collections Management UI
+
+The web UI includes a dedicated collections management page at `/admin/collections` for visualizing and managing RAG collections.
+
+**Access:**
+- Navigate to `http://127.0.0.1:3000/admin/collections`
+- Or click **⚙️ Settings** → **RAG Collections** in the main chat interface
+
+**Features:**
+- **View all collections** with real-time statistics:
+  - Document count
+  - Total chunk count
+  - Embedding models used in each collection
+- **Clear collections** to remove all documents and chunks (with confirmation)
+- **Collection insights** showing which embedding models are active
+- **Protected default collection** cannot be deleted to prevent accidental data loss
+
+**Use Cases:**
+- Monitor collection growth and usage
+- Clean up test collections
+- Verify which embedding models are in use
+- Understand document distribution across collections
+
+Collections are created automatically when you ingest documents with specific embedding models using the CLI. The UI provides visibility and control over these collections without requiring command-line access.
 
 #### Debug Mode
 

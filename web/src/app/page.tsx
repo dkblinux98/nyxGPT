@@ -1220,6 +1220,26 @@ function Home() {
                 <span>Manage Models</span>
               </a>
 
+              {/* RAG Collections */}
+              <a
+                href="/admin/collections"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '8px 16px',
+                  textDecoration: 'none',
+                  color: 'var(--foreground)',
+                  fontSize: 14,
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={() => setShowSettingsMenu(false)}
+              >
+                <span>📚</span>
+                <span>RAG Collections</span>
+              </a>
+
               {/* Divider */}
               <div style={{ height: 1, background: 'var(--border-light)', margin: '6px 0' }} />
 
