@@ -196,10 +196,10 @@ def test_export_citations_markdown_format(api_base_url: str) -> None:
 
     content = resp.text
 
-    # Verify markdown content
+    # Verify markdown content (doc_id hyphens are escaped for markdown safety)
     assert f"# Citations for {session_name}" in content
     assert "Total sources: 1" in content
-    assert "[1] doc-1 (chunk 1)" in content
+    assert "[1] doc\\-1 (chunk 1)" in content  # Hyphen is escaped in markdown
     assert "**Confidence:** 0.880" in content
     assert "**Message:** 1" in content
     assert "Citation text content" in content

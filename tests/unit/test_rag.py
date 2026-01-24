@@ -555,8 +555,8 @@ def test_cassandra_vectorstore_ensure_schema(monkeypatch: pytest.MonkeyPatch) ->
     store = CassandraVectorStore()
     store.ensure_schema(embedding_dim=768)
 
-    # Should execute 5 statements: CREATE KEYSPACE, USE, CREATE TABLE, CREATE INDEX (vector), CREATE INDEX (embedding_model)
-    assert mock_session.execute.call_count == 5
+    # Should execute 6 statements: CREATE KEYSPACE, USE, CREATE TABLE, CREATE INDEX (vector), CREATE INDEX (embedding_model), CREATE TABLE (collection_settings)
+    assert mock_session.execute.call_count == 6
     assert store._keyspace_ready
 
 

@@ -90,10 +90,10 @@ def test_cassandra_vectorstore_collection_table_name(monkeypatch: pytest.MonkeyP
     assert store1.collection == "default"
     assert store1.table_name == "rag_chunks"  # Assumes default cfg.table
 
-    # Custom collection
+    # Custom collection (hyphens are sanitized to underscores for CQL compatibility)
     store2 = CassandraVectorStore(collection="all-minilm")
     assert store2.collection == "all-minilm"
-    assert store2.table_name == "rag_chunks_all-minilm"
+    assert store2.table_name == "rag_chunks_all_minilm"
 
 
 @pytest.mark.unit

@@ -291,12 +291,26 @@ def test_query_by_embedding_combined_filters():
 def test_retrieve_context_with_metadata_filter():
     """Test that retrieve_context passes metadata_filter to vector store."""
     from nyxgpt.rag.rag import retrieve_context
+    from nyxgpt.rag.vectorstore_cassandra import VectorSearchDebugMetrics
 
     # This test verifies the integration - actual filtering is tested above
     # We just verify the parameter is passed through correctly
     with patch('nyxgpt.rag.rag.CassandraVectorStore') as mock_store_class:
         mock_store = Mock()
-        mock_store.query_by_embedding.return_value = []
+        # Mock to return tuple when collect_metrics=True, else empty list
+        def mock_query_by_embedding(*args, **kwargs):
+            if kwargs.get('collect_metrics'):
+                metrics = VectorSearchDebugMetrics(
+                    raw_results_count=0,
+                    score_min=None,
+                    score_max=None,
+                    score_mean=None,
+                    vector_search_time_ms=0.0
+                )
+                return ([], metrics)
+            return []
+
+        mock_store.query_by_embedding.side_effect = mock_query_by_embedding
         mock_store.list_docs.return_value = []
         mock_store_class.return_value = mock_store
 
@@ -306,6 +320,7 @@ def test_retrieve_context_with_metadata_filter():
                 "test query",
                 top_k=5,
                 metadata_filter=metadata_filter,
+                debug_mode=False,  # Explicitly disable debug mode to avoid tuple unpacking
             )
 
             # Verify metadata_filter was passed to query_by_embedding
