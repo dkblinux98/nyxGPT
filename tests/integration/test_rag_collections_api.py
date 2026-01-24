@@ -282,14 +282,15 @@ def test_rag_collection_update_settings_not_implemented(
 
 
 @pytest.mark.integration
-def test_rag_collection_reindex_not_implemented(
-    api_base_url: str, require_cassandra: None
+def test_rag_collection_reindex_success(
+    api_base_url: str, require_ollama: None, require_cassandra: None
 ) -> None:
-    """Test that re-indexing collection returns 501 Not Implemented."""
+    """Test re-indexing a collection with a different embedding model."""
     collection_name = f"test-reindex-{uuid.uuid4().hex[:8]}"
+    doc_id = f"reindex-doc-{uuid.uuid4().hex[:8]}"
 
-    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
-        # Create collection first
+    with httpx.Client(base_url=api_base_url, timeout=120.0) as client:
+        # Create collection
         create_resp = client.post(
             "/api/v1/rag/collections",
             json={
@@ -299,15 +300,75 @@ def test_rag_collection_reindex_not_implemented(
         )
         assert create_resp.status_code == 201
 
-        # Try to re-index
+        # Ingest a document into the collection
+        ingest_resp = client.post(
+            "/api/v1/rag/ingest",
+            json={
+                "doc_id": doc_id,
+                "text": "This is a test document for re-indexing. " * 10,  # Make it longer to get multiple chunks
+                "collection": collection_name,
+                "ensure_schema": False,  # Schema already created
+            },
+        )
+        assert ingest_resp.status_code in (200, 201)
+        ingest_data = ingest_resp.json()
+        chunks_ingested = ingest_data["chunks_ingested"]
+        assert chunks_ingested > 0
+
+        # Re-index the collection (using same model but marking as "reindex")
+        # In production, you'd use a different model, but for testing we use the same
         reindex_resp = client.post(
             f"/api/v1/rag/collections/{collection_name}/reindex",
             json={
-                "target_embedding_model": "nomic-embed-text-v1.5",
+                "target_embedding_model": "nomic-embed-text",  # Use default model
                 "embedding_dim": 768,
             },
         )
-        assert reindex_resp.status_code == 501  # Not Implemented
+        assert reindex_resp.status_code == 200
+
+        reindex_data = reindex_resp.json()
+        assert reindex_data["collection"] == collection_name
+        assert reindex_data["chunks_processed"] == chunks_ingested
+        assert reindex_data["chunks_total"] == chunks_ingested
+        assert "status" in reindex_data
+        assert "Successfully re-indexed" in reindex_data["status"]
+
+        # Cleanup
+        client.delete(f"/api/v1/rag/collections/{collection_name}")
+
+
+@pytest.mark.integration
+def test_rag_collection_reindex_empty_collection(
+    api_base_url: str, require_cassandra: None
+) -> None:
+    """Test re-indexing an empty collection."""
+    collection_name = f"test-reindex-empty-{uuid.uuid4().hex[:8]}"
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        # Create collection
+        create_resp = client.post(
+            "/api/v1/rag/collections",
+            json={
+                "name": collection_name,
+                "embedding_dim": 768,
+            },
+        )
+        assert create_resp.status_code == 201
+
+        # Try to re-index empty collection
+        reindex_resp = client.post(
+            f"/api/v1/rag/collections/{collection_name}/reindex",
+            json={
+                "target_embedding_model": "nomic-embed-text",
+                "embedding_dim": 768,
+            },
+        )
+        assert reindex_resp.status_code == 200
+
+        reindex_data = reindex_resp.json()
+        assert reindex_data["chunks_processed"] == 0
+        assert reindex_data["chunks_total"] == 0
+        assert "empty" in reindex_data["status"].lower()
 
         # Cleanup
         client.delete(f"/api/v1/rag/collections/{collection_name}")

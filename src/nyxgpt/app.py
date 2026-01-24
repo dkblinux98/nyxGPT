@@ -1970,9 +1970,11 @@ def rag_collection_reindex(
                 detail=f"Collection '{collection_name}' not found.",
             )
 
-        # Get all documents in the collection
-        docs = store.list_docs()
-        if not docs:
+        # Get all chunks from the collection
+        log.info(f"Re-indexing collection '{collection_name}' with model '{body.target_embedding_model}'")
+        chunks = store.get_all_chunks()
+
+        if not chunks:
             return ReindexCollectionResponse(
                 collection=collection_name,
                 status="Collection is empty, nothing to re-index",
@@ -1980,24 +1982,62 @@ def rag_collection_reindex(
                 chunks_total=0,
             )
 
-        # For re-indexing, we need to:
-        # 1. Get all chunks (requires new vectorstore method)
-        # 2. Re-generate embeddings for each chunk
-        # 3. Update chunks with new embeddings (requires new vectorstore method)
-        #
-        # Currently, the vectorstore doesn't have methods to:
-        # - Get all chunks from a collection
-        # - Update individual chunk embeddings
-        #
-        # TODO: Implement vectorstore methods for:
-        #   - get_all_chunks(collection_name) -> list[dict]
-        #   - update_chunk_embedding(doc_id, chunk_id, new_embedding, new_model)
-        #
-        # For now, raise 501 Not Implemented
-        raise HTTPException(
-            status_code=501,
-            detail="Re-indexing is not yet implemented. This requires vectorstore enhancements to retrieve and update individual chunks. "
-                   "As a workaround, delete the collection and re-ingest documents with the desired embedding model.",
+        chunks_total = len(chunks)
+        log.info(f"Found {chunks_total} chunks to re-index in collection '{collection_name}'")
+
+        # Extract text from each chunk for re-embedding
+        texts = [chunk["text"] for chunk in chunks]
+
+        # Re-generate embeddings with new model
+        log.info(f"Generating new embeddings with model '{body.target_embedding_model}'")
+        try:
+            new_embeddings = embed_texts(
+                texts,
+                model=body.target_embedding_model,
+                dimension=body.embedding_dim,
+            )
+        except Exception as e:
+            log.error(f"Failed to generate embeddings: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to generate embeddings with model '{body.target_embedding_model}': {str(e)}"
+            )
+
+        # Update chunks with new embeddings
+        # Group chunks by doc_id for batch updates
+        from collections import defaultdict
+        chunks_by_doc: dict[str, list] = defaultdict(list)
+
+        for i, chunk in enumerate(chunks):
+            chunk_data = {
+                "chunk_id": chunk["chunk_id"],
+                "text": chunk["text"],
+                "metadata": chunk["metadata"],
+                "embedding": new_embeddings[i],
+            }
+            chunks_by_doc[chunk["doc_id"]].append(chunk_data)
+
+        # Update each document's chunks
+        chunks_processed = 0
+        for doc_id, doc_chunks in chunks_by_doc.items():
+            # Get doc_hash from first chunk (all chunks of same doc have same hash)
+            doc_hash = chunks[0].get("doc_hash", "")
+
+            store.upsert_chunks(
+                doc_id=doc_id,
+                chunks=doc_chunks,
+                embedding_model=body.target_embedding_model,
+                doc_hash=doc_hash,
+            )
+            chunks_processed += len(doc_chunks)
+
+        log.info(f"Successfully re-indexed {chunks_processed} chunks in collection '{collection_name}'")
+
+        return ReindexCollectionResponse(
+            collection=collection_name,
+            status=f"Successfully re-indexed {chunks_processed} chunks with model '{body.target_embedding_model}'",
+            chunks_processed=chunks_processed,
+            chunks_total=chunks_total,
         )
 
     except HTTPException:
