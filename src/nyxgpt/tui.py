@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import httpx
-import json
 import logging
 from typing import Optional
 
@@ -1116,6 +1115,8 @@ class NyxGPTTUI(App):
         asyncio.create_task(self._stream_chat(text))
 
     async def _stream_chat(self, prompt: str) -> None:
+        import json
+
         url = f"{self.api_base_url}/api/v1/chat/stream"
 
         payload = {
@@ -1154,8 +1155,6 @@ class NyxGPTTUI(App):
 
                             # Parse retry status
                             try:
-                                import json
-
                                 json_start = start_idx + len("__RETRY_START__")
                                 json_end = end_idx - len("__RETRY_END__")
                                 retry_json = buffer[json_start:json_end]
@@ -1201,7 +1200,10 @@ class NyxGPTTUI(App):
                                     for idx, chunk in enumerate(chunks, 1):
                                         doc_id = chunk.get("doc_id", "Unknown")
                                         chunk_id = chunk.get("chunk_id")
-                                        score = chunk.get("similarity_score") or chunk.get("score", 0.0)
+                                        # Use explicit None checking to avoid treating 0.0 as falsy
+                                        score = chunk.get("similarity_score")
+                                        if score is None:
+                                            score = chunk.get("score", 0.0)
 
                                         # Format score with color based on quality
                                         if score >= 0.7:

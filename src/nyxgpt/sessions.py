@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TypedDict, NotRequired
+from typing import Any, TypedDict, NotRequired, cast
 
 from nyxgpt.config import (
     load_config,
@@ -851,13 +851,16 @@ def export_session_markdown(name: str, sessions_dir: Path | None) -> tuple[bool,
             lines.append(f"## Assistant\n\n{content}\n")
 
             # Include RAG citations if available
-            rag_chunks = msg.get("rag_chunks", [])
+            rag_chunks: list[Any] = cast(list[Any], msg.get("rag_chunks", []))
             if rag_chunks and isinstance(rag_chunks, list) and len(rag_chunks) > 0:
                 lines.append("### RAG Sources\n")
                 for idx, chunk in enumerate(rag_chunks, 1):
                     doc_id = chunk.get("doc_id", "Unknown")
                     chunk_id = chunk.get("chunk_id")
-                    score = chunk.get("similarity_score") or chunk.get("score", 0.0)
+                    # Use explicit None checking to avoid treating 0.0 as falsy
+                    score = chunk.get("similarity_score")
+                    if score is None:
+                        score = chunk.get("score", 0.0)
                     text = chunk.get("text", "")
 
                     chunk_ref = f"chunk {chunk_id}" if chunk_id is not None else "source"
@@ -981,14 +984,17 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
 
         # Include RAG citations if available (for assistant messages)
         if role == "assistant":
-            rag_chunks = msg.get("rag_chunks", [])
+            rag_chunks: list[Any] = cast(list[Any], msg.get("rag_chunks", []))
             if rag_chunks and isinstance(rag_chunks, list) and len(rag_chunks) > 0:
                 html_parts.append('    <div class="citations">')
                 html_parts.append('      <div class="citation-header">RAG Sources</div>')
                 for idx, chunk in enumerate(rag_chunks, 1):
                     doc_id = chunk.get("doc_id", "Unknown")
                     chunk_id = chunk.get("chunk_id")
-                    score = chunk.get("similarity_score") or chunk.get("score", 0.0)
+                    # Use explicit None checking to avoid treating 0.0 as falsy
+                    score = chunk.get("similarity_score")
+                    if score is None:
+                        score = chunk.get("score", 0.0)
                     text = chunk.get("text", "")
 
                     # Escape HTML in text

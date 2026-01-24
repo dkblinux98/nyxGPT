@@ -2221,7 +2221,7 @@ def test_export_markdown_includes_rag_citations(tmp_path: Path) -> None:
     assert "Confidence: 0.880" in content
 
 
-def test_export_session_html(tmp_path: Path) -> None:
+def test_export_session_html_with_citations(tmp_path: Path) -> None:
     """Test that HTML export includes RAG citations with proper styling."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
