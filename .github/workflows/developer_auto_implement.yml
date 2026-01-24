@@ -258,12 +258,23 @@ jobs:
             Requirements:
             - Make the minimal correct change to resolve the issue.
             - Add/update tests for ALL code changes.
-            - **MANDATORY TEST SUCCESS BEFORE COMMIT**:
+            - **MANDATORY VALIDATION BEFORE COMMIT**:
+              * If you modified web/ TypeScript files:
+                - Run: cd web && npm run type-check
+                - ALL type checks MUST PASS before proceeding
+                - Fix any TypeScript errors before committing
+              * If you modified Python files:
+                - Run: mypy src/
+                - Fix any type errors before committing
+              * If you added backend API endpoints (/api/v1/...):
+                - Create corresponding web proxy route in web/src/app/api/v1/.../route.ts
+                - Run: ./scripts/validate-web-routes.sh
+                - Fix any missing routes before committing
               * Run the test suite with: pytest -v
-              * ALL tests MUST PASS (0 failures, 0 errors) before proceeding
-              * If ANY test fails or has errors, you MUST fix them before committing
-              * DO NOT commit code with failing tests under ANY circumstances
-              * Verify test success by checking the pytest output shows "passed" with no "FAILED" or "ERROR"
+                - ALL tests MUST PASS (0 failures, 0 errors) before proceeding
+                - If ANY test fails or has errors, you MUST fix them before committing
+                - DO NOT commit code with failing tests under ANY circumstances
+                - Verify test success by checking the pytest output shows "passed" with no "FAILED" or "ERROR"
             - **MANDATORY DOCUMENTATION**: Update documentation for ALL user-facing changes:
               * If you modify src/nyxgpt/api.py or src/nyxgpt/app.py → Update docs/api.md
               * If you modify src/nyxgpt/cli.py → Update docs/configuration.md or README.md CLI section

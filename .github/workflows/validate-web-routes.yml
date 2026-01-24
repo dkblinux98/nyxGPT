@@ -1,34 +1,50 @@
-name: Validate Web Routes
+name: Web Validation
 
 on:
   pull_request:
     paths:
-      - 'web/src/**/*.ts'
-      - 'web/src/**/*.tsx'
+      - 'web/**/*.ts'
+      - 'web/**/*.tsx'
       - 'src/nyxgpt/app.py'
   push:
     branches:
       - v1.0.0
     paths:
-      - 'web/src/**/*.ts'
-      - 'web/src/**/*.tsx'
+      - 'web/**/*.ts'
+      - 'web/**/*.tsx'
       - 'src/nyxgpt/app.py'
 
 jobs:
-  validate-routes:
+  validate-web:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      - name: TypeScript type check
+        run: cd web && npm run type-check
 
       - name: Validate web proxy routes exist
         run: |
           chmod +x scripts/validate-web-routes.sh
           ./scripts/validate-web-routes.sh
 
-      - name: Check for missing route documentation
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
         run: |
-          echo "Checking if README documents web route creation..."
-          if ! grep -q "web/src/app/api" README.md docs/*.md 2>/dev/null; then
-            echo "⚠️  Warning: No documentation found for creating web proxy routes"
-            echo "   Consider adding a section to docs/api.md or CONTRIBUTING.md"
-          fi
+          python -m pip install --upgrade pip
+          pip install mypy
+
+      - name: Python type check (mypy)
+        run: mypy src/ || echo "⚠️  mypy found type errors (not blocking)"
