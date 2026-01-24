@@ -12,7 +12,7 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 42 available endpoints:
+Quick reference of all 44 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -51,6 +51,8 @@ Quick reference of all 42 available endpoints:
 | `/api/v1/tools/cat` | POST | Read file |
 | `/api/v1/tools/grep` | POST | Search files |
 | `/api/v1/rag/config` | GET | Get RAG configuration (score thresholds) |
+| `/api/v1/rag/collections` | GET | List all RAG collections with statistics |
+| `/api/v1/rag/collections/{name}` | DELETE | Clear RAG collection (truncate all data) |
 | `/api/v1/rag/ingest` | POST | Ingest text document (with update detection) |
 | `/api/v1/rag/documents/{doc_id}` | GET | Get document version information |
 | `/api/v1/rag/query` | POST | Query RAG vector store (supports metadata filters) |
@@ -1051,6 +1053,69 @@ At a high level, the API supports:
 - vector search / retrieval
 - RAG-assisted chat
 - **metadata filtering** - filter queries by doc_id, filename, tags, or date range
+- **collection management** - manage multi-model embedding collections
+
+### `GET /api/v1/rag/collections`
+
+List all RAG collections with statistics including document count, chunk count, and embedding models used.
+
+**Response:**
+
+```json
+{
+  "collections": [
+    {
+      "name": "default",
+      "doc_count": 15,
+      "chunk_count": 342,
+      "embedding_models": ["nomic-embed-text"]
+    },
+    {
+      "name": "all-minilm",
+      "doc_count": 8,
+      "chunk_count": 156,
+      "embedding_models": ["all-minilm:latest"]
+    }
+  ]
+}
+```
+
+**Response Fields:**
+- `name` - Collection name
+- `doc_count` - Number of documents in the collection
+- `chunk_count` - Total number of chunks across all documents
+- `embedding_models` - List of unique embedding models used in this collection
+
+**Use Cases:**
+- Monitor collection growth and usage
+- Verify which embedding models are active
+- Understand document distribution across collections
+
+### `DELETE /api/v1/rag/collections/{name}`
+
+Clear all data from a RAG collection (truncates the collection table).
+
+**WARNING:** This operation permanently deletes all documents and chunks in the collection and cannot be undone.
+
+**Path Parameters:**
+- `name` - Collection name to clear
+
+**Restrictions:**
+- Cannot clear the `default` collection (returns 400 error)
+
+**Response:**
+
+```json
+{
+  "collection": "all-minilm",
+  "status": "Collection 'all-minilm' has been cleared (truncated)"
+}
+```
+
+**Error Responses:**
+- `400 Bad Request` - Attempted to clear default collection (message: "Cannot clear the 'default' collection. This collection is protected.")
+- `503 Service Unavailable` - Cassandra driver not available
+- `500 Internal Server Error` - Failed to clear collection
 
 ### `GET /api/v1/rag/documents`
 
