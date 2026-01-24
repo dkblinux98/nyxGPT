@@ -285,7 +285,7 @@ Disable RAG for a specific session.
 
 Upload and ingest a document for RAG.
 
-**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf`, `.pptx` (PowerPoint presentations), `.docx` (Microsoft Word), `.epub` (eBooks)
+**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf` (with OCR support for image-based PDFs), `.pptx` (PowerPoint presentations), `.docx` (Microsoft Word), `.epub` (eBooks)
 
 **Request:**
 ```bash
@@ -305,7 +305,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
 **File Type Handling:**
 
 - **Markdown (`.md`)**: Extracts YAML frontmatter (title, author, tags, etc.), preserves headers hierarchy, handles code blocks
-- **PDF (`.pdf`)**: Extracts text from all pages
+- **PDF (`.pdf`)**: Extracts text from all pages with automatic OCR fallback for image-based PDFs (configurable)
 - **PowerPoint (`.pptx`)**: Extracts slide text, speaker notes, preserves slide order
 - **Microsoft Word (`.docx`)**: Extracts paragraphs, headings, tables, and embedded image markers
 - **ePUB (`.epub`)**: Extracts metadata (title, author, publisher, etc.), chapter structure, and clean text content
@@ -319,6 +319,10 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
 - Formatting preservation for better context quality
 - Tables are marked with `[Table]` headers in extracted text
 - Metadata is prepended as `[Metadata]` section
+- **OCR support** for image-based PDFs (automatically triggered when text extraction is minimal)
+  - Configurable DPI, language, and page segmentation mode
+  - Requires Tesseract OCR to be installed on the system
+  - See `[pdf]` section in config.ini for OCR settings
 
 **ePUB Files:**
 - Extracts rich metadata (title, author, publisher, description, date, language)

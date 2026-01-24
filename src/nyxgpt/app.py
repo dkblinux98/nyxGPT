@@ -2641,11 +2641,89 @@ async def rag_upload_file(
 
             text = "\n\n".join(text_parts)
 
-            # Validate extracted content
+            # Check if OCR is needed for image-only pages (#2669)
+            cfg = load_config(None)
+            ocr_enabled = cfg.getboolean("pdf", "ocr_enabled", fallback=True)
+            ocr_min_text_threshold = cfg.getint("pdf", "ocr_min_text_threshold", fallback=50)
+
+            # Detect if PDF is image-only or has minimal text
+            needs_ocr = (not text or len(text.strip()) < ocr_min_text_threshold) and ocr_enabled
+
+            if needs_ocr:
+                log.info(f"PDF has minimal text ({len(text.strip()) if text else 0} chars), attempting OCR")
+                try:
+                    import pytesseract
+                    from pdf2image import convert_from_bytes
+                    from PIL import Image
+
+                    # Get OCR configuration
+                    ocr_dpi = cfg.getint("pdf", "ocr_dpi", fallback=300)
+                    ocr_lang = cfg.get("pdf", "ocr_lang", fallback="eng")
+                    ocr_psm = cfg.getint("pdf", "ocr_psm", fallback=3)
+
+                    # Configure tesseract if custom path is specified
+                    tesseract_cmd = cfg.get("pdf", "tesseract_cmd", fallback=None)
+                    if tesseract_cmd:
+                        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+
+                    # Convert PDF pages to images
+                    log.debug(f"Converting PDF to images at {ocr_dpi} DPI")
+                    images = convert_from_bytes(content, dpi=ocr_dpi)
+
+                    # Extract text from each page using OCR
+                    ocr_text_parts = []
+                    if metadata:
+                        meta_str = "\n".join(f"{k}: {v}" for k, v in metadata.items())
+                        ocr_text_parts.append(f"[Metadata]\n{meta_str}\n")
+
+                    # Configure OCR with PSM (Page Segmentation Mode)
+                    # PSM 3 = Fully automatic page segmentation (default)
+                    # PSM 6 = Assume a single uniform block of text
+                    # PSM 11 = Sparse text - Find as much text as possible in no particular order
+                    custom_config = f'--psm {ocr_psm}'
+
+                    for page_num, image in enumerate(images, 1):
+                        try:
+                            page_ocr_text = pytesseract.image_to_string(
+                                image,
+                                lang=ocr_lang,
+                                config=custom_config
+                            )
+                            if page_ocr_text and page_ocr_text.strip():
+                                ocr_text_parts.append(f"[Page {page_num} (OCR)]\n{page_ocr_text.strip()}")
+                                log.debug(f"OCR extracted {len(page_ocr_text.strip())} chars from page {page_num}")
+                        except Exception as page_error:
+                            log.warning(f"OCR failed for page {page_num}: {page_error}")
+                            continue
+
+                    # Use OCR text if extraction was successful
+                    if ocr_text_parts:
+                        ocr_text = "\n\n".join(ocr_text_parts)
+                        if len(ocr_text.strip()) > len(text.strip() if text else ""):
+                            log.info(f"OCR extracted {len(ocr_text.strip())} chars (vs {len(text.strip()) if text else 0} from standard extraction)")
+                            text = ocr_text
+                        else:
+                            log.info("OCR did not improve extraction, using standard extraction")
+                    else:
+                        log.warning("OCR produced no text")
+
+                except ImportError as ocr_import_error:
+                    missing_lib = str(ocr_import_error)
+                    if "pytesseract" in missing_lib:
+                        log.warning("pytesseract not installed, skipping OCR. Install with: pip install pytesseract")
+                    elif "pdf2image" in missing_lib:
+                        log.warning("pdf2image not installed, skipping OCR. Install with: pip install pdf2image")
+                    else:
+                        log.warning(f"OCR dependencies missing: {missing_lib}")
+                except Exception as ocr_error:
+                    log.warning(f"OCR extraction failed: {ocr_error}")
+
+            # Validate extracted content (after OCR attempt)
             if not text or not text.strip():
                 raise HTTPException(
                     status_code=400,
-                    detail="PDF extraction produced no text. The file may be empty, image-only, or malformed."
+                    detail="PDF extraction produced no text. The file may be empty, image-only, or malformed. "
+                           "If this is an image-based PDF, ensure Tesseract OCR is installed and configured."
                 )
 
         except ImportError as e:
