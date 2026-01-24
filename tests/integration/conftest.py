@@ -145,7 +145,10 @@ def cleanup_test_rag_documents(api_base_url):
     # Test document prefixes that should always be cleaned up
     TEST_DOC_PREFIXES = (
         "api-smoke",
+        "api_test",
+        "debug",
         "disable-test-",
+        "doc-",  # Generic test docs
         "docx-only-table-",
         "docx-only-text-",
         "docx-upload-",
@@ -154,14 +157,19 @@ def cleanup_test_rag_documents(api_base_url):
         "epub-metadata-",
         "epub-multi-chapter-",
         "epub-upload-",
+        "filtered-",  # Metadata filter tests
+        "filter-test-",
         "hybrid-test-",
         "itest-",
         "keyword-test-",
+        "manual_test",
         "md-upload-",
+        "other-",  # Metadata filter tests
         "pdf-enhanced-",
         "pptx-notes-",
         "pptx-order-",
         "pptx-upload-",
+        "reindex",  # Reindex tests
         "test-auto-",
         "test-doc-",
         "test.",

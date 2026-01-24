@@ -1073,10 +1073,16 @@ def retrieve_context(
 
         for doc_info in all_docs:
             doc_id = doc_info["doc_id"]
+
+            # Apply metadata filter to doc_id (skip entire document if filtered out)
+            if metadata_filter and metadata_filter.doc_ids:
+                if doc_id not in metadata_filter.doc_ids:
+                    continue
+
             # Fetch all chunks for this document
             try:
-                # Query by doc_id to get all chunks
-                stmt = f"SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim FROM {store.table_name} WHERE doc_id = %s"
+                # Query by doc_id to get all chunks (include ingested_at for date filtering)
+                stmt = f"SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim, ingested_at FROM {store.table_name} WHERE doc_id = %s"
                 if not store._keyspace_ready:
                     store._ensure_keyspace_selected()
                 rows = store.session.execute(stmt, (doc_id,))
@@ -1090,6 +1096,34 @@ def retrieve_context(
                     ):
                         continue
 
+                    # Parse metadata for filtering
+                    metadata = json.loads(r.metadata) if r.metadata else {}
+
+                    # Apply metadata filters (same logic as in query_by_embedding)
+                    if metadata_filter:
+                        # Filter by filename (case-insensitive partial match)
+                        if metadata_filter.filename:
+                            doc_filename = metadata.get("filename", "")
+                            if metadata_filter.filename.lower() not in doc_filename.lower():
+                                continue
+
+                        # Filter by tags (doc must have ALL specified tags)
+                        if metadata_filter.tags:
+                            doc_tags = metadata.get("tags", [])
+                            if not isinstance(doc_tags, list):
+                                continue
+                            if not all(tag in doc_tags for tag in metadata_filter.tags):
+                                continue
+
+                        # Filter by date range
+                        if metadata_filter.date_from or metadata_filter.date_to:
+                            if not hasattr(r, "ingested_at") or r.ingested_at is None:
+                                continue
+                            if metadata_filter.date_from and r.ingested_at < metadata_filter.date_from:
+                                continue
+                            if metadata_filter.date_to and r.ingested_at > metadata_filter.date_to:
+                                continue
+
                     text = (r.text or "").strip()
                     if not text:
                         continue
@@ -1100,7 +1134,7 @@ def retrieve_context(
                         "doc_id": r.doc_id,
                         "chunk_id": r.chunk_id,
                         "text": text,
-                        "metadata": json.loads(r.metadata) if r.metadata else {},
+                        "metadata": metadata,
                         "embedding_model": r.embedding_model
                         if hasattr(r, "embedding_model")
                         else None,
