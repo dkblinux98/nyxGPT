@@ -2100,8 +2100,11 @@ def rag_collection_get_settings(
         global_chunk_overlap = cfg.getint("rag", "chunk_overlap", fallback=200)
 
         # If no stored settings, derive embedding_model from documents
-        embedding_model = stored_settings.get("embedding_model")
-        if not embedding_model:
+        embedding_model_raw = stored_settings.get("embedding_model")
+        embedding_model: str | None = None
+        if isinstance(embedding_model_raw, str):
+            embedding_model = embedding_model_raw
+        elif not embedding_model_raw:
             docs = store.list_docs()
             embedding_models = list(set(
                 d["embedding_model"] for d in docs
@@ -2111,8 +2114,11 @@ def rag_collection_get_settings(
             embedding_model = embedding_models[0] if len(embedding_models) == 1 else None
 
         # Use stored settings if available, otherwise fall back to global config
-        chunk_size = stored_settings.get("chunk_size") or global_chunk_size
-        chunk_overlap = stored_settings.get("chunk_overlap") or global_chunk_overlap
+        chunk_size_raw = stored_settings.get("chunk_size")
+        chunk_size: int = chunk_size_raw if isinstance(chunk_size_raw, int) else global_chunk_size
+
+        chunk_overlap_raw = stored_settings.get("chunk_overlap")
+        chunk_overlap: int = chunk_overlap_raw if isinstance(chunk_overlap_raw, int) else global_chunk_overlap
 
         return CollectionSettingsResponse(
             collection=collection_name,
