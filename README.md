@@ -451,7 +451,7 @@ Search API response includes:
 
 nyxGPT supports per-session RAG to inject relevant context from uploaded documents into chat conversations.
 
-**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf`, `.pptx` (PowerPoint presentations with speaker notes), `.docx` (Microsoft Word), `.epub` (eBooks with metadata and chapter structure)
+**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf` (with OCR support for image-based PDFs), `.pptx` (PowerPoint presentations with speaker notes), `.docx` (Microsoft Word), `.epub` (eBooks with metadata and chapter structure)
 
 #### Web UI
 
@@ -792,6 +792,77 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/query \
 - **Context composition** - Character counts before/after truncation, chunks included
 
 **Priority chain:** Explicit API parameter > Session metadata > Global config
+
+---
+
+### PDF OCR Support
+
+nyxGPT includes OCR (Optical Character Recognition) support for image-based PDFs that have minimal or no extractable text.
+
+**Features:**
+- **Automatic detection** - OCR is triggered when PDF text extraction produces less than the configured threshold (default: 50 characters)
+- **Configurable quality** - Adjust DPI, language, and page segmentation mode for optimal results
+- **Smart fallback** - Uses standard text extraction first, only applying OCR when needed
+- **Multi-language support** - Supports multiple Tesseract language packs
+
+**Prerequisites:**
+
+OCR requires Tesseract to be installed on your system:
+
+```bash
+# macOS (Homebrew)
+brew install tesseract
+
+# Ubuntu/Debian
+sudo apt-get install tesseract-ocr
+
+# Install additional language packs if needed
+# macOS
+brew install tesseract-lang
+
+# Ubuntu/Debian
+sudo apt-get install tesseract-ocr-[lang]
+# Example: tesseract-ocr-spa for Spanish
+```
+
+**Configuration** (in `~/.nyxGPT/config.ini`):
+
+```ini
+[pdf]
+# Enable OCR for image-based PDFs
+ocr_enabled = true
+
+# Minimum text threshold before triggering OCR (characters)
+ocr_min_text_threshold = 50
+
+# OCR DPI resolution (300 recommended for standard docs)
+ocr_dpi = 300
+
+# OCR language (ISO 639-2 codes: eng, spa, fra, deu, etc.)
+ocr_lang = eng
+
+# Page Segmentation Mode (3 = automatic, recommended)
+ocr_psm = 3
+
+# Optional: path to tesseract executable if not in PATH
+# tesseract_cmd = /usr/bin/tesseract
+```
+
+**How it works:**
+1. Standard text extraction is attempted using pdfplumber and pypdf
+2. If extracted text is below the threshold, OCR is triggered automatically
+3. PDF pages are converted to images at the specified DPI
+4. Tesseract OCR extracts text from each image
+5. If OCR produces more text than standard extraction, it's used instead
+
+**Language Support:**
+
+Use multiple languages by specifying them with `+`:
+```ini
+ocr_lang = eng+spa  # English and Spanish
+```
+
+Download additional language packs from: https://github.com/tesseract-ocr/tessdata
 
 ---
 
