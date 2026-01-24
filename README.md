@@ -540,6 +540,49 @@ curl http://127.0.0.1:8000/api/v1/sessions/my-session/citations/export?format=ma
 
 The citations export endpoint extracts all RAG citations from assistant messages in a session, providing a complete bibliography of sources used. Useful for generating reference lists or tracking which documents contributed to responses.
 
+#### Collection Management
+
+Collections allow you to use different embedding models for different sets of documents. Each collection maintains its own vector index optimized for the embedding model and dimension you choose.
+
+**Create a new collection:**
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/rag/collections \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "my-collection",
+    "embedding_dim": 768,
+    "embedding_model": "nomic-embed-text"
+  }'
+```
+
+**List all collections:**
+
+```bash
+curl http://127.0.0.1:8000/api/v1/rag/collections
+```
+
+**View collection settings:**
+
+```bash
+curl http://127.0.0.1:8000/api/v1/rag/collections/my-collection/settings
+```
+
+**Clear a collection** (remove all documents):
+
+```bash
+curl -X DELETE http://127.0.0.1:8000/api/v1/rag/collections/my-collection
+```
+
+**WebUI Management:**
+Navigate to Settings → Collections in the WebUI to:
+- View all collections and their statistics
+- Create new collections with custom embedding dimensions
+- View collection settings (embedding model, chunk size, overlap)
+- Clear collections (removes all documents and chunks)
+
+**Note:** Re-indexing collections and updating per-collection settings are planned features but not yet fully implemented. Currently, embedding models are determined during document ingestion, and chunk settings are global (configured in `config.ini`).
+
 #### Document Metadata Filtering
 
 RAG queries can be filtered by document metadata to narrow search scope and retrieve context from specific documents. Metadata is automatically stored during ingestion (filename, upload date) and can be extended with custom tags.

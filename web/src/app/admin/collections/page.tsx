@@ -19,6 +19,14 @@ export default function CollectionsPage() {
   const [error, setError] = useState<string | null>(null);
   const [deletingCollection, setDeletingCollection] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newCollectionName, setNewCollectionName] = useState('');
+  const [newCollectionDim, setNewCollectionDim] = useState('768');
+  const [newCollectionModel, setNewCollectionModel] = useState('');
+  const [viewingSettings, setViewingSettings] = useState<string | null>(null);
+  const [collectionSettings, setCollectionSettings] = useState<any>(null);
+  const [loadingSettings, setLoadingSettings] = useState(false);
 
   async function loadCollections() {
     setLoading(true);
@@ -69,6 +77,80 @@ export default function CollectionsPage() {
     }
   }
 
+  async function handleCreateCollection() {
+    if (!newCollectionName.trim()) {
+      alert('Collection name is required');
+      return;
+    }
+
+    const dim = parseInt(newCollectionDim, 10);
+    if (isNaN(dim) || dim <= 0) {
+      alert('Valid embedding dimension is required');
+      return;
+    }
+
+    setCreating(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/v1/rag/collections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newCollectionName.trim(),
+          embedding_dim: dim,
+          embedding_model: newCollectionModel.trim() || undefined,
+        }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || errorData.detail || `HTTP ${res.status}`);
+      }
+
+      // Reload collections and close modal
+      await loadCollections();
+      setShowCreateModal(false);
+      setNewCollectionName('');
+      setNewCollectionDim('768');
+      setNewCollectionModel('');
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`Failed to create collection: ${msg}`);
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleViewSettings(collectionName: string) {
+    setViewingSettings(collectionName);
+    setLoadingSettings(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/v1/rag/collections/${encodeURIComponent(collectionName)}/settings`, {
+        cache: 'no-store',
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || errorData.detail || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      setCollectionSettings(data);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`Failed to load settings: ${msg}`);
+      setViewingSettings(null);
+    } finally {
+      setLoadingSettings(false);
+    }
+  }
+
+  function closeSettingsModal() {
+    setViewingSettings(null);
+    setCollectionSettings(null);
+  }
+
   useEffect(() => {
     void loadCollections();
   }, []);
@@ -93,19 +175,36 @@ export default function CollectionsPage() {
             Manage vector store collections and their settings
           </p>
         </div>
-        <button
-          onClick={() => router.push('/')}
-          style={{
-            padding: '0.5rem 1rem',
-            backgroundColor: 'var(--background-secondary)',
-            border: '1px solid var(--border-color)',
-            borderRadius: '0.375rem',
-            cursor: 'pointer',
-            fontSize: '0.875rem',
-          }}
-        >
-          Back to Chat
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button
+            onClick={() => setShowCreateModal(true)}
+            style={{
+              padding: '0.5rem 1rem',
+              backgroundColor: '#3b82f6',
+              color: 'white',
+              border: 'none',
+              borderRadius: '0.375rem',
+              cursor: 'pointer',
+              fontSize: '0.875rem',
+              fontWeight: '600',
+            }}
+          >
+            Create Collection
+          </button>
+          <button
+            onClick={() => router.push('/')}
+            style={{
+              padding: '0.5rem 1rem',
+              backgroundColor: 'var(--background-secondary)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '0.375rem',
+              cursor: 'pointer',
+              fontSize: '0.875rem',
+            }}
+          >
+            Back to Chat
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -154,24 +253,40 @@ export default function CollectionsPage() {
                     )}
                   </h3>
                 </div>
-                {coll.name !== 'default' && (
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button
-                    onClick={() => setDeleteConfirm(coll.name)}
-                    disabled={deletingCollection === coll.name}
+                    onClick={() => handleViewSettings(coll.name)}
                     style={{
                       padding: '0.5rem 1rem',
-                      backgroundColor: '#dc2626',
-                      color: 'white',
-                      border: 'none',
+                      backgroundColor: 'var(--background)',
+                      color: 'var(--foreground)',
+                      border: '1px solid var(--border-color)',
                       borderRadius: '0.375rem',
-                      cursor: deletingCollection === coll.name ? 'not-allowed' : 'pointer',
+                      cursor: 'pointer',
                       fontSize: '0.875rem',
-                      opacity: deletingCollection === coll.name ? 0.6 : 1,
                     }}
                   >
-                    {deletingCollection === coll.name ? 'Deleting...' : 'Clear Collection'}
+                    View Settings
                   </button>
-                )}
+                  {coll.name !== 'default' && (
+                    <button
+                      onClick={() => setDeleteConfirm(coll.name)}
+                      disabled={deletingCollection === coll.name}
+                      style={{
+                        padding: '0.5rem 1rem',
+                        backgroundColor: '#dc2626',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '0.375rem',
+                        cursor: deletingCollection === coll.name ? 'not-allowed' : 'pointer',
+                        fontSize: '0.875rem',
+                        opacity: deletingCollection === coll.name ? 0.6 : 1,
+                      }}
+                    >
+                      {deletingCollection === coll.name ? 'Deleting...' : 'Clear Collection'}
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
@@ -279,10 +394,264 @@ export default function CollectionsPage() {
         <h3 style={{ fontSize: '1rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>About Collections</h3>
         <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)', lineHeight: '1.5' }}>
           Collections allow you to use different embedding models for different documents. Each collection maintains
-          its own vector index optimized for the embedding model and dimension you choose. Use the CLI to create
-          new collections with custom models: <code style={{ backgroundColor: 'var(--background)', padding: '0.125rem 0.25rem', borderRadius: '0.25rem' }}>nyxgpt rag ingest --collection &lt;name&gt; --model &lt;model&gt;</code>
+          its own vector index optimized for the embedding model and dimension you choose.
         </p>
       </div>
+
+      {/* Create Collection Modal */}
+      {showCreateModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+          onClick={() => !creating && setShowCreateModal(false)}
+        >
+          <div
+            style={{
+              backgroundColor: 'var(--background)',
+              padding: '2rem',
+              borderRadius: '0.5rem',
+              maxWidth: '500px',
+              width: '90%',
+              border: '1px solid var(--border-color)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '1rem' }}>
+              Create Collection
+            </h2>
+
+            <div style={{ marginBottom: '1rem' }}>
+              <label
+                htmlFor="collection-name"
+                style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '600' }}
+              >
+                Collection Name *
+              </label>
+              <input
+                id="collection-name"
+                type="text"
+                value={newCollectionName}
+                onChange={(e) => setNewCollectionName(e.target.value)}
+                disabled={creating}
+                placeholder="my-collection"
+                style={{
+                  width: '100%',
+                  padding: '0.5rem',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '0.375rem',
+                  backgroundColor: 'var(--background)',
+                  color: 'var(--foreground)',
+                  fontSize: '0.875rem',
+                }}
+              />
+              <p style={{ marginTop: '0.25rem', fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>
+                Alphanumeric, underscores, and hyphens only
+              </p>
+            </div>
+
+            <div style={{ marginBottom: '1rem' }}>
+              <label
+                htmlFor="embedding-dim"
+                style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '600' }}
+              >
+                Embedding Dimension *
+              </label>
+              <input
+                id="embedding-dim"
+                type="number"
+                value={newCollectionDim}
+                onChange={(e) => setNewCollectionDim(e.target.value)}
+                disabled={creating}
+                placeholder="768"
+                style={{
+                  width: '100%',
+                  padding: '0.5rem',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '0.375rem',
+                  backgroundColor: 'var(--background)',
+                  color: 'var(--foreground)',
+                  fontSize: '0.875rem',
+                }}
+              />
+              <p style={{ marginTop: '0.25rem', fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>
+                Must match your embedding model (e.g., 768, 1536, 3072)
+              </p>
+            </div>
+
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label
+                htmlFor="embedding-model"
+                style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '600' }}
+              >
+                Embedding Model (Optional)
+              </label>
+              <input
+                id="embedding-model"
+                type="text"
+                value={newCollectionModel}
+                onChange={(e) => setNewCollectionModel(e.target.value)}
+                disabled={creating}
+                placeholder="nomic-embed-text"
+                style={{
+                  width: '100%',
+                  padding: '0.5rem',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '0.375rem',
+                  backgroundColor: 'var(--background)',
+                  color: 'var(--foreground)',
+                  fontSize: '0.875rem',
+                }}
+              />
+              <p style={{ marginTop: '0.25rem', fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>
+                For documentation purposes
+              </p>
+            </div>
+
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setShowCreateModal(false)}
+                disabled={creating}
+                style={{
+                  padding: '0.5rem 1rem',
+                  backgroundColor: 'var(--background-secondary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '0.375rem',
+                  cursor: creating ? 'not-allowed' : 'pointer',
+                  fontSize: '0.875rem',
+                  opacity: creating ? 0.6 : 1,
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateCollection}
+                disabled={creating}
+                style={{
+                  padding: '0.5rem 1rem',
+                  backgroundColor: '#3b82f6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '0.375rem',
+                  cursor: creating ? 'not-allowed' : 'pointer',
+                  fontSize: '0.875rem',
+                  fontWeight: '600',
+                  opacity: creating ? 0.6 : 1,
+                }}
+              >
+                {creating ? 'Creating...' : 'Create Collection'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {viewingSettings && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+          onClick={closeSettingsModal}
+        >
+          <div
+            style={{
+              backgroundColor: 'var(--background)',
+              padding: '2rem',
+              borderRadius: '0.5rem',
+              maxWidth: '600px',
+              width: '90%',
+              border: '1px solid var(--border-color)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '1rem' }}>
+              Collection Settings: {viewingSettings}
+            </h2>
+
+            {loadingSettings ? (
+              <div style={{ padding: '2rem', textAlign: 'center' }}>
+                <LoadingSpinner size="medium" />
+                <p style={{ marginTop: '1rem', color: 'var(--foreground-muted)' }}>Loading settings...</p>
+              </div>
+            ) : collectionSettings ? (
+              <div>
+                <div style={{ marginBottom: '1rem' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
+                    Embedding Model
+                  </div>
+                  <div style={{ padding: '0.75rem', backgroundColor: 'var(--background-secondary)', borderRadius: '0.375rem', fontSize: '0.875rem' }}>
+                    {collectionSettings.settings?.embedding_model || (
+                      <span style={{ color: 'var(--foreground-muted)', fontStyle: 'italic' }}>
+                        Multiple models or not set
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: '1rem' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
+                    Chunk Size
+                  </div>
+                  <div style={{ padding: '0.75rem', backgroundColor: 'var(--background-secondary)', borderRadius: '0.375rem', fontSize: '0.875rem' }}>
+                    {collectionSettings.settings?.chunk_size || 'Not set'}
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: '1.5rem' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
+                    Chunk Overlap
+                  </div>
+                  <div style={{ padding: '0.75rem', backgroundColor: 'var(--background-secondary)', borderRadius: '0.375rem', fontSize: '0.875rem' }}>
+                    {collectionSettings.settings?.chunk_overlap || 'Not set'}
+                  </div>
+                </div>
+
+                <div style={{ padding: '1rem', backgroundColor: '#fef3c7', border: '1px solid #f59e0b', borderRadius: '0.375rem', marginBottom: '1rem' }}>
+                  <p style={{ fontSize: '0.875rem', color: '#92400e' }}>
+                    <strong>Note:</strong> Per-collection settings modification is not yet fully implemented.
+                    These settings are currently read-only and derived from the collection's actual data and global configuration.
+                  </p>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <button
+                    onClick={closeSettingsModal}
+                    style={{
+                      padding: '0.5rem 1rem',
+                      backgroundColor: 'var(--background-secondary)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '0.375rem',
+                      cursor: 'pointer',
+                      fontSize: '0.875rem',
+                    }}
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

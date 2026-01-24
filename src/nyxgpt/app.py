@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import inspect
 import os
+import re
 import secrets
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
@@ -52,6 +53,12 @@ from nyxgpt.api_models import (
     CollectionInfo,
     CollectionsListResponse,
     CollectionDeleteResponse,
+    CreateCollectionRequest,
+    CreateCollectionResponse,
+    ReindexCollectionRequest,
+    ReindexCollectionResponse,
+    CollectionSettings,
+    CollectionSettingsResponse,
 )
 
 from nyxgpt.config import (
@@ -1793,6 +1800,84 @@ def rag_collections_list(request: Request) -> CollectionsListResponse:
     return CollectionsListResponse(collections=collections_info)
 
 
+@api.post("/rag/collections", response_model=CreateCollectionResponse, status_code=201)
+def rag_collection_create(
+    request: Request, body: CreateCollectionRequest
+) -> CreateCollectionResponse:
+    """Create a new RAG collection.
+
+    Creates a new empty collection with the specified embedding dimension.
+    Collection names must be alphanumeric with underscores/hyphens only.
+
+    Args:
+        body: Collection creation request with name and embedding_dim
+
+    Returns:
+        CreateCollectionResponse with collection name and status
+    """
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+    # Validate collection name
+    collection_name = body.name.strip()
+
+    # Prevent creating 'default' collection manually
+    if collection_name == "default":
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot manually create 'default' collection. It is automatically managed.",
+        )
+
+    # Validate name format (alphanumeric, underscores, hyphens only)
+    if not re.match(r'^[a-zA-Z0-9_-]+$', collection_name):
+        raise HTTPException(
+            status_code=400,
+            detail="Collection name must contain only letters, numbers, underscores, and hyphens.",
+        )
+
+    # Validate embedding dimension
+    if body.embedding_dim <= 0 or body.embedding_dim > 10000:
+        raise HTTPException(
+            status_code=400,
+            detail="Embedding dimension must be between 1 and 10000.",
+        )
+
+    store = CassandraVectorStore(collection=collection_name)
+    try:
+        # Check if collection already exists
+        existing_collections = store.list_collections()
+        if collection_name in existing_collections:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Collection '{collection_name}' already exists.",
+            )
+
+        # Create the collection schema
+        store.ensure_schema(embedding_dim=body.embedding_dim, collection=collection_name)
+
+        return CreateCollectionResponse(
+            collection=collection_name,
+            status=f"Collection '{collection_name}' created successfully",
+            embedding_dim=body.embedding_dim,
+        )
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except ImportError as e:
+        log.error(f"Cassandra driver import error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="RAG service unavailable: Cassandra driver not found"
+        )
+    except Exception as e:
+        log.error(f"Failed to create collection '{collection_name}': {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create collection: {str(e)}"
+        )
+    finally:
+        store.close()
+
+
 @api.delete("/rag/collections/{collection_name}", response_model=CollectionDeleteResponse)
 def rag_collection_delete(request: Request, collection_name: str) -> CollectionDeleteResponse:
     """Delete a RAG collection (truncates all data in the collection).
@@ -1804,7 +1889,6 @@ def rag_collection_delete(request: Request, collection_name: str) -> CollectionD
     To fully remove the table, use Cassandra admin tools.
     """
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
-    from nyxgpt.api_models import CollectionDeleteResponse
 
     # Prevent deletion of default collection via more descriptive error
     if collection_name == "default":
@@ -1834,6 +1918,279 @@ def rag_collection_delete(request: Request, collection_name: str) -> CollectionD
         raise HTTPException(
             status_code=500,
             detail=f"Failed to clear collection: {str(e)}"
+        )
+    finally:
+        store.close()
+
+
+@api.post("/rag/collections/{collection_name}/reindex", response_model=ReindexCollectionResponse)
+def rag_collection_reindex(
+    request: Request, collection_name: str, body: ReindexCollectionRequest
+) -> ReindexCollectionResponse:
+    """Re-index a collection with a different embedding model.
+
+    This operation regenerates embeddings for all chunks in the collection
+    using the specified target embedding model.
+
+    WARNING: This is a long-running operation. For large collections, this may
+    take several minutes.
+
+    Args:
+        collection_name: Name of collection to re-index
+        body: Re-index request with target_embedding_model and embedding_dim
+
+    Returns:
+        ReindexCollectionResponse with status and progress
+    """
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+    from nyxgpt.rag.embeddings import embed_texts
+
+    # Prevent re-indexing default collection to avoid accidents
+    if collection_name == "default":
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot re-index the 'default' collection. Create a new collection instead.",
+        )
+
+    # Validate embedding dimension
+    if body.embedding_dim <= 0 or body.embedding_dim > 10000:
+        raise HTTPException(
+            status_code=400,
+            detail="Embedding dimension must be between 1 and 10000.",
+        )
+
+    store = CassandraVectorStore(collection=collection_name)
+    try:
+        # Verify collection exists
+        existing_collections = store.list_collections()
+        if collection_name not in existing_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{collection_name}' not found.",
+            )
+
+        # Get all chunks from the collection
+        log.info(f"Re-indexing collection '{collection_name}' with model '{body.target_embedding_model}'")
+        chunks = store.get_all_chunks()
+
+        if not chunks:
+            return ReindexCollectionResponse(
+                collection=collection_name,
+                status="Collection is empty, nothing to re-index",
+                chunks_processed=0,
+                chunks_total=0,
+            )
+
+        chunks_total = len(chunks)
+        log.info(f"Found {chunks_total} chunks to re-index in collection '{collection_name}'")
+
+        # Extract text from each chunk for re-embedding
+        texts = [chunk["text"] for chunk in chunks]
+
+        # Re-generate embeddings with new model
+        log.info(f"Generating new embeddings with model '{body.target_embedding_model}'")
+        try:
+            new_embeddings = embed_texts(
+                texts,
+                model=body.target_embedding_model,
+                dimension=body.embedding_dim,
+            )
+        except Exception as e:
+            log.error(f"Failed to generate embeddings: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to generate embeddings with model '{body.target_embedding_model}': {str(e)}"
+            )
+
+        # Update chunks with new embeddings
+        # Group chunks by doc_id for batch updates
+        from collections import defaultdict
+        chunks_by_doc: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
+        for i, chunk in enumerate(chunks):
+            chunks_by_doc[chunk["doc_id"]].append({
+                "chunk_id": chunk["chunk_id"],
+                "text": chunk["text"],
+                "metadata": chunk["metadata"],
+                "embedding": new_embeddings[i],
+                "doc_hash": chunk.get("doc_hash", ""),
+            })
+
+        # Update each document's chunks
+        chunks_processed = 0
+        for doc_id, doc_chunks in chunks_by_doc.items():
+            # Extract texts, embeddings, and metadata for upsert_chunks signature
+            chunk_texts = [c["text"] for c in doc_chunks]
+            chunk_embeddings = [c["embedding"] for c in doc_chunks]
+            chunk_metadatas = [c["metadata"] for c in doc_chunks]
+            doc_hash = doc_chunks[0].get("doc_hash", "") if doc_chunks else ""
+
+            store.upsert_chunks(
+                doc_id=doc_id,
+                texts=chunk_texts,
+                embeddings=chunk_embeddings,
+                metadatas=chunk_metadatas,
+                embedding_model=body.target_embedding_model,
+                doc_hash=doc_hash,
+            )
+            chunks_processed += len(doc_chunks)
+
+        log.info(f"Successfully re-indexed {chunks_processed} chunks in collection '{collection_name}'")
+
+        return ReindexCollectionResponse(
+            collection=collection_name,
+            status=f"Successfully re-indexed {chunks_processed} chunks with model '{body.target_embedding_model}'",
+            chunks_processed=chunks_processed,
+            chunks_total=chunks_total,
+        )
+
+    except HTTPException:
+        raise
+    except ImportError as e:
+        log.error(f"Cassandra driver import error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="RAG service unavailable: Cassandra driver not found"
+        )
+    except Exception as e:
+        log.error(f"Failed to re-index collection '{collection_name}': {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to re-index collection: {str(e)}"
+        )
+    finally:
+        store.close()
+
+
+@api.get("/rag/collections/{collection_name}/settings", response_model=CollectionSettingsResponse)
+def rag_collection_get_settings(
+    request: Request, collection_name: str
+) -> CollectionSettingsResponse:
+    """Get settings for a collection.
+
+    Returns the current configuration for a collection, including:
+    - Embedding model(s) in use
+    - Default chunk size (from config)
+    - Default chunk overlap (from config)
+
+    Note: Per-collection settings are currently derived from actual data
+    in the collection, not stored separately.
+
+    Args:
+        collection_name: Name of collection
+
+    Returns:
+        CollectionSettingsResponse with current settings
+    """
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+    store = CassandraVectorStore(collection=collection_name)
+    try:
+        # Verify collection exists
+        existing_collections = store.list_collections()
+        if collection_name not in existing_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{collection_name}' not found.",
+            )
+
+        # Get embedding models in use from documents
+        docs = store.list_docs()
+        embedding_models = list(set(
+            d["embedding_model"] for d in docs
+            if d.get("embedding_model")
+        ))
+
+        # Get default chunk settings from config
+        cfg = load_config(None)
+        chunk_size = cfg.getint("rag", "chunk_size", fallback=1000)
+        chunk_overlap = cfg.getint("rag", "chunk_overlap", fallback=200)
+
+        # Build settings response
+        # embedding_model is first model if only one, otherwise None (indicates mixed)
+        embedding_model = embedding_models[0] if len(embedding_models) == 1 else None
+
+        return CollectionSettingsResponse(
+            collection=collection_name,
+            settings=CollectionSettings(
+                embedding_model=embedding_model,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            ),
+        )
+
+    except HTTPException:
+        raise
+    except ImportError as e:
+        log.error(f"Cassandra driver import error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="RAG service unavailable: Cassandra driver not found"
+        )
+    except Exception as e:
+        log.error(f"Failed to get settings for collection '{collection_name}': {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get collection settings: {str(e)}"
+        )
+    finally:
+        store.close()
+
+
+@api.put("/rag/collections/{collection_name}/settings", response_model=CollectionSettingsResponse)
+def rag_collection_update_settings(
+    request: Request, collection_name: str, body: CollectionSettings
+) -> CollectionSettingsResponse:
+    """Update settings for a collection.
+
+    This would allow configuring per-collection settings like:
+    - Preferred embedding model
+    - Default chunk size
+    - Default chunk overlap
+
+    Note: This endpoint is not yet fully implemented. Per-collection settings
+    require schema enhancements to store configuration separately from documents.
+
+    Args:
+        collection_name: Name of collection
+        body: New settings to apply
+
+    Returns:
+        CollectionSettingsResponse with updated settings
+    """
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+    # Verify collection exists first
+    store = CassandraVectorStore(collection=collection_name)
+    try:
+        existing_collections = store.list_collections()
+        if collection_name not in existing_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{collection_name}' not found.",
+            )
+
+        # TODO: Implement per-collection settings storage
+        # This requires:
+        # 1. New Cassandra table: collection_settings
+        # 2. Schema: (collection_name, setting_key, setting_value)
+        # 3. Vectorstore methods: get_collection_settings(), update_collection_settings()
+        # 4. Apply settings during document ingestion (chunk_size, chunk_overlap, embedding_model)
+        #
+        # For now, raise 501 Not Implemented
+        raise HTTPException(
+            status_code=501,
+            detail="Updating collection settings is not yet implemented. This requires schema enhancements to store per-collection configuration. "
+                   "Currently, settings are global (from config file) and embedding models are determined during document ingestion.",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Failed to update settings for collection '{collection_name}': {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update collection settings: {str(e)}"
         )
     finally:
         store.close()

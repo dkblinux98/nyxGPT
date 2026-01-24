@@ -562,3 +562,39 @@ class CassandraVectorStore:
         if existing_hash is None:
             return True  # Document doesn't exist, needs ingestion
         return existing_hash != new_hash
+
+    def get_all_chunks(self) -> list[dict]:
+        """Get all chunks from the collection.
+
+        Returns all chunks with their text, embeddings, and metadata.
+        Useful for re-indexing or bulk operations.
+
+        Returns:
+            List of dicts with keys: doc_id, chunk_id, text, metadata, embedding,
+            embedding_model, embedding_dim, doc_hash, ingested_at, updated_at
+        """
+        self._ensure_keyspace_selected()
+        tbl = self.table_name
+
+        # Query all chunks from the collection
+        query = f"SELECT * FROM {tbl}"
+        stmt = SimpleStatement(query, fetch_size=1000)  # Use paging for large collections
+
+        chunks = []
+        rows = self.session.execute(stmt)
+
+        for row in rows:
+            chunks.append({
+                "doc_id": row.doc_id,
+                "chunk_id": row.chunk_id,
+                "text": row.text,
+                "metadata": row.metadata,
+                "embedding": list(row.embedding) if row.embedding else None,
+                "embedding_model": row.embedding_model,
+                "embedding_dim": row.embedding_dim,
+                "doc_hash": row.doc_hash,
+                "ingested_at": row.ingested_at,
+                "updated_at": row.updated_at,
+            })
+
+        return chunks

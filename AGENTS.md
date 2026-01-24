@@ -125,6 +125,37 @@ developer_submit_for_review.sh
 
 ---
 
+## qa-agent
+
+Performs quality assurance checks before merge.
+
+Allowed:
+- Run full test suite (unit + integration + E2E)
+- Execute TUI smoke tests
+- Execute WebUI smoke tests
+- Create QA Failure sub-issues for test failures
+- Approve or block PR based on QA results
+
+Scripts:
+- qa_run_full_suite.sh <PR>
+- qa_manual_checklist.sh <PR>
+- qa_report.sh <PR> <FINDINGS_FILE>
+
+Workflow:
+1. Triggered when PR assigned to qa-agent
+2. Run automated test suite
+3. Run manual smoke test checklists
+4. Create QA report with findings
+5. If critical failures: Create QA Failure sub-issues
+6. Comment on PR with QA status (PASS/FAIL)
+
+Forbidden:
+- Merging PRs
+- Bypassing test failures
+- Modifying code
+
+---
+
 ## Human
 
 Closes releases and advances phases.
