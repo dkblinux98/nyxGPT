@@ -223,6 +223,79 @@ def cleanup_test_rag_documents(api_base_url):
 
 
 @pytest.fixture(scope="session", autouse=True)
+def cleanup_test_collections(api_base_url):
+    """Clean up test RAG collections after all integration tests complete.
+
+    This fixture runs at the end of the test session and deletes any RAG collections
+    that were created during the test run (identified by test prefixes).
+    """
+    # Test collection prefixes that should always be cleaned up
+    TEST_COLLECTION_PREFIXES = (
+        "api_test",
+        "debug-",
+        "final_test",
+        "fixed_test",
+        "manual_test",
+        "test_",
+        "test-",
+    )
+
+    # Record collections that exist before tests run
+    try:
+        from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+        store = CassandraVectorStore()
+        existing_collections = set(store.list_collections())
+        store.close()
+    except Exception as e:
+        print(f"\n[INTEGRATION TESTS] Could not list collections before tests: {e}")
+        existing_collections = set()
+
+    print(f"\n[INTEGRATION TESTS] Found {len(existing_collections)} existing collections before tests")
+
+    yield  # Run all tests
+
+    # Clean up collections created during tests
+    print("\n[INTEGRATION TESTS] Cleaning up test collections...")
+
+    try:
+        from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+        store = CassandraVectorStore()
+        current_collections = store.list_collections()
+
+        deleted_count = 0
+        skipped_count = 0
+        for collection_name in current_collections:
+            # Never delete default collection
+            if collection_name == "default":
+                continue
+
+            # Delete ANY collection matching test prefixes (regardless of whether it
+            # existed before - if it has a test prefix, it should be cleaned up)
+            if collection_name.startswith(TEST_COLLECTION_PREFIXES):
+                try:
+                    # Drop the collection table entirely
+                    collection_store = CassandraVectorStore(collection=collection_name)
+                    collection_store.drop_collection()
+                    collection_store.close()
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"[INTEGRATION TESTS] Failed to drop collection {collection_name}: {e}")
+            else:
+                # Non-test collection that existed before or was created during tests
+                if collection_name not in existing_collections:
+                    print(f"[INTEGRATION TESTS] WARNING: Non-test collection created during tests: {collection_name}")
+                skipped_count += 1
+
+        store.close()
+        print(f"[INTEGRATION TESTS] Collection cleanup complete: {deleted_count} dropped, {skipped_count} preserved")
+
+    except Exception as e:
+        print(f"[INTEGRATION TESTS] Collection cleanup failed: {e}")
+
+
+@pytest.fixture(scope="session", autouse=True)
 def cleanup_test_sessions(api_base_url):
     """Clean up test sessions after all integration tests complete.
 

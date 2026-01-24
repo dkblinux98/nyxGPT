@@ -9,8 +9,8 @@ type RAGResult = {
   doc_id: string;
   chunk_id: number;
   text: string;
-  score: float;
-  similarity_score: float | null;
+  score: number;
+  similarity_score: number | null;
 };
 
 type RAGDebugInfo = {

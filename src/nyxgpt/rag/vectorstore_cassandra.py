@@ -469,6 +469,20 @@ class CassandraVectorStore:
 
         self.session.execute(SimpleStatement(f"TRUNCATE {self.table_name}"))
 
+    def drop_collection(self) -> None:
+        """Drop the collection table entirely.
+
+        WARNING: This permanently removes the table and all its data.
+        Cannot be used on the default collection.
+        """
+        if self.collection == "default":
+            raise ValueError("Cannot drop the default collection")
+
+        if not self._keyspace_ready:
+            self._ensure_keyspace_selected()
+
+        self.session.execute(SimpleStatement(f"DROP TABLE IF EXISTS {self.table_name}"))
+
     def list_collections(self) -> list[str]:
         """List all available collections (tables)."""
         if not self._keyspace_ready:
