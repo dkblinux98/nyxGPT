@@ -163,6 +163,7 @@ class RagIngestRequest(BaseModel):
     text: str = Field(..., description="Raw document text")
     metadata: dict[str, Any] | None = None
     ensure_schema: bool = False
+    collection: str = Field("default", description="Target collection name")
 
 
 class RagIngestResponse(BaseModel):

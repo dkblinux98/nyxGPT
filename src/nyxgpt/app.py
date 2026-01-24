@@ -1682,6 +1682,7 @@ def rag_ingest(request: Request, req: RagIngestRequest) -> RagIngestResponse:
             text=req.text,
             metadata=req.metadata,
             ensure_schema=req.ensure_schema,
+            collection=req.collection,
         )
         return RagIngestResponse(
             doc_id=req.doc_id,
