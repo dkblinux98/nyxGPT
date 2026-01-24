@@ -1815,7 +1815,6 @@ def rag_collection_create(
         CreateCollectionResponse with collection name and status
     """
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
-    from nyxgpt.api_models import CreateCollectionRequest, CreateCollectionResponse
     import re
 
     # Validate collection name
@@ -1946,7 +1945,6 @@ def rag_collection_reindex(
     """
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
     from nyxgpt.rag.embeddings import embed_texts
-    from nyxgpt.api_models import ReindexCollectionRequest, ReindexCollectionResponse
 
     # Prevent re-indexing default collection to avoid accidents
     if collection_name == "default":
@@ -2041,7 +2039,6 @@ def rag_collection_get_settings(
         CollectionSettingsResponse with current settings
     """
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
-    from nyxgpt.api_models import CollectionSettingsResponse, CollectionSettings
 
     store = CassandraVectorStore(collection=collection_name)
     try:
@@ -2117,10 +2114,9 @@ def rag_collection_update_settings(
     Returns:
         CollectionSettingsResponse with updated settings
     """
-    from nyxgpt.api_models import CollectionSettings, CollectionSettingsResponse
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
     # Verify collection exists first
-    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
     store = CassandraVectorStore(collection=collection_name)
     try:
         existing_collections = store.list_collections()
