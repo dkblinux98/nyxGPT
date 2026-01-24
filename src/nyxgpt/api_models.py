@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, TypedDict
+from typing import Any, Optional, TypedDict
 
 from pydantic import BaseModel, Field
 

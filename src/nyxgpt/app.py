@@ -2009,23 +2009,28 @@ def rag_collection_reindex(
         chunks_by_doc: dict[str, list] = defaultdict(list)
 
         for i, chunk in enumerate(chunks):
-            chunk_data = {
+            chunks_by_doc[chunk["doc_id"]].append({
                 "chunk_id": chunk["chunk_id"],
                 "text": chunk["text"],
                 "metadata": chunk["metadata"],
                 "embedding": new_embeddings[i],
-            }
-            chunks_by_doc[chunk["doc_id"]].append(chunk_data)
+                "doc_hash": chunk.get("doc_hash", ""),
+            })
 
         # Update each document's chunks
         chunks_processed = 0
         for doc_id, doc_chunks in chunks_by_doc.items():
-            # Get doc_hash from first chunk (all chunks of same doc have same hash)
-            doc_hash = chunks[0].get("doc_hash", "")
+            # Extract texts, embeddings, and metadata for upsert_chunks signature
+            chunk_texts = [c["text"] for c in doc_chunks]
+            chunk_embeddings = [c["embedding"] for c in doc_chunks]
+            chunk_metadatas = [c["metadata"] for c in doc_chunks]
+            doc_hash = doc_chunks[0].get("doc_hash", "") if doc_chunks else ""
 
             store.upsert_chunks(
                 doc_id=doc_id,
-                chunks=doc_chunks,
+                texts=chunk_texts,
+                embeddings=chunk_embeddings,
+                metadatas=chunk_metadatas,
                 embedding_model=body.target_embedding_model,
                 doc_hash=doc_hash,
             )
