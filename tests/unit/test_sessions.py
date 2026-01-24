@@ -2162,3 +2162,186 @@ def test_remove_tags_case_insensitive(tmp_path: Path) -> None:
     meta = sessions.load_session_meta(mf)
     assert "Python" not in meta["tags"]
     assert set(meta["tags"]) == {"Java", "Rust"}
+
+
+def test_export_markdown_includes_rag_citations(tmp_path: Path) -> None:
+    """Test that markdown export includes RAG citations."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("citations-md-test", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    # Create messages with RAG citations
+    messages = [
+        {"role": "user", "content": "What is RAG?"},
+        {
+            "role": "assistant",
+            "content": "RAG is Retrieval-Augmented Generation.",
+            "rag_chunks": [
+                {
+                    "text": "RAG enhances LLM responses with retrieved context from documents.",
+                    "doc_id": "rag-guide.md",
+                    "chunk_id": 1,
+                    "score": 0.95,
+                    "similarity_score": 0.95,
+                },
+                {
+                    "text": "Vector search finds relevant chunks using embeddings.",
+                    "doc_id": "vector-search.md",
+                    "chunk_id": 3,
+                    "score": 0.88,
+                    "similarity_score": 0.88,
+                },
+            ],
+        },
+    ]
+
+    metadata = {
+        "title": "RAG Citations Test",
+        "created_at": "2024-01-01T12:00:00",
+        "updated_at": "2024-01-01T12:05:00",
+    }
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    # Export to markdown
+    ok, content = sessions.export_session_markdown("citations-md-test", sessions_dir)
+    assert ok
+
+    # Verify citations are included
+    assert "### RAG Sources" in content
+    assert "**[1] rag-guide.md**" in content
+    assert "(chunk 1)" in content
+    assert "Confidence: 0.950" in content
+    assert "RAG enhances LLM responses" in content
+    assert "**[2] vector-search.md**" in content
+    assert "(chunk 3)" in content
+    assert "Confidence: 0.880" in content
+
+
+def test_export_session_html_with_citations(tmp_path: Path) -> None:
+    """Test that HTML export includes RAG citations with proper styling."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("citations-html-test", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    # Create messages with RAG citations
+    messages = [
+        {"role": "user", "content": "Question"},
+        {
+            "role": "assistant",
+            "content": "Answer",
+            "rag_chunks": [
+                {
+                    "text": "Citation content here",
+                    "doc_id": "source.md",
+                    "chunk_id": 2,
+                    "score": 0.92,
+                    "similarity_score": 0.92,
+                }
+            ],
+        },
+    ]
+
+    metadata = {
+        "title": "HTML Citations Test",
+        "created_at": "2024-01-01T12:00:00",
+    }
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    # Export to HTML
+    ok, content = sessions.export_session_html("citations-html-test", sessions_dir)
+    assert ok
+
+    # Verify citations are included with proper structure
+    assert '<div class="citations">' in content
+    assert '<div class="citation-header">RAG Sources</div>' in content
+    assert '<div class="citation-item">' in content
+    assert '<div class="citation-title">[1] source.md (chunk 2)</div>' in content
+    assert '<div class="citation-score">Confidence: 0.920</div>' in content
+    assert '<div class="citation-text">Citation content here</div>' in content
+
+    # Verify CSS classes are defined
+    assert ".citations" in content
+    assert ".citation-header" in content
+    assert ".citation-item" in content
+
+
+def test_export_markdown_no_citations(tmp_path: Path) -> None:
+    """Test that markdown export works correctly when there are no citations."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("no-citations-test", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    # Create messages WITHOUT RAG citations
+    messages = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there!"},
+    ]
+
+    metadata = {
+        "title": "No Citations Test",
+        "created_at": "2024-01-01T12:00:00",
+    }
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    # Export to markdown
+    ok, content = sessions.export_session_markdown("no-citations-test", sessions_dir)
+    assert ok
+
+    # Verify no citation sections appear
+    assert "### RAG Sources" not in content
+    assert "Confidence:" not in content
+
+
+def test_export_citations_text_truncation(tmp_path: Path) -> None:
+    """Test that long citation text is properly truncated in exports."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("long-cite-test", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+
+    # Create citation with very long text
+    long_text = "A" * 500  # 500 characters, should be truncated to 200 + "..."
+
+    messages = [
+        {"role": "user", "content": "Question"},
+        {
+            "role": "assistant",
+            "content": "Answer",
+            "rag_chunks": [
+                {
+                    "text": long_text,
+                    "doc_id": "long-doc.md",
+                    "chunk_id": 1,
+                    "score": 0.90,
+                }
+            ],
+        },
+    ]
+
+    metadata = {"title": "Long Citation Test"}
+
+    sessions.save_session_messages(session_file, messages)
+    sessions.save_session_meta(meta_file, metadata)
+
+    # Export to markdown
+    ok, content = sessions.export_session_markdown("long-cite-test", sessions_dir)
+    assert ok
+
+    # Verify text is truncated
+    assert "A" * 200 in content
+    assert "..." in content
+    # Full 500 characters should not appear
+    assert "A" * 500 not in content

@@ -198,6 +198,7 @@ function RagCitationsCollapsible({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ragConfig, setRagConfig] = useState<RagConfig | null>(null);
+  const [expandedChunks, setExpandedChunks] = useState<Set<number>>(new Set());
 
   const handleToggle = async () => {
     const newExpanded = !expanded;
@@ -356,8 +357,39 @@ function RagCitationsCollapsible({
                   </div>
                 )}
                 <div style={{ color: 'var(--foreground)', whiteSpace: 'pre-wrap' }}>
-                  {chunk.text.length > 200 ? chunk.text.substring(0, 200) + '...' : chunk.text}
+                  {expandedChunks.has(idx) || chunk.text.length <= 200 ? (
+                    chunk.text
+                  ) : (
+                    chunk.text.substring(0, 200) + '...'
+                  )}
                 </div>
+                {chunk.text.length > 200 && (
+                  <button
+                    onClick={() => {
+                      setExpandedChunks((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(idx)) {
+                          next.delete(idx);
+                        } else {
+                          next.add(idx);
+                        }
+                        return next;
+                      });
+                    }}
+                    style={{
+                      marginTop: 6,
+                      padding: '4px 8px',
+                      fontSize: 11,
+                      border: '1px solid var(--border)',
+                      borderRadius: 4,
+                      background: 'var(--background)',
+                      color: 'var(--foreground)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {expandedChunks.has(idx) ? 'Show less' : 'Show full source'}
+                  </button>
+                )}
               </div>
             );
           })}

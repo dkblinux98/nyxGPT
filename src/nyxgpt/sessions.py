@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TypedDict, NotRequired
+from typing import Any, TypedDict, NotRequired, cast
 
 from nyxgpt.config import (
     load_config,
@@ -849,6 +849,29 @@ def export_session_markdown(name: str, sessions_dir: Path | None) -> tuple[bool,
             lines.append(f"## User\n\n{content}\n")
         elif role == "assistant":
             lines.append(f"## Assistant\n\n{content}\n")
+
+            # Include RAG citations if available
+            rag_chunks: list[Any] = cast(list[Any], msg.get("rag_chunks", []))
+            if rag_chunks and isinstance(rag_chunks, list) and len(rag_chunks) > 0:
+                lines.append("### RAG Sources\n")
+                for idx, chunk in enumerate(rag_chunks, 1):
+                    doc_id = chunk.get("doc_id", "Unknown")
+                    chunk_id = chunk.get("chunk_id")
+                    # Use explicit None checking to avoid treating 0.0 as falsy
+                    score = chunk.get("similarity_score")
+                    if score is None:
+                        score = chunk.get("score", 0.0)
+                    text = chunk.get("text", "")
+
+                    chunk_ref = f"chunk {chunk_id}" if chunk_id is not None else "source"
+                    lines.append(f"**[{idx}] {doc_id}** ({chunk_ref}) - Confidence: {score:.3f}\n")
+
+                    # Include preview of source text (first 200 chars)
+                    if text:
+                        preview = text[:200] + "..." if len(text) > 200 else text
+                        lines.append(f"> {preview}\n")
+
+                lines.append("")  # Add blank line after citations
         else:
             lines.append(f"## {role.title()}\n\n{content}\n")
 
@@ -923,6 +946,12 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
         "    .role { font-weight: bold; margin-bottom: 10px; text-transform: uppercase; font-size: 12px; }"
     )
     html_parts.append("    .content { white-space: pre-wrap; line-height: 1.6; }")
+    html_parts.append("    .citations { margin-top: 15px; padding: 10px; background: #e3f2fd; border-left: 3px solid #2196f3; border-radius: 4px; }")
+    html_parts.append("    .citation-header { font-weight: 600; font-size: 13px; margin-bottom: 8px; color: #1976d2; }")
+    html_parts.append("    .citation-item { margin: 8px 0; padding: 8px; background: white; border-radius: 4px; font-size: 12px; }")
+    html_parts.append("    .citation-title { font-weight: 600; color: #333; }")
+    html_parts.append("    .citation-score { color: #666; font-size: 11px; }")
+    html_parts.append("    .citation-text { margin-top: 6px; padding: 6px; background: #f5f5f5; border-left: 2px solid #ccc; font-size: 11px; color: #555; white-space: pre-wrap; }")
     html_parts.append("  </style>")
     html_parts.append("</head>")
     html_parts.append("<body>")
@@ -952,6 +981,38 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
         html_parts.append(f'  <div class="message {role}">')
         html_parts.append(f'    <div class="role">{role}</div>')
         html_parts.append(f'    <div class="content">{content}</div>')
+
+        # Include RAG citations if available (for assistant messages)
+        if role == "assistant":
+            rag_chunks: list[Any] = cast(list[Any], msg.get("rag_chunks", []))
+            if rag_chunks and isinstance(rag_chunks, list) and len(rag_chunks) > 0:
+                html_parts.append('    <div class="citations">')
+                html_parts.append('      <div class="citation-header">RAG Sources</div>')
+                for idx, chunk in enumerate(rag_chunks, 1):
+                    doc_id = chunk.get("doc_id", "Unknown")
+                    chunk_id = chunk.get("chunk_id")
+                    # Use explicit None checking to avoid treating 0.0 as falsy
+                    score = chunk.get("similarity_score")
+                    if score is None:
+                        score = chunk.get("score", 0.0)
+                    text = chunk.get("text", "")
+
+                    # Escape HTML in text
+                    text = text.replace("<", "&lt;").replace(">", "&gt;")
+
+                    chunk_ref = f"chunk {chunk_id}" if chunk_id is not None else "source"
+                    html_parts.append('      <div class="citation-item">')
+                    html_parts.append(f'        <div class="citation-title">[{idx}] {doc_id} ({chunk_ref})</div>')
+                    html_parts.append(f'        <div class="citation-score">Confidence: {score:.3f}</div>')
+
+                    # Include preview of source text (first 200 chars)
+                    if text:
+                        preview = text[:200] + "..." if len(text) > 200 else text
+                        html_parts.append(f'        <div class="citation-text">{preview}</div>')
+
+                    html_parts.append('      </div>')
+                html_parts.append('    </div>')
+
         html_parts.append("  </div>")
 
     html_parts.append("</body>")

@@ -25,7 +25,7 @@ from fastapi import (
     Query,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
 from starlette.status import HTTP_401_UNAUTHORIZED
 from nyxgpt import api_models
 from nyxgpt.api_models import (
@@ -1207,6 +1207,121 @@ def get_message_rag_chunks(
         "has_rag": len(rag_chunks) > 0,
         "chunks": rag_chunks,
     }
+
+
+def _escape_markdown(text: str) -> str:
+    """Escape markdown special characters in text."""
+    # Escape common markdown special characters that could break formatting
+    replacements = {
+        "\\": "\\\\",  # Backslash must be first
+        "`": "\\`",
+        "*": "\\*",
+        "_": "\\_",
+        "{": "\\{",
+        "}": "\\}",
+        "[": "\\[",
+        "]": "\\]",
+        "(": "\\(",
+        ")": "\\)",
+        "#": "\\#",
+        "+": "\\+",
+        "-": "\\-",
+        ".": "\\.",
+        "!": "\\!",
+        "|": "\\|",
+    }
+    for char, escaped in replacements.items():
+        text = text.replace(char, escaped)
+    return text
+
+
+@api.get("/sessions/{name}/citations/export", response_model=None)
+def export_session_citations(
+    name: str, format: str = "json", sessions_dir: Optional[str] = None
+) -> dict[str, Any] | Response:
+    """Export all RAG citations from a session.
+
+    Returns all RAG citations from assistant messages in the session.
+    Useful for generating bibliographies or reference lists.
+
+    Supported formats: json, markdown
+    """
+    # Validate session name to prevent path traversal attacks
+    if not name or ".." in name or "/" in name or "\\" in name:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid session name. Must not contain path separators or navigation characters.",
+        )
+
+    format_lower = format.lower()
+    if format_lower not in ("json", "markdown"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid format. Must be one of: json, markdown",
+        )
+
+    _sessions_dir = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
+
+    # Load session messages
+    sf = sessions.session_file_for(name, _sessions_dir)
+    if not sf.exists():
+        raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
+
+    # Use file locking to prevent race conditions during read
+    with sessions.file_lock(sf, timeout=5.0):
+        msgs = sessions.load_session_messages(sf)
+
+    # Extract all citations from assistant messages
+    citations: list[dict[str, Any]] = []
+    for msg_idx, msg in enumerate(msgs):
+        if msg.get("role") == "assistant":
+            rag_chunks: list[Any] = cast(list[Any], msg.get("rag_chunks", []))
+            if rag_chunks and isinstance(rag_chunks, list):
+                for chunk_idx, chunk in enumerate(rag_chunks):
+                    citations.append({
+                        "message_index": msg_idx,
+                        "citation_index": chunk_idx,
+                        "doc_id": chunk.get("doc_id"),
+                        "chunk_id": chunk.get("chunk_id"),
+                        "text": chunk.get("text"),
+                        "score": chunk.get("score"),
+                        "similarity_score": chunk.get("similarity_score"),
+                    })
+
+    if format_lower == "json":
+        return {
+            "session": name,
+            "total_citations": len(citations),
+            "citations": citations,
+        }
+    else:  # markdown
+        lines: list[str] = []
+        lines.append(f"# Citations for {name}\n")
+        lines.append(f"Total sources: {len(citations)}\n")
+        lines.append("---\n")
+
+        for idx, citation in enumerate(citations, 1):
+            doc_id = _escape_markdown(citation.get("doc_id", "Unknown"))
+            chunk_id = citation.get("chunk_id")
+            # Use explicit None checking to avoid treating 0.0 as falsy
+            score = citation.get("similarity_score")
+            if score is None:
+                score = citation.get("score", 0.0)
+            text = _escape_markdown(citation.get("text", ""))
+
+            chunk_ref = f"chunk {chunk_id}" if chunk_id is not None else "source"
+            lines.append(f"## [{idx}] {doc_id} ({chunk_ref})\n")
+            lines.append(f"**Confidence:** {score:.3f}")
+            lines.append(f"**Message:** {citation['message_index']}\n")
+
+            if text:
+                lines.append(f"**Source text:**\n> {text}\n")
+
+        return Response(
+            content="\n".join(lines),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{name}-citations.md"'},
+        )
 
 
 @api.post("/sessions/{name}/messages/{message_index}/regenerate")
