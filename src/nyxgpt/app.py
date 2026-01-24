@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import inspect
 import os
+import re
 import secrets
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
@@ -1815,7 +1816,6 @@ def rag_collection_create(
         CreateCollectionResponse with collection name and status
     """
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
-    import re
 
     # Validate collection name
     collection_name = body.name.strip()
@@ -1889,7 +1889,6 @@ def rag_collection_delete(request: Request, collection_name: str) -> CollectionD
     To fully remove the table, use Cassandra admin tools.
     """
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
-    from nyxgpt.api_models import CollectionDeleteResponse
 
     # Prevent deletion of default collection via more descriptive error
     if collection_name == "default":
@@ -2006,7 +2005,7 @@ def rag_collection_reindex(
         # Update chunks with new embeddings
         # Group chunks by doc_id for batch updates
         from collections import defaultdict
-        chunks_by_doc: dict[str, list] = defaultdict(list)
+        chunks_by_doc: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
         for i, chunk in enumerate(chunks):
             chunks_by_doc[chunk["doc_id"]].append({
