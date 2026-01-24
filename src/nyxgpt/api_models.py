@@ -343,6 +343,57 @@ class CollectionDeleteResponse(BaseModel):
     status: str = Field(..., description="Deletion status message")
 
 
+class CreateCollectionRequest(BaseModel):
+    """Request model for creating a new collection."""
+
+    name: str = Field(..., description="Collection name (alphanumeric, underscores, hyphens)")
+    embedding_dim: int = Field(..., description="Embedding dimension (e.g., 768, 1536)")
+    embedding_model: Optional[str] = Field(
+        None, description="Embedding model name (optional, for documentation)"
+    )
+
+
+class CreateCollectionResponse(BaseModel):
+    """Response model for collection creation."""
+
+    collection: str = Field(..., description="Name of created collection")
+    status: str = Field(..., description="Creation status message")
+    embedding_dim: int = Field(..., description="Embedding dimension")
+
+
+class ReindexCollectionRequest(BaseModel):
+    """Request model for re-indexing a collection."""
+
+    target_embedding_model: str = Field(
+        ..., description="Target embedding model for re-indexing"
+    )
+    embedding_dim: int = Field(..., description="New embedding dimension")
+
+
+class ReindexCollectionResponse(BaseModel):
+    """Response model for collection re-indexing."""
+
+    collection: str = Field(..., description="Name of collection being re-indexed")
+    status: str = Field(..., description="Re-indexing status message")
+    chunks_processed: int = Field(..., description="Number of chunks processed")
+    chunks_total: int = Field(..., description="Total number of chunks")
+
+
+class CollectionSettings(BaseModel):
+    """Collection settings configuration."""
+
+    embedding_model: Optional[str] = Field(None, description="Preferred embedding model")
+    chunk_size: Optional[int] = Field(None, description="Default chunk size for documents")
+    chunk_overlap: Optional[int] = Field(None, description="Chunk overlap in characters")
+
+
+class CollectionSettingsResponse(BaseModel):
+    """Response model for collection settings."""
+
+    collection: str = Field(..., description="Collection name")
+    settings: CollectionSettings = Field(..., description="Collection settings")
+
+
 # ----------------------------
 # Search API models
 # ----------------------------
