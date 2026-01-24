@@ -312,8 +312,67 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: '✅ **Developer Agent**: Implementation complete. Submitting PR for review...'
+              body: '✅ **Developer Agent**: Implementation complete. Running verification checks...'
             });
+
+      - name: Verify Tests Pass
+        id: verify_tests
+        run: |
+          echo "Running pytest to verify all tests pass..."
+          if ! pytest tests/unit/ -v; then
+            echo "::error::Tests failed! Agent should have fixed this before committing."
+            echo "tests_failed=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "✅ All tests passed"
+          echo "tests_failed=false" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Type Checking (Python)
+        id: verify_mypy
+        continue-on-error: true
+        run: |
+          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
+            echo "Python files changed, running mypy..."
+            if ! mypy src/; then
+              echo "::warning::Mypy type checking failed"
+              echo "mypy_failed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "✅ Mypy passed"
+              echo "mypy_failed=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Verify Type Checking (TypeScript)
+        id: verify_tsc
+        continue-on-error: true
+        run: |
+          if git diff --name-only HEAD~1 | grep -q '^web/.*\.tsx\?$'; then
+            echo "TypeScript files changed, running type check..."
+            cd web
+            if ! npm run type-check; then
+              echo "::warning::TypeScript type checking failed"
+              echo "tsc_failed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "✅ TypeScript type check passed"
+              echo "tsc_failed=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Verify Web Routes
+        id: verify_routes
+        continue-on-error: true
+        run: |
+          if git diff --name-only HEAD~1 | grep -q '^web/\|^src/nyxgpt/app\.py$'; then
+            echo "Web files changed, validating routes..."
+            chmod +x scripts/validate-web-routes.sh
+            if ! ./scripts/validate-web-routes.sh; then
+              echo "::warning::Web route validation failed"
+              echo "routes_failed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "✅ Web routes validated"
+              echo "routes_failed=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
 
       - name: Submit PR for review
         if: steps.check_pr.outputs.pr_exists == 'false'
