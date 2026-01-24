@@ -1740,12 +1740,15 @@ def rag_collections_list(request: Request) -> CollectionsListResponse:
     - Embedding models used
     """
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
-    from nyxgpt.api_models import CollectionInfo, CollectionsListResponse
+    from nyxgpt.api_models import CollectionsListResponse
 
     # Get list of all collections
     temp_store = CassandraVectorStore()
     try:
         collection_names = temp_store.list_collections()
+    except Exception as e:
+        log.error(f"Failed to list collections: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to list collections: {str(e)}")
     finally:
         temp_store.close()
 
@@ -1807,7 +1810,7 @@ def rag_collection_delete(request: Request, collection_name: str) -> CollectionD
     if collection_name == "default":
         raise HTTPException(
             status_code=400,
-            detail="Cannot delete the 'default' collection. Use truncate endpoint to clear it.",
+            detail="Cannot clear the 'default' collection. This collection is protected.",
         )
 
     store = CassandraVectorStore(collection=collection_name)
@@ -1818,11 +1821,19 @@ def rag_collection_delete(request: Request, collection_name: str) -> CollectionD
             collection=collection_name,
             status=f"Collection '{collection_name}' has been cleared (truncated)",
         )
+    except ImportError as e:
+        # Cassandra driver not available
+        log.error(f"Cassandra driver import error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="RAG service unavailable: Cassandra driver not found"
+        )
     except Exception as e:
-        log.error(f"Failed to delete collection '{collection_name}': {e}", exc_info=True)
+        # Catch database errors and other issues
+        log.error(f"Failed to clear collection '{collection_name}': {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to delete collection: {str(e)}"
+            detail=f"Failed to clear collection: {str(e)}"
         )
     finally:
         store.close()

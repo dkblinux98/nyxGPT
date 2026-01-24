@@ -1101,7 +1101,7 @@ Clear all data from a RAG collection (truncates the collection table).
 - `name` - Collection name to clear
 
 **Restrictions:**
-- Cannot delete the `default` collection (returns 400 error)
+- Cannot clear the `default` collection (returns 400 error)
 
 **Response:**
 
@@ -1113,8 +1113,9 @@ Clear all data from a RAG collection (truncates the collection table).
 ```
 
 **Error Responses:**
-- `400 Bad Request` - Attempted to delete default collection
-- `500 Internal Server Error` - Failed to truncate collection
+- `400 Bad Request` - Attempted to clear default collection (message: "Cannot clear the 'default' collection. This collection is protected.")
+- `503 Service Unavailable` - Cassandra driver not available
+- `500 Internal Server Error` - Failed to clear collection
 
 ### `GET /api/v1/rag/documents`
 

@@ -652,7 +652,7 @@ The web UI includes a dedicated collections management page at `/admin/collectio
   - Embedding models used in each collection
 - **Clear collections** to remove all documents and chunks (with confirmation)
 - **Collection insights** showing which embedding models are active
-- **Protected default collection** cannot be deleted to prevent accidental data loss
+- **Protected default collection** cannot be cleared to prevent accidental data loss
 
 **Use Cases:**
 - Monitor collection growth and usage
@@ -660,7 +660,9 @@ The web UI includes a dedicated collections management page at `/admin/collectio
 - Verify which embedding models are in use
 - Understand document distribution across collections
 
-Collections are created automatically when you ingest documents with specific embedding models using the CLI. The UI provides visibility and control over these collections without requiring command-line access.
+**Note on collection lifecycle:**
+- **Creation**: Collections are created automatically when you ingest documents with specific embedding models using the CLI (see Multi-Model Embedding Support section above). No manual collection creation is needed.
+- **Deletion**: Collections can be cleared (truncated) via the UI, removing all documents and chunks while preserving the table structure. To fully drop a collection table, use Cassandra admin tools directly.
 
 #### Debug Mode
 
