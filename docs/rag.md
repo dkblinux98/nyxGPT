@@ -775,6 +775,202 @@ debug_mode = true  # Enables debug_info in standard /rag/query endpoint
 
 ---
 
+## RAG Playground
+
+The RAG Playground is an interactive web interface for testing queries, adjusting parameters, comparing results, and performing A/B testing. It provides real-time debugging and performance metrics visualization to help optimize your RAG system.
+
+### Access
+
+Navigate to `http://127.0.0.1:3000/admin/playground` in your web browser while the FastAPI backend and Next.js web UI are running.
+
+### Interface Overview
+
+The playground consists of four main panels:
+
+#### 1. Query Builder (Left Panel)
+
+**Query Input:**
+- Multi-line text area for entering search queries
+- Supports any query text
+
+**Adjustable Parameters:**
+- **Top K** (1-50): Number of results to retrieve
+  - Slider control with real-time value display
+  - Default: 5
+- **Min Score** (0.0-1.0): Minimum relevance threshold
+  - Slider control with 0.05 step increments
+  - Default: 0.0
+- **Collection**: Dropdown selector for choosing which collection to query
+  - Shows document count and chunk count for each collection
+  - Default: "default"
+
+**Feature Toggles:**
+- **Enable Debug Mode**: Collect detailed timing and performance metrics
+  - Enables debug_info in query response
+  - Shows timing breakdowns, query variants, filtering pipeline
+- **Collect Evaluation Metrics**: Gather comprehensive retrieval accuracy and latency data
+  - Uses `/api/v1/rag/metrics/query` endpoint
+  - Provides retrieval accuracy, latency breakdown, hit rate metrics
+
+**Execution:**
+- "Run Query" button executes the query with current parameters
+- Button disabled when query is empty or query is executing
+- Shows "Executing..." state during query execution
+
+#### 2. Results Display (Center Panel)
+
+**Tabbed Interface:**
+
+**Results Tab:**
+- List of retrieved chunks with relevance scores
+- Each result card shows:
+  - Result rank number
+  - Document ID and chunk ID
+  - Color-coded relevance score:
+    - Green (≥0.7): High relevance
+    - Yellow (0.4-0.7): Medium relevance
+    - Red (<0.4): Low relevance
+  - Full chunk text with word wrapping
+- Empty state message when no results found
+
+**Metrics Tab** (requires `collect_metrics` enabled):
+- **Retrieval Accuracy**:
+  - Results returned count
+  - Unique documents count
+  - Score distribution: min, max, mean, median
+- **Latency Breakdown**:
+  - Total time in milliseconds
+  - Per-stage timings: embedding, vector search, keyword search, fusion, reranking
+- **Hit Rate**:
+  - Success rate percentage
+  - Threshold performance metrics
+- Empty state message when metrics not collected
+
+**Debug Tab** (requires `debug_mode` enabled):
+- **Query Processing**:
+  - Original query text
+  - Total queries executed
+  - Query variants (if query expansion enabled)
+- **Timing Breakdown**:
+  - Total time and per-stage execution times
+- **Results Filtering Pipeline**:
+  - Raw results count
+  - After min score filter
+  - After deduplication
+  - After max chunks limit
+  - Score range and mean
+- **Full JSON Debug Output**:
+  - Expandable details section
+  - Complete debug_info JSON with syntax highlighting
+- Empty state message when debug mode not enabled
+
+#### 3. Query History (Left Panel, Bottom)
+
+- Automatically stores last 20 queries in browser localStorage
+- Each history item shows:
+  - Execution timestamp
+  - Query text (truncated with ellipsis)
+  - Result count and parameters used
+- Click any history item to view its results
+- Checkbox for selecting queries to compare (when comparison mode enabled)
+- "Clear" button to delete all history
+
+#### 4. Comparison Panel (Right Panel, toggleable)
+
+- Shows side-by-side comparison of selected queries
+- Activated by "Show Comparison" button in header
+- For each selected query, displays:
+  - Execution timestamp
+  - Query text
+  - Result count and top_k parameter
+  - Total execution time (if debug mode was enabled)
+  - Average score (if debug info available)
+- Select queries from history using checkboxes
+- Compare up to multiple queries simultaneously
+
+### Use Cases
+
+**Parameter Optimization:**
+```
+1. Run a query with top_k=5
+2. Run the same query with top_k=10
+3. Compare results to see if more results improve coverage
+4. Adjust min_score to filter low-quality results
+5. Monitor score distribution in Metrics tab
+```
+
+**A/B Testing:**
+```
+1. Enable comparison mode
+2. Test different query phrasings for the same information need
+3. Compare result counts, scores, and execution times
+4. Identify which query variant performs best
+5. Use query history to revisit and compare previous experiments
+```
+
+**Performance Tuning:**
+```
+1. Enable debug mode and metrics collection
+2. Run a representative query
+3. Review latency breakdown in Debug tab
+4. Identify bottlenecks (embedding, search, fusion, reranking)
+5. Adjust config.ini settings to optimize slow stages
+6. Re-run query and compare metrics
+```
+
+**Collection Comparison:**
+```
+1. Ingest the same document into multiple collections with different embedding models
+2. Run the same query against each collection
+3. Compare result quality, scores, and execution times
+4. Determine optimal embedding model for your use case
+```
+
+**Query Refinement:**
+```
+1. Start with a broad query
+2. Review results in Results tab
+3. Refine query based on what was retrieved
+4. Use query history to track refinement progression
+5. Compare original vs refined query performance
+```
+
+### API Endpoints Used
+
+The playground uses existing RAG API endpoints:
+
+- **POST /api/v1/rag/query**: Standard query with optional debug mode
+- **POST /api/v1/rag/metrics/query**: Query with full evaluation metrics
+- **GET /api/v1/rag/collections**: List available collections for selector
+- **GET /api/v1/rag/config**: Retrieve min_score and threshold config
+
+No new backend endpoints are required; the playground is a pure frontend enhancement.
+
+### Storage and Privacy
+
+- Query history stored in browser localStorage (client-side only)
+- No server-side query logging or history persistence
+- History limited to 20 most recent queries
+- Clear history button deletes all stored queries
+- History is per-browser, not synced across devices
+
+### Prerequisites
+
+- FastAPI backend running: `nyxgpt ops restart api`
+- Next.js web UI running: `nyxgpt ops restart web`
+- Cassandra running for RAG queries
+- At least one collection with ingested documents
+
+### Tips
+
+- Enable both debug mode and metrics collection for maximum insight
+- Use query history to build up a test suite of representative queries
+- Compare queries with identical parameters except one variable to isolate impact
+- Export comparison data (future enhancement) for reporting
+- Color-coded scores help quickly identify result quality at a glance
+
+---
+
 ## Notes
 
 - RAG is optional and can be disabled at any time.

@@ -334,6 +334,7 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
 - **Optimistic UI updates** for instant feedback on session operations (pin, rename, delete, create)
 - RAG document upload and toggle
 - **RAG Collections management** at `/admin/collections` for multi-model embedding support
+- **RAG Playground** at `/admin/playground` for interactive query testing and A/B comparison
 - **Configuration wizard** at `/admin` for step-by-step setup
 - **Log viewer** at `/admin/logs` for debugging and monitoring
 - Model management (pull, delete, list) at `/models`
@@ -706,6 +707,62 @@ The web UI includes a dedicated collections management page at `/admin/collectio
 **Note on collection lifecycle:**
 - **Creation**: Collections are created automatically when you ingest documents with specific embedding models using the CLI (see Multi-Model Embedding Support section above). No manual collection creation is needed.
 - **Deletion**: Collections can be cleared (truncated) via the UI, removing all documents and chunks while preserving the table structure. To fully drop a collection table, use Cassandra admin tools directly.
+
+#### RAG Playground
+
+The RAG Playground provides an interactive testing environment for optimizing your RAG system. Access it at `http://127.0.0.1:3000/admin/playground`.
+
+**Features:**
+
+**Query Builder (Left Panel):**
+- Text input for search queries
+- Adjustable parameters:
+  - `top_k` slider (1-50): Number of results to retrieve
+  - `min_score` slider (0.0-1.0): Minimum relevance threshold
+  - Collection selector: Choose which collection to query
+- Feature toggles:
+  - Enable debug mode: Collect detailed timing and performance metrics
+  - Collect evaluation metrics: Gather comprehensive retrieval accuracy and latency data
+
+**Results Display (Center Panel):**
+- **Results Tab**: Retrieved chunks with relevance scores
+  - Color-coded score indicators (green: high, yellow: medium, red: low)
+  - Document ID, chunk ID, and full text for each result
+  - Expandable result cards
+- **Metrics Tab**: Performance analytics (requires metrics collection)
+  - Retrieval accuracy: Results returned, unique documents, score distribution
+  - Latency breakdown: Timing for embedding, vector search, keyword search, fusion, reranking
+  - Hit rate: Success rate and threshold performance
+- **Debug Tab**: Detailed debugging information (requires debug mode)
+  - Query processing: Original query, query variants, total queries executed
+  - Timing breakdown: Per-stage execution times
+  - Results filtering pipeline: Raw results count, filtering stages, score statistics
+  - Full JSON debug output
+
+**Query History & Comparison (Bottom/Right Panel):**
+- Automatic query history storage (last 20 queries in browser localStorage)
+- Select multiple historical queries for A/B comparison
+- Side-by-side comparison view showing:
+  - Query parameters (top_k, min_score, collection)
+  - Result counts and timing metrics
+  - Average scores and performance differences
+- Clear history option
+
+**Use Cases:**
+- **Parameter optimization**: Test different top_k and min_score values to find optimal settings
+- **A/B testing**: Compare query performance with different parameters or collections
+- **Performance tuning**: Identify bottlenecks using latency breakdown and debug metrics
+- **Query refinement**: Experiment with query phrasing and see which variants perform best
+- **Collection comparison**: Test the same query across different embedding model collections
+
+**Access:**
+- Navigate to `http://127.0.0.1:3000/admin/playground`
+- Or use the admin navigation menu in the WebUI
+
+**Prerequisites:**
+- FastAPI backend must be running
+- Cassandra must be available for RAG queries
+- At least one collection with ingested documents
 
 #### Debug Mode
 
