@@ -37,13 +37,16 @@ jobs:
               core.setOutput('has_conflicts', 'false');
             }
 
-      - name: Send Slack notification
+      - name: Send Slack DM notification
         if: steps.check.outputs.has_conflicts == 'true'
         uses: slackapi/slack-github-action@v1.26.0
         with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
           payload: |
             {
-              "text": "⚠️ Merge Conflict Detected",
+              "channel": "${{ secrets.SLACK_USER_ID }}",
+              "text": "⚠️ Merge Conflict Detected in PR #${{ steps.check.outputs.pr_number }}",
               "blocks": [
                 {
                   "type": "header",
@@ -95,6 +98,3 @@ jobs:
                 }
               ]
             }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
