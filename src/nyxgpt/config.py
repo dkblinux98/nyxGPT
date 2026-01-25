@@ -93,6 +93,60 @@ def validate_config(cfg: ConfigParser) -> list[str]:
                 f"must be less than chunk_size ({chunk_size})"
             )
 
+    # Validate context window settings
+    if cfg.has_option("context", "default_window_size"):
+        try:
+            window_size = cfg.getint("context", "default_window_size")
+            if window_size < 100:
+                errors.append(
+                    f"Invalid context.default_window_size: {window_size} "
+                    "(must be at least 100)"
+                )
+            elif window_size > 1000000:
+                errors.append(
+                    f"Invalid context.default_window_size: {window_size} "
+                    "(must not exceed 1,000,000)"
+                )
+        except ValueError as e:
+            errors.append(
+                f"Invalid context.default_window_size: must be an integer ({e})"
+            )
+
+    # Validate warning threshold
+    if cfg.has_option("context", "warning_threshold"):
+        try:
+            threshold = cfg.getfloat("context", "warning_threshold")
+            if not (0.0 <= threshold <= 1.0):
+                errors.append(
+                    f"Invalid context.warning_threshold: {threshold} "
+                    "(must be between 0.0 and 1.0)"
+                )
+        except ValueError as e:
+            errors.append(
+                f"Invalid context.warning_threshold: must be a float ({e})"
+            )
+
+    # Validate model-specific context window overrides
+    if cfg.has_section("context"):
+        for option in cfg.options("context"):
+            if option.startswith("context_window_"):
+                try:
+                    window_size = cfg.getint("context", option)
+                    if window_size < 100:
+                        errors.append(
+                            f"Invalid context.{option}: {window_size} "
+                            "(must be at least 100)"
+                        )
+                    elif window_size > 1000000:
+                        errors.append(
+                            f"Invalid context.{option}: {window_size} "
+                            "(must not exceed 1,000,000)"
+                        )
+                except ValueError as e:
+                    errors.append(
+                        f"Invalid context.{option}: must be an integer ({e})"
+                    )
+
     return errors
 
 
