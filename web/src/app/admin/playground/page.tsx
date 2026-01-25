@@ -657,29 +657,31 @@ export default function PlaygroundPage() {
                           </div>
                         </div>
 
-                        <div style={{ marginTop: '1rem', padding: '1rem', backgroundColor: 'var(--background)', borderRadius: '0.375rem', border: '1px solid var(--border-color)' }}>
-                          <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
-                            Score Distribution
+                        {currentResult.evaluation_metrics.retrieval_accuracy.score_distribution?.min != null && (
+                          <div style={{ marginTop: '1rem', padding: '1rem', backgroundColor: 'var(--background)', borderRadius: '0.375rem', border: '1px solid var(--border-color)' }}>
+                            <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', textTransform: 'uppercase', marginBottom: '0.5rem' }}>
+                              Score Distribution
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem', fontSize: '0.875rem' }}>
+                              <div>
+                                <span style={{ color: 'var(--foreground-muted)' }}>Min:</span>{' '}
+                                <strong>{currentResult.evaluation_metrics.retrieval_accuracy.score_distribution.min.toFixed(4)}</strong>
+                              </div>
+                              <div>
+                                <span style={{ color: 'var(--foreground-muted)' }}>Max:</span>{' '}
+                                <strong>{currentResult.evaluation_metrics.retrieval_accuracy.score_distribution.max.toFixed(4)}</strong>
+                              </div>
+                              <div>
+                                <span style={{ color: 'var(--foreground-muted)' }}>Mean:</span>{' '}
+                                <strong>{currentResult.evaluation_metrics.retrieval_accuracy.score_distribution.mean.toFixed(4)}</strong>
+                              </div>
+                              <div>
+                                <span style={{ color: 'var(--foreground-muted)' }}>Median:</span>{' '}
+                                <strong>{currentResult.evaluation_metrics.retrieval_accuracy.score_distribution.median.toFixed(4)}</strong>
+                              </div>
+                            </div>
                           </div>
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.5rem', fontSize: '0.875rem' }}>
-                            <div>
-                              <span style={{ color: 'var(--foreground-muted)' }}>Min:</span>{' '}
-                              <strong>{currentResult.evaluation_metrics.retrieval_accuracy.score_distribution.min.toFixed(4)}</strong>
-                            </div>
-                            <div>
-                              <span style={{ color: 'var(--foreground-muted)' }}>Max:</span>{' '}
-                              <strong>{currentResult.evaluation_metrics.retrieval_accuracy.score_distribution.max.toFixed(4)}</strong>
-                            </div>
-                            <div>
-                              <span style={{ color: 'var(--foreground-muted)' }}>Mean:</span>{' '}
-                              <strong>{currentResult.evaluation_metrics.retrieval_accuracy.score_distribution.mean.toFixed(4)}</strong>
-                            </div>
-                            <div>
-                              <span style={{ color: 'var(--foreground-muted)' }}>Median:</span>{' '}
-                              <strong>{currentResult.evaluation_metrics.retrieval_accuracy.score_distribution.median.toFixed(4)}</strong>
-                            </div>
-                          </div>
-                        </div>
+                        )}
                       </div>
 
                       {/* Latency */}
@@ -699,19 +701,19 @@ export default function PlaygroundPage() {
                             <strong>Total Time:</strong> {currentResult.evaluation_metrics.latency.total_time_ms.toFixed(2)} ms
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', fontSize: '0.875rem' }}>
-                            {currentResult.evaluation_metrics.latency.embedding_ms !== null && (
+                            {currentResult.evaluation_metrics.latency.embedding_ms != null && (
                               <div>Embedding: {currentResult.evaluation_metrics.latency.embedding_ms.toFixed(2)} ms</div>
                             )}
-                            {currentResult.evaluation_metrics.latency.vector_search_ms !== null && (
+                            {currentResult.evaluation_metrics.latency.vector_search_ms != null && (
                               <div>Vector Search: {currentResult.evaluation_metrics.latency.vector_search_ms.toFixed(2)} ms</div>
                             )}
-                            {currentResult.evaluation_metrics.latency.keyword_search_ms !== null && (
+                            {currentResult.evaluation_metrics.latency.keyword_search_ms != null && (
                               <div>Keyword Search: {currentResult.evaluation_metrics.latency.keyword_search_ms.toFixed(2)} ms</div>
                             )}
-                            {currentResult.evaluation_metrics.latency.fusion_ms !== null && (
+                            {currentResult.evaluation_metrics.latency.fusion_ms != null && (
                               <div>Fusion: {currentResult.evaluation_metrics.latency.fusion_ms.toFixed(2)} ms</div>
                             )}
-                            {currentResult.evaluation_metrics.latency.reranking_ms !== null && (
+                            {currentResult.evaluation_metrics.latency.reranking_ms != null && (
                               <div>Reranking: {currentResult.evaluation_metrics.latency.reranking_ms.toFixed(2)} ms</div>
                             )}
                           </div>
@@ -800,22 +802,22 @@ export default function PlaygroundPage() {
                           </h4>
                           <div style={{ fontSize: '0.875rem' }}>
                             <div><strong>Total Time:</strong> {currentResult.debug_info.total_time_ms.toFixed(2)} ms</div>
-                            {currentResult.debug_info.embedding_time_ms !== null && (
+                            {currentResult.debug_info.embedding_time_ms != null && (
                               <div>Embedding: {currentResult.debug_info.embedding_time_ms.toFixed(2)} ms</div>
                             )}
-                            {currentResult.debug_info.vector_search_time_ms !== null && (
+                            {currentResult.debug_info.vector_search_time_ms != null && (
                               <div>Vector Search: {currentResult.debug_info.vector_search_time_ms.toFixed(2)} ms</div>
                             )}
-                            {currentResult.debug_info.keyword_search_time_ms !== null && (
+                            {currentResult.debug_info.keyword_search_time_ms != null && (
                               <div>Keyword Search: {currentResult.debug_info.keyword_search_time_ms.toFixed(2)} ms</div>
                             )}
-                            {currentResult.debug_info.fusion_time_ms !== null && (
+                            {currentResult.debug_info.fusion_time_ms != null && (
                               <div>Fusion: {currentResult.debug_info.fusion_time_ms.toFixed(2)} ms</div>
                             )}
-                            {currentResult.debug_info.query_expansion_time_ms !== null && (
+                            {currentResult.debug_info.query_expansion_time_ms != null && (
                               <div>Query Expansion: {currentResult.debug_info.query_expansion_time_ms.toFixed(2)} ms</div>
                             )}
-                            {currentResult.debug_info.reranking_time_ms !== null && (
+                            {currentResult.debug_info.reranking_time_ms != null && (
                               <div>Reranking: {currentResult.debug_info.reranking_time_ms.toFixed(2)} ms</div>
                             )}
                           </div>
@@ -838,7 +840,7 @@ export default function PlaygroundPage() {
                             <div><strong>After Min Score Filter:</strong> {currentResult.debug_info.after_min_score_filter}</div>
                             <div><strong>After Deduplication:</strong> {currentResult.debug_info.after_dedupe_filter}</div>
                             <div><strong>After Max Chunks Limit:</strong> {currentResult.debug_info.after_max_chunks_filter}</div>
-                            {currentResult.debug_info.score_min !== null && (
+                            {currentResult.debug_info.score_min != null && (
                               <>
                                 <div style={{ marginTop: '0.5rem' }}>
                                   <strong>Score Range:</strong> {currentResult.debug_info.score_min.toFixed(4)} - {currentResult.debug_info.score_max?.toFixed(4)}
