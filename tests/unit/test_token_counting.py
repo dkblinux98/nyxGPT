@@ -279,3 +279,157 @@ def test_config_get_context_warning_threshold_clamped() -> None:
     cfg["context"] = {"warning_threshold": "-0.5"}
     result = get_context_warning_threshold(cfg)
     assert result == 0.0
+
+
+def test_chat_minimal_context_exceeds_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that chat handles case where minimal context (system + prompt) exceeds budget.
+
+    When even the minimal context (system messages + current prompt) exceeds the token
+    budget, the system should log a warning and return the minimal context anyway.
+    This is preferable to failing completely.
+    """
+    from nyxgpt.chat import chat
+
+    # Set very small context window that won't fit even minimal messages
+    cfg = _cfg(tmp_path, context_window=20)
+
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
+
+    # Track messages sent to ollama
+    sent: dict[str, Any] = {}
+
+    def fake_ollama_chat(*, messages: list[dict[str, str]], **_: Any) -> str:
+        sent["messages"] = messages
+        return "response"
+
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
+
+    from nyxgpt.sessions import SessionState
+
+    # Create session with system message and long history
+    state = SessionState(
+        name="test",
+        session_file=tmp_path / "test.json",
+        meta_file=tmp_path / "test.meta.json",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant with specific instructions."},
+            {"role": "user", "content": "Previous message " * 20},
+            {"role": "assistant", "content": "Previous response " * 20},
+        ],
+        meta={},
+    )
+
+    def fake_load_session(*_: Any, **__: Any) -> SessionState:
+        return state
+
+    monkeypatch.setattr("nyxgpt.chat.load_session", fake_load_session)
+    monkeypatch.setattr("nyxgpt.chat.save_session", lambda *a, **k: None)
+
+    # Enable logging to capture warnings
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="nyxgpt.chat")
+
+    # Chat with a new prompt that will create minimal context > budget
+    result = chat("This is a new user prompt that is somewhat long", config_path=None)
+    assert result.reply == "response"
+
+    # Should have truncated to minimal context (system + current prompt)
+    # Even though it exceeds budget, function returns it anyway
+    assert len(sent["messages"]) == 2  # system + current prompt
+    assert sent["messages"][0]["role"] == "system"
+    assert sent["messages"][1]["role"] == "user"
+    assert "new user prompt" in sent["messages"][1]["content"]
+
+    # Check that appropriate warning was logged
+    warning_found = False
+    for record in caplog.records:
+        if record.levelname == "WARNING" and "truncated to minimal context" in record.message.lower():
+            warning_found = True
+            # Verify the warning message is clear and actionable
+            assert "minimal context" in record.message
+            break
+
+    assert warning_found, "Expected warning about minimal context not found in logs"
+
+
+def test_chat_huge_prompt_exceeds_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that chat handles case where current prompt alone exceeds budget.
+
+    When the current user prompt is so large that it exceeds the token budget
+    even without any history or system messages, the system should still process
+    it and log an appropriate warning.
+    """
+    from nyxgpt.chat import chat
+
+    # Set small context window
+    cfg = _cfg(tmp_path, context_window=30)
+
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
+
+    # Track messages sent to ollama
+    sent: dict[str, Any] = {}
+
+    def fake_ollama_chat(*, messages: list[dict[str, str]], **_: Any) -> str:
+        sent["messages"] = messages
+        return "response"
+
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
+
+    from nyxgpt.sessions import SessionState
+
+    # Create session with minimal history
+    state = SessionState(
+        name="test",
+        session_file=tmp_path / "test.json",
+        meta_file=tmp_path / "test.meta.json",
+        messages=[
+            {"role": "user", "content": "Short message"},
+            {"role": "assistant", "content": "Short response"},
+        ],
+        meta={},
+    )
+
+    def fake_load_session(*_: Any, **__: Any) -> SessionState:
+        return state
+
+    monkeypatch.setattr("nyxgpt.chat.load_session", fake_load_session)
+    monkeypatch.setattr("nyxgpt.chat.save_session", lambda *a, **k: None)
+
+    # Enable logging to capture warnings
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="nyxgpt.chat")
+
+    # Send a huge prompt that alone exceeds the budget
+    huge_prompt = "This is an extremely long user prompt that contains many repeated words and phrases. " * 50
+    result = chat(huge_prompt, config_path=None)
+    assert result.reply == "response"
+
+    # Should have only the huge prompt in messages (all history removed)
+    assert len(sent["messages"]) == 1
+    assert sent["messages"][0]["role"] == "user"
+    assert "extremely long user prompt" in sent["messages"][0]["content"]
+
+    # Check that warnings were logged
+    context_exceeded_warning = False
+    minimal_context_warning = False
+
+    for record in caplog.records:
+        if record.levelname == "WARNING":
+            msg_lower = record.message.lower()
+            if "context exceeds budget" in msg_lower or "exceeds budget" in msg_lower:
+                context_exceeded_warning = True
+            if "truncated to minimal context" in msg_lower or "minimal context" in msg_lower:
+                minimal_context_warning = True
+
+    # Should have at least one warning about the budget issue
+    assert context_exceeded_warning or minimal_context_warning, (
+        "Expected warning about context budget exceeded not found in logs"
+    )
