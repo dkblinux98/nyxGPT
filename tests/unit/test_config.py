@@ -542,3 +542,422 @@ medium_score_threshold = 0.5
 
     cfg = load_config(str(ini))
     assert get_rag_medium_score_threshold(cfg) == 0.5
+
+
+def test_validate_config_detects_negative_context_window(tmp_path: Path) -> None:
+    """validate_config should detect negative context window size."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+default_window_size = -100
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any(
+        "context.default_window_size" in err and "at least 100" in err for err in errors
+    )
+
+
+def test_validate_config_detects_zero_context_window(tmp_path: Path) -> None:
+    """validate_config should detect zero context window size."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+default_window_size = 0
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any(
+        "context.default_window_size" in err and "at least 100" in err for err in errors
+    )
+
+
+def test_validate_config_detects_too_small_context_window(tmp_path: Path) -> None:
+    """validate_config should detect context window size below minimum."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+default_window_size = 50
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any(
+        "context.default_window_size" in err and "at least 100" in err for err in errors
+    )
+
+
+def test_validate_config_detects_too_large_context_window(tmp_path: Path) -> None:
+    """validate_config should detect context window size above maximum."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+default_window_size = 2000000
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any(
+        "context.default_window_size" in err and "not exceed 1,000,000" in err
+        for err in errors
+    )
+
+
+def test_validate_config_detects_invalid_context_window_type(tmp_path: Path) -> None:
+    """validate_config should detect non-integer context window size."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+default_window_size = not_a_number
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any(
+        "context.default_window_size" in err and "must be an integer" in err
+        for err in errors
+    )
+
+
+def test_validate_config_accepts_valid_context_window(tmp_path: Path) -> None:
+    """validate_config should accept valid context window sizes."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+default_window_size = 8192
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    # Should have no errors related to context.default_window_size
+    assert not any("context.default_window_size" in err for err in errors)
+
+
+def test_validate_config_detects_invalid_warning_threshold_negative(
+    tmp_path: Path,
+) -> None:
+    """validate_config should detect negative warning threshold."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+warning_threshold = -0.5
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any(
+        "context.warning_threshold" in err and "between 0.0 and 1.0" in err
+        for err in errors
+    )
+
+
+def test_validate_config_detects_invalid_warning_threshold_too_large(
+    tmp_path: Path,
+) -> None:
+    """validate_config should detect warning threshold > 1.0."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+warning_threshold = 1.5
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any(
+        "context.warning_threshold" in err and "between 0.0 and 1.0" in err
+        for err in errors
+    )
+
+
+def test_validate_config_detects_invalid_warning_threshold_type(tmp_path: Path) -> None:
+    """validate_config should detect non-float warning threshold."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+warning_threshold = not_a_number
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any(
+        "context.warning_threshold" in err and "must be a float" in err
+        for err in errors
+    )
+
+
+def test_validate_config_accepts_valid_warning_threshold(tmp_path: Path) -> None:
+    """validate_config should accept valid warning threshold."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+warning_threshold = 0.8
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    # Should have no errors related to context.warning_threshold
+    assert not any("context.warning_threshold" in err for err in errors)
+
+
+def test_validate_config_accepts_boundary_warning_thresholds(tmp_path: Path) -> None:
+    """validate_config should accept warning threshold at boundaries (0.0, 1.0)."""
+    # Test 0.0
+    ini = tmp_path / "config1.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+warning_threshold = 0.0
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+    assert not any("context.warning_threshold" in err for err in errors)
+
+    # Test 1.0
+    ini2 = tmp_path / "config2.ini"
+    _write(
+        ini2,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+warning_threshold = 1.0
+""".lstrip(),
+    )
+
+    cfg2 = load_config(str(ini2))
+    errors2 = validate_config(cfg2)
+    assert not any("context.warning_threshold" in err for err in errors2)
+
+
+def test_validate_config_detects_invalid_model_specific_override(tmp_path: Path) -> None:
+    """validate_config should detect invalid model-specific context window override."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+context_window_llama3_1_8b = -1000
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any(
+        "context.context_window_llama3_1_8b" in err and "at least 100" in err
+        for err in errors
+    )
+
+
+def test_validate_config_detects_too_large_model_specific_override(
+    tmp_path: Path,
+) -> None:
+    """validate_config should detect model-specific override above maximum."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+context_window_llama3_1_8b = 5000000
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any(
+        "context.context_window_llama3_1_8b" in err and "not exceed 1,000,000" in err
+        for err in errors
+    )
+
+
+def test_validate_config_detects_invalid_model_specific_override_type(
+    tmp_path: Path,
+) -> None:
+    """validate_config should detect non-integer model-specific override."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+context_window_mistral = not_a_number
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any(
+        "context.context_window_mistral" in err and "must be an integer" in err
+        for err in errors
+    )
+
+
+def test_validate_config_accepts_valid_model_specific_override(tmp_path: Path) -> None:
+    """validate_config should accept valid model-specific overrides."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[context]
+default_window_size = 8192
+context_window_llama3_1_8b = 131072
+context_window_mistral = 8192
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    # Should have no errors related to context settings
+    assert not any("context." in err for err in errors)
