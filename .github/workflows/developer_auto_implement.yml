@@ -348,53 +348,88 @@ jobs:
 
       - name: Verify Type Checking (Python)
         id: verify_mypy
-        continue-on-error: true
         run: |
           if git diff --name-only HEAD~1 | grep -q '\.py$'; then
             echo "Python files changed, running mypy..."
             if ! mypy src/; then
-              echo "::warning::Mypy type checking failed"
+              echo "::error::Mypy type checking failed"
               echo "mypy_failed=true" >> "$GITHUB_OUTPUT"
+              exit 1
             else
               echo "✅ Mypy passed"
               echo "mypy_failed=false" >> "$GITHUB_OUTPUT"
             fi
+          else
+            echo "No Python files changed, skipping mypy"
+            echo "mypy_failed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Verify Type Checking (TypeScript)
         id: verify_tsc
-        continue-on-error: true
         run: |
           if git diff --name-only HEAD~1 | grep -q '^web/.*\.tsx\?$'; then
             echo "TypeScript files changed, running type check..."
             cd web
             if ! npm run type-check; then
-              echo "::warning::TypeScript type checking failed"
+              echo "::error::TypeScript type checking failed"
               echo "tsc_failed=true" >> "$GITHUB_OUTPUT"
+              exit 1
             else
               echo "✅ TypeScript type check passed"
               echo "tsc_failed=false" >> "$GITHUB_OUTPUT"
             fi
+          else
+            echo "No TypeScript files changed, skipping type check"
+            echo "tsc_failed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Verify Web Routes
         id: verify_routes
-        continue-on-error: true
         run: |
           if git diff --name-only HEAD~1 | grep -q '^web/\|^src/nyxgpt/app\.py$'; then
             echo "Web files changed, validating routes..."
             chmod +x scripts/validate-web-routes.sh
             if ! ./scripts/validate-web-routes.sh; then
-              echo "::warning::Web route validation failed"
+              echo "::error::Web route validation failed"
               echo "routes_failed=true" >> "$GITHUB_OUTPUT"
+              exit 1
             else
               echo "✅ Web routes validated"
               echo "routes_failed=false" >> "$GITHUB_OUTPUT"
             fi
+          else
+            echo "No web files changed, skipping route validation"
+            echo "routes_failed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Post verification failure comment
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: `❌ **Developer Agent**: Verification failed!
+
+            The implementation did not pass all validation checks. This should not happen - the agent is instructed to validate before committing.
+
+            **What failed:**
+            - Check the [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details
+
+            **Next steps:**
+            1. Review the workflow logs to see which validation failed (pytest, mypy, tsc, or routes)
+            2. The agent will need to be re-assigned to fix the issues
+            3. Unassign and re-assign @${{ vars.DEV_AGENT }} to trigger a new implementation attempt
+
+            **Note:** No PR was created because validation failed.`
+            });
+
       - name: Submit PR for review
-        if: steps.check_pr.outputs.pr_exists == 'false'
+        if: steps.check_pr.outputs.pr_exists == 'false' && success()
         id: pr
         shell: bash
         run: |
