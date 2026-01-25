@@ -1040,3 +1040,260 @@ def test_rag_upload_epub_multi_chapter(
         assert query_resp.status_code == 200
         results = query_resp.json()["results"]
         assert len(results) > 0
+
+
+@pytest.mark.integration
+def test_rag_upload_html_file(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test RAG file upload endpoint with .html file (#2666)."""
+    # Create a test HTML file with typical web page structure
+    test_file = tmp_path / "test.html"
+    html_content = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="description" content="Test HTML document for RAG">
+    <meta name="author" content="Integration Test">
+    <meta name="keywords" content="html, rag, testing">
+    <title>Test HTML Document</title>
+    <style>
+        body { font-family: Arial; }
+        .hidden { display: none; }
+    </style>
+    <script>
+        console.log("This script should be removed");
+    </script>
+</head>
+<body>
+    <header>
+        <nav>
+            <a href="#home">Home</a>
+            <a href="#about">About</a>
+        </nav>
+    </header>
+
+    <main>
+        <article>
+            <h1>HTML Parsing Test</h1>
+
+            <section>
+                <h2>Introduction</h2>
+                <p>This is a test HTML document for RAG upload testing.</p>
+                <p>It contains multiple paragraphs with semantic structure.</p>
+            </section>
+
+            <section>
+                <h2>Features</h2>
+                <ul>
+                    <li>Clean text extraction</li>
+                    <li>Semantic structure preservation</li>
+                    <li>Boilerplate removal</li>
+                </ul>
+            </section>
+
+            <section>
+                <h3>Code Example</h3>
+                <pre><code>def hello_world():
+    print("Hello, World!")</code></pre>
+            </section>
+
+            <section>
+                <h2>Data Table</h2>
+                <table>
+                    <tr>
+                        <th>Feature</th>
+                        <th>Status</th>
+                    </tr>
+                    <tr>
+                        <td>HTML Support</td>
+                        <td>Implemented</td>
+                    </tr>
+                    <tr>
+                        <td>Metadata Extraction</td>
+                        <td>Working</td>
+                    </tr>
+                </table>
+            </section>
+
+            <blockquote>
+                This is a quote that should be preserved with proper formatting.
+            </blockquote>
+        </article>
+    </main>
+
+    <aside class="advertisement">
+        This ad should be removed during parsing.
+    </aside>
+
+    <footer>
+        <p>Copyright 2025 - This footer should be removed</p>
+    </footer>
+</body>
+</html>"""
+    test_file.write_text(html_content)
+
+    # Use unique doc_id
+    doc_id = _unique_doc_id("html-upload")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        # Upload the file
+        with open(test_file, "rb") as f:
+            files = {"file": ("test.html", f, "text/html")}
+            upload_resp = client.post(
+                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
+            )
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert "doc_id" in upload_data
+        assert "chunks_ingested" in upload_data
+        assert upload_data["chunks_ingested"] > 0
+
+        # Give Cassandra indexing a moment
+        time.sleep(2.0)
+
+        # Verify we can query the uploaded content
+        query_resp = client.post(
+            "/api/v1/rag/query", json={"query": "HTML parsing test", "top_k": 5}
+        )
+        assert query_resp.status_code == 200
+        results = query_resp.json()["results"]
+        assert len(results) > 0
+
+        # Verify semantic structure was preserved
+        query_resp2 = client.post(
+            "/api/v1/rag/query", json={"query": "clean text extraction", "top_k": 5}
+        )
+        assert query_resp2.status_code == 200
+        results2 = query_resp2.json()["results"]
+        assert len(results2) > 0
+
+
+@pytest.mark.integration
+def test_rag_upload_html_with_metadata(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test that HTML upload correctly extracts metadata from meta tags (#2666)."""
+    test_file = tmp_path / "metadata_test.html"
+    html_content = """<!DOCTYPE html>
+<html>
+<head>
+    <meta name="description" content="Sample metadata description">
+    <meta name="author" content="Test Author">
+    <meta property="og:title" content="Open Graph Title">
+    <title>Metadata Test Page</title>
+</head>
+<body>
+    <h1>Metadata Extraction Test</h1>
+    <p>This HTML file tests metadata extraction from meta tags.</p>
+</body>
+</html>"""
+    test_file.write_text(html_content)
+
+    doc_id = _unique_doc_id("html-meta-upload")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("metadata_test.html", f, "text/html")}
+            upload_resp = client.post(
+                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
+            )
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert upload_data["chunks_ingested"] > 0
+
+        # Give Cassandra indexing a moment
+        time.sleep(2.0)
+
+        # Query to verify metadata was extracted and indexed
+        query_resp = client.post(
+            "/api/v1/rag/query", json={"query": "metadata extraction", "top_k": 5}
+        )
+        assert query_resp.status_code == 200
+        results = query_resp.json()["results"]
+        assert len(results) > 0
+
+
+@pytest.mark.integration
+def test_rag_upload_html_empty_file(api_base_url: str, tmp_path) -> None:
+    """Test that uploading empty HTML file is handled gracefully (#2666)."""
+    test_file = tmp_path / "empty.html"
+    # HTML with only boilerplate (no actual content)
+    html_content = """<!DOCTYPE html>
+<html>
+<head><title>Empty</title></head>
+<body>
+    <header></header>
+    <footer></footer>
+</body>
+</html>"""
+    test_file.write_text(html_content)
+
+    with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("empty.html", f, "text/html")}
+            upload_resp = client.post("/api/v1/rag/upload", files=files)
+
+        # Should fail with 400 error (no extractable content)
+        assert upload_resp.status_code == 400
+        error_data = upload_resp.json()
+        assert "detail" in error_data
+        assert "no text" in error_data["detail"].lower()
+
+
+@pytest.mark.integration
+def test_rag_upload_html_boilerplate_removal(
+    api_base_url: str, require_ollama: None, require_cassandra: None, tmp_path
+) -> None:
+    """Test that HTML upload removes boilerplate elements (#2666)."""
+    test_file = tmp_path / "boilerplate_test.html"
+    html_content = """<!DOCTYPE html>
+<html>
+<head>
+    <title>Boilerplate Test</title>
+    <script>console.log("ad tracking");</script>
+</head>
+<body>
+    <nav>Navigation that should be removed</nav>
+    <header>Header that should be removed</header>
+
+    <main>
+        <article>
+            <h1>Main Content</h1>
+            <p>This is the actual content that should be extracted.</p>
+            <p>All boilerplate should be removed.</p>
+        </article>
+    </main>
+
+    <aside class="advertisement">Ad content to be removed</aside>
+    <div class="social-share">Share buttons to be removed</div>
+    <footer>Footer that should be removed</footer>
+</body>
+</html>"""
+    test_file.write_text(html_content)
+
+    doc_id = _unique_doc_id("html-boilerplate-upload")
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        with open(test_file, "rb") as f:
+            files = {"file": ("boilerplate_test.html", f, "text/html")}
+            upload_resp = client.post(
+                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
+            )
+
+        assert upload_resp.status_code == 200
+        upload_data = upload_resp.json()
+        assert upload_data["chunks_ingested"] > 0
+
+        # Give Cassandra indexing a moment
+        time.sleep(2.0)
+
+        # Verify main content is queryable
+        query_resp = client.post(
+            "/api/v1/rag/query", json={"query": "actual content extracted", "top_k": 5}
+        )
+        assert query_resp.status_code == 200
+        results = query_resp.json()["results"]
+        assert len(results) > 0

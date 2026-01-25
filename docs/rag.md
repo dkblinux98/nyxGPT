@@ -285,7 +285,7 @@ Disable RAG for a specific session.
 
 Upload and ingest a document for RAG.
 
-**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf` (with OCR support for image-based PDFs), `.pptx` (PowerPoint presentations), `.docx` (Microsoft Word), `.epub` (eBooks)
+**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf` (with OCR support for image-based PDFs), `.pptx` (PowerPoint presentations), `.docx` (Microsoft Word), `.epub` (eBooks), `.html`/`.htm` (web pages)
 
 **Request:**
 ```bash
@@ -309,6 +309,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
 - **PowerPoint (`.pptx`)**: Extracts slide text, speaker notes, preserves slide order
 - **Microsoft Word (`.docx`)**: Extracts paragraphs, headings, tables, and embedded image markers
 - **ePUB (`.epub`)**: Extracts metadata (title, author, publisher, etc.), chapter structure, and clean text content
+- **HTML (`.html`/`.htm`)**: Extracts clean text with semantic structure preservation, removes boilerplate (scripts, styles, nav, headers, footers, ads), preserves headings, paragraphs, lists, tables, and blockquotes
 - **JSON (`.json`)**: Formatted with indentation for readability
 - **Plain text (`.txt`)**: UTF-8 encoded text
 
@@ -331,10 +332,19 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
 - Removes boilerplate (scripts, styles) for cleaner text
 - Handles multi-chapter books with proper organization
 
+**HTML Files:**
+- Extracts metadata from meta tags (title, description, author, keywords, Open Graph tags)
+- Preserves semantic structure (headings, paragraphs, lists, tables, blockquotes, code blocks)
+- Removes boilerplate and non-content elements (scripts, styles, nav, headers, footers, ads, sidebars)
+- Intelligently identifies main content area (main, article, or content divs)
+- Handles multiple encodings (UTF-8, ISO-8859-1, Windows-1252)
+- Formats lists and tables for better readability
+- Clean text extraction suitable for RAG context
+
 **Error (unsupported file type):**
 ```json
 {
-  "detail": "File type .exe not supported. Allowed: {'.txt', '.md', '.json', '.pdf', '.pptx', '.docx', '.epub'}"
+  "detail": "File type .exe not supported. Allowed: {'.txt', '.md', '.json', '.pdf', '.pptx', '.docx', '.epub', '.html', '.htm'}"
 }
 ```
 
