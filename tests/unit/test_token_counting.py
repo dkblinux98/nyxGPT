@@ -279,3 +279,54 @@ def test_config_get_context_warning_threshold_clamped() -> None:
     cfg["context"] = {"warning_threshold": "-0.5"}
     result = get_context_warning_threshold(cfg)
     assert result == 0.0
+
+
+def test_count_tokens_fails_fast_without_tiktoken(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that count_tokens raises ImportError when tiktoken is unavailable."""
+    from nyxgpt import token_counter
+
+    # Reset the global encoder cache
+    token_counter._tiktoken_encoder = None
+
+    # Mock tiktoken import to fail
+    import builtins
+
+    real_import = builtins.__import__
+
+    def mock_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "tiktoken":
+            raise ImportError("tiktoken not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", mock_import)
+
+    # Should raise ImportError, not silently fall back
+    with pytest.raises(ImportError, match="tiktoken not installed"):
+        token_counter.count_tokens("test text")
+
+
+def test_count_message_tokens_fails_fast_without_tiktoken(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Test that count_message_tokens raises ImportError when tiktoken is unavailable."""
+    from nyxgpt import token_counter
+
+    # Reset the global encoder cache
+    token_counter._tiktoken_encoder = None
+
+    # Mock tiktoken import to fail
+    import builtins
+
+    real_import = builtins.__import__
+
+    def mock_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "tiktoken":
+            raise ImportError("tiktoken not installed")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", mock_import)
+
+    # Should raise ImportError, not silently fall back
+    messages = [{"role": "user", "content": "test"}]
+    with pytest.raises(ImportError, match="tiktoken not installed"):
+        token_counter.count_message_tokens(messages)

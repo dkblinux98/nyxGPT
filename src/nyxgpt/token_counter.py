@@ -47,13 +47,8 @@ def count_tokens(text: str) -> int:
     if not text:
         return 0
 
-    try:
-        encoder = _get_encoder()
-        return len(encoder.encode(text))
-    except ImportError:
-        # Fallback to character-based estimation if tiktoken not available
-        # Rough estimate: ~4 characters per token for English text
-        return len(text) // 4
+    encoder = _get_encoder()
+    return len(encoder.encode(text))
 
 
 def count_message_tokens(messages: list[dict[str, str]]) -> int:
@@ -74,41 +69,32 @@ def count_message_tokens(messages: list[dict[str, str]]) -> int:
     if not messages:
         return 0
 
-    try:
-        encoder = _get_encoder()
+    encoder = _get_encoder()
 
-        # Token overhead per message (role markers, formatting, etc.)
-        # Based on OpenAI's documented formula:
-        # 3 tokens per message (formatting) + 1 token per message (role)
-        tokens_per_message = 4
+    # Token overhead per message (role markers, formatting, etc.)
+    # Based on OpenAI's documented formula:
+    # 3 tokens per message (formatting) + 1 token per message (role)
+    tokens_per_message = 4
 
-        total_tokens = 0
+    total_tokens = 0
 
-        for message in messages:
-            total_tokens += tokens_per_message
+    for message in messages:
+        total_tokens += tokens_per_message
 
-            # Count role tokens
-            role = message.get("role", "")
-            if role:
-                total_tokens += len(encoder.encode(role))
+        # Count role tokens
+        role = message.get("role", "")
+        if role:
+            total_tokens += len(encoder.encode(role))
 
-            # Count content tokens
-            content = message.get("content", "")
-            if content:
-                total_tokens += len(encoder.encode(content))
+        # Count content tokens
+        content = message.get("content", "")
+        if content:
+            total_tokens += len(encoder.encode(content))
 
-        # Add 2 tokens for reply priming (assistant response start)
-        total_tokens += 2
+    # Add 2 tokens for reply priming (assistant response start)
+    total_tokens += 2
 
-        return total_tokens
-
-    except ImportError:
-        # Fallback to simple character-based estimation
-        total_chars = sum(
-            len(msg.get("role", "")) + len(msg.get("content", "")) for msg in messages
-        )
-        # Add overhead estimate and divide by 4 chars/token
-        return (total_chars + len(messages) * 10) // 4
+    return total_tokens
 
 
 __all__ = [
