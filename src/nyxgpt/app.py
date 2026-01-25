@@ -3094,8 +3094,10 @@ async def rag_upload_file(
                     # Try property attribute (for Open Graph tags)
                     meta_tag = soup.find('meta', attrs={'property': meta_name})
 
-                if meta_tag and meta_tag.get('content'):
-                    metadata[metadata_key] = meta_tag.get('content').strip()
+                if meta_tag:
+                    meta_content = meta_tag.get('content')
+                    if meta_content and isinstance(meta_content, str):
+                        metadata[metadata_key] = meta_content.strip()
 
             # Add metadata section if available
             if metadata:
@@ -3167,16 +3169,16 @@ async def rag_upload_file(
                     content_parts.append("\n".join(list_items))
 
             # Extract tables
-            for table in main_content.find_all('table'):
-                table_rows = []
-                for row in table.find_all('tr'):
+            for html_table in main_content.find_all('table'):
+                html_table_rows: list[str] = []
+                for row in html_table.find_all('tr'):
                     cells = row.find_all(['th', 'td'])
                     if cells:
                         row_text = " | ".join(cell.get_text(strip=True) for cell in cells)
                         if row_text:
-                            table_rows.append(row_text)
-                if table_rows:
-                    content_parts.append("[Table]\n" + "\n".join(table_rows))
+                            html_table_rows.append(row_text)
+                if html_table_rows:
+                    content_parts.append("[Table]\n" + "\n".join(html_table_rows))
 
             # If we extracted structured content, use it
             if content_parts:
