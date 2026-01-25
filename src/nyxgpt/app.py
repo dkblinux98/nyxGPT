@@ -2557,7 +2557,7 @@ async def rag_upload_file(
 ) -> RagIngestResponse:
     """Upload and ingest a document for RAG with proper markdown parsing."""
     # Validate file type
-    allowed_types = {".txt", ".md", ".json", ".pdf", ".pptx", ".docx", ".epub"}
+    allowed_types = {".txt", ".md", ".json", ".pdf", ".pptx", ".docx", ".epub", ".html", ".htm"}
     file_ext = Path(file.filename or "").suffix.lower()
     if file_ext not in allowed_types:
         raise HTTPException(
@@ -3035,6 +3035,192 @@ async def rag_upload_file(
             raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"ePUB parsing failed: {e}")
+
+    elif file_ext in {".html", ".htm"}:
+        # Handle HTML documents (#2666)
+        try:
+            from bs4 import BeautifulSoup
+
+            # Decode HTML content
+            try:
+                html_content = content.decode("utf-8")
+            except UnicodeDecodeError:
+                # Try common fallback encodings
+                for encoding in ["iso-8859-1", "windows-1252", "cp1252"]:
+                    try:
+                        html_content = content.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Unable to decode HTML file. Unsupported encoding."
+                    )
+
+            # Parse HTML
+            soup = BeautifulSoup(html_content, 'html.parser')
+
+            # Remove boilerplate and non-content elements
+            for tag in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'iframe', 'noscript']):
+                tag.decompose()
+
+            # Remove common ad and tracking elements
+            for class_name in ['advertisement', 'ad-container', 'social-share', 'comments', 'sidebar']:
+                for elem in soup.find_all(class_=class_name):
+                    elem.decompose()
+
+            text_parts = []
+
+            # Extract metadata from meta tags
+            metadata = {}
+
+            # Page title
+            title_tag = soup.find('title')
+            if title_tag and title_tag.string:
+                metadata['Title'] = title_tag.string.strip()
+
+            # Meta tags
+            meta_mappings = {
+                'description': 'Description',
+                'author': 'Author',
+                'keywords': 'Keywords',
+                'og:title': 'OG_Title',
+                'og:description': 'OG_Description'
+            }
+
+            for meta_name, metadata_key in meta_mappings.items():
+                # Try name attribute
+                meta_tag = soup.find('meta', attrs={'name': meta_name})
+                if not meta_tag:
+                    # Try property attribute (for Open Graph tags)
+                    meta_tag = soup.find('meta', attrs={'property': meta_name})
+
+                if meta_tag:
+                    meta_content = meta_tag.get('content')
+                    if meta_content and isinstance(meta_content, str):
+                        metadata[metadata_key] = meta_content.strip()
+
+            # Add metadata section if available
+            if metadata:
+                meta_str = "\n".join(f"{k}: {v}" for k, v in metadata.items())
+                text_parts.append(f"[Metadata]\n{meta_str}\n")
+
+            # Extract main content with semantic structure preservation
+            # Try to find main content area (common patterns)
+            main_content = (
+                soup.find('main') or
+                soup.find('article') or
+                soup.find('div', class_='content') or
+                soup.find('div', id='content') or
+                soup.find('div', class_='main') or
+                soup.find('div', id='main') or
+                soup.body or
+                soup
+            )
+
+            # Process content preserving structure
+            content_parts = []
+
+            # Extract headings with hierarchy
+            for heading in main_content.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                heading_text = heading.get_text(strip=True)
+                if heading_text:
+                    level = heading.name[1]  # Extract number from h1, h2, etc.
+                    content_parts.append(f"{'#' * int(level)} {heading_text}")
+
+            # Extract paragraphs and preserve block structure
+            for elem in main_content.find_all(['p', 'div', 'section', 'blockquote', 'pre', 'code']):
+                elem_text = elem.get_text(strip=True)
+
+                # Skip empty elements
+                if not elem_text:
+                    continue
+
+                # Skip if this is just a container with nested elements we'll process separately
+                if elem.find(['p', 'div', 'section']) and elem.name == 'div':
+                    continue
+
+                # Format blockquotes
+                if elem.name == 'blockquote':
+                    elem_text = "> " + elem_text
+
+                # Format code blocks
+                if elem.name in ['pre', 'code']:
+                    elem_text = f"```\n{elem_text}\n```"
+
+                content_parts.append(elem_text)
+
+            # Extract list items with structure
+            for ul in main_content.find_all('ul'):
+                list_items = []
+                for li in ul.find_all('li', recursive=False):
+                    li_text = li.get_text(strip=True)
+                    if li_text:
+                        list_items.append(f"• {li_text}")
+                if list_items:
+                    content_parts.append("\n".join(list_items))
+
+            for ol in main_content.find_all('ol'):
+                list_items = []
+                for idx, li in enumerate(ol.find_all('li', recursive=False), start=1):
+                    li_text = li.get_text(strip=True)
+                    if li_text:
+                        list_items.append(f"{idx}. {li_text}")
+                if list_items:
+                    content_parts.append("\n".join(list_items))
+
+            # Extract tables
+            for html_table in main_content.find_all('table'):
+                html_table_rows: list[str] = []
+                for row in html_table.find_all('tr'):
+                    cells = row.find_all(['th', 'td'])
+                    if cells:
+                        row_text = " | ".join(cell.get_text(strip=True) for cell in cells)
+                        if row_text:
+                            html_table_rows.append(row_text)
+                if html_table_rows:
+                    content_parts.append("[Table]\n" + "\n".join(html_table_rows))
+
+            # If we extracted structured content, use it
+            if content_parts:
+                # Remove duplicates (headings might be extracted twice)
+                seen = set()
+                unique_parts = []
+                for part in content_parts:
+                    if part not in seen:
+                        unique_parts.append(part)
+                        seen.add(part)
+                text_parts.extend(unique_parts)
+            else:
+                # Fallback: extract all text from main content
+                text_content = main_content.get_text(separator="\n")
+                # Clean up excessive whitespace
+                lines = [line.strip() for line in text_content.splitlines()]
+                cleaned_lines = [line for line in lines if line]
+                if cleaned_lines:
+                    text_parts.append("\n\n".join(cleaned_lines))
+
+            # Combine all parts
+            text = "\n\n".join(text_parts)
+
+            # Validate extracted content
+            if not text or not text.strip():
+                raise HTTPException(
+                    status_code=400,
+                    detail="HTML extraction produced no text. The file may be empty or contain only boilerplate."
+                )
+
+        except ImportError:
+            raise HTTPException(
+                status_code=400,
+                detail="HTML support not available. Install beautifulsoup4: pip install beautifulsoup4",
+            )
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"HTML parsing failed: {e}")
 
     else:
         # Plain text

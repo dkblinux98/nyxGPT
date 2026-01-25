@@ -1460,7 +1460,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       <input
         ref={fileInputRef}
         type="file"
-        accept=".txt,.md,.json,.pdf,.docx,.pptx,.epub"
+        accept=".txt,.md,.json,.pdf,.docx,.pptx,.epub,.html,.htm"
         onChange={(e) => {
           const file = e.target.files?.[0];
           if (file) void uploadFile(file);
