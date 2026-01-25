@@ -1082,7 +1082,7 @@ class NyxGPTTUI(App):
 
                 self.output.append(
                     f"\n✓ Repository indexed successfully!\n"
-                    f"  Files indexed: {data.get('files_indexed', 0)}\n"
+                    f"  Files indexed: {data.get('total_files', 0)}\n"
                     f"  Total chunks: {data.get('total_chunks', 0)}\n\n"
                 )
                 log.info(f"Repository indexed: {params['repo_path']}")
@@ -1090,8 +1090,8 @@ class NyxGPTTUI(App):
         except httpx.TimeoutException:
             log.error("Repository indexing timed out")
             self.output.append(
-                f"\n[error] Repository indexing timed out (>5 minutes). "
-                f"Try indexing a smaller repository or use the CLI.\n\n"
+                "\n[error] Repository indexing timed out (>5 minutes). "
+                "Try indexing a smaller repository or use the CLI.\n\n"
             )
         except Exception as e:
             log.error(f"Failed to index repository: {type(e).__name__}: {e}")

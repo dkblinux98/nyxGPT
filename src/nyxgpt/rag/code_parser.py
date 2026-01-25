@@ -374,17 +374,31 @@ def _split_large_chunk(chunk: str, max_size: int) -> list[str]:
     return chunks
 
 
-def parse_code_file(file_path: Path, extract_docs_only: bool = False) -> str:
+def parse_code_file(file_path: Path, extract_docs_only: bool = False, max_file_size_mb: int = 5) -> str:
     """Parse a single code file and extract relevant content.
 
     Args:
         file_path: Path to the code file
         extract_docs_only: If True, extract only comments/docstrings. If False, include full code.
+        max_file_size_mb: Maximum file size in MB to process (default: 5MB)
 
     Returns:
         Parsed content as string
     """
+    import logging
+    log = logging.getLogger(__name__)
+
     file_ext = file_path.suffix.lower()
+
+    # Check file size before reading to prevent memory issues
+    try:
+        file_size_bytes = file_path.stat().st_size
+        max_size_bytes = max_file_size_mb * 1024 * 1024
+        if file_size_bytes > max_size_bytes:
+            log.warning(f"Skipping large file {file_path.name} ({file_size_bytes / 1024 / 1024:.1f}MB > {max_file_size_mb}MB)")
+            return ""
+    except OSError:
+        return ""
 
     try:
         with open(file_path, "r", encoding="utf-8") as f:

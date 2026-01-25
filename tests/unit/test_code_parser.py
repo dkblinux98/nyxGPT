@@ -3,7 +3,6 @@
 import pytest
 from pathlib import Path
 import tempfile
-import os
 
 from nyxgpt.rag.code_parser import (
     parse_gitignore,

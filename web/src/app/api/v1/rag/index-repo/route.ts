@@ -7,7 +7,7 @@ export async function POST(request: Request) {
     // Validate required fields
     if (!body.repo_path || typeof body.repo_path !== "string") {
       return new Response(
-        JSON.stringify({ error: "repo_path is required and must be a string" }),
+        JSON.stringify({ detail: "repo_path is required and must be a string" }),
         {
           status: 400,
           headers: { "Content-Type": "application/json" },
@@ -18,7 +18,7 @@ export async function POST(request: Request) {
     // Validate repo_path is not empty
     if (body.repo_path.trim().length === 0) {
       return new Response(
-        JSON.stringify({ error: "repo_path cannot be empty" }),
+        JSON.stringify({ detail: "repo_path cannot be empty" }),
         {
           status: 400,
           headers: { "Content-Type": "application/json" },
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
     if (body.extensions !== undefined && body.extensions !== null) {
       if (!Array.isArray(body.extensions)) {
         return new Response(
-          JSON.stringify({ error: "extensions must be an array" }),
+          JSON.stringify({ detail: "extensions must be an array" }),
           {
             status: 400,
             headers: { "Content-Type": "application/json" },
@@ -41,7 +41,7 @@ export async function POST(request: Request) {
       for (const ext of body.extensions) {
         if (typeof ext !== "string") {
           return new Response(
-            JSON.stringify({ error: "all extensions must be strings" }),
+            JSON.stringify({ detail: "all extensions must be strings" }),
             {
               status: 400,
               headers: { "Content-Type": "application/json" },
@@ -54,7 +54,7 @@ export async function POST(request: Request) {
     // Validate boolean fields
     if (body.extract_docs_only !== undefined && typeof body.extract_docs_only !== "boolean") {
       return new Response(
-        JSON.stringify({ error: "extract_docs_only must be a boolean" }),
+        JSON.stringify({ detail: "extract_docs_only must be a boolean" }),
         {
           status: 400,
           headers: { "Content-Type": "application/json" },
@@ -64,7 +64,7 @@ export async function POST(request: Request) {
 
     if (body.ensure_schema !== undefined && typeof body.ensure_schema !== "boolean") {
       return new Response(
-        JSON.stringify({ error: "ensure_schema must be a boolean" }),
+        JSON.stringify({ detail: "ensure_schema must be a boolean" }),
         {
           status: 400,
           headers: { "Content-Type": "application/json" },
@@ -94,7 +94,7 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error("Failed to index repository:", error);
     return new Response(
-      JSON.stringify({ error: "Failed to index repository via backend" }),
+      JSON.stringify({ detail: "Failed to index repository via backend" }),
       {
         status: 502,
         headers: { "Content-Type": "application/json" },

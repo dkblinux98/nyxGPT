@@ -1558,7 +1558,6 @@ def ingest_repository(
     """
     from pathlib import Path
     from nyxgpt.rag.code_parser import index_repository
-    import os
 
     repo_path_obj = Path(repo_path).resolve()
     if not repo_path_obj.exists():
@@ -1567,11 +1566,20 @@ def ingest_repository(
         raise ValueError(f"Repository path is not a directory: {repo_path}")
 
     # Security: Validate repo path is within allowed directories
-    # Restrict to user home directory or current working directory
+    # Restrict to user home directory, current working directory, or trusted paths
+    import os
     allowed_base_paths = [
         Path.home(),
         Path.cwd(),
     ]
+
+    # Add trusted paths from environment variable (colon-separated)
+    # Example: export NYXGPT_TRUSTED_PATHS="/opt/repos:/usr/local/repos"
+    trusted_paths_env = os.environ.get("NYXGPT_TRUSTED_PATHS", "").strip()
+    if trusted_paths_env:
+        for trusted_path in trusted_paths_env.split(":"):
+            if trusted_path:
+                allowed_base_paths.append(Path(trusted_path).resolve())
 
     # Check if repo_path is within allowed directories
     is_allowed = False
@@ -1584,10 +1592,11 @@ def ingest_repository(
             continue
 
     if not is_allowed:
+        allowed_paths_str = ", ".join(str(p) for p in allowed_base_paths)
         raise ValueError(
             f"Repository path is outside allowed directories. "
-            f"Only paths within home directory ({Path.home()}) or "
-            f"current working directory ({Path.cwd()}) are allowed."
+            f"Allowed paths: {allowed_paths_str}. "
+            f"To add more trusted paths, set NYXGPT_TRUSTED_PATHS environment variable."
         )
 
     log.info(f"Indexing repository: {repo_path}")
