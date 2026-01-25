@@ -18,16 +18,78 @@ jobs:
           script: |
             const issue_number = context.payload.issue.number;
             const scrum_agent = process.env.SCRUM_AGENT;
+            const project_number = process.env.PROJECT_NUMBER;
+            const project_owner = process.env.PROJECT_OWNER;
+            const status_field = process.env.STATUS_FIELD;
+            const status_backlog = process.env.STATUS_BACKLOG;
 
-            // Assign to scrummaster-agent on creation.
-            await github.rest.issues.addAssignees({
+            // Query issue's project status
+            const query = `
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  issue(number: $number) {
+                    projectItems(first: 10) {
+                      nodes {
+                        project {
+                          number
+                        }
+                        fieldValues(first: 20) {
+                          nodes {
+                            ... on ProjectV2ItemFieldSingleSelectValue {
+                              field {
+                                ... on ProjectV2SingleSelectField {
+                                  name
+                                }
+                              }
+                              name
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const result = await github.graphql(query, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number,
-              assignees: [scrum_agent]
+              number: issue_number
             });
 
-            // Optional: add a label to indicate backlog ownership.
-            // await github.rest.issues.addLabels({ owner: context.repo.owner, repo: context.repo.repo, issue_number, labels: ['backlog'] });
+            // Find the project item and status
+            const projectItems = result.repository.issue.projectItems.nodes;
+            const projectItem = projectItems.find(item => item.project.number === parseInt(project_number));
+
+            if (!projectItem) {
+              console.log(`Issue #${issue_number} is not in project ${project_number}. Skipping assignment.`);
+              return;
+            }
+
+            const statusField = projectItem.fieldValues.nodes.find(
+              fv => fv.field && fv.field.name === status_field
+            );
+
+            const currentStatus = statusField ? statusField.name : null;
+
+            console.log(`Issue #${issue_number} current status: ${currentStatus}`);
+
+            // Only assign to scrummaster if status is Backlog (or newly created without status)
+            if (currentStatus === status_backlog || currentStatus === null) {
+              console.log(`Assigning issue #${issue_number} to ${scrum_agent}`);
+              await github.rest.issues.addAssignees({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                assignees: [scrum_agent]
+              });
+            } else {
+              console.log(`Issue #${issue_number} is in "${currentStatus}" status, not Backlog. Skipping assignment.`);
+            }
         env:
           SCRUM_AGENT: ${{ vars.SCRUM_AGENT }}
+          PROJECT_NUMBER: ${{ vars.PROJECT_NUMBER }}
+          PROJECT_OWNER: ${{ vars.PROJECT_OWNER }}
+          STATUS_FIELD: ${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG: ${{ vars.STATUS_BACKLOG }}

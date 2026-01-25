@@ -12,6 +12,19 @@ Every assignee is responsible for verifying project hygiene before reassigning:
 - Merged PRs without linked issues must be corrected
 - Project fields must be accurate before state transitions
 
+### Review Trigger (review-agent ownership)
+The review workflow is triggered when review-agent is assigned as reviewer:
+- **Automatic**: When `developer_submit_for_review.sh` assigns review-agent as reviewer
+- **Manual re-trigger options**:
+  - Push new commit to PR branch (triggers on synchronize)
+  - Comment `@review` on the PR
+  - Run via GitHub Actions UI: `gh workflow run claude-code-review.yml -f pr_number=<N>`
+
+The review-agent OWNS the review process:
+- Review workflow uses `REVIEW_AGENT_TOKEN` for all GitHub operations
+- Review comments are posted by review-agent (claude[bot])
+- Review-agent orchestrates the auto-fix loop (developer-agent executes fixes)
+
 ## 1) Review checklist
 
 ### Core Requirements (from project standards)
@@ -46,17 +59,20 @@ If CI fails after PR is opened:
 
 ## 4) Review and recommendation
 After completing the review:
-- Post a structured review comment starting with "## Code Review: [APPROVE|REQUEST_CHANGES]"
+- Post a structured review comment starting with "## Code Review - [APPROVE|REQUEST_CHANGES]"
 - Include findings organized by severity (Critical/Medium/Minor)
 - Provide clear recommendation with rationale
-- **WAIT for human confirmation** - Do NOT proceed automatically
 
-## 5) Human confirmation (required)
-The human owner must review the recommendation and post one of:
-- `@approve-merge` - Confirms merge should proceed
-- `@request-changes` - Confirms changes are needed
+## 5) Automatic execution
+The review decision is automatically executed:
+- **APPROVE**: Workflow automatically merges the PR (no human confirmation required)
+- **REQUEST_CHANGES**:
+  - If `REVIEW_AUTO_FIX_ENABLED=true`: Auto-fix workflow triggers
+  - If `REVIEW_AUTO_FIX_ENABLED=false`: Creates Acceptance Failure sub-issues
 
-The GitHub workflow will then execute the approved action.
+Manual override (optional):
+- `@approve-merge` - Human can manually trigger merge
+- `@request-changes` - Human can manually trigger changes workflow
 
 ## 6) Acceptance Failure loop (blocking findings)
 When human posts `@request-changes`:
@@ -129,14 +145,15 @@ gh variable list --repo dkblinux98/nyxGPT | grep REVIEW_AUTO_FIX_ENABLED
 ```
 
 ### Required Secrets
-The auto-fix workflow requires these secrets to be configured:
+The review workflow requires these secrets to be configured:
 - `CLAUDE_CODE_OAUTH_TOKEN` - OAuth token for Claude Code agent
-- `DEVELOPER_AGENT_TOKEN` - GitHub token with repo/project permissions
+- `REVIEW_AGENT_TOKEN` - GitHub token with repo/project permissions (used for review workflow)
+- `DEVELOPER_AGENT_TOKEN` - GitHub token with repo/project permissions (used for auto-fix)
 
 **How to configure secrets:**
 - Navigate to: Settings → Secrets and variables → Actions → Secrets
 - Click "New repository secret"
-- Add both secrets if not already present
+- Add all secrets if not already present
 
 ### Branch Cleanup
 Branch deletion happens in `review_accept_and_merge.sh` via `--delete-branch`, not in auto-fix workflow.

@@ -83,16 +83,24 @@ Forbidden:
 
 ## review-agent
 
-Performs reviews and recommends action. Human must approve before execution.
+Owns and performs code reviews. Initiates review when assigned as PR reviewer.
+
+Review Trigger:
+- Automatically triggered when developer-agent assigns review-agent as reviewer
+- Can be manually re-triggered via:
+  - New commit to PR branch
+  - `@review` comment on PR
+  - Manual workflow dispatch
 
 Workflow:
-1. Wait for CI checks: `gh pr checks <PR> --watch`
-2. Review code + CI results
-3. Post review comment with recommendation (APPROVE or REQUEST_CHANGES)
-4. Wait for human confirmation:
+1. Review workflow triggers when review-agent is assigned as reviewer
+2. Run CI checks (linters, tests, test coverage, documentation)
+3. Review code + CI results
+4. Post review comment with recommendation (APPROVE or REQUEST_CHANGES)
+5. Wait for human confirmation (or auto-fix if enabled):
    - `@approve-merge` - Human approves merge
    - `@request-changes` - Human confirms changes needed
-5. Automation executes approved action
+6. Automation executes approved action
 
 On CI failure:
 - Set parent issue → In Progress
@@ -116,12 +124,13 @@ On code review recommendation:
     - `@approve-merge`: Merge PR, assign issue to human for acceptance
     - `@request-changes`: Create Acceptance Failure sub-issues, assign to developer-agent
 
-Scripts (executed by automation after human approval):
-- review_request_changes.sh <ISSUE> "<TITLE>" <BODY_FILE>
-- review_accept_and_merge.sh <PR> <ISSUE>
+Scripts:
+- review_trigger.sh <PR> - Manually trigger review workflow (for re-reviews or if auto-trigger failed)
+- review_request_changes.sh <ISSUE> "<TITLE>" <BODY_FILE> - Executed by automation after human approval
+- review_accept_and_merge.sh <PR> <ISSUE> - Executed by automation after human approval
 
-Note: Role transition happens automatically when developer-agent runs
-developer_submit_for_review.sh
+Note: Review workflow triggers automatically when developer-agent runs
+developer_submit_for_review.sh and assigns review-agent as reviewer
 
 ---
 
