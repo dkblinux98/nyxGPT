@@ -4,6 +4,74 @@ export async function POST(request: Request) {
   try {
     const body = await request.json();
 
+    // Validate required fields
+    if (!body.repo_path || typeof body.repo_path !== "string") {
+      return new Response(
+        JSON.stringify({ error: "repo_path is required and must be a string" }),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // Validate repo_path is not empty
+    if (body.repo_path.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ error: "repo_path cannot be empty" }),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    // Validate extensions if provided
+    if (body.extensions !== undefined && body.extensions !== null) {
+      if (!Array.isArray(body.extensions)) {
+        return new Response(
+          JSON.stringify({ error: "extensions must be an array" }),
+          {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          }
+        );
+      }
+      // Validate each extension is a string
+      for (const ext of body.extensions) {
+        if (typeof ext !== "string") {
+          return new Response(
+            JSON.stringify({ error: "all extensions must be strings" }),
+            {
+              status: 400,
+              headers: { "Content-Type": "application/json" },
+            }
+          );
+        }
+      }
+    }
+
+    // Validate boolean fields
+    if (body.extract_docs_only !== undefined && typeof body.extract_docs_only !== "boolean") {
+      return new Response(
+        JSON.stringify({ error: "extract_docs_only must be a boolean" }),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    if (body.ensure_schema !== undefined && typeof body.ensure_schema !== "boolean") {
+      return new Response(
+        JSON.stringify({ error: "ensure_schema must be a boolean" }),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
     const res = await fetch(`${base}/api/v1/rag/index-repo`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

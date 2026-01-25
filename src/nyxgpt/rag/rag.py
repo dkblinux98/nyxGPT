@@ -1558,12 +1558,37 @@ def ingest_repository(
     """
     from pathlib import Path
     from nyxgpt.rag.code_parser import index_repository
+    import os
 
     repo_path_obj = Path(repo_path).resolve()
     if not repo_path_obj.exists():
         raise ValueError(f"Repository path does not exist: {repo_path}")
     if not repo_path_obj.is_dir():
         raise ValueError(f"Repository path is not a directory: {repo_path}")
+
+    # Security: Validate repo path is within allowed directories
+    # Restrict to user home directory or current working directory
+    allowed_base_paths = [
+        Path.home(),
+        Path.cwd(),
+    ]
+
+    # Check if repo_path is within allowed directories
+    is_allowed = False
+    for base_path in allowed_base_paths:
+        try:
+            repo_path_obj.relative_to(base_path.resolve())
+            is_allowed = True
+            break
+        except ValueError:
+            continue
+
+    if not is_allowed:
+        raise ValueError(
+            f"Repository path is outside allowed directories. "
+            f"Only paths within home directory ({Path.home()}) or "
+            f"current working directory ({Path.cwd()}) are allowed."
+        )
 
     log.info(f"Indexing repository: {repo_path}")
     log.info(f"  Extensions: {extensions or 'all supported'}")

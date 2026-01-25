@@ -443,6 +443,7 @@ def index_repository(
     extensions: set[str] | None = None,
     extract_docs_only: bool = False,
     max_chunk_size: int = 1000,
+    max_files: int = 10000,
 ) -> dict[str, Any]:
     """Index a code repository for RAG ingestion.
 
@@ -451,33 +452,60 @@ def index_repository(
         extensions: Set of file extensions to include. If None, use all supported languages.
         extract_docs_only: If True, extract only comments/docstrings. If False, include full code.
         max_chunk_size: Maximum characters per chunk for language-aware chunking
+        max_files: Maximum number of files to index (default: 10000)
 
     Returns:
         Dictionary with:
             - 'files': list of indexed file paths
             - 'chunks': list of (file_path, chunk_index, chunk_content) tuples
             - 'total_chunks': total number of chunks
+            - 'truncated': boolean indicating if file limit was reached
     """
+    import logging
+
+    log = logging.getLogger(__name__)
     code_files = collect_code_files(repo_path, extensions)
+
+    # Check if repository is too large
+    file_count = len(code_files)
+    truncated = False
+    if file_count > max_files:
+        log.warning(
+            f"Repository has {file_count} files, limiting to {max_files}. "
+            f"Consider using --extensions to filter specific file types."
+        )
+        code_files = code_files[:max_files]
+        truncated = True
 
     all_chunks = []
     indexed_files = []
 
-    for file_path in code_files:
-        content = parse_code_file(file_path, extract_docs_only)
-        if not content:
+    # Process files with progress logging for large repositories
+    for i, file_path in enumerate(code_files):
+        # Log progress for large repositories
+        if file_count > 100 and (i + 1) % 100 == 0:
+            log.info(f"Indexing progress: {i + 1}/{len(code_files)} files processed")
+
+        try:
+            content = parse_code_file(file_path, extract_docs_only)
+            if not content:
+                continue
+
+            file_ext = file_path.suffix.lower()
+            chunks = chunk_code_by_structure(content, file_ext, max_chunk_size)
+
+            for idx, chunk in enumerate(chunks):
+                all_chunks.append((str(file_path), idx, chunk))
+
+            indexed_files.append(str(file_path))
+        except Exception as e:
+            # Log error but continue processing other files
+            log.warning(f"Failed to process {file_path}: {e}")
             continue
-
-        file_ext = file_path.suffix.lower()
-        chunks = chunk_code_by_structure(content, file_ext, max_chunk_size)
-
-        for idx, chunk in enumerate(chunks):
-            all_chunks.append((str(file_path), idx, chunk))
-
-        indexed_files.append(str(file_path))
 
     return {
         "files": indexed_files,
         "chunks": all_chunks,
         "total_chunks": len(all_chunks),
+        "truncated": truncated,
     }
