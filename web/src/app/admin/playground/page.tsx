@@ -734,7 +734,9 @@ export default function PlaygroundPage() {
                           }}
                         >
                           <div style={{ fontSize: '1.5rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>
-                            {(currentResult.evaluation_metrics.hit_rate.success_rate * 100).toFixed(1)}%
+                            {currentResult.evaluation_metrics.hit_rate.success_rate != null
+                              ? (currentResult.evaluation_metrics.hit_rate.success_rate * 100).toFixed(1)
+                              : '0.0'}%
                           </div>
                           <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>
                             Success Rate
