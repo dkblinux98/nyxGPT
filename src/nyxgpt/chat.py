@@ -26,15 +26,6 @@ from nyxgpt.token_counter import count_message_tokens
 logger = logging.getLogger(__name__)
 
 
-class ContextBudgetExceededError(Exception):
-    """Raised when the minimal context (system + current prompt) exceeds the token budget.
-
-    This indicates that even without any conversation history, the current prompt
-    or system message is too large for the configured context window.
-    """
-    pass
-
-
 @dataclass
 class ChatResult:
     session: str
@@ -286,16 +277,6 @@ def _truncate_messages_to_budget(
     minimal = system_messages + preserved
     try:
         minimal_tokens = count_message_tokens(minimal)
-
-        # Check if minimal context still exceeds budget (#2614, #3011)
-        # This can happen with very long system prompts or current prompts
-        if minimal_tokens > max_tokens:
-            raise ContextBudgetExceededError(
-                f"Current prompt exceeds context window budget "
-                f"({minimal_tokens}/{max_tokens} tokens). "
-                f"Try a shorter prompt or increase context window size."
-            )
-
         logger.warning(
             f"Truncated to minimal context: {len(minimal)} messages "
             f"({minimal_tokens} tokens). All history removed."
