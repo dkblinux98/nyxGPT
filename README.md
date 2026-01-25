@@ -27,6 +27,7 @@ Your data stays on your machine. No cloud dependency is required.
 - **Automatic session naming** with LLM‑generated titles and smart filename sync
 - **Session management** with right-click context menus, rename, export, delete, and pin
 - Optional **RAG** using Cassandra 5.0 native vector search
+- **Code repository indexing** with language-aware parsing and .gitignore support
 - **Per‑session RAG controls** via WebUI, TUI, and API
 - Config‑driven RAG context pruning and prompt optimization
 - Streaming responses (CLI, TUI, API, Web UI)
@@ -451,7 +452,7 @@ Search API response includes:
 
 nyxGPT supports per-session RAG to inject relevant context from uploaded documents into chat conversations.
 
-**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf` (with OCR support for image-based PDFs), `.pptx` (PowerPoint presentations with speaker notes), `.docx` (Microsoft Word), `.epub` (eBooks with metadata and chapter structure)
+**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf` (with OCR support for image-based PDFs), `.pptx` (PowerPoint presentations with speaker notes), `.docx` (Microsoft Word), `.epub` (eBooks with metadata and chapter structure), and **code repositories** with language-aware parsing for `.py`, `.js`, `.ts`, `.tsx`, `.java`, `.c`, `.cpp`, `.cs`, `.go`, `.rb`, `.rs`, `.sh`, `.php` files
 
 #### Web UI
 
@@ -540,6 +541,54 @@ curl http://127.0.0.1:8000/api/v1/sessions/my-session/citations/export?format=ma
 ```
 
 The citations export endpoint extracts all RAG citations from assistant messages in a session, providing a complete bibliography of sources used. Useful for generating reference lists or tracking which documents contributed to responses.
+
+**Index code repositories:**
+
+nyxGPT can index entire code repositories with language-aware parsing, automatic .gitignore support, and optional comment/docstring extraction.
+
+**CLI:**
+```bash
+# Index a repository (full code)
+nyxgpt rag index-repo /path/to/repo --ensure-schema
+
+# Index only Python and JavaScript files
+nyxgpt rag index-repo /path/to/repo --extensions ".py,.js"
+
+# Extract only comments and docstrings (no code)
+nyxgpt rag index-repo /path/to/repo --docs-only
+
+# Customize document ID prefix and collection
+nyxgpt rag index-repo /path/to/repo --prefix "myproject" --collection "code"
+```
+
+**API:**
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/rag/index-repo \
+  -H "Content-Type: application/json" \
+  -d '{
+    "repo_path": "/path/to/repo",
+    "doc_id_prefix": "code",
+    "extensions": [".py", ".js", ".ts"],
+    "extract_docs_only": false,
+    "ensure_schema": true,
+    "collection": "default"
+  }'
+```
+
+**Features:**
+- **Language-aware chunking**: Splits code by function/class boundaries for Python, JavaScript, TypeScript, Java, C/C++, Go, Ruby, Rust, PHP, and shell scripts
+- **Automatic .gitignore support**: Respects .gitignore patterns to skip build artifacts, dependencies, and other unwanted files
+- **.git directory exclusion**: Always skips .git directories automatically
+- **Comment/docstring extraction**: Optional mode to index only documentation (comments and docstrings) without code
+- **Supported languages**: Python, JavaScript, TypeScript, Java, C, C++, C#, Go, Ruby, Rust, Shell, PHP (extensible)
+- **Multi-file indexing**: Each source file becomes a separate document with relative path as doc_id
+- **Metadata tracking**: Stores file path, language, and extraction mode in metadata for filtering
+
+**Use cases:**
+- Index your project's codebase for AI-assisted code search and understanding
+- Create documentation-only indices for API reference generation
+- Build knowledge bases from open-source repositories
+- Enable context-aware coding assistance with RAG-powered chat
 
 #### Collection Management
 

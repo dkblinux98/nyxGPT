@@ -45,6 +45,8 @@ from nyxgpt.api_models import (
     ToolGrepRequest,
     RagIngestRequest,
     RagIngestResponse,
+    RagIndexRepoRequest,
+    RagIndexRepoResponse,
     RagQueryRequest,
     RagQueryResult,
     RagQueryResponse,
@@ -3059,6 +3061,35 @@ async def rag_upload_file(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")
+
+
+@api.post("/rag/index-repo")
+def rag_index_repo(request: Request, req: RagIndexRepoRequest) -> RagIndexRepoResponse:
+    """Index a code repository for RAG."""
+    from nyxgpt.rag.rag import ingest_repository
+
+    try:
+        extensions_set = set(req.extensions) if req.extensions else None
+
+        result = ingest_repository(
+            repo_path=req.repo_path,
+            doc_id_prefix=req.doc_id_prefix,
+            extensions=extensions_set,
+            extract_docs_only=req.extract_docs_only,
+            ensure_schema=req.ensure_schema,
+            collection=req.collection,
+        )
+
+        return RagIndexRepoResponse(
+            total_files=result["total_files"],
+            total_chunks=result["total_chunks"],
+            files=result["files"],
+            doc_ids=result["doc_ids"],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Repository indexing failed: {e}")
 
 
 # --- Log viewing endpoints ---

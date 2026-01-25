@@ -193,6 +193,26 @@ class RagDocumentInfo(BaseModel):
     )
 
 
+class RagIndexRepoRequest(BaseModel):
+    repo_path: str = Field(..., description="Path to repository root")
+    doc_id_prefix: str = Field("code", description="Prefix for document IDs")
+    extensions: list[str] | None = Field(
+        None, description="File extensions to include (e.g., ['.py', '.js'])"
+    )
+    extract_docs_only: bool = Field(
+        False, description="Extract only comments/docstrings (exclude code)"
+    )
+    ensure_schema: bool = Field(False, description="Create schema if missing")
+    collection: str = Field("default", description="Target collection name")
+
+
+class RagIndexRepoResponse(BaseModel):
+    total_files: int = Field(description="Number of files indexed")
+    total_chunks: int = Field(description="Total chunks ingested")
+    files: list[str] = Field(description="List of indexed file paths")
+    doc_ids: list[str] = Field(description="List of document IDs created")
+
+
 class RagQueryRequest(BaseModel):
     query: str = Field(..., description="Search query")
     top_k: int = Field(5, ge=1, le=50)
