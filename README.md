@@ -451,7 +451,7 @@ Search API response includes:
 
 nyxGPT supports per-session RAG to inject relevant context from uploaded documents into chat conversations.
 
-**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf` (with OCR support for image-based PDFs), `.pptx` (PowerPoint presentations with speaker notes), `.docx` (Microsoft Word), `.epub` (eBooks with metadata and chapter structure), `.html`/`.htm` (web pages with boilerplate removal and semantic structure preservation)
+**Supported file types:** `.txt`, `.md` (with frontmatter parsing), `.json`, `.pdf` (with OCR support for image-based PDFs), `.pptx` (PowerPoint presentations with speaker notes), `.docx` (Microsoft Word), `.epub` (eBooks with metadata and chapter structure), `.html`/`.htm` (web pages with boilerplate removal and semantic structure preservation), and **code repositories** with language-aware parsing for `.py`, `.js`, `.ts`, `.tsx`, `.java`, `.c`, `.cpp`, `.cs`, `.go`, `.rb`, `.rs`, `.sh`, `.php` files
 
 #### Web UI
 
