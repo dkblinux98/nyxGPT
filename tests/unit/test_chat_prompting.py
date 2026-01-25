@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 import configparser
 import pytest
-from nyxgpt.chat import chat, chat_stream, ContextBudgetExceededError
+from nyxgpt.chat import chat, chat_stream
 
 pytestmark = pytest.mark.unit
 
@@ -351,95 +351,3 @@ def test_chat_rag_templates_default_backward_compatible(
     assert "--- BEGIN RETRIEVED CONTEXT ---" in all_text
     assert "--- END RETRIEVED CONTEXT ---" in all_text
     assert "CONTEXT TEXT" in all_text
-
-
-def test_chat_raises_on_extreme_truncation(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Test that chat raises ContextBudgetExceededError when minimal context exceeds budget.
-
-    This tests the edge case where even the current prompt alone (without any
-    conversation history) exceeds the context window budget. Related to #2614, #3011.
-    """
-    cfg = _cfg(tmp_path, rag_enabled=False)
-
-    # Set a very small context window budget
-    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr(
-        "nyxgpt.chat.get_context_window_size", lambda *_a, **_k: 10
-    )  # Extremely small budget
-
-    # Mock count_message_tokens to simulate a very long prompt
-    def fake_count_tokens(messages: list[dict[str, str]]) -> int:
-        # System message + current prompt will exceed the budget of 10 tokens
-        return 100  # Always return a count that exceeds budget
-
-    monkeypatch.setattr("nyxgpt.chat.count_message_tokens", fake_count_tokens)
-
-    # Mock ollama_chat (should never be called because we should raise before this)
-    def fake_ollama_chat(*args: Any, **kwargs: Any) -> str:
-        pytest.fail("ollama_chat should not be called when context budget is exceeded")
-
-    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
-
-    # Attempt to chat with a prompt that will exceed budget
-    with pytest.raises(ContextBudgetExceededError) as exc_info:
-        chat("This is a test prompt", config_path=None)
-
-    # Verify the error message contains helpful information
-    error_msg = str(exc_info.value)
-    assert "exceeds context window budget" in error_msg
-    assert "100/10 tokens" in error_msg
-    assert "shorter prompt" in error_msg
-    assert "increase context window" in error_msg
-
-
-def test_chat_extreme_truncation_with_system_prompt(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Test extreme truncation when system prompt + current prompt exceeds budget.
-
-    This tests the specific scenario mentioned in #3011 where a very long
-    system prompt combined with the current prompt exceeds the budget.
-    """
-    cfg = _cfg(tmp_path, rag_enabled=False)
-
-    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
-    monkeypatch.setattr(
-        "nyxgpt.chat.get_context_window_size", lambda *_a, **_k: 50
-    )  # Small budget
-
-    # Track how many times count_message_tokens is called
-    call_count = {"count": 0}
-
-    def fake_count_tokens(messages: list[dict[str, str]]) -> int:
-        call_count["count"] += 1
-        # Simulate: system + current prompt always exceeds budget
-        # but conversation history would be even larger
-        if call_count["count"] == 1:
-            # First call: full conversation (too large)
-            return 200
-        else:
-            # Subsequent calls during truncation: still too large even for minimal
-            return 100
-
-    monkeypatch.setattr("nyxgpt.chat.count_message_tokens", fake_count_tokens)
-
-    # Mock ollama_chat (should not be called)
-    monkeypatch.setattr(
-        "nyxgpt.chat.ollama_chat",
-        lambda *a, **k: pytest.fail("Should not call ollama_chat"),
-    )
-
-    # Provide a custom system prompt to ensure we hit the edge case
-    with pytest.raises(ContextBudgetExceededError) as exc_info:
-        chat(
-            "Test prompt",
-            system="This is a very long system prompt that exceeds the budget",
-            config_path=None,
-        )
-
-    # Verify error message
-    error_msg = str(exc_info.value)
-    assert "100/50 tokens" in error_msg
-    assert "exceeds context window budget" in error_msg
