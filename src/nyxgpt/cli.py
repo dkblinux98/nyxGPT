@@ -942,6 +942,62 @@ def cmd_rag_wipe(confirm: bool, collection: str = "default") -> int:
     return 0
 
 
+def cmd_rag_index_repo(
+    repo_path: Path,
+    prefix: str,
+    extensions: str | None,
+    docs_only: bool,
+    ensure_schema: bool,
+    collection: str = "default",
+    model: str | None = None,
+    dimension: int | None = None,
+) -> int:
+    """Index a code repository for RAG."""
+    from nyxgpt.rag.rag import ingest_repository
+
+    # Parse extensions if provided
+    extensions_set = None
+    if extensions:
+        extensions_set = {ext.strip() for ext in extensions.split(",")}
+        # Ensure extensions start with a dot
+        extensions_set = {
+            ext if ext.startswith(".") else f".{ext}" for ext in extensions_set
+        }
+
+    try:
+        result = ingest_repository(
+            repo_path=str(repo_path),
+            doc_id_prefix=prefix,
+            extensions=extensions_set,
+            extract_docs_only=docs_only,
+            ensure_schema=ensure_schema,
+            collection=collection,
+            embedding_model=model,
+            embedding_dim=dimension,
+        )
+
+        print(
+            f"Indexed repository: {repo_path} into collection '{collection}'"
+        )
+        print(f"  Files indexed: {result['total_files']}")
+        print(f"  Total chunks: {result['total_chunks']}")
+        print(f"  Document ID prefix: {prefix}")
+        if docs_only:
+            print("  Mode: Documentation only (comments/docstrings)")
+        else:
+            print("  Mode: Full code")
+
+        if model:
+            print(f"  Using embedding model: {model}")
+        if dimension:
+            print(f"  Using dimension: {dimension}")
+
+        return 0
+    except Exception as e:
+        print(f"ERROR: Failed to index repository: {e}", file=sys.stderr)
+        return 1
+
+
 def cmd_models_list() -> int:
     """List all available Ollama models."""
     try:
@@ -1258,6 +1314,45 @@ def cli(argv: list[str] | None = None) -> int:
         "--collection", default="default", help="Collection name (default: default)"
     )
 
+    # Add index-repo command for code repository indexing
+    index_repo_p = rag_sub.add_parser(
+        "index-repo", help="Index a code repository for RAG"
+    )
+    index_repo_p.add_argument("repo_path", type=Path, help="Path to repository root")
+    index_repo_p.add_argument(
+        "--prefix",
+        default="code",
+        help="Document ID prefix (default: code)",
+    )
+    index_repo_p.add_argument(
+        "--extensions",
+        help="File extensions to include (comma-separated, e.g., '.py,.js'). If omitted, all supported languages are indexed.",
+    )
+    index_repo_p.add_argument(
+        "--docs-only",
+        action="store_true",
+        help="Extract only comments/docstrings (exclude code)",
+    )
+    index_repo_p.add_argument(
+        "--ensure-schema",
+        action="store_true",
+        help="Create schema if missing",
+    )
+    index_repo_p.add_argument(
+        "--collection",
+        default="default",
+        help="Collection name (default: default)",
+    )
+    index_repo_p.add_argument(
+        "--model",
+        help="Override embedding model (default: from config)",
+    )
+    index_repo_p.add_argument(
+        "--dimension",
+        type=int,
+        help="Override embedding dimension (default: from config)",
+    )
+
     # Add models command
     models_p = sub.add_parser("models", help="Manage Ollama models")
     models_sub = models_p.add_subparsers(dest="models_cmd", required=True)
@@ -1419,6 +1514,17 @@ def cli(argv: list[str] | None = None) -> int:
             return cmd_rag_delete(args.doc_id, collection=args.collection)
         if args.rag_cmd == "wipe":
             return cmd_rag_wipe(args.yes_really, collection=args.collection)
+        if args.rag_cmd == "index-repo":
+            return cmd_rag_index_repo(
+                args.repo_path,
+                args.prefix,
+                args.extensions,
+                args.docs_only,
+                args.ensure_schema,
+                collection=args.collection,
+                model=args.model,
+                dimension=args.dimension,
+            )
 
     if cmd == "models":
         if args.models_cmd == "list":

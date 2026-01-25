@@ -507,6 +507,7 @@ class HelpOverlayScreen(ModalScreen[None]):
             yield Label("\n[bold]Features:[/bold]")
             yield Label("  Ctrl+F         - Search messages")
             yield Label("  Ctrl+R         - Toggle RAG")
+            yield Label("  Ctrl+I         - Index code repository")
             yield Label("  Ctrl+M         - Models manager")
             yield Label("  Ctrl+L         - Clear output")
 
@@ -705,6 +706,7 @@ class NyxGPTTUI(App):
         ("ctrl+s", "pick_session", "Sessions"),
         ("ctrl+f", "search_messages", "Search"),
         ("ctrl+r", "toggle_rag", "Toggle RAG"),
+        ("ctrl+i", "index_repository", "Index Repo"),
         ("ctrl+m", "models_manager", "Models"),
         ("ctrl+n", "rename_session", "Rename"),
         ("ctrl+d", "delete_session", "Delete"),
@@ -991,6 +993,109 @@ class NyxGPTTUI(App):
         except Exception as e:
             log.error(f"Failed to rename session: {type(e).__name__}: {e}")
             self.output.append(f"\n[error] Failed to rename session: {e}\n\n")
+
+    def action_index_repository(self) -> None:
+        """Index a code repository for RAG."""
+        self.run_worker(self._index_repository_worker())
+
+    async def _index_repository_worker(self) -> None:
+        """Worker to handle async repository indexing."""
+        from textual.widgets import Label
+        from textual.containers import Container
+        from textual.screen import ModalScreen
+        from textual.widgets import Button
+
+        class IndexRepoScreen(ModalScreen[dict | None]):
+            """Modal screen for indexing a code repository."""
+
+            def compose(self) -> ComposeResult:
+                with Container(id="index-repo-dialog"):
+                    yield Label("Index Code Repository for RAG")
+                    self.repo_path_input = Input(
+                        placeholder="Enter repository path",
+                        id="repo-path-input",
+                    )
+                    yield self.repo_path_input
+                    yield Label("Extensions (optional, e.g., .py,.js):")
+                    self.extensions_input = Input(
+                        placeholder="Leave empty for all supported types",
+                        id="extensions-input",
+                    )
+                    yield self.extensions_input
+                    self.docs_only_checkbox = Checkbox(
+                        "Extract only docs/comments", id="docs-only-checkbox"
+                    )
+                    yield self.docs_only_checkbox
+                    with Container(classes="index-repo-buttons"):
+                        yield Button("Index", variant="primary", id="index-btn")
+                        yield Button("Cancel", id="cancel-btn")
+
+            async def on_mount(self) -> None:
+                self.repo_path_input.focus()
+
+            async def on_button_pressed(self, event: Button.Pressed) -> None:
+                if event.button.id == "index-btn":
+                    repo_path = self.repo_path_input.value.strip()
+                    if repo_path:
+                        extensions = self.extensions_input.value.strip()
+                        ext_list = (
+                            [e.strip() for e in extensions.split(",") if e.strip()]
+                            if extensions
+                            else None
+                        )
+                        self.dismiss(
+                            {
+                                "repo_path": repo_path,
+                                "extensions": ext_list,
+                                "docs_only": self.docs_only_checkbox.value,
+                            }
+                        )
+                    else:
+                        self.dismiss(None)
+                elif event.button.id == "cancel-btn":
+                    self.dismiss(None)
+
+        # Show index repo dialog
+        params = await self.push_screen_wait(IndexRepoScreen())
+
+        if not params:
+            return
+
+        # Show indexing message
+        self.output.append(
+            f"\nIndexing repository: {params['repo_path']}\nThis may take a while...\n\n"
+        )
+
+        # Call index-repo API
+        try:
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                res = await client.post(
+                    f"{self.api_base_url}/api/v1/rag/index-repo",
+                    json={
+                        "repo_path": params["repo_path"],
+                        "extensions": params["extensions"],
+                        "extract_docs_only": params["docs_only"],
+                    },
+                )
+                res.raise_for_status()
+                data = res.json()
+
+                self.output.append(
+                    f"\n✓ Repository indexed successfully!\n"
+                    f"  Files indexed: {data.get('total_files', 0)}\n"
+                    f"  Total chunks: {data.get('total_chunks', 0)}\n\n"
+                )
+                log.info(f"Repository indexed: {params['repo_path']}")
+
+        except httpx.TimeoutException:
+            log.error("Repository indexing timed out")
+            self.output.append(
+                "\n[error] Repository indexing timed out (>5 minutes). "
+                "Try indexing a smaller repository or use the CLI.\n\n"
+            )
+        except Exception as e:
+            log.error(f"Failed to index repository: {type(e).__name__}: {e}")
+            self.output.append(f"\n[error] Failed to index repository: {e}\n\n")
 
     def action_delete_session(self) -> None:
         """Delete the current session with confirmation."""

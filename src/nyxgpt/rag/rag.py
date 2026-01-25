@@ -1525,3 +1525,151 @@ def compose_context(results: Iterable[dict]) -> str:
             break
 
     return "\n\n".join(parts)
+
+
+def ingest_repository(
+    repo_path: str,
+    doc_id_prefix: str = "code",
+    extensions: set[str] | None = None,
+    extract_docs_only: bool = False,
+    ensure_schema: bool = False,
+    collection: str = "default",
+    embedding_model: str | None = None,
+    embedding_dim: int | None = None,
+) -> dict:
+    """Ingest a code repository for RAG.
+
+    Args:
+        repo_path: Path to the repository root
+        doc_id_prefix: Prefix for document IDs (default: "code")
+        extensions: Set of file extensions to include (e.g., {'.py', '.js'}). If None, use all supported.
+        extract_docs_only: If True, extract only comments/docstrings. If False, include full code.
+        ensure_schema: If True, create schema if it doesn't exist
+        collection: Target collection name
+        embedding_model: Override embedding model
+        embedding_dim: Override embedding dimension
+
+    Returns:
+        Dictionary with ingestion results:
+            - 'total_files': number of files indexed
+            - 'total_chunks': total chunks ingested
+            - 'files': list of indexed file paths
+            - 'doc_ids': list of document IDs created
+    """
+    from pathlib import Path
+    from nyxgpt.rag.code_parser import index_repository
+
+    repo_path_obj = Path(repo_path).resolve()
+    if not repo_path_obj.exists():
+        raise ValueError(f"Repository path does not exist: {repo_path}")
+    if not repo_path_obj.is_dir():
+        raise ValueError(f"Repository path is not a directory: {repo_path}")
+
+    # Security: Validate repo path is within allowed directories
+    # Restrict to user home directory, current working directory, or trusted paths
+    import os
+    allowed_base_paths = [
+        Path.home(),
+        Path.cwd(),
+    ]
+
+    # Add trusted paths from environment variable (colon-separated)
+    # Example: export NYXGPT_TRUSTED_PATHS="/opt/repos:/usr/local/repos"
+    trusted_paths_env = os.environ.get("NYXGPT_TRUSTED_PATHS", "").strip()
+    if trusted_paths_env:
+        for trusted_path in trusted_paths_env.split(":"):
+            if trusted_path:
+                allowed_base_paths.append(Path(trusted_path).resolve())
+
+    # Check if repo_path is within allowed directories
+    is_allowed = False
+    for base_path in allowed_base_paths:
+        try:
+            repo_path_obj.relative_to(base_path.resolve())
+            is_allowed = True
+            break
+        except ValueError:
+            continue
+
+    if not is_allowed:
+        allowed_paths_str = ", ".join(str(p) for p in allowed_base_paths)
+        raise ValueError(
+            f"Repository path is outside allowed directories. "
+            f"Allowed paths: {allowed_paths_str}. "
+            f"To add more trusted paths, set NYXGPT_TRUSTED_PATHS environment variable."
+        )
+
+    log.info(f"Indexing repository: {repo_path}")
+    log.info(f"  Extensions: {extensions or 'all supported'}")
+    log.info(f"  Extract docs only: {extract_docs_only}")
+
+    # Index the repository
+    result = index_repository(
+        repo_path_obj,
+        extensions=extensions,
+        extract_docs_only=extract_docs_only,
+        max_chunk_size=800,  # Use standard chunk size
+    )
+
+    files = result["files"]
+    chunks = result["chunks"]
+    total_chunks = result["total_chunks"]
+
+    log.info(f"Found {len(files)} files, {total_chunks} chunks")
+
+    # Ingest each file as a separate document
+    doc_ids = []
+    total_ingested = 0
+
+    for file_path_str in files:
+        # Create document ID from file path
+        file_path_obj = Path(file_path_str)
+        try:
+            relative_path = file_path_obj.relative_to(repo_path_obj)
+        except ValueError:
+            relative_path = file_path_obj
+
+        doc_id = f"{doc_id_prefix}:{str(relative_path).replace('/', ':')}"
+        doc_ids.append(doc_id)
+
+        # Collect all chunks for this file
+        file_chunks = [chunk for fp, idx, chunk in chunks if fp == file_path_str]
+        if not file_chunks:
+            continue
+
+        # Combine chunks into single text for this file
+        combined_text = "\n\n".join(file_chunks)
+
+        # Ingest the document
+        metadata = {
+            "file_path": str(relative_path),
+            "repo_path": str(repo_path_obj),
+            "language": file_path_obj.suffix.lstrip("."),
+            "extract_docs_only": extract_docs_only,
+        }
+
+        ingest_result = ingest_document(
+            doc_id,
+            combined_text,
+            metadata=metadata,
+            ensure_schema=ensure_schema,
+            collection=collection,
+            embedding_model=embedding_model,
+            embedding_dim=embedding_dim,
+        )
+
+        total_ingested += ingest_result["chunks_ingested"]
+        log.info(
+            f"  Ingested {doc_id}: {ingest_result['chunks_ingested']} chunks ({ingest_result['status']})"
+        )
+
+    log.info(
+        f"Repository ingestion complete: {len(doc_ids)} files, {total_ingested} total chunks"
+    )
+
+    return {
+        "total_files": len(doc_ids),
+        "total_chunks": total_ingested,
+        "files": files,
+        "doc_ids": doc_ids,
+    }
