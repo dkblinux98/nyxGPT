@@ -239,9 +239,9 @@ jobs:
               body: `✅ **Developer Agent**: Branch created: \`${branch_name}\`\n\n🤖 Starting Claude Code implementation...\n\nThis may take several minutes. Claude will:\n- Analyze the issue requirements\n- Implement the solution\n- Add/update tests\n- Run the test suite\n- Commit changes\n\nYou can watch progress in the [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}).`
             });
 
-      - name: Run Claude Code to implement issue
+      - name: Run Claude Code to implement issue (Initial)
         if: steps.check_pr.outputs.pr_exists == 'false'
-        id: claude
+        id: claude_initial
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -264,6 +264,8 @@ jobs:
                 - ALL type checks MUST PASS before proceeding
                 - Fix any TypeScript errors before committing
               * If you modified Python files:
+                - Run: ruff check src/ tests/
+                - Fix any linting errors before committing
                 - Run: mypy src/
                 - Fix any type errors before committing
               * If you added backend API endpoints (/api/v1/...):
@@ -334,73 +336,211 @@ jobs:
         working-directory: web
         run: npm ci
 
-      - name: Verify Tests Pass
-        id: verify_tests
+      - name: Run Verification (Attempt 1)
+        id: verify1
+        continue-on-error: true
         run: |
-          echo "Running pytest to verify all tests pass..."
-          if ! pytest tests/unit/ -v; then
-            echo "::error::Tests failed! Agent should have fixed this before committing."
-            echo "tests_failed=true" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
-          echo "✅ All tests passed"
-          echo "tests_failed=false" >> "$GITHUB_OUTPUT"
+          set +e  # Don't exit immediately on error - we want to capture all failures
+          FAILED=0
 
-      - name: Verify Type Checking (Python)
-        id: verify_mypy
-        run: |
+          echo "::group::Running pytest"
+          pytest tests/unit/ -v 2>&1 | tee /tmp/pytest_attempt1.log
+          [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
+          echo "::endgroup::"
+
+          echo "::group::Running ruff"
           if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            echo "Python files changed, running mypy..."
-            if ! mypy src/; then
-              echo "::error::Mypy type checking failed"
-              echo "mypy_failed=true" >> "$GITHUB_OUTPUT"
-              exit 1
-            else
-              echo "✅ Mypy passed"
-              echo "mypy_failed=false" >> "$GITHUB_OUTPUT"
-            fi
+            ruff check src/ tests/ 2>&1 | tee /tmp/ruff_attempt1.log
+            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
+          else
+            echo "No Python files changed, skipping ruff"
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Running mypy"
+          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
+            mypy src/ 2>&1 | tee /tmp/mypy_attempt1.log
+            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           else
             echo "No Python files changed, skipping mypy"
-            echo "mypy_failed=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "::endgroup::"
 
-      - name: Verify Type Checking (TypeScript)
-        id: verify_tsc
-        run: |
+          echo "::group::Running TypeScript type check"
           if git diff --name-only HEAD~1 | grep -q '^web/.*\.tsx\?$'; then
-            echo "TypeScript files changed, running type check..."
-            cd web
-            if ! npm run type-check; then
-              echo "::error::TypeScript type checking failed"
-              echo "tsc_failed=true" >> "$GITHUB_OUTPUT"
-              exit 1
-            else
-              echo "✅ TypeScript type check passed"
-              echo "tsc_failed=false" >> "$GITHUB_OUTPUT"
-            fi
+            (cd web && npm run type-check) 2>&1 | tee /tmp/tsc_attempt1.log
+            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           else
             echo "No TypeScript files changed, skipping type check"
-            echo "tsc_failed=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "::endgroup::"
 
-      - name: Verify Web Routes
-        id: verify_routes
-        run: |
+          echo "::group::Running web route validation"
           if git diff --name-only HEAD~1 | grep -q '^web/\|^src/nyxgpt/app\.py$'; then
-            echo "Web files changed, validating routes..."
             chmod +x scripts/validate-web-routes.sh
-            if ! ./scripts/validate-web-routes.sh; then
-              echo "::error::Web route validation failed"
-              echo "routes_failed=true" >> "$GITHUB_OUTPUT"
-              exit 1
-            else
-              echo "✅ Web routes validated"
-              echo "routes_failed=false" >> "$GITHUB_OUTPUT"
-            fi
+            ./scripts/validate-web-routes.sh 2>&1 | tee /tmp/routes_attempt1.log
+            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           else
             echo "No web files changed, skipping route validation"
-            echo "routes_failed=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "::endgroup::"
+
+          if [ $FAILED -eq 1 ]; then
+            echo "verification_passed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Verification failed on attempt 1, will retry with fixes"
+            exit 1
+          else
+            echo "verification_passed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ All verification checks passed!"
+          fi
+
+      - name: Claude Fix Issues (Attempt 2)
+        if: steps.verify1.outputs.verification_passed == 'false'
+        id: claude_fix2
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          show_full_output: true
+          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
+          prompt: |
+            VERIFICATION FAILED - YOU MUST FIX THE ISSUES
+
+            The previous implementation for issue #${{ github.event.issue.number }} failed verification checks.
+
+            Failure logs have been saved to:
+            - /tmp/pytest_attempt1.log (if pytest failed)
+            - /tmp/ruff_attempt1.log (if ruff linting failed)
+            - /tmp/mypy_attempt1.log (if mypy failed)
+            - /tmp/tsc_attempt1.log (if TypeScript type checking failed)
+            - /tmp/routes_attempt1.log (if route validation failed)
+
+            YOUR TASK:
+            1. Read each log file that exists using the Read tool
+            2. Understand what failed and why
+            3. Fix ALL the issues in the code
+            4. Re-run the verification commands yourself to confirm fixes work:
+               - pytest tests/unit/ -v
+               - ruff check src/ tests/ (if Python files changed)
+               - mypy src/ (if Python files changed)
+               - cd web && npm run type-check (if TypeScript files changed)
+               - ./scripts/validate-web-routes.sh (if web files changed)
+            5. Commit your fixes with message: "fix: address verification failures (attempt 2) (#${{ github.event.issue.number }})"
+
+            DO NOT create a PR. Just fix the code and commit. The workflow will handle PR creation after verification passes.
+
+      - name: Run Verification (Attempt 2)
+        if: steps.claude_fix2.conclusion == 'success'
+        id: verify2
+        continue-on-error: true
+        run: |
+          set +e
+          FAILED=0
+
+          echo "::group::Running pytest"
+          pytest tests/unit/ -v 2>&1 | tee /tmp/pytest_attempt2.log
+          [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
+          echo "::endgroup::"
+
+          echo "::group::Running ruff"
+          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
+            ruff check src/ tests/ 2>&1 | tee /tmp/ruff_attempt2.log
+            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Running mypy"
+          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
+            mypy src/ 2>&1 | tee /tmp/mypy_attempt2.log
+            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Running TypeScript type check"
+          if git diff --name-only HEAD~1 | grep -q '^web/.*\.tsx\?$'; then
+            (cd web && npm run type-check) 2>&1 | tee /tmp/tsc_attempt2.log
+            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Running web route validation"
+          if git diff --name-only HEAD~1 | grep -q '^web/\|^src/nyxgpt/app\.py$'; then
+            ./scripts/validate-web-routes.sh 2>&1 | tee /tmp/routes_attempt2.log
+            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
+          fi
+          echo "::endgroup::"
+
+          if [ $FAILED -eq 1 ]; then
+            echo "verification_passed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Verification failed on attempt 2, will retry with fixes"
+            exit 1
+          else
+            echo "verification_passed=true" >> "$GITHUB_OUTPUT"
+            echo "✅ All verification checks passed!"
+          fi
+
+      - name: Claude Fix Issues (Attempt 3)
+        if: steps.verify2.outputs.verification_passed == 'false'
+        id: claude_fix3
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          show_full_output: true
+          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
+          prompt: |
+            VERIFICATION STILL FAILING - FINAL ATTEMPT TO FIX
+
+            Issue #${{ github.event.issue.number }} verification failed AGAIN after your previous fix attempt.
+
+            Latest failure logs:
+            - /tmp/pytest_attempt2.log (if pytest failed)
+            - /tmp/ruff_attempt2.log (if ruff linting failed)
+            - /tmp/mypy_attempt2.log (if mypy failed)
+            - /tmp/tsc_attempt2.log (if TypeScript type checking failed)
+            - /tmp/routes_attempt2.log (if route validation failed)
+
+            This is your LAST CHANCE to fix the issues before the workflow fails completely.
+
+            YOUR TASK:
+            1. Read the latest failure logs
+            2. Compare with previous logs at /tmp/*_attempt1.log to see if you made progress
+            3. Fix ALL remaining issues
+            4. Verify your fixes by running the checks yourself
+            5. Commit with message: "fix: address remaining verification failures (attempt 3) (#${{ github.event.issue.number }})"
+
+      - name: Final Verification (Must Pass)
+        id: verify_final
+        run: |
+          echo "::group::Final pytest verification"
+          pytest tests/unit/ -v
+          echo "::endgroup::"
+
+          echo "::group::Final ruff verification"
+          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
+            ruff check src/ tests/
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Final mypy verification"
+          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
+            mypy src/
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Final TypeScript verification"
+          if git diff --name-only HEAD~1 | grep -q '^web/.*\.tsx\?$'; then
+            cd web && npm run type-check
+          fi
+          echo "::endgroup::"
+
+          echo "::group::Final route validation"
+          if git diff --name-only HEAD~1 | grep -q '^web/\|^src/nyxgpt/app\.py$'; then
+            ./scripts/validate-web-routes.sh
+          fi
+          echo "::endgroup::"
+
+          echo "✅ All verification checks passed on final attempt!"
 
       - name: Post verification failure comment
         if: failure()
@@ -413,19 +553,21 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `❌ **Developer Agent**: Verification failed!
+              body: `❌ **Developer Agent**: Failed after 3 attempts
 
-            The implementation did not pass all validation checks. This should not happen - the agent is instructed to validate before committing.
+            The implementation failed verification even after 3 fix attempts. This indicates a more complex issue that requires manual intervention.
 
-            **What failed:**
-            - Check the [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details
+            **What happened:**
+            - Attempt 1: Initial implementation failed verification
+            - Attempt 2: Agent attempted fixes, verification still failed
+            - Attempt 3: Agent attempted more fixes, verification STILL failed
 
             **Next steps:**
-            1. Review the workflow logs to see which validation failed (pytest, mypy, tsc, or routes)
-            2. The agent will need to be re-assigned to fix the issues
-            3. Unassign and re-assign @${{ vars.DEV_AGENT }} to trigger a new implementation attempt
+            1. Review the [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) to see what's failing
+            2. Check the commit history on the branch to see what the agent tried
+            3. Manual debugging may be required - the agent may not have enough context
 
-            **Note:** No PR was created because validation failed.`
+            **Note:** No PR was created because verification never passed.`
             });
 
       - name: Submit PR for review
