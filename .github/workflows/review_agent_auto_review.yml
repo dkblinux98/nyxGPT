@@ -131,15 +131,19 @@ jobs:
           # Auto triggers: ## Code Review - APPROVE or ## Code Review - REQUEST_CHANGES
           if echo "$COMMENT" | grep -qE '^## Code Review - APPROVE'; then
             DECISION="APPROVE"
+            TRIGGER_TYPE="auto"
             echo "::notice::Auto-approved by review agent"
           elif echo "$COMMENT" | grep -qE '^\s*@approve-merge\s*$'; then
             DECISION="APPROVE"
+            TRIGGER_TYPE="manual"
             echo "::notice::Human approved merge"
           elif echo "$COMMENT" | grep -qE '^## Code Review - REQUEST_CHANGES'; then
             DECISION="REQUEST_CHANGES"
+            TRIGGER_TYPE="auto"
             echo "::notice::Review agent requested changes"
           elif echo "$COMMENT" | grep -qE '^\s*@request-changes\s*$'; then
             DECISION="REQUEST_CHANGES"
+            TRIGGER_TYPE="manual"
             echo "::notice::Human requested changes"
           else
             echo "::error::No valid trigger phrase found (@approve-merge, @request-changes, or review decision comment)"
@@ -147,7 +151,8 @@ jobs:
           fi
 
           echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
-          echo "Decision: $DECISION"
+          echo "trigger_type=$TRIGGER_TYPE" >> "$GITHUB_OUTPUT"
+          echo "Decision: $DECISION (trigger: $TRIGGER_TYPE)"
 
           echo "::endgroup::"
 
@@ -403,18 +408,27 @@ jobs:
           script: |
             const pr_number = ${{ steps.get_pr.outputs.pr_number }};
             const decision = '${{ steps.parse_decision.outputs.decision }}';
+            const trigger_type = '${{ steps.parse_decision.outputs.trigger_type }}';
             const escalate = '${{ steps.count.outputs.escalate }}';
             const loop_count = '${{ steps.count.outputs.loop_count }}';
 
             let body;
             if (decision === 'APPROVE') {
-              body = '✅ **Review Agent**: PR merged successfully.\n\nHuman approved merge. Changes have been merged to release branch.';
+              if (trigger_type === 'auto') {
+                body = '✅ **Review Agent**: PR merged successfully.\n\nAutomatically approved and merged. Changes have been merged to release branch.';
+              } else {
+                body = '✅ **Review Agent**: PR merged successfully.\n\nHuman approved merge. Changes have been merged to release branch.';
+              }
             } else if (decision === 'REQUEST_CHANGES') {
               if (escalate === 'true') {
                 body = '⚠️ **Review Agent**: Escalated after 3 review loops.\n\nHuman confirmed changes needed. 3 auto-fix attempts completed but issues persist. Manual intervention assigned to @${{ vars.HUMAN_OWNER }}.';
               } else {
                 const next_iteration = parseInt(loop_count) + 1;
-                body = `🔧 **Review Agent**: Auto-fix loop iteration ${next_iteration}/3 complete.\n\nHuman confirmed changes needed. Fixes have been pushed to branch. PR will be automatically re-reviewed shortly.`;
+                if (trigger_type === 'auto') {
+                  body = `🔧 **Review Agent**: Auto-fix loop iteration ${next_iteration}/3 complete.\n\nChanges requested by review-agent. Fixes have been pushed to branch. PR will be automatically re-reviewed shortly.`;
+                } else {
+                  body = `🔧 **Review Agent**: Auto-fix loop iteration ${next_iteration}/3 complete.\n\nHuman confirmed changes needed. Fixes have been pushed to branch. PR will be automatically re-reviewed shortly.`;
+                }
               }
             } else {
               body = '❌ **Review Agent**: Execution failed.\n\nCheck workflow logs for details.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';

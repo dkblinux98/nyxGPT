@@ -195,8 +195,12 @@ pr_url="$(gh pr create --repo "$REPO" --base "$BASE_BRANCH" --head "$CURRENT_BRA
 
 pr_number="$(gh pr view "$pr_url" --repo "$REPO" --json number -q .number)"
 
-# Set PR hygiene: assignee and reviewer
-gh pr edit "$pr_number" --repo "$REPO" --add-assignee "$REPO_OWNER" >&2 || _warn "Failed to set PR assignee to $REPO_OWNER"
+# Set PR assignee and reviewer to review-agent
+# PR and issue remain assigned to review-agent until merge completes successfully
+if ! gh pr edit "$pr_number" --repo "$REPO" --add-assignee "$REVIEW_AGENT" >&2; then
+  _warn "Failed to set PR assignee to $REVIEW_AGENT"
+fi
+echo "[dev] PR assignee set: @$REVIEW_AGENT" >&2
 
 # Request review from review-agent (critical - must succeed)
 if ! gh pr edit "$pr_number" --repo "$REPO" --add-reviewer "$REVIEW_AGENT" >&2; then
