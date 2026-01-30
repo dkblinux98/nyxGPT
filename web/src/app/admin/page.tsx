@@ -1,8 +1,15 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useEffect, useState } from 'react';
-import LoadingSpinner from '../../components/LoadingSpinner';
-import ErrorMessage from '../../components/ErrorMessage';
+
+// Lazy load components that are not needed for initial render
+const LoadingSpinner = dynamic(() => import('../../components/LoadingSpinner'), {
+  ssr: false,
+});
+const ErrorMessage = dynamic(() => import('../../components/ErrorMessage'), {
+  ssr: false,
+});
 
 type ConfigData = {
   ollama_base_url: string;

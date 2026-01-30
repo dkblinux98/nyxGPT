@@ -1,10 +1,19 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useEffect, useState } from 'react';
-import LoadingSpinner from '../../components/LoadingSpinner';
-import ErrorMessage from '../../components/ErrorMessage';
-import SkeletonLoader from '../../components/SkeletonLoader';
 import { useToast } from '../../contexts/ToastContext';
+
+// Lazy load components for better code splitting
+const LoadingSpinner = dynamic(() => import('../../components/LoadingSpinner'), {
+  ssr: false,
+});
+const ErrorMessage = dynamic(() => import('../../components/ErrorMessage'), {
+  ssr: false,
+});
+const SkeletonLoader = dynamic(() => import('../../components/SkeletonLoader'), {
+  ssr: false,
+});
 
 type Model = {
   name: string;

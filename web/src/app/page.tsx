@@ -1,19 +1,58 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import Image from 'next/image';
-import ChatPane from './components/ChatPane';
-import ThemeToggle from '../components/ThemeToggle';
-import LoadingSpinner from '../components/LoadingSpinner';
-import ErrorMessage from '../components/ErrorMessage';
-import { SessionListSkeleton } from '../components/SkeletonLoader';
-import { SessionListErrorBoundary } from '../components/SessionListErrorBoundary';
-import { SessionCacheErrorBoundary } from '../components/SessionCacheErrorBoundary';
-import { UnifiedSearch, UnifiedSearchRef } from '../components/UnifiedSearch';
-import { VirtualizedSessionList } from '../components/VirtualizedSessionList';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { useSessionCache } from '../hooks/useSessionCache';
+import { SessionListErrorBoundary } from '../components/SessionListErrorBoundary';
+import { SessionCacheErrorBoundary } from '../components/SessionCacheErrorBoundary';
+import { SessionListSkeleton } from '../components/SkeletonLoader';
+import LoadingSpinner from '../components/LoadingSpinner';
+import ErrorMessage from '../components/ErrorMessage';
+import {
+  preloadCriticalPath,
+  preloadAdminPage,
+  preloadModelsPage,
+} from '../utils/preload';
+
+// Lazy load heavy components for better initial page load
+const ChatPane = dynamic(() => import('./components/ChatPane'), {
+  loading: () => (
+    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+      <LoadingSpinner size="large" label="Loading chat..." />
+    </div>
+  ),
+  ssr: false,
+});
+
+const UnifiedSearch = dynamic<{
+  ref?: React.Ref<any>;
+  sessions: Array<any>;
+  onSelectSession: (name: string) => void;
+  onMessageClick: (sessionName: string, messageIndex: number) => void;
+  modKey: string;
+}>(() => import('../components/UnifiedSearch').then(mod => mod.UnifiedSearch), {
+  ssr: false,
+});
+
+const VirtualizedSessionList = dynamic<{
+  sessions: Array<any>;
+  selectedSession: string;
+  onSelectSession: (name: string) => void;
+  onContextMenu: (e: React.MouseEvent, sessionName: string) => void;
+  pendingSessions: Set<string>;
+  highlightText: (text: string, search: string) => React.ReactNode;
+}>(() => import('../components/VirtualizedSessionList').then(mod => mod.VirtualizedSessionList), {
+  loading: () => <SessionListSkeleton />,
+  ssr: false,
+});
+
+// Type for UnifiedSearchRef
+type UnifiedSearchRef = {
+  focus: () => void;
+};
 
 type Info = {
   ollama_base_url: string;
@@ -135,6 +174,11 @@ function Home() {
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Preload critical path components after initial render
+  useEffect(() => {
+    preloadCriticalPath();
   }, []);
 
   // Filter sessions
@@ -1172,7 +1216,10 @@ function Home() {
                   color: 'var(--foreground)',
                   fontSize: 14,
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--button-hover)';
+                  preloadAdminPage();
+                }}
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                 onClick={() => setShowSettingsMenu(false)}
               >
@@ -1212,7 +1259,10 @@ function Home() {
                   color: 'var(--foreground)',
                   fontSize: 14,
                 }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'var(--button-hover)';
+                  preloadModelsPage();
+                }}
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                 onClick={() => setShowSettingsMenu(false)}
               >

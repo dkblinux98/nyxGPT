@@ -1,8 +1,15 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useEffect, useState, useRef } from 'react';
-import LoadingSpinner from '../../../components/LoadingSpinner';
-import ErrorMessage from '../../../components/ErrorMessage';
+
+// Lazy load components for better code splitting
+const LoadingSpinner = dynamic(() => import('../../../components/LoadingSpinner'), {
+  ssr: false,
+});
+const ErrorMessage = dynamic(() => import('../../../components/ErrorMessage'), {
+  ssr: false,
+});
 
 type LogFile = {
   name: string;
