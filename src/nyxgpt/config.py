@@ -651,6 +651,100 @@ def get_prompt_mode_long_threshold(cfg: ConfigParser) -> int:
         return 10
 
 
+def get_embedding_cache_enabled(cfg: ConfigParser) -> bool:
+    """Get whether embedding caching is enabled.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        True if embedding caching is enabled (default: True)
+    """
+    try:
+        return cfg.getboolean("cache", "embedding_cache_enabled", fallback=True)
+    except Exception:
+        return True
+
+
+def get_embedding_cache_max_size(cfg: ConfigParser) -> int:
+    """Get maximum size of embedding cache.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Maximum cache size (default: 1000)
+    """
+    try:
+        size = cfg.getint("cache", "embedding_cache_max_size", fallback=1000)
+        return max(1, size)  # Must be at least 1
+    except Exception:
+        return 1000
+
+
+def get_embedding_cache_ttl(cfg: ConfigParser) -> int:
+    """Get TTL for embedding cache entries in seconds.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        TTL in seconds (default: 3600 = 1 hour)
+    """
+    try:
+        ttl = cfg.getint("cache", "embedding_cache_ttl_seconds", fallback=3600)
+        return max(0, ttl)  # 0 = no expiration
+    except Exception:
+        return 3600
+
+
+def get_response_cache_enabled(cfg: ConfigParser) -> bool:
+    """Get whether response caching is enabled.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        True if response caching is enabled (default: False)
+    """
+    try:
+        return cfg.getboolean("cache", "response_cache_enabled", fallback=False)
+    except Exception:
+        return False
+
+
+def get_response_cache_max_size(cfg: ConfigParser) -> int:
+    """Get maximum size of response cache.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Maximum cache size (default: 100)
+    """
+    try:
+        size = cfg.getint("cache", "response_cache_max_size", fallback=100)
+        return max(1, size)  # Must be at least 1
+    except Exception:
+        return 100
+
+
+def get_response_cache_ttl(cfg: ConfigParser) -> int:
+    """Get TTL for response cache entries in seconds.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        TTL in seconds (default: 1800 = 30 minutes)
+    """
+    try:
+        ttl = cfg.getint("cache", "response_cache_ttl_seconds", fallback=1800)
+        return max(0, ttl)  # 0 = no expiration
+    except Exception:
+        return 1800
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "load_config",
@@ -679,6 +773,12 @@ __all__ = [
     "get_prompt_mode_enabled",
     "get_prompt_mode_short_threshold",
     "get_prompt_mode_long_threshold",
+    "get_embedding_cache_enabled",
+    "get_embedding_cache_max_size",
+    "get_embedding_cache_ttl",
+    "get_response_cache_enabled",
+    "get_response_cache_max_size",
+    "get_response_cache_ttl",
     "validate_config",
     "ConfigValidationError",
 ]

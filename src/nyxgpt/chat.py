@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass
@@ -34,6 +37,149 @@ class ChatResult:
     rag_used: bool
     rag_chunks: int
     rag_context: list[dict] | None = None  # List of {text, score, doc_id, chunk_id, similarity_score}
+
+
+@dataclass
+class ResponseCacheEntry:
+    """Cache entry for LLM responses with TTL support."""
+
+    response: str
+    timestamp: float
+
+
+class ResponseCache:
+    """Thread-safe LRU cache for LLM responses with TTL support."""
+
+    def __init__(self, max_size: int = 100, ttl_seconds: int = 1800):
+        """Initialize response cache.
+
+        Args:
+            max_size: Maximum number of cached responses (LRU eviction)
+            ttl_seconds: Time-to-live for cache entries in seconds
+        """
+        self.max_size = max_size
+        self.ttl_seconds = ttl_seconds
+        self._cache: dict[str, ResponseCacheEntry] = {}
+        self._access_order: list[str] = []  # For LRU tracking
+
+    def _compute_hash(self, messages: list[dict[str, str]], model: str) -> str:
+        """Compute cache key hash from messages and model.
+
+        Args:
+            messages: List of message dicts to hash
+            model: Model name
+
+        Returns:
+            SHA256 hash of the cache key
+        """
+        # Create deterministic JSON representation
+        key_data = {"model": model, "messages": messages}
+        key_str = json.dumps(key_data, sort_keys=True)
+        return hashlib.sha256(key_str.encode("utf-8")).hexdigest()
+
+    def get(self, messages: list[dict[str, str]], model: str) -> str | None:
+        """Get cached response if available and not expired.
+
+        Args:
+            messages: Message list to look up
+            model: Model used for generation
+
+        Returns:
+            Cached response or None if not found/expired
+        """
+        cache_key = self._compute_hash(messages, model)
+        entry = self._cache.get(cache_key)
+
+        if entry is None:
+            return None
+
+        # Check TTL
+        if self.ttl_seconds > 0:
+            age = time.time() - entry.timestamp
+            if age > self.ttl_seconds:
+                # Expired, remove from cache
+                del self._cache[cache_key]
+                if cache_key in self._access_order:
+                    self._access_order.remove(cache_key)
+                return None
+
+        # Update access order for LRU
+        if cache_key in self._access_order:
+            self._access_order.remove(cache_key)
+        self._access_order.append(cache_key)
+
+        return entry.response
+
+    def put(self, messages: list[dict[str, str]], model: str, response: str) -> None:
+        """Store response in cache.
+
+        Args:
+            messages: Message list that generated the response
+            model: Model used for generation
+            response: Response to cache
+        """
+        cache_key = self._compute_hash(messages, model)
+
+        # Evict oldest entry if cache is full
+        if len(self._cache) >= self.max_size and cache_key not in self._cache:
+            if self._access_order:
+                oldest_key = self._access_order.pop(0)
+                del self._cache[oldest_key]
+
+        # Store new entry
+        self._cache[cache_key] = ResponseCacheEntry(
+            response=response, timestamp=time.time()
+        )
+
+        # Update access order
+        if cache_key in self._access_order:
+            self._access_order.remove(cache_key)
+        self._access_order.append(cache_key)
+
+    def clear(self) -> None:
+        """Clear all cached responses."""
+        self._cache.clear()
+        self._access_order.clear()
+
+    def size(self) -> int:
+        """Get current cache size."""
+        return len(self._cache)
+
+
+# Global response cache instance
+_response_cache: ResponseCache | None = None
+
+
+def _get_response_cache() -> ResponseCache | None:
+    """Get or create the global response cache instance.
+
+    Returns None if caching is disabled in config.
+    """
+    global _response_cache
+
+    cfg = load_config(None)
+
+    # Check if response cache is enabled
+    try:
+        cache_enabled = cfg.getboolean("cache", "response_cache_enabled", fallback=False)
+    except Exception:
+        cache_enabled = False
+
+    if not cache_enabled:
+        return None
+
+    # Create cache if it doesn't exist
+    if _response_cache is None:
+        try:
+            max_size = cfg.getint("cache", "response_cache_max_size", fallback=100)
+            ttl_seconds = cfg.getint("cache", "response_cache_ttl_seconds", fallback=1800)
+        except Exception:
+            max_size = 100
+            ttl_seconds = 1800
+
+        _response_cache = ResponseCache(max_size=max_size, ttl_seconds=ttl_seconds)
+
+    return _response_cache
 
 
 @dataclass
@@ -507,7 +653,7 @@ def chat(
     rag_enabled: bool | None = None,
     rag_filters: dict[str, Any] | None = None,
 ) -> ChatResult:
-    """Run a chat turn, persisting session history. Optionally inject RAG context."""
+    """Run a chat turn, persisting session history. Optionally inject RAG context and use response caching."""
 
     context = _prepare_chat_context(
         prompt=prompt,
@@ -521,12 +667,39 @@ def chat(
         rag_filters=rag_filters,
     )
 
-    reply = ollama_chat(
-        base_url=context.base_url,
-        model=context.chosen_model,
-        messages=context.messages,
-        timeout_s=context.chat_timeout_s,
-    )
+    # Try to get response from cache
+    cache = _get_response_cache()
+    reply = None
+
+    if cache is not None:
+        cached_reply = cache.get(context.messages, context.chosen_model)
+        if cached_reply is not None:
+            logger.debug(
+                "Response cache HIT for session=%s, model=%s",
+                session,
+                context.chosen_model,
+            )
+            reply = cached_reply
+
+    # Cache miss - generate new response
+    if reply is None:
+        if cache is not None:
+            logger.debug(
+                "Response cache MISS for session=%s, model=%s",
+                session,
+                context.chosen_model,
+            )
+
+        reply = ollama_chat(
+            base_url=context.base_url,
+            model=context.chosen_model,
+            messages=context.messages,
+            timeout_s=context.chat_timeout_s,
+        )
+
+        # Store in cache
+        if cache is not None:
+            cache.put(context.messages, context.chosen_model, reply)
 
     cfg = _cfg(config_path)
     _persist_chat_turn(context, prompt, reply, cfg, sessions_dir)

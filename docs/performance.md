@@ -667,6 +667,103 @@ See [Ollama Docker documentation](https://github.com/ollama/ollama/blob/main/doc
 
 ---
 
+## Caching
+
+nyxGPT includes built-in caching to improve performance by avoiding redundant computations.
+
+### Embedding Cache
+
+Caches embedding vectors by text content, model, and dimension. Enabled by default.
+
+```ini
+[cache]
+# Enable/disable embedding caching (default: true)
+embedding_cache_enabled = true
+
+# Maximum number of cached embeddings (LRU eviction)
+embedding_cache_max_size = 1000
+
+# Time-to-live for cached embeddings in seconds (0 = no expiration)
+embedding_cache_ttl_seconds = 3600
+```
+
+**When to use**:
+- RAG-enabled workflows with repeated queries
+- Ingesting similar or overlapping documents
+- Development and testing with the same queries
+
+**Performance impact**:
+- Cache HIT: ~1-2ms (99% faster than computing embedding)
+- Cache MISS: Same as normal (embedding computed and cached)
+- Memory usage: ~3-4 KB per cached embedding
+
+**Tuning guidance**:
+- **Cache size**: Higher = more cache hits, but more memory. 1000 embeddings ≈ 3-4 MB RAM.
+- **TTL**: Set to 0 for infinite cache (good for static documents), or 3600+ for fresh embeddings.
+- **Disable caching**: Set `embedding_cache_enabled = false` if memory is constrained or embeddings change frequently.
+
+**Example use case**:
+If you frequently query the same documents (e.g., "What is the architecture?" repeated across sessions), the embedding for your query is computed once and reused, saving 50-200ms per query.
+
+### Response Cache
+
+Caches LLM responses for identical prompts. Disabled by default (responses should generally be fresh).
+
+```ini
+[cache]
+# Enable/disable response caching (default: false)
+# WARNING: May return stale responses for identical prompts
+response_cache_enabled = false
+
+# Maximum number of cached responses (LRU eviction)
+response_cache_max_size = 100
+
+# Time-to-live for cached responses in seconds (0 = no expiration)
+response_cache_ttl_seconds = 1800
+```
+
+**When to use**:
+- Repeated identical queries in automated workflows
+- Testing and development with fixed prompts
+- Read-only information retrieval use cases
+
+**When NOT to use**:
+- Interactive chat (users expect fresh responses)
+- Queries where context matters (session history affects response)
+- Real-time information needs
+
+**Performance impact**:
+- Cache HIT: ~1-2ms (99.9% faster than generating response)
+- Cache MISS: Same as normal (response generated and cached)
+- Memory usage: ~100-2000 bytes per cached response (depends on response length)
+
+**Tuning guidance**:
+- **Enable selectively**: Only enable for specific use cases (not recommended for general chat)
+- **Short TTL**: Use 300-1800 seconds to prevent very stale responses
+- **Monitor cache hits**: Check logs for "Response cache HIT/MISS" messages
+
+**Cache invalidation**:
+Both caches use LRU (Least Recently Used) eviction and TTL-based expiration:
+- When cache is full, oldest entry is evicted
+- Entries expire after TTL seconds (0 = no expiration)
+- Clear caches by restarting the API (persistent disk caching not implemented)
+
+**Monitoring cache performance**:
+Enable debug logging to see cache hit/miss rates:
+
+```ini
+[logging]
+level = DEBUG
+```
+
+Look for log messages like:
+```
+DEBUG Response cache HIT for session=default, model=llama3.1:8b
+DEBUG Response cache MISS for session=default, model=llama3.1:8b
+```
+
+---
+
 ## Benchmarking
 
 Track performance over time:
@@ -713,9 +810,10 @@ time nyxgpt chat --config /tmp/test-config.ini "Write a haiku"
 **Key Performance Levers** (in order of impact):
 
 1. **Model size**: Biggest impact on speed and memory
-2. **RAG enabled/disabled**: 100-500ms per request
-3. **RAG context size**: Affects prompt length and generation time
-4. **Chunk retrieval count**: Affects RAG latency
-5. **Batch sizes**: Affects ingestion speed only
+2. **Caching**: Embedding cache (enabled by default) can save 50-200ms per query; response cache (disabled by default) can save seconds per repeated query
+3. **RAG enabled/disabled**: 100-500ms per request
+4. **RAG context size**: Affects prompt length and generation time
+5. **Chunk retrieval count**: Affects RAG latency
+6. **Batch sizes**: Affects ingestion speed only
 
-**General Rule**: Start with minimal configuration and scale up as needed based on measured performance and quality requirements.
+**General Rule**: Start with minimal configuration and scale up as needed based on measured performance and quality requirements. Enable caching for repetitive workloads.
