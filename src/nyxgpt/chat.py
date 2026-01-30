@@ -26,6 +26,21 @@ from nyxgpt.token_counter import count_message_tokens
 logger = logging.getLogger(__name__)
 
 
+def _format_stream_event(event_type: str, data: Any) -> str:
+    """Format a structured event for streaming.
+
+    Args:
+        event_type: Type of event (text, metadata, rag_context, done, error, etc.)
+        data: Event payload (will be JSON-serialized)
+
+    Returns:
+        JSON string with newline delimiter
+    """
+    import json
+    event = {"type": event_type, "data": data}
+    return json.dumps(event) + "\n"
+
+
 @dataclass
 class ChatResult:
     session: str
@@ -588,38 +603,44 @@ def chat_stream(
         "Starting chat stream for session=%s, model=%s", session, context.chosen_model
     )
 
-    # Yield RAG metadata as first chunk if RAG was used
+    # Yield RAG metadata as first event if RAG was used
     if context.rag_used and context.rag_context:
-        import json
+        rag_chunks = [
+            {
+                "text": chunk.get("text", ""),
+                "score": chunk.get("score", 0.0),
+                "doc_id": chunk.get("doc_id"),
+                "chunk_id": chunk.get("chunk_id"),
+                "similarity_score": chunk.get("similarity_score"),
+            }
+            for chunk in context.rag_context
+        ]
+        yield _format_stream_event("rag_context", {"chunks": rag_chunks})
 
-        rag_data = {
-            "type": "rag_metadata",
-            "chunks": [
-                {
-                    "text": chunk.get("text", ""),
-                    "score": chunk.get("score", 0.0),
-                    "doc_id": chunk.get("doc_id"),
-                    "chunk_id": chunk.get("chunk_id"),
-                    "similarity_score": chunk.get("similarity_score"),
-                }
-                for chunk in context.rag_context
-            ],
-        }
-        yield f"__RAG_START__{json.dumps(rag_data)}__RAG_END__\n"
+    # Yield metadata event with session/model info
+    yield _format_stream_event(
+        "metadata",
+        {
+            "session": context.state.name,
+            "model": context.chosen_model,
+            "rag_used": context.rag_used,
+            "rag_chunks": context.rag_chunks,
+        },
+    )
 
     # Create retry callback that yields status messages
     def _retry_callback(attempt: int, delay: float, error: Exception) -> None:
-        # Yield a special marker for retry status
-        import json
-
-        retry_data = {
-            "type": "retry_status",
-            "attempt": attempt,
-            "delay": delay,
-            "error": str(error),
-        }
-        # Store in a list that we'll check and yield
-        retry_messages.append(f"__RETRY_START__{json.dumps(retry_data)}__RETRY_END__\n")
+        # Store structured retry event
+        retry_messages.append(
+            _format_stream_event(
+                "retry",
+                {
+                    "attempt": attempt,
+                    "delay": delay,
+                    "error": str(error),
+                },
+            )
+        )
 
         # Call the original callback if provided
         if on_retry:
@@ -630,6 +651,7 @@ def chat_stream(
 
     # Stream tokens and assemble final reply
     parts: list[str] = []
+    token_count = 0
     try:
         for chunk in ollama_chat_stream_tokens(
             base_url=context.base_url,
@@ -644,15 +666,31 @@ def chat_stream(
             retry_messages.clear()
 
             parts.append(chunk)
-            yield chunk
-    except Exception:
+            token_count += 1
+
+            # Yield text chunk as structured event
+            yield _format_stream_event("text", {"content": chunk, "token_index": token_count})
+    except Exception as e:
         # If we have retry messages but the connection ultimately failed,
         # yield them before re-raising
         for retry_msg in retry_messages:
             yield retry_msg
+
+        # Yield error event
+        yield _format_stream_event("error", {"message": str(e), "type": type(e).__name__})
         raise
 
     reply = "".join(parts)
+
+    # Yield completion event with final statistics
+    yield _format_stream_event(
+        "done",
+        {
+            "total_tokens": token_count,
+            "session": context.state.name,
+            "model": context.chosen_model,
+        },
+    )
 
     cfg = _cfg(config_path)
     _persist_chat_turn(context, prompt, reply, cfg, sessions_dir)
