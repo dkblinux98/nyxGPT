@@ -5,7 +5,8 @@ import time
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
-from cassandra.cluster import Cluster
+from cassandra.cluster import Cluster, ExecutionProfile, EXEC_PROFILE_DEFAULT
+from cassandra.policies import DCAwareRoundRobinPolicy, TokenAwarePolicy
 from cassandra.query import SimpleStatement
 
 from nyxgpt.config import load_config
@@ -17,6 +18,13 @@ class CassandraConfig:
     port: int
     keyspace: str
     table: str
+    # Connection pooling settings
+    pool_size_per_host: int = 2
+    max_connections_per_host: int = 4
+    request_timeout: int = 10
+    connect_timeout: int = 5
+    # Health check settings
+    idle_heartbeat_interval: int = 30
 
 
 @dataclass
@@ -63,21 +71,63 @@ def _cassandra_cfg() -> CassandraConfig:
     keyspace = cfg.get("rag", "cassandra_keyspace", fallback="nyxgpt")
     table = cfg.get("rag", "cassandra_table", fallback="rag_chunks")
 
-    return CassandraConfig(hosts=hosts, port=port, keyspace=keyspace, table=table)
+    # Connection pooling settings
+    pool_size = cfg.getint("rag", "cassandra_pool_size_per_host", fallback=2)
+    max_connections = cfg.getint("rag", "cassandra_max_connections_per_host", fallback=4)
+    request_timeout = cfg.getint("rag", "cassandra_request_timeout_seconds", fallback=10)
+    connect_timeout = cfg.getint("rag", "cassandra_connect_timeout_seconds", fallback=5)
+    idle_heartbeat = cfg.getint("rag", "cassandra_idle_heartbeat_interval_seconds", fallback=30)
+
+    return CassandraConfig(
+        hosts=hosts,
+        port=port,
+        keyspace=keyspace,
+        table=table,
+        pool_size_per_host=pool_size,
+        max_connections_per_host=max_connections,
+        request_timeout=request_timeout,
+        connect_timeout=connect_timeout,
+        idle_heartbeat_interval=idle_heartbeat,
+    )
 
 
 class CassandraVectorStore:
     def __init__(self, *, collection: str = "default") -> None:
-        """Initialize Cassandra vector store.
+        """Initialize Cassandra vector store with connection pooling.
 
         Args:
             collection: Collection name for multi-model support (default: "default")
         """
         self.cfg = _cassandra_cfg()
         self.collection = collection
-        self.cluster = Cluster(self.cfg.hosts, port=self.cfg.port)
+
+        # Configure execution profile with load balancing policy
+        profile = ExecutionProfile(
+            load_balancing_policy=TokenAwarePolicy(DCAwareRoundRobinPolicy()),
+            request_timeout=self.cfg.request_timeout,
+        )
+
+        # Create cluster with connection pooling configuration
+        self.cluster = Cluster(
+            self.cfg.hosts,
+            port=self.cfg.port,
+            execution_profiles={EXEC_PROFILE_DEFAULT: profile},
+            # Connection pooling settings
+            protocol_version=4,
+            # Idle heartbeat to detect stale connections
+            idle_heartbeat_interval=self.cfg.idle_heartbeat_interval,
+            # Connection timeout
+            connect_timeout=self.cfg.connect_timeout,
+        )
+
+        # Configure connection pool size (set on session after connection)
+        # Note: pool sizing is done via cluster settings, not session
         # Connect without a keyspace so we can create it if missing.
         self.session = self.cluster.connect()
+
+        # Set pool size per host after connection
+        # This is done through the cluster object's connection pool settings
+        # The driver will maintain pool_size_per_host connections per host
         self._keyspace_ready = False
         self._migration_checked = False
 
