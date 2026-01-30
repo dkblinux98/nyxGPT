@@ -1217,6 +1217,128 @@ Check:
 
 ---
 
+## Parallel Query Execution
+
+**New in v1.0:** nyxGPT supports parallel execution of expanded RAG queries for significantly improved performance when query expansion is enabled.
+
+### Overview
+
+When query expansion is enabled, nyxGPT generates multiple alternative phrasings of your query to improve retrieval quality. By default, these queries are now executed concurrently rather than sequentially, dramatically reducing latency.
+
+**Benefits:**
+- **Lower latency** - Multiple query variants execute in parallel rather than sequentially
+- **Better scalability** - Efficiently utilizes system resources for concurrent embedding and vector search operations
+- **No quality degradation** - Results are identical to sequential execution, just faster
+- **Configurable** - Control concurrency limits to balance performance and resource usage
+
+### How It Works
+
+When query expansion generates multiple query variants (e.g., original query + 2 expansions = 3 total), the parallel execution system:
+
+1. **Concurrent embedding** - All query variants are embedded in parallel using asyncio and thread pools
+2. **Concurrent vector search** - All vector searches execute concurrently against Cassandra
+3. **Deduplication** - Results are deduplicated and merged just as in sequential execution
+4. **Automatic fallback** - For single queries (no expansion), the system uses sequential execution to avoid overhead
+
+**Performance gain example:**
+- Sequential: 3 queries × 100ms each = 300ms total
+- Parallel: max(100ms, 100ms, 100ms) ≈ 120ms total (2.5x faster)
+
+### Configuration
+
+```ini
+[rag]
+# Enable parallel query execution (default: true)
+# When enabled and query expansion produces multiple queries,
+# they execute concurrently for better performance
+enable_parallel_queries = true
+
+# Maximum concurrent queries to execute in parallel (default: 5)
+# Higher values = more parallelism but more resource usage
+# Recommended: 3-10 depending on system resources and Ollama capacity
+max_concurrent_queries = 5
+
+# Query expansion must be enabled to benefit from parallel execution
+enable_query_expansion = true
+```
+
+### Use Cases
+
+**Best for:**
+- Query expansion with 2+ expanded queries
+- Systems with available CPU/memory headroom
+- Latency-sensitive applications where response time matters
+
+**Less beneficial when:**
+- Query expansion is disabled (only 1 query = no parallelism)
+- System resources are constrained
+- Ollama embedding server is the bottleneck
+
+### Performance Tuning
+
+**Optimal concurrency:**
+```ini
+# For systems with good resources and fast Ollama
+max_concurrent_queries = 10
+
+# For resource-constrained systems
+max_concurrent_queries = 3
+
+# Disable for debugging or sequential behavior
+enable_parallel_queries = false
+```
+
+**Monitor with debug mode:**
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/rag/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "test query", "debug_mode": true}'
+```
+
+Debug output includes timing for query expansion and vector search phases, allowing you to measure the performance impact.
+
+### API Usage
+
+Parallel execution is automatic when configured - no API changes needed:
+
+```python
+from nyxgpt.rag.rag import retrieve_context
+
+# Automatically uses parallel execution if enabled
+results, debug_info = retrieve_context(
+    "How do I configure RAG?",
+    debug_mode=True
+)
+
+# Check timing in debug_info
+print(f"Vector search time: {debug_info.vector_search_time_ms}ms")
+```
+
+### Troubleshooting
+
+**Problem: No performance improvement**
+
+Check:
+- Is `enable_query_expansion = true`? (Parallel only helps with multiple queries)
+- Is `enable_parallel_queries = true`?
+- Run with `debug_mode=True` to see if queries are actually being expanded
+- If only 1 query, parallel execution won't activate
+
+**Problem: High resource usage**
+
+Solution:
+- Reduce `max_concurrent_queries` to a lower value (e.g., 3)
+- Consider system load and Ollama capacity
+- Monitor Ollama logs for connection/timeout errors
+
+**Problem: Inconsistent results**
+
+Note:
+- Parallel execution uses deduplication, so results should be identical to sequential
+- If seeing differences, file a bug report - this indicates an issue
+
+---
+
 ## Reranking (Cross-Encoder)
 
 Reranking is an optional second-pass scoring step that improves retrieval precision by re-scoring initial results with a more sophisticated relevance model.

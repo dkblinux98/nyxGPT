@@ -260,6 +260,8 @@ cassandra_table = rag_chunks
 | `dedupe` | Remove duplicate or near-duplicate chunks before injection |
 | `enable_query_expansion` | Generate alternative phrasings to improve retrieval |
 | `expansion_model` | Model for query expansion (optional, defaults to nyxgpt.default_model) |
+| `enable_parallel_queries` | Execute expanded queries concurrently for better performance (default: true) |
+| `max_concurrent_queries` | Maximum concurrent queries when parallel execution enabled (default: 5) |
 | `include_scores` | Include similarity scores in context headers (debugging only) |
 | `include_headers` | Include per-chunk headers like "[Context 1]" in injected context |
 | `cassandra_hosts` | Cassandra host(s) |

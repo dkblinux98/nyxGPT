@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import urllib.error
@@ -215,3 +216,77 @@ def embed_text(
     else:
         vecs = result
     return vecs[0] if vecs else []
+
+
+async def embed_texts_async(
+    texts: list[str],
+    *,
+    collect_metrics: bool = False,
+    model: str | None = None,
+    dimension: int | None = None,
+    max_concurrent: int | None = None,
+) -> list[list[float]] | tuple[list[list[float]], EmbeddingDebugMetrics]:
+    """Embed a batch of texts concurrently using asyncio.
+
+    This function runs the synchronous embedding operations in a thread pool
+    to avoid blocking the event loop while allowing concurrent execution.
+
+    Args:
+        texts: List of texts to embed
+        collect_metrics: If True, return tuple of (embeddings, metrics)
+        model: Override embedding model (default: from config)
+        dimension: Override expected dimension (default: from config)
+        max_concurrent: Maximum concurrent embedding requests (default: from config)
+
+    Returns:
+        list of float vectors, one per input text.
+        If collect_metrics=True, returns tuple of (embeddings, EmbeddingDebugMetrics).
+    """
+    if not texts:
+        if collect_metrics:
+            ecfg = _embedding_cfg(model=model, dimension=dimension)
+            metrics = EmbeddingDebugMetrics(
+                embedding_model=ecfg.model,
+                embedding_dim=ecfg.dimension,
+                num_texts_embedded=0,
+                batch_size=ecfg.batch_size,
+                embedding_time_ms=0.0,
+            )
+            return [], metrics
+        return []
+
+    # Get max_concurrent from config if not specified
+    if max_concurrent is None:
+        cfg = load_config(None)
+        max_concurrent = cfg.getint("rag", "max_concurrent_queries", fallback=5)
+
+    start_time = time.perf_counter()
+
+    # Create a semaphore to limit concurrent requests
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def embed_single(text: str) -> list[float]:
+        """Embed a single text with concurrency control."""
+        async with semaphore:
+            # Run the synchronous embed_text in a thread pool
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None, lambda: embed_text(text, model=model, dimension=dimension)
+            )
+
+    # Execute all embeddings concurrently
+    embeddings = await asyncio.gather(*[embed_single(text) for text in texts])
+
+    if collect_metrics:
+        elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+        ecfg = _embedding_cfg(model=model, dimension=dimension)
+        metrics = EmbeddingDebugMetrics(
+            embedding_model=ecfg.model,
+            embedding_dim=ecfg.dimension,
+            num_texts_embedded=len(texts),
+            batch_size=ecfg.batch_size,
+            embedding_time_ms=elapsed_ms,
+        )
+        return embeddings, metrics
+
+    return embeddings

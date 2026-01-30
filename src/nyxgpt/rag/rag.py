@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Iterable, List, cast
 import logging
@@ -20,7 +21,11 @@ from nyxgpt.config import (
     get_rag_include_headers,
     get_rag_debug_mode,
 )
-from nyxgpt.rag.embeddings import embed_text, embed_texts, EmbeddingDebugMetrics
+from nyxgpt.rag.embeddings import (
+    embed_text,
+    embed_texts,
+    EmbeddingDebugMetrics,
+)
 from nyxgpt.rag.vectorstore_cassandra import (
     CassandraVectorStore,
     VectorSearchDebugMetrics,
@@ -901,6 +906,135 @@ def expand_query(query: str, max_expansions: int = 3) -> list[str]:
     return [query]
 
 
+async def _parallel_vector_search(
+    queries: list[str],
+    store: CassandraVectorStore,
+    k: int,
+    embedding_model: str | None,
+    embedding_dim: int | None,
+    actual_model: str,
+    metadata_filter: MetadataFilter | None,
+    collect_debug: bool,
+    max_concurrent: int,
+) -> tuple[
+    dict[tuple, dict],
+    list[float],
+    int,
+    EmbeddingDebugMetrics | None,
+    VectorSearchDebugMetrics | None,
+]:
+    """Execute multiple vector searches concurrently.
+
+    Args:
+        queries: List of query strings (original + expansions)
+        store: CassandraVectorStore instance
+        k: Number of results per query
+        embedding_model: Model to use for embeddings
+        embedding_dim: Expected embedding dimension
+        actual_model: The resolved embedding model name
+        metadata_filter: Optional metadata filter for query results
+        collect_debug: Whether to collect debug metrics
+        max_concurrent: Maximum concurrent queries
+
+    Returns:
+        Tuple of (vector_results_map, all_scores, total_raw_results, embedding_metrics, vector_search_metrics)
+    """
+    vector_results_map: dict[tuple, dict] = {}
+    all_scores: list[float] = []
+    total_raw_results = 0
+    embedding_metrics: EmbeddingDebugMetrics | None = None
+    vector_search_metrics: VectorSearchDebugMetrics | None = None
+
+    # Use semaphore to limit concurrent queries
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def process_query(idx: int, q: str) -> tuple[int, list[dict], EmbeddingDebugMetrics | None, VectorSearchDebugMetrics | None]:
+        """Process a single query with concurrency control."""
+        async with semaphore:
+            # Run embedding and vector search in thread pool (since they're blocking I/O)
+            loop = asyncio.get_event_loop()
+
+            # Embed the query
+            if collect_debug:
+                result = await loop.run_in_executor(
+                    None,
+                    lambda: embed_texts(
+                        [q],
+                        collect_metrics=True,
+                        model=embedding_model,
+                        dimension=embedding_dim,
+                    ),
+                )
+                embeddings, emb_metrics = cast(
+                    tuple[list[list[float]], EmbeddingDebugMetrics], result
+                )
+                q_emb = embeddings[0] if embeddings else []
+            else:
+                q_emb = await loop.run_in_executor(
+                    None,
+                    lambda: embed_text(q, model=embedding_model, dimension=embedding_dim),
+                )
+                emb_metrics = None
+
+            # Query vector store
+            if collect_debug:
+                vs_result = await loop.run_in_executor(
+                    None,
+                    lambda: store.query_by_embedding(
+                        q_emb,
+                        k=k,
+                        collect_metrics=True,
+                        embedding_model=actual_model,
+                        metadata_filter=metadata_filter,
+                    ),
+                )
+                results, vs_metrics = cast(
+                    tuple[list[dict], VectorSearchDebugMetrics], vs_result
+                )
+            else:
+                results = await loop.run_in_executor(
+                    None,
+                    lambda: cast(
+                        list[dict],
+                        store.query_by_embedding(
+                            q_emb, k=k, embedding_model=actual_model, metadata_filter=metadata_filter
+                        ),
+                    ),
+                )
+                vs_metrics = None
+
+            return idx, results, emb_metrics, vs_metrics
+
+    # Execute all queries concurrently
+    tasks = [process_query(idx, q) for idx, q in enumerate(queries)]
+    query_results = await asyncio.gather(*tasks)
+
+    # Aggregate results
+    for idx, results, emb_metrics, vs_metrics in query_results:
+        # Store metrics from first query
+        if idx == 0:
+            embedding_metrics = emb_metrics
+            vector_search_metrics = vs_metrics
+
+        # Accumulate results and scores
+        if collect_debug and vs_metrics:
+            total_raw_results += vs_metrics.raw_results_count
+            if vs_metrics.score_min is not None:
+                all_scores.extend([r.get("score", 0.0) for r in results])
+
+        # Deduplicate and merge results
+        for r in results:
+            text = (r.get("text") or "").strip()
+            if not text:
+                continue
+
+            chunk_key = (r.get("doc_id"), r.get("chunk_id"))
+            if chunk_key not in vector_results_map:
+                vector_results_map[chunk_key] = r
+
+    return vector_results_map, all_scores, total_raw_results, embedding_metrics, vector_search_metrics
+
+
 # ----------------------------
 # Retrieve with Hybrid Search
 # ----------------------------
@@ -990,64 +1124,96 @@ def retrieve_context(
     # ======================================================================
     # VECTOR SEARCH
     # ======================================================================
-    vector_results_map: dict[tuple, dict] = {}  # (doc_id, chunk_id) -> result dict
-    all_scores: list[float] = []
-    total_raw_results = 0
+    # Check if parallel query execution is enabled
+    use_parallel = cfg.getboolean("rag", "enable_parallel_queries", fallback=True)
+    max_concurrent = cfg.getint("rag", "max_concurrent_queries", fallback=5)
+
+    # Declare variables that will be assigned in either branch
+    vector_results_map: dict[tuple, dict]
+    all_scores: list[float]
+    total_raw_results: int
 
     store = CassandraVectorStore(collection=collection)
     try:
-        for idx, q in enumerate(queries):
-            # Embed with metrics collection if debug mode
-            if collect_debug:
-                result = embed_texts(
-                    [q],
-                    collect_metrics=True,
-                    model=embedding_model,
-                    dimension=embedding_dim,
+        if use_parallel and len(queries) > 1:
+            # Use parallel execution for multiple queries
+            (
+                vector_results_map,
+                all_scores,
+                total_raw_results,
+                embedding_metrics,
+                vector_search_metrics,
+            ) = asyncio.run(
+                _parallel_vector_search(
+                    queries=queries,
+                    store=store,
+                    k=k,
+                    embedding_model=embedding_model,
+                    embedding_dim=embedding_dim,
+                    actual_model=actual_model,
+                    metadata_filter=metadata_filter,
+                    collect_debug=collect_debug,
+                    max_concurrent=max_concurrent,
                 )
-                # Type narrowing: result is tuple[list[list[float]], EmbeddingDebugMetrics]
-                embeddings, emb_metrics = cast(
-                    tuple[list[list[float]], EmbeddingDebugMetrics], result
-                )
-                q_emb = embeddings[0] if embeddings else []
-                # Store only the first embedding metrics (they're all the same model/config)
-                if idx == 0:
-                    embedding_metrics = emb_metrics
-            else:
-                q_emb = embed_text(q, model=embedding_model, dimension=embedding_dim)
+            )
+        else:
+            # Sequential execution (original behavior)
+            vector_results_map = {}
+            all_scores = []
+            total_raw_results = 0
 
-            # Query vector store with metrics collection if debug mode
-            # Filter by embedding_model to ensure we only get results from the same model
-            if collect_debug:
-                vs_result = store.query_by_embedding(
-                    q_emb, k=k, collect_metrics=True, embedding_model=actual_model, metadata_filter=metadata_filter
-                )
-                # Type narrowing: vs_result is tuple[list[dict], VectorSearchDebugMetrics]
-                results, vs_metrics = cast(
-                    tuple[list[dict], VectorSearchDebugMetrics], vs_result
-                )
-                total_raw_results += vs_metrics.raw_results_count
-                # Accumulate scores for overall statistics
-                if vs_metrics.score_min is not None:
-                    all_scores.extend([r.get("score", 0.0) for r in results])
-                # Store metrics from first query
-                if idx == 0:
-                    vector_search_metrics = vs_metrics
-            else:
-                results = cast(
-                    list[dict],
-                    store.query_by_embedding(q_emb, k=k, embedding_model=actual_model, metadata_filter=metadata_filter),
-                )
+            for idx, q in enumerate(queries):
+                # Embed with metrics collection if debug mode
+                if collect_debug:
+                    result = embed_texts(
+                        [q],
+                        collect_metrics=True,
+                        model=embedding_model,
+                        dimension=embedding_dim,
+                    )
+                    # Type narrowing: result is tuple[list[list[float]], EmbeddingDebugMetrics]
+                    embeddings, emb_metrics = cast(
+                        tuple[list[list[float]], EmbeddingDebugMetrics], result
+                    )
+                    q_emb = embeddings[0] if embeddings else []
+                    # Store only the first embedding metrics (they're all the same model/config)
+                    if idx == 0:
+                        embedding_metrics = emb_metrics
+                else:
+                    q_emb = embed_text(q, model=embedding_model, dimension=embedding_dim)
 
-            for r in results:
-                text = (r.get("text") or "").strip()
-                if not text:
-                    continue
+                # Query vector store with metrics collection if debug mode
+                # Filter by embedding_model to ensure we only get results from the same model
+                if collect_debug:
+                    vs_result = store.query_by_embedding(
+                        q_emb, k=k, collect_metrics=True, embedding_model=actual_model, metadata_filter=metadata_filter
+                    )
+                    # Type narrowing: vs_result is tuple[list[dict], VectorSearchDebugMetrics]
+                    results, vs_metrics = cast(
+                        tuple[list[dict], VectorSearchDebugMetrics], vs_result
+                    )
+                    total_raw_results += vs_metrics.raw_results_count
+                    # Accumulate scores for overall statistics
+                    if vs_metrics.score_min is not None:
+                        all_scores.extend([r.get("score", 0.0) for r in results])
+                    # Store metrics from first query
+                    if idx == 0:
+                        vector_search_metrics = vs_metrics
+                else:
+                    results = cast(
+                        list[dict],
+                        store.query_by_embedding(q_emb, k=k, embedding_model=actual_model, metadata_filter=metadata_filter),
+                    )
 
-                # Use (doc_id, chunk_id) as unique key for deduplication
-                chunk_key = (r.get("doc_id"), r.get("chunk_id"))
-                if chunk_key not in vector_results_map:
-                    vector_results_map[chunk_key] = r
+                for r in results:
+                    text = (r.get("text") or "").strip()
+                    if not text:
+                        continue
+
+                    # Use (doc_id, chunk_id) as unique key for deduplication
+                    chunk_key = (r.get("doc_id"), r.get("chunk_id"))
+                    if chunk_key not in vector_results_map:
+                        vector_results_map[chunk_key] = r
 
         # Get list of all documents for keyword search
         all_docs = store.list_docs()
