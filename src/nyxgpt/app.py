@@ -1544,18 +1544,41 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+def _format_sse(data: str, event: str | None = None, event_id: str | None = None) -> str:
+    """Format data as Server-Sent Events (SSE).
+
+    Args:
+        data: Data payload to send
+        event: Optional event type
+        event_id: Optional event ID for client-side tracking
+
+    Returns:
+        Formatted SSE string with proper framing
+    """
+    lines = []
+    if event:
+        lines.append(f"event: {event}")
+    if event_id:
+        lines.append(f"id: {event_id}")
+    # Multi-line data support: each line prefixed with "data: "
+    for line in data.split("\n"):
+        lines.append(f"data: {line}")
+    lines.append("")  # Empty line terminates the event
+    return "\n".join(lines) + "\n"
+
+
 def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingResponse:
-    """Create a streaming chat response with request ID context propagation.
+    """Create a streaming chat response with SSE framing and request ID context propagation.
 
     This helper consolidates the streaming logic used by both versioned and legacy endpoints.
-    It handles request ID capture and context setting for proper log traceability.
+    It handles request ID capture, context setting for proper log traceability, and SSE formatting.
 
     Args:
         request: FastAPI Request object containing state and configuration
         req: Chat request parameters
 
     Returns:
-        StreamingResponse configured for text/plain streaming
+        StreamingResponse configured for Server-Sent Events (text/event-stream)
 
     Raises:
         HTTPException: 422 for validation errors, 500 for server errors
@@ -1572,8 +1595,10 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
 
         # Capture request ID before entering generator (context may not propagate)
         req_id = request.state.request_id
+        chunk_id = 0
 
-        def _stream_with_keepalive():
+        def _stream_with_sse():
+            nonlocal chunk_id
             # Explicitly set request ID in context for streaming generator
             try:
                 request_id_var.set(req_id)
@@ -1581,8 +1606,10 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                 log.warning(f"Failed to set request ID in streaming context: {e}")
             # Continue regardless - streaming should work even if request ID fails
 
-            # Send an immediate keepalive to prevent client read timeouts
-            yield "\n"
+            # Send an immediate keepalive event to prevent client read timeouts
+            yield _format_sse("", event="keepalive", event_id=str(chunk_id))
+            chunk_id += 1
+
             d = _chat_runtime_defaults(_req_cfg(request))
             chosen_model = req.model or d["default_model"]
 
@@ -1607,12 +1634,17 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                     # Convert RagFilters model to dict
                     kwargs["rag_filters"] = rag_filters_val.model_dump()
 
+            # Stream chat chunks with SSE framing
             for chunk in chat_stream(req.prompt, **kwargs):
-                yield chunk
+                yield _format_sse(chunk, event="message", event_id=str(chunk_id))
+                chunk_id += 1
+
+            # Send completion event
+            yield _format_sse("", event="done", event_id=str(chunk_id))
 
         return StreamingResponse(
-            _stream_with_keepalive(),
-            media_type="text/plain; charset=utf-8",
+            _stream_with_sse(),
+            media_type="text/event-stream; charset=utf-8",
         )
     except HTTPException:
         # Re-raise HTTP exceptions (e.g., 422 from validation above)
