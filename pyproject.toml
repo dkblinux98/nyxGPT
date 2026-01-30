@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.110",
   "uvicorn>=0.27",
+  "httpx>=0.27",  # For async embedding optimization
   "cassandra-driver>=3.29.2",
   "python-frontmatter>=1.0.0",
   "markdown>=3.5",
@@ -24,7 +25,6 @@ dependencies = [
 
 [project.optional-dependencies]
 ui = [
-  "httpx>=0.27",
   "textual>=0.58",
 ]
 

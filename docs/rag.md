@@ -117,7 +117,49 @@ cassandra_hosts = 127.0.0.1
 cassandra_port = 9042
 cassandra_keyspace = nyxgpt
 cassandra_table = rag_chunks
+
+# Performance optimization settings (NEW)
+embedding_use_async = true                   # Enable async embedding (default: true)
+embedding_max_concurrent_batches = 4         # Concurrent batch requests (default: 4)
+embedding_batch_size = 16                    # Texts per batch (default: 16)
+embedding_timeout_seconds = 120              # Per-batch timeout (default: 120)
 ```
+
+### Performance Optimization
+
+nyxGPT supports **concurrent async embedding generation** for significant performance improvements:
+
+**Async Embedding**:
+- Uses `httpx` for async I/O with connection pooling
+- Processes multiple embedding batches concurrently
+- **10-100x speedup** for network-bound operations
+- Automatically falls back to synchronous mode if httpx unavailable
+
+**Configuration Options**:
+
+- `embedding_use_async`: Enable/disable async processing (default: `true`)
+- `embedding_max_concurrent_batches`: Max concurrent requests to Ollama (default: `4`)
+  - Local Ollama: 4-8 recommended
+  - Remote Ollama: 8-16 for best performance
+  - Low-resource systems: Reduce to 2-3
+- `embedding_batch_size`: Texts per batch request (default: `16`)
+  - Controls memory vs speed tradeoff
+  - Higher values = faster but more memory
+- `embedding_timeout_seconds`: Per-batch timeout (default: `120`)
+
+**GPU Acceleration**:
+- Ollama automatically uses GPU if available on the host system
+- No explicit GPU configuration needed at nyxGPT level
+- Monitor GPU usage: `nvidia-smi` (NVIDIA) or `rocm-smi` (AMD)
+- For best performance, ensure Ollama model is loaded in VRAM
+
+**Memory Management**:
+- Batch size controls memory usage during embedding
+- Async processing uses connection pooling to reduce overhead
+- Each batch processes multiple texts in parallel on Ollama
+- Lower batch sizes for memory-constrained systems
+
+See [`docs/performance.md`](performance.md) for detailed tuning guidance.
 
 ---
 
