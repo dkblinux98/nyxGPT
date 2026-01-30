@@ -12,12 +12,13 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 44 available endpoints:
+Quick reference of all 45 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check |
 | `/api/v1/info` | GET | Runtime configuration |
+| `/api/v1/metrics` | GET | Resource usage metrics (memory, CPU, latency, queue depth) |
 | `/api/v1/config` | GET | Get current configuration |
 | `/api/v1/config` | POST | Update configuration (full replace) |
 | `/api/v1/config` | PATCH | Partial configuration update |
@@ -113,6 +114,61 @@ Simple health check.
 Used by:
 - integration tests
 - service monitors
+
+---
+
+### `GET /api/v1/metrics`
+
+Get current resource usage metrics for monitoring and performance analysis.
+
+**Response:**
+
+```json
+{
+  "memory_rss": 123456789,
+  "memory_vms": 234567890,
+  "memory_percent": 2.5,
+  "cpu_percent": 15.3,
+  "request_count": 150,
+  "active_requests": 2,
+  "avg_latency_ms": 45.2,
+  "p95_latency_ms": 120.5,
+  "p99_latency_ms": 250.8,
+  "queue_depth": 2,
+  "max_queue_depth": 5,
+  "timestamp": 1706745600.123
+}
+```
+
+**Fields:**
+
+- `memory_rss` (int): Resident Set Size in bytes (physical memory used)
+- `memory_vms` (int): Virtual Memory Size in bytes
+- `memory_percent` (float): Memory usage as percentage of system memory
+- `cpu_percent` (float): CPU usage percentage (can exceed 100 on multi-core systems)
+- `request_count` (int): Total number of requests processed since startup
+- `active_requests` (int): Number of currently active requests being processed
+- `avg_latency_ms` (float): Average request latency in milliseconds
+- `p95_latency_ms` (float): 95th percentile request latency in milliseconds
+- `p99_latency_ms` (float): 99th percentile request latency in milliseconds
+- `queue_depth` (int): Current queue depth (same as active_requests)
+- `max_queue_depth` (int): Maximum observed queue depth since startup
+- `timestamp` (float): Unix timestamp when metrics were collected
+
+**Use cases:**
+
+- Performance monitoring and alerting
+- Capacity planning and load analysis
+- Detecting memory leaks or resource bottlenecks
+- Understanding request latency distributions
+
+**Example:**
+
+```bash
+curl http://127.0.0.1:8000/api/v1/metrics
+```
+
+**Note:** Latency percentiles are calculated from a rolling window of the most recent 1000 requests. The window size can be configured during ResourceMonitor initialization.
 
 ---
 

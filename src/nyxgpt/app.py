@@ -61,6 +61,7 @@ from nyxgpt.api_models import (
     ReindexCollectionResponse,
     CollectionSettings,
     CollectionSettingsResponse,
+    ResourceMetricsResponse,
 )
 
 from nyxgpt.config import (
@@ -84,6 +85,7 @@ from nyxgpt import models
 from nyxgpt.rag.rag import ingest_document, retrieve_context
 from nyxgpt.logging import configure_logging, request_id_var, get_log_dir
 from nyxgpt.rate_limiter import RateLimiter
+from nyxgpt.resource_monitor import get_monitor
 
 
 import logging
@@ -347,6 +349,25 @@ async def rate_limit_middleware(request: Request, call_next):
         response.headers[key] = value
 
     return response
+
+
+@app.middleware("http")
+async def resource_monitoring_middleware(request: Request, call_next):
+    """Track request latency and active requests for resource monitoring.
+
+    Records start/end of requests to track latency percentiles and queue depth.
+    """
+    monitor = get_monitor()
+
+    # Start tracking this request
+    start_time = monitor.start_request()
+
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        # End tracking (even if request failed)
+        monitor.end_request(start_time)
 
 
 @app.middleware("http")
@@ -632,6 +653,31 @@ def info(request: Request) -> InfoResponse:
         default_model=get_default_model(cfg),
         sessions_dir=str(get_sessions_dir(cfg)),
         release_version=release_version,
+    )
+
+
+@api.get("/metrics", response_model=ResourceMetricsResponse)
+def metrics() -> ResourceMetricsResponse:
+    """Get current resource usage metrics.
+
+    Returns memory, CPU, request latency, and queue depth metrics.
+    """
+    monitor = get_monitor()
+    metrics_data = monitor.get_metrics()
+
+    return ResourceMetricsResponse(
+        memory_rss=metrics_data.memory_rss,
+        memory_vms=metrics_data.memory_vms,
+        memory_percent=metrics_data.memory_percent,
+        cpu_percent=metrics_data.cpu_percent,
+        request_count=metrics_data.request_count,
+        active_requests=metrics_data.active_requests,
+        avg_latency_ms=metrics_data.avg_latency_ms,
+        p95_latency_ms=metrics_data.p95_latency_ms,
+        p99_latency_ms=metrics_data.p99_latency_ms,
+        queue_depth=metrics_data.queue_depth,
+        max_queue_depth=metrics_data.max_queue_depth,
+        timestamp=metrics_data.timestamp,
     )
 
 

@@ -197,3 +197,72 @@ def test_api_search_empty_query_returns_empty(api_base_url: str) -> None:
     assert r.status_code == 422
     data = r.json()
     assert "detail" in data
+
+
+@pytest.mark.integration
+def test_api_metrics(api_base_url: str) -> None:
+    """Test resource usage metrics endpoint."""
+    r = httpx.get(f"{api_base_url}/api/v1/metrics", timeout=5.0)
+    assert r.status_code == 200
+    data = r.json()
+
+    # Verify all required fields are present
+    assert "memory_rss" in data
+    assert "memory_vms" in data
+    assert "memory_percent" in data
+    assert "cpu_percent" in data
+    assert "request_count" in data
+    assert "active_requests" in data
+    assert "avg_latency_ms" in data
+    assert "p95_latency_ms" in data
+    assert "p99_latency_ms" in data
+    assert "queue_depth" in data
+    assert "max_queue_depth" in data
+    assert "timestamp" in data
+
+    # Verify data types and basic validity
+    assert isinstance(data["memory_rss"], int)
+    assert data["memory_rss"] > 0
+    assert isinstance(data["memory_vms"], int)
+    assert data["memory_vms"] > 0
+    assert isinstance(data["memory_percent"], (int, float))
+    assert data["memory_percent"] >= 0
+    assert isinstance(data["cpu_percent"], (int, float))
+    assert data["cpu_percent"] >= 0
+    assert isinstance(data["request_count"], int)
+    assert data["request_count"] >= 0
+    assert isinstance(data["active_requests"], int)
+    assert data["active_requests"] >= 0
+    assert isinstance(data["avg_latency_ms"], (int, float))
+    assert data["avg_latency_ms"] >= 0
+    assert isinstance(data["p95_latency_ms"], (int, float))
+    assert data["p95_latency_ms"] >= 0
+    assert isinstance(data["p99_latency_ms"], (int, float))
+    assert data["p99_latency_ms"] >= 0
+    assert isinstance(data["queue_depth"], int)
+    assert data["queue_depth"] >= 0
+    assert isinstance(data["max_queue_depth"], int)
+    assert data["max_queue_depth"] >= 0
+    assert isinstance(data["timestamp"], (int, float))
+    assert data["timestamp"] > 0
+
+
+@pytest.mark.integration
+def test_api_metrics_tracks_requests(api_base_url: str) -> None:
+    """Test that metrics endpoint tracks requests correctly."""
+    # Get initial metrics
+    r1 = httpx.get(f"{api_base_url}/api/v1/metrics", timeout=5.0)
+    assert r1.status_code == 200
+    initial_count = r1.json()["request_count"]
+
+    # Make a few requests
+    for _ in range(3):
+        httpx.get(f"{api_base_url}/health", timeout=5.0)
+
+    # Get updated metrics
+    r2 = httpx.get(f"{api_base_url}/api/v1/metrics", timeout=5.0)
+    assert r2.status_code == 200
+    final_count = r2.json()["request_count"]
+
+    # Request count should have increased (by at least 4: 3 health + 1 metrics)
+    assert final_count >= initial_count + 4

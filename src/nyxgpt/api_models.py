@@ -481,3 +481,25 @@ class SearchResponse(BaseModel):
     results: list[SearchResultItem] = Field(
         ..., description="List of matching messages"
     )
+
+
+# ----------------------------
+# Resource monitoring models
+# ----------------------------
+
+
+class ResourceMetricsResponse(BaseModel):
+    """Response model for resource usage metrics."""
+
+    memory_rss: int = Field(..., description="Resident Set Size in bytes (physical memory)")
+    memory_vms: int = Field(..., description="Virtual Memory Size in bytes")
+    memory_percent: float = Field(..., description="Memory usage as percentage of system memory")
+    cpu_percent: float = Field(..., description="CPU usage percentage")
+    request_count: int = Field(..., description="Total number of requests processed")
+    active_requests: int = Field(..., description="Number of currently active requests")
+    avg_latency_ms: float = Field(..., description="Average request latency in milliseconds")
+    p95_latency_ms: float = Field(..., description="95th percentile latency in milliseconds")
+    p99_latency_ms: float = Field(..., description="99th percentile latency in milliseconds")
+    queue_depth: int = Field(..., description="Current queue depth (active requests)")
+    max_queue_depth: int = Field(..., description="Maximum observed queue depth")
+    timestamp: float = Field(..., description="Unix timestamp when metrics were collected")
