@@ -69,8 +69,8 @@ def test_query_by_embedding_filter_by_doc_ids():
     mock_session.prepare.return_value = Mock()
 
     with patch('nyxgpt.rag.vectorstore_cassandra.Cluster', return_value=mock_cluster):
-        store = CassandraVectorStore()
-        store.session = mock_session
+        store = CassandraVectorStore(use_pool=False)
+        store._session = mock_session
         store._keyspace_ready = True
 
         # Filter for only doc1
@@ -117,8 +117,8 @@ def test_query_by_embedding_filter_by_filename():
     mock_session.execute.return_value = [mock_row1, mock_row2]
 
     with patch('nyxgpt.rag.vectorstore_cassandra.Cluster', return_value=mock_cluster):
-        store = CassandraVectorStore()
-        store.session = mock_session
+        store = CassandraVectorStore(use_pool=False)
+        store._session = mock_session
         store._keyspace_ready = True
 
         # Filter for filename containing "mygpt" (case-insensitive)
@@ -166,8 +166,8 @@ def test_query_by_embedding_filter_by_tags():
     mock_session.execute.return_value = [mock_row1, mock_row2]
 
     with patch('nyxgpt.rag.vectorstore_cassandra.Cluster', return_value=mock_cluster):
-        store = CassandraVectorStore()
-        store.session = mock_session
+        store = CassandraVectorStore(use_pool=False)
+        store._session = mock_session
         store._keyspace_ready = True
 
         # Filter for docs with both "python" AND "tutorial" tags
@@ -216,8 +216,8 @@ def test_query_by_embedding_filter_by_date_range():
     mock_session.execute.return_value = [mock_row1, mock_row2]
 
     with patch('nyxgpt.rag.vectorstore_cassandra.Cluster', return_value=mock_cluster):
-        store = CassandraVectorStore()
-        store.session = mock_session
+        store = CassandraVectorStore(use_pool=False)
+        store._session = mock_session
         store._keyspace_ready = True
 
         # Filter for docs ingested in 2024
@@ -267,8 +267,8 @@ def test_query_by_embedding_combined_filters():
     mock_session.execute.return_value = [mock_row1, mock_row2]
 
     with patch('nyxgpt.rag.vectorstore_cassandra.Cluster', return_value=mock_cluster):
-        store = CassandraVectorStore()
-        store.session = mock_session
+        store = CassandraVectorStore(use_pool=False)
+        store._session = mock_session
         store._keyspace_ready = True
 
         # Combine filename AND tags filters

@@ -5,10 +5,15 @@ import time
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
-from cassandra.cluster import Cluster
+from cassandra.cluster import Cluster, Session
 from cassandra.query import SimpleStatement
 
 from nyxgpt.config import load_config
+from nyxgpt.rag.cassandra_pool import (
+    CassandraConnectionPool,
+    get_pool_config,
+    ConnectionPoolError,
+)
 
 
 @dataclass(frozen=True)
@@ -67,19 +72,55 @@ def _cassandra_cfg() -> CassandraConfig:
 
 
 class CassandraVectorStore:
-    def __init__(self, *, collection: str = "default") -> None:
+    def __init__(self, *, collection: str = "default", use_pool: bool = True) -> None:
         """Initialize Cassandra vector store.
 
         Args:
             collection: Collection name for multi-model support (default: "default")
+            use_pool: Use connection pool (default: True). Set False for testing/legacy.
         """
         self.cfg = _cassandra_cfg()
         self.collection = collection
-        self.cluster = Cluster(self.cfg.hosts, port=self.cfg.port)
-        # Connect without a keyspace so we can create it if missing.
-        self.session = self.cluster.connect()
+        self.use_pool = use_pool
+        self._session: Optional[Session] = None
+        self._pool: Optional[CassandraConnectionPool] = None
+
+        # Legacy non-pooled mode for backward compatibility
+        if not use_pool:
+            self.cluster = Cluster(self.cfg.hosts, port=self.cfg.port)
+            # Connect without a keyspace so we can create it if missing.
+            self._session = self.cluster.connect()
+        else:
+            # Use connection pool
+            try:
+                pool_config = get_pool_config()
+                self._pool = CassandraConnectionPool.get_instance(pool_config)
+                # Don't acquire session yet - do it lazily
+            except ConnectionPoolError as e:
+                # Fallback to direct connection if pool initialization fails
+                self.cluster = Cluster(self.cfg.hosts, port=self.cfg.port)
+                self._session = self.cluster.connect()
+                self.use_pool = False
+
         self._keyspace_ready = False
         self._migration_checked = False
+
+    @property
+    def session(self) -> Session:
+        """Get current session (from pool or direct connection).
+
+        Returns:
+            Active Cassandra session
+        """
+        if self.use_pool and self._pool is not None:
+            # Acquire from pool if not already acquired
+            if self._session is None:
+                self._session = self._pool.acquire()
+            return self._session
+        elif self._session is not None:
+            return self._session
+        else:
+            raise ConnectionPoolError("No active session available")
 
     @property
     def table_name(self) -> str:
@@ -149,8 +190,17 @@ class CassandraVectorStore:
             pass
 
     def close(self) -> None:
-        self.session.shutdown()
-        self.cluster.shutdown()
+        """Close vector store and release resources."""
+        if self.use_pool and self._pool is not None and self._session is not None:
+            # Release session back to pool
+            self._pool.release(self._session)
+            self._session = None
+        elif hasattr(self, 'cluster') and hasattr(self, '_session'):
+            # Legacy mode: close session and cluster
+            if self._session is not None:
+                self._session.shutdown()
+            if hasattr(self, 'cluster'):
+                self.cluster.shutdown()
 
     # ----------------------------
     # Schema helpers (optional)

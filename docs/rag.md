@@ -117,6 +117,84 @@ cassandra_hosts = 127.0.0.1
 cassandra_port = 9042
 cassandra_keyspace = nyxgpt
 cassandra_table = rag_chunks
+
+# Connection pool configuration
+connection_pool_size = 5
+health_check_interval = 60
+connection_timeout = 10
+max_retry_attempts = 3
+retry_delay = 2
+```
+
+---
+
+## Connection Pooling
+
+nyxGPT uses connection pooling for efficient Cassandra database access. Connection pooling provides:
+
+- **Connection Reuse**: Maintains a pool of reusable database sessions
+- **Health Checking**: Automatically monitors session health with configurable intervals
+- **Graceful Reconnection**: Automatically replaces unhealthy sessions
+- **Thread Safety**: Safe concurrent access from multiple threads
+- **Performance**: Reduces connection overhead and improves throughput
+
+### Configuration Options
+
+Configure connection pooling in `~/.nyxGPT/config.ini`:
+
+```ini
+[rag]
+# Number of sessions to maintain in the pool (default: 5)
+connection_pool_size = 5
+
+# Health check interval in seconds (default: 60)
+# How often to check if sessions are still healthy
+health_check_interval = 60
+
+# Connection timeout in seconds (default: 10)
+# Timeout for establishing new connections
+connection_timeout = 10
+
+# Maximum retry attempts on connection failure (default: 3)
+max_retry_attempts = 3
+
+# Delay between retry attempts in seconds (default: 2)
+retry_delay = 2
+```
+
+### How It Works
+
+1. **Initialization**: On first use, a singleton pool of sessions is created
+2. **Session Acquisition**: When needed, a session is acquired from the pool
+3. **Health Checking**: Background thread periodically checks session health
+4. **Auto-Reconnection**: Unhealthy sessions are automatically replaced
+5. **Session Release**: When done, sessions are returned to the pool for reuse
+
+### Pool Statistics
+
+You can monitor pool health programmatically:
+
+```python
+from nyxgpt.rag.cassandra_pool import CassandraConnectionPool
+
+pool = CassandraConnectionPool.get_instance()
+stats = pool.get_stats()
+
+print(f"Total sessions: {stats['total_sessions']}")
+print(f"Available: {stats['available_sessions']}")
+print(f"In use: {stats['in_use_sessions']}")
+print(f"Last health check: {stats['last_health_check']}")
+```
+
+### Legacy Mode
+
+For backward compatibility or testing, you can disable connection pooling:
+
+```python
+from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+# Disable pooling (creates direct connection)
+store = CassandraVectorStore(use_pool=False)
 ```
 
 ---
