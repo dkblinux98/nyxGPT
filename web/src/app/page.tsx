@@ -692,6 +692,9 @@ function Home() {
             width={200}
             height={100}
             priority
+            quality={90}
+            placeholder="blur"
+            blurDataURL="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
             style={{ objectFit: 'contain' }}
           />
           <div style={{ display: 'flex', gap: 8 }}>

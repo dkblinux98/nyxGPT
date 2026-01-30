@@ -1,4 +1,87 @@
+# nyxGPT Web UI
+
+Next.js-based web interface for nyxGPT with optimized performance and modern features.
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+
+## Image Optimization
+
+The web UI includes comprehensive image optimization features powered by Next.js Image component:
+
+### Features
+
+- **Automatic format conversion** - Images are automatically converted to modern formats (WebP, AVIF) for optimal file sizes
+- **Lazy loading** - Images load only when they enter the viewport, improving initial page load performance
+- **Responsive sizing** - Images automatically scale to appropriate sizes for different screen sizes and device pixel densities
+- **Blur placeholders** - Low-quality image placeholders display while full images load, preventing layout shift
+- **Configurable quality** - Adjustable image quality settings for balancing size vs. visual fidelity
+
+### Configuration
+
+Image optimization is configured in `next.config.ts`:
+
+```typescript
+images: {
+  formats: ['image/webp', 'image/avif'],
+  deviceSizes: [640, 750, 828, 1080, 1200, 1920, 2048, 3840],
+  imageSizes: [16, 32, 48, 64, 96, 128, 256, 384],
+  minimumCacheTTL: 60,
+}
+```
+
+### Using the OptimizedImage Component
+
+The `OptimizedImage` component provides a convenient wrapper around Next.js Image with sensible defaults:
+
+```tsx
+import { OptimizedImage } from '@/components/OptimizedImage';
+
+// Basic usage
+<OptimizedImage
+  src="/my-image.png"
+  alt="Description"
+  width={800}
+  height={600}
+/>
+
+// With custom quality
+<OptimizedImage
+  src="/logo.png"
+  alt="Logo"
+  width={200}
+  height={100}
+  quality={95}
+/>
+
+// With loading skeleton
+<OptimizedImage
+  src="/photo.jpg"
+  alt="Photo"
+  width={1200}
+  height={800}
+  showSkeleton
+  skeletonColor="#e0e0e0"
+/>
+```
+
+### Component Props
+
+- `enableBlur` (boolean, default: `true`) - Enable blur placeholder while loading
+- `customBlurDataURL` (string) - Custom base64 encoded blur placeholder
+- `showSkeleton` (boolean, default: `false`) - Show animated loading skeleton
+- `skeletonColor` (string, default: `'var(--skeleton-bg, #e0e0e0)'`) - Skeleton background color
+- `priority` (boolean, default: `false`) - Disable lazy loading for above-the-fold images
+- `quality` (number, default: `85`) - Image quality (1-100)
+- All standard Next.js Image props are also supported
+
+### Performance Benefits
+
+Image optimization provides several performance improvements:
+
+1. **Reduced bandwidth** - WebP/AVIF formats are 25-35% smaller than PNG/JPEG
+2. **Faster page loads** - Lazy loading defers offscreen images
+3. **Better UX** - Blur placeholders prevent layout shift
+4. **Automatic responsiveness** - Correct image sizes served for each device
 
 ## Getting Started
 

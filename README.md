@@ -332,6 +332,7 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
 - Session picker and management
 - **Client-side session metadata cache** - Stale-while-revalidate pattern for faster UI updates with automatic background refresh
 - **Optimistic UI updates** for instant feedback on session operations (pin, rename, delete, create)
+- **Image optimization** - Automatic WebP/AVIF conversion, lazy loading, responsive sizing, and blur placeholders for improved performance
 - RAG document upload and toggle
 - **RAG Collections management** at `/admin/collections` for multi-model embedding support
 - **RAG Playground** at `/admin/playground` for interactive query testing and A/B comparison
