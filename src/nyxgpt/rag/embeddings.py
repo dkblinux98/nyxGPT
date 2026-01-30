@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
@@ -9,6 +10,9 @@ from typing import Iterable
 from itertools import islice
 
 from nyxgpt.config import get_default_model, get_ollama_base_url, load_config
+from nyxgpt.cache import get_cached_embedding, cache_embedding
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -110,9 +114,10 @@ def embed_texts(
     model: str | None = None,
     dimension: int | None = None,
 ) -> list[list[float]] | tuple[list[list[float]], EmbeddingDebugMetrics]:
-    """Embed a batch of texts using Ollama.
+    """Embed a batch of texts using Ollama with caching.
 
-    Uses the `/api/embed` endpoint.
+    Uses the `/api/embed` endpoint. Caches embeddings by (text, model, dimension)
+    to avoid recomputing identical embeddings.
 
     Multi-model support:
       - Pass `model` to use a specific embedding model
@@ -123,6 +128,8 @@ def embed_texts(
       - `[ollama] base_url`
       - `[rag] embedding_model` (optional, can be overridden)
       - `[rag] embedding_dim` (can be overridden)
+      - `[cache] embedding_cache_enabled` (default: true)
+      - `[cache] embedding_cache_ttl_seconds` (default: 0 = no expiration)
 
     Args:
         texts: Iterable of texts to embed
@@ -153,33 +160,65 @@ def embed_texts(
     ecfg = _embedding_cfg(model=model, dimension=dimension)
     url = f"{ecfg.base_url}/api/embed"
 
+    # Try to get cached embeddings first
     out: list[list[float]] = []
-    for batch in _batched(texts_list, ecfg.batch_size):
-        data = _post_json(
-            url,
-            {"model": ecfg.model, "input": batch},
-            timeout=ecfg.timeout,
+    uncached_texts: list[str] = []
+    uncached_indices: list[int] = []
+
+    for i, text in enumerate(texts_list):
+        cached = get_cached_embedding(text, ecfg.model, ecfg.dimension)
+        if cached is not None:
+            out.append(cached)
+        else:
+            uncached_texts.append(text)
+            uncached_indices.append(i)
+            out.append([])  # Placeholder
+
+    cache_hits = len(texts_list) - len(uncached_texts)
+    if cache_hits > 0:
+        logger.debug(
+            "Embedding cache: %d hits, %d misses", cache_hits, len(uncached_texts)
         )
 
-        if "embeddings" in data:
-            vectors = data["embeddings"]
-        elif "embedding" in data:
-            vectors = [data["embedding"]]
-        else:
-            raise EmbeddingError(
-                f"Unexpected Ollama embed response keys: {list(data.keys())}"
+    # Fetch and cache only the uncached texts
+    if uncached_texts:
+        for batch in _batched(uncached_texts, ecfg.batch_size):
+            data = _post_json(
+                url,
+                {"model": ecfg.model, "input": batch},
+                timeout=ecfg.timeout,
             )
 
-        for i, v in enumerate(vectors):
-            if not isinstance(v, list):
-                raise EmbeddingError("Embedding is not a list")
-            if len(v) != ecfg.dimension:
+            if "embeddings" in data:
+                vectors = data["embeddings"]
+            elif "embedding" in data:
+                vectors = [data["embedding"]]
+            else:
                 raise EmbeddingError(
-                    f"Embedding has dim {len(v)} but expected {ecfg.dimension}. "
-                    f"Update collection dimension to match model output. "
-                    f"Use --collection flag to specify a different collection."
+                    f"Unexpected Ollama embed response keys: {list(data.keys())}"
                 )
-            out.append([float(x) for x in v])
+
+            for i, v in enumerate(vectors):
+                if not isinstance(v, list):
+                    raise EmbeddingError("Embedding is not a list")
+                if len(v) != ecfg.dimension:
+                    raise EmbeddingError(
+                        f"Embedding has dim {len(v)} but expected {ecfg.dimension}. "
+                        f"Update collection dimension to match model output. "
+                        f"Use --collection flag to specify a different collection."
+                    )
+
+                embedding = [float(x) for x in v]
+
+                # Find the original index for this embedding
+                batch_start_idx = uncached_texts.index(batch[i])
+                original_idx = uncached_indices[batch_start_idx]
+
+                # Store in output at correct position
+                out[original_idx] = embedding
+
+                # Cache the embedding
+                cache_embedding(batch[i], ecfg.model, ecfg.dimension, embedding)
 
     if collect_metrics:
         elapsed_ms = (time.perf_counter() - start_time) * 1000.0

@@ -22,6 +22,7 @@ from nyxgpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
 from nyxgpt.rag.rag import retrieve_context, compose_context
 from nyxgpt.sessions import load_session, save_session
 from nyxgpt.token_counter import count_message_tokens
+from nyxgpt.cache import get_cached_response, cache_response
 
 logger = logging.getLogger(__name__)
 
@@ -507,7 +508,10 @@ def chat(
     rag_enabled: bool | None = None,
     rag_filters: dict[str, Any] | None = None,
 ) -> ChatResult:
-    """Run a chat turn, persisting session history. Optionally inject RAG context."""
+    """Run a chat turn, persisting session history. Optionally inject RAG context.
+
+    Supports response caching for identical prompts (configurable via [cache] section).
+    """
 
     context = _prepare_chat_context(
         prompt=prompt,
@@ -521,12 +525,31 @@ def chat(
         rag_filters=rag_filters,
     )
 
-    reply = ollama_chat(
-        base_url=context.base_url,
-        model=context.chosen_model,
+    # Try to get cached response first
+    cached_reply = get_cached_response(
         messages=context.messages,
-        timeout_s=context.chat_timeout_s,
+        model=context.chosen_model,
+        session=session,
     )
+
+    if cached_reply is not None:
+        logger.info("Response cache hit for session %s", session)
+        reply = cached_reply
+    else:
+        logger.debug("Response cache miss for session %s", session)
+        reply = ollama_chat(
+            base_url=context.base_url,
+            model=context.chosen_model,
+            messages=context.messages,
+            timeout_s=context.chat_timeout_s,
+        )
+        # Cache the response
+        cache_response(
+            messages=context.messages,
+            model=context.chosen_model,
+            response=reply,
+            session=session,
+        )
 
     cfg = _cfg(config_path)
     _persist_chat_turn(context, prompt, reply, cfg, sessions_dir)
