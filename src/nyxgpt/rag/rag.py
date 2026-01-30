@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Iterable, List, cast
 import logging
@@ -988,66 +989,88 @@ def retrieve_context(
         log.debug("Expanded query into %d variants", len(queries))
 
     # ======================================================================
-    # VECTOR SEARCH
+    # VECTOR SEARCH (with parallel query execution)
     # ======================================================================
     vector_results_map: dict[tuple, dict] = {}  # (doc_id, chunk_id) -> result dict
     all_scores: list[float] = []
     total_raw_results = 0
 
     store = CassandraVectorStore(collection=collection)
-    try:
-        for idx, q in enumerate(queries):
-            # Embed with metrics collection if debug mode
-            if collect_debug:
-                result = embed_texts(
-                    [q],
-                    collect_metrics=True,
-                    model=embedding_model,
-                    dimension=embedding_dim,
-                )
-                # Type narrowing: result is tuple[list[list[float]], EmbeddingDebugMetrics]
-                embeddings, emb_metrics = cast(
-                    tuple[list[list[float]], EmbeddingDebugMetrics], result
-                )
-                q_emb = embeddings[0] if embeddings else []
-                # Store only the first embedding metrics (they're all the same model/config)
-                if idx == 0:
-                    embedding_metrics = emb_metrics
-            else:
-                q_emb = embed_text(q, model=embedding_model, dimension=embedding_dim)
 
-            # Query vector store with metrics collection if debug mode
-            # Filter by embedding_model to ensure we only get results from the same model
-            if collect_debug:
-                vs_result = store.query_by_embedding(
-                    q_emb, k=k, collect_metrics=True, embedding_model=actual_model, metadata_filter=metadata_filter
-                )
-                # Type narrowing: vs_result is tuple[list[dict], VectorSearchDebugMetrics]
-                results, vs_metrics = cast(
-                    tuple[list[dict], VectorSearchDebugMetrics], vs_result
-                )
-                total_raw_results += vs_metrics.raw_results_count
-                # Accumulate scores for overall statistics
-                if vs_metrics.score_min is not None:
-                    all_scores.extend([r.get("score", 0.0) for r in results])
+    # Get concurrency limit from config
+    max_workers = cfg.getint("rag", "parallel_query_max_workers", fallback=4)
+
+    def _execute_query(idx: int, q: str) -> tuple[int, list[dict], EmbeddingDebugMetrics | None, VectorSearchDebugMetrics | None]:
+        """Execute a single query (embed + vector search). Returns (idx, results, emb_metrics, vs_metrics)."""
+        emb_metrics = None
+        vs_metrics = None
+
+        # Embed with metrics collection if debug mode
+        if collect_debug:
+            result = embed_texts(
+                [q],
+                collect_metrics=True,
+                model=embedding_model,
+                dimension=embedding_dim,
+            )
+            # Type narrowing: result is tuple[list[list[float]], EmbeddingDebugMetrics]
+            embeddings, emb_metrics = cast(
+                tuple[list[list[float]], EmbeddingDebugMetrics], result
+            )
+            q_emb = embeddings[0] if embeddings else []
+        else:
+            q_emb = embed_text(q, model=embedding_model, dimension=embedding_dim)
+
+        # Query vector store with metrics collection if debug mode
+        # Filter by embedding_model to ensure we only get results from the same model
+        if collect_debug:
+            vs_result = store.query_by_embedding(
+                q_emb, k=k, collect_metrics=True, embedding_model=actual_model, metadata_filter=metadata_filter
+            )
+            # Type narrowing: vs_result is tuple[list[dict], VectorSearchDebugMetrics]
+            results, vs_metrics = cast(
+                tuple[list[dict], VectorSearchDebugMetrics], vs_result
+            )
+        else:
+            results = cast(
+                list[dict],
+                store.query_by_embedding(q_emb, k=k, embedding_model=actual_model, metadata_filter=metadata_filter),
+            )
+
+        return (idx, results, emb_metrics, vs_metrics)
+
+    try:
+        # Execute queries in parallel using ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_execute_query, idx, q) for idx, q in enumerate(queries)]
+
+            for future in as_completed(futures):
+                idx, results, emb_metrics, vs_metrics = future.result()
+
                 # Store metrics from first query
                 if idx == 0:
-                    vector_search_metrics = vs_metrics
-            else:
-                results = cast(
-                    list[dict],
-                    store.query_by_embedding(q_emb, k=k, embedding_model=actual_model, metadata_filter=metadata_filter),
-                )
+                    if emb_metrics is not None:
+                        embedding_metrics = emb_metrics
+                    if vs_metrics is not None:
+                        vector_search_metrics = vs_metrics
+                        total_raw_results += vs_metrics.raw_results_count
 
-            for r in results:
-                text = (r.get("text") or "").strip()
-                if not text:
-                    continue
+                # Accumulate scores and raw results
+                if vs_metrics is not None and vs_metrics.score_min is not None:
+                    all_scores.extend([r.get("score", 0.0) for r in results])
+                    if idx > 0:  # Add to total for non-first queries
+                        total_raw_results += vs_metrics.raw_results_count
 
-                # Use (doc_id, chunk_id) as unique key for deduplication
-                chunk_key = (r.get("doc_id"), r.get("chunk_id"))
-                if chunk_key not in vector_results_map:
-                    vector_results_map[chunk_key] = r
+                # Process results
+                for r in results:
+                    text = (r.get("text") or "").strip()
+                    if not text:
+                        continue
+
+                    # Use (doc_id, chunk_id) as unique key for deduplication
+                    chunk_key = (r.get("doc_id"), r.get("chunk_id"))
+                    if chunk_key not in vector_results_map:
+                        vector_results_map[chunk_key] = r
 
         # Get list of all documents for keyword search
         all_docs = store.list_docs()
