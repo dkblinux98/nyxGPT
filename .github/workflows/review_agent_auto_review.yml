@@ -222,14 +222,38 @@ jobs:
         run: |
           set -euo pipefail
           PR="${{ steps.get_pr.outputs.pr_number }}"
+          ISSUE="${{ steps.get_issue.outputs.issue_number }}"
 
-          echo "Escalating PR #$PR to human after 3 review attempts"
+          echo "::group::Escalating to human after 3 review cycles"
 
-          gh pr comment "$PR" --body "@${{ vars.HUMAN_OWNER }} claude bot has attempted to review and fix this PR 3 times but issues persist. Manual intervention is required."
+          # Keep issue in "In Review" status and assign to human owner
+          bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && require_gh_auth && issue_assign_only '$ISSUE' '$HUMAN_OWNER'"
 
+          # Assign PR to human owner
           gh pr edit "$PR" --add-assignee "${{ vars.HUMAN_OWNER }}"
 
-          echo "✓ Escalation complete"
+          # Post escalation comment
+          gh pr comment "$PR" --body "⚠️ **Review Agent**: Escalated after 3 review cycles
+
+@${{ vars.HUMAN_OWNER }} This PR has gone through 3 review cycles with requested changes, but issues persist.
+
+**Review History:**
+- 3 code reviews completed with REQUEST_CHANGES
+- Developer made fixes after each review
+- Issues still remain after 3 cycles
+
+**Status:**
+- Issue #${ISSUE} remains in **In Review** status
+- Issue and PR assigned to you for manual review
+- You can either:
+  - Manually review and merge if acceptable
+  - Provide specific guidance to developer
+  - Close PR if not viable
+
+[View all review comments](https://github.com/${{ github.repository }}/pull/${PR})"
+
+          echo "::endgroup::"
+          echo "✓ Escalation complete - issue kept in 'In Review', assigned to human"
           exit 0
 
       - name: Return to developer (if changes requested and not escalated)
