@@ -276,17 +276,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `🔧 **Developer Agent**: Fixing review issues for PR #${pr_number}
-
-🤖 Starting Claude Code to address review comments...
-
-Claude will:
-- Read the review comments from PR #${pr_number}
-- Implement the requested fixes
-- Run all tests (3-try loop to fix any failures)
-- Commit and push fixes
-
-[View workflow logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
+              body: `🔧 **Developer Agent**: Fixing review issues for PR #${pr_number}\n\n🤖 Starting Claude Code to address review comments...\n\nClaude will:\n- Read the review comments from PR #${pr_number}\n- Implement the requested fixes\n- Run all tests (3-try loop to fix any failures)\n- Commit and push fixes\n\n[View workflow logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
             });
 
       - name: Post PR exists notice (if no review issues)
@@ -301,9 +291,7 @@ Claude will:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `✅ **Developer Agent**: PR #${pr_number} already exists and has no review issues.
-
-Skipping implementation step.`
+              body: `✅ **Developer Agent**: PR #${pr_number} already exists and has no review issues.\n\nSkipping implementation step.`
             });
 
       - name: Run Claude Code to fix review issues (Review Fix)
