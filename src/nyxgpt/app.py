@@ -1904,6 +1904,14 @@ def rag_collection_delete(request: Request, collection_name: str) -> CollectionD
     try:
         # Truncate the collection (remove all data)
         store.truncate()
+
+        # Invalidate cache for this collection
+        from nyxgpt.rag.cache import get_cache
+        cache = get_cache()
+        if cache.enabled:
+            invalidated = cache.invalidate_collection(collection_name)
+            log.info(f"Invalidated {invalidated} cache entries for collection '{collection_name}'")
+
         return CollectionDeleteResponse(
             collection=collection_name,
             status=f"Collection '{collection_name}' has been cleared (truncated)",
@@ -3247,6 +3255,78 @@ async def rag_upload_file(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")
+
+
+@api.get("/rag/cache/stats", response_model=CacheStatsResponse)
+def rag_cache_stats(request: Request) -> CacheStatsResponse:
+    """Get RAG query cache statistics.
+
+    Returns comprehensive cache performance metrics including:
+    - Hit/miss counts and hit rate percentage
+    - Cache size and eviction/invalidation counts
+    - Configuration (TTL, max size)
+
+    Useful for monitoring cache effectiveness and tuning parameters.
+    """
+    from nyxgpt.rag.cache import get_cache
+
+    cache = get_cache()
+    stats = cache.get_stats()
+
+    return CacheStatsResponse(
+        enabled=stats["enabled"],
+        hits=stats["hits"],
+        misses=stats["misses"],
+        total_queries=stats["total_queries"],
+        hit_rate=stats["hit_rate"],
+        evictions=stats["evictions"],
+        invalidations=stats["invalidations"],
+        total_entries=stats["total_entries"],
+        total_size_bytes=stats["total_size_bytes"],
+        max_size=stats["max_size"],
+        ttl_seconds=stats["ttl_seconds"],
+    )
+
+
+@api.post("/rag/cache/clear", response_model=CacheClearResponse)
+def rag_cache_clear(request: Request) -> CacheClearResponse:
+    """Clear all entries from the RAG query cache.
+
+    Invalidates the entire cache, forcing all subsequent queries to
+    retrieve fresh results from the vector store.
+
+    Use this endpoint when you need to force cache refresh, such as
+    after bulk document updates or configuration changes.
+    """
+    from nyxgpt.rag.cache import get_cache
+
+    cache = get_cache()
+    entries_cleared = cache.invalidate_all()
+
+    return CacheClearResponse(
+        status="Cache cleared successfully",
+        entries_cleared=entries_cleared,
+    )
+
+
+@api.post("/rag/cache/reset-stats", response_model=CacheClearResponse)
+def rag_cache_reset_stats(request: Request) -> CacheClearResponse:
+    """Reset cache statistics without clearing cached entries.
+
+    Resets hit/miss counters and other statistics to zero while
+    preserving all cached query results.
+
+    Useful for measuring cache performance over a specific time period.
+    """
+    from nyxgpt.rag.cache import get_cache
+
+    cache = get_cache()
+    cache.reset_stats()
+
+    return CacheClearResponse(
+        status="Cache statistics reset successfully",
+        entries_cleared=0,
+    )
 
 
 @api.post("/rag/index-repo")

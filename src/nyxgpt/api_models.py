@@ -481,3 +481,26 @@ class SearchResponse(BaseModel):
     results: list[SearchResultItem] = Field(
         ..., description="List of matching messages"
     )
+
+
+class CacheStatsResponse(BaseModel):
+    """Response model for RAG cache statistics."""
+
+    enabled: bool = Field(..., description="Whether caching is enabled")
+    hits: int = Field(..., description="Number of cache hits")
+    misses: int = Field(..., description="Number of cache misses")
+    total_queries: int = Field(..., description="Total queries (hits + misses)")
+    hit_rate: float = Field(..., description="Cache hit rate percentage (0-100)")
+    evictions: int = Field(..., description="Number of cache evictions")
+    invalidations: int = Field(..., description="Number of cache invalidations")
+    total_entries: int = Field(..., description="Current number of cached entries")
+    total_size_bytes: int = Field(..., description="Approximate cache size in bytes")
+    max_size: int = Field(..., description="Maximum cache size (entries)")
+    ttl_seconds: int = Field(..., description="Cache TTL in seconds")
+
+
+class CacheClearResponse(BaseModel):
+    """Response model for cache clear operation."""
+
+    status: str = Field(..., description="Status message")
+    entries_cleared: int = Field(..., description="Number of entries cleared")

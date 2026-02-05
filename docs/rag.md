@@ -121,6 +121,194 @@ cassandra_table = rag_chunks
 
 ---
 
+## Query Result Caching
+
+nyxGPT includes an intelligent query result caching system to improve RAG query performance for repeated queries.
+
+### Features
+
+- **Query Fingerprinting**: SHA-256 hash-based cache keys for consistent query matching
+- **TTL-Based Expiration**: Configurable time-to-live for cache entries
+- **Automatic Invalidation**: Cache is invalidated when documents are ingested or deleted
+- **Hit Rate Monitoring**: Comprehensive statistics and performance metrics
+- **LRU Eviction**: Least-recently-used eviction when cache reaches max size
+- **Thread-Safe**: Safe for concurrent access across multiple requests
+
+### How It Works
+
+The cache operates transparently within the `retrieve_context()` function:
+
+1. **Cache Check**: Before executing a query, checks if results are cached
+2. **Cache Key Generation**: Generates a fingerprint from query parameters:
+   - Query text (normalized: trimmed, lowercased)
+   - top_k parameter
+   - Collection name
+   - Embedding model and dimension
+   - Metadata filters (doc_ids, filename, tags, date range)
+3. **TTL Validation**: Checks if cached entry has expired
+4. **Result Return**: Returns cached results on hit, or executes full query on miss
+5. **Cache Population**: Stores query results in cache after successful retrieval
+
+### Configuration
+
+Add to `~/.nyxGPT/config.ini`:
+
+```ini
+[rag]
+# Enable query result caching (default: true)
+cache_enabled = true
+
+# Time-to-live for cache entries in seconds (default: 300 = 5 minutes)
+cache_ttl_seconds = 300
+
+# Maximum number of cache entries before eviction (default: 1000)
+cache_max_size = 1000
+```
+
+**TTL Recommendations:**
+- **Frequently updated documents**: 300 seconds (5 minutes)
+- **Static documents**: 3600 seconds (1 hour) or higher
+- **Development/testing**: 60 seconds (1 minute) for quick iteration
+
+**Cache Size Recommendations:**
+- Each entry stores ~1-10KB depending on top_k
+- 1000 entries ≈ 1-10MB memory usage
+- Adjust based on available memory and query patterns
+
+### Cache Invalidation
+
+The cache is automatically invalidated in the following scenarios:
+
+1. **Document Ingestion**: When `ingest_document()` is called, all cache entries for that collection are invalidated
+2. **Collection Truncation**: When a collection is cleared via API, all cache entries are invalidated
+3. **Manual Invalidation**: Via API endpoints (see below)
+
+**Note**: Currently, collection-specific invalidation invalidates all cache entries for safety. Selective per-collection invalidation is planned for a future release.
+
+### API Endpoints
+
+#### Get Cache Statistics
+
+```bash
+GET /api/v1/rag/cache/stats
+```
+
+Returns comprehensive cache performance metrics:
+
+```json
+{
+  "enabled": true,
+  "hits": 150,
+  "misses": 50,
+  "total_queries": 200,
+  "hit_rate": 75.0,
+  "evictions": 10,
+  "invalidations": 5,
+  "total_entries": 180,
+  "total_size_bytes": 1523456,
+  "max_size": 1000,
+  "ttl_seconds": 300
+}
+```
+
+**Metrics Explained:**
+- `hit_rate`: Percentage of queries served from cache (0-100)
+- `evictions`: Number of entries removed due to TTL expiration or max size
+- `invalidations`: Number of entries removed due to document changes
+- `total_entries`: Current number of cached query results
+- `total_size_bytes`: Approximate memory usage (rough estimate)
+
+#### Clear Cache
+
+```bash
+POST /api/v1/rag/cache/clear
+```
+
+Invalidates all cache entries, forcing subsequent queries to retrieve fresh results.
+
+Response:
+```json
+{
+  "status": "Cache cleared successfully",
+  "entries_cleared": 180
+}
+```
+
+Use when:
+- After bulk document updates
+- After configuration changes affecting retrieval
+- When debugging query results
+
+#### Reset Statistics
+
+```bash
+POST /api/v1/rag/cache/reset-stats
+```
+
+Resets hit/miss counters to zero without clearing cached entries.
+
+Response:
+```json
+{
+  "status": "Cache statistics reset successfully",
+  "entries_cleared": 0
+}
+```
+
+Use for measuring cache performance over specific time periods.
+
+### Performance Impact
+
+**Expected Hit Rates:**
+- **Development**: 30-50% (frequent code/query changes)
+- **Production**: 60-80% (repeated queries from users)
+- **Search Interfaces**: 70-90% (common queries, pagination)
+
+**Query Speedup:**
+- Cache hit: ~1-5ms (in-memory lookup)
+- Cache miss: 50-500ms (embedding + vector search + fusion)
+- **Speedup factor**: 10-100x for cache hits
+
+### Monitoring and Tuning
+
+**Monitor Hit Rate:**
+```bash
+curl http://127.0.0.1:8000/api/v1/rag/cache/stats | jq '.hit_rate'
+```
+
+**Tuning Guidelines:**
+
+1. **Low Hit Rate (<30%)**:
+   - Queries too diverse (expected for exploratory use)
+   - TTL too short (entries expire before reuse)
+   - Cache size too small (frequent evictions)
+   - **Action**: Increase `cache_ttl_seconds` or `cache_max_size`
+
+2. **High Eviction Rate**:
+   - Cache size too small for query diversity
+   - **Action**: Increase `cache_max_size`
+
+3. **High Invalidation Rate**:
+   - Frequent document updates
+   - **Action**: Decrease `cache_ttl_seconds` to reduce wasted cache space
+
+4. **Memory Concerns**:
+   - **Action**: Decrease `cache_max_size` or `cache_ttl_seconds`
+
+### Thread Safety
+
+The cache uses `threading.RLock()` for thread-safe operations. All cache methods are safe for concurrent access from multiple requests.
+
+### Limitations
+
+- **In-Memory Only**: Cache does not persist across API restarts
+- **Collection Invalidation**: Currently invalidates all entries (not selective per collection)
+- **No Distributed Caching**: Each API instance has its own cache (no shared cache across instances)
+
+Future enhancements may include persistent caching (Redis) and distributed cache support.
+
+---
+
 ## Document Update Detection
 
 nyxGPT now includes automatic document update detection using SHA-256 content hashing. This feature:

@@ -1054,6 +1054,7 @@ At a high level, the API supports:
 - RAG-assisted chat
 - **metadata filtering** - filter queries by doc_id, filename, tags, or date range
 - **collection management** - manage multi-model embedding collections
+- **query result caching** - intelligent caching with TTL expiration and hit rate monitoring
 
 ### `GET /api/v1/rag/collections`
 
@@ -1170,6 +1171,81 @@ The `/api/v1/rag/query` and `/api/v1/chat/stream` endpoints support optional met
 - `date_to` (str): ISO date string, filter by ingestion date <=
 
 All filters are optional and combined with AND logic when present.
+
+### `GET /api/v1/rag/cache/stats`
+
+Get comprehensive RAG query cache statistics and performance metrics.
+
+**Response:**
+
+```json
+{
+  "enabled": true,
+  "hits": 150,
+  "misses": 50,
+  "total_queries": 200,
+  "hit_rate": 75.0,
+  "evictions": 10,
+  "invalidations": 5,
+  "total_entries": 180,
+  "total_size_bytes": 1523456,
+  "max_size": 1000,
+  "ttl_seconds": 300
+}
+```
+
+**Response Fields:**
+- `enabled` - Whether caching is enabled
+- `hits` - Number of cache hits
+- `misses` - Number of cache misses
+- `total_queries` - Total queries (hits + misses)
+- `hit_rate` - Cache hit rate percentage (0-100)
+- `evictions` - Number of entries evicted (TTL expiration or max size)
+- `invalidations` - Number of entries invalidated (document changes)
+- `total_entries` - Current number of cached entries
+- `total_size_bytes` - Approximate cache memory usage
+- `max_size` - Maximum cache size (entries)
+- `ttl_seconds` - Cache TTL in seconds
+
+**Use Cases:**
+- Monitor cache effectiveness
+- Tune cache parameters (TTL, max size)
+- Debug query performance issues
+
+### `POST /api/v1/rag/cache/clear`
+
+Clear all entries from the RAG query cache, forcing subsequent queries to retrieve fresh results.
+
+**Response:**
+
+```json
+{
+  "status": "Cache cleared successfully",
+  "entries_cleared": 180
+}
+```
+
+**When to use:**
+- After bulk document updates
+- After configuration changes affecting retrieval
+- When debugging unexpected query results
+
+### `POST /api/v1/rag/cache/reset-stats`
+
+Reset cache statistics (hits, misses, evictions, invalidations) to zero without clearing cached entries.
+
+**Response:**
+
+```json
+{
+  "status": "Cache statistics reset successfully",
+  "entries_cleared": 0
+}
+```
+
+**When to use:**
+- Measuring cache performance over a specific time period
+- Benchmarking different cache configurations
 
 ---
 

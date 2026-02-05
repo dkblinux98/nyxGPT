@@ -29,6 +29,7 @@ from nyxgpt.rag.vectorstore_cassandra import (
 from nyxgpt.rag.bm25 import BM25Index
 from nyxgpt.rag.fusion import reciprocal_rank_fusion, weighted_fusion
 from nyxgpt.rag.reranker import rerank_results, RerankerDebugMetrics
+from nyxgpt.rag.cache import get_cache
 
 log = logging.getLogger(__name__)
 
@@ -803,6 +804,12 @@ def ingest_document(
         status = "updated" if is_update else "ingested"
         log.info(f"Document {doc_id} {status}: {len(chunks)} chunks")
 
+        # Invalidate cache after document ingestion
+        cache = get_cache()
+        if cache.enabled:
+            invalidated = cache.invalidate_collection(collection)
+            log.debug(f"Invalidated {invalidated} cache entries for collection '{collection}'")
+
         return {
             "status": status,
             "chunks_ingested": len(chunks),
@@ -951,6 +958,36 @@ def retrieve_context(
 
     # Determine debug mode from parameter or config
     collect_debug = debug_mode if debug_mode is not None else get_rag_debug_mode(cfg)
+
+    # Check cache first
+    cache = get_cache()
+    if cache.enabled:
+        # Convert MetadataFilter to dict for cache key generation
+        filter_dict = None
+        if metadata_filter is not None:
+            filter_dict = {
+                "doc_ids": metadata_filter.doc_ids,
+                "filename": metadata_filter.filename,
+                "tags": metadata_filter.tags,
+                "date_from": metadata_filter.date_from.isoformat() if metadata_filter.date_from else None,
+                "date_to": metadata_filter.date_to.isoformat() if metadata_filter.date_to else None,
+            }
+
+        cached = cache.get(
+            query=query,
+            top_k=top_k,
+            collection=collection,
+            embedding_model=embedding_model,
+            embedding_dim=embedding_dim,
+            metadata_filter=filter_dict,
+        )
+
+        if cached is not None:
+            cached_results, cached_debug = cached
+            log.debug(f"Cache hit: returning {len(cached_results)} cached results")
+            if collect_debug:
+                return cached_results, cached_debug
+            return cached_results
 
     # Get the actual model that will be used for embedding
     from nyxgpt.rag.embeddings import _embedding_cfg
@@ -1345,6 +1382,30 @@ def retrieve_context(
         total_chars_after_truncation=0,  # Not available at this level
         chunks_included=len(filtered),
     )
+
+    # Populate cache with results
+    if cache.enabled:
+        # Convert MetadataFilter to dict for cache key generation
+        filter_dict = None
+        if metadata_filter is not None:
+            filter_dict = {
+                "doc_ids": metadata_filter.doc_ids,
+                "filename": metadata_filter.filename,
+                "tags": metadata_filter.tags,
+                "date_from": metadata_filter.date_from.isoformat() if metadata_filter.date_from else None,
+                "date_to": metadata_filter.date_to.isoformat() if metadata_filter.date_to else None,
+            }
+
+        cache.put(
+            query=query,
+            top_k=top_k,
+            results=filtered,
+            collection=collection,
+            embedding_model=embedding_model,
+            embedding_dim=embedding_dim,
+            metadata_filter=filter_dict,
+            debug_info=debug_info if collect_debug else None,
+        )
 
     return filtered, debug_info
 
