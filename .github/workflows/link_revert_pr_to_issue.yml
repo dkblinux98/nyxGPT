@@ -79,12 +79,15 @@ jobs:
           ISSUE="${{ steps.find_issue.outputs.issue_number }}"
           ORIGINAL_PR="${{ steps.extract.outputs.original_pr }}"
 
-          # Prepend "Closes #ISSUE" to the existing body
-          NEW_BODY="Closes #${ISSUE}
+          # Update PR body to link to issue
+          NEW_BODY=$(cat <<EOF
+          Closes #${ISSUE}
 
-Reverts dkblinux98/nyxGPT#${ORIGINAL_PR}
+          Reverts dkblinux98/nyxGPT#${ORIGINAL_PR}
 
-This reverts the changes from PR #${ORIGINAL_PR}, which addressed issue #${ISSUE}."
+          This reverts the changes from PR #${ORIGINAL_PR}, which addressed issue #${ISSUE}.
+          EOF
+          )
 
           echo "Updating PR #$PR_NUMBER with new body:"
           echo "$NEW_BODY"
