@@ -3,6 +3,7 @@ name: Claude Code Review
 on:
   # Triggered when review-agent is assigned as reviewer
   pull_request_review_requested:
+    types: [requested]
   # Triggered when new commits are pushed to PR being reviewed
   pull_request:
     types: [synchronize]
