@@ -8,6 +8,7 @@ This guide covers optimization strategies for nyxGPT to improve response times, 
 
 - [ ] Choose appropriate model size for your hardware
 - [ ] Enable system prompt minimization for verbose prompts
+- [ ] Enable caching for embeddings and responses
 - [ ] Tune RAG configuration for your use case
 - [ ] Optimize Cassandra settings
 - [ ] Configure batch sizes appropriately
@@ -129,6 +130,148 @@ After:  "a helpful assistant. respond to user queries carefully. be accurate and
 - Slightly less formal tone
 - May affect very specific phrasing requirements
 - Disable if exact wording of system prompt is critical
+
+---
+
+## Caching
+
+Caching dramatically improves performance by avoiding redundant computations. nyxGPT supports two types of caching:
+
+### Embedding Cache
+
+Cache embeddings to avoid recomputing vectors for identical texts.
+
+```ini
+[cache]
+# Enable embedding caching
+embedding_cache_enabled = true
+
+# Backend: "memory" (fast, volatile) or "disk" (persistent across restarts)
+embedding_cache_backend = memory
+
+# Memory backend: LRU cache with max size
+embedding_cache_max_size = 1000
+
+# TTL (time-to-live) in seconds
+# Memory default: 3600s (1 hour)
+# Disk default: 86400s (24 hours)
+embedding_cache_ttl_seconds = 3600
+
+# Disk backend only: cache directory
+embedding_cache_dir = ~/.nyxGPT/cache/embeddings
+```
+
+**When to enable**:
+- Using RAG with repeated queries
+- Ingesting documents with overlapping content
+- Running tests or benchmarks
+- Processing batches of similar queries
+
+**Performance impact**:
+- **Cache hit**: ~1ms (memory) or ~10ms (disk) vs 100-500ms for embedding computation
+- **Speedup**: 100-500x for identical texts
+- **Memory overhead**: ~1KB per cached embedding (for 768-dim vectors)
+
+**Backend selection**:
+- **Memory**: Best for active development, testing, or short sessions
+  - Pros: Extremely fast (1ms), no disk I/O
+  - Cons: Lost on restart, limited by max_size
+  - Recommended for: < 1000 unique embedding calls per session
+
+- **Disk**: Best for long-running processes or persistent caching
+  - Pros: Survives restarts, unlimited size (disk-limited)
+  - Cons: Slower (10ms), file I/O overhead
+  - Recommended for: Production, repeated document ingestion
+
+**Tuning tips**:
+- Start with memory cache (faster, simpler)
+- Increase `embedding_cache_max_size` if you have RAM available
+- Use disk cache for production or persistent workloads
+- Set shorter TTL (e.g., 1800s) to avoid stale embeddings
+- Clear cache after model changes: embeddings are model-specific
+
+### Response Cache
+
+Cache LLM responses to avoid redundant API calls for identical prompts.
+
+```ini
+[cache]
+# Enable response caching
+response_cache_enabled = true
+
+# Backend: "memory" or "disk"
+response_cache_backend = memory
+
+# Memory backend: max number of cached responses
+response_cache_max_size = 100
+
+# TTL in seconds
+# Memory default: 1800s (30 minutes)
+# Disk default: 3600s (1 hour)
+response_cache_ttl_seconds = 1800
+
+# Disk backend only: cache directory
+response_cache_dir = ~/.nyxGPT/cache/responses
+```
+
+**When to enable**:
+- Testing or debugging (repeated identical prompts)
+- Batch processing with duplicate queries
+- Demo or presentation scenarios
+- Development with fixed test inputs
+
+**When NOT to enable**:
+- Production chat (responses should vary based on context)
+- Creative or non-deterministic use cases
+- When using RAG (context may change even for identical prompts)
+
+**Performance impact**:
+- **Cache hit**: ~1ms (memory) or ~10ms (disk) vs 1-60s for LLM generation
+- **Speedup**: 1000-60000x for identical prompts
+- **Memory overhead**: ~1KB per cached response (varies with response length)
+
+**WARNING**: Response caching is based on the full conversation context (all messages + model). Identical user prompts with different conversation history will **not** share cache entries. This is intentional to ensure correct responses, but means cache hit rate may be lower than expected.
+
+**Tuning tips**:
+- Keep `response_cache_max_size` small (50-100) for memory cache
+- Use shorter TTL (900-1800s) to avoid stale responses
+- Disable for production chat unless you need deterministic responses
+- Best suited for testing, CI/CD, or batch processing
+- Clear cache when changing models or system prompts
+
+### Cache Invalidation
+
+Both caches support TTL-based automatic expiration. Manual invalidation:
+
+**Via Python**:
+```python
+from nyxgpt.rag.embeddings import clear_embedding_cache
+from nyxgpt.chat import clear_response_cache
+
+clear_embedding_cache()
+clear_response_cache()
+```
+
+**Via config change**: Set `ttl_seconds = 0` for unlimited caching (cache persists until manually cleared or restart).
+
+### Monitoring Cache Performance
+
+Enable debug logging to see cache hits/misses:
+
+```ini
+[logging]
+level = DEBUG
+```
+
+Then check logs:
+```bash
+tail -f ~/.nyxGPT/logs/nyxgpt.log | grep -i cache
+```
+
+Look for:
+- `Cache hit: <key>...` - Successful cache retrieval
+- `Cache miss (expired): <key>...` - Expired entry removed
+- `Cache eviction (LRU): <key>...` - LRU eviction due to max_size
 
 ---
 
@@ -561,6 +704,14 @@ Continue tuning until performance meets requirements.
 default_model = qwen2.5:0.5b
 chat_timeout_seconds = 120
 
+[cache]
+# Enable caching for faster repeated queries
+embedding_cache_enabled = true
+embedding_cache_backend = memory
+embedding_cache_max_size = 500
+
+response_cache_enabled = false  # Not recommended for production
+
 [rag]
 enabled = false
 # Or if RAG needed:
@@ -578,6 +729,15 @@ enabled = false
 default_model = llama3.2:3b
 chat_timeout_seconds = 180
 
+[cache]
+# Enable caching for better performance
+embedding_cache_enabled = true
+embedding_cache_backend = memory
+embedding_cache_max_size = 1000
+embedding_cache_ttl_seconds = 3600
+
+response_cache_enabled = false  # Enable only for testing/demos
+
 [rag]
 enabled = true
 chat_top_k = 5
@@ -592,6 +752,15 @@ embedding_batch_size = 16
 [nyxgpt]
 default_model = llama3.1:8b
 chat_timeout_seconds = 300
+
+[cache]
+# Persistent disk cache for production
+embedding_cache_enabled = true
+embedding_cache_backend = disk
+embedding_cache_ttl_seconds = 86400  # 24 hours
+embedding_cache_dir = ~/.nyxGPT/cache/embeddings
+
+response_cache_enabled = false  # Not recommended for production chat
 
 [rag]
 enabled = true
@@ -735,9 +904,17 @@ time nyxgpt chat --config /tmp/test-config.ini "Write a haiku"
 **Key Performance Levers** (in order of impact):
 
 1. **Model size**: Biggest impact on speed and memory
-2. **RAG enabled/disabled**: 100-500ms per request
-3. **RAG context size**: Affects prompt length and generation time
-4. **Chunk retrieval count**: Affects RAG latency
-5. **Batch sizes**: Affects ingestion speed only
+2. **Caching**: 100-60000x speedup for repeated queries
+3. **RAG enabled/disabled**: 100-500ms per request
+4. **RAG context size**: Affects prompt length and generation time
+5. **Chunk retrieval count**: Affects RAG latency
+6. **Batch sizes**: Affects ingestion speed only
 
 **General Rule**: Start with minimal configuration and scale up as needed based on measured performance and quality requirements.
+
+**Caching Best Practices**:
+- Always enable embedding cache for RAG workloads
+- Use memory cache for development, disk cache for production
+- Response cache is best for testing/demos, not production chat
+- Monitor cache hit rates with debug logging
+- Clear caches after model or configuration changes

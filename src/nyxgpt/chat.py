@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from collections.abc import Callable, Iterator
@@ -8,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
+from nyxgpt.cache import CacheBackend, DiskCache, MemoryCache, NoOpCache, hash_text
 from nyxgpt.config import (
     get_context_warning_threshold,
     get_context_window_size,
@@ -25,6 +27,9 @@ from nyxgpt.sessions import load_session, save_session
 from nyxgpt.token_counter import count_message_tokens
 
 logger = logging.getLogger(__name__)
+
+# Global response cache instance (initialized lazily)
+_response_cache: CacheBackend[str] | None = None
 
 
 @dataclass
@@ -91,6 +96,61 @@ def _get_str(cfg: Any, section: str, key: str, default: str) -> str:
         return result
     except Exception:
         return default
+
+
+def _get_response_cache() -> CacheBackend[str]:
+    """Get or initialize the global response cache.
+
+    Returns:
+        Initialized cache backend based on config settings
+    """
+    global _response_cache
+
+    if _response_cache is not None:
+        return _response_cache
+
+    # Load config to determine cache settings
+    cfg = load_config(None)
+
+    # Check if response cache is enabled
+    cache_enabled = _get_bool(cfg, "cache", "response_cache_enabled", False)
+
+    if not cache_enabled:
+        logger.debug("Response cache disabled")
+        _response_cache = NoOpCache()
+        return _response_cache
+
+    # Get cache backend type
+    cache_backend = _get_str(cfg, "cache", "response_cache_backend", "memory").lower()
+
+    if cache_backend == "memory":
+        max_size = _get_int(cfg, "cache", "response_cache_max_size", 100)
+        ttl = _get_int(cfg, "cache", "response_cache_ttl_seconds", 1800)
+        _response_cache = MemoryCache(max_size=max_size, default_ttl=ttl)
+        logger.debug(f"Response cache initialized: memory (max_size={max_size}, ttl={ttl}s)")
+
+    elif cache_backend == "disk":
+        cache_dir = _get_str(cfg, "cache", "response_cache_dir", "~/.nyxGPT/cache/responses")
+        ttl = _get_int(cfg, "cache", "response_cache_ttl_seconds", 3600)
+        _response_cache = DiskCache(cache_dir=cache_dir, default_ttl=ttl)
+        logger.debug(f"Response cache initialized: disk (dir={cache_dir}, ttl={ttl}s)")
+
+    else:
+        logger.warning(f"Unknown cache backend '{cache_backend}', disabling cache")
+        _response_cache = NoOpCache()
+
+    return _response_cache
+
+
+def clear_response_cache() -> None:
+    """Clear the global response cache.
+
+    This is useful for testing or when you want to force fresh responses.
+    """
+    global _response_cache
+    if _response_cache is not None:
+        _response_cache.clear()
+        logger.info("Response cache cleared")
 
 
 def _minimize_system_prompt(prompt: str) -> str:
@@ -510,7 +570,30 @@ def chat(
     rag_enabled: bool | None = None,
     rag_filters: dict[str, Any] | None = None,
 ) -> ChatResult:
-    """Run a chat turn, persisting session history. Optionally inject RAG context."""
+    """Run a chat turn with optional response caching, persisting session history.
+
+    Response caching is based on the full conversation context (messages + model).
+    Cache is keyed by hash of messages to ensure identical prompts get cached responses.
+
+    Config:
+      - `[cache] response_cache_enabled` (enable/disable caching)
+      - `[cache] response_cache_backend` (memory or disk)
+      - `[cache] response_cache_ttl_seconds` (cache expiration time)
+
+    Args:
+        prompt: User's input message
+        session: Session name to use
+        new: Whether to start a new session (clearing history)
+        model: Model to use (overrides config default)
+        system: System prompt (overrides config default)
+        config_path: Path to config file
+        sessions_dir: Path to sessions directory
+        rag_enabled: Enable/disable RAG for this request
+        rag_filters: Metadata filters for RAG document selection
+
+    Returns:
+        ChatResult with reply and metadata
+    """
 
     context = _prepare_chat_context(
         prompt=prompt,
@@ -524,12 +607,41 @@ def chat(
         rag_filters=rag_filters,
     )
 
+    # Try to retrieve from cache first
+    cache = _get_response_cache()
+    cache_key_data = {
+        "messages": context.messages,
+        "model": context.chosen_model,
+    }
+    cache_key = hash_text(json.dumps(cache_key_data, sort_keys=True))
+
+    cached_reply = cache.get(cache_key)
+    if cached_reply is not None:
+        logger.debug(f"Response cache hit for session={session}")
+        # Still persist the cached reply to session
+        cfg = _cfg(config_path)
+        _persist_chat_turn(context, prompt, cached_reply, cfg, sessions_dir)
+
+        return ChatResult(
+            session=context.state.name,
+            model=context.chosen_model,
+            reply=cached_reply,
+            rag_used=context.rag_used,
+            rag_chunks=context.rag_chunks,
+            rag_context=context.rag_context,
+        )
+
+    # Cache miss - call LLM
+    logger.debug(f"Response cache miss for session={session}, calling LLM...")
     reply = ollama_chat(
         base_url=context.base_url,
         model=context.chosen_model,
         messages=context.messages,
         timeout_s=context.chat_timeout_s,
     )
+
+    # Store in cache
+    cache.set(cache_key, reply)
 
     cfg = _cfg(config_path)
     _persist_chat_turn(context, prompt, reply, cfg, sessions_dir)
