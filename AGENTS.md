@@ -97,10 +97,11 @@ Workflow:
 2. Run CI checks (linters, tests, test coverage, documentation)
 3. Review code + CI results
 4. Post review comment with recommendation (APPROVE or REQUEST_CHANGES)
-5. Wait for human confirmation (or auto-fix if enabled):
-   - `@approve-merge` - Human approves merge
-   - `@request-changes` - Human confirms changes needed
-6. Automation executes approved action
+5. Review workflow executes automatically:
+   - Review agent runs all tests and linters
+   - Reviews code against acceptance criteria and quality standards
+   - Posts structured review comment: "## Code Review - [APPROVE|REQUEST_CHANGES]"
+   - Automation executes decision automatically (no human confirmation needed)
 
 On CI failure:
 - Set parent issue → In Progress
@@ -108,21 +109,15 @@ On CI failure:
 - Comment with CI failure details
 - Switch role to developer-agent and fix
 
-On code review recommendation:
-- Post structured review comment with findings and recommendation
-- **If REVIEW_AUTO_FIX_ENABLED=true (Automated Fix Loop)**:
-  - On REQUEST_CHANGES: Automated fix loop triggers
-  - Developer-agent checks out PR branch and fixes all Critical/Medium issues
-  - Commits fixes and pushes to PR branch (triggers re-review)
-  - Loops up to 3 times maximum
-  - After 3 loops with persistent issues: Escalate to human (@dkblinux98 mentioned and assigned)
-  - On APPROVE or within 3 loops: Proceeds to merge
-- **If REVIEW_AUTO_FIX_ENABLED=false (Manual Workflow)**:
-  - Wait for human to post confirmation comment
-  - Human posts `@approve-merge` or `@request-changes`
-  - Automation executes:
-    - `@approve-merge`: Merge PR, assign issue to human for acceptance
-    - `@request-changes`: Create Acceptance Failure sub-issues, assign to developer-agent
+On code review decision:
+- **APPROVE**: Automation merges PR immediately, assigns issue to human for acceptance
+- **REQUEST_CHANGES**:
+  - Issue returns to developer-agent with "In Progress" status
+  - Developer reads review comment and fixes all Critical/Medium issues
+  - Developer runs tests in 3-try loop (resets each time) BEFORE committing
+  - Developer commits fixes and re-submits for review (triggers re-review)
+  - Review cycle continues (cumulative count)
+  - After 3 review cycles with REQUEST_CHANGES: Issue stays "In Review", escalates to human
 
 Scripts:
 - review_trigger.sh <PR> - Manually trigger review workflow (for re-reviews or if auto-trigger failed)
