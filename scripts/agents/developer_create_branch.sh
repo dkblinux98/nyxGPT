@@ -32,6 +32,20 @@ SLUG="${3:-issue-${ISSUE}}"
 if [[ -z "$ISSUE" ]]; then usage >&2; exit 2; fi
 
 load_config
+
+# If slug is "auto", derive it from the issue title
+if [[ "$SLUG" == "auto" ]]; then
+  echo "Deriving branch slug from issue title..." >&2
+  TITLE=$(gh issue view "$ISSUE" --json title -q '.title' 2>/dev/null || echo "issue-${ISSUE}")
+  SLUG=$(echo "$TITLE" | \
+    tr '[:upper:]' '[:lower:]' | \
+    sed 's/[^a-z0-9]/-/g' | \
+    sed 's/--*/-/g' | \
+    sed 's/^-//' | \
+    sed 's/-$//' | \
+    cut -c1-50)
+  echo "Generated slug: $SLUG" >&2
+fi
 require_gh_auth
 require_cmd git
 

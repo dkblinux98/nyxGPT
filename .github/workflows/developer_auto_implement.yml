@@ -219,6 +219,7 @@ jobs:
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
           echo "::group::Creating branch for issue #$ISSUE"
+          # Pass "auto" to derive branch slug from issue title (e.g., feat/2680-bundle-size-reduction)
           BRANCH=$(./scripts/agents/developer_create_branch.sh "$ISSUE" feat auto)
           echo "::notice::Created branch: $BRANCH"
           echo "branch_name=$BRANCH" >> "$GITHUB_OUTPUT"
