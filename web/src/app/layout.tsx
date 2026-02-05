@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "../contexts/ThemeContext";
@@ -22,6 +22,14 @@ export const metadata: Metadata = {
     shortcut: "/stone-soup-creative-logo.png",
     apple: "/stone-soup-creative-logo.png",
   },
+  manifest: "/manifest.json",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  themeColor: "#0070f3",
 };
 
 export default function RootLayout({
