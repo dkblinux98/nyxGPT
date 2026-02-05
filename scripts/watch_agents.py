@@ -310,13 +310,13 @@ def clear_screen():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Watch GitHub Actions workflows for a specific issue or all agent workflows"
+        description="Watch GitHub Actions workflow runs (shows all non-skipped workflows by default)"
     )
     parser.add_argument(
         'issue',
         type=int,
         nargs='?',
-        help='Issue number to monitor (optional - if omitted, shows all agent workflows)'
+        help='Issue number to monitor (optional - if omitted, shows all workflows)'
     )
     parser.add_argument(
         '--poll-interval',
