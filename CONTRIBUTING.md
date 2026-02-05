@@ -94,14 +94,20 @@ Run checks on specific files:
 pre-commit run --files src/nyxgpt/cli.py
 ```
 
-### Bypassing Hooks (Use Sparingly)
+### Bypassing Hooks (Not Recommended)
 
-If you need to commit without running hooks (not recommended):
+Bypassing pre-commit hooks defeats their purpose and should be avoided:
 ```bash
-git commit --no-verify -m "Your message"
+git commit --no-verify -m "Your message"  # ❌ Skips ALL checks
 ```
 
-**Note:** CI will still run all checks, so bypassing locally only delays feedback.
+**Why this is problematic:**
+- Broken code enters the repository
+- CI/CD pipelines fail, wasting resources
+- Other developers may pull broken code
+- Only delays feedback (CI will catch issues anyway)
+
+See the [Commit Workflow](#commit-workflow-how-pre-commit-hooks-prevent-bad-commits) section for the proper way to handle blocked commits.
 
 ### Updating Hooks
 
@@ -221,6 +227,146 @@ feat(rag): add PDF document ingestion
 - Update RAG pipeline to handle PDF embeddings
 
 Closes #123
+```
+
+### Commit Workflow (How Pre-Commit Hooks Prevent Bad Commits)
+
+Pre-commit hooks automatically run quality checks **before** each commit is created. This prevents broken code from entering the repository and triggering failed CI/CD runs.
+
+#### How It Works
+
+When you run `git commit`, the following happens automatically:
+
+1. **Git calls the pre-commit hook** (installed in `.git/hooks/pre-commit`)
+2. **Hooks run on staged files only** (files you `git add`ed)
+3. **All checks must pass** for the commit to succeed
+4. **If any check fails**, the commit is **blocked** and changes are not committed
+
+#### The Proper Commit Workflow
+
+```bash
+# 1. Make your changes
+vim src/nyxgpt/api.py
+
+# 2. Stage your changes
+git add src/nyxgpt/api.py
+
+# 3. Attempt to commit
+git commit -m "feat(api): add new endpoint"
+
+# Pre-commit hooks run automatically:
+# ✓ trim trailing whitespace...........Passed
+# ✓ fix end of files...................Passed
+# ✓ Check YAML syntax..................Passed
+# ✓ Format Python code with Black......Passed
+# ✓ Lint Python code with Ruff.........Passed
+# ✓ Type check Python code with mypy...Passed
+# ✓ Detect secrets in code.............Passed
+#
+# ✅ Commit succeeds!
+```
+
+#### When Hooks Block a Commit (Example)
+
+```bash
+# You accidentally introduce a YAML syntax error
+vim .github/workflows/test.yml
+
+git add .github/workflows/test.yml
+git commit -m "Update workflow"
+
+# Pre-commit hooks run:
+# ✓ trim trailing whitespace...........Passed
+# ✓ fix end of files...................Passed
+# ✗ Check YAML syntax..................Failed  <-- BLOCKS COMMIT
+#
+# ❌ Commit BLOCKED! No changes committed.
+# Files remain staged, ready to fix and retry.
+```
+
+#### What Pre-Commit Hooks Prevent
+
+**Without pre-commit hooks:**
+1. Commit code with syntax errors ❌
+2. Push to GitHub ❌
+3. **10+ CI workflow runs fail** ❌
+4. Manually fix and push again ❌
+5. **Another 10+ CI workflow runs** ❌
+6. Finally succeeds (after wasting time and resources)
+
+**With pre-commit hooks:**
+1. Attempt to commit code with errors ✓
+2. **Pre-commit blocks immediately** ✓
+3. Fix locally ✓
+4. Commit succeeds ✓
+5. Push to GitHub ✓
+6. **All CI workflows pass on first try** ✓
+
+#### Fixing Issues Caught by Hooks
+
+When hooks block a commit, fix the issues and try again:
+
+```bash
+# Hooks found issues
+git commit -m "Update code"
+# ✗ Format Python code with Black......Failed
+# ✗ Lint Python code with Ruff.........Failed
+
+# Fix the issues (many auto-fix themselves)
+# Black and Ruff often auto-format files
+
+# Check what was changed
+git diff
+
+# Re-stage the auto-fixed files
+git add src/nyxgpt/api.py
+
+# Try committing again
+git commit -m "Update code"
+# ✅ All checks pass - commit succeeds!
+```
+
+#### NEVER Bypass Hooks (Unless Absolutely Necessary)
+
+**Bad practice:**
+```bash
+git commit --no-verify -m "Quick fix"  # ❌ Skips ALL checks
+```
+
+**Why this is dangerous:**
+- Broken code enters the repository
+- CI/CD pipelines fail
+- Other developers may pull broken code
+- Wastes CI/CD resources
+- Creates technical debt
+
+**When bypassing might be acceptable:**
+- Emergency hotfix (but still run checks manually afterward)
+- You've manually verified all checks pass
+- You understand the risks
+
+**Better approach:**
+```bash
+# Run checks manually first
+pre-commit run --all-files
+
+# If checks pass, commit normally (hooks run again as confirmation)
+git commit -m "Your message"
+```
+
+#### Checking Commit Status
+
+After attempting a commit, verify it succeeded:
+
+```bash
+# Check if commit was created
+git log -1
+
+# Check if files are still staged (means commit failed)
+git status
+
+# If files are still staged, hooks blocked the commit
+# Fix the issues and try again
 ```
 
 ### Pull Request Process
