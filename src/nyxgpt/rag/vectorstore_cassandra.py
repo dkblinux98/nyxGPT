@@ -5,8 +5,10 @@ import time
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
-from cassandra.cluster import Cluster
-from cassandra.query import SimpleStatement
+from cassandra.cluster import Cluster, ExecutionProfile, EXEC_PROFILE_DEFAULT
+from cassandra.policies import DCAwareRoundRobinPolicy, TokenAwarePolicy
+from cassandra.query import SimpleStatement, PreparedStatement
+from functools import lru_cache
 
 from nyxgpt.config import load_config
 
@@ -54,7 +56,9 @@ class VectorStoreError(RuntimeError):
     pass
 
 
+@lru_cache(maxsize=1)
 def _cassandra_cfg() -> CassandraConfig:
+    """Get Cassandra configuration (cached for performance)."""
     cfg = load_config(None)
 
     hosts_raw = cfg.get("rag", "cassandra_hosts", fallback="127.0.0.1")
@@ -68,18 +72,47 @@ def _cassandra_cfg() -> CassandraConfig:
 
 class CassandraVectorStore:
     def __init__(self, *, collection: str = "default") -> None:
-        """Initialize Cassandra vector store.
+        """Initialize Cassandra vector store with optimized connection pooling.
 
         Args:
             collection: Collection name for multi-model support (default: "default")
         """
         self.cfg = _cassandra_cfg()
         self.collection = collection
-        self.cluster = Cluster(self.cfg.hosts, port=self.cfg.port)
+
+        # Load performance tuning config
+        config = load_config(None)
+        pool_size = config.getint("rag", "cassandra_pool_size", fallback=10)
+        max_requests_per_conn = config.getint("rag", "cassandra_max_requests_per_connection", fallback=128)
+
+        # Configure execution profile with connection pooling and load balancing
+        profile = ExecutionProfile(
+            load_balancing_policy=TokenAwarePolicy(DCAwareRoundRobinPolicy()),
+            request_timeout=30.0,  # 30 second timeout for vector queries
+        )
+
+        # Create cluster with optimized settings
+        self.cluster = Cluster(
+            self.cfg.hosts,
+            port=self.cfg.port,
+            execution_profiles={EXEC_PROFILE_DEFAULT: profile},
+            # Connection pool settings for better concurrency
+            protocol_version=4,
+            # Pool settings per host
+            control_connection_timeout=10.0,
+        )
+
+        # Set pool size dynamically (must be done after cluster creation)
+        self.cluster.connection_class.pool_size = pool_size
+        self.cluster.connection_class.max_requests_per_connection = max_requests_per_conn
+
         # Connect without a keyspace so we can create it if missing.
         self.session = self.cluster.connect()
         self._keyspace_ready = False
         self._migration_checked = False
+
+        # Prepared statement cache for performance
+        self._prepared_statements: dict[str, PreparedStatement] = {}
 
     @property
     def table_name(self) -> str:
@@ -328,18 +361,30 @@ class CassandraVectorStore:
 
         start_time = time.perf_counter()
 
-        # Build query - include ingested_at for date filtering
-        stmt = SimpleStatement(
-            f"""
-            SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim, ingested_at, similarity_cosine(embedding, %s) AS score
-            FROM {self.table_name}
-            ORDER BY embedding ANN OF %s
-            LIMIT %s
-            """,
-            fetch_size=k * 2 if metadata_filter else k,  # Fetch more if filtering
-        )
+        # Load fetch size multiplier from config for ANN tuning
+        config = load_config(None)
+        fetch_size_multiplier = config.getfloat("rag", "vector_fetch_size_multiplier", fallback=2.0)
 
-        rows = self.session.execute(stmt, (embedding, embedding, k * 2 if metadata_filter else k))
+        # Calculate optimal fetch size based on filtering needs
+        # Fetch more results if metadata filtering is enabled to account for post-filter reduction
+        fetch_size = int(k * fetch_size_multiplier) if metadata_filter else k
+
+        # Use prepared statement for better performance
+        stmt_key = f"query_by_embedding_{self.table_name}"
+        if stmt_key not in self._prepared_statements:
+            self._prepared_statements[stmt_key] = self.session.prepare(
+                f"""
+                SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim, ingested_at, similarity_cosine(embedding, ?) AS score
+                FROM {self.table_name}
+                ORDER BY embedding ANN OF ?
+                LIMIT ?
+                """
+            )
+
+        stmt = self._prepared_statements[stmt_key]
+        stmt.fetch_size = fetch_size
+
+        rows = self.session.execute(stmt, (embedding, embedding, fetch_size))
         out: list[dict] = []
         scores: list[float] = []
         for r in rows:
@@ -418,6 +463,156 @@ class CassandraVectorStore:
             return out, metrics
 
         return out
+
+    def batch_query_by_embeddings(
+        self,
+        embeddings: List[List[float]],
+        k: int = 5,
+        *,
+        collect_metrics: bool = False,
+        embedding_model: str | None = None,
+        metadata_filter: Optional[MetadataFilter] = None,
+    ) -> list[list[dict]] | tuple[list[list[dict]], list[VectorSearchDebugMetrics]]:
+        """Batch query by multiple embedding vectors (concurrent execution for performance).
+
+        Executes multiple vector searches concurrently using Cassandra's async API
+        for improved throughput when processing multiple queries.
+
+        Args:
+            embeddings: List of query vectors
+            k: Number of results to return per query
+            collect_metrics: If True, return tuple of (results, metrics)
+            embedding_model: Filter results by embedding model
+            metadata_filter: Optional metadata filter criteria
+
+        Returns:
+            List of result lists (one per query embedding).
+            If collect_metrics=True, returns tuple of (results, metrics_list).
+        """
+        if not self._keyspace_ready:
+            self._ensure_keyspace_selected()
+
+        if not embeddings:
+            return ([], []) if collect_metrics else []
+
+        # Load fetch size multiplier from config
+        config = load_config(None)
+        fetch_size_multiplier = config.getfloat("rag", "vector_fetch_size_multiplier", fallback=2.0)
+        fetch_size = int(k * fetch_size_multiplier) if metadata_filter else k
+
+        # Use prepared statement for better performance
+        stmt_key = f"query_by_embedding_{self.table_name}"
+        if stmt_key not in self._prepared_statements:
+            self._prepared_statements[stmt_key] = self.session.prepare(
+                f"""
+                SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim, ingested_at, similarity_cosine(embedding, ?) AS score
+                FROM {self.table_name}
+                ORDER BY embedding ANN OF ?
+                LIMIT ?
+                """
+            )
+
+        stmt = self._prepared_statements[stmt_key]
+        stmt.fetch_size = fetch_size
+
+        # Execute all queries concurrently using async API
+        start_time = time.perf_counter()
+        futures = []
+        for emb in embeddings:
+            future = self.session.execute_async(stmt, (emb, emb, fetch_size))
+            futures.append(future)
+
+        # Collect results from all queries
+        all_results: list[list[dict]] = []
+        all_metrics: list[VectorSearchDebugMetrics] = []
+
+        for future in futures:
+            query_start = time.perf_counter()
+            rows = future.result()
+            out: list[dict] = []
+            scores: list[float] = []
+
+            for r in rows:
+                # Filter by embedding_model if specified
+                if (
+                    embedding_model is not None
+                    and hasattr(r, "embedding_model")
+                    and r.embedding_model != embedding_model
+                ):
+                    continue
+
+                # Parse metadata
+                metadata = json.loads(r.metadata) if r.metadata else {}
+
+                # Apply metadata filters
+                if metadata_filter:
+                    # Filter by doc_ids (OR logic)
+                    if metadata_filter.doc_ids and r.doc_id not in metadata_filter.doc_ids:
+                        continue
+
+                    # Filter by filename (case-insensitive partial match)
+                    if metadata_filter.filename:
+                        doc_filename = metadata.get("filename", "")
+                        if metadata_filter.filename.lower() not in doc_filename.lower():
+                            continue
+
+                    # Filter by tags (doc must have ALL specified tags)
+                    if metadata_filter.tags:
+                        doc_tags = metadata.get("tags", [])
+                        if not isinstance(doc_tags, list):
+                            continue
+                        if not all(tag in doc_tags for tag in metadata_filter.tags):
+                            continue
+
+                    # Filter by date range
+                    if metadata_filter.date_from or metadata_filter.date_to:
+                        if not hasattr(r, "ingested_at") or r.ingested_at is None:
+                            continue
+                        if metadata_filter.date_from and r.ingested_at < metadata_filter.date_from:
+                            continue
+                        if metadata_filter.date_to and r.ingested_at > metadata_filter.date_to:
+                            continue
+
+                score = (
+                    float(r.score) if hasattr(r, "score") and r.score is not None else 0.0
+                )
+                result = {
+                    "doc_id": r.doc_id,
+                    "chunk_id": r.chunk_id,
+                    "text": r.text,
+                    "metadata": metadata,
+                    "score": score,
+                    "embedding_model": r.embedding_model
+                    if hasattr(r, "embedding_model")
+                    else None,
+                    "embedding_dim": r.embedding_dim
+                    if hasattr(r, "embedding_dim")
+                    else None,
+                }
+                out.append(result)
+                scores.append(score)
+
+                # Stop if we have enough results
+                if len(out) >= k:
+                    break
+
+            all_results.append(out)
+
+            if collect_metrics:
+                elapsed_ms = (time.perf_counter() - query_start) * 1000.0
+                metrics = VectorSearchDebugMetrics(
+                    raw_results_count=len(out),
+                    score_min=min(scores) if scores else None,
+                    score_max=max(scores) if scores else None,
+                    score_mean=sum(scores) / len(scores) if scores else None,
+                    vector_search_time_ms=elapsed_ms,
+                )
+                all_metrics.append(metrics)
+
+        if collect_metrics:
+            return all_results, all_metrics
+
+        return all_results
 
     def list_docs(self) -> list[dict]:
         """Return a list of documents currently stored: {doc_id, chunks, embedding_model}."""

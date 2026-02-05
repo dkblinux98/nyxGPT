@@ -4,9 +4,11 @@ import json
 import time
 import urllib.error
 import urllib.request
+import hashlib
 from dataclasses import dataclass
 from typing import Iterable
 from itertools import islice
+from functools import lru_cache
 
 from nyxgpt.config import get_default_model, get_ollama_base_url, load_config
 
@@ -195,18 +197,14 @@ def embed_texts(
     return out
 
 
-def embed_text(
-    text: str, *, model: str | None = None, dimension: int | None = None
-) -> list[float]:
-    """Convenience wrapper for a single string.
+@lru_cache(maxsize=1024)
+def _embed_text_cached(
+    text: str, model: str, dimension: int
+) -> tuple[float, ...]:
+    """Internal cached embedding function.
 
-    Args:
-        text: Text to embed
-        model: Override embedding model (default: from config)
-        dimension: Override expected dimension (default: from config)
-
-    Returns:
-        Embedding vector
+    Returns tuple instead of list for hashability (LRU cache requirement).
+    Cache size is configurable via maxsize parameter.
     """
     result = embed_texts([text], model=model, dimension=dimension)
     # Handle both return types: list[list[float]] or tuple with metrics
@@ -214,4 +212,44 @@ def embed_text(
         vecs, _ = result
     else:
         vecs = result
-    return vecs[0] if vecs else []
+    vec = vecs[0] if vecs else []
+    return tuple(vec)  # Convert to tuple for caching
+
+
+def embed_text(
+    text: str, *, model: str | None = None, dimension: int | None = None, use_cache: bool = True
+) -> list[float]:
+    """Convenience wrapper for a single string with optional caching.
+
+    Args:
+        text: Text to embed
+        model: Override embedding model (default: from config)
+        dimension: Override expected dimension (default: from config)
+        use_cache: If True, use LRU cache for repeated queries (default: True)
+
+    Returns:
+        Embedding vector
+    """
+    # Get config defaults if not specified
+    ecfg = _embedding_cfg(model=model, dimension=dimension)
+    actual_model = model or ecfg.model
+    actual_dim = dimension or ecfg.dimension
+
+    if use_cache:
+        # Check cache first for memory optimization
+        cached_vec = _embed_text_cached(text, actual_model, actual_dim)
+        return list(cached_vec)
+    else:
+        # Skip cache for dynamic/one-off embeddings
+        result = embed_texts([text], model=model, dimension=dimension)
+        # Handle both return types: list[list[float]] or tuple with metrics
+        if isinstance(result, tuple):
+            vecs, _ = result
+        else:
+            vecs = result
+        return vecs[0] if vecs else []
+
+
+def clear_embedding_cache() -> None:
+    """Clear the LRU embedding cache to free memory."""
+    _embed_text_cached.cache_clear()
