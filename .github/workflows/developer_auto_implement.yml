@@ -11,7 +11,6 @@ jobs:
     # This is intentional - manual assignments will trigger but exit gracefully
     if: >-
       ${{ vars.AGENTS_ENABLED == 'true'
-          && vars.DEV_AUTO_IMPLEMENT_ENABLED == 'true'
           && github.event.assignee.login == vars.DEV_AGENT }}
     runs-on: ubuntu-latest
 
