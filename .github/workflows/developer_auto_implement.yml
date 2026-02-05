@@ -530,7 +530,7 @@ jobs:
 
           echo "::group::Final TypeScript verification"
           if git diff --name-only HEAD~1 | grep -q '^web/.*\.tsx\?$'; then
-            cd web && npm run type-check
+            (cd web && npm run type-check)
           fi
           echo "::endgroup::"
 
