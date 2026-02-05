@@ -32,6 +32,7 @@ Your data stays on your machine. No cloud dependency is required.
 - Streaming responses (CLI, TUI, API, Web UI)
 - Unified core shared between CLI and FastAPI
 - Optional **API rate limiting** (disabled by default for localhost use)
+- **Progressive Web App (PWA)** with offline support, install prompts, and push notifications
 - Homebrew‑managed background services
 - Robust unit and integration test suite
 

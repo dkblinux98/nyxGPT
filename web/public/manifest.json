@@ -1,18 +1,39 @@
 {
-  "name": "nyxGPT",
+  "name": "nyxGPT - Local AI Assistant",
   "short_name": "nyxGPT",
-  "description": "An intelligent chat application with RAG capabilities",
+  "description": "Your private AI assistant powered by local LLMs with RAG capabilities",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#0070f3",
   "orientation": "portrait-primary",
+  "scope": "/",
+  "categories": ["productivity", "utilities"],
   "icons": [
     {
       "src": "/icon.png",
-      "sizes": "any",
+      "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/nyxGPT-logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
     }
   ]
 }
