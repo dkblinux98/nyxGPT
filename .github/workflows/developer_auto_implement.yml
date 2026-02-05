@@ -110,9 +110,13 @@ jobs:
           script: |
             const issue_number = context.payload.issue.number;
             const isRetry = '${{ github.event_name }}' === 'issue_comment';
+            const repo = '${{ github.repository }}';
+            const runId = '${{ github.run_id }}';
             const message = isRetry
-              ? '🔄 **Developer Agent**: Retry requested. Restarting implementation...\n\nVerifying issue status...\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})'
-              : '🤖 **Developer Agent**: Auto-implementation workflow triggered.\n\nVerifying issue status...\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
+              ? `🔄 **Developer Agent**: Retry requested. Restarting implementation...\n\n` +
+                `Verifying issue status...\n\n[View workflow run](https://github.com/${repo}/actions/runs/${runId})`
+              : `🤖 **Developer Agent**: Auto-implementation workflow triggered.\n\n` +
+                `Verifying issue status...\n\n[View workflow run](https://github.com/${repo}/actions/runs/${runId})`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -272,11 +276,19 @@ jobs:
           script: |
             const issue_number = context.payload.issue.number;
             const pr_number = '${{ steps.check_pr.outputs.existing_pr }}';
+            const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `🔧 **Developer Agent**: Fixing review issues for PR #${pr_number}\n\n🤖 Starting Claude Code to address review comments...\n\nClaude will:\n- Read the review comments from PR #${pr_number}\n- Implement the requested fixes\n- Run all tests (3-try loop to fix any failures)\n- Commit and push fixes\n\n[View workflow logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
+              body: `🔧 **Developer Agent**: Fixing review issues for PR #${pr_number}\n\n` +
+                    `🤖 Starting Claude Code to address review comments...\n\n` +
+                    `Claude will:\n` +
+                    `- Read the review comments from PR #${pr_number}\n` +
+                    `- Implement the requested fixes\n` +
+                    `- Run all tests (3-try loop to fix any failures)\n` +
+                    `- Commit and push fixes\n\n` +
+                    `[View workflow logs](${repoUrl}/actions/runs/${context.runId})`
             });
 
       - name: Post PR exists notice (if no review issues)
@@ -291,7 +303,8 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `✅ **Developer Agent**: PR #${pr_number} already exists and has no review issues.\n\nSkipping implementation step.`
+              body: `✅ **Developer Agent**: PR #${pr_number} already exists and ` +
+                    `has no review issues.\n\nSkipping implementation step.`
             });
 
       - name: Run Claude Code to fix review issues (Review Fix)
@@ -340,7 +353,17 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `✅ **Developer Agent**: Branch created: \`${branch_name}\`\n\n🤖 Starting Claude Code implementation...\n\nThis may take several minutes. Claude will:\n- Analyze the issue requirements\n- Implement the solution\n- Add/update tests\n- Run the test suite\n- Commit changes\n\nYou can watch progress in the [workflow logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`
+              body: `✅ **Developer Agent**: Branch created: \`${branch_name}\`\n\n` +
+                    `🤖 Starting Claude Code implementation...\n\n` +
+                    `This may take several minutes. Claude will:\n` +
+                    `- Analyze the issue requirements\n` +
+                    `- Implement the solution\n` +
+                    `- Add/update tests\n` +
+                    `- Run the test suite\n` +
+                    `- Commit changes\n\n` +
+                    `You can watch progress in the ` +
+                    `[workflow logs](https://github.com/${context.repo.owner}/` +
+                    `${context.repo.repo}/actions/runs/${context.runId}).`
             });
 
       - name: Run Claude Code to implement issue (Initial)
@@ -529,9 +552,11 @@ jobs:
                - mypy src/ (if Python files changed)
                - cd web && npm run type-check (if TypeScript files changed)
                - ./scripts/validate-web-routes.sh (if web files changed)
-            5. Commit your fixes with message: "fix: address verification failures (attempt 2) (#${{ github.event.issue.number }})"
+            5. Commit your fixes with message:
+               "fix: address verification failures (attempt 2) (#${{ github.event.issue.number }})"
 
-            DO NOT create a PR. Just fix the code and commit. The workflow will handle PR creation after verification passes.
+            DO NOT create a PR. Just fix the code and commit.
+            The workflow will handle PR creation after verification passes.
 
       - name: Run Verification (Attempt 2)
         if: steps.claude_fix2.conclusion == 'success'
@@ -611,7 +636,8 @@ jobs:
             2. Compare with previous logs at /tmp/*_attempt1.log to see if you made progress
             3. Fix ALL remaining issues
             4. Verify your fixes by running the checks yourself
-            5. Commit with message: "fix: address remaining verification failures (attempt 3) (#${{ github.event.issue.number }})"
+            5. Commit with message:
+               "fix: address remaining verification failures (attempt 3) (#${{ github.event.issue.number }})"
 
       - name: Final Verification (Must Pass)
         id: verify_final
@@ -659,7 +685,8 @@ jobs:
               issue_number,
               body: `❌ **Developer Agent**: Failed after 3 attempts
 
-            The implementation failed verification even after 3 fix attempts. This indicates a more complex issue that requires manual intervention.
+            The implementation failed verification even after 3 fix attempts.
+            This indicates a more complex issue that requires manual intervention.
 
             **What happened:**
             - Attempt 1: Initial implementation failed verification
@@ -667,7 +694,8 @@ jobs:
             - Attempt 3: Agent attempted more fixes, verification STILL failed
 
             **Next steps:**
-            1. Review the [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) to see what's failing
+            1. Review the [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+               to see what's failing
             2. Check the commit history on the branch to see what the agent tried
             3. Manual debugging may be required - the agent may not have enough context
 
@@ -700,5 +728,13 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `🎉 **Developer Agent**: Implementation complete!\n\n📝 Pull Request: #${pr_number}\n📊 Status: **In Review**\n👤 Assigned to: @${review_agent}\n\nThe review agent will now:\n1. Wait for CI checks to complete\n2. Review the code changes\n3. Either merge or request changes\n\n[View PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${pr_number})`
+              body: `🎉 **Developer Agent**: Implementation complete!\n\n` +
+                    `📝 Pull Request: #${pr_number}\n` +
+                    `📊 Status: **In Review**\n` +
+                    `👤 Assigned to: @${review_agent}\n\n` +
+                    `The review agent will now:\n` +
+                    `1. Wait for CI checks to complete\n` +
+                    `2. Review the code changes\n` +
+                    `3. Either merge or request changes\n\n` +
+                    `[View PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${pr_number})`
             });
