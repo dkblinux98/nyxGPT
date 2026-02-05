@@ -263,6 +263,28 @@ enable_query_expansion = false    # Default
 
 **Performance impact**: Adds 1-3 seconds per query (LLM call to generate expansions).
 
+**Parallel Query Execution**:
+
+When query expansion is enabled, multiple query variants are executed concurrently for better performance:
+
+```ini
+[rag]
+enable_query_expansion = true
+query_parallel_workers = 4    # Default: 4, recommended: 2-8
+```
+
+**Tuning guidance**:
+- **Lower (2-3)**: Less CPU usage, slightly slower for multiple queries
+- **Medium (4-6)**: Balanced performance (recommended)
+- **Higher (7-10)**: Faster parallel execution but higher CPU/memory usage
+
+**Performance impact**:
+- Sequential: 3 queries × 100ms = 300ms total
+- Parallel (4 workers): 3 queries executed concurrently ≈ 100-150ms total
+- Improvement: 2-3x faster when query expansion generates multiple variants
+
+**Note**: Parallel execution is automatically enabled when `enable_query_expansion = true` and multiple query variants are generated. Single queries use sequential execution (no parallelism overhead).
+
 ### Deduplication
 
 ```ini

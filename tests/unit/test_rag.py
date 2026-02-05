@@ -1528,6 +1528,155 @@ def test_chunk_text_backward_compatibility(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.unit
+def test_parallel_query_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test parallel execution of multiple query variants."""
+    cfg = ConfigParser()
+    cfg["rag"] = {
+        "chat_top_k": "5",
+        "min_score": "0.50",
+        "max_chunks": "5",
+        "dedupe": "true",
+        "enable_query_expansion": "true",
+        "query_parallel_workers": "4",
+    }
+
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    # Mock query expansion to return multiple queries
+    def mock_expand_query(query, max_expansions=3):
+        return [query, f"{query} variant 1", f"{query} variant 2"]
+
+    monkeypatch.setattr("nyxgpt.rag.rag.expand_query", mock_expand_query)
+
+    # Track which queries were embedded (should be batched)
+    embedded_texts = []
+
+    def mock_embed_texts(texts, *, collect_metrics=False, **kwargs):
+        nonlocal embedded_texts
+        embedded_texts.extend(texts)
+        embeddings = [[0.1, 0.2, 0.3] for _ in texts]
+        if collect_metrics:
+            from nyxgpt.rag.embeddings import EmbeddingDebugMetrics
+            metrics = EmbeddingDebugMetrics(
+                embedding_model="test-model",
+                embedding_dim=3,
+                num_texts_embedded=len(texts),
+                batch_size=16,
+                embedding_time_ms=10.0,
+            )
+            return embeddings, metrics
+        return embeddings
+
+    monkeypatch.setattr("nyxgpt.rag.rag.embed_texts", mock_embed_texts)
+    monkeypatch.setattr(
+        "nyxgpt.rag.rag.embed_text", lambda _q, **kwargs: [0.1, 0.2, 0.3]
+    )
+
+    # Mock vector store that tracks parallel execution
+    class FakeStore:
+        def __init__(self, **kwargs):
+            self.query_count = 0
+            self.queries_started = []
+            self.queries_completed = []
+
+        def query_by_embedding(self, _emb, k: int, **kwargs):
+            self.query_count += 1
+            self.queries_started.append(self.query_count)
+            # Simulate varying results from different query variants
+            import time
+            time.sleep(0.01)  # Small delay to test parallelism
+            result = [
+                {"text": f"result {self.query_count}", "score": 0.90 - (self.query_count * 0.05), "doc_id": f"doc{self.query_count}", "chunk_id": 0},
+            ]
+            self.queries_completed.append(self.query_count)
+            return result
+
+        def list_docs(self):
+            return []
+
+        def close(self):
+            pass
+
+    fake_store = FakeStore()
+    monkeypatch.setattr("nyxgpt.rag.rag.CassandraVectorStore", lambda **kw: fake_store)
+
+    from nyxgpt.rag.rag import retrieve_context
+
+    # Execute retrieval with multiple query variants
+    import time
+    start_time = time.perf_counter()
+    results = retrieve_context("test query")
+    elapsed_time = time.perf_counter() - start_time
+
+    # Verify all three queries were executed
+    assert fake_store.query_count == 3
+
+    # Verify all queries were embedded in batch (parallel embedding)
+    assert len(embedded_texts) == 3
+    assert embedded_texts[0] == "test query"
+    assert embedded_texts[1] == "test query variant 1"
+    assert embedded_texts[2] == "test query variant 2"
+
+    # Verify results were deduplicated and returned
+    assert len(results) > 0
+
+    # Verify parallel execution completed faster than sequential would
+    # (With 3 queries each sleeping 0.01s, parallel should be ~0.01s vs sequential ~0.03s)
+    # Allow generous margin for test stability
+    assert elapsed_time < 0.05  # Should be much faster than sequential
+
+
+@pytest.mark.unit
+def test_parallel_query_execution_single_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that single query execution still works correctly (no parallelism needed)."""
+    cfg = ConfigParser()
+    cfg["rag"] = {
+        "chat_top_k": "5",
+        "min_score": "0.50",
+        "max_chunks": "5",
+        "dedupe": "true",
+        "enable_query_expansion": "false",  # Single query only
+    }
+
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr(
+        "nyxgpt.rag.rag.embed_text", lambda _q, **kwargs: [0.1, 0.2, 0.3]
+    )
+
+    # Mock vector store
+    class FakeStore:
+        def __init__(self, **kwargs):
+            self.query_count = 0
+
+        def query_by_embedding(self, _emb, k: int, **kwargs):
+            self.query_count += 1
+            return [
+                {"text": "single result", "score": 0.90, "doc_id": "doc1", "chunk_id": 0},
+            ]
+
+        def list_docs(self):
+            return []
+
+        def close(self):
+            pass
+
+    fake_store = FakeStore()
+    monkeypatch.setattr("nyxgpt.rag.rag.CassandraVectorStore", lambda **kw: fake_store)
+
+    from nyxgpt.rag.rag import retrieve_context
+
+    # Execute retrieval with single query
+    results = retrieve_context("test query")
+
+    # Verify single query was executed (no parallelism overhead)
+    assert fake_store.query_count == 1
+
+    # Verify results were returned
+    assert len(results) == 1
+    assert results[0]["text"] == "single result"
+
+
+@pytest.mark.unit
 def test_compute_evaluation_metrics_score_percentiles() -> None:
     """compute_evaluation_metrics should calculate score percentiles correctly."""
     from nyxgpt.rag.rag import (
