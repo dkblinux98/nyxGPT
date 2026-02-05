@@ -166,7 +166,8 @@ def get_workflow_agent(workflow_name: str, config: Dict[str, str]) -> str:
     """Determine which agent is responsible for a workflow"""
     agent_map = {
         "Developer Agent Auto-Implement": config.get('DEV_AGENT', 'developer-agent'),
-        "Review Agent Auto-Review": config.get('REVIEW_AGENT', 'review-agent'),
+        "Review Agent Execute Decision": config.get('REVIEW_AGENT', 'review-agent'),
+        "Review Agent Auto-Fix Loop": config.get('REVIEW_AGENT', 'review-agent'),
         "Claude Code Review": config.get('REVIEW_AGENT', 'review-agent'),
         "Claude Code": "varies",  # Can be triggered by any agent or human
         "Scrummaster Agent - Select and Start Next Issue": config.get('SCRUM_AGENT', 'scrummaster-agent'),
@@ -229,7 +230,8 @@ def get_workflow_runs(repo: str, issue: Optional[str] = None) -> List[Dict]:
         # If no issue specified, include all agent workflows
         if issue is None:
             if workflow_name in ("Developer Agent Auto-Implement",
-                                "Review Agent Auto-Review",
+                                "Review Agent Execute Decision",
+                                "Review Agent Auto-Fix Loop",
                                 "Claude Code Review",
                                 "Claude Code",
                                 "Scrummaster Agent - Select and Start Next Issue",
@@ -240,7 +242,8 @@ def get_workflow_runs(repo: str, issue: Optional[str] = None) -> List[Dict]:
         else:
             # Include if it's an agent workflow or branch matches issue pattern
             if (workflow_name in ("Developer Agent Auto-Implement",
-                                "Review Agent Auto-Review",
+                                "Review Agent Execute Decision",
+                                "Review Agent Auto-Fix Loop",
                                 "Claude Code Review",
                                 "Claude Code",
                                 "Scrummaster Agent - Select and Start Next Issue",
