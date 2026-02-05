@@ -14,7 +14,6 @@ jobs:
     # Status verification will exit early if not "In Progress"
     if: >-
       ${{ vars.AGENTS_ENABLED == 'true'
-          && vars.DEV_AUTO_IMPLEMENT_ENABLED == 'true'
           && (
             (github.event_name == 'issues' && github.event.assignee.login == vars.DEV_AGENT)
             || (github.event_name == 'issue_comment' && contains(github.event.comment.body, 'RETRY_IMPLEMENTATION'))
