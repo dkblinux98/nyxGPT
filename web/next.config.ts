@@ -1,4 +1,9 @@
 import type { NextConfig } from "next";
+import bundleAnalyzer from "@next/bundle-analyzer";
+
+const withBundleAnalyzer = bundleAnalyzer({
+  enabled: process.env.ANALYZE === "true",
+});
 
 const nextConfig: NextConfig = {
   allowedDevOrigins: [
@@ -12,5 +17,12 @@ const nextConfig: NextConfig = {
   devIndicators: {
     position: "top-right", // top-right, bottom-right, top-left, bottom-left
   },
+  compiler: {
+    removeConsole: process.env.NODE_ENV === "production",
+  },
+  experimental: {
+    optimizePackageImports: ["react-virtuoso"],
+  },
 };
-export default nextConfig;
+
+export default withBundleAnalyzer(nextConfig);
