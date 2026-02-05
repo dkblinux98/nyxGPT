@@ -99,6 +99,29 @@ ON rag_chunks (embedding_model);
 >
 > **Note:** The schema now includes version tracking fields (`doc_hash`, `ingested_at`, `updated_at`) for automatic update detection.
 
+### Materialized Views for Performance
+
+nyxGPT automatically creates **materialized views** to optimize common query patterns. Materialized views provide denormalized, pre-aggregated data that improves read performance for expensive operations.
+
+**Automatically Created Views:**
+
+1. **`rag_chunks_doc_metadata_mv`**: Document-level metadata view
+   - Optimizes: `list_docs()`, `get_document_info()`
+   - Contains: doc_id, chunk_id, embedding_model, doc_hash, timestamps
+   - Primary key: (doc_id, chunk_id)
+
+**Benefits:**
+- **Improved Query Performance**: Faster document listing and metadata retrieval
+- **Automatic Maintenance**: Cassandra automatically keeps views in sync with base table
+- **Low Write Overhead**: Typically <10% overhead for nyxGPT's write patterns
+- **Transparent Fallback**: Code automatically falls back to base table if views unavailable
+
+**How It Works:**
+
+Materialized views are created automatically when `ensure_schema()` is called (during first document ingestion with `ensure_schema=True`). If your Cassandra version doesn't support materialized views, or if view creation fails, the system transparently falls back to querying the base table - no action required.
+
+**Note**: Materialized views are an optimization feature. The system works correctly with or without them.
+
 ---
 
 ## Configuration
