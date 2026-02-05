@@ -3,16 +3,22 @@ name: Developer Agent Auto-Implement
 on:
   issues:
     types: [assigned]
+  issue_comment:
+    types: [created]
 
 jobs:
   implement:
-    # Note: Triggers on assignment to DEV_AGENT regardless of prior state
-    # Status verification at line 86-159 will exit early if not "In Progress"
-    # This is intentional - manual assignments will trigger but exit gracefully
+    # Triggers on:
+    # 1. Assignment to DEV_AGENT
+    # 2. Comment containing RETRY_IMPLEMENTATION on an issue assigned to DEV_AGENT
+    # Status verification will exit early if not "In Progress"
     if: >-
       ${{ vars.AGENTS_ENABLED == 'true'
           && vars.DEV_AUTO_IMPLEMENT_ENABLED == 'true'
-          && github.event.assignee.login == vars.DEV_AGENT }}
+          && (
+            (github.event_name == 'issues' && github.event.assignee.login == vars.DEV_AGENT)
+            || (github.event_name == 'issue_comment' && contains(github.event.comment.body, 'RETRY_IMPLEMENTATION'))
+          ) }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -75,17 +81,44 @@ jobs:
             echo "config ok: $REPO_OWNER/$REPO_NAME project $PROJECT_OWNER#$PROJECT_NUMBER release=$RELEASE_BRANCH"
           '
 
+      - name: Verify issue is assigned to developer-agent (comment trigger only)
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          script: |
+            const issue = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number
+            });
+            const devAgent = '${{ vars.DEV_AGENT }}';
+            const isAssigned = issue.data.assignees.some(a => a.login === devAgent);
+            if (!isAssigned) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.issue.number,
+                body: `❌ **Developer Agent**: Cannot retry - issue is not assigned to @${devAgent}`
+              });
+              core.setFailed(`Issue not assigned to ${devAgent}`);
+            }
+
       - name: Post workflow start comment
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
+            const isRetry = '${{ github.event_name }}' === 'issue_comment';
+            const message = isRetry
+              ? '🔄 **Developer Agent**: Retry requested. Restarting implementation...\n\nVerifying issue status...\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})'
+              : '🤖 **Developer Agent**: Auto-implementation workflow triggered.\n\nVerifying issue status...\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: '🤖 **Developer Agent**: Auto-implementation workflow triggered.\n\nVerifying issue status...\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})'
+              body: message
             });
 
       - name: Verify issue is In Progress in ProjectV2 (otherwise exit)
