@@ -262,10 +262,15 @@ cassandra_table = rag_chunks
 | `expansion_model` | Model for query expansion (optional, defaults to nyxgpt.default_model) |
 | `include_scores` | Include similarity scores in context headers (debugging only) |
 | `include_headers` | Include per-chunk headers like "[Context 1]" in injected context |
-| `cassandra_hosts` | Cassandra host(s) |
+| `cassandra_hosts` | Cassandra host(s) - comma-separated list for read replicas (e.g., `192.168.1.10,192.168.1.11`) |
 | `cassandra_port` | Cassandra port |
 | `cassandra_keyspace` | Cassandra keyspace for RAG |
 | `cassandra_table` | Cassandra table name for RAG chunks |
+| `replication_strategy` | Replication strategy: `SimpleStrategy` (default) or `NetworkTopologyStrategy` |
+| `replication_factor` | Number of replicas to maintain (default: 1 for local dev, 3 for production) |
+| `read_consistency` | Read consistency level: `ONE`, `LOCAL_ONE`, `QUORUM`, `LOCAL_QUORUM`, `ALL` (default: `LOCAL_ONE`) |
+| `write_consistency` | Write consistency level: `ONE`, `LOCAL_ONE`, `QUORUM`, `LOCAL_QUORUM`, `ALL` (default: `LOCAL_QUORUM`) |
+| `load_balancing_policy` | Load balancing policy: `TokenAwarePolicy` (default, optimal for read replicas), `RoundRobinPolicy`, `DCAwareRoundRobinPolicy` |
 
 **RAG Prompt Templates:**
 

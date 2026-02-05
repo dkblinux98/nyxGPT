@@ -117,7 +117,122 @@ cassandra_hosts = 127.0.0.1
 cassandra_port = 9042
 cassandra_keyspace = nyxgpt
 cassandra_table = rag_chunks
+
+# Read Replica Configuration (for scaling)
+replication_strategy = SimpleStrategy
+replication_factor = 1
+read_consistency = LOCAL_ONE
+write_consistency = LOCAL_QUORUM
+load_balancing_policy = TokenAwarePolicy
 ```
+
+---
+
+## Read Replicas for Scaling
+
+nyxGPT supports Cassandra read replicas for improved query performance and availability. This feature enables:
+
+- **Multiple Cassandra hosts**: Distribute load across multiple nodes
+- **Read/write splitting**: Route read queries to optimal replicas using token-aware load balancing
+- **Configurable consistency**: Choose consistency levels independently for reads vs writes
+- **Automatic failover**: The Cassandra driver handles node failures transparently
+
+### Configuration
+
+#### Local Development
+
+For local development with a single Cassandra node:
+
+```ini
+[rag]
+cassandra_hosts = 127.0.0.1
+replication_strategy = SimpleStrategy
+replication_factor = 1
+read_consistency = LOCAL_ONE
+write_consistency = LOCAL_QUORUM
+load_balancing_policy = TokenAwarePolicy
+```
+
+#### Production Multi-Node Cluster
+
+For production deployments with multiple Cassandra nodes:
+
+```ini
+[rag]
+# Comma-separated list of Cassandra nodes
+cassandra_hosts = 192.168.1.10,192.168.1.11,192.168.1.12
+
+# Replication settings
+replication_strategy = SimpleStrategy
+replication_factor = 3
+
+# Consistency levels for read/write operations
+# Options: ONE, LOCAL_ONE, QUORUM, LOCAL_QUORUM, ALL
+read_consistency = LOCAL_ONE      # Fast reads from nearest replica
+write_consistency = LOCAL_QUORUM  # Strong write durability
+
+# Load balancing policy
+# TokenAwarePolicy: Routes reads to replicas that own the data (optimal)
+# RoundRobinPolicy: Simple round-robin distribution
+# DCAwareRoundRobinPolicy: Multi-datacenter deployments
+load_balancing_policy = TokenAwarePolicy
+```
+
+#### Multi-Datacenter Deployment
+
+For multi-datacenter deployments using NetworkTopologyStrategy:
+
+```ini
+[rag]
+cassandra_hosts = dc1-node1,dc1-node2,dc2-node1,dc2-node2
+replication_strategy = NetworkTopologyStrategy
+replication_factor = 3  # Applied per datacenter
+read_consistency = LOCAL_QUORUM
+write_consistency = LOCAL_QUORUM
+load_balancing_policy = DCAwareRoundRobinPolicy
+```
+
+**Note:** NetworkTopologyStrategy requires datacenter-specific replication factors. The current implementation uses a single `replication_factor` value applied to all datacenters. For fine-grained control, you may need to create the keyspace manually with datacenter-specific settings.
+
+### Consistency Levels
+
+Choose consistency levels based on your requirements:
+
+| Level | Reads | Writes | Use Case |
+|-------|-------|--------|----------|
+| `ONE` | Fastest | Fastest | Maximum performance, eventual consistency |
+| `LOCAL_ONE` | Fast | Fast | Datacenter-local, low latency |
+| `QUORUM` | Strong | Strong | Strong consistency across all datacenters |
+| `LOCAL_QUORUM` | Balanced | Balanced | **Recommended**: Strong consistency within datacenter |
+| `ALL` | Slowest | Slowest | Maximum durability (not recommended for production) |
+
+**Recommended Settings:**
+- **Read-heavy workloads**: `read_consistency = LOCAL_ONE`, `write_consistency = LOCAL_QUORUM`
+- **Strong consistency**: `read_consistency = LOCAL_QUORUM`, `write_consistency = LOCAL_QUORUM`
+- **Maximum performance**: `read_consistency = ONE`, `write_consistency = ONE` (eventual consistency)
+
+### Load Balancing Policies
+
+- **TokenAwarePolicy** (default): Routes queries to replicas that own the data partition. Wraps RoundRobinPolicy for optimal read performance. **Recommended for read replicas.**
+- **RoundRobinPolicy**: Simple round-robin distribution across all nodes.
+- **DCAwareRoundRobinPolicy**: Routes queries to nodes in the local datacenter, with fallback to remote datacenters.
+
+### Verifying Read Replica Configuration
+
+After configuring read replicas, verify your cluster status:
+
+```bash
+# Connect to Cassandra container
+docker exec -it nyxgpt-cassandra cqlsh
+
+# Check keyspace replication settings
+DESC KEYSPACE nyxgpt;
+
+# Check cluster status
+nodetool status;
+```
+
+You should see your configured replication strategy and all nodes in the cluster.
 
 ---
 

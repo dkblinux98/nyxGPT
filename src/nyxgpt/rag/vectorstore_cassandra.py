@@ -5,8 +5,13 @@ import time
 from datetime import datetime
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
-from cassandra.cluster import Cluster
-from cassandra.query import SimpleStatement
+from cassandra.cluster import Cluster, ExecutionProfile, EXEC_PROFILE_DEFAULT
+from cassandra.policies import (
+    TokenAwarePolicy,
+    RoundRobinPolicy,
+    DCAwareRoundRobinPolicy,
+)
+from cassandra.query import SimpleStatement, ConsistencyLevel
 
 from nyxgpt.config import load_config
 
@@ -17,6 +22,11 @@ class CassandraConfig:
     port: int
     keyspace: str
     table: str
+    replication_strategy: str
+    replication_factor: int
+    read_consistency: ConsistencyLevel
+    write_consistency: ConsistencyLevel
+    load_balancing_policy: str
 
 
 @dataclass
@@ -63,23 +73,98 @@ def _cassandra_cfg() -> CassandraConfig:
     keyspace = cfg.get("rag", "cassandra_keyspace", fallback="nyxgpt")
     table = cfg.get("rag", "cassandra_table", fallback="rag_chunks")
 
-    return CassandraConfig(hosts=hosts, port=port, keyspace=keyspace, table=table)
+    # Read replica and consistency settings
+    replication_strategy = cfg.get("rag", "replication_strategy", fallback="SimpleStrategy")
+    replication_factor = cfg.getint("rag", "replication_factor", fallback=1)
+
+    # Parse consistency levels
+    read_consistency_str = cfg.get("rag", "read_consistency", fallback="LOCAL_ONE")
+    write_consistency_str = cfg.get("rag", "write_consistency", fallback="LOCAL_QUORUM")
+
+    # Map string names to ConsistencyLevel enum
+    consistency_map = {
+        "ONE": ConsistencyLevel.ONE,
+        "LOCAL_ONE": ConsistencyLevel.LOCAL_ONE,
+        "QUORUM": ConsistencyLevel.QUORUM,
+        "LOCAL_QUORUM": ConsistencyLevel.LOCAL_QUORUM,
+        "ALL": ConsistencyLevel.ALL,
+        "ANY": ConsistencyLevel.ANY,
+        "TWO": ConsistencyLevel.TWO,
+        "THREE": ConsistencyLevel.THREE,
+    }
+
+    read_consistency = consistency_map.get(read_consistency_str.upper(), ConsistencyLevel.LOCAL_ONE)
+    write_consistency = consistency_map.get(write_consistency_str.upper(), ConsistencyLevel.LOCAL_QUORUM)
+
+    load_balancing_policy = cfg.get("rag", "load_balancing_policy", fallback="TokenAwarePolicy")
+
+    return CassandraConfig(
+        hosts=hosts,
+        port=port,
+        keyspace=keyspace,
+        table=table,
+        replication_strategy=replication_strategy,
+        replication_factor=replication_factor,
+        read_consistency=read_consistency,
+        write_consistency=write_consistency,
+        load_balancing_policy=load_balancing_policy,
+    )
 
 
 class CassandraVectorStore:
     def __init__(self, *, collection: str = "default") -> None:
-        """Initialize Cassandra vector store.
+        """Initialize Cassandra vector store with read replica support.
+
+        Supports multiple Cassandra hosts with configurable load balancing,
+        consistency levels, and replication settings.
 
         Args:
             collection: Collection name for multi-model support (default: "default")
         """
         self.cfg = _cassandra_cfg()
         self.collection = collection
-        self.cluster = Cluster(self.cfg.hosts, port=self.cfg.port)
+
+        # Create load balancing policy based on configuration
+        lb_policy = self._create_load_balancing_policy()
+
+        # Create execution profile with consistency levels
+        profile = ExecutionProfile(
+            load_balancing_policy=lb_policy,
+            request_timeout=30.0,
+        )
+
+        # Initialize cluster with execution profile
+        self.cluster = Cluster(
+            self.cfg.hosts,
+            port=self.cfg.port,
+            execution_profiles={EXEC_PROFILE_DEFAULT: profile},
+        )
+
         # Connect without a keyspace so we can create it if missing.
         self.session = self.cluster.connect()
         self._keyspace_ready = False
         self._migration_checked = False
+
+    def _create_load_balancing_policy(self):
+        """Create load balancing policy based on configuration.
+
+        Returns:
+            Load balancing policy instance for Cassandra driver
+        """
+        policy_name = self.cfg.load_balancing_policy
+
+        if policy_name == "TokenAwarePolicy":
+            # TokenAwarePolicy wraps a child policy (RoundRobin by default)
+            # This sends reads to replicas that own the data
+            return TokenAwarePolicy(RoundRobinPolicy())
+        elif policy_name == "RoundRobinPolicy":
+            return RoundRobinPolicy()
+        elif policy_name == "DCAwareRoundRobinPolicy":
+            # For multi-datacenter deployments
+            return DCAwareRoundRobinPolicy()
+        else:
+            # Default to TokenAwarePolicy for optimal read performance
+            return TokenAwarePolicy(RoundRobinPolicy())
 
     @property
     def table_name(self) -> str:
@@ -179,10 +264,18 @@ class CassandraVectorStore:
         sanitized_collection = collection.replace("-", "_")
         tbl = f"{base_tbl}_{sanitized_collection}" if collection != "default" else base_tbl
 
+        # Build replication configuration based on settings
+        if self.cfg.replication_strategy == "SimpleStrategy":
+            replication_config = f"{{'class':'{self.cfg.replication_strategy}','replication_factor':{self.cfg.replication_factor}}}"
+        else:
+            # For NetworkTopologyStrategy, assume single datacenter named 'dc1' for now
+            # Production deployments should specify datacenter-specific factors
+            replication_config = f"{{'class':'{self.cfg.replication_strategy}','dc1':{self.cfg.replication_factor}}}"
+
         self.session.execute(
             f"""
             CREATE KEYSPACE IF NOT EXISTS {ks}
-            WITH REPLICATION = {{'class':'SimpleStrategy','replication_factor':1}};
+            WITH REPLICATION = {replication_config};
             """
         )
 
@@ -281,8 +374,8 @@ class CassandraVectorStore:
         for idx, (text, emb, meta) in enumerate(zip(texts_l, embs_l, metas_l)):
             # For updates, preserve original ingested_at; for new docs, use current time
             ingested_at = original_ingested_at if original_ingested_at else now
-            self.session.execute(
-                stmt,
+            # Use configured write consistency level
+            bound_stmt = stmt.bind(
                 (
                     doc_id,
                     idx,
@@ -294,8 +387,10 @@ class CassandraVectorStore:
                     doc_hash,
                     ingested_at,
                     now,
-                ),
+                )
             )
+            bound_stmt.consistency_level = self.cfg.write_consistency
+            self.session.execute(bound_stmt)
 
     # ----------------------------
     # Query
@@ -329,6 +424,7 @@ class CassandraVectorStore:
         start_time = time.perf_counter()
 
         # Build query - include ingested_at for date filtering
+        # Use configured read consistency level for optimal read replica performance
         stmt = SimpleStatement(
             f"""
             SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim, ingested_at, similarity_cosine(embedding, %s) AS score
@@ -337,6 +433,7 @@ class CassandraVectorStore:
             LIMIT %s
             """,
             fetch_size=k * 2 if metadata_filter else k,  # Fetch more if filtering
+            consistency_level=self.cfg.read_consistency,
         )
 
         rows = self.session.execute(stmt, (embedding, embedding, k * 2 if metadata_filter else k))
@@ -428,6 +525,7 @@ class CassandraVectorStore:
         # We fetch all doc_id, embedding_model pairs and aggregate in Python.
         stmt = SimpleStatement(
             f"SELECT doc_id, embedding_model FROM {self.table_name}",
+            consistency_level=self.cfg.read_consistency,
         )
 
         rows = self.session.execute(stmt)
@@ -455,19 +553,22 @@ class CassandraVectorStore:
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
-        self.session.execute(
-            SimpleStatement(
-                f"DELETE FROM {self.table_name} WHERE doc_id = %s",
-            ),
-            (doc_id,),
+        stmt = SimpleStatement(
+            f"DELETE FROM {self.table_name} WHERE doc_id = %s",
+            consistency_level=self.cfg.write_consistency,
         )
+        self.session.execute(stmt, (doc_id,))
 
     def truncate(self) -> None:
         """Remove all rows from the vector table (development convenience)."""
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
-        self.session.execute(SimpleStatement(f"TRUNCATE {self.table_name}"))
+        stmt = SimpleStatement(
+            f"TRUNCATE {self.table_name}",
+            consistency_level=self.cfg.write_consistency,
+        )
+        self.session.execute(stmt)
 
     def drop_collection(self) -> None:
         """Drop the collection table entirely.
@@ -493,7 +594,8 @@ class CassandraVectorStore:
             SELECT table_name
             FROM system_schema.tables
             WHERE keyspace_name = %s
-            """
+            """,
+            consistency_level=self.cfg.read_consistency,
         )
 
         rows = self.session.execute(stmt, (self.cfg.keyspace,))
@@ -522,7 +624,8 @@ class CassandraVectorStore:
             self._ensure_keyspace_selected()
 
         stmt = SimpleStatement(
-            f"SELECT doc_hash FROM {self.table_name} WHERE doc_id = %s LIMIT 1"
+            f"SELECT doc_hash FROM {self.table_name} WHERE doc_id = %s LIMIT 1",
+            consistency_level=self.cfg.read_consistency,
         )
 
         rows = self.session.execute(stmt, (doc_id,))
@@ -550,7 +653,8 @@ class CassandraVectorStore:
             SELECT doc_id, doc_hash, ingested_at, updated_at, embedding_model
             FROM {self.table_name}
             WHERE doc_id = %s
-            """
+            """,
+            consistency_level=self.cfg.read_consistency,
         )
 
         rows = list(self.session.execute(stmt, (doc_id,)))
@@ -604,7 +708,11 @@ class CassandraVectorStore:
 
         # Query all chunks from the collection
         query = f"SELECT * FROM {tbl}"
-        stmt = SimpleStatement(query, fetch_size=1000)  # Use paging for large collections
+        stmt = SimpleStatement(
+            query,
+            fetch_size=1000,  # Use paging for large collections
+            consistency_level=self.cfg.read_consistency,
+        )
 
         chunks = []
         rows = self.session.execute(stmt)
@@ -665,7 +773,8 @@ class CassandraVectorStore:
             FROM {self.cfg.keyspace}.collection_settings
             WHERE collection_name = %s
         """
-        result = self.session.execute(query, [self.collection])
+        stmt = SimpleStatement(query, consistency_level=self.cfg.read_consistency)
+        result = self.session.execute(stmt, [self.collection])
         row = result.one()
 
         if row is None:
@@ -702,7 +811,8 @@ class CassandraVectorStore:
             (collection_name, embedding_model, chunk_size, chunk_overlap)
             VALUES (%s, %s, %s, %s)
         """
+        stmt = SimpleStatement(query, consistency_level=self.cfg.write_consistency)
         self.session.execute(
-            query,
+            stmt,
             [self.collection, embedding_model, chunk_size, chunk_overlap]
         )
