@@ -32,6 +32,7 @@ Your data stays on your machine. No cloud dependency is required.
 - Streaming responses (CLI, TUI, API, Web UI)
 - Unified core shared between CLI and FastAPI
 - Optional **API rate limiting** (disabled by default for localhost use)
+- **Offline support** with service worker caching and background sync
 - Homebrew‑managed background services
 - Robust unit and integration test suite
 
@@ -343,6 +344,11 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
   - `Cmd/Ctrl+/` - Toggle sidebar visibility
   - `/` - Focus search input
   - `Esc` - Close menus and dialogs
+- **Offline support** with automatic caching and background sync:
+  - Static assets cached for instant loading
+  - Previously loaded pages available offline
+  - Automatic reconnection when back online
+  - Service worker handles cache strategies intelligently
 
 ---
 

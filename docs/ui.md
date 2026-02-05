@@ -458,6 +458,192 @@ This ensures tests verify that virtualization prevents rendering all 1000+ items
 
 ---
 
+## Offline Support (Service Worker)
+
+The web UI includes a service worker for offline support, caching, and background sync. The service worker is automatically registered when you visit the web UI and provides progressive web app (PWA) capabilities.
+
+### Features
+
+**Static Asset Caching:**
+- All static assets (JavaScript, CSS, images) are cached on first load
+- Subsequent visits load instantly from cache (cache-first strategy)
+- Cached assets are automatically updated when new versions are available
+
+**Dynamic Content Caching:**
+- API responses are cached using a network-first strategy
+- If network is unavailable, cached responses are served
+- Ensures previously loaded content remains accessible offline
+
+**Offline Fallback Page:**
+- When offline and navigating to an uncached page, users see a friendly offline page at `/offline`
+- Displays connection status with real-time updates
+- Automatically redirects to the requested page when connection is restored
+- Shows what features are available while offline
+
+**Background Sync:**
+- Queued actions are automatically synced when connection is restored
+- Uses the Background Sync API where supported
+- Currently supports chat message synchronization (infrastructure in place for future enhancements)
+
+**Update Notifications:**
+- When a new version of the web UI is available, users see an update prompt
+- Users can reload immediately or continue with the current version
+- Updates are applied seamlessly without data loss
+
+### Cache Strategies
+
+The service worker implements multiple caching strategies based on resource type:
+
+1. **Cache First (Static Assets)**
+   - Used for: JS, CSS, fonts, images
+   - Serves from cache immediately
+   - Updates cache in background if newer version available
+   - Fast page loads and instant asset delivery
+
+2. **Network First (API Calls)**
+   - Used for: `/api/*` endpoints
+   - Attempts network request first
+   - Falls back to cache if network unavailable
+   - Ensures fresh data when online, graceful degradation when offline
+
+3. **Network First with Offline Fallback (HTML Pages)**
+   - Used for: Page navigation
+   - Attempts to load from network
+   - Falls back to cached version if offline
+   - Shows `/offline` page if neither cache nor network available
+
+### Usage in Components
+
+**Detect Online/Offline Status:**
+```typescript
+import { useOfflineDetection } from '@/hooks/useOfflineDetection';
+
+function MyComponent() {
+  const isOnline = useOfflineDetection();
+
+  if (!isOnline) {
+    return <div>You are offline. Some features may be limited.</div>;
+  }
+
+  // Normal component rendering
+}
+```
+
+**Queue Actions for Background Sync:**
+```typescript
+import { useBackgroundSync } from '@/hooks/useBackgroundSync';
+
+function ChatComponent() {
+  const { sync, status } = useBackgroundSync();
+
+  const sendMessage = async (message: string) => {
+    // Attempt to send immediately
+    try {
+      await api.sendMessage(message);
+    } catch (error) {
+      // If offline, queue for background sync
+      if (!navigator.onLine) {
+        await sync('sync-chat-messages');
+        // Message will be sent when connection is restored
+      }
+    }
+  };
+}
+```
+
+### Service Worker Lifecycle
+
+**Installation:**
+1. Service worker is registered automatically on page load
+2. Static assets are cached immediately
+3. Service worker activates and takes control of the page
+
+**Updates:**
+1. Browser periodically checks for service worker updates
+2. If new version is detected, it's downloaded in the background
+3. User sees update notification when new version is ready
+4. User can reload to activate the new version immediately
+5. Old service worker is deactivated and caches are cleaned up
+
+**Manual Cache Management:**
+```typescript
+import { clearCache } from '@/lib/serviceWorker';
+
+// Clear all caches (useful for debugging or force refresh)
+clearCache();
+```
+
+### Browser Support
+
+**Full Support:**
+- Chrome/Edge 40+
+- Firefox 44+
+- Safari 11.1+
+- Opera 27+
+
+**Background Sync Support:**
+- Chrome/Edge 49+
+- Opera 36+
+- Not supported: Firefox, Safari (gracefully degrades)
+
+**Note:** Service workers require HTTPS in production. Development mode (localhost) works with HTTP.
+
+### Debugging
+
+**Check Service Worker Status:**
+1. Open DevTools → Application → Service Workers
+2. Verify service worker is registered and active
+3. View cache storage under Application → Cache Storage
+
+**View Cached Resources:**
+1. DevTools → Application → Cache Storage
+2. Expand `nyxgpt-static-v1`, `nyxgpt-dynamic-v1`, `nyxgpt-api-v1`
+3. Inspect cached URLs and responses
+
+**Simulate Offline Mode:**
+1. DevTools → Network → Toggle "Offline" checkbox
+2. Or DevTools → Application → Service Workers → "Offline" checkbox
+3. Test offline fallback behavior
+
+**Service Worker Console Logs:**
+Service worker logs appear in:
+- DevTools → Console (filter by "Service Worker")
+- DevTools → Application → Service Workers → "View console" link
+
+**Force Update Service Worker:**
+1. DevTools → Application → Service Workers
+2. Click "Update" button
+3. Or check "Update on reload" checkbox
+
+**Unregister Service Worker:**
+1. DevTools → Application → Service Workers
+2. Click "Unregister" button
+3. Or use programmatically: `unregisterServiceWorker()`
+
+### Configuration
+
+Service worker configuration is managed in `/public/sw.js`:
+
+```javascript
+// Cache version (increment to force cache invalidation)
+const CACHE_VERSION = 'v1';
+
+// Assets to cache immediately on install
+const STATIC_ASSETS = [
+  '/',
+  '/offline',
+  '/stone-soup-creative-logo.png',
+  '/nyxGPT-logo.png',
+];
+```
+
+To trigger a cache refresh for all users:
+1. Increment `CACHE_VERSION` in `sw.js`
+2. Deploy the updated service worker
+3. Users will receive update notification on next visit
+
+---
+
 ## Operational dependencies
 
 For reliable UI operation, ensure the following are active:
