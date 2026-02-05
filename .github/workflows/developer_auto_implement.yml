@@ -207,8 +207,33 @@ jobs:
             echo "::notice::No existing PR found for branch $BRANCH"
           fi
 
-      - name: Post PR exists notice (if PR exists)
+      - name: Check for review comments (if PR exists)
         if: steps.check_pr.outputs.pr_exists == 'true'
+        id: check_review
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ steps.check_pr.outputs.existing_pr }}"
+
+          # Check if there are REQUEST_CHANGES review comments
+          REVIEW_COMMENT=$(gh pr view "$PR" --json comments --jq '
+            [.comments[] |
+             select(.author.login == "claude" and
+                    (.body | startswith("## Code Review - REQUEST_CHANGES")))] |
+            last |
+            .body // ""
+          ')
+
+          if [[ -n "$REVIEW_COMMENT" ]]; then
+            echo "has_review_issues=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR has review comments requesting changes - will fix issues"
+          else
+            echo "has_review_issues=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR has no review issues - skipping"
+          fi
+
+      - name: Post review fix start comment (if review issues found)
+        if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -219,10 +244,69 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `✅ **Developer Agent**: PR already exists for this issue.
+              body: `🔧 **Developer Agent**: Fixing review issues for PR #${pr_number}
 
-            PR #${pr_number} is already open and under review. Skipping implementation step.`
+🤖 Starting Claude Code to address review comments...
+
+Claude will:
+- Read the review comments from PR #${pr_number}
+- Implement the requested fixes
+- Run all tests (3-try loop to fix any failures)
+- Commit and push fixes
+
+[View workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`
             });
+
+      - name: Post PR exists notice (if no review issues)
+        if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const pr_number = '${{ steps.check_pr.outputs.existing_pr }}';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: `✅ **Developer Agent**: PR #${pr_number} already exists and has no review issues.
+
+Skipping implementation step.`
+            });
+
+      - name: Run Claude Code to fix review issues (Review Fix)
+        if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true'
+        id: claude_review_fix
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          show_full_output: true
+          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
+          prompt: |
+            Fix the code review issues for issue #${{ github.event.issue.number }}.
+
+            **Context:**
+            - PR exists: #${{ steps.check_pr.outputs.existing_pr }}
+            - Code review requested changes
+            - You are on branch: ${{ steps.branch.outputs.branch_name }}
+
+            **Instructions:**
+            1. Get review comments: gh pr view ${{ steps.check_pr.outputs.existing_pr }} --json comments
+            2. Find the most recent "## Code Review - REQUEST_CHANGES" comment
+            3. Identify all Critical and Medium issues
+            4. Implement fixes for each issue
+            5. BEFORE committing, run ALL validation in a 3-try loop:
+               - pytest -v (ALL tests MUST pass)
+               - If tests fail: analyze, fix, re-run (up to 3 tries)
+               - ruff check src/ tests/
+               - mypy src/
+               - cd web && npm run type-check (if web files modified)
+               - ./scripts/validate-web-routes.sh (if API endpoints added)
+            6. Commit: "fix: address code review findings (#${{ github.event.issue.number }})"
+            7. Push changes
+
+            **CRITICAL**: Do NOT commit until ALL tests pass with 0 failures and 0 errors.
 
       - name: Post implementation start comment
         if: steps.check_pr.outputs.pr_exists == 'false'
