@@ -64,31 +64,35 @@ After completing the review:
 - Provide clear recommendation with rationale
 
 ## 5) Automatic execution
-The review decision is automatically executed:
+The review decision is automatically executed based on the review comment:
 - **APPROVE**: Workflow automatically merges the PR (no human confirmation required)
 - **REQUEST_CHANGES**:
-  - If `REVIEW_AUTO_FIX_ENABLED=true`: Auto-fix workflow triggers
-  - If `REVIEW_AUTO_FIX_ENABLED=false`: Creates Acceptance Failure sub-issues
+  - Issue returns to developer-agent with "In Progress" status
+  - Developer reads review comment and implements fixes
+  - Developer runs tests in 3-try loop (resets each assignment) BEFORE committing
+  - Developer commits and re-submits for review (triggers re-review automatically)
+  - Review cycle repeats (cumulative count tracked)
+  - After 3 review cycles: Issue stays "In Review", escalates to human owner
 
 Manual override (optional):
 - `@approve-merge` - Human can manually trigger merge
-- `@request-changes` - Human can manually trigger changes workflow
+- `@request-changes` - Human can manually trigger changes workflow (legacy)
 
-## 6) Acceptance Failure loop (blocking findings)
-When human posts `@request-changes`:
-- Automation creates ONE sub-issue per Critical/Medium finding
-- Sub-issues labeled `Acceptance Failure`
-- Copy key context and reproduction details
-- Inherit Phase/Sprint fields
-- Assign to developer-agent and set status -> In Progress
+## 6) Review cycle escalation
+The review workflow tracks cumulative review cycles:
+- Each REQUEST_CHANGES increments the cycle counter
+- Developer 3-try loop (for test failures) resets each time issue is reassigned
+- Review 3-cycle limit is cumulative across all reviews for this PR
+- After 3 REQUEST_CHANGES reviews: Issue stays "In Review", assigned to human owner
+
+No sub-issues are created. All fixes happen on the PR branch.
 
 ## 7) Merge criteria
-- No open Critical/Medium Acceptance Failure items
-- CI green
-- Human approval via `@approve-merge`
+- All tests and linters passing
+- Code review APPROVE decision (either from review agent or human override)
 
 ## 8) Post-merge
-When human posts `@approve-merge`:
+When PR is merged (automatically on APPROVE or via human `@approve-merge` override):
 - Automation merges into active release branch (NEVER merge to master/main)
 - Delete short-lived feature/fix branches created for the feature
 - Close the issue (GitHub state)
@@ -108,47 +112,10 @@ When the human owner moves the last issue in the active Phase to "For Release" (
 
 ## 10) Configuration
 
-### REVIEW_AUTO_FIX_ENABLED
-Controls whether the automated fix loop is active.
-
-**Location:** GitHub Repository Settings
-- Navigate to: Settings → Secrets and variables → Actions → Variables
-- Variable name: `REVIEW_AUTO_FIX_ENABLED`
-- Valid values: `true` (enabled) or `false` (disabled)
-- Default: `false`
-
-**Behavior when enabled (true):**
-- On REQUEST_CHANGES review: Auto-fix workflow triggers automatically
-- Developer-agent checks out PR branch and fixes all Critical/Medium issues
-- Commits fixes and pushes to PR branch (triggers re-review via CI)
-- Loops up to 3 times maximum
-- After 3 loops with persistent issues: Escalates to @dkblinux98
-- No sub-issues created during auto-fix loop
-- Manual `@request-changes` trigger disabled (auto-fix takes over)
-
-**Behavior when disabled (false):**
-- Manual workflow active (wait for human `@approve-merge` or `@request-changes`)
-- On `@request-changes`: Creates Acceptance Failure sub-issues as documented in section 6
-- Developer-agent fixes sub-issues on separate branches
-- Standard manual review-fix cycle
-
-**How to change:**
-```bash
-# Enable auto-fix loop
-gh variable set REVIEW_AUTO_FIX_ENABLED --body "true" --repo dkblinux98/nyxGPT
-
-# Disable auto-fix loop (revert to manual workflow)
-gh variable set REVIEW_AUTO_FIX_ENABLED --body "false" --repo dkblinux98/nyxGPT
-
-# Check current value
-gh variable list --repo dkblinux98/nyxGPT | grep REVIEW_AUTO_FIX_ENABLED
-```
-
 ### Required Secrets
 The review workflow requires these secrets to be configured:
 - `CLAUDE_CODE_OAUTH_TOKEN` - OAuth token for Claude Code agent
 - `REVIEW_AGENT_TOKEN` - GitHub token with repo/project permissions (used for review workflow)
-- `DEVELOPER_AGENT_TOKEN` - GitHub token with repo/project permissions (used for auto-fix)
 
 **How to configure secrets:**
 - Navigate to: Settings → Secrets and variables → Actions → Secrets
