@@ -286,7 +286,7 @@ Claude will:
 - Run all tests (3-try loop to fix any failures)
 - Commit and push fixes
 
-[View workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`
+[View workflow logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
             });
 
       - name: Post PR exists notice (if no review issues)
@@ -352,7 +352,7 @@ Skipping implementation step.`
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `✅ **Developer Agent**: Branch created: \`${branch_name}\`\n\n🤖 Starting Claude Code implementation...\n\nThis may take several minutes. Claude will:\n- Analyze the issue requirements\n- Implement the solution\n- Add/update tests\n- Run the test suite\n- Commit changes\n\nYou can watch progress in the [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}).`
+              body: `✅ **Developer Agent**: Branch created: \`${branch_name}\`\n\n🤖 Starting Claude Code implementation...\n\nThis may take several minutes. Claude will:\n- Analyze the issue requirements\n- Implement the solution\n- Add/update tests\n- Run the test suite\n- Commit changes\n\nYou can watch progress in the [workflow logs](https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`
             });
 
       - name: Run Claude Code to implement issue (Initial)
@@ -707,9 +707,10 @@ Skipping implementation step.`
           script: |
             const issue_number = context.payload.issue.number;
             const pr_number = '${{ steps.pr.outputs.pr_number }}';
+            const review_agent = '${{ vars.REVIEW_AGENT }}';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `🎉 **Developer Agent**: Implementation complete!\n\n📝 Pull Request: #${pr_number}\n📊 Status: **In Review**\n👤 Assigned to: @${{ vars.REVIEW_AGENT }}\n\nThe review agent will now:\n1. Wait for CI checks to complete\n2. Review the code changes\n3. Either merge or request changes\n\n[View PR](https://github.com/${{ github.repository }}/pull/${pr_number})`
+              body: `🎉 **Developer Agent**: Implementation complete!\n\n📝 Pull Request: #${pr_number}\n📊 Status: **In Review**\n👤 Assigned to: @${review_agent}\n\nThe review agent will now:\n1. Wait for CI checks to complete\n2. Review the code changes\n3. Either merge or request changes\n\n[View PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${pr_number})`
             });

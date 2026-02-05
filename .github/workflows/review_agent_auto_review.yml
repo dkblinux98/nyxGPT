@@ -233,7 +233,8 @@ jobs:
           gh pr edit "$PR" --add-assignee "${{ vars.HUMAN_OWNER }}"
 
           # Post escalation comment
-          gh pr comment "$PR" --body "⚠️ **Review Agent**: Escalated after 3 review cycles
+          gh pr comment "$PR" --body "$(cat <<EOF
+⚠️ **Review Agent**: Escalated after 3 review cycles
 
 @${{ vars.HUMAN_OWNER }} This PR has gone through 3 review cycles with requested changes, but issues persist.
 
@@ -250,7 +251,9 @@ jobs:
   - Provide specific guidance to developer
   - Close PR if not viable
 
-[View all review comments](https://github.com/${{ github.repository }}/pull/${PR})"
+[View all review comments](https://github.com/${{ github.repository }}/pull/${PR})
+EOF
+)"
 
           echo "::endgroup::"
           echo "✓ Escalation complete - issue kept in 'In Review', assigned to human"
@@ -272,7 +275,8 @@ jobs:
           LOOP_NUM=$((${{ steps.count.outputs.loop_count }} + 1))
 
           # Post comment to PR explaining what needs to be fixed
-          gh pr comment "$PR" --body "🔄 **Review Agent**: Changes requested (review loop $LOOP_NUM/3)
+          gh pr comment "$PR" --body "$(cat <<EOF
+🔄 **Review Agent**: Changes requested (review loop $LOOP_NUM/3)
 
 Issue #$ISSUE has been returned to **In Progress** and assigned to @${{ vars.DEV_AGENT }}.
 
@@ -283,7 +287,9 @@ Issue #$ISSUE has been returned to **In Progress** and assigned to @${{ vars.DEV
 4. Commit and push your fixes
 5. The PR will be automatically re-reviewed
 
-**Note:** This is review iteration $LOOP_NUM of 3. After 3 review cycles, the issue will be escalated to @${{ vars.HUMAN_OWNER }}."
+**Note:** This is review iteration $LOOP_NUM of 3. After 3 review cycles, the issue will be escalated to @${{ vars.HUMAN_OWNER }}.
+EOF
+)"
 
           echo "::endgroup::"
           echo "✓ Issue returned to developer-agent"

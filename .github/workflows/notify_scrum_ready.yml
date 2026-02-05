@@ -148,9 +148,10 @@ jobs:
           script: |
             const issue_number = context.payload.issue.number;
             const next_issue = '${{ steps.select.outputs.next_issue }}';
+            const dev_agent = '${{ vars.DEV_AGENT }}';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `🚀 **Scrummaster Agent**: Issue #${next_issue} has been moved to **In Progress** and assigned to @${{ vars.DEV_AGENT }}\n\nDeveloper auto-implementation workflow will begin momentarily.\n\n[View issue](https://github.com/${{ github.repository }}/issues/${next_issue})`
+              body: `🚀 **Scrummaster Agent**: Issue #${next_issue} has been moved to **In Progress** and assigned to @${dev_agent}\n\nDeveloper auto-implementation workflow will begin momentarily.\n\n[View issue](https://github.com/${context.repo.owner}/${context.repo.repo}/issues/${next_issue})`
             });
