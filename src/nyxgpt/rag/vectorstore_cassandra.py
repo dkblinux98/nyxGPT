@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
-from cassandra.cluster import Cluster
-from cassandra.query import SimpleStatement
+from cassandra.cluster import Cluster, ExecutionProfile, EXEC_PROFILE_DEFAULT
+from cassandra.policies import WhiteListRoundRobinPolicy, DowngradingConsistencyRetryPolicy
+from cassandra.query import SimpleStatement, BatchStatement, BatchType, ConsistencyLevel
 
 from nyxgpt.config import load_config
 
@@ -68,18 +69,35 @@ def _cassandra_cfg() -> CassandraConfig:
 
 class CassandraVectorStore:
     def __init__(self, *, collection: str = "default") -> None:
-        """Initialize Cassandra vector store.
+        """Initialize Cassandra vector store with optimized connection settings.
 
         Args:
             collection: Collection name for multi-model support (default: "default")
         """
         self.cfg = _cassandra_cfg()
         self.collection = collection
-        self.cluster = Cluster(self.cfg.hosts, port=self.cfg.port)
+
+        # Configure execution profiles for different query types
+        profile = ExecutionProfile(
+            load_balancing_policy=WhiteListRoundRobinPolicy(self.cfg.hosts),
+            retry_policy=DowngradingConsistencyRetryPolicy(),
+            consistency_level=ConsistencyLevel.LOCAL_ONE,
+            request_timeout=30.0,
+        )
+
+        self.cluster = Cluster(
+            self.cfg.hosts,
+            port=self.cfg.port,
+            execution_profiles={EXEC_PROFILE_DEFAULT: profile},
+            protocol_version=5,  # Use latest protocol for better performance
+        )
         # Connect without a keyspace so we can create it if missing.
         self.session = self.cluster.connect()
         self._keyspace_ready = False
         self._migration_checked = False
+
+        # Cache for prepared statements (lazy initialization)
+        self._prepared_stmts: dict[str, any] = {}
 
     @property
     def table_name(self) -> str:
@@ -242,7 +260,12 @@ class CassandraVectorStore:
         doc_hash: str | None = None,
         original_ingested_at: datetime | None = None,
     ) -> None:
-        """Upsert document chunks with embeddings.
+        """Upsert document chunks with embeddings using batch operations.
+
+        Performance optimizations:
+        - Uses prepared statements for query plan caching
+        - Batches inserts in groups of 50 to reduce network round-trips
+        - Batch size limited to avoid exceeding Cassandra batch size limits
 
         Args:
             doc_id: Document identifier
@@ -268,20 +291,31 @@ class CassandraVectorStore:
         if embedding_dim is None and embs_l:
             embedding_dim = len(embs_l[0])
 
-        # Current timestamp
-        now = datetime.utcnow()
+        # Current timestamp (timezone-aware)
+        now = datetime.now(timezone.utc)
 
-        stmt = self.session.prepare(
-            f"""
-            INSERT INTO {self.table_name} (doc_id, chunk_id, text, metadata, embedding, embedding_model, embedding_dim, doc_hash, ingested_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """
-        )
+        # Get or create prepared statement (cached)
+        stmt_key = f"upsert_{self.table_name}"
+        if stmt_key not in self._prepared_stmts:
+            self._prepared_stmts[stmt_key] = self.session.prepare(
+                f"""
+                INSERT INTO {self.table_name} (doc_id, chunk_id, text, metadata, embedding, embedding_model, embedding_dim, doc_hash, ingested_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+            )
+        stmt = self._prepared_stmts[stmt_key]
+
+        # Batch inserts in groups of 50 to balance performance and memory
+        # Cassandra recommends batch sizes under 100 statements
+        BATCH_SIZE = 50
+        batch = BatchStatement(batch_type=BatchType.UNLOGGED)
+        batch_count = 0
 
         for idx, (text, emb, meta) in enumerate(zip(texts_l, embs_l, metas_l)):
             # For updates, preserve original ingested_at; for new docs, use current time
             ingested_at = original_ingested_at if original_ingested_at else now
-            self.session.execute(
+
+            batch.add(
                 stmt,
                 (
                     doc_id,
@@ -296,6 +330,17 @@ class CassandraVectorStore:
                     now,
                 ),
             )
+            batch_count += 1
+
+            # Execute batch when it reaches the size limit
+            if batch_count >= BATCH_SIZE:
+                self.session.execute(batch)
+                batch = BatchStatement(batch_type=BatchType.UNLOGGED)
+                batch_count = 0
+
+        # Execute any remaining statements in the final batch
+        if batch_count > 0:
+            self.session.execute(batch)
 
     # ----------------------------
     # Query
@@ -311,6 +356,11 @@ class CassandraVectorStore:
         metadata_filter: Optional[MetadataFilter] = None,
     ) -> list[dict] | tuple[list[dict], VectorSearchDebugMetrics]:
         """Query by embedding vector with optional metadata filtering.
+
+        Performance optimizations:
+        - Uses prepared statements for ANN vector search
+        - Dynamically adjusts fetch size based on filtering requirements
+        - Smart limit calculation to account for post-query filtering
 
         Args:
             embedding: Query vector
@@ -328,18 +378,27 @@ class CassandraVectorStore:
 
         start_time = time.perf_counter()
 
-        # Build query - include ingested_at for date filtering
-        stmt = SimpleStatement(
-            f"""
-            SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim, ingested_at, similarity_cosine(embedding, %s) AS score
-            FROM {self.table_name}
-            ORDER BY embedding ANN OF %s
-            LIMIT %s
-            """,
-            fetch_size=k * 2 if metadata_filter else k,  # Fetch more if filtering
-        )
+        # Calculate smart fetch size and limit based on filtering
+        # If filtering is enabled, we need to fetch more results to account for filtering
+        filter_multiplier = 3 if metadata_filter else 1
+        fetch_limit = k * filter_multiplier
+        fetch_size = min(fetch_limit, 1000)  # Cap fetch size to avoid memory issues
 
-        rows = self.session.execute(stmt, (embedding, embedding, k * 2 if metadata_filter else k))
+        # Use prepared statement for vector search (cached per table)
+        stmt_key = f"query_embedding_{self.table_name}"
+        if stmt_key not in self._prepared_stmts:
+            self._prepared_stmts[stmt_key] = self.session.prepare(
+                f"""
+                SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim, ingested_at, similarity_cosine(embedding, ?) AS score
+                FROM {self.table_name}
+                ORDER BY embedding ANN OF ?
+                LIMIT ?
+                """
+            )
+        stmt = self._prepared_stmts[stmt_key]
+        stmt.fetch_size = fetch_size
+
+        rows = self.session.execute(stmt, (embedding, embedding, fetch_limit))
         out: list[dict] = []
         scores: list[float] = []
         for r in rows:
@@ -420,14 +479,20 @@ class CassandraVectorStore:
         return out
 
     def list_docs(self) -> list[dict]:
-        """Return a list of documents currently stored: {doc_id, chunks, embedding_model}."""
+        """Return a list of documents currently stored: {doc_id, chunks, embedding_model}.
+
+        Performance optimization:
+        - Uses paging with optimized fetch size for large collections
+        """
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
         # Cassandra only supports GROUP BY on PRIMARY KEY columns.
         # We fetch all doc_id, embedding_model pairs and aggregate in Python.
+        # Use paging for efficient memory usage with large collections
         stmt = SimpleStatement(
             f"SELECT doc_id, embedding_model FROM {self.table_name}",
+            fetch_size=5000,  # Optimized fetch size for large collections
         )
 
         rows = self.session.execute(stmt)
@@ -451,16 +516,19 @@ class CassandraVectorStore:
         return out
 
     def delete_doc(self, doc_id: str) -> None:
-        """Delete all chunks for the given doc_id."""
+        """Delete all chunks for the given doc_id using prepared statement."""
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
-        self.session.execute(
-            SimpleStatement(
-                f"DELETE FROM {self.table_name} WHERE doc_id = %s",
-            ),
-            (doc_id,),
-        )
+        # Use prepared statement for better performance
+        stmt_key = f"delete_doc_{self.table_name}"
+        if stmt_key not in self._prepared_stmts:
+            self._prepared_stmts[stmt_key] = self.session.prepare(
+                f"DELETE FROM {self.table_name} WHERE doc_id = ?"
+            )
+        stmt = self._prepared_stmts[stmt_key]
+
+        self.session.execute(stmt, (doc_id,))
 
     def truncate(self) -> None:
         """Remove all rows from the vector table (development convenience)."""
@@ -510,7 +578,7 @@ class CassandraVectorStore:
         return collections
 
     def get_document_hash(self, doc_id: str) -> str | None:
-        """Get the content hash for a document.
+        """Get the content hash for a document using prepared statement.
 
         Args:
             doc_id: Document identifier
@@ -521,9 +589,13 @@ class CassandraVectorStore:
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
-        stmt = SimpleStatement(
-            f"SELECT doc_hash FROM {self.table_name} WHERE doc_id = %s LIMIT 1"
-        )
+        # Use prepared statement for better performance
+        stmt_key = f"get_doc_hash_{self.table_name}"
+        if stmt_key not in self._prepared_stmts:
+            self._prepared_stmts[stmt_key] = self.session.prepare(
+                f"SELECT doc_hash FROM {self.table_name} WHERE doc_id = ? LIMIT 1"
+            )
+        stmt = self._prepared_stmts[stmt_key]
 
         rows = self.session.execute(stmt, (doc_id,))
         row = rows.one()
@@ -532,7 +604,7 @@ class CassandraVectorStore:
         return None
 
     def get_document_info(self, doc_id: str) -> dict | None:
-        """Get document version information.
+        """Get document version information using prepared statement.
 
         Args:
             doc_id: Document identifier
@@ -543,15 +615,17 @@ class CassandraVectorStore:
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
-        # Cassandra only supports GROUP BY on PRIMARY KEY columns.
-        # We fetch all rows for doc_id and aggregate in Python.
-        stmt = SimpleStatement(
-            f"""
-            SELECT doc_id, doc_hash, ingested_at, updated_at, embedding_model
-            FROM {self.table_name}
-            WHERE doc_id = %s
-            """
-        )
+        # Use prepared statement for better performance
+        stmt_key = f"get_doc_info_{self.table_name}"
+        if stmt_key not in self._prepared_stmts:
+            self._prepared_stmts[stmt_key] = self.session.prepare(
+                f"""
+                SELECT doc_id, doc_hash, ingested_at, updated_at, embedding_model
+                FROM {self.table_name}
+                WHERE doc_id = ?
+                """
+            )
+        stmt = self._prepared_stmts[stmt_key]
 
         rows = list(self.session.execute(stmt, (doc_id,)))
         if not rows:

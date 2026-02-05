@@ -249,7 +249,7 @@ def test_cassandra_vectorstore_initialization(monkeypatch: pytest.MonkeyPatch) -
     mock_cluster.connect.return_value = mock_session
 
     monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port, **kwargs: mock_cluster
     )
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
@@ -263,7 +263,7 @@ def test_cassandra_vectorstore_initialization(monkeypatch: pytest.MonkeyPatch) -
 
 @pytest.mark.unit
 def test_cassandra_vectorstore_upsert_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """upsert_chunks should insert all chunks with proper parameters."""
+    """upsert_chunks should insert all chunks with proper parameters using batch statements."""
     cfg = ConfigParser()
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
@@ -275,8 +275,19 @@ def test_cassandra_vectorstore_upsert_chunks(monkeypatch: pytest.MonkeyPatch) ->
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
+    # Mock prepared statement with query_string attribute for BatchStatement.add()
+    mock_prepared_stmt = Mock()
+    mock_prepared_stmt.query_string = "INSERT INTO test_tbl (doc_id, chunk_id, text, metadata, embedding, embedding_model, embedding_dim, doc_hash, ingested_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    mock_session.prepare.return_value = mock_prepared_stmt
+
     monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port, **kwargs: mock_cluster
+    )
+
+    # Mock BatchStatement
+    mock_batch = Mock()
+    monkeypatch.setattr(
+        "nyxgpt.rag.vectorstore_cassandra.BatchStatement", lambda **kwargs: mock_batch
     )
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
@@ -292,8 +303,10 @@ def test_cassandra_vectorstore_upsert_chunks(monkeypatch: pytest.MonkeyPatch) ->
 
     # Verify session.prepare was called
     assert mock_session.prepare.called
-    # Verify session.execute was called twice (once per chunk)
-    assert mock_session.execute.call_count == 2
+    # Verify batch.add was called twice (once per chunk)
+    assert mock_batch.add.call_count == 2
+    # Verify session.execute was called once (batch statement with 2 chunks)
+    assert mock_session.execute.call_count == 1
 
 
 @pytest.mark.unit
@@ -313,7 +326,7 @@ def test_cassandra_vectorstore_upsert_length_mismatch(
     mock_cluster.connect.return_value = mock_session
 
     monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port, **kwargs: mock_cluster
     )
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore, VectorStoreError
@@ -359,7 +372,7 @@ def test_cassandra_vectorstore_query_by_embedding(
     mock_cluster.connect.return_value = mock_session
 
     monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port, **kwargs: mock_cluster
     )
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
@@ -403,7 +416,7 @@ def test_cassandra_vectorstore_query_with_metrics(
     mock_cluster.connect.return_value = mock_session
 
     monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port, **kwargs: mock_cluster
     )
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
@@ -453,7 +466,7 @@ def test_cassandra_vectorstore_list_docs(monkeypatch: pytest.MonkeyPatch) -> Non
     mock_cluster.connect.return_value = mock_session
 
     monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port, **kwargs: mock_cluster
     )
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
@@ -486,7 +499,7 @@ def test_cassandra_vectorstore_delete_doc(monkeypatch: pytest.MonkeyPatch) -> No
     mock_cluster.connect.return_value = mock_session
 
     monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port, **kwargs: mock_cluster
     )
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
@@ -519,7 +532,7 @@ def test_cassandra_vectorstore_truncate(monkeypatch: pytest.MonkeyPatch) -> None
     mock_cluster.connect.return_value = mock_session
 
     monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port, **kwargs: mock_cluster
     )
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
@@ -547,7 +560,7 @@ def test_cassandra_vectorstore_ensure_schema(monkeypatch: pytest.MonkeyPatch) ->
     mock_cluster.connect.return_value = mock_session
 
     monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
+        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port, **kwargs: mock_cluster
     )
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
