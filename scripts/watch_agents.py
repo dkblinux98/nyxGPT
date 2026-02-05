@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-Watch workflow runs related to a specific issue.
-Displays live-updating table with agent assignments and clickable links.
-Auto-exits when issue reaches "In Review" status and is assigned to human owner.
+Watch workflow runs in the repository.
+Displays live-updating table showing all non-skipped workflow runs by default.
+Can optionally monitor a specific issue and auto-exit when complete.
+
+Usage:
+  watch_agents.py [issue_number] [--poll-interval SECONDS] [--include-skipped]
 """
 
 import argparse
@@ -164,19 +167,21 @@ def get_issue_info(issue: str, config: Dict[str, str]) -> Tuple[str, str]:
 
 def get_workflow_agent(workflow_name: str, config: Dict[str, str]) -> str:
     """Determine which agent is responsible for a workflow"""
-    agent_map = {
-        "Developer Agent Auto-Implement": config.get('DEV_AGENT', 'developer-agent'),
-        "Review Agent Execute Decision": config.get('REVIEW_AGENT', 'review-agent'),
-        "Review Agent Auto-Fix Loop": config.get('REVIEW_AGENT', 'review-agent'),
-        "Claude Code Review": config.get('REVIEW_AGENT', 'review-agent'),
-        "Claude Code": "varies",  # Can be triggered by any agent or human
-        "Scrummaster Agent - Select and Start Next Issue": config.get('SCRUM_AGENT', 'scrummaster-agent'),
-        "Assign Backlog Issues to scrummaster-agent": config.get('SCRUM_AGENT', 'scrummaster-agent'),
-        "Auto-check Release Tracking Issues": config.get('SCRUM_AGENT', 'scrummaster-agent'),
-        "Add issue to release issue on milestone assignment": "github",  # Automatic on milestone assignment
-    }
+    # Pattern-based agent detection for flexibility
+    name_lower = workflow_name.lower()
 
-    return agent_map.get(workflow_name, "unknown")
+    if "developer" in name_lower or "implement" in name_lower:
+        return config.get('DEV_AGENT', 'developer-agent')
+    elif "review" in name_lower:
+        return config.get('REVIEW_AGENT', 'review-agent')
+    elif "scrummaster" in name_lower or "scrum" in name_lower or "backlog" in name_lower:
+        return config.get('SCRUM_AGENT', 'scrummaster-agent')
+    elif "claude code" in name_lower and workflow_name == "Claude Code":
+        return "varies"  # Can be triggered by any agent or human
+    elif any(keyword in name_lower for keyword in ["merge conflict", "validate", "check"]):
+        return "automation"
+
+    return "N/A"
 
 
 def format_duration(seconds: int) -> str:
@@ -207,8 +212,8 @@ def get_status_icon(status: str, conclusion: Optional[str] = None) -> str:
     return "❓"
 
 
-def get_workflow_runs(repo: str, issue: Optional[str] = None) -> List[Dict]:
-    """Get workflow runs related to an issue (or all agent workflows if issue is None)"""
+def get_workflow_runs(repo: str, issue: Optional[str] = None, include_skipped: bool = False) -> List[Dict]:
+    """Get workflow runs (all non-skipped by default, optionally filter by issue)"""
     result = run_gh_command([
         'run', 'list',
         '--repo', repo,
@@ -221,39 +226,26 @@ def get_workflow_runs(repo: str, issue: Optional[str] = None) -> List[Dict]:
 
     runs = json.loads(result)
 
-    # Filter runs related to this issue or all agent workflows
-    related_runs = []
+    # Filter runs
+    filtered_runs = []
     for run in runs:
         workflow_name = run.get('workflowName', '')
         head_branch = run.get('headBranch', '')
+        conclusion = run.get('conclusion', '')
 
-        # If no issue specified, include all agent workflows
-        if issue is None:
-            if workflow_name in ("Developer Agent Auto-Implement",
-                                "Review Agent Execute Decision",
-                                "Review Agent Auto-Fix Loop",
-                                "Claude Code Review",
-                                "Claude Code",
-                                "Scrummaster Agent - Select and Start Next Issue",
-                                "Assign Backlog Issues to scrummaster-agent",
-                                "Auto-check Release Tracking Issues",
-                                "Add issue to release issue on milestone assignment"):
-                related_runs.append(run)
-        else:
-            # Include if it's an agent workflow or branch matches issue pattern
-            if (workflow_name in ("Developer Agent Auto-Implement",
-                                "Review Agent Execute Decision",
-                                "Review Agent Auto-Fix Loop",
-                                "Claude Code Review",
-                                "Claude Code",
-                                "Scrummaster Agent - Select and Start Next Issue",
-                                "Assign Backlog Issues to scrummaster-agent",
-                                "Auto-check Release Tracking Issues",
-                                "Add issue to release issue on milestone assignment")
-                or f"/{issue}-" in head_branch):
-                related_runs.append(run)
+        # Skip workflows with 'skipped' conclusion unless requested
+        if not include_skipped and conclusion == 'skipped':
+            continue
 
-    return related_runs[:20]  # Limit to 20 most recent
+        # If issue specified, only include runs related to that issue
+        if issue is not None:
+            # Include if branch matches issue pattern (e.g., feat/2678-auto)
+            if f"/{issue}-" not in head_branch and f"-{issue}-" not in head_branch:
+                continue
+
+        filtered_runs.append(run)
+
+    return filtered_runs[:20]  # Limit to 20 most recent
 
 
 def print_table_header():
@@ -332,6 +324,11 @@ def main():
         default=15,
         help='Polling interval in seconds (default: 15)'
     )
+    parser.add_argument(
+        '--include-skipped',
+        action='store_true',
+        help='Include skipped workflow runs in the output'
+    )
 
     args = parser.parse_args()
 
@@ -349,7 +346,8 @@ def main():
     if args.issue:
         print(f"🔍 Initializing watch for issue #{args.issue}...")
     else:
-        print("🔍 Initializing watch for all agent workflows...")
+        skip_note = " (excluding skipped)" if not args.include_skipped else ""
+        print(f"🔍 Initializing watch for all workflows{skip_note}...")
     print(f"Repository: {repo}")
     print(f"Poll interval: {args.poll_interval}s")
     time.sleep(2)
@@ -392,16 +390,19 @@ def main():
                 print()
                 print(f"🎯 Exit Condition: Status='{status_in_review}' AND Assignee='{human_owner}'")
             else:
-                print(f"{BOLD}🔍 Monitoring All Agent Workflows{RESET}")
+                print(f"{BOLD}🔍 Monitoring All Workflow Runs{RESET}")
                 print("═" * 80)
                 print(f"Last updated: {current_time}")
+                if not args.include_skipped:
+                    print(f"{GRAY}(Skipped workflows hidden - use --include-skipped to show all){RESET}")
             print("─" * 80)
 
             # Get and display workflow runs
-            runs = get_workflow_runs(repo, str(args.issue) if args.issue else None)
-
-            # Filter out skipped workflows
-            runs = [r for r in runs if r.get('conclusion', '').lower() != 'skipped']
+            runs = get_workflow_runs(
+                repo,
+                str(args.issue) if args.issue else None,
+                include_skipped=args.include_skipped
+            )
 
             if runs:
                 # Separate active and completed runs
@@ -421,9 +422,10 @@ def main():
                         print_run_row(run, config)
             else:
                 if args.issue:
-                    print(f"\n{GRAY}📊 No workflow runs found for this issue yet.{RESET}")
+                    print(f"\n{GRAY}📊 No workflow runs found for issue #{args.issue}.{RESET}")
                 else:
-                    print(f"\n{GRAY}📊 No agent workflow runs found.{RESET}")
+                    suffix = " (excluding skipped)" if not args.include_skipped else ""
+                    print(f"\n{GRAY}📊 No workflow runs found{suffix}.{RESET}")
 
             print("\n" + "─" * 80)
             print(f"⏱️  Next update in {args.poll_interval}s... (Ctrl+C to exit)")
