@@ -1,12 +1,9 @@
 name: Claude Code Review
 
 on:
-  # Triggered when review-agent is assigned as reviewer
-  pull_request_review_requested:
-    types: [requested]
-  # Triggered when new commits are pushed to PR being reviewed
+  # Triggered when review-agent is assigned as reviewer or new commits pushed
   pull_request:
-    types: [synchronize]
+    types: [review_requested, synchronize]
   # Manual trigger via issue comment
   issue_comment:
     types: [created]
@@ -21,13 +18,13 @@ on:
 jobs:
   claude-review:
     # Only run when:
-    # 1. Review-agent is requested as reviewer (pull_request_review_requested)
+    # 1. Review-agent is requested as reviewer (review_requested)
     # 2. PR updated (synchronize) and review-agent is already assigned
     # 3. Manual trigger via @review comment on PR
     # 4. Manual trigger via workflow_dispatch
     if: |
-      (github.event_name == 'pull_request_review_requested' && github.event.requested_reviewer.login == vars.REVIEW_AGENT) ||
-      (github.event_name == 'pull_request' && contains(toJSON(github.event.pull_request.requested_reviewers.*.login), vars.REVIEW_AGENT)) ||
+      (github.event_name == 'pull_request' && github.event.action == 'review_requested' && github.event.requested_reviewer.login == vars.REVIEW_AGENT) ||
+      (github.event_name == 'pull_request' && github.event.action == 'synchronize' && contains(toJSON(github.event.pull_request.requested_reviewers.*.login), vars.REVIEW_AGENT)) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@review')) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
