@@ -2,24 +2,25 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
-from dataclasses import dataclass
-from typing import Any, Callable, Iterator, cast
+from collections.abc import Callable, Iterator
 from configparser import ConfigParser
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, cast
 
 from nyxgpt.config import (
-    load_config,
-    get_context_window_size,
     get_context_warning_threshold,
-    get_system_prompt_minimize,
-    get_rag_instruction_template,
-    get_rag_context_format,
+    get_context_window_size,
     get_prompt_mode_enabled,
-    get_prompt_mode_short_threshold,
     get_prompt_mode_long_threshold,
+    get_prompt_mode_short_threshold,
+    get_rag_context_format,
+    get_rag_instruction_template,
+    get_system_prompt_minimize,
+    load_config,
 )
 from nyxgpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
-from nyxgpt.rag.rag import retrieve_context, compose_context
+from nyxgpt.rag.rag import compose_context, retrieve_context
 from nyxgpt.sessions import load_session, save_session
 from nyxgpt.token_counter import count_message_tokens
 
@@ -33,7 +34,9 @@ class ChatResult:
     reply: str
     rag_used: bool
     rag_chunks: int
-    rag_context: list[dict] | None = None  # List of {text, score, doc_id, chunk_id, similarity_score}
+    rag_context: list[dict] | None = (
+        None  # List of {text, score, doc_id, chunk_id, similarity_score}
+    )
 
 
 @dataclass
@@ -343,8 +346,7 @@ def _prepare_chat_context(
         mode = _detect_prompt_mode(conversation_msg_count, cfg)
         sys_msg = _get_prompt_template(mode)
         logger.debug(
-            f"Adaptive prompt mode: {mode} "
-            f"(conversation has {conversation_msg_count} messages)"
+            f"Adaptive prompt mode: {mode} " f"(conversation has {conversation_msg_count} messages)"
         )
 
     if sys_msg.strip():
@@ -373,6 +375,7 @@ def _prepare_chat_context(
         metadata_filter = None
         if rag_filters:
             from datetime import datetime
+
             from nyxgpt.rag.vectorstore_cassandra import MetadataFilter
 
             # Parse dates if provided
@@ -460,7 +463,7 @@ def _persist_chat_turn(
     sessions_dir: str | None = None,
 ) -> None:
     """Persist a completed chat turn to session storage."""
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(UTC).isoformat()
     context.state.messages.append(
         {
             "role": "user",
@@ -584,9 +587,7 @@ def chat_stream(
         rag_filters=rag_filters,
     )
 
-    logger.debug(
-        "Starting chat stream for session=%s, model=%s", session, context.chosen_model
-    )
+    logger.debug("Starting chat stream for session=%s, model=%s", session, context.chosen_model)
 
     # Yield RAG metadata as first chunk if RAG was used
     if context.rag_used and context.rag_context:

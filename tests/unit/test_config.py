@@ -4,15 +4,16 @@ import logging
 from pathlib import Path
 
 import pytest
+
 from nyxgpt.config import (
-    load_config,
-    validate_config,
     get_api_port,
     get_prompt_mode_enabled,
-    get_prompt_mode_short_threshold,
     get_prompt_mode_long_threshold,
+    get_prompt_mode_short_threshold,
     get_rag_good_score_threshold,
     get_rag_medium_score_threshold,
+    load_config,
+    validate_config,
 )
 
 pytestmark = pytest.mark.unit
@@ -54,9 +55,7 @@ def test_load_config_missing_file_raises(tmp_path: Path) -> None:
         load_config(str(missing))
 
 
-def test_load_config_expands_tilde_home(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_load_config_expands_tilde_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Simulate a home dir and a config file under it
     fake_home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(fake_home))
@@ -74,18 +73,14 @@ default_model = llama3.1:8b
     assert cfg.get("nyxgpt", "default_model") == "llama3.1:8b"
 
 
-def test_default_log_dir_is_under_home(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_default_log_dir_is_under_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # This test encodes the desired default: ~/.nyxGPT/logs
     fake_home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(fake_home))
 
     cfg = load_config(None)
     # We will implement nyxgpt.log_dir; until then, this uses fallback.
-    log_dir = cfg.get(
-        "nyxgpt", "log_dir", fallback=str(Path("~/.nyxGPT/logs").expanduser())
-    )
+    log_dir = cfg.get("nyxgpt", "log_dir", fallback=str(Path("~/.nyxGPT/logs").expanduser()))
 
     # Must resolve under fake HOME
     resolved = Path(log_dir).expanduser()
@@ -565,9 +560,7 @@ default_window_size = -100
     errors = validate_config(cfg)
 
     assert len(errors) > 0
-    assert any(
-        "context.default_window_size" in err and "at least 100" in err for err in errors
-    )
+    assert any("context.default_window_size" in err and "at least 100" in err for err in errors)
 
 
 def test_validate_config_detects_zero_context_window(tmp_path: Path) -> None:
@@ -591,9 +584,7 @@ default_window_size = 0
     errors = validate_config(cfg)
 
     assert len(errors) > 0
-    assert any(
-        "context.default_window_size" in err and "at least 100" in err for err in errors
-    )
+    assert any("context.default_window_size" in err and "at least 100" in err for err in errors)
 
 
 def test_validate_config_detects_too_small_context_window(tmp_path: Path) -> None:
@@ -617,9 +608,7 @@ default_window_size = 50
     errors = validate_config(cfg)
 
     assert len(errors) > 0
-    assert any(
-        "context.default_window_size" in err and "at least 100" in err for err in errors
-    )
+    assert any("context.default_window_size" in err and "at least 100" in err for err in errors)
 
 
 def test_validate_config_detects_too_large_context_window(tmp_path: Path) -> None:
@@ -644,8 +633,7 @@ default_window_size = 2000000
 
     assert len(errors) > 0
     assert any(
-        "context.default_window_size" in err and "not exceed 1,000,000" in err
-        for err in errors
+        "context.default_window_size" in err and "not exceed 1,000,000" in err for err in errors
     )
 
 
@@ -671,8 +659,7 @@ default_window_size = not_a_number
 
     assert len(errors) > 0
     assert any(
-        "context.default_window_size" in err and "must be an integer" in err
-        for err in errors
+        "context.default_window_size" in err and "must be an integer" in err for err in errors
     )
 
 
@@ -724,8 +711,7 @@ warning_threshold = -0.5
 
     assert len(errors) > 0
     assert any(
-        "context.warning_threshold" in err and "between 0.0 and 1.0" in err
-        for err in errors
+        "context.warning_threshold" in err and "between 0.0 and 1.0" in err for err in errors
     )
 
 
@@ -753,8 +739,7 @@ warning_threshold = 1.5
 
     assert len(errors) > 0
     assert any(
-        "context.warning_threshold" in err and "between 0.0 and 1.0" in err
-        for err in errors
+        "context.warning_threshold" in err and "between 0.0 and 1.0" in err for err in errors
     )
 
 
@@ -779,10 +764,7 @@ warning_threshold = not_a_number
     errors = validate_config(cfg)
 
     assert len(errors) > 0
-    assert any(
-        "context.warning_threshold" in err and "must be a float" in err
-        for err in errors
-    )
+    assert any("context.warning_threshold" in err and "must be a float" in err for err in errors)
 
 
 def test_validate_config_accepts_valid_warning_threshold(tmp_path: Path) -> None:
@@ -874,8 +856,7 @@ context_window_llama3_1_8b = -1000
 
     assert len(errors) > 0
     assert any(
-        "context.context_window_llama3_1_8b" in err and "at least 100" in err
-        for err in errors
+        "context.context_window_llama3_1_8b" in err and "at least 100" in err for err in errors
     )
 
 
@@ -932,8 +913,7 @@ context_window_mistral = not_a_number
 
     assert len(errors) > 0
     assert any(
-        "context.context_window_mistral" in err and "must be an integer" in err
-        for err in errors
+        "context.context_window_mistral" in err and "must be an integer" in err for err in errors
     )
 
 

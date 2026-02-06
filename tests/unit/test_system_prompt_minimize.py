@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import configparser
 from pathlib import Path
 from typing import Any
-import configparser
+
 import pytest
+
 from nyxgpt.chat import _minimize_system_prompt, chat
 
 pytestmark = pytest.mark.unit
@@ -122,9 +124,7 @@ def test_minimize_preserves_case_in_content():
     assert "JavaScript" in result
 
 
-def test_chat_with_minimize_disabled(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_chat_with_minimize_disabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Test that chat works normally when minimization is disabled."""
     cfg = configparser.ConfigParser()
     cfg["nyxgpt"] = {
@@ -157,9 +157,7 @@ def test_chat_with_minimize_disabled(
     assert system_msg["content"] == "You are a helpful assistant."
 
 
-def test_chat_with_minimize_enabled(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_chat_with_minimize_enabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Test that chat applies minimization when enabled."""
     cfg = configparser.ConfigParser()
     cfg["nyxgpt"] = {

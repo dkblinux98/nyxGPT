@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import patch
+
+import pytest
+
 from nyxgpt import models
 
 

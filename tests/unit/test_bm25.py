@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
 from configparser import ConfigParser
 
-from nyxgpt.rag.bm25 import BM25Index, tokenize, _bm25_cfg
+import pytest
 
+from nyxgpt.rag.bm25 import BM25Index, _bm25_cfg, tokenize
 
 # =============================================================================
 # Tokenization Tests
@@ -200,7 +200,7 @@ def test_bm25_search_single_term():
     assert 2 in doc_indices  # "Python tutorial"
 
     # All scores should be positive
-    for doc_idx, score in results:
+    for _doc_idx, score in results:
         assert score > 0.0
 
 
@@ -291,9 +291,7 @@ def test_bm25_search_idf_weighting():
     # Rare term should have higher average score due to IDF
     # (comparing docs that contain both terms)
     doc0_rare_score = next(score for doc_idx, score in rare_results if doc_idx == 0)
-    doc0_common_score = next(
-        score for doc_idx, score in common_results if doc_idx == 0
-    )
+    doc0_common_score = next(score for doc_idx, score in common_results if doc_idx == 0)
 
     # This assertion might be sensitive to BM25 parameters,
     # but generally rare terms score higher per occurrence

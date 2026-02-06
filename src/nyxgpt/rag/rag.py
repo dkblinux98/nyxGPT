@@ -1,34 +1,35 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, List, cast
-import logging
+import hashlib
 import json
+import logging
+import statistics
 import time
 import uuid
-import statistics
-import hashlib
+from collections.abc import Iterable
+from dataclasses import dataclass
+from typing import cast
 
 from nyxgpt.config import (
-    load_config,
-    get_rag_chat_top_k,
-    get_rag_min_score,
-    get_rag_max_chunks,
     get_rag_chat_context_max_chars,
-    get_rag_dedupe,
-    get_rag_include_scores,
-    get_rag_include_headers,
+    get_rag_chat_top_k,
     get_rag_debug_mode,
-)
-from nyxgpt.rag.embeddings import embed_text, embed_texts, EmbeddingDebugMetrics
-from nyxgpt.rag.vectorstore_cassandra import (
-    CassandraVectorStore,
-    VectorSearchDebugMetrics,
-    MetadataFilter,
+    get_rag_dedupe,
+    get_rag_include_headers,
+    get_rag_include_scores,
+    get_rag_max_chunks,
+    get_rag_min_score,
+    load_config,
 )
 from nyxgpt.rag.bm25 import BM25Index
+from nyxgpt.rag.embeddings import EmbeddingDebugMetrics, embed_text, embed_texts
 from nyxgpt.rag.fusion import reciprocal_rank_fusion, weighted_fusion
-from nyxgpt.rag.reranker import rerank_results, RerankerDebugMetrics
+from nyxgpt.rag.reranker import RerankerDebugMetrics, rerank_results
+from nyxgpt.rag.vectorstore_cassandra import (
+    CassandraVectorStore,
+    MetadataFilter,
+    VectorSearchDebugMetrics,
+)
 
 log = logging.getLogger(__name__)
 
@@ -174,7 +175,7 @@ def _chunking_cfg() -> ChunkingConfig:
         overlap=overlap,
         overlap_strategy=overlap_strategy,
         preserve_headings=preserve_headings,
-        sentence_aware=sentence_aware
+        sentence_aware=sentence_aware,
     )
 
 
@@ -199,17 +200,35 @@ def _split_sentences(text: str) -> list[str]:
 
     # Common abbreviations to avoid splitting on
     abbrevs = {
-        'dr', 'mr', 'mrs', 'ms', 'prof', 'sr', 'jr',
-        'vs', 'etc', 'al', 'inc', 'ltd', 'co', 'mt',
-        'e.g', 'i.e', 'u.s', 'u.k', 'st', 'ave', 'blvd'
+        "dr",
+        "mr",
+        "mrs",
+        "ms",
+        "prof",
+        "sr",
+        "jr",
+        "vs",
+        "etc",
+        "al",
+        "inc",
+        "ltd",
+        "co",
+        "mt",
+        "e.g",
+        "i.e",
+        "u.s",
+        "u.k",
+        "st",
+        "ave",
+        "blvd",
     }
 
     # Pattern to match sentence boundaries
     # Matches: period/question/exclamation followed by space and capital letter
     sentence_endings = re.compile(
-        r'([.!?]+)'  # Sentence ending punctuation
-        r'(?:\s+|\n+)'  # Followed by whitespace
-        r'(?=[A-Z])'  # Lookahead for capital letter
+        r"([.!?]+)"  # Sentence ending punctuation
+        r"(?:\s+|\n+)"  # Followed by whitespace
+        r"(?=[A-Z])"  # Lookahead for capital letter
     )
 
     sentences: list[str] = []
@@ -224,7 +243,7 @@ def _split_sentences(text: str) -> list[str]:
             # Get the last word before the punctuation
             words = sentence.split()
             if words:
-                last_word = words[-1].rstrip('.!?').lower()
+                last_word = words[-1].rstrip(".!?").lower()
                 # If last word is an abbreviation, skip this split
                 if last_word in abbrevs:
                     continue
@@ -259,7 +278,7 @@ def _is_heading(line: str) -> bool:
         return False
 
     # ATX-style: # Heading, ## Heading, etc.
-    if re.match(r'^#{1,6}\s+.+', line):
+    if re.match(r"^#{1,6}\s+.+", line):
         return True
 
     # Could also check for Setext-style (underlined with === or ---)
@@ -279,7 +298,7 @@ def _extract_heading_level(line: str) -> int:
     """
     import re
 
-    match = re.match(r'^(#{1,6})\s+', line.strip())
+    match = re.match(r"^(#{1,6})\s+", line.strip())
     if match:
         return len(match.group(1))
     return 0
@@ -719,13 +738,9 @@ def ingest_document(
                     "previous_hash": None,
                 }
 
-            embeddings_result = embed_texts(
-                chunks, model=embedding_model, dimension=embedding_dim
-            )
+            embeddings_result = embed_texts(chunks, model=embedding_model, dimension=embedding_dim)
             embeddings: list[list[float]] = (
-                embeddings_result
-                if isinstance(embeddings_result, list)
-                else embeddings_result[0]
+                embeddings_result if isinstance(embeddings_result, list) else embeddings_result[0]
             )
 
             # Get the actual model and dimension from embeddings config
@@ -755,13 +770,9 @@ def ingest_document(
                     "previous_hash": None,
                 }
 
-            embeddings_result = embed_texts(
-                chunks, model=embedding_model, dimension=embedding_dim
-            )
+            embeddings_result = embed_texts(chunks, model=embedding_model, dimension=embedding_dim)
             embeddings = (
-                embeddings_result
-                if isinstance(embeddings_result, list)
-                else embeddings_result[0]
+                embeddings_result if isinstance(embeddings_result, list) else embeddings_result[0]
             )
 
         # Get existing document info (including ingested_at for preservation)
@@ -847,13 +858,11 @@ def expand_query(query: str, max_expansions: int = 3) -> list[str]:
         return [query]
 
     try:
-        from nyxgpt.config import get_ollama_base_url, get_default_model
+        from nyxgpt.config import get_default_model, get_ollama_base_url
         from nyxgpt.ollama_client import ollama_chat
 
         base_url = get_ollama_base_url(cfg)
-        model = cfg.get("rag", "expansion_model", fallback=None) or get_default_model(
-            cfg
-        )
+        model = cfg.get("rag", "expansion_model", fallback=None) or get_default_model(cfg)
 
         system_prompt = (
             "You are a query expansion assistant. Given a search query, "
@@ -890,9 +899,7 @@ def expand_query(query: str, max_expansions: int = 3) -> list[str]:
 
         if isinstance(expansions, list):
             # Return original + valid expansions (up to max)
-            valid = [
-                str(e).strip() for e in expansions if e and len(str(e).strip()) > 0
-            ]
+            valid = [str(e).strip() for e in expansions if e and len(str(e).strip()) > 0]
             return [query] + valid[:max_expansions]
 
     except Exception as e:
@@ -914,7 +921,7 @@ def retrieve_context(
     collection: str = "default",
     embedding_model: str | None = None,
     embedding_dim: int | None = None,
-    metadata_filter: "MetadataFilter | None" = None,
+    metadata_filter: MetadataFilter | None = None,
 ) -> list[dict] | tuple[list[dict], RAGDebugInfo]:
     """Retrieve relevant context for a query using hybrid search.
 
@@ -1020,12 +1027,14 @@ def retrieve_context(
             # Filter by embedding_model to ensure we only get results from the same model
             if collect_debug:
                 vs_result = store.query_by_embedding(
-                    q_emb, k=k, collect_metrics=True, embedding_model=actual_model, metadata_filter=metadata_filter
+                    q_emb,
+                    k=k,
+                    collect_metrics=True,
+                    embedding_model=actual_model,
+                    metadata_filter=metadata_filter,
                 )
                 # Type narrowing: vs_result is tuple[list[dict], VectorSearchDebugMetrics]
-                results, vs_metrics = cast(
-                    tuple[list[dict], VectorSearchDebugMetrics], vs_result
-                )
+                results, vs_metrics = cast(tuple[list[dict], VectorSearchDebugMetrics], vs_result)
                 total_raw_results += vs_metrics.raw_results_count
                 # Accumulate scores for overall statistics
                 if vs_metrics.score_min is not None:
@@ -1036,7 +1045,9 @@ def retrieve_context(
             else:
                 results = cast(
                     list[dict],
-                    store.query_by_embedding(q_emb, k=k, embedding_model=actual_model, metadata_filter=metadata_filter),
+                    store.query_by_embedding(
+                        q_emb, k=k, embedding_model=actual_model, metadata_filter=metadata_filter
+                    ),
                 )
 
             for r in results:
@@ -1119,7 +1130,10 @@ def retrieve_context(
                         if metadata_filter.date_from or metadata_filter.date_to:
                             if not hasattr(r, "ingested_at") or r.ingested_at is None:
                                 continue
-                            if metadata_filter.date_from and r.ingested_at < metadata_filter.date_from:
+                            if (
+                                metadata_filter.date_from
+                                and r.ingested_at < metadata_filter.date_from
+                            ):
                                 continue
                             if metadata_filter.date_to and r.ingested_at > metadata_filter.date_to:
                                 continue
@@ -1135,12 +1149,10 @@ def retrieve_context(
                         "chunk_id": r.chunk_id,
                         "text": text,
                         "metadata": metadata,
-                        "embedding_model": r.embedding_model
-                        if hasattr(r, "embedding_model")
-                        else None,
-                        "embedding_dim": r.embedding_dim
-                        if hasattr(r, "embedding_dim")
-                        else None,
+                        "embedding_model": (
+                            r.embedding_model if hasattr(r, "embedding_model") else None
+                        ),
+                        "embedding_dim": r.embedding_dim if hasattr(r, "embedding_dim") else None,
                     }
             except Exception as e:
                 log.warning("Failed to fetch chunks for doc %s: %s", doc_id, e)
@@ -1193,9 +1205,7 @@ def retrieve_context(
         if hybrid_alpha is not None:
             # Use weighted fusion
             fusion_method = f"weighted(alpha={hybrid_alpha})"
-            fused_ranking = weighted_fusion(
-                vector_ranking, keyword_ranking, alpha=hybrid_alpha
-            )
+            fused_ranking = weighted_fusion(vector_ranking, keyword_ranking, alpha=hybrid_alpha)
         else:
             # Use RRF (default)
             fusion_method = "reciprocal_rank_fusion"
@@ -1237,17 +1247,13 @@ def retrieve_context(
         if collect_debug:
             rerank_result = rerank_results(query, all_results, collect_metrics=True)
             # Type narrowing: collect_metrics=True returns tuple
-            assert isinstance(rerank_result, tuple), (
-                "Expected tuple when collect_metrics=True"
-            )
+            assert isinstance(rerank_result, tuple), "Expected tuple when collect_metrics=True"
             reranked_results, reranking_metrics = rerank_result
             all_results = reranked_results
         else:
             rerank_result = rerank_results(query, all_results)
             # Type narrowing: collect_metrics=False returns list
-            assert isinstance(rerank_result, list), (
-                "Expected list when collect_metrics=False"
-            )
+            assert isinstance(rerank_result, list), "Expected list when collect_metrics=False"
             all_results = rerank_result
 
     # ======================================================================
@@ -1269,9 +1275,7 @@ def retrieve_context(
     after_min_score = len(filtered)
     after_max_chunks = len(filtered)
 
-    filtering_time_ms = (
-        (time.perf_counter() - filter_start) * 1000.0 if filter_start else 0.0
-    )
+    filtering_time_ms = (time.perf_counter() - filter_start) * 1000.0 if filter_start else 0.0
 
     if not collect_debug:
         return filtered
@@ -1285,30 +1289,20 @@ def retrieve_context(
         overall_score_max = max(all_scores) if all_scores else None
         overall_score_mean = sum(all_scores) / len(all_scores) if all_scores else None
     else:
-        overall_score_min = (
-            vector_search_metrics.score_min if vector_search_metrics else None
-        )
-        overall_score_max = (
-            vector_search_metrics.score_max if vector_search_metrics else None
-        )
-        overall_score_mean = (
-            vector_search_metrics.score_mean if vector_search_metrics else None
-        )
+        overall_score_min = vector_search_metrics.score_min if vector_search_metrics else None
+        overall_score_max = vector_search_metrics.score_max if vector_search_metrics else None
+        overall_score_mean = vector_search_metrics.score_mean if vector_search_metrics else None
 
     debug_info = RAGDebugInfo(
         total_time_ms=total_time_ms,
         query_expansion_time_ms=query_expansion_time_ms,
-        embedding_time_ms=embedding_metrics.embedding_time_ms
-        if embedding_metrics
-        else 0.0,
-        vector_search_time_ms=vector_search_metrics.vector_search_time_ms
-        if vector_search_metrics
-        else 0.0,
+        embedding_time_ms=embedding_metrics.embedding_time_ms if embedding_metrics else 0.0,
+        vector_search_time_ms=(
+            vector_search_metrics.vector_search_time_ms if vector_search_metrics else 0.0
+        ),
         keyword_search_time_ms=keyword_search_time_ms,
         fusion_time_ms=fusion_time_ms,
-        reranking_time_ms=reranking_metrics.reranking_time_ms
-        if reranking_metrics
-        else None,
+        reranking_time_ms=reranking_metrics.reranking_time_ms if reranking_metrics else None,
         filtering_time_ms=filtering_time_ms,
         composition_time_ms=0.0,  # compose_context is called separately
         original_query=query,
@@ -1316,13 +1310,13 @@ def retrieve_context(
         num_queries=len(queries),
         embedding_model=embedding_metrics.embedding_model if embedding_metrics else "",
         embedding_dim=embedding_metrics.embedding_dim if embedding_metrics else 0,
-        num_texts_embedded=embedding_metrics.num_texts_embedded
-        if embedding_metrics
-        else 0,
+        num_texts_embedded=embedding_metrics.num_texts_embedded if embedding_metrics else 0,
         batch_size=embedding_metrics.batch_size if embedding_metrics else 0,
-        raw_results_count=total_raw_results
-        if len(queries) > 1
-        else (vector_search_metrics.raw_results_count if vector_search_metrics else 0),
+        raw_results_count=(
+            total_raw_results
+            if len(queries) > 1
+            else (vector_search_metrics.raw_results_count if vector_search_metrics else 0)
+        ),
         score_min=overall_score_min,
         score_max=overall_score_max,
         score_mean=overall_score_mean,
@@ -1332,12 +1326,8 @@ def retrieve_context(
         fusion_method=fusion_method,
         reranking_enabled=reranking_enabled,
         reranker_model=reranking_metrics.reranker_model if reranking_metrics else None,
-        num_candidates_reranked=reranking_metrics.num_candidates
-        if reranking_metrics
-        else None,
-        num_results_after_rerank=reranking_metrics.num_reranked
-        if reranking_metrics
-        else None,
+        num_candidates_reranked=reranking_metrics.num_candidates if reranking_metrics else None,
+        num_results_after_rerank=reranking_metrics.num_reranked if reranking_metrics else None,
         after_min_score_filter=after_min_score,
         after_dedupe_filter=after_dedupe,
         after_max_chunks_filter=after_max_chunks,
@@ -1373,19 +1363,25 @@ def compute_evaluation_metrics(
         sorted_scores = sorted(scores)
         score_distribution = {
             "p50": statistics.median(sorted_scores),
-            "p75": statistics.quantiles(sorted_scores, n=4)[2]
-            if len(sorted_scores) >= 2
-            else sorted_scores[-1],
-            "p95": statistics.quantiles(sorted_scores, n=20)[18]
-            if len(sorted_scores) >= 2
-            else sorted_scores[-1],
-            "p99": statistics.quantiles(sorted_scores, n=100)[98]
-            if len(sorted_scores) >= 2
-            else sorted_scores[-1],
+            "p75": (
+                statistics.quantiles(sorted_scores, n=4)[2]
+                if len(sorted_scores) >= 2
+                else sorted_scores[-1]
+            ),
+            "p95": (
+                statistics.quantiles(sorted_scores, n=20)[18]
+                if len(sorted_scores) >= 2
+                else sorted_scores[-1]
+            ),
+            "p99": (
+                statistics.quantiles(sorted_scores, n=100)[98]
+                if len(sorted_scores) >= 2
+                else sorted_scores[-1]
+            ),
         }
 
     # Retrieval accuracy metrics
-    unique_docs = len(set(r.get("doc_id") for r in results if r.get("doc_id")))
+    unique_docs = len({r.get("doc_id") for r in results if r.get("doc_id")})
     retrieval_accuracy = RetrievalAccuracyMetrics(
         results_returned=len(results),
         query_success=len(results) > 0,
@@ -1494,7 +1490,7 @@ def compose_context(results: Iterable[dict]) -> str:
     include_scores = get_rag_include_scores(cfg)
     include_headers = get_rag_include_headers(cfg)
 
-    parts: List[str] = []
+    parts: list[str] = []
     used = 0
 
     for i, r in enumerate(results, start=1):
@@ -1557,6 +1553,7 @@ def ingest_repository(
             - 'doc_ids': list of document IDs created
     """
     from pathlib import Path
+
     from nyxgpt.rag.code_parser import index_repository
 
     repo_path_obj = Path(repo_path).resolve()
@@ -1568,6 +1565,7 @@ def ingest_repository(
     # Security: Validate repo path is within allowed directories
     # Restrict to user home directory, current working directory, or trusted paths
     import os
+
     allowed_base_paths = [
         Path.home(),
         Path.cwd(),
@@ -1663,9 +1661,7 @@ def ingest_repository(
             f"  Ingested {doc_id}: {ingest_result['chunks_ingested']} chunks ({ingest_result['status']})"
         )
 
-    log.info(
-        f"Repository ingestion complete: {len(doc_ids)} files, {total_ingested} total chunks"
-    )
+    log.info(f"Repository ingestion complete: {len(doc_ids)} files, {total_ingested} total chunks")
 
     return {
         "total_files": len(doc_ids),

@@ -153,9 +153,7 @@ def test_session_sync_filename_with_title(api_base_url: str) -> None:
         assert init_resp.status_code == 200
 
         # Set title
-        title_resp = client.post(
-            f"/api/v1/sessions/{session_name}/title", json={"title": title}
-        )
+        title_resp = client.post(f"/api/v1/sessions/{session_name}/title", json={"title": title})
         assert title_resp.status_code == 200
 
         # Sync filename
@@ -205,9 +203,7 @@ def test_session_sync_filename_already_synced(api_base_url: str) -> None:
         assert init_resp.status_code == 200
 
         # Set title that matches current filename
-        title_resp = client.post(
-            f"/api/v1/sessions/{session_name}/title", json={"title": title}
-        )
+        title_resp = client.post(f"/api/v1/sessions/{session_name}/title", json={"title": title})
         assert title_resp.status_code == 200
 
         # Sync filename
@@ -218,10 +214,7 @@ def test_session_sync_filename_already_synced(api_base_url: str) -> None:
 
         # Should report no change
         if "message" in data:
-            assert (
-                "already" in data["message"].lower()
-                or "no change" in data["message"].lower()
-            )
+            assert "already" in data["message"].lower() or "no change" in data["message"].lower()
 
 
 @pytest.mark.integration
@@ -281,9 +274,7 @@ def test_session_rename_preserves_messages(api_base_url: str) -> None:
         session_file.write_text(json.dumps(messages, indent=2))
 
         # Set title
-        title_resp = client.post(
-            f"/api/v1/sessions/{old_name}/title", json={"title": "Test Title"}
-        )
+        title_resp = client.post(f"/api/v1/sessions/{old_name}/title", json={"title": "Test Title"})
         assert title_resp.status_code == 200
 
         # Rename session

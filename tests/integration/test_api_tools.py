@@ -255,9 +255,7 @@ def test_tools_grep_endpoint_regex_pattern(api_base_url: str, tmp_path: Path) ->
 
 
 @pytest.mark.integration
-def test_tools_grep_endpoint_directory_search(
-    api_base_url: str, tmp_path: Path
-) -> None:
+def test_tools_grep_endpoint_directory_search(api_base_url: str, tmp_path: Path) -> None:
     """Test POST /api/v1/tools/grep searches in directory."""
     test_dir = tmp_path / "search_dir"
     test_dir.mkdir()

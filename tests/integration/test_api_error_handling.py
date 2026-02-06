@@ -3,7 +3,6 @@ from __future__ import annotations
 import httpx
 import pytest
 
-
 pytestmark = pytest.mark.integration
 
 
@@ -49,9 +48,7 @@ def test_chat_with_empty_json_body(api_base_url: str) -> None:
         assert response.status_code == 422
 
 
-def test_rag_ingest_with_missing_fields(
-    api_base_url: str, require_cassandra: None
-) -> None:
+def test_rag_ingest_with_missing_fields(api_base_url: str, require_cassandra: None) -> None:
     """POST /api/v1/rag/ingest with missing required fields should return 422."""
     with httpx.Client(base_url=api_base_url, timeout=5.0) as client:
         response = client.post(
@@ -95,9 +92,7 @@ def test_api_key_authentication_invalid(api_base_url: str) -> None:
     """
     with httpx.Client(base_url=api_base_url, timeout=5.0) as client:
         # Make request with invalid API key
-        response = client.get(
-            "/api/v1/info", headers={"X-API-Key": "invalid-key-12345"}
-        )
+        response = client.get("/api/v1/info", headers={"X-API-Key": "invalid-key-12345"})
 
         # Either authentication is disabled (200) or key is invalid (401/403)
         assert response.status_code in (200, 401, 403)
@@ -130,9 +125,7 @@ def test_session_init_with_invalid_name_format(api_base_url: str) -> None:
     with httpx.Client(base_url=api_base_url, timeout=5.0) as client:
         response = client.post(
             "/api/v1/sessions/init",
-            json={
-                "name": "../invalid-session-name"  # Path traversal attempt
-            },
+            json={"name": "../invalid-session-name"},  # Path traversal attempt
         )
         # Should reject invalid session names
         assert response.status_code in (400, 422)
@@ -146,9 +139,7 @@ def test_session_init_with_too_long_name(api_base_url: str) -> None:
     with httpx.Client(base_url=api_base_url, timeout=5.0) as client:
         response = client.post(
             "/api/v1/sessions/init",
-            json={
-                "name": "a" * 1000  # Extremely long name
-            },
+            json={"name": "a" * 1000},  # Extremely long name
         )
         # Should reject excessively long session names
         assert response.status_code in (422, 500)
@@ -156,9 +147,7 @@ def test_session_init_with_too_long_name(api_base_url: str) -> None:
         assert "error" in response.json()
 
 
-def test_rag_query_with_invalid_top_k(
-    api_base_url: str, require_cassandra: None
-) -> None:
+def test_rag_query_with_invalid_top_k(api_base_url: str, require_cassandra: None) -> None:
     """POST /api/v1/rag/query with invalid top_k value should return 422."""
     with httpx.Client(base_url=api_base_url, timeout=5.0) as client:
         response = client.post(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
 from nyxgpt import sessions
 from nyxgpt.cli import cli
 
@@ -56,9 +57,7 @@ def test_sessions_export_markdown_to_stdout(
     assert "Hi there!" in captured.out
 
 
-def test_sessions_export_json_to_stdout(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_sessions_export_json_to_stdout(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Test exporting a session to JSON format (stdout)."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -97,9 +96,7 @@ def test_sessions_export_json_to_stdout(
     assert '"Test message"' in captured.out
 
 
-def test_sessions_export_html_to_stdout(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_sessions_export_html_to_stdout(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Test exporting a session to HTML format (stdout)."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -138,9 +135,7 @@ def test_sessions_export_html_to_stdout(
     assert "HTML test" in captured.out
 
 
-def test_sessions_export_to_file(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_sessions_export_to_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Test exporting a session to a file."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -196,9 +191,7 @@ def test_sessions_export_nonexistent_session(
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    exit_code = cli(
-        ["sessions", "export", "nonexistent", "--sessions-dir", str(sessions_dir)]
-    )
+    exit_code = cli(["sessions", "export", "nonexistent", "--sessions-dir", str(sessions_dir)])
 
     assert exit_code == 1
 
@@ -233,9 +226,7 @@ def test_sessions_export_default_format_is_markdown(
     sessions.save_session_meta(meta_file, metadata)
 
     # Don't specify --format
-    exit_code = cli(
-        ["sessions", "export", "test-default", "--sessions-dir", str(sessions_dir)]
-    )
+    exit_code = cli(["sessions", "export", "test-default", "--sessions-dir", str(sessions_dir)])
 
     assert exit_code == 0
 
@@ -323,9 +314,7 @@ def test_sessions_stats_displays_message_counts(
     sessions.save_session_messages(session_file, messages)
     sessions.save_session_meta(meta_file, metadata)
 
-    exit_code = cli(
-        ["sessions", "stats", "test-stats", "--sessions-dir", str(sessions_dir)]
-    )
+    exit_code = cli(["sessions", "stats", "test-stats", "--sessions-dir", str(sessions_dir)])
 
     assert exit_code == 0
 
@@ -383,9 +372,7 @@ def test_sessions_stats_handles_minimal_metadata(
     sessions.save_session_messages(session_file, messages)
     sessions.save_session_meta(meta_file, metadata)
 
-    exit_code = cli(
-        ["sessions", "stats", "minimal-stats", "--sessions-dir", str(sessions_dir)]
-    )
+    exit_code = cli(["sessions", "stats", "minimal-stats", "--sessions-dir", str(sessions_dir)])
 
     assert exit_code == 0
 
@@ -406,9 +393,7 @@ def test_sessions_stats_nonexistent_session(
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    exit_code = cli(
-        ["sessions", "stats", "nonexistent", "--sessions-dir", str(sessions_dir)]
-    )
+    exit_code = cli(["sessions", "stats", "nonexistent", "--sessions-dir", str(sessions_dir)])
 
     assert exit_code == 1
 
@@ -449,9 +434,7 @@ def test_sessions_stats_calculates_token_estimate(
     sessions.save_session_messages(session_file, messages)
     sessions.save_session_meta(meta_file, metadata)
 
-    exit_code = cli(
-        ["sessions", "stats", "token-test", "--sessions-dir", str(sessions_dir)]
-    )
+    exit_code = cli(["sessions", "stats", "token-test", "--sessions-dir", str(sessions_dir)])
 
     assert exit_code == 0
 
@@ -464,9 +447,7 @@ def test_sessions_stats_calculates_token_estimate(
 
 
 # Session list command tests
-def test_sessions_list_empty(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_sessions_list_empty(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Test listing sessions when none exist."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -478,9 +459,7 @@ def test_sessions_list_empty(
     assert f"No sessions found in {sessions_dir}" in captured.out
 
 
-def test_sessions_list_with_sessions(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_sessions_list_with_sessions(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Test listing sessions displays session info."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -531,9 +510,7 @@ def test_sessions_show(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> No
     sessions.save_session_messages(session_file, messages)
     sessions.save_session_meta(meta_file, metadata)
 
-    exit_code = cli(
-        ["sessions", "show", "test-show", "--sessions-dir", str(sessions_dir)]
-    )
+    exit_code = cli(["sessions", "show", "test-show", "--sessions-dir", str(sessions_dir)])
 
     assert exit_code == 0
     captured = capsys.readouterr()
@@ -542,16 +519,12 @@ def test_sessions_show(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> No
     assert '"title": "Test Session"' in captured.out
 
 
-def test_sessions_show_nonexistent(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_sessions_show_nonexistent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Test show fails for nonexistent session."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    exit_code = cli(
-        ["sessions", "show", "nonexistent", "--sessions-dir", str(sessions_dir)]
-    )
+    exit_code = cli(["sessions", "show", "nonexistent", "--sessions-dir", str(sessions_dir)])
 
     assert exit_code == 1
     captured = capsys.readouterr()
@@ -582,9 +555,7 @@ def test_sessions_delete(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> 
     sessions.save_session_messages(session_file, messages)
     sessions.save_session_meta(meta_file, metadata)
 
-    exit_code = cli(
-        ["sessions", "delete", "test-delete", "--sessions-dir", str(sessions_dir)]
-    )
+    exit_code = cli(["sessions", "delete", "test-delete", "--sessions-dir", str(sessions_dir)])
 
     assert exit_code == 0
     captured = capsys.readouterr()
@@ -593,16 +564,12 @@ def test_sessions_delete(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> 
     assert not session_file.exists()
 
 
-def test_sessions_delete_nonexistent(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_sessions_delete_nonexistent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Test delete fails for nonexistent session."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    exit_code = cli(
-        ["sessions", "delete", "nonexistent", "--sessions-dir", str(sessions_dir)]
-    )
+    exit_code = cli(["sessions", "delete", "nonexistent", "--sessions-dir", str(sessions_dir)])
 
     assert exit_code == 1
     captured = capsys.readouterr()
@@ -677,9 +644,7 @@ def test_sessions_pin(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
     sessions.save_session_messages(session_file, messages)
     sessions.save_session_meta(meta_file, metadata)
 
-    exit_code = cli(
-        ["sessions", "pin", "test-pin", "--sessions-dir", str(sessions_dir)]
-    )
+    exit_code = cli(["sessions", "pin", "test-pin", "--sessions-dir", str(sessions_dir)])
 
     assert exit_code == 0
     captured = capsys.readouterr()
@@ -700,9 +665,7 @@ def test_sessions_unpin(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> N
     sessions.save_session_messages(session_file, messages)
     sessions.save_session_meta(meta_file, metadata)
 
-    exit_code = cli(
-        ["sessions", "unpin", "test-unpin", "--sessions-dir", str(sessions_dir)]
-    )
+    exit_code = cli(["sessions", "unpin", "test-unpin", "--sessions-dir", str(sessions_dir)])
 
     assert exit_code == 0
     captured = capsys.readouterr()
@@ -791,9 +754,7 @@ def test_sessions_tag_add_missing_name(capsys: pytest.CaptureFixture[str]) -> No
     assert "session name is required" in captured.err
 
 
-def test_sessions_tag_add_missing_tags(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_sessions_tag_add_missing_tags(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Test tag-add fails when tags are missing."""
     exit_code = cli(["sessions", "tag-add", "test-session"])
 
@@ -865,9 +826,7 @@ def test_sessions_search(
     # Mock input to avoid pagination prompt
     monkeypatch.setattr("builtins.input", lambda _: "q")
 
-    exit_code = cli(
-        ["sessions", "search", "searchable", "--sessions-dir", str(sessions_dir)]
-    )
+    exit_code = cli(["sessions", "search", "searchable", "--sessions-dir", str(sessions_dir)])
 
     assert exit_code == 0
     captured = capsys.readouterr()
@@ -875,16 +834,12 @@ def test_sessions_search(
     assert "searchable" in captured.out.lower()
 
 
-def test_sessions_search_no_results(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_sessions_search_no_results(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Test search with no results."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    exit_code = cli(
-        ["sessions", "search", "nonexistent", "--sessions-dir", str(sessions_dir)]
-    )
+    exit_code = cli(["sessions", "search", "nonexistent", "--sessions-dir", str(sessions_dir)])
 
     assert exit_code == 0
     captured = capsys.readouterr()
@@ -1109,14 +1064,10 @@ def test_batch_export(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
     assert "Exported 1 session(s)" in captured.out
 
 
-def test_batch_export_missing_output(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_batch_export_missing_output(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Test batch-export fails when output directory is missing."""
     # Need at least 3 positional args for extras to have values
-    exit_code = cli(
-        ["sessions", "batch-export", "s1", "s2", "s3", "--sessions-dir", str(tmp_path)]
-    )
+    exit_code = cli(["sessions", "batch-export", "s1", "s2", "s3", "--sessions-dir", str(tmp_path)])
 
     assert exit_code == 2
     captured = capsys.readouterr()
@@ -1214,9 +1165,7 @@ def test_info_command(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 # Models command tests (with mocking for Ollama API)
-def test_models_list(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_models_list(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Test models list command."""
     # Mock the models.list_models function
     import nyxgpt.models as models_mod
@@ -1260,9 +1209,7 @@ def test_models_list_empty(
     assert "No models found" in captured.out
 
 
-def test_models_pull(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_models_pull(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Test models pull command."""
     import nyxgpt.models as models_mod
 
@@ -1295,9 +1242,7 @@ def test_models_delete_with_force(
     assert "Deleted model: llama3.1:8b" in captured.out
 
 
-def test_models_show(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_models_show(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     """Test models show command."""
     import nyxgpt.models as models_mod
 

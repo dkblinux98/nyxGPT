@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
 from nyxgpt.wizard import (
     _configure_rag,
     _generate_config_ini,
@@ -44,9 +45,7 @@ def test_validate_ollama_connection_no_models():
 
 def test_validate_ollama_connection_failure():
     """Test Ollama connection failure."""
-    with patch(
-        "nyxgpt.wizard.list_models", side_effect=RuntimeError("Failed to reach Ollama")
-    ):
+    with patch("nyxgpt.wizard.list_models", side_effect=RuntimeError("Failed to reach Ollama")):
         success, message, models = _validate_ollama_connection("http://127.0.0.1:11434")
 
         assert success is False
@@ -213,9 +212,7 @@ def test_run_wizard_cancelled_on_existing_config(
         assert "cancelled" in captured.out.lower()
 
 
-def test_run_wizard_ollama_connection_failure(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-):
+def test_run_wizard_ollama_connection_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     """Test wizard exits gracefully when Ollama connection fails."""
     output_path = tmp_path / "config.ini"
 
@@ -223,17 +220,19 @@ def test_run_wizard_ollama_connection_failure(
         "http://127.0.0.1:11434",  # Ollama URL
     ]
 
-    with patch("builtins.input", side_effect=inputs):
-        with patch(
+    with (
+        patch("builtins.input", side_effect=inputs),
+        patch(
             "nyxgpt.wizard.list_models",
             side_effect=RuntimeError("Failed to reach Ollama"),
-        ):
-            exit_code = run_wizard(output_path=output_path)
+        ),
+    ):
+        exit_code = run_wizard(output_path=output_path)
 
-            assert exit_code == 1
+        assert exit_code == 1
 
-            captured = capsys.readouterr()
-            assert "Cannot connect" in captured.out
+        captured = capsys.readouterr()
+        assert "Cannot connect" in captured.out
 
 
 def test_run_wizard_success_minimal(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
@@ -269,9 +268,7 @@ def test_run_wizard_success_minimal(tmp_path: Path, capsys: pytest.CaptureFixtur
             assert "enable_chat_context = false" in content
 
 
-def test_run_wizard_success_with_rag(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-):
+def test_run_wizard_success_with_rag(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     """Test successful wizard run with RAG enabled."""
     output_path = tmp_path / "config.ini"
 
@@ -301,9 +298,7 @@ def test_run_wizard_success_with_rag(
             assert "enable_chat_context = true" in content
 
 
-def test_run_wizard_keyboard_interrupt(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-):
+def test_run_wizard_keyboard_interrupt(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     """Test wizard handles keyboard interrupt gracefully."""
     output_path = tmp_path / "config.ini"
 

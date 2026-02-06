@@ -3,21 +3,21 @@ from __future__ import annotations
 import configparser
 import logging
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from textual.widgets import Input
 
 from nyxgpt.tui import (  # type: ignore[import-untyped]
     ChatOutput,
-    NyxGPTTUI,
-    SessionMetadataPreview,
-    SessionPickerScreen,
-    SearchResultsScreen,
-    SessionStatusBar,
-    HelpOverlayScreen,
     CommandPaletteScreen,
     DeleteConfirmationScreen,
+    HelpOverlayScreen,
+    NyxGPTTUI,
+    SearchResultsScreen,
+    SessionMetadataPreview,
+    SessionPickerScreen,
+    SessionStatusBar,
 )
 
 pytestmark = pytest.mark.unit
@@ -233,9 +233,7 @@ def test_tui_initialization_fallback_url(tmp_path: Path) -> None:
 # ============================================================================
 
 
-def test_unlock_prompt_success(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_unlock_prompt_success(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Test _unlock_prompt() successfully enables and focuses prompt."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -261,9 +259,7 @@ def test_unlock_prompt_success(
     assert "Input prompt unlocked and focused" in caplog.text
 
 
-def test_unlock_prompt_attribute_error(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_unlock_prompt_attribute_error(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Test _unlock_prompt() handles AttributeError gracefully."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -284,9 +280,7 @@ def test_unlock_prompt_attribute_error(
     assert "Failed to unlock prompt (widget not available)" in caplog.text
 
 
-def test_unlock_prompt_other_exception(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_unlock_prompt_other_exception(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Test _unlock_prompt() handles other exceptions gracefully."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -299,9 +293,7 @@ def test_unlock_prompt_other_exception(
 
     # Mock prompt to raise RuntimeError when accessing disabled
     app.prompt = MagicMock(spec=Input)
-    type(app.prompt).disabled = PropertyMock(
-        side_effect=RuntimeError("Textual shutdown")
-    )
+    type(app.prompt).disabled = PropertyMock(side_effect=RuntimeError("Textual shutdown"))
 
     with caplog.at_level(logging.WARNING, logger="nyxgpt.tui"):
         # Should not raise exception
@@ -491,9 +483,7 @@ async def test_stream_chat_success(tmp_path: Path) -> None:
         await app._stream_chat("Test prompt")
 
     # Verify typing indicator was shown
-    typing_indicator_calls = [
-        call for call in app.output.append.call_args_list if "⋯" in str(call)
-    ]
+    typing_indicator_calls = [call for call in app.output.append.call_args_list if "⋯" in str(call)]
     assert len(typing_indicator_calls) > 0, "Typing indicator should be shown"
 
     # Verify typing indicator was removed on first content
@@ -509,9 +499,7 @@ async def test_stream_chat_success(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_chat_error_handling(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+async def test_stream_chat_error_handling(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Test error handling in chat streaming."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -542,9 +530,7 @@ async def test_stream_chat_error_handling(
 
     # Verify error was shown in output
     app.output.append.assert_called()
-    error_call = [
-        call for call in app.output.append.call_args_list if "[error]" in str(call)
-    ]
+    error_call = [call for call in app.output.append.call_args_list if "[error]" in str(call)]
     assert len(error_call) > 0
 
     # Verify prompt was unlocked even after error (finally block)
@@ -1037,9 +1023,7 @@ async def test_stream_chat_partial_retry_marker_split_across_chunks(
     # Verify reconnection message was displayed (marker was reassembled correctly)
     append_calls = [str(call) for call in app.output.append.call_args_list]
     reconnect_calls = [c for c in append_calls if "reconnecting" in c.lower()]
-    assert len(reconnect_calls) > 0, (
-        "Partial retry marker should be reassembled and displayed"
-    )
+    assert len(reconnect_calls) > 0, "Partial retry marker should be reassembled and displayed"
 
     # Verify response text was displayed
     text_calls = [c for c in append_calls if "Hello World" in c]
@@ -1103,9 +1087,7 @@ async def test_stream_chat_partial_marker_at_chunk_boundary(tmp_path: Path) -> N
 
     # Verify reconnection message was displayed
     reconnect_calls = [c for c in append_calls if "reconnecting" in c.lower()]
-    assert len(reconnect_calls) > 0, (
-        "Reassembled marker should display reconnection message"
-    )
+    assert len(reconnect_calls) > 0, "Reassembled marker should display reconnection message"
 
     # Verify text after marker was displayed
     after_calls = [c for c in append_calls if "text after" in c]
@@ -1265,9 +1247,7 @@ async def test_stream_chat_malformed_marker_removed(tmp_path: Path) -> None:
     assert len(text_calls) > 0, "Text after malformed marker should still be displayed"
 
     # Verify malformed marker itself was removed (not displayed to user)
-    marker_calls = [
-        c for c in append_calls if "__RETRY_START__" in c or "invalid json" in c
-    ]
+    marker_calls = [c for c in append_calls if "__RETRY_START__" in c or "invalid json" in c]
     assert len(marker_calls) == 0, "Malformed marker should be removed from output"
 
 
@@ -1300,9 +1280,7 @@ async def test_stream_chat_buffer_flush_threshold_exceeded(tmp_path: Path) -> No
         # Send a very long chunk that starts with partial marker prefix
         # This simulates a malformed stream where marker never completes
         # and buffer grows beyond threshold
-        long_text = "__RETRY_" + (
-            "x" * 100
-        )  # Exceeds MARKER_BUFFER_OVERFLOW_THRESHOLD (100)
+        long_text = "__RETRY_" + ("x" * 100)  # Exceeds MARKER_BUFFER_OVERFLOW_THRESHOLD (100)
         yield long_text
         yield " more text after flush"
 
@@ -1446,9 +1424,9 @@ async def test_stream_chat_buffer_overflow_protection(tmp_path: Path) -> None:
     # Verify the oversized partial-marker buffer was flushed (buffer overflow protection triggered)
     # The large buffer that looks like a partial marker should be treated as regular text and displayed
     large_buffer_calls = [c for c in append_calls if "_" * 100 in c]
-    assert len(large_buffer_calls) > 0, (
-        "Oversized partial-marker buffer should be flushed as regular text"
-    )
+    assert (
+        len(large_buffer_calls) > 0
+    ), "Oversized partial-marker buffer should be flushed as regular text"
 
     # Verify subsequent text was also displayed
     done_calls = [c for c in append_calls if "done" in c]
@@ -1517,9 +1495,7 @@ async def test_tui_action_search_messages_switches_session(tmp_path: Path) -> No
     # Verify notification was shown
     mock_notify.assert_called_once()
     assert "target-session" in mock_notify.call_args[0][0]
-    assert (
-        "message 6" in mock_notify.call_args[0][0]
-    )  # message_index 5 = message 6 (1-indexed)
+    assert "message 6" in mock_notify.call_args[0][0]  # message_index 5 = message 6 (1-indexed)
 
 
 @pytest.mark.asyncio
@@ -1561,9 +1537,7 @@ async def test_tui_action_search_messages_same_session(tmp_path: Path) -> None:
 async def test_search_results_screen_perform_search_success() -> None:
     """Test SearchResultsScreen perform_search with successful API response."""
 
-    screen = SearchResultsScreen(
-        api_base_url="http://127.0.0.1:8000", current_session="test"
-    )
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
 
     # Mock the results list
     screen.results_list = MagicMock()
@@ -1632,9 +1606,7 @@ async def test_search_results_screen_perform_search_success() -> None:
 async def test_search_results_screen_perform_search_no_results() -> None:
     """Test SearchResultsScreen perform_search with no results."""
 
-    screen = SearchResultsScreen(
-        api_base_url="http://127.0.0.1:8000", current_session="test"
-    )
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
 
     # Mock the results list
     screen.results_list = MagicMock()
@@ -1674,9 +1646,7 @@ async def test_search_results_screen_perform_search_no_results() -> None:
 async def test_search_results_screen_perform_search_api_error() -> None:
     """Test SearchResultsScreen perform_search handles API errors."""
 
-    screen = SearchResultsScreen(
-        api_base_url="http://127.0.0.1:8000", current_session="test"
-    )
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
 
     # Mock the results list
     screen.results_list = MagicMock()
@@ -1707,9 +1677,7 @@ async def test_search_results_screen_perform_search_api_error() -> None:
 async def test_search_results_screen_case_sensitive_filter() -> None:
     """Test SearchResultsScreen applies case_sensitive filter."""
 
-    screen = SearchResultsScreen(
-        api_base_url="http://127.0.0.1:8000", current_session="test"
-    )
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
 
     # Set case_sensitive to True
     screen.case_sensitive = True
@@ -1783,9 +1751,7 @@ async def test_tui_update_session_status_success(tmp_path: Path) -> None:
     mock_client = AsyncMock()
     mock_client.__aenter__.return_value = mock_client
     mock_client.__aexit__.return_value = None
-    mock_client.get = AsyncMock(
-        side_effect=[mock_metadata_response, mock_session_response]
-    )
+    mock_client.get = AsyncMock(side_effect=[mock_metadata_response, mock_session_response])
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         await app._update_session_status()
@@ -1951,9 +1917,7 @@ async def test_tui_action_toggle_rag_error(
 
 
 @pytest.mark.asyncio
-async def test_tui_action_models_manager(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+async def test_tui_action_models_manager(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Test action_models_manager opens ModelsManagerScreen."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -2205,9 +2169,7 @@ async def test_handle_command_clear(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_handle_command_unknown(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+async def test_handle_command_unknown(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Test that unknown commands show error message."""
     config_file = tmp_path / "config.ini"
     cfg = configparser.ConfigParser()
@@ -2303,9 +2265,7 @@ async def test_input_submitted_with_slash_command_not_locked(tmp_path: Path) -> 
 async def test_search_results_screen_initialization() -> None:
     """Test SearchResultsScreen initializes correctly."""
 
-    screen = SearchResultsScreen(
-        api_base_url="http://127.0.0.1:8000", current_session="test"
-    )
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
 
     assert screen.api_base_url == "http://127.0.0.1:8000"
     assert screen.current_session == "test"
@@ -2317,9 +2277,7 @@ async def test_search_results_screen_initialization() -> None:
 async def test_search_results_screen_on_mount() -> None:
     """Test SearchResultsScreen focuses search input on mount."""
 
-    screen = SearchResultsScreen(
-        api_base_url="http://127.0.0.1:8000", current_session="test"
-    )
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
 
     # Mock search_input widget
     mock_search_input = MagicMock()
@@ -2335,9 +2293,7 @@ async def test_search_results_screen_on_mount() -> None:
 async def test_search_results_screen_action_close() -> None:
     """Test SearchResultsScreen close action."""
 
-    screen = SearchResultsScreen(
-        api_base_url="http://127.0.0.1:8000", current_session="test"
-    )
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
 
     # Mock dismiss
     with patch.object(screen, "dismiss") as mock_dismiss:
@@ -2490,8 +2446,10 @@ async def test_command_palette_screen_filter_commands() -> None:
 
     # Should filter to commands containing "search"
     assert len(screen.filtered_commands) > 0
-    assert all("search" in cmd["label"].lower() or "search" in cmd["description"].lower()
-               for cmd in screen.filtered_commands)
+    assert all(
+        "search" in cmd["label"].lower() or "search" in cmd["description"].lower()
+        for cmd in screen.filtered_commands
+    )
 
 
 @pytest.mark.asyncio
@@ -2615,13 +2573,16 @@ async def test_delete_session_action_success(tmp_path: Path) -> None:
     ]
 
     # Mock push_screen_wait to return True (confirmed)
-    with patch.object(
-        app, "push_screen_wait", new=AsyncMock(return_value=True)
+    with (
+        patch.object(app, "push_screen_wait", new=AsyncMock(return_value=True)),
+        patch(
+            "nyxgpt.tui.list_sessions",
+            side_effect=[mock_sessions, [{"name": "session2", "messages": 0}]],
+        ),
+        patch("nyxgpt.tui.delete_session", return_value=True),
     ):
-        with patch("nyxgpt.tui.list_sessions", side_effect=[mock_sessions, [{"name": "session2", "messages": 0}]]):
-            with patch("nyxgpt.tui.delete_session", return_value=True):
-                with patch.object(app, "_update_session_status", new=AsyncMock()):
-                    await app._delete_session_worker()
+        with patch.object(app, "_update_session_status", new=AsyncMock()):
+            await app._delete_session_worker()
 
     # Verify session was switched
     assert app.session == "session2"
@@ -2662,9 +2623,7 @@ async def test_delete_session_action_cancelled(tmp_path: Path) -> None:
     ]
 
     # Mock push_screen_wait to return False (cancelled)
-    with patch.object(
-        app, "push_screen_wait", new=AsyncMock(return_value=False)
-    ):
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=False)):
         with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
             with patch("nyxgpt.tui.delete_session", return_value=True) as mock_delete:
                 await app._delete_session_worker()
@@ -2746,9 +2705,7 @@ async def test_delete_session_action_not_found(tmp_path: Path) -> None:
     ]
 
     # Mock push_screen_wait to return True (confirmed)
-    with patch.object(
-        app, "push_screen_wait", new=AsyncMock(return_value=True)
-    ):
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=True)):
         with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
             # Mock delete_session to return False (not found)
             with patch("nyxgpt.tui.delete_session", return_value=False):
@@ -2791,9 +2748,7 @@ async def test_delete_session_action_exception(
     ]
 
     # Mock push_screen_wait to return True (confirmed)
-    with patch.object(
-        app, "push_screen_wait", new=AsyncMock(return_value=True)
-    ):
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=True)):
         with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
             # Mock delete_session to raise exception
             with patch("nyxgpt.tui.delete_session", side_effect=RuntimeError("Delete failed")):

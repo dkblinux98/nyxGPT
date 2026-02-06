@@ -8,28 +8,27 @@ FastAPI backend. It focuses on correctness and streaming, not visual polish.
 from __future__ import annotations
 
 import asyncio
-import httpx
 import logging
-from typing import Optional
 
+import httpx
 from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Container, Vertical
+from textual.screen import ModalScreen, Screen
 from textual.widgets import (
-    Header,
-    Footer,
-    Static,
-    Input,
-    ListView,
-    ListItem,
-    Label,
     Button,
     Checkbox,
+    Footer,
+    Header,
+    Input,
+    Label,
+    ListItem,
+    ListView,
+    Static,
 )
-from textual.containers import Vertical, Container
-from textual.binding import Binding
-from textual.screen import Screen, ModalScreen
 
 from nyxgpt.config import load_config
-from nyxgpt.sessions import list_sessions, delete_session, get_sessions_dir
+from nyxgpt.sessions import delete_session, get_sessions_dir, list_sessions
 
 log = logging.getLogger(__name__)
 
@@ -130,7 +129,7 @@ class SessionPickerScreen(Screen):
         ("ctrl+c", "cancel", "Cancel"),
     ]
 
-    def __init__(self, config_path: Optional[str] = None) -> None:
+    def __init__(self, config_path: str | None = None) -> None:
         super().__init__()
         self.config = load_config(config_path)
         self.all_sessions: list[dict] = []
@@ -193,9 +192,7 @@ class SessionPickerScreen(Screen):
                 if query in s["name"].lower()
                 or query in s.get("meta", {}).get("title", "").lower()
                 or query in s.get("meta", {}).get("summary", "").lower()
-                or any(
-                    query in tag.lower() for tag in s.get("meta", {}).get("tags", [])
-                )
+                or any(query in tag.lower() for tag in s.get("meta", {}).get("tags", []))
             ]
 
         await self.update_session_list()
@@ -206,9 +203,7 @@ class SessionPickerScreen(Screen):
             return
 
         session_name = event.item.name
-        session = next(
-            (s for s in self.filtered_sessions if s["name"] == session_name), None
-        )
+        session = next((s for s in self.filtered_sessions if s["name"] == session_name), None)
 
         if session:
             preview = self.query_one("#session-preview", SessionMetadataPreview)
@@ -259,9 +254,7 @@ class ModelsManagerScreen(Screen):
 
         try:
             async with httpx.AsyncClient() as client:
-                res = await client.get(
-                    f"{self.api_base_url}/api/v1/models", timeout=10.0
-                )
+                res = await client.get(f"{self.api_base_url}/api/v1/models", timeout=10.0)
                 res.raise_for_status()
                 data = res.json()
                 model_names = data.get("models", [])
@@ -353,9 +346,7 @@ class SearchResultsScreen(ModalScreen[dict | None]):
         yield Header()
         with Container(id="search-dialog"):
             yield Label("Search Messages")
-            self.search_input = Input(
-                placeholder="Enter search query...", id="search-input"
-            )
+            self.search_input = Input(placeholder="Enter search query...", id="search-input")
             yield self.search_input
 
             # Filters
@@ -416,9 +407,7 @@ class SearchResultsScreen(ModalScreen[dict | None]):
                 if len(self.results) == 0:
                     self.notify(f"No results found for '{query}'", severity="warning")
                 else:
-                    self.notify(
-                        f"Found {len(self.results)} result(s)", severity="information"
-                    )
+                    self.notify(f"Found {len(self.results)} result(s)", severity="information")
         except Exception as e:
             self.notify(f"Search failed: {str(e)}", severity="error")
             self.results = []
@@ -431,13 +420,11 @@ class SearchResultsScreen(ModalScreen[dict | None]):
         if not self.results:
             return
 
-        for idx, result in enumerate(self.results):
+        for _idx, result in enumerate(self.results):
             session_title = result.get("session_title") or result.get("session_name")
             role_icon = "👤" if result.get("role") == "user" else "🤖"
             matches_text = (
-                f" ({result.get('matches')} matches)"
-                if result.get("matches", 0) > 1
-                else ""
+                f" ({result.get('matches')} matches)" if result.get("matches", 0) > 1 else ""
             )
             label_text = f"{role_icon} {session_title}{matches_text}"
 
@@ -460,9 +447,7 @@ class SearchResultsScreen(ModalScreen[dict | None]):
 
     async def action_select_result(self) -> None:
         """Return selected result to caller."""
-        if self.results_list.index is not None and self.results_list.index < len(
-            self.results
-        ):
+        if self.results_list.index is not None and self.results_list.index < len(self.results):
             result = self.results[self.results_list.index]
             self.dismiss(result)
         else:
@@ -674,9 +659,7 @@ class CommandPaletteScreen(ModalScreen[str | None]):
             return
 
         command_key = event.item.name
-        command = next(
-            (c for c in self.filtered_commands if c["key"] == command_key), None
-        )
+        command = next((c for c in self.filtered_commands if c["key"] == command_key), None)
 
         if command:
             desc_label = self.query_one("#command-description", Label)
@@ -716,8 +699,8 @@ class NyxGPTTUI(App):
     def __init__(
         self,
         session: str = "default",
-        api_base_url: Optional[str] = None,
-        config_path: Optional[str] = None,
+        api_base_url: str | None = None,
+        config_path: str | None = None,
     ) -> None:
         super().__init__()
         cfg = load_config(config_path)
@@ -732,9 +715,7 @@ class NyxGPTTUI(App):
         self.config_path = config_path
         self.rag_enabled = False  # Track current session RAG state
 
-        log.info(
-            "TUI initialized", extra={"session": session, "api": self.api_base_url}
-        )
+        log.info("TUI initialized", extra={"session": session, "api": self.api_base_url})
 
     def _unlock_prompt(self) -> None:
         """Re-enable the input prompt and focus it.
@@ -812,9 +793,7 @@ class NyxGPTTUI(App):
                     pass
 
         except Exception as e:
-            log.warning(
-                f"Failed to fetch session status for session {self.session}: {e}"
-            )
+            log.warning(f"Failed to fetch session status for session {self.session}: {e}")
             self.rag_enabled = False
 
     async def action_toggle_rag(self) -> None:
@@ -842,9 +821,7 @@ class NyxGPTTUI(App):
 
     async def _pick_session_worker(self) -> None:
         """Worker to handle session picker."""
-        session_name = await self.push_screen_wait(
-            SessionPickerScreen(self.config_path)
-        )
+        session_name = await self.push_screen_wait(SessionPickerScreen(self.config_path))
 
         if session_name:
             # Update the current session
@@ -872,9 +849,7 @@ class NyxGPTTUI(App):
 
     async def _search_messages_worker(self) -> None:
         """Worker to handle message search."""
-        result = await self.push_screen_wait(
-            SearchResultsScreen(self.api_base_url, self.session)
-        )
+        result = await self.push_screen_wait(SearchResultsScreen(self.api_base_url, self.session))
 
         if result:
             # User selected a search result
@@ -905,10 +880,9 @@ class NyxGPTTUI(App):
 
     async def _rename_session_worker(self) -> None:
         """Worker to handle async rename session logic."""
-        from textual.widgets import Label
         from textual.containers import Container
         from textual.screen import ModalScreen
-        from textual.widgets import Button
+        from textual.widgets import Button, Label
 
         class RenameScreen(ModalScreen[str | None]):
             """Modal screen for renaming a session."""
@@ -959,9 +933,7 @@ class NyxGPTTUI(App):
             current_title = ""
 
         # Show rename dialog
-        new_name = await self.push_screen_wait(
-            RenameScreen(self.session, current_title)
-        )
+        new_name = await self.push_screen_wait(RenameScreen(self.session, current_title))
 
         if not new_name:
             return
@@ -982,9 +954,7 @@ class NyxGPTTUI(App):
                 # Update session name if filename changed
                 if new_session_name != old_name:
                     self.session = new_session_name
-                    self.output.append(
-                        f"\nSession renamed: {old_name} → {new_session_name}\n\n"
-                    )
+                    self.output.append(f"\nSession renamed: {old_name} → {new_session_name}\n\n")
                     log.info(f"Session renamed: {old_name} → {new_session_name}")
                 else:
                     self.output.append(f"\nSession title updated to: {new_name}\n\n")
@@ -1000,10 +970,9 @@ class NyxGPTTUI(App):
 
     async def _index_repository_worker(self) -> None:
         """Worker to handle async repository indexing."""
-        from textual.widgets import Label
         from textual.containers import Container
         from textual.screen import ModalScreen
-        from textual.widgets import Button
+        from textual.widgets import Button, Label
 
         class IndexRepoScreen(ModalScreen[dict | None]):
             """Modal screen for indexing a code repository."""
@@ -1114,9 +1083,7 @@ class NyxGPTTUI(App):
             return
 
         # Show confirmation dialog
-        confirmed = await self.push_screen_wait(
-            DeleteConfirmationScreen(self.session)
-        )
+        confirmed = await self.push_screen_wait(DeleteConfirmationScreen(self.session))
 
         if not confirmed:
             log.info(f"Session deletion cancelled for {self.session}")
@@ -1127,9 +1094,7 @@ class NyxGPTTUI(App):
         try:
             success = delete_session(session_to_delete, sessions_dir)
             if not success:
-                self.output.append(
-                    "\n[error] Failed to delete session: Session not found.\n\n"
-                )
+                self.output.append("\n[error] Failed to delete session: Session not found.\n\n")
                 log.error(f"Session not found: {session_to_delete}")
                 return
 
@@ -1145,14 +1110,10 @@ class NyxGPTTUI(App):
                 )
                 # Update status bar for new session
                 await self._update_session_status()
-                log.info(
-                    f"Session deleted: {session_to_delete}, switched to {new_session}"
-                )
+                log.info(f"Session deleted: {session_to_delete}, switched to {new_session}")
             else:
                 # This should not happen as we checked for last session, but handle defensively
-                self.output.append(
-                    "\n[error] Session deleted but no sessions remaining.\n\n"
-                )
+                self.output.append("\n[error] Session deleted but no sessions remaining.\n\n")
                 log.error("No sessions remaining after delete")
 
         except Exception as e:
@@ -1254,9 +1215,7 @@ class NyxGPTTUI(App):
                         # Check for retry status markers
                         while "__RETRY_START__" in buffer and "__RETRY_END__" in buffer:
                             start_idx = buffer.index("__RETRY_START__")
-                            end_idx = buffer.index("__RETRY_END__") + len(
-                                "__RETRY_END__"
-                            )
+                            end_idx = buffer.index("__RETRY_END__") + len("__RETRY_END__")
 
                             # Parse retry status
                             try:
@@ -1275,9 +1234,7 @@ class NyxGPTTUI(App):
                                     f"\n[reconnecting] Connection lost. Retrying (attempt {attempt}) in {delay:.1f}s...\n"
                                 )
                             except Exception as parse_err:
-                                log.warning(
-                                    f"Failed to parse retry status: {parse_err}"
-                                )
+                                log.warning(f"Failed to parse retry status: {parse_err}")
                             finally:
                                 # Always remove the marker from buffer (whether parsing succeeded or failed)
                                 buffer = buffer[:start_idx] + buffer[end_idx:]
@@ -1290,10 +1247,12 @@ class NyxGPTTUI(App):
                             # Parse and display RAG citation summary
                             try:
                                 rag_start = start_idx + len("__RAG_START__")
-                                rag_json = buffer[rag_start:buffer.index("__RAG_END__")]
+                                rag_json = buffer[rag_start : buffer.index("__RAG_END__")]
                                 rag_data = json.loads(rag_json)
 
-                                if rag_data.get("type") == "rag_metadata" and isinstance(rag_data.get("chunks"), list):
+                                if rag_data.get("type") == "rag_metadata" and isinstance(
+                                    rag_data.get("chunks"), list
+                                ):
                                     chunks = rag_data["chunks"]
                                     chunk_count = len(chunks)
 
@@ -1318,7 +1277,11 @@ class NyxGPTTUI(App):
                                         else:
                                             score_style = "red"
 
-                                        chunk_ref = f"chunk {chunk_id}" if chunk_id is not None else "source"
+                                        chunk_ref = (
+                                            f"chunk {chunk_id}"
+                                            if chunk_id is not None
+                                            else "source"
+                                        )
                                         citation_line = f"[dim]  [{idx}] {doc_id} ({chunk_ref}) - score: [{score_style}]{score:.3f}[/{score_style}][/dim]\n"
                                         self.output.append(citation_line)
 
@@ -1362,10 +1325,7 @@ class NyxGPTTUI(App):
                                     first_content = False
                                 self.output.append(buffer)
                                 buffer = ""
-                            elif (
-                                safe_idx == 0
-                                and len(buffer) > MARKER_BUFFER_OVERFLOW_THRESHOLD
-                            ):
+                            elif safe_idx == 0 and len(buffer) > MARKER_BUFFER_OVERFLOW_THRESHOLD:
                                 # Entire buffer is potential partial marker but too large, flush it
                                 if first_content and buffer.strip():
                                     self.output.remove_typing_indicator()

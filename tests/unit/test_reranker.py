@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from configparser import ConfigParser
 from unittest.mock import Mock, patch
+
 import pytest
 
 
@@ -70,9 +71,7 @@ def test_rerank_results_with_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
             return 0.6
         return 0.5
 
-    monkeypatch.setattr(
-        "nyxgpt.rag.reranker._score_relevance", mock_score_relevance
-    )
+    monkeypatch.setattr("nyxgpt.rag.reranker._score_relevance", mock_score_relevance)
 
     from nyxgpt.rag.reranker import rerank_results
 
@@ -114,9 +113,7 @@ def test_rerank_results_preserves_original_score(monkeypatch: pytest.MonkeyPatch
     def mock_score_relevance(query: str, document: str, config):
         return 0.75
 
-    monkeypatch.setattr(
-        "nyxgpt.rag.reranker._score_relevance", mock_score_relevance
-    )
+    monkeypatch.setattr("nyxgpt.rag.reranker._score_relevance", mock_score_relevance)
 
     from nyxgpt.rag.reranker import rerank_results
 
@@ -151,9 +148,7 @@ def test_rerank_results_handles_failure_gracefully(monkeypatch: pytest.MonkeyPat
             raise RerankError("Scoring failed")
         return 0.7
 
-    monkeypatch.setattr(
-        "nyxgpt.rag.reranker._score_relevance", mock_score_relevance
-    )
+    monkeypatch.setattr("nyxgpt.rag.reranker._score_relevance", mock_score_relevance)
 
     from nyxgpt.rag.reranker import rerank_results
 
@@ -182,7 +177,7 @@ def test_score_relevance_json_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
-    from nyxgpt.rag.reranker import _score_relevance, RerankerConfig
+    from nyxgpt.rag.reranker import RerankerConfig, _score_relevance
 
     config = RerankerConfig(
         base_url="http://localhost:11434",
@@ -203,6 +198,7 @@ def test_score_relevance_json_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
         mock_response = Mock()
         # Properly construct JSON with escaped inner content
         import json as json_module
+
         response_data = {"message": {"content": response_content}}
         mock_response.read.return_value = json_module.dumps(response_data).encode("utf-8")
         mock_response.__enter__ = Mock(return_value=mock_response)
@@ -222,7 +218,7 @@ def test_score_relevance_clamps_to_range(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
 
-    from nyxgpt.rag.reranker import _score_relevance, RerankerConfig
+    from nyxgpt.rag.reranker import RerankerConfig, _score_relevance
 
     config = RerankerConfig(
         base_url="http://localhost:11434",
@@ -243,6 +239,7 @@ def test_score_relevance_clamps_to_range(monkeypatch: pytest.MonkeyPatch) -> Non
         mock_response = Mock()
         # Properly construct JSON with escaped inner content
         import json as json_module
+
         response_data = {"message": {"content": response_content}}
         mock_response.read.return_value = json_module.dumps(response_data).encode("utf-8")
         mock_response.__enter__ = Mock(return_value=mock_response)

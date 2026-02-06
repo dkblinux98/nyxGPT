@@ -1,7 +1,7 @@
 from __future__ import annotations
+
 import os
 import sys
-
 from configparser import ConfigParser
 from pathlib import Path
 
@@ -59,9 +59,7 @@ def validate_config(cfg: ConfigParser) -> list[str]:
     if cfg.has_option("ollama", "base_url"):
         url = cfg.get("ollama", "base_url")
         if not url.startswith(("http://", "https://")):
-            errors.append(
-                f"Invalid ollama.base_url: {url} (must start with http:// or https://)"
-            )
+            errors.append(f"Invalid ollama.base_url: {url} (must start with http:// or https://)")
 
     # Validate RAG numeric settings
     rag_int_settings = {
@@ -77,9 +75,7 @@ def validate_config(cfg: ConfigParser) -> list[str]:
             try:
                 val = cfg.getint("rag", setting)
                 if not (min_val <= val <= max_val):
-                    errors.append(
-                        f"Invalid rag.{setting}: {val} (must be {min_val}-{max_val})"
-                    )
+                    errors.append(f"Invalid rag.{setting}: {val} (must be {min_val}-{max_val})")
             except ValueError as e:
                 errors.append(f"Invalid rag.{setting}: must be an integer ({e})")
 
@@ -99,8 +95,7 @@ def validate_config(cfg: ConfigParser) -> list[str]:
             window_size = cfg.getint("context", "default_window_size")
             if window_size < 100:
                 errors.append(
-                    f"Invalid context.default_window_size: {window_size} "
-                    "(must be at least 100)"
+                    f"Invalid context.default_window_size: {window_size} " "(must be at least 100)"
                 )
             elif window_size > 1000000:
                 errors.append(
@@ -108,9 +103,7 @@ def validate_config(cfg: ConfigParser) -> list[str]:
                     "(must not exceed 1,000,000)"
                 )
         except ValueError as e:
-            errors.append(
-                f"Invalid context.default_window_size: must be an integer ({e})"
-            )
+            errors.append(f"Invalid context.default_window_size: must be an integer ({e})")
 
     # Validate warning threshold
     if cfg.has_option("context", "warning_threshold"):
@@ -122,9 +115,7 @@ def validate_config(cfg: ConfigParser) -> list[str]:
                     "(must be between 0.0 and 1.0)"
                 )
         except ValueError as e:
-            errors.append(
-                f"Invalid context.warning_threshold: must be a float ({e})"
-            )
+            errors.append(f"Invalid context.warning_threshold: must be a float ({e})")
 
     # Validate model-specific context window overrides
     if cfg.has_section("context"):
@@ -134,8 +125,7 @@ def validate_config(cfg: ConfigParser) -> list[str]:
                     window_size = cfg.getint("context", option)
                     if window_size < 100:
                         errors.append(
-                            f"Invalid context.{option}: {window_size} "
-                            "(must be at least 100)"
+                            f"Invalid context.{option}: {window_size} " "(must be at least 100)"
                         )
                     elif window_size > 1000000:
                         errors.append(
@@ -143,9 +133,7 @@ def validate_config(cfg: ConfigParser) -> list[str]:
                             "(must not exceed 1,000,000)"
                         )
                 except ValueError as e:
-                    errors.append(
-                        f"Invalid context.{option}: must be an integer ({e})"
-                    )
+                    errors.append(f"Invalid context.{option}: must be an integer ({e})")
 
     return errors
 
@@ -188,10 +176,10 @@ def load_config(path: str | Path | None = None) -> ConfigParser:
 
     if (
         _CACHED_CFG is not None
-        and _CACHED_PATH == config_path
+        and config_path == _CACHED_PATH
         and _CACHED_MTIME_NS is not None
         and mtime_ns is not None
-        and _CACHED_MTIME_NS == mtime_ns
+        and mtime_ns == _CACHED_MTIME_NS
     ):
         return _CACHED_CFG
 
@@ -203,9 +191,7 @@ def load_config(path: str | Path | None = None) -> ConfigParser:
     if _CACHED_CFG is None:
         validation_errors = validate_config(parser)
         if validation_errors:
-            error_msg = "Configuration validation failed:\n  " + "\n  ".join(
-                validation_errors
-            )
+            error_msg = "Configuration validation failed:\n  " + "\n  ".join(validation_errors)
             # Print to stderr for visibility even if logging isn't set up yet
             print(f"ERROR: {error_msg}", file=sys.stderr)
             # Don't raise, just warn - allows system to start with fallback values
@@ -240,9 +226,7 @@ def _expand_path(value: str) -> Path:
 
 
 def get_sessions_dir(cfg: ConfigParser) -> Path:
-    val = cfg.get(
-        "nyxgpt", "sessions_dir", fallback=str(Path.home() / ".nyxGPT" / "sessions")
-    )
+    val = cfg.get("nyxgpt", "sessions_dir", fallback=str(Path.home() / ".nyxGPT" / "sessions"))
     return _expand_path(val)
 
 
@@ -448,9 +432,7 @@ def get_rate_limit_config(cfg: ConfigParser) -> dict:
     """
     try:
         return {
-            "requests_per_second": cfg.getint(
-                "rate_limit", "requests_per_second", fallback=10
-            ),
+            "requests_per_second": cfg.getint("rate_limit", "requests_per_second", fallback=10),
             "burst_size": cfg.getint("rate_limit", "burst_size", fallback=20),
         }
     except Exception:
@@ -571,9 +553,7 @@ def get_rag_context_format(cfg: ConfigParser) -> str:
     Returns:
         Context format template string
     """
-    default_format = (
-        "--- BEGIN RETRIEVED CONTEXT ---\n{context}\n--- END RETRIEVED CONTEXT ---"
-    )
+    default_format = "--- BEGIN RETRIEVED CONTEXT ---\n{context}\n--- END RETRIEVED CONTEXT ---"
     try:
         return cfg.get("rag", "context_format", fallback=default_format)
     except Exception:
@@ -598,9 +578,7 @@ def get_prompt_mode_enabled(cfg: ConfigParser) -> bool:
         import logging
 
         log = logging.getLogger(__name__)
-        log.warning(
-            "Invalid prompt.adaptive_mode_enabled in config, using False: %s", e
-        )
+        log.warning("Invalid prompt.adaptive_mode_enabled in config, using False: %s", e)
         return False
 
 

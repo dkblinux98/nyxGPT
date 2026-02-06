@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from datetime import datetime
+
 from cassandra.cluster import Cluster
 from cassandra.query import SimpleStatement
 
@@ -32,11 +33,12 @@ class MetadataFilter:
         date_from: Filter by ingestion date >= this datetime
         date_to: Filter by ingestion date <= this datetime
     """
-    doc_ids: Optional[list[str]] = None
-    filename: Optional[str] = None
-    tags: Optional[list[str]] = None
-    date_from: Optional[datetime] = None
-    date_to: Optional[datetime] = None
+
+    doc_ids: list[str] | None = None
+    filename: str | None = None
+    tags: list[str] | None = None
+    date_from: datetime | None = None
+    date_to: datetime | None = None
 
 
 @dataclass
@@ -234,7 +236,7 @@ class CassandraVectorStore:
         self,
         doc_id: str,
         texts: Iterable[str],
-        embeddings: Iterable[List[float]],
+        embeddings: Iterable[list[float]],
         metadatas: Iterable[dict] | None = None,
         *,
         embedding_model: str | None = None,
@@ -278,7 +280,7 @@ class CassandraVectorStore:
             """
         )
 
-        for idx, (text, emb, meta) in enumerate(zip(texts_l, embs_l, metas_l)):
+        for idx, (text, emb, meta) in enumerate(zip(texts_l, embs_l, metas_l, strict=False)):
             # For updates, preserve original ingested_at; for new docs, use current time
             ingested_at = original_ingested_at if original_ingested_at else now
             self.session.execute(
@@ -303,12 +305,12 @@ class CassandraVectorStore:
 
     def query_by_embedding(
         self,
-        embedding: List[float],
+        embedding: list[float],
         k: int = 5,
         *,
         collect_metrics: bool = False,
         embedding_model: str | None = None,
-        metadata_filter: Optional[MetadataFilter] = None,
+        metadata_filter: MetadataFilter | None = None,
     ) -> list[dict] | tuple[list[dict], VectorSearchDebugMetrics]:
         """Query by embedding vector with optional metadata filtering.
 
@@ -383,21 +385,15 @@ class CassandraVectorStore:
                     if metadata_filter.date_to and r.ingested_at > metadata_filter.date_to:
                         continue
 
-            score = (
-                float(r.score) if hasattr(r, "score") and r.score is not None else 0.0
-            )
+            score = float(r.score) if hasattr(r, "score") and r.score is not None else 0.0
             result = {
                 "doc_id": r.doc_id,
                 "chunk_id": r.chunk_id,
                 "text": r.text,
                 "metadata": metadata,
                 "score": score,
-                "embedding_model": r.embedding_model
-                if hasattr(r, "embedding_model")
-                else None,
-                "embedding_dim": r.embedding_dim
-                if hasattr(r, "embedding_dim")
-                else None,
+                "embedding_model": r.embedding_model if hasattr(r, "embedding_model") else None,
+                "embedding_dim": r.embedding_dim if hasattr(r, "embedding_dim") else None,
             }
             out.append(result)
             scores.append(score)
@@ -439,9 +435,7 @@ class CassandraVectorStore:
                 doc_info[doc_id] = {
                     "doc_id": doc_id,
                     "chunks": 0,
-                    "embedding_model": r.embedding_model
-                    if hasattr(r, "embedding_model")
-                    else None,
+                    "embedding_model": r.embedding_model if hasattr(r, "embedding_model") else None,
                 }
             doc_info[doc_id]["chunks"] += 1
 
@@ -521,9 +515,7 @@ class CassandraVectorStore:
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
-        stmt = SimpleStatement(
-            f"SELECT doc_hash FROM {self.table_name} WHERE doc_id = %s LIMIT 1"
-        )
+        stmt = SimpleStatement(f"SELECT doc_hash FROM {self.table_name} WHERE doc_id = %s LIMIT 1")
 
         rows = self.session.execute(stmt, (doc_id,))
         row = rows.one()
@@ -562,16 +554,18 @@ class CassandraVectorStore:
         return {
             "doc_id": row.doc_id,
             "doc_hash": row.doc_hash if hasattr(row, "doc_hash") else None,
-            "ingested_at": row.ingested_at.isoformat()
-            if hasattr(row, "ingested_at") and row.ingested_at
-            else None,
-            "updated_at": row.updated_at.isoformat()
-            if hasattr(row, "updated_at") and row.updated_at
-            else None,
+            "ingested_at": (
+                row.ingested_at.isoformat()
+                if hasattr(row, "ingested_at") and row.ingested_at
+                else None
+            ),
+            "updated_at": (
+                row.updated_at.isoformat()
+                if hasattr(row, "updated_at") and row.updated_at
+                else None
+            ),
             "chunks": len(rows),
-            "embedding_model": row.embedding_model
-            if hasattr(row, "embedding_model")
-            else None,
+            "embedding_model": row.embedding_model if hasattr(row, "embedding_model") else None,
         }
 
     def document_needs_update(self, doc_id: str, new_hash: str) -> bool:
@@ -610,18 +604,20 @@ class CassandraVectorStore:
         rows = self.session.execute(stmt)
 
         for row in rows:
-            chunks.append({
-                "doc_id": row.doc_id,
-                "chunk_id": row.chunk_id,
-                "text": row.text,
-                "metadata": row.metadata,
-                "embedding": list(row.embedding) if row.embedding else None,
-                "embedding_model": row.embedding_model,
-                "embedding_dim": row.embedding_dim,
-                "doc_hash": row.doc_hash,
-                "ingested_at": row.ingested_at,
-                "updated_at": row.updated_at,
-            })
+            chunks.append(
+                {
+                    "doc_id": row.doc_id,
+                    "chunk_id": row.chunk_id,
+                    "text": row.text,
+                    "metadata": row.metadata,
+                    "embedding": list(row.embedding) if row.embedding else None,
+                    "embedding_model": row.embedding_model,
+                    "embedding_dim": row.embedding_dim,
+                    "doc_hash": row.doc_hash,
+                    "ingested_at": row.ingested_at,
+                    "updated_at": row.updated_at,
+                }
+            )
 
         return chunks
 
@@ -651,7 +647,7 @@ class CassandraVectorStore:
             """
         )
 
-    def get_collection_settings(self) -> dict[str, Optional[str | int]]:
+    def get_collection_settings(self) -> dict[str, str | int | None]:
         """Get settings for the current collection.
 
         Returns:
@@ -684,9 +680,9 @@ class CassandraVectorStore:
     def update_collection_settings(
         self,
         *,
-        embedding_model: Optional[str] = None,
-        chunk_size: Optional[int] = None,
-        chunk_overlap: Optional[int] = None,
+        embedding_model: str | None = None,
+        chunk_size: int | None = None,
+        chunk_overlap: int | None = None,
     ) -> None:
         """Update settings for the current collection.
 
@@ -702,7 +698,4 @@ class CassandraVectorStore:
             (collection_name, embedding_model, chunk_size, chunk_overlap)
             VALUES (%s, %s, %s, %s)
         """
-        self.session.execute(
-            query,
-            [self.collection, embedding_model, chunk_size, chunk_overlap]
-        )
+        self.session.execute(query, [self.collection, embedding_model, chunk_size, chunk_overlap])

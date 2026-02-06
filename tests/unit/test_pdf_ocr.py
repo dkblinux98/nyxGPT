@@ -1,7 +1,9 @@
 """Tests for PDF OCR functionality (#2669)."""
+
 from __future__ import annotations
 
 from unittest.mock import Mock, patch
+
 import pytest
 
 

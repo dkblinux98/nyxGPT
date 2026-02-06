@@ -1,92 +1,86 @@
 from __future__ import annotations
 
-import io
 import inspect
+import io
+import logging
 import os
 import re
 import secrets
-import uuid
-from contextlib import redirect_stderr, redirect_stdout
-from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Any, Optional, cast
-import urllib.request
 import urllib.error
+import urllib.request
+import uuid
 from configparser import ConfigParser
+from contextlib import asynccontextmanager, redirect_stderr, redirect_stdout
+from pathlib import Path
+from typing import Any, cast
 
 from fastapi import (
     APIRouter,
-    FastAPI,
-    HTTPException,
-    Request,
     Body,
-    UploadFile,
-    File,
     Depends,
+    FastAPI,
+    File,
+    HTTPException,
     Query,
+    Request,
+    UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.status import HTTP_401_UNAUTHORIZED
-from nyxgpt import api_models
+
+import nyxgpt.config
+from nyxgpt import api_models, models, sessions, tools_fs
+from nyxgpt import chat as chat_module
 from nyxgpt.api_models import (
-    InfoResponse,
-    SessionsListResponse,
-    TitleRequest,
-    RenameRequest,
-    TagsRequest,
     ChatRequest,
     ChatResponse,
-    RagChunkInfo,
-    RagDocumentInfo,
-    ToolTextResponse,
-    ToolLsRequest,
-    ToolCatRequest,
-    ToolGrepRequest,
-    RagIngestRequest,
-    RagIngestResponse,
-    RagIndexRepoRequest,
-    RagIndexRepoResponse,
-    RagQueryRequest,
-    RagQueryResult,
-    RagQueryResponse,
-    RagMetricsQueryRequest,
-    RagMetricsQueryResponse,
-    CollectionInfo,
-    CollectionsListResponse,
     CollectionDeleteResponse,
-    CreateCollectionRequest,
-    CreateCollectionResponse,
-    ReindexCollectionRequest,
-    ReindexCollectionResponse,
+    CollectionInfo,
     CollectionSettings,
     CollectionSettingsResponse,
+    CollectionsListResponse,
+    CreateCollectionRequest,
+    CreateCollectionResponse,
+    InfoResponse,
+    RagChunkInfo,
+    RagDocumentInfo,
+    RagIndexRepoRequest,
+    RagIndexRepoResponse,
+    RagIngestRequest,
+    RagIngestResponse,
+    RagMetricsQueryRequest,
+    RagMetricsQueryResponse,
+    RagQueryRequest,
+    RagQueryResponse,
+    RagQueryResult,
+    ReindexCollectionRequest,
+    ReindexCollectionResponse,
+    RenameRequest,
+    SessionsListResponse,
+    TagsRequest,
+    TitleRequest,
+    ToolCatRequest,
+    ToolGrepRequest,
+    ToolLsRequest,
+    ToolTextResponse,
 )
-
+from nyxgpt.chat import chat as run_chat
+from nyxgpt.chat import chat_stream
 from nyxgpt.config import (
     get_default_model,
     get_ollama_base_url,
-    get_sessions_dir,
-    get_rate_limit_enabled,
-    get_rate_limit_config,
-    get_rag_min_score,
     get_rag_good_score_threshold,
     get_rag_medium_score_threshold,
+    get_rag_min_score,
+    get_rate_limit_config,
+    get_rate_limit_enabled,
+    get_sessions_dir,
     load_config,
 )
-import nyxgpt.config
-from nyxgpt import chat as chat_module
-from nyxgpt.chat import chat as run_chat, chat_stream
-from nyxgpt import sessions
-from nyxgpt import tools_fs
-from nyxgpt import models
-
+from nyxgpt.logging import configure_logging, get_log_dir, request_id_var
 from nyxgpt.rag.rag import ingest_document, retrieve_context
-from nyxgpt.logging import configure_logging, request_id_var, get_log_dir
 from nyxgpt.rate_limiter import RateLimiter
-
-
-import logging
 
 log = logging.getLogger("nyxgpt.api")
 
@@ -233,9 +227,7 @@ async def security_headers_middleware(request: Request, call_next):
     # Strict-Transport-Security (HSTS) - only for HTTPS
     # Force browser to use HTTPS for 1 year
     if request.url.scheme == "https":
-        response.headers["Strict-Transport-Security"] = (
-            "max-age=31536000; includeSubDomains"
-        )
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
     return response
 
@@ -555,9 +547,7 @@ def _ollama_get_json(url: str, timeout_s: float = 10.0) -> Any:
     return json.loads(data.decode("utf-8"))
 
 
-def _ollama_post_json(
-    url: str, payload: dict[str, Any], timeout_s: float = 60.0
-) -> Any:
+def _ollama_post_json(url: str, payload: dict[str, Any], timeout_s: float = 60.0) -> Any:
     import json
 
     body = json.dumps(payload).encode("utf-8")
@@ -650,9 +640,7 @@ def config_get(request: Request) -> dict[str, Any]:
 
 
 @api.post("/config")
-def config_update(
-    request: Request, payload: dict[str, Any] = Body(...)
-) -> dict[str, Any]:
+def config_update(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     # Only apply known keys; ignore the rest.
     updates: dict[str, Any] = {}
     if "default_model" in payload:
@@ -680,9 +668,7 @@ def config_update(
 
 # PATCH endpoint for config updates
 @api.patch("/config")
-def config_patch(
-    request: Request, payload: dict[str, Any] = Body(...)
-) -> dict[str, Any]:
+def config_patch(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     return config_update(request, payload)
 
 
@@ -700,15 +686,11 @@ def models_list(request: Request) -> dict[str, Any]:
                 names.append(m["name"])
         return {"models": names}
     except Exception as e:
-        raise HTTPException(
-            status_code=502, detail=f"Failed to list models from Ollama: {e}"
-        )
+        raise HTTPException(status_code=502, detail=f"Failed to list models from Ollama: {e}")
 
 
 @api.post("/models/pull")
-def models_pull(
-    request: Request, payload: dict[str, Any] = Body(...)
-) -> dict[str, Any]:
+def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     cfg = _req_cfg(request)
     model = payload.get("model")
     if not isinstance(model, str) or not model.strip():
@@ -723,9 +705,7 @@ def models_pull(
         )
         return {"ok": True, "model": model, "result": data}
     except Exception as e:
-        raise HTTPException(
-            status_code=502, detail=f"Failed to pull model via Ollama: {e}"
-        )
+        raise HTTPException(status_code=502, detail=f"Failed to pull model via Ollama: {e}")
 
 
 @api.delete("/models/{model_name}")
@@ -738,9 +718,7 @@ def models_delete(request: Request, model_name: str) -> dict[str, Any]:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(
-            status_code=502, detail=f"Failed to delete model via Ollama: {e}"
-        )
+        raise HTTPException(status_code=502, detail=f"Failed to delete model via Ollama: {e}")
 
 
 @api.get("/models/{model_name}/info")
@@ -753,13 +731,11 @@ def models_info(request: Request, model_name: str) -> dict[str, Any]:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(
-            status_code=502, detail=f"Failed to get model info via Ollama: {e}"
-        )
+        raise HTTPException(status_code=502, detail=f"Failed to get model info via Ollama: {e}")
 
 
 @api.get("/sessions", response_model=SessionsListResponse)
-def sessions_list(sessions_dir: Optional[str] = None) -> SessionsListResponse:
+def sessions_list(sessions_dir: str | None = None) -> SessionsListResponse:
     cfg = _cfg(None)
     effective_dir = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(cfg)
     rows = sessions.list_sessions(effective_dir)
@@ -773,18 +749,14 @@ def sessions_list(sessions_dir: Optional[str] = None) -> SessionsListResponse:
                 "modified": r.get("modified"),
                 "pinned": bool(meta.get("pinned")),
                 "tags": meta.get("tags") if isinstance(meta.get("tags"), list) else [],
-                "title": meta.get("title")
-                if isinstance(meta.get("title"), str)
-                else "",
-                "summary": meta.get("summary")
-                if isinstance(meta.get("summary"), str)
-                else "",
-                "token_estimate": meta.get("token_estimate")
-                if isinstance(meta.get("token_estimate"), int)
-                else None,
-                "model": meta.get("model")
-                if isinstance(meta.get("model"), str)
-                else "",
+                "title": meta.get("title") if isinstance(meta.get("title"), str) else "",
+                "summary": meta.get("summary") if isinstance(meta.get("summary"), str) else "",
+                "token_estimate": (
+                    meta.get("token_estimate")
+                    if isinstance(meta.get("token_estimate"), int)
+                    else None
+                ),
+                "model": meta.get("model") if isinstance(meta.get("model"), str) else "",
             }
         )
     return SessionsListResponse(sessions=out)
@@ -792,18 +764,12 @@ def sessions_list(sessions_dir: Optional[str] = None) -> SessionsListResponse:
 
 def search_params(
     query: str = Query(..., min_length=1, description="Text to search for in messages"),
-    case_sensitive: bool = Query(
-        False, description="Whether to perform case-sensitive search"
-    ),
-    role_filter: Optional[api_models.MessageRole] = Query(
+    case_sensitive: bool = Query(False, description="Whether to perform case-sensitive search"),
+    role_filter: api_models.MessageRole | None = Query(
         None, description="Filter by message role (user, assistant, system)"
     ),
-    session_filter: Optional[str] = Query(
-        None, description="Filter to specific session name"
-    ),
-    limit: int = Query(
-        50, ge=1, le=500, description="Maximum number of results to return"
-    ),
+    session_filter: str | None = Query(None, description="Filter to specific session name"),
+    limit: int = Query(50, ge=1, le=500, description="Maximum number of results to return"),
 ) -> api_models.SearchRequest:
     """Dependency function to validate search parameters using SearchRequest model.
 
@@ -822,7 +788,7 @@ def search_params(
 @api.get("/sessions/search", response_model=api_models.SearchResponse)
 def sessions_search(
     params: api_models.SearchRequest = Depends(search_params),
-    sessions_dir: Optional[str] = None,
+    sessions_dir: str | None = None,
 ) -> api_models.SearchResponse:
     """Search for messages across all sessions or within a specific session.
 
@@ -873,9 +839,9 @@ def sessions_search(
 @api.get("/sessions/{name}")
 def sessions_show(
     name: str,
-    sessions_dir: Optional[str] = None,
-    offset: Optional[int] = None,
-    limit: Optional[int] = None,
+    sessions_dir: str | None = None,
+    offset: int | None = None,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     sd = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     sf = sessions.session_file_for(name, sd or sessions.default_sessions_dir())
@@ -965,7 +931,7 @@ def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 
 @api.delete("/sessions/{name}")
-def sessions_delete(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
+def sessions_delete(name: str, sessions_dir: str | None = None) -> dict[str, Any]:
     ok = sessions.delete_session(
         name, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     )
@@ -975,7 +941,7 @@ def sessions_delete(name: str, sessions_dir: Optional[str] = None) -> dict[str, 
 
 
 @api.post("/sessions/{name}/summarize")
-def sessions_summarize(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
+def sessions_summarize(name: str, sessions_dir: str | None = None) -> dict[str, Any]:
     ok, msg = sessions.summarize_session(
         name, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     )
@@ -985,7 +951,7 @@ def sessions_summarize(name: str, sessions_dir: Optional[str] = None) -> dict[st
 
 
 @api.post("/sessions/{name}/pin")
-def sessions_pin(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
+def sessions_pin(name: str, sessions_dir: str | None = None) -> dict[str, Any]:
     ok, msg = sessions.set_pinned(
         name, True, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     )
@@ -995,7 +961,7 @@ def sessions_pin(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any
 
 
 @api.post("/sessions/{name}/unpin")
-def sessions_unpin(name: str, sessions_dir: Optional[str] = None) -> dict[str, Any]:
+def sessions_unpin(name: str, sessions_dir: str | None = None) -> dict[str, Any]:
     ok, msg = sessions.set_pinned(
         name,
         False,
@@ -1007,9 +973,7 @@ def sessions_unpin(name: str, sessions_dir: Optional[str] = None) -> dict[str, A
 
 
 @api.post("/sessions/{name}/title")
-def sessions_title(
-    name: str, req: TitleRequest, sessions_dir: Optional[str] = None
-) -> dict[str, Any]:
+def sessions_title(name: str, req: TitleRequest, sessions_dir: str | None = None) -> dict[str, Any]:
     ok, msg = sessions.set_title(
         name,
         req.title,
@@ -1022,7 +986,7 @@ def sessions_title(
 
 @api.post("/sessions/{name}/tags/add")
 def sessions_tags_add(
-    name: str, req: TagsRequest, sessions_dir: Optional[str] = None
+    name: str, req: TagsRequest, sessions_dir: str | None = None
 ) -> dict[str, Any]:
     if not req.tags:
         raise HTTPException(status_code=400, detail="At least one tag is required")
@@ -1038,7 +1002,7 @@ def sessions_tags_add(
 
 @api.post("/sessions/{name}/tags/remove")
 def sessions_tags_remove(
-    name: str, req: TagsRequest, sessions_dir: Optional[str] = None
+    name: str, req: TagsRequest, sessions_dir: str | None = None
 ) -> dict[str, Any]:
     if not req.tags:
         raise HTTPException(status_code=400, detail="At least one tag is required")
@@ -1054,7 +1018,7 @@ def sessions_tags_remove(
 
 @api.post("/sessions/{name}/rename")
 def sessions_rename(
-    name: str, req: RenameRequest, sessions_dir: Optional[str] = None
+    name: str, req: RenameRequest, sessions_dir: str | None = None
 ) -> dict[str, Any]:
     """Rename a session with optional title update and filename sync.
 
@@ -1116,9 +1080,7 @@ def sessions_rename(
 
 
 @api.post("/sessions/{name}/sync-filename")
-def sessions_sync_filename(
-    name: str, sessions_dir: Optional[str] = None
-) -> dict[str, Any]:
+def sessions_sync_filename(name: str, sessions_dir: str | None = None) -> dict[str, Any]:
     """Force filename sync for a session based on its current title.
 
     This endpoint is useful when:
@@ -1134,9 +1096,7 @@ def sessions_sync_filename(
         raise HTTPException(status_code=404, detail=f"Session '{name}' not found")
 
     # Force filename sync
-    success, status, new_name = sessions.sync_filename_with_title(
-        name, _sessions_dir, force=True
-    )
+    success, status, new_name = sessions.sync_filename_with_title(name, _sessions_dir, force=True)
 
     if not success:
         raise HTTPException(status_code=500, detail=f"Filename sync failed: {status}")
@@ -1161,7 +1121,7 @@ def edit_message(
     name: str,
     message_index: int,
     req: api_models.EditMessageRequest,
-    sessions_dir: Optional[str] = None,
+    sessions_dir: str | None = None,
 ) -> dict[str, Any]:
     """Edit a message in a session.
 
@@ -1186,7 +1146,7 @@ def edit_message(
 
 @api.get("/sessions/{name}/messages/{message_index}/rag")
 def get_message_rag_chunks(
-    name: str, message_index: int, sessions_dir: Optional[str] = None
+    name: str, message_index: int, sessions_dir: str | None = None
 ) -> dict[str, Any]:
     """Get RAG chunks for a specific message.
 
@@ -1249,7 +1209,7 @@ def _escape_markdown(text: str) -> str:
 
 @api.get("/sessions/{name}/citations/export", response_model=None)
 def export_session_citations(
-    name: str, format: str = "json", sessions_dir: Optional[str] = None
+    name: str, format: str = "json", sessions_dir: str | None = None
 ) -> dict[str, Any] | Response:
     """Export all RAG citations from a session.
 
@@ -1290,15 +1250,17 @@ def export_session_citations(
             rag_chunks: list[Any] = cast(list[Any], msg.get("rag_chunks", []))
             if rag_chunks and isinstance(rag_chunks, list):
                 for chunk_idx, chunk in enumerate(rag_chunks):
-                    citations.append({
-                        "message_index": msg_idx,
-                        "citation_index": chunk_idx,
-                        "doc_id": chunk.get("doc_id"),
-                        "chunk_id": chunk.get("chunk_id"),
-                        "text": chunk.get("text"),
-                        "score": chunk.get("score"),
-                        "similarity_score": chunk.get("similarity_score"),
-                    })
+                    citations.append(
+                        {
+                            "message_index": msg_idx,
+                            "citation_index": chunk_idx,
+                            "doc_id": chunk.get("doc_id"),
+                            "chunk_id": chunk.get("chunk_id"),
+                            "text": chunk.get("text"),
+                            "score": chunk.get("score"),
+                            "similarity_score": chunk.get("similarity_score"),
+                        }
+                    )
 
     if format_lower == "json":
         return {
@@ -1341,7 +1303,7 @@ def regenerate_response(
     name: str,
     message_index: int,
     req: api_models.RegenerateRequest,
-    sessions_dir: Optional[str] = None,
+    sessions_dir: str | None = None,
 ) -> dict[str, Any]:
     """Regenerate response from a specific message.
 
@@ -1362,15 +1324,11 @@ def regenerate_response(
 
     msgs = sessions.load_session_messages(sf)
     if message_index < 0 or message_index >= len(msgs):
-        raise HTTPException(
-            status_code=400, detail=f"Invalid message index: {message_index}"
-        )
+        raise HTTPException(status_code=400, detail=f"Invalid message index: {message_index}")
 
     message = msgs[message_index]
     if message.get("role") != "user":
-        raise HTTPException(
-            status_code=400, detail="Can only regenerate from user messages"
-        )
+        raise HTTPException(status_code=400, detail="Can only regenerate from user messages")
 
     # If new prompt provided, edit the message first
     prompt = req.prompt if req.prompt else message.get("content", "")
@@ -1418,9 +1376,7 @@ def regenerate_response(
 
 
 @api.get("/sessions/{name}/export")
-def sessions_export(
-    name: str, format: str = "markdown", sessions_dir: Optional[str] = None
-):
+def sessions_export(name: str, format: str = "markdown", sessions_dir: str | None = None):
     """Export session to markdown, JSON, or HTML format."""
     format_lower = format.lower()
     if format_lower not in ("markdown", "json", "html"):
@@ -1488,9 +1444,7 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
         # Optional runtime override: only pass if chat implementation supports it.
         if _maybe_kw(run_chat, "rag_enabled"):
             rag_val = getattr(req, "rag_enabled", None)
-            kwargs["rag_enabled"] = (
-                d["rag_enabled"] if rag_val is None else bool(rag_val)
-            )
+            kwargs["rag_enabled"] = d["rag_enabled"] if rag_val is None else bool(rag_val)
 
         result = run_chat(req.prompt, **kwargs)
 
@@ -1527,9 +1481,7 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
         )
     except ValueError as e:
         # Validation errors (e.g., invalid session name)
-        log.warning(
-            "Chat validation error", extra={"request_id": req_id, "error": str(e)}
-        )
+        log.warning("Chat validation error", extra={"request_id": req_id, "error": str(e)})
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         log.error(
@@ -1597,9 +1549,7 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
 
             if _maybe_kw(chat_stream, "rag_enabled"):
                 rag_val = getattr(req, "rag_enabled", None)
-                kwargs["rag_enabled"] = (
-                    d["rag_enabled"] if rag_val is None else bool(rag_val)
-                )
+                kwargs["rag_enabled"] = d["rag_enabled"] if rag_val is None else bool(rag_val)
 
             if _maybe_kw(chat_stream, "rag_filters"):
                 rag_filters_val = getattr(req, "rag_filters", None)
@@ -1607,8 +1557,7 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                     # Convert RagFilters model to dict
                     kwargs["rag_filters"] = rag_filters_val.model_dump()
 
-            for chunk in chat_stream(req.prompt, **kwargs):
-                yield chunk
+            yield from chat_stream(req.prompt, **kwargs)
 
         return StreamingResponse(
             _stream_with_keepalive(),
@@ -1646,33 +1595,23 @@ def chat_stream_api_legacy(request: Request, req: ChatRequest):
 def tool_ls(req: ToolLsRequest) -> ToolTextResponse:
     rc, out, err = _capture_stdout(tools_fs.ls, Path(req.path))
     if rc != 0:
-        raise HTTPException(
-            status_code=400, detail=(err.strip() or out.strip() or "ls failed")
-        )
+        raise HTTPException(status_code=400, detail=(err.strip() or out.strip() or "ls failed"))
     return ToolTextResponse(output=out)
 
 
 @api.post("/tools/cat", response_model=ToolTextResponse)
 def tool_cat(req: ToolCatRequest) -> ToolTextResponse:
-    rc, out, err = _capture_stdout(
-        tools_fs.cat, Path(req.path), head=req.head, tail=req.tail
-    )
+    rc, out, err = _capture_stdout(tools_fs.cat, Path(req.path), head=req.head, tail=req.tail)
     if rc != 0:
-        raise HTTPException(
-            status_code=400, detail=(err.strip() or out.strip() or "cat failed")
-        )
+        raise HTTPException(status_code=400, detail=(err.strip() or out.strip() or "cat failed"))
     return ToolTextResponse(output=out)
 
 
 @api.post("/tools/grep", response_model=ToolTextResponse)
 def tool_grep(req: ToolGrepRequest) -> ToolTextResponse:
-    rc, out, err = _capture_stdout(
-        tools_fs.grep, req.pattern, Path(req.path), max_matches=req.max
-    )
+    rc, out, err = _capture_stdout(tools_fs.grep, req.pattern, Path(req.path), max_matches=req.max)
     if rc != 0:
-        raise HTTPException(
-            status_code=400, detail=(err.strip() or out.strip() or "grep failed")
-        )
+        raise HTTPException(status_code=400, detail=(err.strip() or out.strip() or "grep failed"))
     return ToolTextResponse(output=out)
 
 
@@ -1749,8 +1688,8 @@ def rag_collections_list(request: Request) -> CollectionsListResponse:
     - Total number of chunks
     - Embedding models used
     """
-    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
     from nyxgpt.api_models import CollectionsListResponse
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
     # Get list of all collections
     temp_store = CassandraVectorStore()
@@ -1772,10 +1711,9 @@ def rag_collections_list(request: Request) -> CollectionsListResponse:
             chunk_count = sum(d["chunks"] for d in docs)
 
             # Get unique embedding models
-            embedding_models = list(set(
-                d["embedding_model"] for d in docs
-                if d.get("embedding_model")
-            ))
+            embedding_models = list(
+                {d["embedding_model"] for d in docs if d.get("embedding_model")}
+            )
             embedding_models.sort()
 
             collections_info.append(
@@ -1831,7 +1769,7 @@ def rag_collection_create(
         )
 
     # Validate name format (alphanumeric and underscores only - no hyphens for Cassandra compatibility)
-    if not re.match(r'^[a-zA-Z0-9_]+$', collection_name):
+    if not re.match(r"^[a-zA-Z0-9_]+$", collection_name):
         raise HTTPException(
             status_code=400,
             detail="Collection name must contain only letters, numbers, and underscores.",
@@ -1868,15 +1806,11 @@ def rag_collection_create(
     except ImportError as e:
         log.error(f"Cassandra driver import error: {e}", exc_info=True)
         raise HTTPException(
-            status_code=503,
-            detail="RAG service unavailable: Cassandra driver not found"
+            status_code=503, detail="RAG service unavailable: Cassandra driver not found"
         )
     except Exception as e:
         log.error(f"Failed to create collection '{collection_name}': {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to create collection: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to create collection: {str(e)}")
     finally:
         store.close()
 
@@ -1912,16 +1846,12 @@ def rag_collection_delete(request: Request, collection_name: str) -> CollectionD
         # Cassandra driver not available
         log.error(f"Cassandra driver import error: {e}", exc_info=True)
         raise HTTPException(
-            status_code=503,
-            detail="RAG service unavailable: Cassandra driver not found"
+            status_code=503, detail="RAG service unavailable: Cassandra driver not found"
         )
     except Exception as e:
         # Catch database errors and other issues
         log.error(f"Failed to clear collection '{collection_name}': {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to clear collection: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to clear collection: {str(e)}")
     finally:
         store.close()
 
@@ -1945,8 +1875,8 @@ def rag_collection_reindex(
     Returns:
         ReindexCollectionResponse with status and progress
     """
-    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
     from nyxgpt.rag.embeddings import embed_texts
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
     # Prevent re-indexing default collection to avoid accidents
     if collection_name == "default":
@@ -1973,7 +1903,9 @@ def rag_collection_reindex(
             )
 
         # Get all chunks from the collection
-        log.info(f"Re-indexing collection '{collection_name}' with model '{body.target_embedding_model}'")
+        log.info(
+            f"Re-indexing collection '{collection_name}' with model '{body.target_embedding_model}'"
+        )
         chunks = store.get_all_chunks()
 
         if not chunks:
@@ -2002,22 +1934,25 @@ def rag_collection_reindex(
             log.error(f"Failed to generate embeddings: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to generate embeddings with model '{body.target_embedding_model}': {str(e)}"
+                detail=f"Failed to generate embeddings with model '{body.target_embedding_model}': {str(e)}",
             )
 
         # Update chunks with new embeddings
         # Group chunks by doc_id for batch updates
         from collections import defaultdict
+
         chunks_by_doc: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
         for i, chunk in enumerate(chunks):
-            chunks_by_doc[chunk["doc_id"]].append({
-                "chunk_id": chunk["chunk_id"],
-                "text": chunk["text"],
-                "metadata": chunk["metadata"],
-                "embedding": new_embeddings[i],
-                "doc_hash": chunk.get("doc_hash", ""),
-            })
+            chunks_by_doc[chunk["doc_id"]].append(
+                {
+                    "chunk_id": chunk["chunk_id"],
+                    "text": chunk["text"],
+                    "metadata": chunk["metadata"],
+                    "embedding": new_embeddings[i],
+                    "doc_hash": chunk.get("doc_hash", ""),
+                }
+            )
 
         # Update each document's chunks
         chunks_processed = 0
@@ -2038,7 +1973,9 @@ def rag_collection_reindex(
             )
             chunks_processed += len(doc_chunks)
 
-        log.info(f"Successfully re-indexed {chunks_processed} chunks in collection '{collection_name}'")
+        log.info(
+            f"Successfully re-indexed {chunks_processed} chunks in collection '{collection_name}'"
+        )
 
         return ReindexCollectionResponse(
             collection=collection_name,
@@ -2052,15 +1989,11 @@ def rag_collection_reindex(
     except ImportError as e:
         log.error(f"Cassandra driver import error: {e}", exc_info=True)
         raise HTTPException(
-            status_code=503,
-            detail="RAG service unavailable: Cassandra driver not found"
+            status_code=503, detail="RAG service unavailable: Cassandra driver not found"
         )
     except Exception as e:
         log.error(f"Failed to re-index collection '{collection_name}': {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to re-index collection: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to re-index collection: {str(e)}")
     finally:
         store.close()
 
@@ -2109,10 +2042,9 @@ def rag_collection_get_settings(
             embedding_model = embedding_model_raw
         elif not embedding_model_raw:
             docs = store.list_docs()
-            embedding_models = list(set(
-                d["embedding_model"] for d in docs
-                if d.get("embedding_model")
-            ))
+            embedding_models = list(
+                {d["embedding_model"] for d in docs if d.get("embedding_model")}
+            )
             # Use first model if only one, otherwise None (indicates mixed)
             embedding_model = embedding_models[0] if len(embedding_models) == 1 else None
 
@@ -2121,7 +2053,9 @@ def rag_collection_get_settings(
         chunk_size: int = chunk_size_raw if isinstance(chunk_size_raw, int) else global_chunk_size
 
         chunk_overlap_raw = stored_settings.get("chunk_overlap")
-        chunk_overlap: int = chunk_overlap_raw if isinstance(chunk_overlap_raw, int) else global_chunk_overlap
+        chunk_overlap: int = (
+            chunk_overlap_raw if isinstance(chunk_overlap_raw, int) else global_chunk_overlap
+        )
 
         return CollectionSettingsResponse(
             collection=collection_name,
@@ -2137,15 +2071,11 @@ def rag_collection_get_settings(
     except ImportError as e:
         log.error(f"Cassandra driver import error: {e}", exc_info=True)
         raise HTTPException(
-            status_code=503,
-            detail="RAG service unavailable: Cassandra driver not found"
+            status_code=503, detail="RAG service unavailable: Cassandra driver not found"
         )
     except Exception as e:
         log.error(f"Failed to get settings for collection '{collection_name}': {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get collection settings: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to get collection settings: {str(e)}")
     finally:
         store.close()
 
@@ -2201,14 +2131,14 @@ def rag_collection_update_settings(
     except ImportError as e:
         log.error(f"Cassandra driver import error: {e}", exc_info=True)
         raise HTTPException(
-            status_code=503,
-            detail="RAG service unavailable: Cassandra driver not found"
+            status_code=503, detail="RAG service unavailable: Cassandra driver not found"
         )
     except Exception as e:
-        log.error(f"Failed to update settings for collection '{collection_name}': {e}", exc_info=True)
+        log.error(
+            f"Failed to update settings for collection '{collection_name}': {e}", exc_info=True
+        )
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to update collection settings: {str(e)}"
+            status_code=500, detail=f"Failed to update collection settings: {str(e)}"
         )
     finally:
         store.close()
@@ -2292,6 +2222,7 @@ def rag_documents_list(
 def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
     try:
         from datetime import datetime
+
         from nyxgpt.rag.vectorstore_cassandra import MetadataFilter
 
         # Build metadata filter if any filter params are provided
@@ -2370,9 +2301,7 @@ def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
 
 
 @api.post("/rag/metrics/query", response_model=RagMetricsQueryResponse)
-def rag_metrics_query(
-    request: Request, req: RagMetricsQueryRequest
-) -> RagMetricsQueryResponse:
+def rag_metrics_query(request: Request, req: RagMetricsQueryRequest) -> RagMetricsQueryResponse:
     """Query RAG with comprehensive evaluation metrics.
 
     This endpoint extends the standard RAG query with evaluation metrics including:
@@ -2395,11 +2324,19 @@ def rag_metrics_query(
 
         # Convert RAGDebugInfo to RagDebugInfo (API model)
         from nyxgpt.api_models import (
-            RagDebugInfo,
-            RagEvaluationMetrics as ApiRagEvaluationMetrics,
-            RetrievalAccuracyMetrics as ApiRetrievalAccuracyMetrics,
-            LatencyMetrics as ApiLatencyMetrics,
             HitRateMetrics as ApiHitRateMetrics,
+        )
+        from nyxgpt.api_models import (
+            LatencyMetrics as ApiLatencyMetrics,
+        )
+        from nyxgpt.api_models import (
+            RagDebugInfo,
+        )
+        from nyxgpt.api_models import (
+            RagEvaluationMetrics as ApiRagEvaluationMetrics,
+        )
+        from nyxgpt.api_models import (
+            RetrievalAccuracyMetrics as ApiRetrievalAccuracyMetrics,
         )
 
         api_debug_info = RagDebugInfo(
@@ -2588,9 +2525,17 @@ async def rag_upload_file(
             metadata = {}
             if reader.metadata:
                 # Extract common metadata fields
-                for key in ['/Title', '/Author', '/Subject', '/Creator', '/Producer', '/CreationDate', '/ModDate']:
+                for key in [
+                    "/Title",
+                    "/Author",
+                    "/Subject",
+                    "/Creator",
+                    "/Producer",
+                    "/CreationDate",
+                    "/ModDate",
+                ]:
                     if key in reader.metadata:
-                        clean_key = key.lstrip('/')
+                        clean_key = key.lstrip("/")
                         metadata[clean_key] = str(reader.metadata[key])
 
             # Extract text with better formatting using pdfplumber
@@ -2652,7 +2597,9 @@ async def rag_upload_file(
             needs_ocr = (not text or len(text.strip()) < ocr_min_text_threshold) and ocr_enabled
 
             if needs_ocr:
-                log.info(f"PDF has minimal text ({len(text.strip()) if text else 0} chars), attempting OCR")
+                log.info(
+                    f"PDF has minimal text ({len(text.strip()) if text else 0} chars), attempting OCR"
+                )
                 try:
                     import pytesseract
                     from pdf2image import convert_from_bytes
@@ -2681,18 +2628,20 @@ async def rag_upload_file(
                     # PSM 3 = Fully automatic page segmentation (default)
                     # PSM 6 = Assume a single uniform block of text
                     # PSM 11 = Sparse text - Find as much text as possible in no particular order
-                    custom_config = f'--psm {ocr_psm}'
+                    custom_config = f"--psm {ocr_psm}"
 
                     for page_num, image in enumerate(images, 1):
                         try:
                             page_ocr_text = pytesseract.image_to_string(
-                                image,
-                                lang=ocr_lang,
-                                config=custom_config
+                                image, lang=ocr_lang, config=custom_config
                             )
                             if page_ocr_text and page_ocr_text.strip():
-                                ocr_text_parts.append(f"[Page {page_num} (OCR)]\n{page_ocr_text.strip()}")
-                                log.debug(f"OCR extracted {len(page_ocr_text.strip())} chars from page {page_num}")
+                                ocr_text_parts.append(
+                                    f"[Page {page_num} (OCR)]\n{page_ocr_text.strip()}"
+                                )
+                                log.debug(
+                                    f"OCR extracted {len(page_ocr_text.strip())} chars from page {page_num}"
+                                )
                         except Exception as page_error:
                             log.warning(f"OCR failed for page {page_num}: {page_error}")
                             continue
@@ -2701,7 +2650,9 @@ async def rag_upload_file(
                     if ocr_text_parts:
                         ocr_text = "\n\n".join(ocr_text_parts)
                         if len(ocr_text.strip()) > len(text.strip() if text else ""):
-                            log.info(f"OCR extracted {len(ocr_text.strip())} chars (vs {len(text.strip()) if text else 0} from standard extraction)")
+                            log.info(
+                                f"OCR extracted {len(ocr_text.strip())} chars (vs {len(text.strip()) if text else 0} from standard extraction)"
+                            )
                             text = ocr_text
                         else:
                             log.info("OCR did not improve extraction, using standard extraction")
@@ -2711,9 +2662,13 @@ async def rag_upload_file(
                 except ImportError as ocr_import_error:
                     missing_lib = str(ocr_import_error)
                     if "pytesseract" in missing_lib:
-                        log.warning("pytesseract not installed, skipping OCR. Install with: pip install pytesseract")
+                        log.warning(
+                            "pytesseract not installed, skipping OCR. Install with: pip install pytesseract"
+                        )
                     elif "pdf2image" in missing_lib:
-                        log.warning("pdf2image not installed, skipping OCR. Install with: pip install pdf2image")
+                        log.warning(
+                            "pdf2image not installed, skipping OCR. Install with: pip install pdf2image"
+                        )
                     else:
                         log.warning(f"OCR dependencies missing: {missing_lib}")
                 except Exception as ocr_error:
@@ -2724,7 +2679,7 @@ async def rag_upload_file(
                 raise HTTPException(
                     status_code=400,
                     detail="PDF extraction produced no text. The file may be empty, image-only, or malformed. "
-                           "If this is an image-based PDF, ensure Tesseract OCR is installed and configured."
+                    "If this is an image-based PDF, ensure Tesseract OCR is installed and configured.",
                 )
 
         except ImportError as e:
@@ -2742,9 +2697,10 @@ async def rag_upload_file(
     elif file_ext == ".docx":
         # Handle DOCX (Microsoft Word)
         try:
+            import zipfile
+
             from docx import Document
             from docx.opc.exceptions import PackageNotFoundError
-            import zipfile
 
             try:
                 doc = Document(io.BytesIO(content))
@@ -2769,17 +2725,21 @@ async def rag_upload_file(
                 # Images are stored in runs within paragraphs
                 for run in para.runs:
                     # Check if this run contains an image
-                    if hasattr(run, '_element') and run._element is not None:
+                    if hasattr(run, "_element") and run._element is not None:
                         # Look for drawing elements that contain images
-                        for drawing in run._element.findall('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing'):
+                        for drawing in run._element.findall(
+                            ".//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}drawing"
+                        ):
                             image_counter += 1
                             # Extract image description if available (alt text)
-                            desc_elems = drawing.findall('.//{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}docPr')
+                            desc_elems = drawing.findall(
+                                ".//{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}docPr"
+                            )
 
                             image_desc = f"[Image {image_counter}"
-                            if desc_elems and desc_elems[0].get('descr'):
+                            if desc_elems and desc_elems[0].get("descr"):
                                 image_desc += f": {desc_elems[0].get('descr')}"
-                            elif desc_elems and desc_elems[0].get('name'):
+                            elif desc_elems and desc_elems[0].get("name"):
                                 image_desc += f": {desc_elems[0].get('name')}"
                             image_desc += "]"
 
@@ -2787,7 +2747,7 @@ async def rag_upload_file(
 
                 if para_text:
                     # Preserve heading structure
-                    if para.style and para.style.name.startswith('Heading'):
+                    if para.style and para.style.name.startswith("Heading"):
                         text_parts.append(f"\n## {para_text}\n")
                     else:
                         text_parts.append(para_text)
@@ -2826,8 +2786,8 @@ async def rag_upload_file(
         # Handle Markdown with proper parsing (#2667)
         try:
             import frontmatter
-            from markdown import markdown
             from bs4 import BeautifulSoup
+            from markdown import markdown
 
             # Parse frontmatter and content
             post = frontmatter.loads(content.decode("utf-8"))
@@ -2897,8 +2857,7 @@ async def rag_upload_file(
 
             if not text:
                 raise HTTPException(
-                    status_code=400,
-                    detail="PPTX file contains no extractable text"
+                    status_code=400, detail="PPTX file contains no extractable text"
                 )
 
         except ImportError:
@@ -2913,16 +2872,13 @@ async def rag_upload_file(
         # Handle ePUB eBooks
         try:
             import ebooklib
-            from ebooklib import epub
             from bs4 import BeautifulSoup
+            from ebooklib import epub
 
             try:
                 book = epub.read_epub(io.BytesIO(content))
             except Exception as e:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid ePUB file: {e}"
-                )
+                raise HTTPException(status_code=400, detail=f"Invalid ePUB file: {e}")
 
             text_parts = []
 
@@ -2945,18 +2901,30 @@ async def rag_upload_file(
 
             # Extract metadata
             metadata = {}
-            if book.get_metadata('DC', 'title'):
-                metadata['Title'] = ', '.join(extract_metadata_values(book.get_metadata('DC', 'title')))
-            if book.get_metadata('DC', 'creator'):
-                metadata['Author'] = ', '.join(extract_metadata_values(book.get_metadata('DC', 'creator')))
-            if book.get_metadata('DC', 'description'):
-                metadata['Description'] = ', '.join(extract_metadata_values(book.get_metadata('DC', 'description')))
-            if book.get_metadata('DC', 'publisher'):
-                metadata['Publisher'] = ', '.join(extract_metadata_values(book.get_metadata('DC', 'publisher')))
-            if book.get_metadata('DC', 'date'):
-                metadata['Date'] = ', '.join(extract_metadata_values(book.get_metadata('DC', 'date')))
-            if book.get_metadata('DC', 'language'):
-                metadata['Language'] = ', '.join(extract_metadata_values(book.get_metadata('DC', 'language')))
+            if book.get_metadata("DC", "title"):
+                metadata["Title"] = ", ".join(
+                    extract_metadata_values(book.get_metadata("DC", "title"))
+                )
+            if book.get_metadata("DC", "creator"):
+                metadata["Author"] = ", ".join(
+                    extract_metadata_values(book.get_metadata("DC", "creator"))
+                )
+            if book.get_metadata("DC", "description"):
+                metadata["Description"] = ", ".join(
+                    extract_metadata_values(book.get_metadata("DC", "description"))
+                )
+            if book.get_metadata("DC", "publisher"):
+                metadata["Publisher"] = ", ".join(
+                    extract_metadata_values(book.get_metadata("DC", "publisher"))
+                )
+            if book.get_metadata("DC", "date"):
+                metadata["Date"] = ", ".join(
+                    extract_metadata_values(book.get_metadata("DC", "date"))
+                )
+            if book.get_metadata("DC", "language"):
+                metadata["Language"] = ", ".join(
+                    extract_metadata_values(book.get_metadata("DC", "language"))
+                )
 
             # Add metadata section if available
             if metadata:
@@ -2974,7 +2942,7 @@ async def rag_upload_file(
                     # Parse HTML content
                     html_content = item.get_body_content()
                     if html_content:
-                        soup = BeautifulSoup(html_content, 'html.parser')
+                        soup = BeautifulSoup(html_content, "html.parser")
 
                         # Remove script and style elements
                         for script in soup(["script", "style"]):
@@ -2984,7 +2952,7 @@ async def rag_upload_file(
                         chapter_texts = []
 
                         # Process headings to preserve structure
-                        for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                        for heading in soup.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
                             heading_text = heading.get_text(strip=True)
                             if heading_text:
                                 level = heading.name[1]  # Extract number from h1, h2, etc.
@@ -3010,7 +2978,10 @@ async def rag_upload_file(
                         if chapter_text.strip() and len(chapter_text.strip()) > 50:
                             has_content = True  # Found actual content
                             # Add chapter marker for multi-chapter books
-                            if chapter_num > 1 or len(list(book.get_items_of_type(ebooklib.ITEM_DOCUMENT))) > 1:
+                            if (
+                                chapter_num > 1
+                                or len(list(book.get_items_of_type(ebooklib.ITEM_DOCUMENT))) > 1
+                            ):
                                 text_parts.append(f"[Chapter {chapter_num}]\n{chapter_text}")
                             else:
                                 text_parts.append(chapter_text)
@@ -3019,7 +2990,7 @@ async def rag_upload_file(
             if not has_content:
                 raise HTTPException(
                     status_code=400,
-                    detail="ePUB extraction produced no text. The file may be empty, image-only, or malformed."
+                    detail="ePUB extraction produced no text. The file may be empty, image-only, or malformed.",
                 )
 
             # Join all parts with double newlines
@@ -3054,19 +3025,26 @@ async def rag_upload_file(
                         continue
                 else:
                     raise HTTPException(
-                        status_code=400,
-                        detail="Unable to decode HTML file. Unsupported encoding."
+                        status_code=400, detail="Unable to decode HTML file. Unsupported encoding."
                     )
 
             # Parse HTML
-            soup = BeautifulSoup(html_content, 'html.parser')
+            soup = BeautifulSoup(html_content, "html.parser")
 
             # Remove boilerplate and non-content elements
-            for tag in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'iframe', 'noscript']):
+            for tag in soup(
+                ["script", "style", "nav", "header", "footer", "aside", "iframe", "noscript"]
+            ):
                 tag.decompose()
 
             # Remove common ad and tracking elements
-            for class_name in ['advertisement', 'ad-container', 'social-share', 'comments', 'sidebar']:
+            for class_name in [
+                "advertisement",
+                "ad-container",
+                "social-share",
+                "comments",
+                "sidebar",
+            ]:
                 for elem in soup.find_all(class_=class_name):
                     elem.decompose()
 
@@ -3076,28 +3054,28 @@ async def rag_upload_file(
             metadata = {}
 
             # Page title
-            title_tag = soup.find('title')
+            title_tag = soup.find("title")
             if title_tag and title_tag.string:
-                metadata['Title'] = title_tag.string.strip()
+                metadata["Title"] = title_tag.string.strip()
 
             # Meta tags
             meta_mappings = {
-                'description': 'Description',
-                'author': 'Author',
-                'keywords': 'Keywords',
-                'og:title': 'OG_Title',
-                'og:description': 'OG_Description'
+                "description": "Description",
+                "author": "Author",
+                "keywords": "Keywords",
+                "og:title": "OG_Title",
+                "og:description": "OG_Description",
             }
 
             for meta_name, metadata_key in meta_mappings.items():
                 # Try name attribute
-                meta_tag = soup.find('meta', attrs={'name': meta_name})
+                meta_tag = soup.find("meta", attrs={"name": meta_name})
                 if not meta_tag:
                     # Try property attribute (for Open Graph tags)
-                    meta_tag = soup.find('meta', attrs={'property': meta_name})
+                    meta_tag = soup.find("meta", attrs={"property": meta_name})
 
                 if meta_tag:
-                    meta_content = meta_tag.get('content')
+                    meta_content = meta_tag.get("content")
                     if meta_content and isinstance(meta_content, str):
                         metadata[metadata_key] = meta_content.strip()
 
@@ -3109,28 +3087,28 @@ async def rag_upload_file(
             # Extract main content with semantic structure preservation
             # Try to find main content area (common patterns)
             main_content = (
-                soup.find('main') or
-                soup.find('article') or
-                soup.find('div', class_='content') or
-                soup.find('div', id='content') or
-                soup.find('div', class_='main') or
-                soup.find('div', id='main') or
-                soup.body or
-                soup
+                soup.find("main")
+                or soup.find("article")
+                or soup.find("div", class_="content")
+                or soup.find("div", id="content")
+                or soup.find("div", class_="main")
+                or soup.find("div", id="main")
+                or soup.body
+                or soup
             )
 
             # Process content preserving structure
             content_parts = []
 
             # Extract headings with hierarchy
-            for heading in main_content.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+            for heading in main_content.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
                 heading_text = heading.get_text(strip=True)
                 if heading_text:
                     level = heading.name[1]  # Extract number from h1, h2, etc.
                     content_parts.append(f"{'#' * int(level)} {heading_text}")
 
             # Extract paragraphs and preserve block structure
-            for elem in main_content.find_all(['p', 'div', 'section', 'blockquote', 'pre', 'code']):
+            for elem in main_content.find_all(["p", "div", "section", "blockquote", "pre", "code"]):
                 elem_text = elem.get_text(strip=True)
 
                 # Skip empty elements
@@ -3138,32 +3116,32 @@ async def rag_upload_file(
                     continue
 
                 # Skip if this is just a container with nested elements we'll process separately
-                if elem.find(['p', 'div', 'section']) and elem.name == 'div':
+                if elem.find(["p", "div", "section"]) and elem.name == "div":
                     continue
 
                 # Format blockquotes
-                if elem.name == 'blockquote':
+                if elem.name == "blockquote":
                     elem_text = "> " + elem_text
 
                 # Format code blocks
-                if elem.name in ['pre', 'code']:
+                if elem.name in ["pre", "code"]:
                     elem_text = f"```\n{elem_text}\n```"
 
                 content_parts.append(elem_text)
 
             # Extract list items with structure
-            for ul in main_content.find_all('ul'):
+            for ul in main_content.find_all("ul"):
                 list_items = []
-                for li in ul.find_all('li', recursive=False):
+                for li in ul.find_all("li", recursive=False):
                     li_text = li.get_text(strip=True)
                     if li_text:
                         list_items.append(f"• {li_text}")
                 if list_items:
                     content_parts.append("\n".join(list_items))
 
-            for ol in main_content.find_all('ol'):
+            for ol in main_content.find_all("ol"):
                 list_items = []
-                for idx, li in enumerate(ol.find_all('li', recursive=False), start=1):
+                for idx, li in enumerate(ol.find_all("li", recursive=False), start=1):
                     li_text = li.get_text(strip=True)
                     if li_text:
                         list_items.append(f"{idx}. {li_text}")
@@ -3171,10 +3149,10 @@ async def rag_upload_file(
                     content_parts.append("\n".join(list_items))
 
             # Extract tables
-            for html_table in main_content.find_all('table'):
+            for html_table in main_content.find_all("table"):
                 html_table_rows: list[str] = []
-                for row in html_table.find_all('tr'):
-                    cells = row.find_all(['th', 'td'])
+                for row in html_table.find_all("tr"):
+                    cells = row.find_all(["th", "td"])
                     if cells:
                         row_text = " | ".join(cell.get_text(strip=True) for cell in cells)
                         if row_text:
@@ -3208,7 +3186,7 @@ async def rag_upload_file(
             if not text or not text.strip():
                 raise HTTPException(
                     status_code=400,
-                    detail="HTML extraction produced no text. The file may be empty or contain only boilerplate."
+                    detail="HTML extraction produced no text. The file may be empty or contain only boilerplate.",
                 )
 
         except ImportError:
@@ -3230,9 +3208,7 @@ async def rag_upload_file(
             raise HTTPException(status_code=400, detail=f"File encoding error: {e}")
 
     # Use filename as doc_id if not provided (sanitize to prevent path traversal)
-    safe_filename = (
-        os.path.basename(file.filename or "").strip() if file.filename else ""
-    )
+    safe_filename = os.path.basename(file.filename or "").strip() if file.filename else ""
     final_doc_id = doc_id or safe_filename or f"upload_{uuid.uuid4().hex[:8]}"
 
     # Ingest
@@ -3310,9 +3286,9 @@ def logs_list_files(request: Request) -> dict[str, Any]:
 def logs_view_file(
     request: Request,
     filename: str,
-    tail: Optional[int] = None,
-    level: Optional[str] = None,
-    search: Optional[str] = None,
+    tail: int | None = None,
+    level: str | None = None,
+    search: str | None = None,
 ) -> dict[str, Any]:
     """
     View log file contents with optional filtering.
@@ -3353,7 +3329,7 @@ def logs_view_file(
         raise HTTPException(status_code=404, detail="Log file not found")
 
     try:
-        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+        with open(log_file, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
 
         # Apply filters
@@ -3367,9 +3343,7 @@ def logs_view_file(
         # Filter by search string
         if search:
             search_lower = search.lower()
-            filtered_lines = [
-                line for line in filtered_lines if search_lower in line.lower()
-            ]
+            filtered_lines = [line for line in filtered_lines if search_lower in line.lower()]
 
         # Apply tail limit
         if tail and tail > 0:
@@ -3391,8 +3365,8 @@ def logs_view_file(
 async def logs_stream_file(
     request: Request,
     filename: str,
-    level: Optional[str] = None,
-    search: Optional[str] = None,
+    level: str | None = None,
+    search: str | None = None,
 ) -> StreamingResponse:
     """
     Stream log file contents with optional filtering.
@@ -3431,7 +3405,7 @@ async def logs_stream_file(
     async def stream_lines():
         """Generator that streams filtered log lines."""
         try:
-            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+            with open(log_file, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     # Apply filters
                     if level and level.upper() not in line:

@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import List, cast
+from typing import cast
 
-from nyxgpt.rag.embeddings import embed_texts, EmbeddingError
+from nyxgpt.rag.embeddings import EmbeddingError, embed_texts
 from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
 
@@ -29,7 +29,7 @@ class ModelPerformanceMetrics:
 def benchmark_embedding_speed(
     model: str,
     dimension: int,
-    test_texts: List[str],
+    test_texts: list[str],
     num_runs: int = 3,
 ) -> float:
     """Benchmark embedding speed for a model.
@@ -58,7 +58,7 @@ def benchmark_embedding_speed(
 
 def benchmark_query_speed(
     collection: str,
-    test_queries: List[str],
+    test_queries: list[str],
     model: str,
     dimension: int,
     k: int = 5,
@@ -99,10 +99,10 @@ def benchmark_query_speed(
 
 
 def compare_models(
-    models: List[tuple[str, int, str]],  # (model_name, dimension, collection)
-    test_texts: List[str],
-    test_queries: List[str] | None = None,
-) -> List[ModelPerformanceMetrics]:
+    models: list[tuple[str, int, str]],  # (model_name, dimension, collection)
+    test_texts: list[str],
+    test_queries: list[str] | None = None,
+) -> list[ModelPerformanceMetrics]:
     """Compare multiple embedding models.
 
     Args:
@@ -116,9 +116,7 @@ def compare_models(
     results = []
 
     for model_name, dimension, collection in models:
-        print(
-            f"\nBenchmarking {model_name} (dim={dimension}, collection={collection})..."
-        )
+        print(f"\nBenchmarking {model_name} (dim={dimension}, collection={collection})...")
 
         # Benchmark embedding speed
         try:
@@ -132,9 +130,7 @@ def compare_models(
         query_time = 0.0
         if test_queries:
             try:
-                query_time = benchmark_query_speed(
-                    collection, test_queries, model_name, dimension
-                )
+                query_time = benchmark_query_speed(collection, test_queries, model_name, dimension)
                 print(f"  Query time: {query_time:.2f} ms")
             except Exception as e:
                 print(f"  Query failed: {e}")
@@ -153,7 +149,7 @@ def compare_models(
     return results
 
 
-def print_comparison_table(metrics: List[ModelPerformanceMetrics]) -> None:
+def print_comparison_table(metrics: list[ModelPerformanceMetrics]) -> None:
     """Print a comparison table of model metrics.
 
     Args:
@@ -169,9 +165,7 @@ def print_comparison_table(metrics: List[ModelPerformanceMetrics]) -> None:
 
     # Print header
     print("\n" + "=" * 80)
-    print(
-        f"{'Model':<{model_width}} {'Dim':<{dim_width}} {'Embed (ms)':<15} {'Query (ms)':<15}"
-    )
+    print(f"{'Model':<{model_width}} {'Dim':<{dim_width}} {'Embed (ms)':<15} {'Query (ms)':<15}")
     print("=" * 80)
 
     # Print rows

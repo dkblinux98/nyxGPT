@@ -97,9 +97,7 @@ def _reranker_cfg() -> RerankerConfig:
     base_url = get_ollama_base_url(cfg).rstrip("/")
 
     # Reranker can use a dedicated model or fall back to default
-    model = cfg.get("rag", "reranker_model", fallback="").strip() or get_default_model(
-        cfg
-    )
+    model = cfg.get("rag", "reranker_model", fallback="").strip() or get_default_model(cfg)
 
     timeout = cfg.getint("rag", "reranker_timeout_seconds", fallback=30)
     top_n = cfg.getint("rag", "rerank_top_n", fallback=3)
@@ -197,9 +195,7 @@ def _score_relevance(query: str, document: str, config: RerankerConfig) -> float
         return max(0.0, min(1.0, score))
 
     except urllib.error.HTTPError as e:
-        msg = (
-            e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
-        )
+        msg = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
         raise RerankError(f"HTTP error calling {url}: {e.code} {msg}")
     except urllib.error.URLError as e:
         raise RerankError(f"Failed to reach Ollama at {url}: {e}")

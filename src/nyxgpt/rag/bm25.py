@@ -62,8 +62,8 @@ from __future__ import annotations
 import logging
 import math
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 from nyxgpt.config import load_config
 
@@ -149,9 +149,7 @@ class BM25Index:
         self.doc_lengths: list[int] = []
         self.avg_doc_length = 0.0
         self.doc_freqs: dict[str, int] = {}  # term -> num docs containing it
-        self.term_doc_freqs: dict[
-            int, dict[str, int]
-        ] = {}  # doc_idx -> {term -> count}
+        self.term_doc_freqs: dict[int, dict[str, int]] = {}  # doc_idx -> {term -> count}
         self.cfg = _bm25_cfg()
 
     def build_index(self, documents: Iterable[str]) -> None:
@@ -190,14 +188,10 @@ class BM25Index:
             self.term_doc_freqs[doc_idx] = dict(term_counts)
 
         # Compute average document length
-        self.avg_doc_length = (
-            sum(self.doc_lengths) / self.doc_count if self.doc_count > 0 else 0.0
-        )
+        self.avg_doc_length = sum(self.doc_lengths) / self.doc_count if self.doc_count > 0 else 0.0
 
         # Compute document frequencies (number of docs containing each term)
-        self.doc_freqs = {
-            term: len(doc_set) for term, doc_set in doc_freq_counter.items()
-        }
+        self.doc_freqs = {term: len(doc_set) for term, doc_set in doc_freq_counter.items()}
 
     def _idf(self, term: str) -> float:
         """Compute IDF (Inverse Document Frequency) for a term.

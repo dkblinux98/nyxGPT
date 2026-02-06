@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import logging
 import socket
 from pathlib import Path
 
 import pytest
-import logging
 
 from nyxgpt.config import load_config
 from nyxgpt.logging import configure_logging, get_log_dir
@@ -115,9 +115,7 @@ def _configure_test_logging():
 
     handler = logging.FileHandler(tests_log, mode="a", encoding="utf-8")
     handler.setLevel(logging.DEBUG)
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
 
     root = logging.getLogger()
     # Make sure the root logger level does not filter out INFO/DEBUG during tests.
@@ -155,9 +153,7 @@ def _ensure_test_logging_works():
     root = logging.getLogger()
 
     # Simple formatter without request_id
-    test_formatter = logging.Formatter(
-        "%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
+    test_formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     # Configure all root handlers
     for handler in root.handlers:

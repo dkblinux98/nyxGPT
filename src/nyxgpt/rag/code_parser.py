@@ -120,7 +120,7 @@ def parse_gitignore(repo_path: Path) -> list[str]:
         return []
 
     patterns = []
-    with open(gitignore_path, "r", encoding="utf-8") as f:
+    with open(gitignore_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             # Skip empty lines and comments
@@ -164,10 +164,7 @@ def should_ignore(file_path: Path, repo_path: Path, ignore_patterns: list[str]) 
                 if re.match(regex_pattern, rel_path_str):
                     return True
             # Exact match
-            elif rel_path_str == pattern or rel_path.name == pattern:
-                return True
-            # Directory basename match
-            elif pattern in rel_path.parts:
+            elif rel_path_str == pattern or rel_path.name == pattern or pattern in rel_path.parts:
                 return True
 
         return False
@@ -232,9 +229,7 @@ def extract_comments_and_docstrings(code: str, file_ext: str) -> str:
     return "\n\n".join(cleaned)
 
 
-def chunk_code_by_structure(
-    code: str, file_ext: str, max_chunk_size: int = 1000
-) -> list[str]:
+def chunk_code_by_structure(code: str, file_ext: str, max_chunk_size: int = 1000) -> list[str]:
     """Chunk code by language-aware structural boundaries.
 
     Args:
@@ -374,7 +369,9 @@ def _split_large_chunk(chunk: str, max_size: int) -> list[str]:
     return chunks
 
 
-def parse_code_file(file_path: Path, extract_docs_only: bool = False, max_file_size_mb: int = 5) -> str:
+def parse_code_file(
+    file_path: Path, extract_docs_only: bool = False, max_file_size_mb: int = 5
+) -> str:
     """Parse a single code file and extract relevant content.
 
     Args:
@@ -386,6 +383,7 @@ def parse_code_file(file_path: Path, extract_docs_only: bool = False, max_file_s
         Parsed content as string
     """
     import logging
+
     log = logging.getLogger(__name__)
 
     file_ext = file_path.suffix.lower()
@@ -395,13 +393,15 @@ def parse_code_file(file_path: Path, extract_docs_only: bool = False, max_file_s
         file_size_bytes = file_path.stat().st_size
         max_size_bytes = max_file_size_mb * 1024 * 1024
         if file_size_bytes > max_size_bytes:
-            log.warning(f"Skipping large file {file_path.name} ({file_size_bytes / 1024 / 1024:.1f}MB > {max_file_size_mb}MB)")
+            log.warning(
+                f"Skipping large file {file_path.name} ({file_size_bytes / 1024 / 1024:.1f}MB > {max_file_size_mb}MB)"
+            )
             return ""
     except OSError:
         return ""
 
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             code = f.read()
     except (UnicodeDecodeError, PermissionError):
         # Skip binary files or files we can't read
@@ -416,9 +416,7 @@ def parse_code_file(file_path: Path, extract_docs_only: bool = False, max_file_s
         return f"[File: {file_path.name}]\n{code}"
 
 
-def collect_code_files(
-    repo_path: Path, extensions: set[str] | None = None
-) -> list[Path]:
+def collect_code_files(repo_path: Path, extensions: set[str] | None = None) -> list[Path]:
     """Collect all code files in a repository, respecting .gitignore.
 
     Args:

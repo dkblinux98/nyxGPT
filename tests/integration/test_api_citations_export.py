@@ -20,9 +20,7 @@ def test_export_citations_nonexistent_session(api_base_url: str) -> None:
     nonexistent_session = f"nonexistent-{uuid.uuid4().hex[:8]}"
 
     with httpx.Client(base_url=api_base_url, timeout=5.0) as client:
-        resp = client.get(
-            f"/api/v1/sessions/{nonexistent_session}/citations/export"
-        )
+        resp = client.get(f"/api/v1/sessions/{nonexistent_session}/citations/export")
 
     assert resp.status_code == 404
     data = resp.json()
@@ -42,9 +40,7 @@ def test_export_citations_invalid_format(api_base_url: str) -> None:
         assert init_resp.status_code == 200
 
         # Try invalid format
-        resp = client.get(
-            f"/api/v1/sessions/{session_name}/citations/export?format=xml"
-        )
+        resp = client.get(f"/api/v1/sessions/{session_name}/citations/export?format=xml")
 
     assert resp.status_code == 400
     data = resp.json()
@@ -109,9 +105,7 @@ def test_export_citations_json_format(api_base_url: str) -> None:
         session_file.write_text(json.dumps(messages, indent=2))
 
         # Export citations in JSON format
-        resp = client.get(
-            f"/api/v1/sessions/{session_name}/citations/export?format=json"
-        )
+        resp = client.get(f"/api/v1/sessions/{session_name}/citations/export?format=json")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -185,9 +179,7 @@ def test_export_citations_markdown_format(api_base_url: str) -> None:
         session_file.write_text(json.dumps(messages, indent=2))
 
         # Export citations in Markdown format
-        resp = client.get(
-            f"/api/v1/sessions/{session_name}/citations/export?format=markdown"
-        )
+        resp = client.get(f"/api/v1/sessions/{session_name}/citations/export?format=markdown")
 
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "text/markdown; charset=utf-8"
@@ -228,9 +220,7 @@ def test_export_citations_no_citations(api_base_url: str) -> None:
         session_file.write_text(json.dumps(messages, indent=2))
 
         # Export citations
-        resp = client.get(
-            f"/api/v1/sessions/{session_name}/citations/export?format=json"
-        )
+        resp = client.get(f"/api/v1/sessions/{session_name}/citations/export?format=json")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -287,9 +277,7 @@ def test_export_citations_only_assistant_messages(api_base_url: str) -> None:
         session_file.write_text(json.dumps(messages, indent=2))
 
         # Export citations
-        resp = client.get(
-            f"/api/v1/sessions/{session_name}/citations/export?format=json"
-        )
+        resp = client.get(f"/api/v1/sessions/{session_name}/citations/export?format=json")
 
     assert resp.status_code == 200
     data = resp.json()
