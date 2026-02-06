@@ -303,6 +303,19 @@ def get_rag_chat_top_k(cfg: ConfigParser) -> int:
         return 3
 
 
+def get_rag_query_parallel_workers(cfg: ConfigParser) -> int:
+    """Number of worker threads for parallel query execution.
+
+    Used when query expansion generates multiple query variants.
+    Higher values = more parallelism but more resource usage.
+    Recommended range: 2-8 workers.
+    """
+    try:
+        return cfg.getint("rag", "query_parallel_workers", fallback=4)
+    except Exception:
+        return 4
+
+
 def get_rag_min_score(cfg: ConfigParser) -> float:
     try:
         return cfg.getfloat("rag", "min_score", fallback=0.0)
