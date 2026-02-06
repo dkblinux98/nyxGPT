@@ -1078,7 +1078,7 @@ def retrieve_context(
 
     store = CassandraVectorStore(collection=collection)
     try:
-        # Batch embed all queries upfront (reduces API calls)
+        # Batch embed queries: use embed_texts for multiple queries, embed_text for single
         if collect_debug:
             result = embed_texts(
                 queries, collect_metrics=True, model=embedding_model, dimension=embedding_dim
@@ -1087,14 +1087,19 @@ def retrieve_context(
                 tuple[list[list[float]], EmbeddingDebugMetrics], result
             )
             embedding_metrics = emb_metrics
-        else:
-            # Use embed_texts for batching even without metrics collection
+        elif len(queries) > 1:
+            # Use embed_texts for batching multiple queries (reduces API calls)
             query_embeddings = cast(
                 list[list[float]],
                 embed_texts(
                     queries, collect_metrics=False, model=embedding_model, dimension=embedding_dim
                 ),
             )
+        else:
+            # Single query: use embed_text (for test compatibility)
+            query_embeddings = [
+                embed_text(queries[0], model=embedding_model, dimension=embedding_dim)
+            ]
 
         # Parallel execution for multiple queries (performance optimization)
         if len(queries) > 1 and not collect_debug:
