@@ -293,9 +293,13 @@ jobs:
             - Merge the PR
             - Execute any scripts in scripts/agents/
 
-            A separate automated workflow will read your comment and execute the appropriate actions.
+            A separate automated workflow will read your review decision and execute the appropriate actions.
 
-            REQUIRED: Post your review as a PR comment using `gh pr comment ${{ steps.pr_number.outputs.pr }} --body "<review>"` with this EXACT format:
+            REQUIRED: Post your review using the appropriate gh pr review command:
+            - For APPROVE: `gh pr review ${{ steps.pr_number.outputs.pr }} --approve --body "<review>"`
+            - For REQUEST_CHANGES: `gh pr review ${{ steps.pr_number.outputs.pr }} --request-changes --body "<review>"`
+
+            Use this EXACT format for the review body:
 
             ## Code Review - [APPROVE|REQUEST_CHANGES]
 
@@ -363,4 +367,3 @@ jobs:
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
 
       # Note: review_agent_auto_review.yml triggers automatically on the comment via issue_comment event
-
