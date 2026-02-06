@@ -24,7 +24,7 @@ from nyxgpt.config import (
     load_config,
 )
 from nyxgpt.rag.bm25 import BM25Index
-from nyxgpt.rag.embeddings import EmbeddingDebugMetrics, embed_text, embed_texts  # noqa: F401
+from nyxgpt.rag.embeddings import EmbeddingDebugMetrics, embed_text, embed_texts
 from nyxgpt.rag.fusion import reciprocal_rank_fusion, weighted_fusion
 from nyxgpt.rag.reranker import RerankerDebugMetrics, rerank_results
 from nyxgpt.rag.vectorstore_cassandra import (
