@@ -1089,8 +1089,11 @@ def retrieve_context(
             embedding_metrics = emb_metrics
         else:
             # Use embed_texts for batching even without metrics collection
-            query_embeddings = embed_texts(
-                queries, collect_metrics=False, model=embedding_model, dimension=embedding_dim
+            query_embeddings = cast(
+                list[list[float]],
+                embed_texts(
+                    queries, collect_metrics=False, model=embedding_model, dimension=embedding_dim
+                ),
             )
 
         # Parallel execution for multiple queries (performance optimization)
