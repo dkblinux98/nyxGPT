@@ -333,7 +333,7 @@ jobs:
             5. BEFORE committing, run ALL validation in a 3-try loop:
                - pytest -v (ALL tests MUST pass)
                - If tests fail: analyze, fix, re-run (up to 3 tries)
-               - ruff check <modified-files>
+               - ruff check src/ tests/
                - mypy src/
                - cd web && npm run type-check (if web files modified)
                - ./scripts/validate-web-routes.sh (if API endpoints added)
@@ -392,7 +392,7 @@ jobs:
                 - ALL type checks MUST PASS before proceeding
                 - Fix any TypeScript errors before committing
               * If you modified Python files:
-                - Run: ruff check <modified-files>
+                - Run: ruff check src/ tests/
                 - Fix any linting errors before committing
                 - Run: mypy src/
                 - Fix any type errors before committing
@@ -477,9 +477,8 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Running ruff"
-          CHANGED_PY_FILES=$(git diff --name-only HEAD~1 | grep '\.py$' || true)
-          if [[ -n "$CHANGED_PY_FILES" ]]; then
-            echo "$CHANGED_PY_FILES" | xargs ruff check 2>&1 | tee /tmp/ruff_attempt1.log
+          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
+            ruff check src/ tests/ 2>&1 | tee /tmp/ruff_attempt1.log
             [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           else
             echo "No Python files changed, skipping ruff"
@@ -550,7 +549,7 @@ jobs:
             3. Fix ALL the issues in the code
             4. Re-run the verification commands yourself to confirm fixes work:
                - pytest tests/unit/ -v
-               - ruff check <modified-files> (if Python files changed)
+               - ruff check src/ tests/ (if Python files changed)
                - mypy src/ (if Python files changed)
                - cd web && npm run type-check (if TypeScript files changed)
                - ./scripts/validate-web-routes.sh (if web files changed)
@@ -574,12 +573,9 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Running ruff"
-          CHANGED_PY_FILES=$(git diff --name-only HEAD~1 | grep '\.py$' || true)
-          if [[ -n "$CHANGED_PY_FILES" ]]; then
-            echo "$CHANGED_PY_FILES" | xargs ruff check 2>&1 | tee /tmp/ruff_attempt2.log
+          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
+            ruff check src/ tests/ 2>&1 | tee /tmp/ruff_attempt2.log
             [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
-          else
-            echo "No Python files changed, skipping ruff"
           fi
           echo "::endgroup::"
 
@@ -652,11 +648,8 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Final ruff verification"
-          CHANGED_PY_FILES=$(git diff --name-only HEAD~1 | grep '\.py$' || true)
-          if [[ -n "$CHANGED_PY_FILES" ]]; then
-            echo "$CHANGED_PY_FILES" | xargs ruff check
-          else
-            echo "No Python files changed, skipping ruff"
+          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
+            ruff check src/ tests/
           fi
           echo "::endgroup::"
 
