@@ -5,12 +5,10 @@ import os
 import shutil
 import subprocess
 import tarfile
+import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Callable
-
-import tomllib
-
 
 # Repo root: .../nyxGPT/src/nyxgpt/ops.py -> parents[2] is repo root
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -27,7 +25,7 @@ def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[s
     return subprocess.run(cmd, check=check, text=True, capture_output=True)
 
 
-def _which(prog: str) -> Optional[str]:
+def _which(prog: str) -> str | None:
     return shutil.which(prog)
 
 
@@ -43,7 +41,7 @@ def _ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
 
-def _copy_file(src: Path, dst: Path, *, mode: Optional[int] = None) -> None:
+def _copy_file(src: Path, dst: Path, *, mode: int | None = None) -> None:
     _ensure_dir(dst.parent)
     shutil.copy2(src, dst)
     if mode is not None:
@@ -84,9 +82,7 @@ def _restart_brew_service(name: str) -> list[OpsResult]:
         details = (cp.stdout or "").strip() + (
             "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
         )
-        return [
-            OpsResult(False, f"Failed to restart brew service: {name}", details.strip())
-        ]
+        return [OpsResult(False, f"Failed to restart brew service: {name}", details.strip())]
     except Exception as e:
         return [
             OpsResult(
@@ -107,11 +103,7 @@ def _restart_docker_container(name: str) -> list[OpsResult]:
         details = (cp.stdout or "").strip() + (
             "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
         )
-        return [
-            OpsResult(
-                False, f"Failed to restart docker container: {name}", details.strip()
-            )
-        ]
+        return [OpsResult(False, f"Failed to restart docker container: {name}", details.strip())]
     except Exception as e:
         return [
             OpsResult(
@@ -132,9 +124,7 @@ def _restart_launchagent(label: str) -> list[OpsResult]:
         details = (cp.stdout or "").strip() + (
             "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
         )
-        return [
-            OpsResult(False, f"Failed to restart LaunchAgent: {label}", details.strip())
-        ]
+        return [OpsResult(False, f"Failed to restart LaunchAgent: {label}", details.strip())]
     except Exception as e:
         return [
             OpsResult(
@@ -145,7 +135,7 @@ def _restart_launchagent(label: str) -> list[OpsResult]:
         ]
 
 
-def _find_launchagent_template() -> tuple[Optional[Path], list[Path]]:
+def _find_launchagent_template() -> tuple[Path | None, list[Path]]:
     """
     Locate the Cassandra log follower LaunchAgent template inside the repo.
     Returns (path_or_none, candidates_checked).
@@ -176,9 +166,7 @@ def _install_scripts() -> list[OpsResult]:
         src = src_dir / name
         if not src.exists():
             # Not required — some users run the web/API without wrappers.
-            results.append(
-                OpsResult(True, f"Script not present (skipped): {name}", str(src))
-            )
+            results.append(OpsResult(True, f"Script not present (skipped): {name}", str(src)))
             continue
         dst = dst_dir / name
         _copy_file(src, dst, mode=0o755)
@@ -191,12 +179,8 @@ def _install_cassandra_launchagent() -> list[OpsResult]:
     results: list[OpsResult] = []
     tpl, checked = _find_launchagent_template()
     if tpl is None:
-        details = (
-            "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
-        )
-        results.append(
-            OpsResult(False, "Missing Cassandra logs LaunchAgent template", details)
-        )
+        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        results.append(OpsResult(False, "Missing Cassandra logs LaunchAgent template", details))
         return results
     la_dir = Path.home() / "Library" / "LaunchAgents"
     _ensure_dir(la_dir)
@@ -228,13 +212,9 @@ def _ensure_log_symlinks() -> list[OpsResult]:
                 if dst.exists() or dst.is_symlink():
                     dst.unlink()
                 dst.symlink_to(src)
-                results.append(
-                    OpsResult(True, f"Symlinked {dst.name}", f"{dst} -> {src}")
-                )
+                results.append(OpsResult(True, f"Symlinked {dst.name}", f"{dst} -> {src}"))
             except Exception as e:
-                results.append(
-                    OpsResult(False, f"Failed to symlink {dst.name}", str(e))
-                )
+                results.append(OpsResult(False, f"Failed to symlink {dst.name}", str(e)))
     return results
 
 
@@ -280,11 +260,8 @@ def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     content = template.read_text(encoding="utf-8")
     # Update the sha256 in the formula to match the generated tarball
     import re
-    content = re.sub(
-        r'sha256 "[a-f0-9]+"',
-        f'sha256 "{sha}"',
-        content
-    )
+
+    content = re.sub(r'sha256 "[a-f0-9]+"', f'sha256 "{sha}"', content)
 
     formula_dir = tap_dir / "Formula"
     _ensure_dir(formula_dir)
@@ -376,9 +353,7 @@ def _ensure_web_deps() -> list[OpsResult]:
 
     # Check if node_modules exists and undici can be resolved
     if node_modules.exists() and _can_resolve("undici"):
-        results.append(
-            OpsResult(True, "Web deps already installed (undici OK)", str(node_modules))
-        )
+        results.append(OpsResult(True, "Web deps already installed (undici OK)", str(node_modules)))
         return results
 
     def _run_npm(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -400,9 +375,7 @@ def _ensure_web_deps() -> list[OpsResult]:
                     cp2 = _run_npm(["npm", "install"])
                     if cp2.returncode != 0:
                         details = (cp2.stdout or "").strip() + (
-                            "\n" + (cp2.stderr or "").strip()
-                            if (cp2.stderr or "").strip()
-                            else ""
+                            "\n" + (cp2.stderr or "").strip() if (cp2.stderr or "").strip() else ""
                         )
                         results.append(
                             OpsResult(
@@ -415,9 +388,7 @@ def _ensure_web_deps() -> list[OpsResult]:
                     # npm install succeeded (and likely updated package-lock.json)
                     if not _can_resolve("undici"):
                         details = (cp2.stdout or "").strip() + (
-                            "\n" + (cp2.stderr or "").strip()
-                            if (cp2.stderr or "").strip()
-                            else ""
+                            "\n" + (cp2.stderr or "").strip() if (cp2.stderr or "").strip() else ""
                         )
                         results.append(
                             OpsResult(
@@ -441,18 +412,14 @@ def _ensure_web_deps() -> list[OpsResult]:
                     "\n" + stderr.strip() if stderr.strip() else ""
                 )
                 results.append(
-                    OpsResult(
-                        False, "Failed to install web deps via npm ci", details.strip()
-                    )
+                    OpsResult(False, "Failed to install web deps via npm ci", details.strip())
                 )
                 return results
 
             # npm ci succeeded
             if not _can_resolve("undici"):
                 details = (cp.stdout or "").strip() + (
-                    "\n" + (cp.stderr or "").strip()
-                    if (cp.stderr or "").strip()
-                    else ""
+                    "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
                 )
                 results.append(
                     OpsResult(
@@ -462,9 +429,7 @@ def _ensure_web_deps() -> list[OpsResult]:
                     )
                 )
                 return results
-            results.append(
-                OpsResult(True, "Installed web deps via npm ci", str(node_modules))
-            )
+            results.append(OpsResult(True, "Installed web deps via npm ci", str(node_modules)))
             return results
 
         # No lockfile: use npm install
@@ -472,9 +437,7 @@ def _ensure_web_deps() -> list[OpsResult]:
         if cp.returncode == 0:
             if not _can_resolve("undici"):
                 details = (cp.stdout or "").strip() + (
-                    "\n" + (cp.stderr or "").strip()
-                    if (cp.stderr or "").strip()
-                    else ""
+                    "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
                 )
                 results.append(
                     OpsResult(
@@ -484,25 +447,19 @@ def _ensure_web_deps() -> list[OpsResult]:
                     )
                 )
                 return results
-            results.append(
-                OpsResult(True, "Installed web deps via npm install", str(node_modules))
-            )
+            results.append(OpsResult(True, "Installed web deps via npm install", str(node_modules)))
             return results
 
         details = (cp.stdout or "").strip() + (
             "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
         )
         results.append(
-            OpsResult(
-                False, "Failed to install web deps via npm install", details.strip()
-            )
+            OpsResult(False, "Failed to install web deps via npm install", details.strip())
         )
         return results
 
     except Exception as e:
-        results.append(
-            OpsResult(False, "Failed to install web deps", f"{type(e).__name__}: {e}")
-        )
+        results.append(OpsResult(False, "Failed to install web deps", f"{type(e).__name__}: {e}"))
         return results
 
 
@@ -558,9 +515,7 @@ def status(args) -> int:
     if _which("docker"):
         cp = _run(["docker", "ps", "--format", "{{.Names}}"], check=False)
         running = "nyxgpt-cassandra" in (cp.stdout or "")
-        print(
-            f"\nDocker container nyxgpt-cassandra: {'RUNNING' if running else 'NOT RUNNING'}"
-        )
+        print(f"\nDocker container nyxgpt-cassandra: {'RUNNING' if running else 'NOT RUNNING'}")
     else:
         print("\nDocker: docker not found")
 
@@ -603,9 +558,7 @@ def doctor(args) -> int:
         if _which("npm") is None:
             issues.append("Missing tool in PATH: npm")
         if not (web_dir / "node_modules").exists():
-            issues.append(
-                f"Missing web deps: {web_dir / 'node_modules'} (run: nyxgpt ops install)"
-            )
+            issues.append(f"Missing web deps: {web_dir / 'node_modules'} (run: nyxgpt ops install)")
         elif not _can_resolve("undici"):
             issues.append("Missing web dependency: undici (run: nyxgpt ops install)")
 

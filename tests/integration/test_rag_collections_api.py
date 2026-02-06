@@ -8,9 +8,7 @@ import pytest
 
 
 @pytest.mark.integration
-def test_rag_collections_list(
-    api_base_url: str, require_cassandra: None
-) -> None:
+def test_rag_collections_list(api_base_url: str, require_cassandra: None) -> None:
     """Test listing RAG collections."""
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         # Verify API is up
@@ -98,9 +96,7 @@ def test_rag_collection_stats_after_ingest(
 
 
 @pytest.mark.integration
-def test_rag_collection_delete_protection(
-    api_base_url: str, require_cassandra: None
-) -> None:
+def test_rag_collection_delete_protection(api_base_url: str, require_cassandra: None) -> None:
     """Test that default collection cannot be deleted."""
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         # Attempt to delete default collection
@@ -112,9 +108,7 @@ def test_rag_collection_delete_protection(
 
 
 @pytest.mark.integration
-def test_rag_collection_delete_nonexistent(
-    api_base_url: str, require_cassandra: None
-) -> None:
+def test_rag_collection_delete_nonexistent(api_base_url: str, require_cassandra: None) -> None:
     """Test deleting a non-existent collection."""
     fake_collection = f"nonexistent-{uuid.uuid4().hex[:8]}"
 
@@ -127,9 +121,7 @@ def test_rag_collection_delete_nonexistent(
 
 
 @pytest.mark.integration
-def test_rag_collection_create_success(
-    api_base_url: str, require_cassandra: None
-) -> None:
+def test_rag_collection_create_success(api_base_url: str, require_cassandra: None) -> None:
     """Test successfully creating a new collection."""
     collection_name = f"test_coll_{uuid.uuid4().hex[:8]}"
 
@@ -162,9 +154,7 @@ def test_rag_collection_create_success(
 
 
 @pytest.mark.integration
-def test_rag_collection_create_invalid_name(
-    api_base_url: str, require_cassandra: None
-) -> None:
+def test_rag_collection_create_invalid_name(api_base_url: str, require_cassandra: None) -> None:
     """Test that invalid collection names are rejected."""
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         # Try to create collection with invalid name (contains spaces/special chars)
@@ -181,9 +171,7 @@ def test_rag_collection_create_invalid_name(
 
 
 @pytest.mark.integration
-def test_rag_collection_create_duplicate(
-    api_base_url: str, require_cassandra: None
-) -> None:
+def test_rag_collection_create_duplicate(api_base_url: str, require_cassandra: None) -> None:
     """Test that creating a duplicate collection is rejected."""
     collection_name = f"test_dup_{uuid.uuid4().hex[:8]}"
 
@@ -229,9 +217,7 @@ def test_rag_collection_create_default_protected(
 
 
 @pytest.mark.integration
-def test_rag_collection_get_settings(
-    api_base_url: str, require_cassandra: None
-) -> None:
+def test_rag_collection_get_settings(api_base_url: str, require_cassandra: None) -> None:
     """Test getting collection settings."""
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         # Get settings for default collection
@@ -265,9 +251,7 @@ def test_rag_collection_get_settings_nonexistent(
 
 
 @pytest.mark.integration
-def test_rag_collection_update_settings(
-    api_base_url: str, require_cassandra: None
-) -> None:
+def test_rag_collection_update_settings(api_base_url: str, require_cassandra: None) -> None:
     """Test updating collection settings."""
     collection_name = f"test_settings_{uuid.uuid4().hex[:8]}"
 
@@ -346,7 +330,8 @@ def test_rag_collection_reindex_success(
             "/api/v1/rag/ingest",
             json={
                 "doc_id": doc_id,
-                "text": "This is a test document for re-indexing. " * 10,  # Make it longer to get multiple chunks
+                "text": "This is a test document for re-indexing. "
+                * 10,  # Make it longer to get multiple chunks
                 "collection": collection_name,
                 "ensure_schema": False,  # Schema already created
             },

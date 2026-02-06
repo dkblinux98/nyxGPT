@@ -330,6 +330,8 @@ def test_count_message_tokens_fails_fast_without_tiktoken(
     messages = [{"role": "user", "content": "test"}]
     with pytest.raises(ImportError, match="tiktoken not installed"):
         token_counter.count_message_tokens(messages)
+
+
 def test_chat_minimal_context_exceeds_budget(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -364,7 +366,10 @@ def test_chat_minimal_context_exceeds_budget(
         session_file=tmp_path / "test.json",
         meta_file=tmp_path / "test.meta.json",
         messages=[
-            {"role": "system", "content": "You are a helpful assistant with specific instructions."},
+            {
+                "role": "system",
+                "content": "You are a helpful assistant with specific instructions.",
+            },
             {"role": "user", "content": "Previous message " * 20},
             {"role": "assistant", "content": "Previous response " * 20},
         ],
@@ -396,7 +401,10 @@ def test_chat_minimal_context_exceeds_budget(
     # Check that appropriate warning was logged
     warning_found = False
     for record in caplog.records:
-        if record.levelname == "WARNING" and "truncated to minimal context" in record.message.lower():
+        if (
+            record.levelname == "WARNING"
+            and "truncated to minimal context" in record.message.lower()
+        ):
             warning_found = True
             # Verify the warning message is clear and actionable
             assert "minimal context" in record.message
@@ -457,7 +465,9 @@ def test_chat_huge_prompt_exceeds_budget(
     caplog.set_level(logging.WARNING, logger="nyxgpt.chat")
 
     # Send a huge prompt that alone exceeds the budget
-    huge_prompt = "This is an extremely long user prompt that contains many repeated words and phrases. " * 50
+    huge_prompt = (
+        "This is an extremely long user prompt that contains many repeated words and phrases. " * 50
+    )
     result = chat(huge_prompt, config_path=None)
     assert result.reply == "response"
 
@@ -479,6 +489,6 @@ def test_chat_huge_prompt_exceeds_budget(
                 minimal_context_warning = True
 
     # Should have at least one warning about the budget issue
-    assert context_exceeded_warning or minimal_context_warning, (
-        "Expected warning about context budget exceeded not found in logs"
-    )
+    assert (
+        context_exceeded_warning or minimal_context_warning
+    ), "Expected warning about context budget exceeded not found in logs"

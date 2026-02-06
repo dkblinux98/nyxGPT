@@ -112,7 +112,9 @@ def test_rag_upload_text_file(
     """Test RAG file upload endpoint with .txt file."""
     # Create a test text file
     test_file = tmp_path / "test_upload.txt"
-    test_content = "This is a test document for RAG upload testing. It contains important information."
+    test_content = (
+        "This is a test document for RAG upload testing. It contains important information."
+    )
     test_file.write_text(test_content)
 
     # Use unique doc_id to avoid hash-based skip from previous test runs
@@ -122,9 +124,7 @@ def test_rag_upload_text_file(
         # Upload the file with unique doc_id
         with open(test_file, "rb") as f:
             files = {"file": ("test_upload.txt", f, "text/plain")}
-            upload_resp = client.post(
-                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
-            )
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
         upload_data = upload_resp.json()
@@ -136,9 +136,7 @@ def test_rag_upload_text_file(
         time.sleep(2.0)
 
         # Verify we can query the uploaded content
-        query_resp = client.post(
-            "/api/v1/rag/query", json={"query": "test document", "top_k": 5}
-        )
+        query_resp = client.post("/api/v1/rag/query", json={"query": "test document", "top_k": 5})
         assert query_resp.status_code == 200
         results = query_resp.json()["results"]
         assert len(results) > 0
@@ -183,9 +181,7 @@ More content for testing RAG ingestion.
         # Upload the markdown file with unique doc_id
         with open(test_file, "rb") as f:
             files = {"file": ("test.md", f, "text/markdown")}
-            upload_resp = client.post(
-                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
-            )
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
         upload_data = upload_resp.json()
@@ -248,7 +244,13 @@ def test_rag_upload_docx_file(
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         # Upload the DOCX file with unique doc_id
         with open(test_file, "rb") as f:
-            files = {"file": ("test.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            files = {
+                "file": (
+                    "test.docx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            }
             upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
@@ -319,7 +321,13 @@ def test_rag_upload_pptx_file(
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         # Upload the PPTX file with unique doc_id
         with open(test_file, "rb") as f:
-            files = {"file": ("test_presentation.pptx", f, "application/vnd.openxmlformats-officedocument.presentationml.presentation")}
+            files = {
+                "file": (
+                    "test_presentation.pptx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                )
+            }
             upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
@@ -355,7 +363,13 @@ def test_rag_upload_docx_empty_file(api_base_url: str, tmp_path) -> None:
 
     with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
         with open(test_file, "rb") as f:
-            files = {"file": ("empty.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            files = {
+                "file": (
+                    "empty.docx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            }
             upload_resp = client.post("/api/v1/rag/upload", files=files)
 
         # Should reject empty file with 400
@@ -392,7 +406,13 @@ def test_rag_upload_docx_only_table(
 
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         with open(test_file, "rb") as f:
-            files = {"file": ("only_table.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            files = {
+                "file": (
+                    "only_table.docx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            }
             upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
@@ -425,7 +445,13 @@ def test_rag_upload_docx_only_text(
 
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         with open(test_file, "rb") as f:
-            files = {"file": ("only_text.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            files = {
+                "file": (
+                    "only_text.docx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            }
             upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
@@ -464,7 +490,13 @@ def test_rag_upload_pptx_with_speaker_notes(
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         # Upload the PPTX file
         with open(test_file, "rb") as f:
-            files = {"file": ("notes_test.pptx", f, "application/vnd.openxmlformats-officedocument.presentationml.presentation")}
+            files = {
+                "file": (
+                    "notes_test.pptx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                )
+            }
             upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
@@ -509,7 +541,13 @@ def test_rag_upload_pptx_slide_order(
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         # Upload the PPTX file
         with open(test_file, "rb") as f:
-            files = {"file": ("order_test.pptx", f, "application/vnd.openxmlformats-officedocument.presentationml.presentation")}
+            files = {
+                "file": (
+                    "order_test.pptx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                )
+            }
             upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
@@ -527,7 +565,13 @@ def test_rag_upload_docx_corrupted_file(api_base_url: str, tmp_path) -> None:
 
     with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
         with open(test_file, "rb") as f:
-            files = {"file": ("corrupted.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            files = {
+                "file": (
+                    "corrupted.docx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            }
             upload_resp = client.post("/api/v1/rag/upload", files=files)
 
         # Should reject corrupted file with 400
@@ -536,7 +580,9 @@ def test_rag_upload_docx_corrupted_file(api_base_url: str, tmp_path) -> None:
         assert "error" in error_data
         error_msg = error_data["error"]["message"].lower()
         # Accept: corrupted/invalid file errors, or docx support not available
-        assert any(term in error_msg for term in ("corrupted", "invalid", "not available", "not supported"))
+        assert any(
+            term in error_msg for term in ("corrupted", "invalid", "not available", "not supported")
+        )
 
 
 @pytest.mark.integration
@@ -584,7 +630,13 @@ def test_rag_upload_docx_with_images(
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         # Upload the DOCX file
         with open(test_file, "rb") as f:
-            files = {"file": ("test_with_image.docx", f, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
+            files = {
+                "file": (
+                    "test_with_image.docx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            }
             upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
@@ -598,9 +650,7 @@ def test_rag_upload_docx_with_images(
         time.sleep(2.0)
 
         # Query to verify content was ingested (including text around image)
-        query_resp = client.post(
-            "/api/v1/rag/query", json={"query": "paragraph image", "top_k": 5}
-        )
+        query_resp = client.post("/api/v1/rag/query", json={"query": "paragraph image", "top_k": 5})
         assert query_resp.status_code == 200
         results = query_resp.json()["results"]
         # Should find the content
@@ -623,7 +673,13 @@ def test_rag_upload_empty_pptx(api_base_url: str, tmp_path) -> None:
     with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
         # Upload the empty PPTX file
         with open(test_file, "rb") as f:
-            files = {"file": ("empty.pptx", f, "application/vnd.openxmlformats-officedocument.presentationml.presentation")}
+            files = {
+                "file": (
+                    "empty.pptx",
+                    f,
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                )
+            }
             upload_resp = client.post("/api/v1/rag/upload", files=files)
 
         # Should reject with 400 for no extractable text
@@ -663,7 +719,7 @@ def test_rag_upload_pdf_with_tables_and_metadata(
         from reportlab.lib.pagesizes import letter
         from reportlab.lib.styles import getSampleStyleSheet
         from reportlab.lib.units import inch
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
     except ImportError:
         pytest.skip("reportlab not available for PDF generation")
 
@@ -682,38 +738,42 @@ def test_rag_upload_pdf_with_tables_and_metadata(
     story = []
 
     # Add title
-    title = Paragraph("Enhanced PDF Test Document", styles['Title'])
+    title = Paragraph("Enhanced PDF Test Document", styles["Title"])
     story.append(title)
     story.append(Spacer(1, 0.2 * inch))
 
     # Add description
     desc = Paragraph(
         "This document tests improved PDF extraction with tables, formatting, and metadata.",
-        styles['Normal']
+        styles["Normal"],
     )
     story.append(desc)
     story.append(Spacer(1, 0.3 * inch))
 
     # Add a table to test table extraction
     table_data = [
-        ['Feature', 'Status', 'Priority'],
-        ['Table handling', 'Improved', 'High'],
-        ['Formatting preservation', 'Enhanced', 'High'],
-        ['Multi-column support', 'Added', 'Medium'],
-        ['Metadata extraction', 'Implemented', 'High'],
+        ["Feature", "Status", "Priority"],
+        ["Table handling", "Improved", "High"],
+        ["Formatting preservation", "Enhanced", "High"],
+        ["Multi-column support", "Added", "Medium"],
+        ["Metadata extraction", "Implemented", "High"],
     ]
 
     table = Table(table_data)
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 12),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black),
-    ]))
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 12),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 12),
+                ("BACKGROUND", (0, 1), (-1, -1), colors.beige),
+                ("GRID", (0, 0), (-1, -1), 1, colors.black),
+            ]
+        )
+    )
 
     story.append(table)
     story.append(Spacer(1, 0.3 * inch))
@@ -723,7 +783,7 @@ def test_rag_upload_pdf_with_tables_and_metadata(
         "The improved PDF extraction now properly handles complex layouts including "
         "tables with structured data, preserves text formatting, and extracts document "
         "metadata such as title, author, and creation date.",
-        styles['Normal']
+        styles["Normal"],
     )
     story.append(content)
 
@@ -838,9 +898,7 @@ def test_rag_upload_epub_file(
         # Upload the ePUB file with unique doc_id
         with open(test_file, "rb") as f:
             files = {"file": ("test_book.epub", f, "application/epub+zip")}
-            upload_resp = client.post(
-                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
-            )
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
         upload_data = upload_resp.json()
@@ -906,9 +964,7 @@ def test_rag_upload_epub_with_metadata(
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         with open(test_file, "rb") as f:
             files = {"file": ("metadata_book.epub", f, "application/epub+zip")}
-            upload_resp = client.post(
-                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
-            )
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
 
@@ -916,9 +972,7 @@ def test_rag_upload_epub_with_metadata(
         time.sleep(2.0)
 
         # Query for metadata content
-        query_resp = client.post(
-            "/api/v1/rag/query", json={"query": "metadata test", "top_k": 5}
-        )
+        query_resp = client.post("/api/v1/rag/query", json={"query": "metadata test", "top_k": 5})
         assert query_resp.status_code == 200
         results = query_resp.json()["results"]
         assert len(results) > 0
@@ -1009,7 +1063,9 @@ def test_rag_upload_epub_multi_chapter(
         book.add_item(c)
         chapters.append(c)
 
-    book.toc = tuple(epub.Link(f"chap_{i:02d}.xhtml", f"Chapter {i}", f"chap{i}") for i in range(1, 4))
+    book.toc = tuple(
+        epub.Link(f"chap_{i:02d}.xhtml", f"Chapter {i}", f"chap{i}") for i in range(1, 4)
+    )
     book.add_item(epub.EpubNcx())
     book.add_item(epub.EpubNav())
     book.spine = ["nav"] + chapters
@@ -1021,9 +1077,7 @@ def test_rag_upload_epub_multi_chapter(
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         with open(test_file, "rb") as f:
             files = {"file": ("multi_chapter.epub", f, "application/epub+zip")}
-            upload_resp = client.post(
-                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
-            )
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
         upload_data = upload_resp.json()
@@ -1140,9 +1194,7 @@ def test_rag_upload_html_file(
         # Upload the file
         with open(test_file, "rb") as f:
             files = {"file": ("test.html", f, "text/html")}
-            upload_resp = client.post(
-                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
-            )
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
         upload_data = upload_resp.json()
@@ -1196,9 +1248,7 @@ def test_rag_upload_html_with_metadata(
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         with open(test_file, "rb") as f:
             files = {"file": ("metadata_test.html", f, "text/html")}
-            upload_resp = client.post(
-                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
-            )
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
         upload_data = upload_resp.json()
@@ -1279,9 +1329,7 @@ def test_rag_upload_html_boilerplate_removal(
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         with open(test_file, "rb") as f:
             files = {"file": ("boilerplate_test.html", f, "text/html")}
-            upload_resp = client.post(
-                "/api/v1/rag/upload", files=files, params={"doc_id": doc_id}
-            )
+            upload_resp = client.post("/api/v1/rag/upload", files=files, params={"doc_id": doc_id})
 
         assert upload_resp.status_code == 200
         upload_data = upload_resp.json()

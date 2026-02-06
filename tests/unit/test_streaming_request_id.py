@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import logging
 import uuid
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch
 
 from nyxgpt.app import app
-from nyxgpt.logging import request_id_var, RequestIdFilter
+from nyxgpt.logging import RequestIdFilter, request_id_var
 
 pytestmark = pytest.mark.unit
 
@@ -67,8 +67,9 @@ def test_legacy_streaming_endpoint_captures_request_id():
         request_ids_seen.append(request_id_var.get())
         yield "Test"
 
-    with patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream):
-        with client.stream(
+    with (
+        patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream),
+        client.stream(
             "POST",
             "/api/chat/stream",  # Legacy endpoint (no v1)
             json={
@@ -77,9 +78,10 @@ def test_legacy_streaming_endpoint_captures_request_id():
                 "model": "test-model",
             },
             headers={"X-Request-ID": test_request_id},
-        ) as response:
-            assert response.headers.get("X-Request-Id") == test_request_id
-            list(response.iter_text())
+        ) as response,
+    ):
+        assert response.headers.get("X-Request-Id") == test_request_id
+        list(response.iter_text())
 
     assert len(request_ids_seen) > 0
     assert request_ids_seen[0] == test_request_id
@@ -96,8 +98,9 @@ def test_streaming_endpoint_with_auto_generated_request_id():
         request_ids_seen.append(request_id_var.get())
         yield "Test"
 
-    with patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream):
-        with client.stream(
+    with (
+        patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream),
+        client.stream(
             "POST",
             "/api/v1/chat/stream",
             json={
@@ -106,12 +109,13 @@ def test_streaming_endpoint_with_auto_generated_request_id():
                 "model": "test-model",
             },
             # No X-Request-ID header - should auto-generate
-        ) as response:
-            auto_request_id = response.headers.get("X-Request-Id")
-            assert auto_request_id is not None
-            assert len(auto_request_id) > 0
+        ) as response,
+    ):
+        auto_request_id = response.headers.get("X-Request-Id")
+        assert auto_request_id is not None
+        assert len(auto_request_id) > 0
 
-            list(response.iter_text())
+        list(response.iter_text())
 
     # Verify the auto-generated ID was set in the generator
     assert len(request_ids_seen) > 0
@@ -145,8 +149,9 @@ def test_streaming_request_id_propagates_to_logged_function(caplog):
         logger.info(f"Test log from within chat_stream, request_id={req_id}")
         yield "Test response"
 
-    with patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream):
-        with client.stream(
+    with (
+        patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream),
+        client.stream(
             "POST",
             "/api/v1/chat/stream",
             json={
@@ -155,15 +160,15 @@ def test_streaming_request_id_propagates_to_logged_function(caplog):
                 "model": "test-model",
             },
             headers={"X-Request-ID": test_request_id},
-        ) as response:
-            # Consume stream
-            list(response.iter_text())
+        ) as response,
+    ):
+        # Consume stream
+        list(response.iter_text())
 
     # Verify the request ID was captured from the context
     assert len(captured_request_id) > 0, "Mock was not called"
     assert captured_request_id[0] == test_request_id, (
-        f"Expected request_id={test_request_id}, "
-        f"but found request_id={captured_request_id[0]}"
+        f"Expected request_id={test_request_id}, " f"but found request_id={captured_request_id[0]}"
     )
 
 
@@ -186,8 +191,9 @@ def test_streaming_auto_generated_request_id_propagates_to_logs(caplog):
         captured_context_id.append(req_id)
         yield "Test"
 
-    with patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream):
-        with client.stream(
+    with (
+        patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream),
+        client.stream(
             "POST",
             "/api/v1/chat/stream",
             json={
@@ -196,14 +202,15 @@ def test_streaming_auto_generated_request_id_propagates_to_logs(caplog):
                 "model": "test-model",
             },
             # No X-Request-ID header - should auto-generate
-        ) as response:
-            # Get the auto-generated request ID
-            auto_request_id = response.headers.get("X-Request-Id")
-            assert auto_request_id is not None, "Expected X-Request-Id header"
-            captured_header_id.append(auto_request_id)
+        ) as response,
+    ):
+        # Get the auto-generated request ID
+        auto_request_id = response.headers.get("X-Request-Id")
+        assert auto_request_id is not None, "Expected X-Request-Id header"
+        captured_header_id.append(auto_request_id)
 
-            # Consume stream
-            list(response.iter_text())
+        # Consume stream
+        list(response.iter_text())
 
     # Verify the auto-generated request ID was available in the streaming context
     assert len(captured_context_id) > 0, "Mock was not called"
@@ -254,8 +261,7 @@ def test_real_chat_stream_logs_have_request_id(caplog):
     # Verify the request ID was available during real chat_stream execution
     assert len(captured_request_ids) > 0, "Mock ollama stream was not called"
     assert captured_request_ids[0] == test_request_id, (
-        f"Expected request_id={test_request_id}, "
-        f"but found request_id={captured_request_ids[0]}"
+        f"Expected request_id={test_request_id}, " f"but found request_id={captured_request_ids[0]}"
     )
 
 

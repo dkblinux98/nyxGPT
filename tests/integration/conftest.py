@@ -34,9 +34,7 @@ def ensure_api_server_current():
     """
     # Only restart if NYXGPT_SKIP_RESTART is not set (allows CI/custom setups to opt out)
     if os.environ.get("NYXGPT_SKIP_RESTART"):
-        print(
-            "\n[INTEGRATION TESTS] Skipping API server restart (NYXGPT_SKIP_RESTART set)"
-        )
+        print("\n[INTEGRATION TESTS] Skipping API server restart (NYXGPT_SKIP_RESTART set)")
         yield
         return
 
@@ -52,9 +50,7 @@ def ensure_api_server_current():
         if result.returncode == 0:
             print("[INTEGRATION TESTS] API server restart successful")
         else:
-            print(
-                f"[INTEGRATION TESTS] API restart returned non-zero: {result.returncode}"
-            )
+            print(f"[INTEGRATION TESTS] API restart returned non-zero: {result.returncode}")
             if result.stderr:
                 print(f"[INTEGRATION TESTS] stderr: {result.stderr}")
 
@@ -65,22 +61,16 @@ def ensure_api_server_current():
         if _can_connect("127.0.0.1", 8000, timeout=2.0):
             print("[INTEGRATION TESTS] API server is accessible")
         else:
-            print(
-                "[INTEGRATION TESTS] WARNING: API server not accessible after restart"
-            )
+            print("[INTEGRATION TESTS] WARNING: API server not accessible after restart")
 
     except subprocess.TimeoutExpired:
         print(
             "[INTEGRATION TESTS] WARNING: API restart timed out (server might not be managed by ops)"
         )
     except FileNotFoundError:
-        print(
-            "[INTEGRATION TESTS] WARNING: 'nyxgpt' command not found (tests may use stale code)"
-        )
+        print("[INTEGRATION TESTS] WARNING: 'nyxgpt' command not found (tests may use stale code)")
     except Exception as e:
-        print(
-            f"[INTEGRATION TESTS] WARNING: Could not restart API: {type(e).__name__}: {e}"
-        )
+        print(f"[INTEGRATION TESTS] WARNING: Could not restart API: {type(e).__name__}: {e}")
 
     yield
 
@@ -115,9 +105,7 @@ def require_cassandra(cfg: Any) -> None:
     # Defaults assume local Docker Cassandra.
     host = (
         cfg.get("rag", "cassandra_host", fallback=None)
-        or cfg.get("rag", "cassandra_contact_points", fallback="127.0.0.1")
-        .split(",")[0]
-        .strip()
+        or cfg.get("rag", "cassandra_contact_points", fallback="127.0.0.1").split(",")[0].strip()
         or "127.0.0.1"
     )
     port = int(cfg.get("rag", "cassandra_port", fallback="9042"))
@@ -251,7 +239,9 @@ def cleanup_test_collections(api_base_url):
         print(f"\n[INTEGRATION TESTS] Could not list collections before tests: {e}")
         existing_collections = set()
 
-    print(f"\n[INTEGRATION TESTS] Found {len(existing_collections)} existing collections before tests")
+    print(
+        f"\n[INTEGRATION TESTS] Found {len(existing_collections)} existing collections before tests"
+    )
 
     yield  # Run all tests
 
@@ -285,11 +275,15 @@ def cleanup_test_collections(api_base_url):
             else:
                 # Non-test collection that existed before or was created during tests
                 if collection_name not in existing_collections:
-                    print(f"[INTEGRATION TESTS] WARNING: Non-test collection created during tests: {collection_name}")
+                    print(
+                        f"[INTEGRATION TESTS] WARNING: Non-test collection created during tests: {collection_name}"
+                    )
                 skipped_count += 1
 
         store.close()
-        print(f"[INTEGRATION TESTS] Collection cleanup complete: {deleted_count} dropped, {skipped_count} preserved")
+        print(
+            f"[INTEGRATION TESTS] Collection cleanup complete: {deleted_count} dropped, {skipped_count} preserved"
+        )
 
     except Exception as e:
         print(f"[INTEGRATION TESTS] Collection cleanup failed: {e}")
@@ -348,10 +342,7 @@ def cleanup_test_sessions(api_base_url):
 
             # Delete any session created during tests
             try:
-                del_resp = requests.delete(
-                    f"{api_base_url}/api/v1/sessions/{name}",
-                    timeout=5
-                )
+                del_resp = requests.delete(f"{api_base_url}/api/v1/sessions/{name}", timeout=5)
                 if del_resp.ok:
                     deleted_count += 1
                     print(f"[INTEGRATION TESTS] Deleted: {name}")
@@ -360,7 +351,9 @@ def cleanup_test_sessions(api_base_url):
             except Exception as e:
                 print(f"[INTEGRATION TESTS] Failed to delete session {name}: {e}")
 
-        print(f"[INTEGRATION TESTS] Cleanup complete: {deleted_count} deleted, {skipped_count} preserved")
+        print(
+            f"[INTEGRATION TESTS] Cleanup complete: {deleted_count} deleted, {skipped_count} preserved"
+        )
 
     except Exception as e:
         print(f"[INTEGRATION TESTS] Session cleanup failed: {e}")

@@ -3,6 +3,7 @@ Integration tests for RAG playground functionality.
 
 Tests the RAG query and metrics endpoints that power the playground UI.
 """
+
 from __future__ import annotations
 
 import time

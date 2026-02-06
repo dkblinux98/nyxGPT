@@ -3,18 +3,16 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+from configparser import ConfigParser
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional
-
-from configparser import ConfigParser
 
 DEFAULT_LOGGER_NAME = "nyxgpt"
 DEFAULT_FMT = "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"
 DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 # Context variable for request ID tracking
-request_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "request_id", default=None
 )
 
@@ -88,7 +86,7 @@ class RequestIdFilter(logging.Filter):
         return True
 
 
-def _coerce_cfg(cfg: Optional[ConfigParser]) -> ConfigParser:
+def _coerce_cfg(cfg: ConfigParser | None) -> ConfigParser:
     """Return a ConfigParser.
 
     If cfg is None, reload from the default config path.
@@ -101,22 +99,20 @@ def _coerce_cfg(cfg: Optional[ConfigParser]) -> ConfigParser:
     return load_config(None)
 
 
-def get_effective_log_level(cfg: Optional[ConfigParser]) -> int:
+def get_effective_log_level(cfg: ConfigParser | None) -> int:
     cfg = _coerce_cfg(cfg)
     level_name = cfg.get("logging", "level", fallback="INFO").upper()
     return getattr(logging, level_name, logging.INFO)
 
 
-def get_log_dir(cfg: Optional[ConfigParser] = None) -> Path:
+def get_log_dir(cfg: ConfigParser | None = None) -> Path:
     """Return the configured log directory.
 
     This is the single source of truth for where logs are stored.
     Reads from [logging] dir, falls back to ~/.nyxGPT/logs.
     """
     cfg = _coerce_cfg(cfg)
-    log_dir_str = cfg.get(
-        "logging", "dir", fallback=str(Path.home() / ".nyxGPT" / "logs")
-    )
+    log_dir_str = cfg.get("logging", "dir", fallback=str(Path.home() / ".nyxGPT" / "logs"))
     return Path(log_dir_str).expanduser()
 
 
@@ -153,9 +149,7 @@ def _ensure_console_handler(
 ) -> logging.Handler:
     for h in logger.handlers:
         # NOTE: RotatingFileHandler is also a StreamHandler; exclude it.
-        if isinstance(h, logging.StreamHandler) and not isinstance(
-            h, RotatingFileHandler
-        ):
+        if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
             h.setLevel(level)
             h.setFormatter(formatter)
             return h
@@ -168,7 +162,7 @@ def _ensure_console_handler(
 
 
 def configure_logging(
-    cfg: Optional[ConfigParser] = None,
+    cfg: ConfigParser | None = None,
     *,
     logger_name: str = DEFAULT_LOGGER_NAME,
     console: bool = True,
@@ -206,9 +200,7 @@ def configure_logging(
     root.setLevel(level)
 
     # Remove any existing RequestIdFilter to avoid duplicates (hot-reload safe)
-    for f in root.filters[
-        :
-    ]:  # Iterate over copy to avoid modification during iteration
+    for f in root.filters[:]:  # Iterate over copy to avoid modification during iteration
         if isinstance(f, RequestIdFilter):
             root.removeFilter(f)
 
@@ -252,7 +244,7 @@ def configure_logging(
     return logger
 
 
-def refresh_logging(cfg: Optional[ConfigParser] = None) -> None:
+def refresh_logging(cfg: ConfigParser | None = None) -> None:
     """Explicit hot-reload entrypoint.
 
     If cfg is None, this reloads config.ini and reapplies handlers/levels without restart.
@@ -260,6 +252,6 @@ def refresh_logging(cfg: Optional[ConfigParser] = None) -> None:
     configure_logging(cfg)
 
 
-def get_logger(name: Optional[str] = None) -> logging.Logger:
+def get_logger(name: str | None = None) -> logging.Logger:
     """Return a logger (defaults to the app logger name)."""
     return logging.getLogger(name or DEFAULT_LOGGER_NAME)

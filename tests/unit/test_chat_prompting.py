@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import configparser
 from pathlib import Path
 from typing import Any
-import configparser
+
 import pytest
+
 from nyxgpt.chat import chat, chat_stream
 
 pytestmark = pytest.mark.unit
@@ -41,9 +43,7 @@ def test_chat_without_rag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
     assert result.reply == "hello"
 
 
-def test_chat_with_rag_injects_context(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_chat_with_rag_injects_context(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg = _cfg(tmp_path, rag_enabled=True)
 
     # Ensure chat() and sessions use our in-memory config
@@ -171,9 +171,7 @@ def test_chat_with_rag_returns_chunk_metadata(
     assert result.rag_context[0]["chunk_id"] == 0
 
 
-def test_chat_stream_emits_rag_metadata(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_chat_stream_emits_rag_metadata(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """chat_stream should emit RAG metadata as first chunk when RAG is enabled."""
     cfg = _cfg(tmp_path, rag_enabled=True)
 
@@ -237,9 +235,7 @@ def test_chat_with_rag_enabled_but_no_chunks_found(
     monkeypatch.setattr("nyxgpt.chat.retrieve_context", lambda *a, **k: [])
 
     # Mock ollama response
-    monkeypatch.setattr(
-        "nyxgpt.chat.ollama_chat", lambda **_: "answer without RAG context"
-    )
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", lambda **_: "answer without RAG context")
 
     # Track what gets saved
     saved = {}
@@ -261,9 +257,7 @@ def test_chat_with_rag_enabled_but_no_chunks_found(
     last_msg = saved["messages"][-1]
     assert last_msg["role"] == "assistant"
     assert "rag_chunks" in last_msg, "rag_chunks field should exist when RAG is enabled"
-    assert last_msg["rag_chunks"] == [], (
-        "rag_chunks should be empty array when no chunks found"
-    )
+    assert last_msg["rag_chunks"] == [], "rag_chunks should be empty array when no chunks found"
 
     # This distinguishes "RAG was enabled but found nothing" from "RAG was disabled"
     # - Message WITHOUT rag_chunks field = RAG was disabled
@@ -271,9 +265,7 @@ def test_chat_with_rag_enabled_but_no_chunks_found(
     # - Message WITH rag_chunks: [...] = RAG was enabled and found chunks
 
 
-def test_chat_with_custom_rag_templates(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_chat_with_custom_rag_templates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Test that custom RAG templates are used when configured."""
     cfg = _cfg(tmp_path, rag_enabled=True)
 

@@ -87,9 +87,7 @@ def test_sessions_dir_override_is_respected(tmp_path: Path) -> None:
     sessions.save_session(state, cfg, sessions_dir_override=str(override_dir))
 
     # Ensure it can be reloaded from override location
-    state2 = sessions.load_session(
-        "s-override", cfg, sessions_dir_override=str(override_dir)
-    )
+    state2 = sessions.load_session("s-override", cfg, sessions_dir_override=str(override_dir))
     assert len(state2.messages) == 2
 
 
@@ -124,9 +122,7 @@ def test_list_sessions_finds_created_sessions(tmp_path: Path) -> None:
         "..\\escape",
     ],
 )
-def test_session_name_validation_rejects_path_traversal(
-    tmp_path: Path, bad_name: str
-) -> None:
+def test_session_name_validation_rejects_path_traversal(tmp_path: Path, bad_name: str) -> None:
     cfg = _cfg_with_sessions_dir(tmp_path / "sessions")
 
     # If your implementation allows these, this test will fail and we can tighten validation.
@@ -159,9 +155,7 @@ def test_validate_session_name_rejects_invalid_chars() -> None:
         sessions.validate_session_name("invalid@name")
 
 
-def test_load_session_corrupted_json_file(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_load_session_corrupted_json_file(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """load_session should handle corrupted JSON gracefully by returning empty messages."""
     cfg = _cfg_with_sessions_dir(tmp_path / "sessions")
     sessions_dir = sessions.get_sessions_dir(cfg)
@@ -636,9 +630,9 @@ def test_file_lock_concurrent_access_no_deadlock(tmp_path: Path) -> None:
 
     # Verify all operations succeeded
     assert results["failures"] == 0, f"Failures: {results['errors']}"
-    assert results["successes"] == len(sessions_to_test), (
-        f"Expected {len(sessions_to_test)} successes, got {results['successes']}"
-    )
+    assert results["successes"] == len(
+        sessions_to_test
+    ), f"Expected {len(sessions_to_test)} successes, got {results['successes']}"
 
 
 @pytest.mark.unit
@@ -666,9 +660,9 @@ def test_file_lock_ordering_verification(tmp_path: Path) -> None:
         thread.start()
         thread.join(timeout=1.0)
 
-        assert assertion_raised["value"], (
-            "verify_lock_ordering should raise AssertionError for wrong order"
-        )
+        assert assertion_raised[
+            "value"
+        ], "verify_lock_ordering should raise AssertionError for wrong order"
 
 
 @pytest.mark.unit
@@ -702,9 +696,7 @@ def test_verify_lock_ordering_violation() -> None:
     # Only test in debug mode (when __debug__ is True)
     if __debug__:
         # Should raise AssertionError - files in wrong order
-        with pytest.raises(
-            AssertionError, match="File lock ordering violation detected"
-        ):
+        with pytest.raises(AssertionError, match="File lock ordering violation detected"):
             sessions.verify_lock_ordering(file_b, file_a)  # Wrong order!
     else:
         # In optimized mode (-O flag), no assertion raised
@@ -756,9 +748,7 @@ def test_metadata_file_deleted_between_checks(
     def patched_file_lock(file_path: Path, timeout: float = 5.0):
         lock_call_count["count"] += 1
         # Delete metadata file when we try to lock it (simulates race condition)
-        if (
-            file_path == mf and lock_call_count["count"] == 2
-        ):  # Second lock call is for metadata
+        if file_path == mf and lock_call_count["count"] == 2:  # Second lock call is for metadata
             if mf.exists():
                 mf.unlink()
         return original_file_lock(file_path, timeout)
@@ -918,9 +908,7 @@ def test_search_messages_filters_by_role(tmp_path: Path) -> None:
 
     # Search for "about" with role filter
     user_results = sessions.search_messages("about", sessions_dir, role_filter="user")
-    assistant_results = sessions.search_messages(
-        "about", sessions_dir, role_filter="assistant"
-    )
+    assistant_results = sessions.search_messages("about", sessions_dir, role_filter="assistant")
 
     assert len(user_results) == 2  # Both user messages contain "about"
     assert len(assistant_results) == 0  # No assistant messages contain "about"
@@ -966,9 +954,7 @@ def test_search_messages_filters_by_session(tmp_path: Path) -> None:
     assert len(all_results) == 2
 
     # Search only in session-1
-    filtered_results = sessions.search_messages(
-        "Python", sessions_dir, session_filter="session-1"
-    )
+    filtered_results = sessions.search_messages("Python", sessions_dir, session_filter="session-1")
     assert len(filtered_results) == 1
     assert filtered_results[0]["session_name"] == "session-1"
 
@@ -1273,9 +1259,7 @@ def test_merge_sessions_empty_sessions(tmp_path: Path) -> None:
     )
 
     # Merge empty sessions
-    ok, msg = sessions.merge_sessions(
-        ["empty1", "empty2"], "merged_empty", sessions_dir
-    )
+    ok, msg = sessions.merge_sessions(["empty1", "empty2"], "merged_empty", sessions_dir)
     assert ok
     assert "0 messages" in msg
 
@@ -1329,15 +1313,9 @@ def test_batch_delete_sessions(tmp_path: Path) -> None:
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     # Create test sessions
-    sessions.init_session(
-        "session1", sessions_dir, new_session=True, model="llama3.1:8b"
-    )
-    sessions.init_session(
-        "session2", sessions_dir, new_session=True, model="llama3.1:8b"
-    )
-    sessions.init_session(
-        "session3", sessions_dir, new_session=True, model="llama3.1:8b"
-    )
+    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("session3", sessions_dir, new_session=True, model="llama3.1:8b")
 
     # Batch delete two sessions
     success, failure, failed = sessions.batch_delete_sessions(
@@ -1353,9 +1331,7 @@ def test_batch_delete_sessions(tmp_path: Path) -> None:
     assert sessions.session_file_for("session3", sessions_dir).exists()
 
     # Delete non-existent session
-    success, failure, failed = sessions.batch_delete_sessions(
-        ["nonexistent"], sessions_dir
-    )
+    success, failure, failed = sessions.batch_delete_sessions(["nonexistent"], sessions_dir)
     assert success == 0
     assert failure == 1
     assert failed == ["nonexistent"]
@@ -1366,12 +1342,8 @@ def test_batch_tag_sessions(tmp_path: Path) -> None:
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     # Create test sessions
-    sessions.init_session(
-        "session1", sessions_dir, new_session=True, model="llama3.1:8b"
-    )
-    sessions.init_session(
-        "session2", sessions_dir, new_session=True, model="llama3.1:8b"
-    )
+    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
 
     # Batch add tags
     success, failure, failed = sessions.batch_tag_sessions(
@@ -1457,12 +1429,8 @@ def test_batch_update_metadata(tmp_path: Path) -> None:
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     # Create test sessions
-    sessions.init_session(
-        "session1", sessions_dir, new_session=True, model="llama3.1:8b"
-    )
-    sessions.init_session(
-        "session2", sessions_dir, new_session=True, model="llama3.1:8b"
-    )
+    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
 
     # Batch update pinned status
     success, failure, failed = sessions.batch_update_metadata(
@@ -1628,12 +1596,8 @@ def test_rename_session_target_exists(tmp_path: Path) -> None:
     sessions_dir.mkdir()
 
     # Create two sessions
-    sessions.init_session(
-        "session1", sessions_dir, new_session=True, model="llama3.1:8b"
-    )
-    sessions.init_session(
-        "session2", sessions_dir, new_session=True, model="llama3.1:8b"
-    )
+    sessions.init_session("session1", sessions_dir, new_session=True, model="llama3.1:8b")
+    sessions.init_session("session2", sessions_dir, new_session=True, model="llama3.1:8b")
 
     # Try to rename session1 to session2
     ok, msg = sessions.rename_session("session1", "session2", sessions_dir)
@@ -1756,10 +1720,7 @@ def test_sanitize_title_for_filename(tmp_path: Path) -> None:
     assert sessions.sanitize_title_for_filename("My Chat Session") == "my-chat-session"
 
     # Special characters
-    assert (
-        sessions.sanitize_title_for_filename("Python: Tips & Tricks!")
-        == "python-tips-tricks"
-    )
+    assert sessions.sanitize_title_for_filename("Python: Tips & Tricks!") == "python-tips-tricks"
 
     # Multiple spaces and hyphens
     assert sessions.sanitize_title_for_filename("Test   -  Session") == "test-session"
@@ -1866,9 +1827,7 @@ def test_delete_session_nonexistent(tmp_path: Path) -> None:
     assert not ok
 
 
-def test_load_session_meta_corrupted_json(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_load_session_meta_corrupted_json(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     """Test loading corrupted metadata JSON returns empty dict."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
@@ -1895,7 +1854,7 @@ def test_load_session_meta_io_error(
 
     # Monkey-patch Path.read_text to raise IOError
     def raise_io_error(*args, **kwargs):
-        raise IOError("Simulated IO error")
+        raise OSError("Simulated IO error")
 
     monkeypatch.setattr("pathlib.Path.read_text", raise_io_error)
 
@@ -1918,7 +1877,7 @@ def test_load_session_messages_io_error(
 
     # Monkey-patch Path.read_text to raise IOError
     def raise_io_error(*args, **kwargs):
-        raise IOError("Simulated IO error")
+        raise OSError("Simulated IO error")
 
     monkeypatch.setattr("pathlib.Path.read_text", raise_io_error)
 
@@ -2035,9 +1994,7 @@ def test_batch_export_invalid_format(tmp_path: Path) -> None:
     output_dir = tmp_path / "exports"
 
     with pytest.raises(ValueError, match="Invalid format"):
-        sessions.batch_export_sessions(
-            ["session1"], output_dir, sessions_dir, format="invalid"
-        )
+        sessions.batch_export_sessions(["session1"], output_dir, sessions_dir, format="invalid")
 
 
 def test_list_sessions_sorting(tmp_path: Path) -> None:

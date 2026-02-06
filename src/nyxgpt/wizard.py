@@ -18,10 +18,7 @@ from nyxgpt.models import list_models
 
 def _prompt(question: str, default: str | None = None) -> str:
     """Prompt user for input with optional default value."""
-    if default:
-        prompt_text = f"{question} [{default}]: "
-    else:
-        prompt_text = f"{question}: "
+    prompt_text = f"{question} [{default}]: " if default else f"{question}: "
 
     try:
         value = input(prompt_text).strip()
@@ -224,12 +221,8 @@ def _generate_config_ini(
     config.set("rag", "enable_chat_context", "true" if enable_rag else "false")
 
     if enable_rag:
-        config.set(
-            "rag", "cassandra_hosts", rag_config.get("cassandra_hosts", "127.0.0.1")
-        )
-        config.set(
-            "rag", "cassandra_port", str(rag_config.get("cassandra_port", "9042"))
-        )
+        config.set("rag", "cassandra_hosts", rag_config.get("cassandra_hosts", "127.0.0.1"))
+        config.set("rag", "cassandra_port", str(rag_config.get("cassandra_port", "9042")))
         config.set("rag", "cassandra_keyspace", "nyxgpt")
         config.set("rag", "cassandra_table", "rag_chunks")
         config.set(
@@ -327,7 +320,9 @@ def run_wizard(output_path: Path | None = None) -> int:
 
     system_prompt = _prompt("Default system prompt (leave empty for none)", "")
     if system_prompt:
-        print(f"\n✅ System prompt set: {system_prompt[:50]}{'...' if len(system_prompt) > 50 else ''}")
+        print(
+            f"\n✅ System prompt set: {system_prompt[:50]}{'...' if len(system_prompt) > 50 else ''}"
+        )
     else:
         print("\n✅ No default system prompt (empty)")
 

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import pytest
 from configparser import ConfigParser
 
-from nyxgpt.rag.fusion import reciprocal_rank_fusion, weighted_fusion, _rrf_cfg
+import pytest
 
+from nyxgpt.rag.fusion import _rrf_cfg, reciprocal_rank_fusion, weighted_fusion
 
 # =============================================================================
 # Configuration Tests
@@ -276,7 +276,7 @@ def test_weighted_fusion_score_normalization():
     # doc3: 0.5 * 0.0 + 0.5 * 0.0 = 0.0
 
     # doc1 and doc2 should tie, doc3 should be last
-    scores = {item_id: score for item_id, score in result}
+    scores = dict(result)
 
     assert abs(scores["doc1"] - 0.5) < 1e-6
     assert abs(scores["doc2"] - 0.5) < 1e-6
@@ -416,23 +416,23 @@ def test_rrf_exact_keyword_match_ranks_first_with_equal_vector_scores():
     # doc_exact should rank first because:
     # - It appears in both rankings (rank 1 in keyword, rank 1 in vector)
     # - RRF score = 1/(60+1) + 1/(60+1) = 2/61
-    assert ranked_doc_ids[0] == "doc_exact", (
-        f"Exact keyword match should rank first, but got: {ranked_doc_ids}"
-    )
+    assert (
+        ranked_doc_ids[0] == "doc_exact"
+    ), f"Exact keyword match should rank first, but got: {ranked_doc_ids}"
 
     # doc_partial should rank second because:
     # - It appears in both rankings (rank 2 in keyword, rank 2 in vector)
     # - RRF score = 1/(60+2) + 1/(60+2) = 2/62
-    assert ranked_doc_ids[1] == "doc_partial", (
-        f"Partial keyword match should rank second, but got: {ranked_doc_ids}"
-    )
+    assert (
+        ranked_doc_ids[1] == "doc_partial"
+    ), f"Partial keyword match should rank second, but got: {ranked_doc_ids}"
 
     # doc_none should rank last because:
     # - It only appears in vector ranking (rank 3)
     # - RRF score = 1/(60+3) = 1/63
-    assert ranked_doc_ids[2] == "doc_none", (
-        f"No keyword match should rank last, but got: {ranked_doc_ids}"
-    )
+    assert (
+        ranked_doc_ids[2] == "doc_none"
+    ), f"No keyword match should rank last, but got: {ranked_doc_ids}"
 
 
 @pytest.mark.unit
@@ -470,16 +470,16 @@ def test_weighted_fusion_exact_keyword_match_ranks_first_with_equal_vector_score
 
     # When vector scores are identical (all normalize to 0), only keyword
     # scores matter. doc_exact has the highest keyword score.
-    assert ranked_doc_ids[0] == "doc_exact", (
-        f"Exact keyword match should rank first, but got: {ranked_doc_ids}"
-    )
+    assert (
+        ranked_doc_ids[0] == "doc_exact"
+    ), f"Exact keyword match should rank first, but got: {ranked_doc_ids}"
 
     # doc_partial has the second highest keyword score
-    assert ranked_doc_ids[1] == "doc_partial", (
-        f"Partial keyword match should rank second, but got: {ranked_doc_ids}"
-    )
+    assert (
+        ranked_doc_ids[1] == "doc_partial"
+    ), f"Partial keyword match should rank second, but got: {ranked_doc_ids}"
 
     # doc_none has the lowest keyword score (normalizes close to 0)
-    assert ranked_doc_ids[2] == "doc_none", (
-        f"Lowest keyword match should rank last, but got: {ranked_doc_ids}"
-    )
+    assert (
+        ranked_doc_ids[2] == "doc_none"
+    ), f"Lowest keyword match should rank last, but got: {ranked_doc_ids}"

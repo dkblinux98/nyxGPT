@@ -1,6 +1,7 @@
 """Tests for RAG lazy loading feature."""
 
 from pathlib import Path
+
 from nyxgpt import sessions
 
 

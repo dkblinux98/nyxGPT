@@ -1,7 +1,9 @@
 """Tests for RAG document update detection."""
+
 import uuid
 
 import pytest
+
 from nyxgpt.rag.rag import compute_document_hash, ingest_document
 from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 

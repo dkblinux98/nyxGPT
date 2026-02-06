@@ -24,13 +24,17 @@ def test_hybrid_search_end_to_end(
     doc3_id = f"hybrid-test-{uuid.uuid4().hex[:10]}"
 
     # Doc 1: Contains both unique keywords
-    doc1_text = f"{unique_kw1} 5.0 supports {unique_kw2} search with SAI indexes for similarity queries."
+    doc1_text = (
+        f"{unique_kw1} 5.0 supports {unique_kw2} search with SAI indexes for similarity queries."
+    )
 
     # Doc 2: Contains first keyword only
     doc2_text = f"{unique_kw1} is a distributed NoSQL database designed for high availability."
 
     # Doc 3: Contains second keyword only
-    doc3_text = f"{unique_kw2} embeddings enable semantic search and retrieval-augmented generation."
+    doc3_text = (
+        f"{unique_kw2} embeddings enable semantic search and retrieval-augmented generation."
+    )
 
     with httpx.Client(base_url=api_base_url, timeout=60.0) as client:
         # Verify API is up

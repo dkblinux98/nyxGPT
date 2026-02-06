@@ -27,9 +27,7 @@ def test_config(tmp_path):
     """Create a minimal test config."""
     config_path = tmp_path / "config.ini"
     config_path.write_text(
-        "[nyxgpt]\n"
-        "default_model = llama3.1:8b\n"
-        f"sessions_dir = {tmp_path / 'sessions'}\n"
+        "[nyxgpt]\n" "default_model = llama3.1:8b\n" f"sessions_dir = {tmp_path / 'sessions'}\n"
     )
     return load_config(config_path)
 
@@ -97,15 +95,12 @@ def test_concurrent_writes_different_sessions(test_sessions_dir):
         session_name = f"session-{session_id}"
         session_file = sessions.session_file_for(session_name, test_sessions_dir)
         messages = [
-            {"role": "user", "content": f"Session {session_id}, message {i}"}
-            for i in range(10)
+            {"role": "user", "content": f"Session {session_id}, message {i}"} for i in range(10)
         ]
         sessions.save_session_messages(session_file, messages)
 
     # Write to multiple sessions concurrently
-    threads = [
-        threading.Thread(target=write_session, args=(i,)) for i in range(num_sessions)
-    ]
+    threads = [threading.Thread(target=write_session, args=(i,)) for i in range(num_sessions)]
     for t in threads:
         t.start()
     for t in threads:

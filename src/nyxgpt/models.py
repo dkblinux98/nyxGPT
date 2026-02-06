@@ -6,7 +6,8 @@ listing, pulling, deleting, and inspecting models.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from nyxgpt.config import get_ollama_base_url, load_config
 from nyxgpt.ollama_client import delete_json, post_json, post_json_lines

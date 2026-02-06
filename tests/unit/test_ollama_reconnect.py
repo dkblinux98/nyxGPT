@@ -98,14 +98,13 @@ def test_retry_with_backoff_exhausts_retries() -> None:
     mock_func = MagicMock(side_effect=urllib.error.URLError("Connection refused"))
     mock_callback = MagicMock()
 
-    with pytest.raises(urllib.error.URLError):
-        with patch("time.sleep"):
-            _retry_with_backoff(
-                mock_func,
-                max_retries=2,
-                initial_delay=0.1,
-                on_retry=mock_callback,
-            )
+    with pytest.raises(urllib.error.URLError), patch("time.sleep"):
+        _retry_with_backoff(
+            mock_func,
+            max_retries=2,
+            initial_delay=0.1,
+            on_retry=mock_callback,
+        )
 
     # Should try 3 times total (initial + 2 retries)
     assert mock_func.call_count == 3
@@ -118,15 +117,14 @@ def test_retry_with_backoff_exponential_delay() -> None:
     mock_func = MagicMock(side_effect=urllib.error.URLError("Connection refused"))
     mock_callback = MagicMock()
 
-    with pytest.raises(urllib.error.URLError):
-        with patch("time.sleep"):
-            _retry_with_backoff(
-                mock_func,
-                max_retries=3,
-                initial_delay=1.0,
-                backoff_factor=2.0,
-                on_retry=mock_callback,
-            )
+    with pytest.raises(urllib.error.URLError), patch("time.sleep"):
+        _retry_with_backoff(
+            mock_func,
+            max_retries=3,
+            initial_delay=1.0,
+            backoff_factor=2.0,
+            on_retry=mock_callback,
+        )
 
     # Callback should receive increasing delays
     # attempt 1: 1.0s, attempt 2: 2.0s, attempt 3: 4.0s
@@ -151,16 +149,15 @@ def test_retry_with_backoff_max_delay() -> None:
     mock_func = MagicMock(side_effect=urllib.error.URLError("Connection refused"))
     mock_callback = MagicMock()
 
-    with pytest.raises(urllib.error.URLError):
-        with patch("time.sleep"):
-            _retry_with_backoff(
-                mock_func,
-                max_retries=5,
-                initial_delay=1.0,
-                max_delay=3.0,  # Cap at 3 seconds
-                backoff_factor=2.0,
-                on_retry=mock_callback,
-            )
+    with pytest.raises(urllib.error.URLError), patch("time.sleep"):
+        _retry_with_backoff(
+            mock_func,
+            max_retries=5,
+            initial_delay=1.0,
+            max_delay=3.0,  # Cap at 3 seconds
+            backoff_factor=2.0,
+            on_retry=mock_callback,
+        )
 
     # Check that delays are capped
     calls = mock_callback.call_args_list

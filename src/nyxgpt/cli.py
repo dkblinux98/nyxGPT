@@ -2,28 +2,26 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from nyxgpt import models, sessions, tools_fs
+
+# Ops implementation lives in a separate module for testability.
+from nyxgpt import ops as ops_mod
+from nyxgpt.chat import chat, chat_stream
 from nyxgpt.config import (
-    load_config,
     get_default_model,
     get_ollama_base_url,
     get_sessions_dir,
+    load_config,
 )
-from nyxgpt import sessions
-from nyxgpt import tools_fs
-from nyxgpt import models
-from nyxgpt.chat import chat, chat_stream
 from nyxgpt.logging import configure_logging
 from nyxgpt.rag.rag import ingest_document, retrieve_context
 from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 from nyxgpt.tui import NyxGPTTUI
 from nyxgpt.wizard import run_wizard
-
-# Ops implementation lives in a separate module for testability.
-from nyxgpt import ops as ops_mod
 
 
 def _list_sessions_in_dir(sessions_dir: Path) -> list[dict[str, object]]:
@@ -581,8 +579,8 @@ def cmd_sessions(
                 ts = datetime.fromisoformat(timestamp_str)
                 # Make timezone-aware if naive to prevent comparison errors
                 if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-                now = datetime.now(timezone.utc)
+                    ts = ts.replace(tzinfo=UTC)
+                now = datetime.now(UTC)
                 delta = now - ts
 
                 days = delta.days
@@ -697,20 +695,14 @@ def cmd_rag_ingest(
     doc_hash = result["doc_hash"]
 
     if status == "skipped":
-        print(
-            f"Document {doc_id} unchanged (hash: {doc_hash[:16]}...), skipped re-ingestion"
-        )
+        print(f"Document {doc_id} unchanged (hash: {doc_hash[:16]}...), skipped re-ingestion")
     elif status == "updated":
-        print(
-            f"Updated {chunks} chunks for doc_id={doc_id} into collection '{collection}'"
-        )
+        print(f"Updated {chunks} chunks for doc_id={doc_id} into collection '{collection}'")
         print(f"  Document hash: {doc_hash[:16]}...")
         if result["previous_hash"]:
             print(f"  Previous hash: {result['previous_hash'][:16]}...")
     else:  # status == "ingested"
-        print(
-            f"Ingested {chunks} chunks for doc_id={doc_id} into collection '{collection}'"
-        )
+        print(f"Ingested {chunks} chunks for doc_id={doc_id} into collection '{collection}'")
         print(f"  Document hash: {doc_hash[:16]}...")
 
     if model:
@@ -733,6 +725,7 @@ def cmd_rag_query(
     date_to: str | None = None,
 ) -> int:
     from datetime import datetime
+
     from nyxgpt.rag.vectorstore_cassandra import MetadataFilter
 
     # Build metadata filter if any filter params are provided
@@ -784,9 +777,7 @@ def cmd_rag_query(
         print(f"--- {i} ---")
         print(r.get("text", ""))
         if "embedding_model" in r:
-            print(
-                f"  [model: {r.get('embedding_model')}, score: {r.get('score', 0):.3f}]"
-            )
+            print(f"  [model: {r.get('embedding_model')}, score: {r.get('score', 0):.3f}]")
         # Show doc_id and metadata if filtering
         if metadata_filter:
             print(f"  [doc_id: {r.get('doc_id')}, chunk_id: {r.get('chunk_id')}]")
@@ -960,9 +951,7 @@ def cmd_rag_index_repo(
     if extensions:
         extensions_set = {ext.strip() for ext in extensions.split(",")}
         # Ensure extensions start with a dot
-        extensions_set = {
-            ext if ext.startswith(".") else f".{ext}" for ext in extensions_set
-        }
+        extensions_set = {ext if ext.startswith(".") else f".{ext}" for ext in extensions_set}
 
     try:
         result = ingest_repository(
@@ -976,9 +965,7 @@ def cmd_rag_index_repo(
             embedding_dim=dimension,
         )
 
-        print(
-            f"Indexed repository: {repo_path} into collection '{collection}'"
-        )
+        print(f"Indexed repository: {repo_path} into collection '{collection}'")
         print(f"  Files indexed: {result['total_files']}")
         print(f"  Total chunks: {result['total_chunks']}")
         print(f"  Document ID prefix: {prefix}")
@@ -1090,9 +1077,7 @@ def cmd_models_show(name: str) -> int:
         import json
 
         other_fields = {
-            k: v
-            for k, v in info.items()
-            if k not in ("modelfile", "parameters", "template")
+            k: v for k, v in info.items() if k not in ("modelfile", "parameters", "template")
         }
         if other_fields:
             print("Other info:")
@@ -1124,19 +1109,11 @@ def cli(argv: list[str] | None = None) -> int:
     tui_p.add_argument("--api-url", dest="api_url", help="Override API base URL")
 
     chat_p = sub.add_parser("chat", help="Chat with the configured Ollama model")
-    chat_p.add_argument(
-        "prompt", nargs="?", help="Optional single prompt (otherwise interactive)"
-    )
-    chat_p.add_argument(
-        "--model", dest="model_override", help="Override model for this run"
-    )
+    chat_p.add_argument("prompt", nargs="?", help="Optional single prompt (otherwise interactive)")
+    chat_p.add_argument("--model", dest="model_override", help="Override model for this run")
     chat_p.add_argument("--system", help="Optional system prompt")
-    chat_p.add_argument(
-        "--no-stream", action="store_true", help="Disable streaming output"
-    )
-    chat_p.add_argument(
-        "--session", default="default", help="Conversation session name"
-    )
+    chat_p.add_argument("--no-stream", action="store_true", help="Disable streaming output")
+    chat_p.add_argument("--session", default="default", help="Conversation session name")
     chat_p.add_argument("--new", action="store_true", help="Start a fresh session")
     chat_p.add_argument("--sessions-dir", type=Path, help="Override sessions directory")
 
@@ -1170,13 +1147,9 @@ def cli(argv: list[str] | None = None) -> int:
         ],
     )
     sessions_p.add_argument("name", nargs="?", help="Session name")
-    sessions_p.add_argument(
-        "new_name", nargs="?", help="Second argument (rename/title)"
-    )
+    sessions_p.add_argument("new_name", nargs="?", help="Second argument (rename/title)")
     sessions_p.add_argument("extras", nargs="*", help="Extra args (tags)")
-    sessions_p.add_argument(
-        "--sessions-dir", type=Path, help="Override sessions directory"
-    )
+    sessions_p.add_argument("--sessions-dir", type=Path, help="Override sessions directory")
     sessions_p.add_argument(
         "--format",
         choices=["markdown", "json", "html"],
@@ -1222,20 +1195,14 @@ def cli(argv: list[str] | None = None) -> int:
     rag_p = sub.add_parser("rag", help="Retrieval-Augmented Generation commands")
     rag_sub = rag_p.add_subparsers(dest="rag_cmd", required=True)
 
-    ingest_p = rag_sub.add_parser(
-        "ingest", help="Ingest a document into the vector store"
-    )
+    ingest_p = rag_sub.add_parser("ingest", help="Ingest a document into the vector store")
     ingest_p.add_argument("doc_id", help="Document ID")
     ingest_p.add_argument("path", type=Path, help="Path to text file")
-    ingest_p.add_argument(
-        "--ensure-schema", action="store_true", help="Create schema if missing"
-    )
+    ingest_p.add_argument("--ensure-schema", action="store_true", help="Create schema if missing")
     ingest_p.add_argument(
         "--collection", default="default", help="Collection name (default: default)"
     )
-    ingest_p.add_argument(
-        "--model", help="Override embedding model (default: from config)"
-    )
+    ingest_p.add_argument("--model", help="Override embedding model (default: from config)")
     ingest_p.add_argument(
         "--dimension",
         type=int,
@@ -1248,9 +1215,7 @@ def cli(argv: list[str] | None = None) -> int:
     query_p.add_argument(
         "--collection", default="default", help="Collection name (default: default)"
     )
-    query_p.add_argument(
-        "--model", help="Override embedding model (default: from config)"
-    )
+    query_p.add_argument("--model", help="Override embedding model (default: from config)")
     query_p.add_argument(
         "--dimension",
         type=int,
@@ -1290,9 +1255,7 @@ def cli(argv: list[str] | None = None) -> int:
 
     _ = rag_sub.add_parser("collections", help="List all available collections")
 
-    compare_p = rag_sub.add_parser(
-        "compare", help="Compare embedding models performance"
-    )
+    compare_p = rag_sub.add_parser("compare", help="Compare embedding models performance")
     compare_p.add_argument("test_file", type=Path, help="Path to test file")
     compare_p.add_argument(
         "models",
@@ -1307,17 +1270,13 @@ def cli(argv: list[str] | None = None) -> int:
     )
 
     wipe_p = rag_sub.add_parser("wipe", help="Delete ALL documents (dangerous)")
-    wipe_p.add_argument(
-        "--yes-really", action="store_true", help="Confirm destructive wipe"
-    )
+    wipe_p.add_argument("--yes-really", action="store_true", help="Confirm destructive wipe")
     wipe_p.add_argument(
         "--collection", default="default", help="Collection name (default: default)"
     )
 
     # Add index-repo command for code repository indexing
-    index_repo_p = rag_sub.add_parser(
-        "index-repo", help="Index a code repository for RAG"
-    )
+    index_repo_p = rag_sub.add_parser("index-repo", help="Index a code repository for RAG")
     index_repo_p.add_argument("repo_path", type=Path, help="Path to repository root")
     index_repo_p.add_argument(
         "--prefix",
@@ -1364,13 +1323,9 @@ def cli(argv: list[str] | None = None) -> int:
 
     models_delete_p = models_sub.add_parser("delete", help="Delete a model")
     models_delete_p.add_argument("model", help="Model name to delete")
-    models_delete_p.add_argument(
-        "--force", action="store_true", help="Skip confirmation prompt"
-    )
+    models_delete_p.add_argument("--force", action="store_true", help="Skip confirmation prompt")
 
-    models_show_p = models_sub.add_parser(
-        "show", help="Show detailed model information"
-    )
+    models_show_p = models_sub.add_parser("show", help="Show detailed model information")
     models_show_p.add_argument("model", help="Model name to inspect")
 
     # Add wizard command
@@ -1387,9 +1342,7 @@ def cli(argv: list[str] | None = None) -> int:
 
     ops_install = ops_sub.add_parser("install", help="Install operational helpers")
     ops_install.add_argument("--repo-dir", help="Path to nyxGPT repo root")
-    ops_install.add_argument(
-        "--force", action="store_true", help="Overwrite existing files"
-    )
+    ops_install.add_argument("--force", action="store_true", help="Overwrite existing files")
 
     ops_status = ops_sub.add_parser(
         "status", help="Show status of local services (docker/cassandra/agent/api)"
@@ -1398,9 +1351,7 @@ def cli(argv: list[str] | None = None) -> int:
         "--api-url",
         help="Override API base URL (default: from config or http://127.0.0.1:8000)",
     )
-    ops_status.add_argument(
-        "--timeout", type=float, default=2.0, help="Timeout seconds for checks"
-    )
+    ops_status.add_argument("--timeout", type=float, default=2.0, help="Timeout seconds for checks")
 
     ops_doctor = ops_sub.add_parser(
         "doctor", help="Run checks and return non-zero if something is broken"
@@ -1409,9 +1360,7 @@ def cli(argv: list[str] | None = None) -> int:
         "--api-url",
         help="Override API base URL (default: from config or http://127.0.0.1:8000)",
     )
-    ops_doctor.add_argument(
-        "--timeout", type=float, default=2.0, help="Timeout seconds for checks"
-    )
+    ops_doctor.add_argument("--timeout", type=float, default=2.0, help="Timeout seconds for checks")
 
     ops_restart = ops_sub.add_parser("restart", help="Restart local services")
     ops_restart.add_argument(

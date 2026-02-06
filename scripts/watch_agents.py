@@ -15,7 +15,6 @@ import subprocess
 import sys
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
 
 # ANSI color codes
 RESET = "\033[0m"
@@ -28,46 +27,41 @@ CYAN = "\033[36m"
 GRAY = "\033[90m"
 
 
-def load_config() -> Dict[str, str]:
+def load_config() -> dict[str, str]:
     """Load configuration from .nyxGPT/config.ini"""
     config_path = os.path.expanduser("~/.nyxGPT/config.ini")
     config = {}
 
-    with open(config_path, 'r') as f:
+    with open(config_path) as f:
         for line in f:
             line = line.strip()
-            if '=' in line and not line.startswith('#') and not line.startswith('['):
-                key, value = line.split('=', 1)
+            if "=" in line and not line.startswith("#") and not line.startswith("["):
+                key, value = line.split("=", 1)
                 # Normalize keys to uppercase for consistency with bash scripts
                 config[key.strip().upper()] = value.strip()
 
     return config
 
 
-def run_gh_command(args: List[str]) -> str:
+def run_gh_command(args: list[str]) -> str:
     """Run gh CLI command and return output"""
     try:
-        result = subprocess.run(
-            ['gh'] + args,
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        result = subprocess.run(["gh"] + args, capture_output=True, text=True, check=True)
         return result.stdout
     except subprocess.CalledProcessError as e:
         print(f"Error running gh command: {e.stderr}", file=sys.stderr)
         return ""
 
 
-def get_project_id(config: Dict[str, str]) -> Optional[str]:
+def get_project_id(config: dict[str, str]) -> str | None:
     """Get Project V2 ID"""
-    project_owner = config.get('PROJECT_OWNER', '')
-    project_number = config.get('PROJECT_NUMBER', '')
+    project_owner = config.get("PROJECT_OWNER", "")
+    project_number = config.get("PROJECT_NUMBER", "")
 
     if not project_owner or not project_number:
         return None
 
-    query = f'''
+    query = f"""
     query {{
       user(login: "{project_owner}") {{
         projectV2(number: {project_number}) {{
@@ -75,26 +69,26 @@ def get_project_id(config: Dict[str, str]) -> Optional[str]:
         }}
       }}
     }}
-    '''
+    """
 
     try:
-        result = run_gh_command(['api', 'graphql', '-f', f'query={query}'])
+        result = run_gh_command(["api", "graphql", "-f", f"query={query}"])
         if result:
             data = json.loads(result)
-            return data.get('data', {}).get('user', {}).get('projectV2', {}).get('id')
+            return data.get("data", {}).get("user", {}).get("projectV2", {}).get("id")
     except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
         pass
 
     return None
 
 
-def get_issue_info(issue: str, config: Dict[str, str]) -> Tuple[str, str]:
+def get_issue_info(issue: str, config: dict[str, str]) -> tuple[str, str]:
     """Get issue status and assignee from GitHub Project"""
     project_id = get_project_id(config)
     if not project_id:
         return ("unknown", "unknown")
 
-    query = '''
+    query = """
     query($project:ID!) {
       node(id:$project) {
         ... on ProjectV2 {
@@ -122,40 +116,38 @@ def get_issue_info(issue: str, config: Dict[str, str]) -> Tuple[str, str]:
         }
       }
     }
-    '''
+    """
 
     try:
-        result = run_gh_command([
-            'api', 'graphql',
-            '-f', f'query={query}',
-            '-F', f'project={project_id}'
-        ])
+        result = run_gh_command(
+            ["api", "graphql", "-f", f"query={query}", "-F", f"project={project_id}"]
+        )
 
         if not result:
             return ("unknown", "unknown")
 
         data = json.loads(result)
-        items = data.get('data', {}).get('node', {}).get('items', {}).get('nodes', [])
+        items = data.get("data", {}).get("node", {}).get("items", {}).get("nodes", [])
 
-        status_field = config.get('STATUS_FIELD', 'Status')
+        status_field = config.get("STATUS_FIELD", "Status")
 
         for item in items:
-            content = item.get('content', {})
-            if content.get('__typename') == 'Issue' and content.get('number') == int(issue):
+            content = item.get("content", {})
+            if content.get("__typename") == "Issue" and content.get("number") == int(issue):
                 status = "unknown"
                 assignee = "unknown"
 
-                for field_value in item.get('fieldValues', {}).get('nodes', []):
-                    if field_value.get('__typename') == 'ProjectV2ItemFieldSingleSelectValue':
-                        field_name = field_value.get('field', {}).get('name', '')
+                for field_value in item.get("fieldValues", {}).get("nodes", []):
+                    if field_value.get("__typename") == "ProjectV2ItemFieldSingleSelectValue":
+                        field_name = field_value.get("field", {}).get("name", "")
                         if field_name == status_field:
-                            status = field_value.get('name', 'unknown')
-                    elif field_value.get('__typename') == 'ProjectV2ItemFieldUserValue':
-                        field_name = field_value.get('field', {}).get('name', '')
-                        if field_name == 'Assignees':
-                            users = field_value.get('users', {}).get('nodes', [])
+                            status = field_value.get("name", "unknown")
+                    elif field_value.get("__typename") == "ProjectV2ItemFieldUserValue":
+                        field_name = field_value.get("field", {}).get("name", "")
+                        if field_name == "Assignees":
+                            users = field_value.get("users", {}).get("nodes", [])
                             if users:
-                                assignee = users[0].get('login', 'unknown')
+                                assignee = users[0].get("login", "unknown")
 
                 return (status, assignee)
 
@@ -165,17 +157,17 @@ def get_issue_info(issue: str, config: Dict[str, str]) -> Tuple[str, str]:
         return ("unknown", "unknown")
 
 
-def get_workflow_agent(workflow_name: str, config: Dict[str, str]) -> str:
+def get_workflow_agent(workflow_name: str, config: dict[str, str]) -> str:
     """Determine which agent is responsible for a workflow"""
     # Pattern-based agent detection for flexibility
     name_lower = workflow_name.lower()
 
     if "developer" in name_lower or "implement" in name_lower:
-        return config.get('DEV_AGENT', 'developer-agent')
+        return config.get("DEV_AGENT", "developer-agent")
     elif "review" in name_lower:
-        return config.get('REVIEW_AGENT', 'review-agent')
+        return config.get("REVIEW_AGENT", "review-agent")
     elif "scrummaster" in name_lower or "scrum" in name_lower or "backlog" in name_lower:
-        return config.get('SCRUM_AGENT', 'scrummaster-agent')
+        return config.get("SCRUM_AGENT", "scrummaster-agent")
     elif "claude code" in name_lower and workflow_name == "Claude Code":
         return "varies"  # Can be triggered by any agent or human
     elif any(keyword in name_lower for keyword in ["merge conflict", "validate", "check"]):
@@ -194,7 +186,7 @@ def format_duration(seconds: int) -> str:
         return f"{seconds // 3600}h {seconds % 3600 // 60}m"
 
 
-def get_status_icon(status: str, conclusion: Optional[str] = None) -> str:
+def get_status_icon(status: str, conclusion: str | None = None) -> str:
     """Get emoji icon for status"""
     if status in ("in_progress", "IN_PROGRESS"):
         return "🔄"
@@ -212,14 +204,22 @@ def get_status_icon(status: str, conclusion: Optional[str] = None) -> str:
     return "❓"
 
 
-def get_workflow_runs(repo: str, issue: Optional[str] = None, include_skipped: bool = False) -> List[Dict]:
+def get_workflow_runs(
+    repo: str, issue: str | None = None, include_skipped: bool = False
+) -> list[dict]:
     """Get workflow runs (all non-skipped by default, optionally filter by issue)"""
-    result = run_gh_command([
-        'run', 'list',
-        '--repo', repo,
-        '--limit', '100',
-        '--json', 'databaseId,workflowName,status,conclusion,createdAt,updatedAt,url,headBranch'
-    ])
+    result = run_gh_command(
+        [
+            "run",
+            "list",
+            "--repo",
+            repo,
+            "--limit",
+            "100",
+            "--json",
+            "databaseId,workflowName,status,conclusion,createdAt,updatedAt,url,headBranch",
+        ]
+    )
 
     if not result:
         return []
@@ -229,12 +229,12 @@ def get_workflow_runs(repo: str, issue: Optional[str] = None, include_skipped: b
     # Filter runs
     filtered_runs = []
     for run in runs:
-        workflow_name = run.get('workflowName', '')
-        head_branch = run.get('headBranch', '')
-        conclusion = run.get('conclusion', '')
+        run.get("workflowName", "")
+        head_branch = run.get("headBranch", "")
+        conclusion = run.get("conclusion", "")
 
         # Skip workflows with 'skipped' conclusion unless requested
-        if not include_skipped and conclusion == 'skipped':
+        if not include_skipped and conclusion == "skipped":
             continue
 
         # If issue specified, only include runs related to that issue
@@ -254,23 +254,23 @@ def print_table_header():
     print("─" * 120)
 
 
-def print_run_row(run: Dict, config: Dict[str, str]):
+def print_run_row(run: dict, config: dict[str, str]):
     """Print a single run row"""
-    workflow_name = run.get('workflowName', 'Unknown')
+    workflow_name = run.get("workflowName", "Unknown")
     agent = get_workflow_agent(workflow_name, config)
-    status = run.get('status', 'unknown')
-    conclusion = run.get('conclusion', '')
-    url = run.get('url', '')
+    status = run.get("status", "unknown")
+    conclusion = run.get("conclusion", "")
+    url = run.get("url", "")
 
     # Calculate duration
-    created_at = run.get('createdAt', '')
-    updated_at = run.get('updatedAt', '')
+    created_at = run.get("createdAt", "")
+    updated_at = run.get("updatedAt", "")
     duration = ""
 
     if created_at and updated_at:
         try:
-            created = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-            updated = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+            created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            updated = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
             duration_seconds = int((updated - created).total_seconds())
             if duration_seconds > 0:
                 duration = format_duration(duration_seconds)
@@ -279,10 +279,7 @@ def print_run_row(run: Dict, config: Dict[str, str]):
 
     # Get icon and display status
     icon = get_status_icon(status, conclusion)
-    if status == "completed":
-        display_status = f"{icon} {conclusion}"
-    else:
-        display_status = f"{icon} {status}"
+    display_status = f"{icon} {conclusion}" if status == "completed" else f"{icon} {status}"
 
     # Truncate workflow name if too long
     if len(workflow_name) > 33:
@@ -300,12 +297,14 @@ def print_run_row(run: Dict, config: Dict[str, str]):
     else:
         color = GRAY
 
-    print(f"{color}{agent:<20} {display_status:<12} {workflow_name:<35} {duration:<10} {url}{RESET}")
+    print(
+        f"{color}{agent:<20} {display_status:<12} {workflow_name:<35} {duration:<10} {url}{RESET}"
+    )
 
 
 def clear_screen():
     """Clear terminal screen"""
-    os.system('clear' if os.name == 'posix' else 'cls')
+    os.system("clear" if os.name == "posix" else "cls")
 
 
 def main():
@@ -313,21 +312,16 @@ def main():
         description="Watch GitHub Actions workflow runs (shows all non-skipped workflows by default)"
     )
     parser.add_argument(
-        'issue',
+        "issue",
         type=int,
-        nargs='?',
-        help='Issue number to monitor (optional - if omitted, shows all workflows)'
+        nargs="?",
+        help="Issue number to monitor (optional - if omitted, shows all workflows)",
     )
     parser.add_argument(
-        '--poll-interval',
-        type=int,
-        default=15,
-        help='Polling interval in seconds (default: 15)'
+        "--poll-interval", type=int, default=15, help="Polling interval in seconds (default: 15)"
     )
     parser.add_argument(
-        '--include-skipped',
-        action='store_true',
-        help='Include skipped workflow runs in the output'
+        "--include-skipped", action="store_true", help="Include skipped workflow runs in the output"
     )
 
     args = parser.parse_args()
@@ -340,8 +334,8 @@ def main():
         sys.exit(1)
 
     repo = f"{config.get('REPO_OWNER', 'unknown')}/{config.get('REPO_NAME', 'unknown')}"
-    status_in_review = config.get('STATUS_IN_REVIEW', 'In Review')
-    human_owner = config.get('HUMAN_OWNER', 'unknown')
+    status_in_review = config.get("STATUS_IN_REVIEW", "In Review")
+    human_owner = config.get("HUMAN_OWNER", "unknown")
 
     if args.issue:
         print(f"🔍 Initializing watch for issue #{args.issue}...")
@@ -378,7 +372,7 @@ def main():
                     sys.exit(0)
 
             # Display header
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print("\n" + "═" * 80)
             if args.issue:
                 print(f"{BOLD}🔍 Monitoring Issue #{args.issue}{RESET}")
@@ -388,26 +382,28 @@ def main():
                 print(f"📋 Issue Status: {YELLOW}{issue_status}{RESET}")
                 print(f"👤 Assigned to: {CYAN}{issue_assignee}{RESET}")
                 print()
-                print(f"🎯 Exit Condition: Status='{status_in_review}' AND Assignee='{human_owner}'")
+                print(
+                    f"🎯 Exit Condition: Status='{status_in_review}' AND Assignee='{human_owner}'"
+                )
             else:
                 print(f"{BOLD}🔍 Monitoring All Workflow Runs{RESET}")
                 print("═" * 80)
                 print(f"Last updated: {current_time}")
                 if not args.include_skipped:
-                    print(f"{GRAY}(Skipped workflows hidden - use --include-skipped to show all){RESET}")
+                    print(
+                        f"{GRAY}(Skipped workflows hidden - use --include-skipped to show all){RESET}"
+                    )
             print("─" * 80)
 
             # Get and display workflow runs
             runs = get_workflow_runs(
-                repo,
-                str(args.issue) if args.issue else None,
-                include_skipped=args.include_skipped
+                repo, str(args.issue) if args.issue else None, include_skipped=args.include_skipped
             )
 
             if runs:
                 # Separate active and completed runs
-                active_runs = [r for r in runs if r.get('status') != 'completed']
-                completed_runs = [r for r in runs if r.get('status') == 'completed']
+                active_runs = [r for r in runs if r.get("status") != "completed"]
+                completed_runs = [r for r in runs if r.get("status") == "completed"]
 
                 if active_runs:
                     print(f"\n{BOLD}▶️  Active Runs:{RESET}")
@@ -441,5 +437,5 @@ def main():
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

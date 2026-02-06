@@ -4,8 +4,8 @@ import json
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 from itertools import islice
 
 from nyxgpt.config import get_default_model, get_ollama_base_url, load_config
@@ -35,9 +35,7 @@ class EmbeddingError(RuntimeError):
     pass
 
 
-def _embedding_cfg(
-    model: str | None = None, dimension: int | None = None
-) -> EmbeddingConfig:
+def _embedding_cfg(model: str | None = None, dimension: int | None = None) -> EmbeddingConfig:
     """Get embedding configuration.
 
     Args:
@@ -53,9 +51,7 @@ def _embedding_cfg(
     # Allow dedicated embedding model override; otherwise fall back to default_model.
     # [rag] embedding_model = ...
     if model is None:
-        model = cfg.get(
-            "rag", "embedding_model", fallback=""
-        ).strip() or get_default_model(cfg)
+        model = cfg.get("rag", "embedding_model", fallback="").strip() or get_default_model(cfg)
 
     # Default dimension must match Cassandra schema; override in config if needed.
     if dimension is None:
@@ -86,9 +82,7 @@ def _post_json(url: str, payload: dict, timeout: int) -> dict:
             raw = resp.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as e:
-        msg = (
-            e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
-        )
+        msg = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
         raise EmbeddingError(f"HTTP error calling {url}: {e.code} {msg}")
     except urllib.error.URLError as e:
         raise EmbeddingError(f"Failed to reach Ollama at {url}: {e}")
@@ -166,11 +160,9 @@ def embed_texts(
         elif "embedding" in data:
             vectors = [data["embedding"]]
         else:
-            raise EmbeddingError(
-                f"Unexpected Ollama embed response keys: {list(data.keys())}"
-            )
+            raise EmbeddingError(f"Unexpected Ollama embed response keys: {list(data.keys())}")
 
-        for i, v in enumerate(vectors):
+        for _i, v in enumerate(vectors):
             if not isinstance(v, list):
                 raise EmbeddingError("Embedding is not a list")
             if len(v) != ecfg.dimension:
@@ -195,9 +187,7 @@ def embed_texts(
     return out
 
 
-def embed_text(
-    text: str, *, model: str | None = None, dimension: int | None = None
-) -> list[float]:
+def embed_text(text: str, *, model: str | None = None, dimension: int | None = None) -> list[float]:
     """Convenience wrapper for a single string.
 
     Args:

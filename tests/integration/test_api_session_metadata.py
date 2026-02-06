@@ -14,6 +14,7 @@ Tests for 9 session metadata endpoints:
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 
@@ -21,9 +22,7 @@ import httpx
 import pytest
 
 
-def _create_test_session(
-    api_base_url: str, session_name: str, sessions_dir: Path
-) -> None:
+def _create_test_session(api_base_url: str, session_name: str, sessions_dir: Path) -> None:
     """Helper to create a test session with some messages."""
     # Initialize session via API
     init_resp = httpx.post(
@@ -331,9 +330,7 @@ def test_rename_session_direct(api_base_url: str, tmp_sessions_dir: Path) -> Non
 
 
 @pytest.mark.integration
-def test_rename_session_with_title_sync(
-    api_base_url: str, tmp_sessions_dir: Path
-) -> None:
+def test_rename_session_with_title_sync(api_base_url: str, tmp_sessions_dir: Path) -> None:
     """Test session rename with title update and filename sync."""
     session_name = "test-rename-sync"
     _create_test_session(api_base_url, session_name, tmp_sessions_dir)
@@ -528,18 +525,17 @@ def test_summarize_session_success(
 
         # The endpoint should return either 200 (success) or 400 (LLM failure)
         # but never crash (500)
-        assert summarize_resp.status_code in [200, 400], (
-            f"Expected 200 or 400, got {summarize_resp.status_code}: {summarize_resp.text}"
-        )
+        assert summarize_resp.status_code in [
+            200,
+            400,
+        ], f"Expected 200 or 400, got {summarize_resp.status_code}: {summarize_resp.text}"
 
         # If successful, verify metadata was updated
         if summarize_resp.status_code == 200:
             assert summarize_resp.json()["ok"] is True
 
             # Verify metadata was updated (title/summary/tags should be set)
-            get_resp = httpx.get(
-                f"{api_base_url}/api/v1/sessions/{session_name}", timeout=5.0
-            )
+            get_resp = httpx.get(f"{api_base_url}/api/v1/sessions/{session_name}", timeout=5.0)
             assert get_resp.status_code == 200
             session_data = get_resp.json()
             meta = session_data["meta"]
@@ -565,9 +561,7 @@ def test_summarize_session_success(
 
 
 @pytest.mark.integration
-def test_summarize_session_nonexistent(
-    api_base_url: str, tmp_sessions_dir: Path
-) -> None:
+def test_summarize_session_nonexistent(api_base_url: str, tmp_sessions_dir: Path) -> None:
     """Test summarizing nonexistent session returns 400."""
     # Use tmp_sessions_dir to ensure session doesn't exist
     summarize_resp = httpx.post(
@@ -629,10 +623,8 @@ def test_get_metadata_success(api_base_url: str) -> None:
         assert "rag_enabled" in meta
     finally:
         # Clean up
-        try:
+        with contextlib.suppress(Exception):
             httpx.delete(f"{api_base_url}/api/v1/sessions/{session_name}", timeout=5.0)
-        except Exception:
-            pass
 
 
 @pytest.mark.integration
@@ -664,13 +656,9 @@ def test_get_metadata_creates_session_if_missing(api_base_url: str) -> None:
         assert meta["pinned"] is False
 
         # Verify session was actually created
-        get_resp = httpx.get(
-            f"{api_base_url}/api/v1/sessions/{session_name}", timeout=5.0
-        )
+        get_resp = httpx.get(f"{api_base_url}/api/v1/sessions/{session_name}", timeout=5.0)
         assert get_resp.status_code == 200
     finally:
         # Clean up
-        try:
+        with contextlib.suppress(Exception):
             httpx.delete(f"{api_base_url}/api/v1/sessions/{session_name}", timeout=5.0)
-        except Exception:
-            pass

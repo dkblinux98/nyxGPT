@@ -1,19 +1,21 @@
 from __future__ import annotations
 
+import configparser
 from pathlib import Path
 from typing import Any
-import configparser
+
 import pytest
+
 from nyxgpt.chat import (
-    chat,
     _detect_prompt_mode,
     _get_prompt_template,
     _prepare_chat_context,
+    chat,
 )
 from nyxgpt.config import (
     get_prompt_mode_enabled,
-    get_prompt_mode_short_threshold,
     get_prompt_mode_long_threshold,
+    get_prompt_mode_short_threshold,
 )
 
 pytestmark = pytest.mark.unit
@@ -175,8 +177,9 @@ def test_chat_uses_long_mode_for_long_session(
 
     # Mock a session with 12 messages (triggers long mode)
     def fake_load_session(*args, **kwargs):
-        from nyxgpt.sessions import SessionState
         from pathlib import Path
+
+        from nyxgpt.sessions import SessionState
 
         state = SessionState(
             name="test-long",
@@ -225,9 +228,7 @@ def test_chat_respects_custom_system_prompt_over_adaptive_mode(
     custom_prompt = "You are a pirate assistant. Speak like a pirate."
 
     # Chat with custom system prompt
-    result = chat(
-        "hello", session="test-custom", new=True, system=custom_prompt, config_path=None
-    )
+    result = chat("hello", session="test-custom", new=True, system=custom_prompt, config_path=None)
     assert result.reply == "response"
 
     # Verify custom prompt was used, not adaptive mode
@@ -277,8 +278,9 @@ def test_prepare_chat_context_with_adaptive_mode(
 
     # Mock a session with 5 messages (medium mode)
     def fake_load_session(*args, **kwargs):
-        from nyxgpt.sessions import SessionState
         from pathlib import Path
+
+        from nyxgpt.sessions import SessionState
 
         state = SessionState(
             name="test-medium",
@@ -297,9 +299,7 @@ def test_prepare_chat_context_with_adaptive_mode(
     monkeypatch.setattr("nyxgpt.chat.load_session", fake_load_session)
 
     # Prepare context
-    context = _prepare_chat_context(
-        "test prompt", session="test-medium", config_path=None
-    )
+    context = _prepare_chat_context("test prompt", session="test-medium", config_path=None)
 
     # Verify medium mode was applied
     system_msgs = [m for m in context.messages if m.get("role") == "system"]

@@ -1,4 +1,5 @@
 """Tests for RAG metadata filtering functionality."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -68,7 +69,7 @@ def test_query_by_embedding_filter_by_doc_ids():
     mock_session.execute.return_value = [mock_row1, mock_row2]
     mock_session.prepare.return_value = Mock()
 
-    with patch('nyxgpt.rag.vectorstore_cassandra.Cluster', return_value=mock_cluster):
+    with patch("nyxgpt.rag.vectorstore_cassandra.Cluster", return_value=mock_cluster):
         store = CassandraVectorStore()
         store.session = mock_session
         store._keyspace_ready = True
@@ -116,7 +117,7 @@ def test_query_by_embedding_filter_by_filename():
 
     mock_session.execute.return_value = [mock_row1, mock_row2]
 
-    with patch('nyxgpt.rag.vectorstore_cassandra.Cluster', return_value=mock_cluster):
+    with patch("nyxgpt.rag.vectorstore_cassandra.Cluster", return_value=mock_cluster):
         store = CassandraVectorStore()
         store.session = mock_session
         store._keyspace_ready = True
@@ -165,7 +166,7 @@ def test_query_by_embedding_filter_by_tags():
 
     mock_session.execute.return_value = [mock_row1, mock_row2]
 
-    with patch('nyxgpt.rag.vectorstore_cassandra.Cluster', return_value=mock_cluster):
+    with patch("nyxgpt.rag.vectorstore_cassandra.Cluster", return_value=mock_cluster):
         store = CassandraVectorStore()
         store.session = mock_session
         store._keyspace_ready = True
@@ -197,7 +198,7 @@ def test_query_by_embedding_filter_by_date_range():
     mock_row1.doc_id = "doc1"
     mock_row1.chunk_id = 0
     mock_row1.text = "Old content"
-    mock_row1.metadata = '{}'
+    mock_row1.metadata = "{}"
     mock_row1.score = 0.9
     mock_row1.embedding_model = "test-model"
     mock_row1.embedding_dim = 768
@@ -207,7 +208,7 @@ def test_query_by_embedding_filter_by_date_range():
     mock_row2.doc_id = "doc2"
     mock_row2.chunk_id = 0
     mock_row2.text = "Recent content"
-    mock_row2.metadata = '{}'
+    mock_row2.metadata = "{}"
     mock_row2.score = 0.8
     mock_row2.embedding_model = "test-model"
     mock_row2.embedding_dim = 768
@@ -215,7 +216,7 @@ def test_query_by_embedding_filter_by_date_range():
 
     mock_session.execute.return_value = [mock_row1, mock_row2]
 
-    with patch('nyxgpt.rag.vectorstore_cassandra.Cluster', return_value=mock_cluster):
+    with patch("nyxgpt.rag.vectorstore_cassandra.Cluster", return_value=mock_cluster):
         store = CassandraVectorStore()
         store.session = mock_session
         store._keyspace_ready = True
@@ -266,7 +267,7 @@ def test_query_by_embedding_combined_filters():
 
     mock_session.execute.return_value = [mock_row1, mock_row2]
 
-    with patch('nyxgpt.rag.vectorstore_cassandra.Cluster', return_value=mock_cluster):
+    with patch("nyxgpt.rag.vectorstore_cassandra.Cluster", return_value=mock_cluster):
         store = CassandraVectorStore()
         store.session = mock_session
         store._keyspace_ready = True
@@ -295,17 +296,18 @@ def test_retrieve_context_with_metadata_filter():
 
     # This test verifies the integration - actual filtering is tested above
     # We just verify the parameter is passed through correctly
-    with patch('nyxgpt.rag.rag.CassandraVectorStore') as mock_store_class:
+    with patch("nyxgpt.rag.rag.CassandraVectorStore") as mock_store_class:
         mock_store = Mock()
+
         # Mock to return tuple when collect_metrics=True, else empty list
         def mock_query_by_embedding(*args, **kwargs):
-            if kwargs.get('collect_metrics'):
+            if kwargs.get("collect_metrics"):
                 metrics = VectorSearchDebugMetrics(
                     raw_results_count=0,
                     score_min=None,
                     score_max=None,
                     score_mean=None,
-                    vector_search_time_ms=0.0
+                    vector_search_time_ms=0.0,
                 )
                 return ([], metrics)
             return []
@@ -314,7 +316,7 @@ def test_retrieve_context_with_metadata_filter():
         mock_store.list_docs.return_value = []
         mock_store_class.return_value = mock_store
 
-        with patch('nyxgpt.rag.rag.embed_text', return_value=[0.1] * 768):
+        with patch("nyxgpt.rag.rag.embed_text", return_value=[0.1] * 768):
             metadata_filter = MetadataFilter(filename="test.txt")
             _ = retrieve_context(
                 "test query",
@@ -326,5 +328,5 @@ def test_retrieve_context_with_metadata_filter():
             # Verify metadata_filter was passed to query_by_embedding
             mock_store.query_by_embedding.assert_called()
             call_kwargs = mock_store.query_by_embedding.call_args[1]
-            assert 'metadata_filter' in call_kwargs
-            assert call_kwargs['metadata_filter'] == metadata_filter
+            assert "metadata_filter" in call_kwargs
+            assert call_kwargs["metadata_filter"] == metadata_filter

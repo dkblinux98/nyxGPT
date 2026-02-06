@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from enum import Enum
-from typing import Any, Optional, TypedDict
+from enum import StrEnum
+from typing import Any, TypedDict
 
 from pydantic import BaseModel, Field
-
 
 # ----------------------------
 # Core API models
@@ -77,12 +76,8 @@ class RegenerateRequest(BaseModel):
         None,
         description="Optional new prompt to replace user message before regenerating",
     )
-    model: str | None = Field(
-        None, description="Optional model override for regeneration"
-    )
-    rag_enabled: bool | None = Field(
-        None, description="Optional RAG override for regeneration"
-    )
+    model: str | None = Field(None, description="Optional model override for regeneration")
+    rag_enabled: bool | None = Field(None, description="Optional RAG override for regeneration")
 
 
 class TagsRequest(BaseModel):
@@ -93,7 +88,9 @@ class RagFilters(BaseModel):
     """Metadata filters for RAG document selection."""
 
     doc_ids: list[str] | None = Field(None, description="Filter by document IDs (OR logic)")
-    filename: str | None = Field(None, description="Filter by filename (partial match, case-insensitive)")
+    filename: str | None = Field(
+        None, description="Filter by filename (partial match, case-insensitive)"
+    )
     tags: list[str] | None = Field(None, description="Filter by tags (must have ALL tags)")
     date_from: str | None = Field(None, description="Filter by ingestion date >= (ISO format)")
     date_to: str | None = Field(None, description="Filter by ingestion date <= (ISO format)")
@@ -169,28 +166,18 @@ class RagIngestRequest(BaseModel):
 class RagIngestResponse(BaseModel):
     doc_id: str
     chunks_ingested: int
-    status: str = Field(
-        description="Ingestion status: 'ingested', 'updated', or 'skipped'"
-    )
+    status: str = Field(description="Ingestion status: 'ingested', 'updated', or 'skipped'")
     doc_hash: str | None = Field(None, description="SHA-256 hash of document content")
-    previous_hash: str | None = Field(
-        None, description="Previous hash if document was updated"
-    )
+    previous_hash: str | None = Field(None, description="Previous hash if document was updated")
 
 
 class RagDocumentInfo(BaseModel):
     doc_id: str
     doc_hash: str | None = Field(None, description="SHA-256 hash of document content")
-    ingested_at: str | None = Field(
-        None, description="Timestamp when document was first ingested"
-    )
-    updated_at: str | None = Field(
-        None, description="Timestamp when document was last updated"
-    )
+    ingested_at: str | None = Field(None, description="Timestamp when document was first ingested")
+    updated_at: str | None = Field(None, description="Timestamp when document was last updated")
     chunks: int = Field(description="Number of chunks in document")
-    embedding_model: str | None = Field(
-        None, description="Embedding model used for this document"
-    )
+    embedding_model: str | None = Field(None, description="Embedding model used for this document")
 
 
 class RagIndexRepoRequest(BaseModel):
@@ -216,12 +203,12 @@ class RagIndexRepoResponse(BaseModel):
 class RagQueryRequest(BaseModel):
     query: str = Field(..., description="Search query")
     top_k: int = Field(5, ge=1, le=50)
-    debug_mode: bool = Field(
-        False, description="Enable debug mode to return detailed metrics"
-    )
+    debug_mode: bool = Field(False, description="Enable debug mode to return detailed metrics")
     # Metadata filters
     doc_ids: list[str] | None = Field(None, description="Filter by document IDs (OR logic)")
-    filename: str | None = Field(None, description="Filter by filename (partial match, case-insensitive)")
+    filename: str | None = Field(
+        None, description="Filter by filename (partial match, case-insensitive)"
+    )
     tags: list[str] | None = Field(None, description="Filter by tags (must have ALL tags)")
     date_from: str | None = Field(None, description="Filter by ingestion date >= (ISO format)")
     date_to: str | None = Field(None, description="Filter by ingestion date <= (ISO format)")
@@ -346,9 +333,7 @@ class CollectionInfo(BaseModel):
     name: str = Field(..., description="Collection name")
     doc_count: int = Field(..., description="Number of documents in collection")
     chunk_count: int = Field(..., description="Total number of chunks in collection")
-    embedding_models: list[str] = Field(
-        ..., description="Embedding models used in this collection"
-    )
+    embedding_models: list[str] = Field(..., description="Embedding models used in this collection")
 
 
 class CollectionsListResponse(BaseModel):
@@ -369,7 +354,7 @@ class CreateCollectionRequest(BaseModel):
 
     name: str = Field(..., description="Collection name (alphanumeric and underscores only)")
     embedding_dim: int = Field(..., description="Embedding dimension (e.g., 768, 1536)")
-    embedding_model: Optional[str] = Field(
+    embedding_model: str | None = Field(
         None, description="Embedding model name (optional, for documentation)"
     )
 
@@ -385,9 +370,7 @@ class CreateCollectionResponse(BaseModel):
 class ReindexCollectionRequest(BaseModel):
     """Request model for re-indexing a collection."""
 
-    target_embedding_model: str = Field(
-        ..., description="Target embedding model for re-indexing"
-    )
+    target_embedding_model: str = Field(..., description="Target embedding model for re-indexing")
     embedding_dim: int = Field(..., description="New embedding dimension")
 
 
@@ -403,9 +386,9 @@ class ReindexCollectionResponse(BaseModel):
 class CollectionSettings(BaseModel):
     """Collection settings configuration."""
 
-    embedding_model: Optional[str] = Field(None, description="Preferred embedding model")
-    chunk_size: Optional[int] = Field(None, description="Default chunk size for documents")
-    chunk_overlap: Optional[int] = Field(None, description="Chunk overlap in characters")
+    embedding_model: str | None = Field(None, description="Preferred embedding model")
+    chunk_size: int | None = Field(None, description="Default chunk size for documents")
+    chunk_overlap: int | None = Field(None, description="Chunk overlap in characters")
 
 
 class CollectionSettingsResponse(BaseModel):
@@ -420,7 +403,7 @@ class CollectionSettingsResponse(BaseModel):
 # ----------------------------
 
 
-class MessageRole(str, Enum):
+class MessageRole(StrEnum):
     """Valid message roles for filtering."""
 
     USER = "user"
@@ -432,45 +415,25 @@ class SearchRequest(BaseModel):
     """Request model for message search."""
 
     query: str = Field(..., min_length=1, description="Text to search for in messages")
-    case_sensitive: bool = Field(
-        False, description="Whether to perform case-sensitive search"
-    )
+    case_sensitive: bool = Field(False, description="Whether to perform case-sensitive search")
     role_filter: MessageRole | None = Field(
         None, description="Filter by message role (user, assistant, system)"
     )
-    session_filter: str | None = Field(
-        None, description="Filter to specific session name"
-    )
-    limit: int = Field(
-        50, ge=1, le=500, description="Maximum number of results to return"
-    )
+    session_filter: str | None = Field(None, description="Filter to specific session name")
+    limit: int = Field(50, ge=1, le=500, description="Maximum number of results to return")
 
 
 class SearchResultItem(BaseModel):
     """Single search result item."""
 
-    session_name: str = Field(
-        ..., description="Name of the session containing the match"
-    )
-    session_title: str | None = Field(
-        None, description="Title of the session if available"
-    )
-    message_index: int = Field(
-        ..., description="Index of the message in the session (0-based)"
-    )
-    role: str = Field(
-        ..., description="Role of the message author (user, assistant, system)"
-    )
+    session_name: str = Field(..., description="Name of the session containing the match")
+    session_title: str | None = Field(None, description="Title of the session if available")
+    message_index: int = Field(..., description="Index of the message in the session (0-based)")
+    role: str = Field(..., description="Role of the message author (user, assistant, system)")
     content: str = Field(..., description="Full content of the matching message")
-    content_preview: str = Field(
-        ..., description="Preview snippet showing match in context"
-    )
-    timestamp: str | None = Field(
-        None, description="Timestamp of the message if available"
-    )
-    matches: int = Field(
-        ..., description="Number of times the query appears in this message"
-    )
+    content_preview: str = Field(..., description="Preview snippet showing match in context")
+    timestamp: str | None = Field(None, description="Timestamp of the message if available")
+    matches: int = Field(..., description="Number of times the query appears in this message")
 
 
 class SearchResponse(BaseModel):
@@ -478,6 +441,4 @@ class SearchResponse(BaseModel):
 
     query: str = Field(..., description="The search query that was executed")
     total_results: int = Field(..., description="Total number of results found")
-    results: list[SearchResultItem] = Field(
-        ..., description="List of matching messages"
-    )
+    results: list[SearchResultItem] = Field(..., description="List of matching messages")

@@ -8,9 +8,7 @@ import pytest
 
 
 @pytest.mark.integration
-def test_rag_documents_list_endpoint(
-    api_base_url: str, require_cassandra: None
-) -> None:
+def test_rag_documents_list_endpoint(api_base_url: str, require_cassandra: None) -> None:
     """Test that the /api/v1/rag/documents endpoint returns document list."""
     with httpx.Client(base_url=api_base_url, timeout=10.0) as client:
         # Test health first
@@ -118,9 +116,7 @@ def test_chat_stream_with_rag_filters(
 
 
 @pytest.mark.integration
-def test_rag_query_with_metadata_filters(
-    api_base_url: str, require_cassandra: None
-) -> None:
+def test_rag_query_with_metadata_filters(api_base_url: str, require_cassandra: None) -> None:
     """Test RAG query endpoint with metadata filters."""
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
         # Ingest documents with metadata

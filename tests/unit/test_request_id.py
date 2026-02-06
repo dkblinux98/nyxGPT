@@ -5,8 +5,8 @@ import logging
 import pytest
 from fastapi.testclient import TestClient
 
-from nyxgpt.logging import RequestIdFilter, request_id_var
 from nyxgpt.app import app
+from nyxgpt.logging import RequestIdFilter, request_id_var
 
 pytestmark = pytest.mark.unit
 
@@ -190,9 +190,7 @@ async def test_request_id_async_context_propagation():
 
     # Awaited async tasks should preserve context
     child_result = await child_async_task()
-    assert child_result == parent_request_id, (
-        "Request ID should propagate to awaited tasks"
-    )
+    assert child_result == parent_request_id, "Request ID should propagate to awaited tasks"
 
     # Nested async calls should also preserve context
     async def nested_async_call():
@@ -200,9 +198,7 @@ async def test_request_id_async_context_propagation():
         return inner_result
 
     nested_result = await nested_async_call()
-    assert nested_result == parent_request_id, (
-        "Request ID should propagate through nested awaits"
-    )
+    assert nested_result == parent_request_id, "Request ID should propagate through nested awaits"
 
     # Parent context should still be intact
     assert request_id_var.get() == parent_request_id

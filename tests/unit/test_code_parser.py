@@ -1,17 +1,18 @@
 """Unit tests for code repository parsing and indexing."""
 
-import pytest
-from pathlib import Path
 import tempfile
+from pathlib import Path
+
+import pytest
 
 from nyxgpt.rag.code_parser import (
+    chunk_code_by_structure,
+    collect_code_files,
+    extract_comments_and_docstrings,
+    index_repository,
+    parse_code_file,
     parse_gitignore,
     should_ignore,
-    extract_comments_and_docstrings,
-    chunk_code_by_structure,
-    parse_code_file,
-    collect_code_files,
-    index_repository,
 )
 
 
@@ -102,7 +103,7 @@ class Foo:
 @pytest.mark.unit
 def test_extract_comments_javascript():
     """Test comment extraction from JavaScript code."""
-    code = '''// File header comment
+    code = """// File header comment
 
 /* Multi-line
    comment */
@@ -111,7 +112,7 @@ function hello() {
     // Inline comment
     console.log("Hello");
 }
-'''
+"""
 
     extracted = extract_comments_and_docstrings(code, ".js")
     assert "File header comment" in extracted
@@ -150,7 +151,7 @@ class MyClass:
 @pytest.mark.unit
 def test_chunk_code_by_structure_javascript():
     """Test JavaScript code chunking by function boundaries."""
-    code = '''function func1() {
+    code = """function func1() {
     console.log("func1");
 }
 
@@ -161,7 +162,7 @@ function func2() {
 export class MyClass {
     constructor() {}
 }
-'''
+"""
 
     chunks = chunk_code_by_structure(code, ".js", max_chunk_size=100)
     # Should split into multiple chunks
@@ -305,15 +306,13 @@ def func():
 '''
         )
 
-        result = index_repository(
-            repo_path, extensions={".py"}, extract_docs_only=True
-        )
+        result = index_repository(repo_path, extensions={".py"}, extract_docs_only=True)
 
         # Should extract chunks
         assert result["total_chunks"] > 0
 
         # Verify chunks contain docs but not code
-        for file_path, idx, chunk in result["chunks"]:
+        for _file_path, _idx, chunk in result["chunks"]:
             # Docs should be present
             if "Module doc" in chunk or "Function doc" in chunk:
                 # But code should not

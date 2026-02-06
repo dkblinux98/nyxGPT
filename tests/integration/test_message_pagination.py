@@ -13,9 +13,7 @@ def test_message_pagination_basic(api_base_url: str, tmp_sessions_dir) -> None:
     # Create session with multiple messages
     messages = []
     for i in range(100):
-        messages.append(
-            {"role": "user" if i % 2 == 0 else "assistant", "content": f"Message {i}"}
-        )
+        messages.append({"role": "user" if i % 2 == 0 else "assistant", "content": f"Message {i}"})
 
     # Save session file
     import json
@@ -74,8 +72,7 @@ def test_message_pagination_edge_cases(api_base_url: str, tmp_sessions_dir) -> N
 
     # Create session with 25 messages
     messages = [
-        {"role": "user" if i % 2 == 0 else "assistant", "content": f"Msg {i}"}
-        for i in range(25)
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"Msg {i}"} for i in range(25)
     ]
 
     import json

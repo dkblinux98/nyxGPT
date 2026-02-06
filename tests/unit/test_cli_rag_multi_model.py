@@ -20,7 +20,12 @@ def test_rag_ingest_with_collection_flag(
     test_file.write_text("Test document content for embedding.")
 
     with patch("nyxgpt.cli.ingest_document") as mock_ingest:
-        mock_ingest.return_value = {"status": "ingested", "chunks_ingested": 5, "doc_hash": "abc123", "previous_hash": None}
+        mock_ingest.return_value = {
+            "status": "ingested",
+            "chunks_ingested": 5,
+            "doc_hash": "abc123",
+            "previous_hash": None,
+        }
 
         exit_code = cli(
             [
@@ -134,16 +139,12 @@ def test_rag_collections_command(capsys: pytest.CaptureFixture[str]) -> None:
         assert "nomic768" in captured.out
 
 
-def test_rag_compare_command(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_rag_compare_command(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Test rag compare command."""
     from nyxgpt.cli import cli
 
     test_file = tmp_path / "test.txt"
-    test_file.write_text(
-        "This is a test document. It has multiple sentences. Used for testing."
-    )
+    test_file.write_text("This is a test document. It has multiple sentences. Used for testing.")
 
     # Mock the imports from model_compare module where they're used
     with (
@@ -180,9 +181,10 @@ def test_rag_compare_command(
 
 def test_rag_compare_invalid_spec(capsys: pytest.CaptureFixture[str]) -> None:
     """Test rag compare with invalid model spec."""
-    from nyxgpt.cli import cli
-    from pathlib import Path
     import tempfile
+    from pathlib import Path
+
+    from nyxgpt.cli import cli
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         f.write("test")

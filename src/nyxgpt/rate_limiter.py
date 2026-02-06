@@ -87,9 +87,7 @@ class RateLimiter:
             # Generate rate limit headers
             remaining = max(0, int(bucket.tokens))
             # Reset time is when bucket will be full again
-            reset_time = now + (
-                (self._burst_size - bucket.tokens) / self._requests_per_second
-            )
+            reset_time = now + ((self._burst_size - bucket.tokens) / self._requests_per_second)
 
             headers = {
                 "X-RateLimit-Limit": str(self._burst_size),

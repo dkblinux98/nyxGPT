@@ -22,9 +22,7 @@ def test_embedding_cfg_model_override(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
     monkeypatch.setattr("nyxgpt.rag.embeddings.load_config", lambda *_: cfg)
-    monkeypatch.setattr(
-        "nyxgpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b"
-    )
+    monkeypatch.setattr("nyxgpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b")
     monkeypatch.setattr(
         "nyxgpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434"
     )
@@ -59,9 +57,7 @@ def test_embedding_cfg_dimension_override(monkeypatch: pytest.MonkeyPatch) -> No
     }
 
     monkeypatch.setattr("nyxgpt.rag.embeddings.load_config", lambda *_: cfg)
-    monkeypatch.setattr(
-        "nyxgpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b"
-    )
+    monkeypatch.setattr("nyxgpt.rag.embeddings.get_default_model", lambda *_: "llama3.1:8b")
     monkeypatch.setattr(
         "nyxgpt.rag.embeddings.get_ollama_base_url", lambda *_: "http://localhost:11434"
     )
@@ -80,10 +76,13 @@ def test_cassandra_vectorstore_collection_table_name(monkeypatch: pytest.MonkeyP
     """Test that collection parameter affects table name."""
     # Mock Cassandra Cluster to avoid actual connection
     from unittest.mock import MagicMock
+
     mock_cluster = MagicMock()
     mock_session = MagicMock()
     mock_cluster.connect.return_value = mock_session
-    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *args, **kwargs: mock_cluster)
+    monkeypatch.setattr(
+        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *args, **kwargs: mock_cluster
+    )
 
     # Default collection
     store1 = CassandraVectorStore(collection="default")
@@ -209,8 +208,20 @@ def test_retrieve_context_with_collection(monkeypatch: pytest.MonkeyPatch) -> No
             embedding_model = kwargs.get("embedding_model")
             store_calls.append({"query": {"k": k, "embedding_model": embedding_model}})
             return [
-                {"text": "result 1", "score": 0.9, "embedding_model": embedding_model, "doc_id": "doc1", "chunk_id": 0},
-                {"text": "result 2", "score": 0.8, "embedding_model": embedding_model, "doc_id": "doc2", "chunk_id": 0},
+                {
+                    "text": "result 1",
+                    "score": 0.9,
+                    "embedding_model": embedding_model,
+                    "doc_id": "doc1",
+                    "chunk_id": 0,
+                },
+                {
+                    "text": "result 2",
+                    "score": 0.8,
+                    "embedding_model": embedding_model,
+                    "doc_id": "doc2",
+                    "chunk_id": 0,
+                },
             ]
 
         def list_docs(self):
