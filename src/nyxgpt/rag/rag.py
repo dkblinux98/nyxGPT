@@ -279,13 +279,9 @@ def _is_heading(line: str) -> bool:
         return False
 
     # ATX-style: # Heading, ## Heading, etc.
-    if re.match(r"^#{1,6}\s+.+", line):
-        return True
-
     # Could also check for Setext-style (underlined with === or ---)
     # but that requires looking at the next line, so we skip for simplicity
-
-    return False
+    return bool(re.match(r"^#{1,6}\s+.+", line))
 
 
 def _extract_heading_level(line: str) -> int:
@@ -1229,9 +1225,12 @@ def retrieve_context(
             doc_id = doc_info["doc_id"]
 
             # Apply metadata filter to doc_id (skip entire document if filtered out)
-            if metadata_filter and metadata_filter.doc_ids:
-                if doc_id not in metadata_filter.doc_ids:
-                    continue
+            if (
+                metadata_filter
+                and metadata_filter.doc_ids
+                and doc_id not in metadata_filter.doc_ids
+            ):
+                continue
 
             # Fetch all chunks for this document
             try:
