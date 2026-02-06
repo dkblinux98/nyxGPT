@@ -68,7 +68,7 @@ def test_rag_playground_query_with_debug(
 
         # Verify debug info contains expected fields
         assert "total_time_ms" in debug_info
-        assert isinstance(debug_info["total_time_ms"], (int, float))
+        assert isinstance(debug_info["total_time_ms"], int | float)
         assert debug_info["total_time_ms"] > 0
 
         assert "original_query" in debug_info
@@ -139,30 +139,31 @@ def test_rag_playground_metrics_query(
         accuracy = metrics["retrieval_accuracy"]
         assert isinstance(accuracy, dict)
         assert "results_returned" in accuracy
-        assert "unique_docs" in accuracy
+        assert "unique_docs_retrieved" in accuracy
         assert "score_distribution" in accuracy
 
         score_dist = accuracy["score_distribution"]
-        assert "min" in score_dist
-        assert "max" in score_dist
-        assert "mean" in score_dist
-        assert "median" in score_dist
+        # API returns percentiles (p50, p75, p95, p99)
+        assert "p50" in score_dist
+        assert "p75" in score_dist
+        assert "p95" in score_dist
+        assert "p99" in score_dist
 
         # Verify latency metrics
         assert "latency" in metrics
         latency = metrics["latency"]
         assert isinstance(latency, dict)
         assert "total_time_ms" in latency
-        assert isinstance(latency["total_time_ms"], (int, float))
+        assert isinstance(latency["total_time_ms"], int | float)
         assert latency["total_time_ms"] > 0
 
         # Verify hit rate metrics
         assert "hit_rate" in metrics
         hit_rate = metrics["hit_rate"]
         assert isinstance(hit_rate, dict)
-        assert "success_rate" in hit_rate
-        assert isinstance(hit_rate["success_rate"], (int, float))
-        assert 0.0 <= hit_rate["success_rate"] <= 1.0
+        assert "query_success_rate" in hit_rate
+        assert isinstance(hit_rate["query_success_rate"], int | float)
+        assert 0.0 <= hit_rate["query_success_rate"] <= 1.0
 
 
 @pytest.mark.integration
@@ -269,10 +270,10 @@ def test_rag_playground_config(api_base_url: str) -> None:
 
         # Verify config contains threshold values used by playground
         assert "min_score" in data
-        assert isinstance(data["min_score"], (int, float))
+        assert isinstance(data["min_score"], int | float)
 
         # Optional threshold fields
         if "good_score_threshold" in data:
-            assert isinstance(data["good_score_threshold"], (int, float))
+            assert isinstance(data["good_score_threshold"], int | float)
         if "medium_score_threshold" in data:
-            assert isinstance(data["medium_score_threshold"], (int, float))
+            assert isinstance(data["medium_score_threshold"], int | float)

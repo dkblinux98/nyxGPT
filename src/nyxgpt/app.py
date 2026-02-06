@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 import uuid
 from configparser import ConfigParser
-from contextlib import asynccontextmanager, redirect_stderr, redirect_stdout
+from contextlib import asynccontextmanager, redirect_stderr, redirect_stdout, suppress
 from pathlib import Path
 from typing import Any, cast
 
@@ -252,11 +252,9 @@ async def load_cfg_and_refresh_logging(request: Request, call_next):
 
     # Hot-apply logging config (especially level) on every request.
     # configure_logging() is expected to be idempotent and cheap.
-    try:
+    # Never block request handling on logging reconfiguration.
+    with suppress(Exception):
         configure_logging(cfg, console=False)
-    except Exception:
-        # Never block request handling on logging reconfiguration.
-        pass
 
     return await call_next(request)
 
@@ -414,7 +412,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 
 @app.exception_handler(Exception)
-async def unhandled_exception_handler(request: Request, exc: Exception):
+async def unhandled_exception_handler(request: Request, _exc: Exception):
     req_id = getattr(request.state, "request_id", None)
     log.exception("Unhandled API error (request_id=%s)", req_id)
     return JSONResponse(
@@ -686,7 +684,9 @@ def models_list(request: Request) -> dict[str, Any]:
                 names.append(m["name"])
         return {"models": names}
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to list models from Ollama: {e}")
+        raise HTTPException(
+            status_code=502, detail=f"Failed to list models from Ollama: {e}"
+        ) from e
 
 
 @api.post("/models/pull")
@@ -705,7 +705,7 @@ def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> dict[s
         )
         return {"ok": True, "model": model, "result": data}
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to pull model via Ollama: {e}")
+        raise HTTPException(status_code=502, detail=f"Failed to pull model via Ollama: {e}") from e
 
 
 @api.delete("/models/{model_name}")
@@ -716,9 +716,11 @@ def models_delete(request: Request, model_name: str) -> dict[str, Any]:
         models.delete_model(model_name, base_url=get_ollama_base_url(cfg))
         return {"ok": True, "model": model_name}
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to delete model via Ollama: {e}")
+        raise HTTPException(
+            status_code=502, detail=f"Failed to delete model via Ollama: {e}"
+        ) from e
 
 
 @api.get("/models/{model_name}/info")
@@ -729,9 +731,11 @@ def models_info(request: Request, model_name: str) -> dict[str, Any]:
         info = models.show_model(model_name, base_url=get_ollama_base_url(cfg))
         return {"ok": True, "model": model_name, "info": info}
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to get model info via Ollama: {e}")
+        raise HTTPException(
+            status_code=502, detail=f"Failed to get model info via Ollama: {e}"
+        ) from e
 
 
 @api.get("/sessions", response_model=SessionsListResponse)
@@ -897,11 +901,11 @@ def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
     except ValueError as e:
         # Validation errors should return 422 (Unprocessable Entity)
         log.warning("Invalid session name for init: %s", e)
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except Exception as e:
         # Other errors are internal server errors
         log.error("Failed to get session file path: %s", e)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
     if sf.exists():
         return {"ok": True, "name": name, "existed": True}
@@ -925,7 +929,7 @@ def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
         )
     except Exception as e:
         log.exception("sessions.init_session failed")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
     return {"ok": True, "name": name, "existed": False}
 
@@ -1064,7 +1068,7 @@ def sessions_rename(
         try:
             validated_name = sessions.validate_session_name(req.new_name)
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
         # Use existing rename function
         ok, msg = sessions.rename_session(name, validated_name, _sessions_dir)
@@ -1101,19 +1105,17 @@ def sessions_sync_filename(name: str, sessions_dir: str | None = None) -> dict[s
     if not success:
         raise HTTPException(status_code=500, detail=f"Filename sync failed: {status}")
 
-    if status == "no_title":
-        return {"ok": True, "message": "No title set, filename unchanged", "name": name}
-    elif status == "no_change":
-        return {"ok": True, "message": "Filename already matches title", "name": name}
-    elif status == "renamed":
-        return {
+    responses = {
+        "no_title": {"ok": True, "message": "No title set, filename unchanged", "name": name},
+        "no_change": {"ok": True, "message": "Filename already matches title", "name": name},
+        "renamed": {
             "ok": True,
             "old_name": name,
             "new_name": new_name,
             "message": "Filename synced with title",
-        }
-    else:
-        return {"ok": True, "message": status, "name": new_name}
+        },
+    }
+    return responses.get(status, {"ok": True, "message": status, "name": new_name})
 
 
 @api.patch("/sessions/{name}/messages/{message_index}")
@@ -1372,7 +1374,7 @@ def regenerate_response(
         }
     except Exception as e:
         log.error(f"Failed to regenerate response: {e}")
-        raise HTTPException(status_code=500, detail=f"Regeneration failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Regeneration failed: {e}") from e
 
 
 @api.get("/sessions/{name}/export")
@@ -1482,7 +1484,7 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
     except ValueError as e:
         # Validation errors (e.g., invalid session name)
         log.warning("Chat validation error", extra={"request_id": req_id, "error": str(e)})
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except Exception as e:
         log.error(
             "Chat request failed",
@@ -1493,7 +1495,7 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
             },
             exc_info=True,
         )
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingResponse:
@@ -1520,7 +1522,7 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
         try:
             validate_session_name(req.session)
         except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+            raise HTTPException(status_code=422, detail=str(e)) from e
 
         # Capture request ID before entering generator (context may not propagate)
         req_id = request.state.request_id
@@ -1568,7 +1570,7 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
         raise
     except Exception as e:
         log.error(f"Streaming setup failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 # Streaming chat endpoint
@@ -1616,7 +1618,7 @@ def tool_grep(req: ToolGrepRequest) -> ToolTextResponse:
 
 
 @api.post("/rag/ingest", response_model=RagIngestResponse)
-def rag_ingest(request: Request, req: RagIngestRequest) -> RagIngestResponse:
+def rag_ingest(_request: Request, req: RagIngestRequest) -> RagIngestResponse:
     try:
         result = ingest_document(
             doc_id=req.doc_id,
@@ -1633,12 +1635,12 @@ def rag_ingest(request: Request, req: RagIngestRequest) -> RagIngestResponse:
             previous_hash=result["previous_hash"],
         )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @api.get("/rag/documents/{doc_id}", response_model=RagDocumentInfo)
 def rag_document_info(
-    request: Request, doc_id: str, collection: str = "default"
+    _request: Request, doc_id: str, collection: str = "default"
 ) -> RagDocumentInfo:
     """Get document version and metadata information."""
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
@@ -1655,7 +1657,7 @@ def rag_document_info(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     finally:
         store.close()
 
@@ -1679,7 +1681,7 @@ def rag_config(request: Request) -> dict[str, Any]:
 
 
 @api.get("/rag/collections", response_model=CollectionsListResponse)
-def rag_collections_list(request: Request) -> CollectionsListResponse:
+def rag_collections_list(_request: Request) -> CollectionsListResponse:
     """List all RAG collections with their statistics.
 
     Returns information about each collection including:
@@ -1697,7 +1699,7 @@ def rag_collections_list(request: Request) -> CollectionsListResponse:
         collection_names = temp_store.list_collections()
     except Exception as e:
         log.error(f"Failed to list collections: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to list collections: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to list collections: {str(e)}") from e
     finally:
         temp_store.close()
 
@@ -1743,7 +1745,7 @@ def rag_collections_list(request: Request) -> CollectionsListResponse:
 
 @api.post("/rag/collections", response_model=CreateCollectionResponse, status_code=201)
 def rag_collection_create(
-    request: Request, body: CreateCollectionRequest
+    _request: Request, body: CreateCollectionRequest
 ) -> CreateCollectionResponse:
     """Create a new RAG collection.
 
@@ -1807,16 +1809,16 @@ def rag_collection_create(
         log.error(f"Cassandra driver import error: {e}", exc_info=True)
         raise HTTPException(
             status_code=503, detail="RAG service unavailable: Cassandra driver not found"
-        )
+        ) from e
     except Exception as e:
         log.error(f"Failed to create collection '{collection_name}': {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to create collection: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create collection: {str(e)}") from e
     finally:
         store.close()
 
 
 @api.delete("/rag/collections/{collection_name}", response_model=CollectionDeleteResponse)
-def rag_collection_delete(request: Request, collection_name: str) -> CollectionDeleteResponse:
+def rag_collection_delete(_request: Request, collection_name: str) -> CollectionDeleteResponse:
     """Delete a RAG collection (truncates all data in the collection).
 
     WARNING: This operation cannot be undone. All documents and chunks in the
@@ -1847,18 +1849,18 @@ def rag_collection_delete(request: Request, collection_name: str) -> CollectionD
         log.error(f"Cassandra driver import error: {e}", exc_info=True)
         raise HTTPException(
             status_code=503, detail="RAG service unavailable: Cassandra driver not found"
-        )
+        ) from e
     except Exception as e:
         # Catch database errors and other issues
         log.error(f"Failed to clear collection '{collection_name}': {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to clear collection: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear collection: {str(e)}") from e
     finally:
         store.close()
 
 
 @api.post("/rag/collections/{collection_name}/reindex", response_model=ReindexCollectionResponse)
 def rag_collection_reindex(
-    request: Request, collection_name: str, body: ReindexCollectionRequest
+    _request: Request, collection_name: str, body: ReindexCollectionRequest
 ) -> ReindexCollectionResponse:
     """Re-index a collection with a different embedding model.
 
@@ -1935,72 +1937,19 @@ def rag_collection_reindex(
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to generate embeddings with model '{body.target_embedding_model}': {str(e)}",
-            )
-
-        # Update chunks with new embeddings
-        # Group chunks by doc_id for batch updates
-        from collections import defaultdict
-
-        chunks_by_doc: dict[str, list[dict[str, Any]]] = defaultdict(list)
-
-        for i, chunk in enumerate(chunks):
-            chunks_by_doc[chunk["doc_id"]].append(
-                {
-                    "chunk_id": chunk["chunk_id"],
-                    "text": chunk["text"],
-                    "metadata": chunk["metadata"],
-                    "embedding": new_embeddings[i],
-                    "doc_hash": chunk.get("doc_hash", ""),
-                }
-            )
-
-        # Update each document's chunks
-        chunks_processed = 0
-        for doc_id, doc_chunks in chunks_by_doc.items():
-            # Extract texts, embeddings, and metadata for upsert_chunks signature
-            chunk_texts = [c["text"] for c in doc_chunks]
-            chunk_embeddings = [c["embedding"] for c in doc_chunks]
-            chunk_metadatas = [c["metadata"] for c in doc_chunks]
-            doc_hash = doc_chunks[0].get("doc_hash", "") if doc_chunks else ""
-
-            store.upsert_chunks(
-                doc_id=doc_id,
-                texts=chunk_texts,
-                embeddings=chunk_embeddings,
-                metadatas=chunk_metadatas,
-                embedding_model=body.target_embedding_model,
-                doc_hash=doc_hash,
-            )
-            chunks_processed += len(doc_chunks)
-
-        log.info(
-            f"Successfully re-indexed {chunks_processed} chunks in collection '{collection_name}'"
-        )
-
-        return ReindexCollectionResponse(
-            collection=collection_name,
-            status=f"Successfully re-indexed {chunks_processed} chunks with model '{body.target_embedding_model}'",
-            chunks_processed=chunks_processed,
-            chunks_total=chunks_total,
-        )
-
-    except HTTPException:
-        raise
-    except ImportError as e:
-        log.error(f"Cassandra driver import error: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=503, detail="RAG service unavailable: Cassandra driver not found"
-        )
+        ) from e
     except Exception as e:
         log.error(f"Failed to re-index collection '{collection_name}': {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to re-index collection: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to re-index collection: {str(e)}"
+        ) from e
     finally:
         store.close()
 
 
 @api.get("/rag/collections/{collection_name}/settings", response_model=CollectionSettingsResponse)
 def rag_collection_get_settings(
-    request: Request, collection_name: str
+    _request: Request, collection_name: str
 ) -> CollectionSettingsResponse:
     """Get settings for a collection.
 
@@ -2072,17 +2021,19 @@ def rag_collection_get_settings(
         log.error(f"Cassandra driver import error: {e}", exc_info=True)
         raise HTTPException(
             status_code=503, detail="RAG service unavailable: Cassandra driver not found"
-        )
+        ) from e
     except Exception as e:
         log.error(f"Failed to get settings for collection '{collection_name}': {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to get collection settings: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get collection settings: {str(e)}"
+        ) from e
     finally:
         store.close()
 
 
 @api.put("/rag/collections/{collection_name}/settings", response_model=CollectionSettingsResponse)
 def rag_collection_update_settings(
-    request: Request, collection_name: str, body: CollectionSettings
+    _request: Request, collection_name: str, body: CollectionSettings
 ) -> CollectionSettingsResponse:
     """Update settings for a collection.
 
@@ -2132,21 +2083,21 @@ def rag_collection_update_settings(
         log.error(f"Cassandra driver import error: {e}", exc_info=True)
         raise HTTPException(
             status_code=503, detail="RAG service unavailable: Cassandra driver not found"
-        )
+        ) from e
     except Exception as e:
         log.error(
             f"Failed to update settings for collection '{collection_name}': {e}", exc_info=True
         )
         raise HTTPException(
             status_code=500, detail=f"Failed to update collection settings: {str(e)}"
-        )
+        ) from e
     finally:
         store.close()
 
 
 @api.get("/rag/documents")
 def rag_documents_list(
-    request: Request,
+    _request: Request,
     collection: str = Query("default", description="Vector store collection name"),
 ) -> dict[str, Any]:
     """List all documents in the RAG vector store.
@@ -2213,13 +2164,13 @@ def rag_documents_list(
         return {"documents": enriched_docs}
     except Exception as e:
         log.error(f"Failed to list RAG documents: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     finally:
         store.close()
 
 
 @api.post("/rag/query", response_model=RagQueryResponse)
-def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
+def rag_query(_request: Request, req: RagQueryRequest) -> RagQueryResponse:
     try:
         from datetime import datetime
 
@@ -2297,11 +2248,11 @@ def rag_query(request: Request, req: RagQueryRequest) -> RagQueryResponse:
         ]
         return RagQueryResponse(results=out, debug_info=api_debug_info)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @api.post("/rag/metrics/query", response_model=RagMetricsQueryResponse)
-def rag_metrics_query(request: Request, req: RagMetricsQueryRequest) -> RagMetricsQueryResponse:
+def rag_metrics_query(_request: Request, req: RagMetricsQueryRequest) -> RagMetricsQueryResponse:
     """Query RAG with comprehensive evaluation metrics.
 
     This endpoint extends the standard RAG query with evaluation metrics including:
@@ -2415,7 +2366,7 @@ def rag_metrics_query(request: Request, req: RagMetricsQueryRequest) -> RagMetri
             evaluation_metrics=evaluation_metrics,
         )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @api.get("/sessions/{name}/metadata")
@@ -2550,7 +2501,7 @@ async def rag_upload_file(
             try:
                 # Process each page with pdfplumber for better extraction
                 with pdfplumber.open(io.BytesIO(content)) as pdf:
-                    for page_num, page in enumerate(pdf.pages, 1):
+                    for _page_num, page in enumerate(pdf.pages, 1):
                         page_content = []
 
                         # Extract tables with preserved structure
@@ -2687,12 +2638,12 @@ async def rag_upload_file(
             raise HTTPException(
                 status_code=400,
                 detail=f"PDF support not available. Install {missing_lib}: pip install {missing_lib}",
-            )
+            ) from e
         except HTTPException:
             # Re-raise HTTP exceptions without wrapping
             raise
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"PDF parsing failed: {e}")
+            raise HTTPException(status_code=400, detail=f"PDF parsing failed: {e}") from e
 
     elif file_ext == ".docx":
         # Handle DOCX (Microsoft Word)
@@ -2708,12 +2659,12 @@ async def rag_upload_file(
                 raise HTTPException(
                     status_code=400,
                     detail="Invalid DOCX file: file is corrupted or not a valid Word document",
-                )
+                ) from None
             except zipfile.BadZipFile:
                 raise HTTPException(
                     status_code=400,
                     detail="Invalid DOCX file: file structure is corrupted (not a valid ZIP archive)",
-                )
+                ) from None
 
             text_parts = []
             image_counter = 0
@@ -2775,12 +2726,12 @@ async def rag_upload_file(
             raise HTTPException(
                 status_code=400,
                 detail="DOCX support not available. Install python-docx: pip install python-docx",
-            )
+            ) from None
         except HTTPException:
             # Re-raise HTTP exceptions (our specific error messages)
             raise
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"DOCX parsing failed: {e}")
+            raise HTTPException(status_code=400, detail=f"DOCX parsing failed: {e}") from None
 
     elif file_ext == ".md":
         # Handle Markdown with proper parsing (#2667)
@@ -2810,7 +2761,7 @@ async def rag_upload_file(
             # Fallback to plain text if libraries unavailable
             text = content.decode("utf-8")
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Markdown parsing failed: {e}")
+            raise HTTPException(status_code=400, detail=f"Markdown parsing failed: {e}") from None
 
     elif file_ext == ".json":
         # JSON files stored as formatted text
@@ -2820,7 +2771,7 @@ async def rag_upload_file(
             data = json.loads(content.decode("utf-8"))
             text = json.dumps(data, indent=2, ensure_ascii=False)
         except json.JSONDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON file: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid JSON file: {e}") from None
 
     elif file_ext == ".pptx":
         # Handle PowerPoint presentations
@@ -2864,9 +2815,9 @@ async def rag_upload_file(
             raise HTTPException(
                 status_code=400,
                 detail="PPTX support not available. Install python-pptx: pip install python-pptx",
-            )
+            ) from None
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"PPTX parsing failed: {e}")
+            raise HTTPException(status_code=400, detail=f"PPTX parsing failed: {e}") from None
 
     elif file_ext == ".epub":
         # Handle ePUB eBooks
@@ -2878,7 +2829,7 @@ async def rag_upload_file(
             try:
                 book = epub.read_epub(io.BytesIO(content))
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Invalid ePUB file: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid ePUB file: {e}") from None
 
             text_parts = []
 
@@ -3000,12 +2951,12 @@ async def rag_upload_file(
             raise HTTPException(
                 status_code=400,
                 detail="ePUB support not available. Install ebooklib: pip install ebooklib",
-            )
+            ) from None
         except HTTPException:
             # Re-raise HTTP exceptions without wrapping
             raise
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"ePUB parsing failed: {e}")
+            raise HTTPException(status_code=400, detail=f"ePUB parsing failed: {e}") from None
 
     elif file_ext in {".html", ".htm"}:
         # Handle HTML documents (#2666)
@@ -3193,19 +3144,19 @@ async def rag_upload_file(
             raise HTTPException(
                 status_code=400,
                 detail="HTML support not available. Install beautifulsoup4: pip install beautifulsoup4",
-            )
+            ) from None
         except HTTPException:
             # Re-raise HTTP exceptions
             raise
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"HTML parsing failed: {e}")
+            raise HTTPException(status_code=400, detail=f"HTML parsing failed: {e}") from None
 
     else:
         # Plain text
         try:
             text = content.decode("utf-8")
         except UnicodeDecodeError as e:
-            raise HTTPException(status_code=400, detail=f"File encoding error: {e}")
+            raise HTTPException(status_code=400, detail=f"File encoding error: {e}") from None
 
     # Use filename as doc_id if not provided (sanitize to prevent path traversal)
     safe_filename = os.path.basename(file.filename or "").strip() if file.filename else ""
@@ -3222,11 +3173,11 @@ async def rag_upload_file(
             previous_hash=result["previous_hash"],
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}") from None
 
 
 @api.post("/rag/index-repo")
-def rag_index_repo(request: Request, req: RagIndexRepoRequest) -> RagIndexRepoResponse:
+def rag_index_repo(_request: Request, req: RagIndexRepoRequest) -> RagIndexRepoResponse:
     """Index a code repository for RAG."""
     from nyxgpt.rag.rag import ingest_repository
 
@@ -3249,9 +3200,9 @@ def rag_index_repo(request: Request, req: RagIndexRepoRequest) -> RagIndexRepoRe
             doc_ids=result["doc_ids"],
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Repository indexing failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Repository indexing failed: {e}") from e
 
 
 # --- Log viewing endpoints ---
@@ -3326,7 +3277,7 @@ def logs_view_file(
     except HTTPException:
         raise
     except (ValueError, OSError):
-        raise HTTPException(status_code=404, detail="Log file not found")
+        raise HTTPException(status_code=404, detail="Log file not found") from None
 
     try:
         with open(log_file, encoding="utf-8", errors="replace") as f:
@@ -3358,7 +3309,7 @@ def logs_view_file(
 
     except Exception as e:
         log.error(f"Failed to read log file {log_file}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to read log file: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to read log file: {e}") from e
 
 
 @api.get("/logs/stream/{filename}")
@@ -3400,7 +3351,7 @@ async def logs_stream_file(
     except HTTPException:
         raise
     except (ValueError, OSError):
-        raise HTTPException(status_code=404, detail="Log file not found")
+        raise HTTPException(status_code=404, detail="Log file not found") from None
 
     async def stream_lines():
         """Generator that streams filtered log lines."""

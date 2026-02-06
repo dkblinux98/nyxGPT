@@ -8,6 +8,7 @@ FastAPI backend. It focuses on correctness and streaming, not visual polish.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 import httpx
@@ -781,16 +782,14 @@ class NyxGPTTUI(App):
                 message_count = len(session_data.get("messages", []))
 
                 # Update status bar
-                try:
+                # Widget not yet available or app shutting down
+                with contextlib.suppress(Exception):
                     self.status_bar.update_info(
                         session_name=self.session,
                         message_count=message_count,
                         model=model,
                         rag_enabled=self.rag_enabled,
                     )
-                except Exception:
-                    # Widget not yet available or app shutting down
-                    pass
 
         except Exception as e:
             log.warning(f"Failed to fetch session status for session {self.session}: {e}")
@@ -1197,51 +1196,53 @@ class NyxGPTTUI(App):
         )
 
         try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("POST", url, json=payload) as resp:
-                    resp.raise_for_status()
-                    # Show typing indicator before first token
-                    self.output.append("Assistant: ⋯")
-                    first_content = True
+            async with (
+                httpx.AsyncClient(timeout=None) as client,
+                client.stream("POST", url, json=payload) as resp,
+            ):
+                resp.raise_for_status()
+                # Show typing indicator before first token
+                self.output.append("Assistant: ⋯")
+                first_content = True
 
-                    # Buffer for detecting special markers
-                    buffer = ""
-                    async for chunk in resp.aiter_text():
-                        if not chunk:
-                            continue
+                # Buffer for detecting special markers
+                buffer = ""
+                async for chunk in resp.aiter_text():
+                    if not chunk:
+                        continue
 
-                        buffer += chunk
+                    buffer += chunk
 
-                        # Check for retry status markers
-                        while "__RETRY_START__" in buffer and "__RETRY_END__" in buffer:
-                            start_idx = buffer.index("__RETRY_START__")
-                            end_idx = buffer.index("__RETRY_END__") + len("__RETRY_END__")
+                    # Check for retry status markers
+                    while "__RETRY_START__" in buffer and "__RETRY_END__" in buffer:
+                        start_idx = buffer.index("__RETRY_START__")
+                        end_idx = buffer.index("__RETRY_END__") + len("__RETRY_END__")
 
-                            # Parse retry status
-                            try:
-                                json_start = start_idx + len("__RETRY_START__")
-                                json_end = end_idx - len("__RETRY_END__")
-                                retry_json = buffer[json_start:json_end]
-                                retry_data = json.loads(retry_json)
+                        # Parse retry status
+                        try:
+                            json_start = start_idx + len("__RETRY_START__")
+                            json_end = end_idx - len("__RETRY_END__")
+                            retry_json = buffer[json_start:json_end]
+                            retry_data = json.loads(retry_json)
 
-                                # Display reconnection status
-                                attempt = retry_data.get("attempt", "?")
-                                delay = retry_data.get("delay", "?")
-                                if first_content:
-                                    self.output.remove_typing_indicator()
-                                    first_content = False
-                                self.output.append(
-                                    f"\n[reconnecting] Connection lost. Retrying (attempt {attempt}) in {delay:.1f}s...\n"
-                                )
-                            except Exception as parse_err:
-                                log.warning(f"Failed to parse retry status: {parse_err}")
-                            finally:
-                                # Always remove the marker from buffer (whether parsing succeeded or failed)
-                                buffer = buffer[:start_idx] + buffer[end_idx:]
+                            # Display reconnection status
+                            attempt = retry_data.get("attempt", "?")
+                            delay = retry_data.get("delay", "?")
+                            if first_content:
+                                self.output.remove_typing_indicator()
+                                first_content = False
+                            self.output.append(
+                                f"\n[reconnecting] Connection lost. Retrying (attempt {attempt}) in {delay:.1f}s...\n"
+                            )
+                        except Exception as parse_err:
+                            log.warning(f"Failed to parse retry status: {parse_err}")
+                        finally:
+                            # Always remove the marker from buffer (whether parsing succeeded or failed)
+                            buffer = buffer[:start_idx] + buffer[end_idx:]
 
-                        # Check for RAG markers and display citation summary
-                        if "__RAG_START__" in buffer and "__RAG_END__" in buffer:
-                            start_idx = buffer.index("__RAG_START__")
+                    # Check for RAG markers and display citation summary
+                    if "__RAG_START__" in buffer and "__RAG_END__" in buffer:
+                        start_idx = buffer.index("__RAG_START__")
                             end_idx = buffer.index("__RAG_END__") + len("__RAG_END__")
 
                             # Parse and display RAG citation summary
@@ -1333,9 +1334,84 @@ class NyxGPTTUI(App):
                                 self.output.append(buffer)
                                 buffer = ""
 
-                    # Flush any remaining buffer
+                # Flush any remaining buffer
+                                citation_summary = f"\n[dim][RAG: {chunk_count} source{'s' if chunk_count != 1 else ''} retrieved][/dim]\n"
+                                self.output.append(citation_summary)
+
+                                # Display brief citation details (doc_id and score)
+                                for idx, chunk in enumerate(chunks, 1):
+                                    doc_id = chunk.get("doc_id", "Unknown")
+                                    chunk_id = chunk.get("chunk_id")
+                                    # Use explicit None checking to avoid treating 0.0 as falsy
+                                    score = chunk.get("similarity_score")
+                                    if score is None:
+                                        score = chunk.get("score", 0.0)
+
+                                    # Format score with color based on quality
+                                    if score >= 0.7:
+                                        score_style = "green"
+                                    elif score >= 0.5:
+                                        score_style = "yellow"
+                                    else:
+                                        score_style = "red"
+
+                                    chunk_ref = (
+                                        f"chunk {chunk_id}" if chunk_id is not None else "source"
+                                    )
+                                    citation_line = f"[dim]  [{idx}] {doc_id} ({chunk_ref}) - score: [{score_style}]{score:.3f}[/{score_style}][/dim]\n"
+                                    self.output.append(citation_line)
+
+                                self.output.append("\n")
+                        except (json.JSONDecodeError, KeyError, ValueError) as parse_err:
+                            log.warning(f"Failed to parse RAG metadata: {parse_err}")
+                        finally:
+                            # Remove RAG markers from buffer
+                            buffer = buffer[:start_idx] + buffer[end_idx:]
+
+                    # Yield any complete text that's not part of markers
+                    # Keep potential partial markers in buffer
                     if buffer:
-                        self.output.append(buffer)
+                        # First check if we might have a partial marker at the end
+                        safe_idx = len(buffer)
+                        has_partial_marker = False
+                        for marker in ["__RETRY_START__", "__RAG_START__"]:
+                            for i in range(1, len(marker)):
+                                if buffer.endswith(marker[:i]):
+                                    safe_idx = len(buffer) - i
+                                    has_partial_marker = True
+                                    break
+                            if has_partial_marker:
+                                break
+
+                        # If buffer has complete markers, don't flush yet (let the marker handlers above process it)
+                        if "__RETRY_START__" in buffer or "__RAG_START__" in buffer:
+                            # Complete markers present, let them be processed in next iteration
+                            pass
+                        elif has_partial_marker and safe_idx > 0:
+                            # Has partial marker at end, flush safe part and keep partial
+                            if first_content and buffer[:safe_idx].strip():
+                                self.output.remove_typing_indicator()
+                                first_content = False
+                            self.output.append(buffer[:safe_idx])
+                            buffer = buffer[safe_idx:]
+                        elif not has_partial_marker:
+                            # No markers at all, flush everything
+                            if first_content and buffer.strip():
+                                self.output.remove_typing_indicator()
+                                first_content = False
+                            self.output.append(buffer)
+                            buffer = ""
+                        elif safe_idx == 0 and len(buffer) > MARKER_BUFFER_OVERFLOW_THRESHOLD:
+                            # Entire buffer is potential partial marker but too large, flush it
+                            if first_content and buffer.strip():
+                                self.output.remove_typing_indicator()
+                                first_content = False
+                            self.output.append(buffer)
+                            buffer = ""
+
+                # Flush any remaining buffer
+                if buffer:
+                    self.output.append(buffer)
 
             self.output.append("\n\n")
 

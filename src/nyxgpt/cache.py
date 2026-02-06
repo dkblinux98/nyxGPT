@@ -146,7 +146,7 @@ class MemoryCache(CacheBackend[T]):
         """Return the number of items in the cache."""
         return len(self._cache)
 
-    def stats(self) -> dict[str, int]:
+    def stats(self) -> dict[str, int | float]:
         """Return cache statistics.
 
         Returns:
@@ -206,7 +206,7 @@ class DiskCache(CacheBackend[T]):
             with open(cache_file, "rb") as f:
                 data = pickle.load(f)
 
-            value = data["value"]
+            value: T = data["value"]  # Type: ignore - pickle.load returns Any
             expiry = data.get("expiry")
 
             # Check expiration
@@ -266,7 +266,7 @@ class DiskCache(CacheBackend[T]):
         """Return the number of items in the cache."""
         return len(list(self._cache_dir.glob("*.pkl")))
 
-    def stats(self) -> dict[str, int]:
+    def stats(self) -> dict[str, int | float]:
         """Return cache statistics.
 
         Returns:

@@ -51,7 +51,7 @@ def benchmark_embedding_speed(
             elapsed = (time.perf_counter() - start) * 1000.0
             times.append(elapsed)
         except EmbeddingError as e:
-            raise ValueError(f"Failed to embed with model {model}: {e}")
+            raise ValueError(f"Failed to embed with model {model}: {e}") from e
 
     return sum(times) / len(times) if times else 0.0
 

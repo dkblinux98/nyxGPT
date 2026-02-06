@@ -196,11 +196,11 @@ def _score_relevance(query: str, document: str, config: RerankerConfig) -> float
 
     except urllib.error.HTTPError as e:
         msg = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
-        raise RerankError(f"HTTP error calling {url}: {e.code} {msg}")
+        raise RerankError(f"HTTP error calling {url}: {e.code} {msg}") from e
     except urllib.error.URLError as e:
-        raise RerankError(f"Failed to reach Ollama at {url}: {e}")
+        raise RerankError(f"Failed to reach Ollama at {url}: {e}") from e
     except (json.JSONDecodeError, ValueError, KeyError) as e:
-        raise RerankError(f"Failed to parse reranking score: {e}")
+        raise RerankError(f"Failed to parse reranking score: {e}") from e
 
 
 def rerank_results(

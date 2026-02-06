@@ -16,7 +16,7 @@ def _is_connection_error(exc: Exception) -> bool:
     if isinstance(exc, urllib.error.URLError):
         # URLError includes connection refused, timeout, DNS failures, etc.
         return True
-    return bool(isinstance(exc, (ConnectionError, TimeoutError, OSError)))
+    return bool(isinstance(exc, ConnectionError | TimeoutError | OSError))
 
 
 def _retry_with_backoff(

@@ -2,17 +2,14 @@
 
 import tempfile
 import time
-from pathlib import Path
-
-import pytest
 
 from nyxgpt.cache import (
-    MemoryCache,
     DiskCache,
+    MemoryCache,
     NoOpCache,
-    hash_text,
-    hash_list,
     hash_dict,
+    hash_list,
+    hash_text,
 )
 
 
@@ -304,7 +301,7 @@ class TestHashFunctions:
     def test_hash_list_order_matters(self):
         """Test that list order affects hash."""
         hash1 = hash_list(["a", "b", "c"])
-        hash2 = hash_list(["c", "b", "a"])
+        hash_list(["c", "b", "a"])
 
         # Note: hash_list uses json.dumps with sort_keys, so order might not matter
         # Let's just check they're stable

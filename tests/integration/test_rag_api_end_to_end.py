@@ -1289,8 +1289,11 @@ def test_rag_upload_html_empty_file(api_base_url: str, tmp_path) -> None:
         # Should fail with 400 error (no extractable content)
         assert upload_resp.status_code == 400
         error_data = upload_resp.json()
-        assert "detail" in error_data
-        assert "no text" in error_data["detail"].lower()
+        # API returns errors in {"error": {"message": "..."}} format
+        assert "error" in error_data
+        assert "message" in error_data["error"]
+        error_message = error_data["error"]["message"].lower()
+        assert "insufficient content" in error_message or "no text" in error_message
 
 
 @pytest.mark.integration

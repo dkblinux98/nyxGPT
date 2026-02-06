@@ -24,6 +24,10 @@ def _cfg(tmp_path: Path, *, rag_enabled: bool) -> configparser.ConfigParser:
         "chat_top_k": "2",
         "chat_context_max_chars": "500",
     }
+    cfg["cache"] = {
+        "response_cache_enabled": "false",
+        "embedding_cache_enabled": "false",
+    }
     return cfg
 
 
@@ -83,6 +87,11 @@ def test_chat_with_rag_injects_context(monkeypatch: pytest.MonkeyPatch, tmp_path
 def test_chat_rag_disabled_does_not_call_retrieve(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    # Clear global cache to prevent pollution from other tests
+    import nyxgpt.chat as chat_module
+
+    chat_module._response_cache = None
+
     cfg = _cfg(tmp_path, rag_enabled=False)
 
     # Ensure chat() uses our in-memory config

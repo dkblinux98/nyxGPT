@@ -4,7 +4,7 @@
 repos:
   # General file checks
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.5.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
         exclude: ^tests/fixtures/
@@ -24,7 +24,7 @@ repos:
 
   # YAML linting
   - repo: https://github.com/adrienverge/yamllint
-    rev: v1.35.1
+    rev: v1.38.0
     hooks:
       - id: yamllint
         name: Lint YAML files
@@ -33,16 +33,16 @@ repos:
 
   # Python code formatting with Black
   - repo: https://github.com/psf/black
-    rev: 24.1.1
+    rev: 26.1.0
     hooks:
       - id: black
         name: Format Python code with Black
-        language_version: python3.11
+        language_version: python3.13
         args: ['--line-length=100']
 
   # Python linting with Ruff
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.1.15
+    rev: v0.15.0
     hooks:
       - id: ruff
         name: Lint Python code with Ruff
@@ -51,7 +51,7 @@ repos:
 
   # Python type checking with mypy
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.8.0
+    rev: v1.19.1
     hooks:
       - id: mypy
         name: Type check Python code with mypy
@@ -59,12 +59,17 @@ repos:
           - types-redis
           - pydantic>=2.5.0
           - sqlalchemy>=2.0.0
+          - fastapi>=0.110
+          - httpx>=0.27
+          - types-beautifulsoup4
+          - types-Markdown
+          - tiktoken>=0.5.0
         args: ['--config-file=pyproject.toml']
         exclude: ^tests/
 
   # Check for secrets
   - repo: https://github.com/Yelp/detect-secrets
-    rev: v1.4.0
+    rev: v1.5.0
     hooks:
       - id: detect-secrets
         name: Detect secrets in code
