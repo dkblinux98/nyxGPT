@@ -253,10 +253,10 @@ jobs:
           PR="${{ steps.check_pr.outputs.existing_pr }}"
 
           # Check if there are REQUEST_CHANGES review comments
+          # Review comments come from review-agent, not "claude"
           REVIEW_COMMENT=$(gh pr view "$PR" --json comments --jq '
             [.comments[] |
-             select(.author.login == "claude" and
-                    (.body | startswith("## Code Review - REQUEST_CHANGES")))] |
+             select((.body | startswith("## Code Review - REQUEST_CHANGES")))] |
             last |
             .body // ""
           ')
