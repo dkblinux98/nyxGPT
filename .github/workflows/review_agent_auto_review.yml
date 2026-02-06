@@ -185,7 +185,10 @@ jobs:
           ISSUE="${{ steps.get_issue.outputs.issue_number }}"
 
           echo "::notice::Human approved merge - executing merge"
-          bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && bash scripts/agents/review_accept_and_merge.sh '$PR' '$ISSUE'"
+          bash -lc "cd '$GITHUB_WORKSPACE' && \
+            source scripts/agents/lib/gh_project.sh && \
+            load_config && \
+            bash scripts/agents/review_accept_and_merge.sh '$PR' '$ISSUE'"
 
       - name: Count review iterations (if changes requested)
         if: steps.parse_decision.outputs.decision == 'REQUEST_CHANGES'
@@ -195,7 +198,8 @@ jobs:
           set -euo pipefail
           PR="${{ steps.get_pr.outputs.pr_number }}"
 
-          # Query PR comments from claude (Claude Code Action OAuth user) starting with "## Code Review - REQUEST_CHANGES"
+          # Query PR comments from claude (Claude Code Action OAuth user)
+          # starting with "## Code Review - REQUEST_CHANGES"
           # Only count REQUEST_CHANGES iterations, not APPROVE comments
           COUNT=$(gh pr view "$PR" --json comments --jq '
             [.comments[] |
@@ -227,7 +231,11 @@ jobs:
           echo "::group::Escalating to human after 3 review cycles"
 
           # Keep issue in "In Review" status and assign to human owner
-          bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && require_gh_auth && issue_assign_only '$ISSUE' '$HUMAN_OWNER'"
+          bash -lc "cd '$GITHUB_WORKSPACE' && \
+            source scripts/agents/lib/gh_project.sh && \
+            load_config && \
+            require_gh_auth && \
+            issue_assign_only '$ISSUE' \"\$HUMAN_OWNER\""
 
           # Assign PR to human owner
           gh pr edit "$PR" --add-assignee "${{ vars.HUMAN_OWNER }}"
@@ -267,7 +275,12 @@ jobs:
           echo "::group::Returning issue #$ISSUE to developer"
 
           # Set issue status to "In Progress" and assign to developer-agent
-          bash -lc "cd '$GITHUB_WORKSPACE' && source scripts/agents/lib/gh_project.sh && load_config && require_gh_auth && set_issue_status '$ISSUE' '$STATUS_IN_PROGRESS' && issue_assign_only '$ISSUE' '$DEV_AGENT'"
+          bash -lc "cd '$GITHUB_WORKSPACE' && \
+            source scripts/agents/lib/gh_project.sh && \
+            load_config && \
+            require_gh_auth && \
+            set_issue_status '$ISSUE' \"\$STATUS_IN_PROGRESS\" && \
+            issue_assign_only '$ISSUE' \"\$DEV_AGENT\""
 
           LOOP_NUM=$((${{ steps.count.outputs.loop_count }} + 1))
 
@@ -283,7 +296,8 @@ jobs:
             "3. Run all tests locally and fix any test failures (3-try loop)" \
             "4. Commit and push your fixes" \
             "5. The PR will be automatically re-reviewed" \
-            "**Note:** This is review iteration ${LOOP_NUM} of 3. After 3 review cycles, the issue will be escalated to @${HUMAN_OWNER}.")
+            "**Note:** This is review iteration ${LOOP_NUM} of 3." \
+            "After 3 review cycles, the issue will be escalated to @${HUMAN_OWNER}.")
           gh pr comment "$PR" --body "$BODY"
 
           echo "::endgroup::"
@@ -303,17 +317,26 @@ jobs:
 
             let body;
             if (decision === 'APPROVE') {
-              body = '✅ **Review Agent**: Code review approved and PR merged.\n\nChanges have been merged to release branch.';
+              body = '✅ **Review Agent**: Code review approved and PR merged.\n\n' +
+                     'Changes have been merged to release branch.';
             } else if (decision === 'REQUEST_CHANGES') {
               if (escalate === 'true') {
-                body = '⚠️ **Review Agent**: Escalated after 3 review cycles.\n\n3 review attempts completed but issues persist. Manual intervention required. Assigned to @${{ vars.HUMAN_OWNER }}.';
+                body = '⚠️ **Review Agent**: Escalated after 3 review cycles.\n\n' +
+                       '3 review attempts completed but issues persist. ' +
+                       'Manual intervention required. Assigned to @${{ vars.HUMAN_OWNER }}.';
               } else {
                 // REQUEST_CHANGES handled by "Return to developer" step
                 // This completion comment only runs if that step fails
-                body = '❌ **Review Agent**: Failed to return issue to developer.\n\nCheck workflow logs for details.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
+                body = '❌ **Review Agent**: Failed to return issue to developer.\n\n' +
+                       'Check workflow logs for details.\n\n' +
+                       '[View workflow run](https://github.com/${{ github.repository }}' +
+                       '/actions/runs/${{ github.run_id }})';
               }
             } else {
-              body = '❌ **Review Agent**: Workflow execution failed.\n\nCheck workflow logs for details.\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
+              body = '❌ **Review Agent**: Workflow execution failed.\n\n' +
+                     'Check workflow logs for details.\n\n' +
+                     '[View workflow run](https://github.com/${{ github.repository }}' +
+                     '/actions/runs/${{ github.run_id }})';
             }
 
             await github.rest.issues.createComment({
