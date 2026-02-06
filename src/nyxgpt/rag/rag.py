@@ -24,7 +24,7 @@ from nyxgpt.config import (
     load_config,
 )
 from nyxgpt.rag.bm25 import BM25Index
-from nyxgpt.rag.embeddings import EmbeddingDebugMetrics, embed_text, embed_texts
+from nyxgpt.rag.embeddings import EmbeddingDebugMetrics, embed_texts
 from nyxgpt.rag.fusion import reciprocal_rank_fusion, weighted_fusion
 from nyxgpt.rag.reranker import RerankerDebugMetrics, rerank_results
 from nyxgpt.rag.vectorstore_cassandra import (
@@ -1088,9 +1088,10 @@ def retrieve_context(
             )
             embedding_metrics = emb_metrics
         else:
-            query_embeddings = [
-                embed_text(q, model=embedding_model, dimension=embedding_dim) for q in queries
-            ]
+            # Use embed_texts for batching even without metrics collection
+            query_embeddings = embed_texts(
+                queries, collect_metrics=False, model=embedding_model, dimension=embedding_dim
+            )
 
         # Parallel execution for multiple queries (performance optimization)
         if len(queries) > 1 and not collect_debug:
