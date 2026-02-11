@@ -1,0 +1,16 @@
+name: Add Issue to Release Tracking Issue
+
+on:
+  issues:
+    types: [milestoned]
+
+jobs:
+  add-to-release:
+    uses: dkblinux98/nyxAgent/.github/workflows/reusable-add-to-release-issue.yml@v1.0.0
+    with:
+      issue_number: ${{ github.event.issue.number }}
+      milestone_title: ${{ github.event.issue.milestone.title }}
+      release_issue_number: ${{ vars.RELEASE_ISSUE_NUMBER }}
+      repository: ${{ github.repository }}
+    secrets:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -8,7 +8,7 @@ on:
       - 'src/nyxgpt/app.py'
   push:
     branches:
-      - v1.0.0
+      - v2.0.0
     paths:
       - 'web/**/*.ts'
       - 'web/**/*.tsx'
@@ -16,35 +16,13 @@ on:
 
 jobs:
   validate-web:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install web dependencies
-        run: cd web && npm ci
-
-      - name: TypeScript type check
-        run: cd web && npm run type-check
-
-      - name: Validate web proxy routes exist
-        run: |
-          chmod +x scripts/validate-web-routes.sh
-          ./scripts/validate-web-routes.sh
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install mypy
-
-      - name: Python type check (mypy)
-        run: mypy src/ || echo "⚠️  mypy found type errors (not blocking)"
+    uses: dkblinux98/nyxAgent/.github/workflows/reusable-validate-web-routes.yml@v1.0.0
+    with:
+      repository: ${{ github.repository }}
+      web_directory: 'web'
+      python_src_directory: 'src'
+      node_version: '20'
+      python_version: '3.11'
+      enable_route_validation: false
+    secrets:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,23 @@
+name: Review Agent Workflow
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review'
+        required: true
+        type: string
+
+jobs:
+  review:
+    if: ${{ !github.event.pull_request.draft }}
+    uses: dkblinux98/nyxAgent/.github/workflows/reusable-review-auto-review.yml@v1.0.0
+    with:
+      pr_number: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+      config_path: '.nyxagent/config.yaml'
+    secrets:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GH_TOKEN_NYXAGENT: ${{ secrets.GH_TOKEN_NYXAGENT }}

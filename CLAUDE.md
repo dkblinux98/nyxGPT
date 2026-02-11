@@ -10,17 +10,29 @@ Claude must not invent workflow, authority, or automation.
 
 **Before taking any action, Claude must read these files in order:**
 
-### 1. Core Operating Instructions (Always read first)
+### 1. Project-Specific Instructions
 - `CLAUDE.md` (this file)
 - `AGENTS.md`
 - `ARCHITECTURE.md`
 - `VISION.md`
 - `README.md`
-- All files in `.github/workflows/*`
-- All files in `AGENT_CHARTERS/*`
-- All files in `AGENT_PROMPTS/*`
-- All files in `RUNBOOKS/*`
-- All files in `scripts/agents/*`
+- `.nyxagent/config.yaml`
+- `.github/workflows/*.yml` (caller workflows)
+
+### 2. Agent Framework Documentation
+
+Agent framework provided by **nyxAgent package**.
+
+Access documentation via:
+- **CLI**: `nyxagent docs`
+- **GitHub**: https://github.com/dkblinux98/nyxAgent
+- **Installed location**: Check `pip show nyxagent`
+
+Core framework files:
+- Agent Charters: `nyxagent/docs/charters/`
+- Agent Prompts: `nyxagent/docs/prompts/`
+- Runbooks: `nyxagent/docs/runbooks/`
+- Framework docs: `AGENTS.md`, `ARCHITECTURE.md`, `CLAUDE_FRAMEWORK.md`
 
 ### After Reading, Claude Must:
 
@@ -41,7 +53,7 @@ Claude must not invent workflow, authority, or automation.
 ## Sources of Truth
 
 - AGENTS.md
-- scripts/agents/*
+- nyxAgent framework (scripts and documentation)
 - GitHub Issues
 - Release Issues
 
@@ -65,7 +77,7 @@ Executive assistant role uses efficient means for one-off tasks outside the work
 ## Tooling
 
 - Use gh CLI
-- Use scripts in scripts/agents/
+- Use scripts provided by nyxAgent package
 - Do not modify Project fields directly outside scripts
 
 **IMPORTANT: Do not create project metadata without explicit user permission:**
@@ -77,7 +89,7 @@ Executive assistant role uses efficient means for one-off tasks outside the work
 
 ## Branch Rules
 
-- **NEVER merge to master/main** - All merges go to the active release branch (e.g., v1.0.0)
+- **NEVER merge to master/main** - All merges go to the active release branch (e.g., v2.0.0)
 - Feature/fix branches are created from and merged back to the release branch
 - master/main is reserved for releases only (human controlled)
 - After merging to release branch, manually close linked issues (GitHub doesn't auto-close for non-default branch merges)
@@ -86,7 +98,7 @@ Executive assistant role uses efficient means for one-off tasks outside the work
 
 ## PR Rules
 
-- PRs are created only via developer_submit_for_review.sh
+- PRs are created only via nyxAgent's developer workflow
 - PR body must include: Closes #ISSUE
 - Issues close only on merge
 

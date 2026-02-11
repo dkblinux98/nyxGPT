@@ -1,0 +1,22 @@
+name: QA Agent Workflow
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to test'
+        required: true
+        type: string
+
+jobs:
+  qa-test:
+    if: contains(github.event.pull_request.labels.*.name, 'qa-ready')
+    uses: dkblinux98/nyxAgent/.github/workflows/reusable-qa-auto-test.yml@v1.0.0
+    with:
+      pr_number: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
+      config_path: '.nyxagent/config.yaml'
+    secrets:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN_NYXAGENT: ${{ secrets.GH_TOKEN_NYXAGENT }}

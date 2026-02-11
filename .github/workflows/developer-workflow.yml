@@ -1,0 +1,22 @@
+name: Developer Agent Workflow
+
+on:
+  issues:
+    types: [assigned]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to implement'
+        required: true
+        type: string
+
+jobs:
+  implement:
+    uses: dkblinux98/nyxAgent/.github/workflows/reusable-developer-auto-implement.yml@v1.0.0
+    with:
+      issue_number: ${{ github.event.issue.number || github.event.inputs.issue_number }}
+      config_path: '.nyxagent/config.yaml'
+    secrets:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GH_TOKEN_NYXAGENT: ${{ secrets.GH_TOKEN_NYXAGENT }}

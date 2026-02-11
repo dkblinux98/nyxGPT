@@ -1,20 +1,43 @@
-# Agent Roles and Responsibilities (nyxGPT)
+# Agent System (nyxGPT)
 
-This document defines the only valid responsibilities and allowed actions
-for each machine agent in this repository.
+This project uses the **nyxAgent framework** for multi-agent SDLC automation.
 
-Agents must follow these instructions exactly.
-Project automations are deliberately minimal.
-Agents are the sole authority for state transitions.
+**Package**: `nyxagent`
+**Repository**: https://github.com/dkblinux98/nyxAgent
+**Configuration**: `.nyxagent/config.yaml`
 
 ---
 
-## Global Rules
+## Framework Documentation
 
-- Use only scripts in scripts/agents/
-- Do not rely on GitHub Project automations
-- Leave an auditable comment for every state change
+For complete agent details, see the nyxAgent framework documentation:
+
+```bash
+nyxagent docs
+```
+
+Or visit: https://github.com/dkblinux98/nyxAgent/tree/v1.0.0/src/nyxagent/docs
+
+---
+
+## Project Status Semantics (nyxGPT)
+
+Backlog      – approved, unscheduled
+In Progress  – active development
+In Review    – awaiting review (agent review OR human stakeholder acceptance after merge)
+For Release  – stakeholder accepted, ready for release (human sets this)
+Closed       – released (human only)
+
+**Important**: After merge, issues remain in "In Review" status (CLOSED in GitHub, but "In Review" in project) until human stakeholder acceptance. The human owner moves accepted issues to "For Release".
+
+---
+
+## Project-Specific Rules
+
+### Global Rules
+
 - Do not merge to main/master
+- Leave an auditable comment for every state change
 - Do not improvise workflow
 
 ### Project Hygiene (All Agents)
@@ -27,167 +50,54 @@ Every agent is responsible for verifying project hygiene before reassigning issu
 
 ---
 
-## Project Status Semantics
+## Agent Roles
 
-Backlog      – approved, unscheduled
-In Progress  – active development
-In Review    – awaiting review (agent review OR human stakeholder acceptance after merge)
-For Release  – stakeholder accepted, ready for release (human sets this)
-Closed       – released (human only)
+The nyxAgent framework provides the following agents:
 
-**Important**: After merge, issues remain in "In Review" status (CLOSED in GitHub, but "In Review" in project) until human stakeholder acceptance. The human owner moves accepted issues to "For Release".
+- **scrummaster-agent** - Backlog management and issue selection
+- **developer-agent** - Implementation and PR creation
+- **review-agent** - Code review and merge operations
+- **qa-agent** - Quality assurance and testing
+- **executive assistant** (Claude for ad-hoc tasks) - Supports human owner with administrative tasks
 
----
-
-## scrummaster-agent
-
-Controls backlog intake and sequencing.
-
-Allowed:
-- Select next issue by lowest Phase then lowest issue number
-- Set issue → In Progress
-- Assign issue → developer-agent
-
-Scripts:
-- scrummaster_next_issue.sh
-- scrummaster_start_issue.sh <ISSUE>
-
-Forbidden:
-- Writing code
-- Creating PRs
-- Closing issues
+For detailed responsibilities, permissions, and scripts, see:
+- nyxAgent agent charters: `nyxagent docs`
+- nyxAgent GitHub: https://github.com/dkblinux98/nyxAgent
 
 ---
 
-## developer-agent
+## Configuration
 
-Implements features and fixes.
+This project's agent configuration is in `.nyxagent/config.yaml`:
 
-Allowed:
-- Create branches
-- Write code and tests
-- Open PRs
-- Move issue → In Review
-- Assign review-agent
+```yaml
+nyxagent:
+  version: "1.0.0"
 
-Scripts:
-- developer_create_branch.sh <ISSUE>
-- developer_submit_for_review.sh <ISSUE> "<PR TITLE>"
+project:
+  name: "nyxGPT"
+  github_org: "dkblinux98"
+  github_repo: "nyxGPT"
+  project_number: 1
 
-Forbidden:
-- Merging PRs
-- Setting For Release
-- Closing issues manually
+branches:
+  release_branch: "v2.0.0"
+  main_branch: "v2.0.0"
 
----
-
-## review-agent
-
-Owns and performs code reviews. Initiates review when assigned as PR reviewer.
-
-Review Trigger:
-- Automatically triggered when developer-agent assigns review-agent as reviewer
-- Can be manually re-triggered via:
-  - New commit to PR branch
-  - `@review` comment on PR
-  - Manual workflow dispatch
-
-Workflow:
-1. Review workflow triggers when review-agent is assigned as reviewer
-2. Run CI checks (linters, tests, test coverage, documentation)
-3. Review code + CI results
-4. Post review comment with recommendation (APPROVE or REQUEST_CHANGES)
-5. Review workflow executes automatically:
-   - Review agent runs all tests and linters
-   - Reviews code against acceptance criteria and quality standards
-   - Posts structured review comment: "## Code Review - [APPROVE|REQUEST_CHANGES]"
-   - Automation executes decision automatically (no human confirmation needed)
-
-On CI failure:
-- Set parent issue → In Progress
-- Assign parent issue → developer-agent
-- Comment with CI failure details
-- Switch role to developer-agent and fix
-
-On code review decision:
-- **APPROVE**: Automation merges PR immediately, assigns issue to human for acceptance
-- **REQUEST_CHANGES**:
-  - Issue returns to developer-agent with "In Progress" status
-  - Developer reads review comment and fixes all Critical/Medium issues
-  - Developer runs tests in 3-try loop (resets each time) BEFORE committing
-  - Developer commits fixes and re-submits for review (triggers re-review)
-  - Review cycle continues (cumulative count)
-  - After 3 review cycles with REQUEST_CHANGES: Issue stays "In Review", escalates to human
-
-Scripts:
-- review_trigger.sh <PR> - Manually trigger review workflow (for re-reviews or if auto-trigger failed)
-- review_request_changes.sh <ISSUE> "<TITLE>" <BODY_FILE> - Executed by automation after human approval
-- review_accept_and_merge.sh <PR> <ISSUE> - Executed by automation after human approval
-
-Note: Review workflow triggers automatically when developer-agent runs
-developer_submit_for_review.sh and assigns review-agent as reviewer
-
----
-
-## qa-agent
-
-Performs quality assurance checks before merge.
-
-Allowed:
-- Run full test suite (unit + integration + E2E)
-- Execute TUI smoke tests
-- Execute WebUI smoke tests
-- Create QA Failure sub-issues for test failures
-- Approve or block PR based on QA results
-
-Scripts:
-- qa_run_full_suite.sh <PR>
-- qa_manual_checklist.sh <PR>
-- qa_report.sh <PR> <FINDINGS_FILE>
-
-Workflow:
-1. Triggered when PR assigned to qa-agent
-2. Run automated test suite
-3. Run manual smoke test checklists
-4. Create QA report with findings
-5. If critical failures: Create QA Failure sub-issues
-6. Comment on PR with QA status (PASS/FAIL)
-
-Forbidden:
-- Merging PRs
-- Bypassing test failures
-- Modifying code
-
----
-
-## Human
-
-Closes releases and advances phases.
-
----
-
-## Executive Assistant (Claude for ad-hoc tasks)
-
-Supports the human owner during stakeholder acceptance with ad-hoc administrative tasks.
-
-Role:
-- Executes one-off requests outside the agent workflow
-- Handles bulk operations (e.g., bulk-assign backlog issues)
-- Fixes project hygiene issues discovered during acceptance
-- Uses the most efficient means to accomplish tasks (direct gh/GraphQL is acceptable)
-
-Examples:
-- Bulk-assigning backlog issues to scrummaster-agent
-- Fixing missing project fields on PRs/issues
-- Administrative cleanup and corrections
-- Documentation updates
-
-Not an agent role:
-- Does not follow strict agent workflow rules
-- Does not participate in automated workflows
-- Announces current role when switching between executive assistant and agent roles
+agents:
+  developer:
+    enabled: true
+  review:
+    enabled: true
+  scrummaster:
+    enabled: true
+  qa:
+    enabled: true
+  stakeholder:
+    enabled: false
+```
 
 ---
 
 Final rule:
-If it's not explicitly allowed above, it must not be done.
+Follow the nyxAgent framework documentation and this project's configuration exactly.

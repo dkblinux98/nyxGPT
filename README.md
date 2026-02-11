@@ -926,32 +926,19 @@ All pull requests automatically receive AI code review feedback focusing on qual
 
 ### Automated Agent Workflows
 
-This repository includes automated agent workflows for continuous development:
+This repository uses the **nyxAgent framework** for automated multi-agent SDLC workflows:
 
 **Scrummaster Agent** - Selects and dispatches the next backlog issue
 **Developer Agent** - Implements issues end-to-end with Claude Code
 **Review Agent** - Reviews PRs and manages merge workflow
+**QA Agent** - Performs quality assurance testing
 
-**To trigger the workflow:**
+The agent workflows are triggered automatically based on GitHub events (issue assignment, PR creation, etc.) or can be triggered manually via workflow dispatch.
 
-```bash
-./scripts/trigger_next_issue.sh <release_issue_number>
-```
+**Configuration:** See `.nyxagent/config.yaml` for enabled agents and settings
+**Framework Documentation:** Run `nyxagent docs` or visit https://github.com/dkblinux98/nyxAgent
 
-Or manually post a comment containing `READY_FOR_NEXT_ISSUE` in the **Release tracking issue**.
-
-The workflow will:
-1. Select the next backlog issue (lowest Phase, lowest issue number)
-2. Move it to In Progress and assign to developer-agent
-3. Auto-implement the issue with Claude Code
-4. Create a PR and submit for review
-
-**Monitor agent activity in real-time:**
-```bash
-./scripts/watch_agents.sh
-```
-
-For details, see **docs/development.md** and **RUNBOOKS/**.
+For development workflow details, see **docs/development.md**.
 
 ---
 
@@ -973,6 +960,3 @@ Future work focuses on:
 - performance tuning
 - richer session metadata and search
 - optional multi‑user and auth extensions
-
-
-

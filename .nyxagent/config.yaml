@@ -1,4 +1,4 @@
-# nyxAgent Configuration for nyxGPT
+# nyxAgent Configuration Template
 # Documentation: https://github.com/dkblinux98/nyxAgent
 
 nyxagent:
@@ -6,9 +6,9 @@ nyxagent:
 
 project:
   # Project identification
-  name: "nyxGPT"
-  github_org: "dkblinux98"
-  github_repo: "nyxGPT"
+  name: "your-project-name"
+  github_org: "your-github-org"
+  github_repo: "your-repo-name"
   project_number: 1
 
 branches:
@@ -16,9 +16,8 @@ branches:
   # IMPORTANT: NEVER merge to main/master - use release branches
   # Feature branches are created from and merged back to release branch
   # main/master is reserved for releases only (human controlled)
-  # After merging to release branch, manually close linked issues
-  release_branch: "v2.0.0"
-  main_branch: "v2.0.0"
+  release_branch: "v1.0.0"
+  main_branch: "v1.0.0"
 
 agents:
   # Enable/disable agents for this project
@@ -33,15 +32,18 @@ agents:
   stakeholder:
     enabled: false
 
-# Project-specific overrides
-testing:
-  pytest_args: "-v --cov=src/nyxgpt"
-  coverage_threshold: 80
+# Optional: Project-specific overrides
+# Uncomment and customize as needed
 
-linting:
-  pre_commit: true
-
-workflows:
-  auto_implement: true
-  auto_review: true
-  auto_test: true
+# testing:
+#   pytest_args: "-v --cov=src"
+#   coverage_threshold: 80
+#
+# linting:
+#   pre_commit: true
+#   ruff_config: ".ruff.toml"
+#
+# workflows:
+#   auto_implement: true
+#   auto_review: true
+#   auto_test: true
