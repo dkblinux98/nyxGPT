@@ -116,7 +116,7 @@ def file_lock(file_path: Path, timeout: float = 5.0):
                     if time.time() - start_time > timeout:
                         raise TimeoutError(
                             f"Could not acquire lock on {file_path} within {timeout}s"
-                        )
+                        ) from None
                     time.sleep(0.1)
         else:
             import fcntl
@@ -130,7 +130,7 @@ def file_lock(file_path: Path, timeout: float = 5.0):
                     if time.time() - start_time > timeout:
                         raise TimeoutError(
                             f"Could not acquire lock on {file_path} within {timeout}s"
-                        )
+                        ) from None
                     time.sleep(0.1)
 
         yield fd

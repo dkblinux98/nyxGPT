@@ -1937,7 +1937,20 @@ def rag_collection_reindex(
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to generate embeddings with model '{body.target_embedding_model}': {str(e)}",
-        ) from e
+            ) from e
+
+        # TODO: Update chunks in the database with new embeddings
+        # For now, we've validated the model works but don't persist changes
+        log.warning(
+            f"Re-indexing functionality is incomplete. Generated {len(new_embeddings)} embeddings but not persisting them yet."
+        )
+
+        return ReindexCollectionResponse(
+            collection=collection_name,
+            status="embeddings generated but persistence not yet implemented",
+            chunks_processed=len(new_embeddings),
+            chunks_total=chunks_total,
+        )
     except Exception as e:
         log.error(f"Failed to re-index collection '{collection_name}': {e}", exc_info=True)
         raise HTTPException(
@@ -2829,7 +2842,7 @@ async def rag_upload_file(
             try:
                 book = epub.read_epub(io.BytesIO(content))
             except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid ePUB file: {e}") from None
+                raise HTTPException(status_code=400, detail=f"Invalid ePUB file: {e}") from None
 
             text_parts = []
 
@@ -3006,7 +3019,7 @@ async def rag_upload_file(
 
             # Page title
             title_tag = soup.find("title")
-            if title_tag and title_tag.string:
+            if title_tag and hasattr(title_tag, "string") and title_tag.string:
                 metadata["Title"] = title_tag.string.strip()
 
             # Meta tags
@@ -3025,7 +3038,7 @@ async def rag_upload_file(
                     # Try property attribute (for Open Graph tags)
                     meta_tag = soup.find("meta", attrs={"property": meta_name})
 
-                if meta_tag:
+                if meta_tag and hasattr(meta_tag, "get"):
                     meta_content = meta_tag.get("content")
                     if meta_content and isinstance(meta_content, str):
                         metadata[metadata_key] = meta_content.strip()
@@ -3052,64 +3065,70 @@ async def rag_upload_file(
             content_parts = []
 
             # Extract headings with hierarchy
-            for heading in main_content.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
-                heading_text = heading.get_text(strip=True)
-                if heading_text:
-                    level = heading.name[1]  # Extract number from h1, h2, etc.
-                    content_parts.append(f"{'#' * int(level)} {heading_text}")
+            if hasattr(main_content, "find_all"):
+                for heading in main_content.find_all(["h1", "h2", "h3", "h4", "h5", "h6"]):
+                    heading_text = heading.get_text(strip=True)
+                    if heading_text:
+                        level = heading.name[1]  # Extract number from h1, h2, etc.
+                        content_parts.append(f"{'#' * int(level)} {heading_text}")
 
             # Extract paragraphs and preserve block structure
-            for elem in main_content.find_all(["p", "div", "section", "blockquote", "pre", "code"]):
-                elem_text = elem.get_text(strip=True)
+            if hasattr(main_content, "find_all"):
+                for elem in main_content.find_all(
+                    ["p", "div", "section", "blockquote", "pre", "code"]
+                ):
+                    elem_text = elem.get_text(strip=True)
 
-                # Skip empty elements
-                if not elem_text:
-                    continue
+                    # Skip empty elements
+                    if not elem_text:
+                        continue
 
-                # Skip if this is just a container with nested elements we'll process separately
-                if elem.find(["p", "div", "section"]) and elem.name == "div":
-                    continue
+                    # Skip if this is just a container with nested elements we'll process separately
+                    if elem.find(["p", "div", "section"]) and elem.name == "div":
+                        continue
 
-                # Format blockquotes
-                if elem.name == "blockquote":
-                    elem_text = "> " + elem_text
+                    # Format blockquotes
+                    if elem.name == "blockquote":
+                        elem_text = "> " + elem_text
 
-                # Format code blocks
-                if elem.name in ["pre", "code"]:
-                    elem_text = f"```\n{elem_text}\n```"
+                    # Format code blocks
+                    if elem.name in ["pre", "code"]:
+                        elem_text = f"```\n{elem_text}\n```"
 
-                content_parts.append(elem_text)
+                    content_parts.append(elem_text)
 
             # Extract list items with structure
-            for ul in main_content.find_all("ul"):
-                list_items = []
-                for li in ul.find_all("li", recursive=False):
-                    li_text = li.get_text(strip=True)
-                    if li_text:
-                        list_items.append(f"• {li_text}")
-                if list_items:
-                    content_parts.append("\n".join(list_items))
+            if hasattr(main_content, "find_all"):
+                for ul in main_content.find_all("ul"):
+                    list_items = []
+                    for li in ul.find_all("li", recursive=False):
+                        li_text = li.get_text(strip=True)
+                        if li_text:
+                            list_items.append(f"• {li_text}")
+                    if list_items:
+                        content_parts.append("\n".join(list_items))
 
-            for ol in main_content.find_all("ol"):
-                list_items = []
-                for idx, li in enumerate(ol.find_all("li", recursive=False), start=1):
-                    li_text = li.get_text(strip=True)
-                    if li_text:
-                        list_items.append(f"{idx}. {li_text}")
-                if list_items:
-                    content_parts.append("\n".join(list_items))
+                for ol in main_content.find_all("ol"):
+                    list_items = []
+                    for idx, li in enumerate(ol.find_all("li", recursive=False), start=1):
+                        li_text = li.get_text(strip=True)
+                        if li_text:
+                            list_items.append(f"{idx}. {li_text}")
+                    if list_items:
+                        content_parts.append("\n".join(list_items))
 
             # Extract tables
-            for html_table in main_content.find_all("table"):
-                html_table_rows: list[str] = []
-                for row in html_table.find_all("tr"):
-                    cells = row.find_all(["th", "td"])
-                    if cells:
-                        row_text = " | ".join(cell.get_text(strip=True) for cell in cells)
-                        if row_text:
-                            html_table_rows.append(row_text)
-                if html_table_rows:
-                    content_parts.append("[Table]\n" + "\n".join(html_table_rows))
+            if hasattr(main_content, "find_all"):
+                for html_table in main_content.find_all("table"):
+                    html_table_rows: list[str] = []
+                    for row in html_table.find_all("tr"):
+                        cells = row.find_all(["th", "td"])
+                        if cells:
+                            row_text = " | ".join(cell.get_text(strip=True) for cell in cells)
+                            if row_text:
+                                html_table_rows.append(row_text)
+                    if html_table_rows:
+                        content_parts.append("[Table]\n" + "\n".join(html_table_rows))
 
             # If we extracted structured content, use it
             if content_parts:

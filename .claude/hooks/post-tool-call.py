@@ -19,10 +19,14 @@ class ProvenanceHookError(RuntimeError):
 
 
 def http_request(
-    method, host, port, location, *, body: bytes | None = None, headers={}, timeout=None
+    method, host, port, location, *, body: bytes | None = None, headers=None, timeout=None
 ) -> bytes:
+    if headers is None:
+        headers = {}
     with closing(HTTPConnection(host, port, timeout=timeout)) as connection:
         connection.request(method, location, body=body, headers=headers)
+        response = connection.getresponse()
+        return response.read()
 
 
 def get_server_port():

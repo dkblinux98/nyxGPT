@@ -3,7 +3,7 @@ class NyxgptApi < Formula
   homepage "http://127.0.0.1:8000/docs"
   tap = Tap.fetch("dkblinux98", "nyxgpt-local")
   url "file://#{tap.path}/dist/nyxgpt-api-1.0.0.tar.gz"
-  sha256 "5707eb01d3cf3206df71d6d829fe6c86f2cffb59f3c75648f407a6875e8a7823"
+  sha256 "5707eb01d3cf3206df71d6d829fe6c86f2cffb59f3c75648f407a6875e8a7823"  # pragma: allowlist secret
   version "1.0.0"
   license "MIT"
 
