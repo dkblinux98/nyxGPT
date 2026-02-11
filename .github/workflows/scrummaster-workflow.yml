@@ -7,9 +7,9 @@ on:
 
 jobs:
   select-next:
-    uses: dkblinux98/nyxAgent/.github/workflows/reusable-scrummaster-select-issue.yml@v1.0.0
+    uses: dkblinux98/nyxAgent/.github/workflows/scrummaster-agent.yml@v1.0.0
     with:
+      mode: 'select-next'
       config_path: '.nyxagent/config.yaml'
     secrets:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GH_TOKEN_NYXAGENT: ${{ secrets.GH_TOKEN_NYXAGENT }}

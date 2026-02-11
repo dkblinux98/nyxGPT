@@ -12,7 +12,7 @@ on:
 
 jobs:
   implement:
-    uses: dkblinux98/nyxAgent/.github/workflows/reusable-developer-auto-implement.yml@v1.0.0
+    uses: dkblinux98/nyxAgent/.github/workflows/developer-agent.yml@v1.0.0
     with:
       issue_number: ${{ github.event.issue.number || github.event.inputs.issue_number }}
       config_path: '.nyxagent/config.yaml'

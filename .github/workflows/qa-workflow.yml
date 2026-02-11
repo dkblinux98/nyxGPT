@@ -13,7 +13,7 @@ on:
 jobs:
   qa-test:
     if: contains(github.event.pull_request.labels.*.name, 'qa-ready')
-    uses: dkblinux98/nyxAgent/.github/workflows/reusable-qa-auto-test.yml@v1.0.0
+    uses: dkblinux98/nyxAgent/.github/workflows/qa-agent.yml@v1.0.0
     with:
       pr_number: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
       config_path: '.nyxagent/config.yaml'
