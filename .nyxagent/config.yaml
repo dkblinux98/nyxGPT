@@ -6,18 +6,18 @@ nyxagent:
 
 project:
   # Project identification
-  name: "your-project-name"
-  github_org: "your-github-org"
-  github_repo: "your-repo-name"
-  project_number: 1
+  name: "nyxGPT"
+  github_org: "dkblinux98"
+  github_repo: "nyxGPT"
+  project_number: 2
 
 branches:
   # Branch strategy
   # IMPORTANT: NEVER merge to main/master - use release branches
   # Feature branches are created from and merged back to release branch
   # main/master is reserved for releases only (human controlled)
-  release_branch: "v1.0.0"
-  main_branch: "v1.0.0"
+  release_branch: "v2.0.0"
+  main_branch: "v2.0.0"
 
 agents:
   # Enable/disable agents for this project
