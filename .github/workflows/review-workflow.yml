@@ -20,4 +20,4 @@ jobs:
     secrets:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      GH_TOKEN_NYXAGENT: ${{ secrets.GH_TOKEN_NYXAGENT }}
+      NYXAGENT_WORKFLOW_TOKEN: ${{ secrets.NYXAGENT_WORKFLOW_TOKEN }}

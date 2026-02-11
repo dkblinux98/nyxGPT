@@ -19,4 +19,4 @@ jobs:
       config_path: '.nyxagent/config.yaml'
     secrets:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GH_TOKEN_NYXAGENT: ${{ secrets.GH_TOKEN_NYXAGENT }}
+      NYXAGENT_WORKFLOW_TOKEN: ${{ secrets.NYXAGENT_WORKFLOW_TOKEN }}
