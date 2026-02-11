@@ -1,0 +1,47 @@
+# nyxAgent Configuration for nyxGPT
+# Documentation: https://github.com/dkblinux98/nyxAgent
+
+nyxagent:
+  version: "1.0.0"
+
+project:
+  # Project identification
+  name: "nyxGPT"
+  github_org: "dkblinux98"
+  github_repo: "nyxGPT"
+  project_number: 1
+
+branches:
+  # Branch strategy
+  # IMPORTANT: NEVER merge to main/master - use release branches
+  # Feature branches are created from and merged back to release branch
+  # main/master is reserved for releases only (human controlled)
+  # After merging to release branch, manually close linked issues
+  release_branch: "v2.0.0"
+  main_branch: "v2.0.0"
+
+agents:
+  # Enable/disable agents for this project
+  developer:
+    enabled: true
+  review:
+    enabled: true
+  scrummaster:
+    enabled: true
+  qa:
+    enabled: true
+  stakeholder:
+    enabled: false
+
+# Project-specific overrides
+testing:
+  pytest_args: "-v --cov=src/nyxgpt"
+  coverage_threshold: 80
+
+linting:
+  pre_commit: true
+
+workflows:
+  auto_implement: true
+  auto_review: true
+  auto_test: true
