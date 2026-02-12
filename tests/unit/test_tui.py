@@ -491,8 +491,8 @@ async def test_stream_chat_success(tmp_path: Path) -> None:
     assert remove_calls == 1, "Typing indicator should be removed on first content"
 
     # Verify output was updated with chunks
-    # "Assistant: ⋯", remove_typing_indicator(), "Hello", " ", "World", "\n\n"
-    assert app.output.append.call_count >= 5
+    # "Assistant: ⋯", "Hello", " ", "World", "\n\n" (typing indicator removed, not appended)
+    assert app.output.append.call_count >= 4
 
     # Verify prompt was unlocked (called in finally block)
     assert app.prompt.disabled is False

@@ -2978,7 +2978,7 @@ async def rag_upload_file(
             try:
                 book = epub.read_epub(io.BytesIO(content))
             except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid ePUB file: {e}") from None
+                raise HTTPException(status_code=400, detail=f"Invalid ePUB file: {e}") from None
 
             text_parts = []
 

@@ -1243,55 +1243,55 @@ class NyxGPTTUI(App):
                     # Check for RAG markers and display citation summary
                     if "__RAG_START__" in buffer and "__RAG_END__" in buffer:
                         start_idx = buffer.index("__RAG_START__")
-                            end_idx = buffer.index("__RAG_END__") + len("__RAG_END__")
+                        end_idx = buffer.index("__RAG_END__") + len("__RAG_END__")
 
-                            # Parse and display RAG citation summary
-                            try:
-                                rag_start = start_idx + len("__RAG_START__")
-                                rag_json = buffer[rag_start : buffer.index("__RAG_END__")]
-                                rag_data = json.loads(rag_json)
+                        # Parse and display RAG citation summary
+                        try:
+                            rag_start = start_idx + len("__RAG_START__")
+                            rag_json = buffer[rag_start : buffer.index("__RAG_END__")]
+                            rag_data = json.loads(rag_json)
 
-                                if rag_data.get("type") == "rag_metadata" and isinstance(
-                                    rag_data.get("chunks"), list
-                                ):
-                                    chunks = rag_data["chunks"]
-                                    chunk_count = len(chunks)
+                            if rag_data.get("type") == "rag_metadata" and isinstance(
+                                rag_data.get("chunks"), list
+                            ):
+                                chunks = rag_data["chunks"]
+                                chunk_count = len(chunks)
 
-                                    # Display compact citation summary
-                                    citation_summary = f"\n[dim][RAG: {chunk_count} source{'s' if chunk_count != 1 else ''} retrieved][/dim]\n"
-                                    self.output.append(citation_summary)
+                                # Display compact citation summary
+                                citation_summary = f"\n[dim][RAG: {chunk_count} source{'s' if chunk_count != 1 else ''} retrieved][/dim]\n"
+                                self.output.append(citation_summary)
 
-                                    # Display brief citation details (doc_id and score)
-                                    for idx, chunk in enumerate(chunks, 1):
-                                        doc_id = chunk.get("doc_id", "Unknown")
-                                        chunk_id = chunk.get("chunk_id")
-                                        # Use explicit None checking to avoid treating 0.0 as falsy
-                                        score = chunk.get("similarity_score")
-                                        if score is None:
-                                            score = chunk.get("score", 0.0)
+                                # Display brief citation details (doc_id and score)
+                                for idx, chunk in enumerate(chunks, 1):
+                                    doc_id = chunk.get("doc_id", "Unknown")
+                                    chunk_id = chunk.get("chunk_id")
+                                    # Use explicit None checking to avoid treating 0.0 as falsy
+                                    score = chunk.get("similarity_score")
+                                    if score is None:
+                                        score = chunk.get("score", 0.0)
 
-                                        # Format score with color based on quality
-                                        if score >= 0.7:
-                                            score_style = "green"
-                                        elif score >= 0.5:
-                                            score_style = "yellow"
-                                        else:
-                                            score_style = "red"
+                                    # Format score with color based on quality
+                                    if score >= 0.7:
+                                        score_style = "green"
+                                    elif score >= 0.5:
+                                        score_style = "yellow"
+                                    else:
+                                        score_style = "red"
 
-                                        chunk_ref = (
-                                            f"chunk {chunk_id}"
-                                            if chunk_id is not None
-                                            else "source"
-                                        )
-                                        citation_line = f"[dim]  [{idx}] {doc_id} ({chunk_ref}) - score: [{score_style}]{score:.3f}[/{score_style}][/dim]\n"
-                                        self.output.append(citation_line)
+                                    chunk_ref = (
+                                        f"chunk {chunk_id}"
+                                        if chunk_id is not None
+                                        else "source"
+                                    )
+                                    citation_line = f"[dim]  [{idx}] {doc_id} ({chunk_ref}) - score: [{score_style}]{score:.3f}[/{score_style}][/dim]\n"
+                                    self.output.append(citation_line)
 
-                                    self.output.append("\n")
-                            except (json.JSONDecodeError, KeyError, ValueError) as parse_err:
-                                log.warning(f"Failed to parse RAG metadata: {parse_err}")
-                            finally:
-                                # Remove RAG markers from buffer
-                                buffer = buffer[:start_idx] + buffer[end_idx:]
+                                self.output.append("\n")
+                        except (json.JSONDecodeError, KeyError, ValueError) as parse_err:
+                            log.warning(f"Failed to parse RAG metadata: {parse_err}")
+                        finally:
+                            # Remove RAG markers from buffer
+                            buffer = buffer[:start_idx] + buffer[end_idx:]
 
                         # Yield any complete text that's not part of markers
                         # Keep potential partial markers in buffer
@@ -1335,38 +1335,8 @@ class NyxGPTTUI(App):
                                 buffer = ""
 
                 # Flush any remaining buffer
-                                citation_summary = f"\n[dim][RAG: {chunk_count} source{'s' if chunk_count != 1 else ''} retrieved][/dim]\n"
-                                self.output.append(citation_summary)
-
-                                # Display brief citation details (doc_id and score)
-                                for idx, chunk in enumerate(chunks, 1):
-                                    doc_id = chunk.get("doc_id", "Unknown")
-                                    chunk_id = chunk.get("chunk_id")
-                                    # Use explicit None checking to avoid treating 0.0 as falsy
-                                    score = chunk.get("similarity_score")
-                                    if score is None:
-                                        score = chunk.get("score", 0.0)
-
-                                    # Format score with color based on quality
-                                    if score >= 0.7:
-                                        score_style = "green"
-                                    elif score >= 0.5:
-                                        score_style = "yellow"
-                                    else:
-                                        score_style = "red"
-
-                                    chunk_ref = (
-                                        f"chunk {chunk_id}" if chunk_id is not None else "source"
-                                    )
-                                    citation_line = f"[dim]  [{idx}] {doc_id} ({chunk_ref}) - score: [{score_style}]{score:.3f}[/{score_style}][/dim]\n"
-                                    self.output.append(citation_line)
-
-                                self.output.append("\n")
-                        except (json.JSONDecodeError, KeyError, ValueError) as parse_err:
-                            log.warning(f"Failed to parse RAG metadata: {parse_err}")
-                        finally:
-                            # Remove RAG markers from buffer
-                            buffer = buffer[:start_idx] + buffer[end_idx:]
+                if buffer:
+                    self.output.append(buffer)
 
                     # Yield any complete text that's not part of markers
                     # Keep potential partial markers in buffer
