@@ -787,9 +787,29 @@ jobs:
         run: |
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
-          echo "::group::Requesting review for existing PR"
-          PR_NUMBER=$(./scripts/agents/developer_submit_for_review.sh "$ISSUE")
-          echo "::notice::Requested review for PR #$PR_NUMBER"
+          PR="${{ steps.check_pr.outputs.existing_pr }}"
+
+          echo "::group::Requesting review for existing PR #$PR"
+
+          # Assign PR to review-agent
+          gh pr edit "$PR" --add-assignee "${{ vars.REVIEW_AGENT }}" || \
+            echo "::warning::Failed to set PR assignee"
+
+          # Request review from review-agent (critical)
+          if ! gh pr edit "$PR" --add-reviewer "${{ vars.REVIEW_AGENT }}"; then
+            echo "::error::Failed to request review from review-agent"
+            exit 1
+          fi
+
+          # Update issue status and assignee using project scripts
+          bash -lc "cd '$GITHUB_WORKSPACE' && \
+            source scripts/agents/lib/gh_project.sh && \
+            load_config && \
+            require_gh_auth && \
+            set_issue_status '$ISSUE' \"\$STATUS_IN_REVIEW\" && \
+            issue_assign_only '$ISSUE' \"\$REVIEW_AGENT\""
+
+          echo "::notice::PR #$PR submitted for review"
           echo "::endgroup::"
 
       - name: Post review requested comment (existing PR)
