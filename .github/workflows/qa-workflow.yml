@@ -15,6 +15,11 @@ jobs:
     # Only run QA if the PR was actually merged (not just closed)
     # QA is MANDATORY for all merges
     if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      projects: write
     uses: dkblinux98/nyxAgent/.github/workflows/qa-agent.yml@v1.0.0
     with:
       pr_number: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}
