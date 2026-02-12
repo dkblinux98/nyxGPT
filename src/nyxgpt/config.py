@@ -135,6 +135,26 @@ def validate_config(cfg: ConfigParser) -> list[str]:
                 except ValueError as e:
                     errors.append(f"Invalid context.{option}: must be an integer ({e})")
 
+    # Validate batching numeric settings
+    batching_int_settings = {
+        "chat_batch_size": (1, 100),
+        "chat_batch_timeout_ms": (10, 5000),
+        "rag_query_batch_size": (1, 50),
+        "rag_query_batch_timeout_ms": (10, 5000),
+        "max_queue_size": (10, 1000),
+    }
+
+    for setting, (min_val, max_val) in batching_int_settings.items():
+        if cfg.has_option("batching", setting):
+            try:
+                val = cfg.getint("batching", setting)
+                if not (min_val <= val <= max_val):
+                    errors.append(
+                        f"Invalid batching.{setting}: {val} (must be {min_val}-{max_val})"
+                    )
+            except ValueError as e:
+                errors.append(f"Invalid batching.{setting}: must be an integer ({e})")
+
     return errors
 
 
@@ -640,6 +660,132 @@ def get_prompt_mode_long_threshold(cfg: ConfigParser) -> int:
         log = logging.getLogger(__name__)
         log.warning("Invalid prompt.long_threshold in config, using 10: %s", e)
         return 10
+
+
+def get_batching_enabled(cfg: ConfigParser | None = None) -> bool:
+    """Get whether request batching is enabled.
+
+    Args:
+        cfg: ConfigParser instance (loads default if None)
+
+    Returns:
+        True if batching is enabled, False otherwise (default: False)
+    """
+    if cfg is None:
+        cfg = load_config(None)
+    try:
+        return cfg.getboolean("batching", "enabled", fallback=False)
+    except (ValueError, TypeError) as e:
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.warning("Invalid batching.enabled in config, using False: %s", e)
+        return False
+
+
+def get_chat_batch_size(cfg: ConfigParser | None = None) -> int:
+    """Get chat request batch size.
+
+    Args:
+        cfg: ConfigParser instance (loads default if None)
+
+    Returns:
+        Maximum number of chat requests per batch (default: 5)
+    """
+    if cfg is None:
+        cfg = load_config(None)
+    try:
+        return cfg.getint("batching", "chat_batch_size", fallback=5)
+    except (ValueError, TypeError) as e:
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.warning("Invalid batching.chat_batch_size in config, using 5: %s", e)
+        return 5
+
+
+def get_chat_batch_timeout_ms(cfg: ConfigParser | None = None) -> int:
+    """Get chat request batch timeout in milliseconds.
+
+    Args:
+        cfg: ConfigParser instance (loads default if None)
+
+    Returns:
+        Maximum wait time for batch accumulation in ms (default: 100)
+    """
+    if cfg is None:
+        cfg = load_config(None)
+    try:
+        return cfg.getint("batching", "chat_batch_timeout_ms", fallback=100)
+    except (ValueError, TypeError) as e:
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.warning("Invalid batching.chat_batch_timeout_ms in config, using 100: %s", e)
+        return 100
+
+
+def get_rag_query_batch_size(cfg: ConfigParser | None = None) -> int:
+    """Get RAG query batch size.
+
+    Args:
+        cfg: ConfigParser instance (loads default if None)
+
+    Returns:
+        Maximum number of RAG queries per batch (default: 5)
+    """
+    if cfg is None:
+        cfg = load_config(None)
+    try:
+        return cfg.getint("batching", "rag_query_batch_size", fallback=5)
+    except (ValueError, TypeError) as e:
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.warning("Invalid batching.rag_query_batch_size in config, using 5: %s", e)
+        return 5
+
+
+def get_rag_query_batch_timeout_ms(cfg: ConfigParser | None = None) -> int:
+    """Get RAG query batch timeout in milliseconds.
+
+    Args:
+        cfg: ConfigParser instance (loads default if None)
+
+    Returns:
+        Maximum wait time for batch accumulation in ms (default: 100)
+    """
+    if cfg is None:
+        cfg = load_config(None)
+    try:
+        return cfg.getint("batching", "rag_query_batch_timeout_ms", fallback=100)
+    except (ValueError, TypeError) as e:
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.warning("Invalid batching.rag_query_batch_timeout_ms in config, using 100: %s", e)
+        return 100
+
+
+def get_batching_max_queue_size(cfg: ConfigParser | None = None) -> int:
+    """Get maximum batching queue size.
+
+    Args:
+        cfg: ConfigParser instance (loads default if None)
+
+    Returns:
+        Maximum queue size for overflow protection (default: 100)
+    """
+    if cfg is None:
+        cfg = load_config(None)
+    try:
+        return cfg.getint("batching", "max_queue_size", fallback=100)
+    except (ValueError, TypeError) as e:
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.warning("Invalid batching.max_queue_size in config, using 100: %s", e)
+        return 100
 
 
 __all__ = [

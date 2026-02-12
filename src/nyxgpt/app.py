@@ -68,11 +68,17 @@ from nyxgpt.api_models import (
 from nyxgpt.chat import chat as run_chat
 from nyxgpt.chat import chat_stream
 from nyxgpt.config import (
+    get_batching_enabled,
+    get_batching_max_queue_size,
+    get_chat_batch_size,
+    get_chat_batch_timeout_ms,
     get_default_model,
     get_ollama_base_url,
     get_rag_good_score_threshold,
     get_rag_medium_score_threshold,
     get_rag_min_score,
+    get_rag_query_batch_size,
+    get_rag_query_batch_timeout_ms,
     get_rate_limit_config,
     get_rate_limit_enabled,
     get_sessions_dir,
@@ -81,11 +87,15 @@ from nyxgpt.config import (
 from nyxgpt.logging import configure_logging, get_log_dir, request_id_var
 from nyxgpt.rag.rag import ingest_document, retrieve_context
 from nyxgpt.rate_limiter import RateLimiter
+from nyxgpt.request_batcher import BatcherManager
 
 log = logging.getLogger("nyxgpt.api")
 
 # Global rate limiter instance (initialized at startup if enabled)
 _rate_limiter: RateLimiter | None = None
+
+# Global batcher manager (initialized at startup if batching enabled)
+_batcher_manager: BatcherManager | None = None
 
 
 def log_with_context(level, message, request_id=None, **extra):
@@ -101,7 +111,7 @@ def log_with_context(level, message, request_id=None, **extra):
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global _rate_limiter
+    global _rate_limiter, _batcher_manager
 
     # Initialize centralized logging once for the API process
     cfg = load_config(None)
@@ -162,7 +172,29 @@ async def lifespan(_app: FastAPI):
     else:
         log.info("Rate limiting disabled", extra={"component": "startup"})
 
+    # Initialize request batching if enabled
+    if get_batching_enabled(cfg):
+        _batcher_manager = BatcherManager()
+        log.info(
+            "Request batching enabled",
+            extra={
+                "component": "startup",
+                "chat_batch_size": get_chat_batch_size(cfg),
+                "chat_batch_timeout_ms": get_chat_batch_timeout_ms(cfg),
+                "rag_query_batch_size": get_rag_query_batch_size(cfg),
+                "rag_query_batch_timeout_ms": get_rag_query_batch_timeout_ms(cfg),
+                "max_queue_size": get_batching_max_queue_size(cfg),
+            },
+        )
+    else:
+        log.info("Request batching disabled", extra={"component": "startup"})
+
     yield
+
+    # Cleanup on shutdown
+    if _batcher_manager:
+        await _batcher_manager.stop_all()
+        log.info("Request batchers stopped", extra={"component": "shutdown"})
 
 
 # Versioned API router
@@ -621,6 +653,32 @@ def info(request: Request) -> InfoResponse:
         sessions_dir=str(get_sessions_dir(cfg)),
         release_version=release_version,
     )
+
+
+@api.get("/batching/stats")
+async def batching_stats() -> dict[str, Any]:
+    """Get request batching statistics.
+
+    Returns aggregate statistics for all active batchers including:
+    - Total batches processed
+    - Total requests batched
+    - Average batch size
+    - Average wait/process times
+    - Current queue sizes
+
+    Returns 503 if batching is disabled.
+    """
+    if not _batcher_manager:
+        raise HTTPException(
+            status_code=503,
+            detail="Request batching is disabled. Enable it in config.ini [batching] section.",
+        )
+
+    stats = await _batcher_manager.get_all_stats()
+    return {
+        "batching_enabled": True,
+        "batchers": stats,
+    }
 
 
 # --- Config get/set endpoints ---
