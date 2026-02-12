@@ -23,10 +23,13 @@ agents:
   # Enable/disable agents for this project
   developer:
     enabled: true
+    github_username: "myGPT-developer-agent"
   review:
     enabled: true
+    github_username: "myGPT-review-agent"
   scrummaster:
     enabled: true
+    github_username: "myGPT-scrummaster-agent"
   qa:
     enabled: true
   stakeholder:
