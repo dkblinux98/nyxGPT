@@ -181,19 +181,16 @@ class CassandraVectorStore:
         sanitized_collection = collection.replace("-", "_")
         tbl = f"{base_tbl}_{sanitized_collection}" if collection != "default" else base_tbl
 
-        self.session.execute(
-            f"""
+        self.session.execute(f"""
             CREATE KEYSPACE IF NOT EXISTS {ks}
             WITH REPLICATION = {{'class':'SimpleStrategy','replication_factor':1}};
-            """
-        )
+            """)
 
         self.session.execute(f"USE {ks}")
         self._keyspace_ready = True
 
         # Create table with collection-specific vector dimension
-        self.session.execute(
-            f"""
+        self.session.execute(f"""
             CREATE TABLE IF NOT EXISTS {tbl} (
               doc_id text,
               chunk_id int,
@@ -207,23 +204,18 @@ class CassandraVectorStore:
               updated_at timestamp,
               PRIMARY KEY (doc_id, chunk_id)
             );
-            """
-        )
+            """)
 
-        self.session.execute(
-            f"""
+        self.session.execute(f"""
             CREATE INDEX IF NOT EXISTS {tbl}_embedding_sai
             ON {tbl}(embedding) USING 'sai';
-            """
-        )
+            """)
 
         # Add index on embedding_model for efficient model-based filtering
-        self.session.execute(
-            f"""
+        self.session.execute(f"""
             CREATE INDEX IF NOT EXISTS {tbl}_model_idx
             ON {tbl}(embedding_model);
-            """
-        )
+            """)
 
         # Ensure settings table exists
         self.ensure_settings_table()
@@ -273,12 +265,10 @@ class CassandraVectorStore:
         # Current timestamp
         now = datetime.utcnow()
 
-        stmt = self.session.prepare(
-            f"""
+        stmt = self.session.prepare(f"""
             INSERT INTO {self.table_name} (doc_id, chunk_id, text, metadata, embedding, embedding_model, embedding_dim, doc_hash, ingested_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """
-        )
+            """)
 
         for idx, (text, emb, meta) in enumerate(zip(texts_l, embs_l, metas_l, strict=False)):
             # For updates, preserve original ingested_at; for new docs, use current time
@@ -482,13 +472,11 @@ class CassandraVectorStore:
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
-        stmt = SimpleStatement(
-            """
+        stmt = SimpleStatement("""
             SELECT table_name
             FROM system_schema.tables
             WHERE keyspace_name = %s
-            """
-        )
+            """)
 
         rows = self.session.execute(stmt, (self.cfg.keyspace,))
         base_tbl = self.cfg.table
@@ -537,13 +525,11 @@ class CassandraVectorStore:
 
         # Cassandra only supports GROUP BY on PRIMARY KEY columns.
         # We fetch all rows for doc_id and aggregate in Python.
-        stmt = SimpleStatement(
-            f"""
+        stmt = SimpleStatement(f"""
             SELECT doc_id, doc_hash, ingested_at, updated_at, embedding_model
             FROM {self.table_name}
             WHERE doc_id = %s
-            """
-        )
+            """)
 
         rows = list(self.session.execute(stmt, (doc_id,)))
         if not rows:
@@ -636,16 +622,14 @@ class CassandraVectorStore:
         Note: This assumes keyspace is already selected or uses fully qualified table name.
         """
         # Use fully qualified table name to work in any context
-        self.session.execute(
-            f"""
+        self.session.execute(f"""
             CREATE TABLE IF NOT EXISTS {self.cfg.keyspace}.collection_settings (
                 collection_name text PRIMARY KEY,
                 embedding_model text,
                 chunk_size int,
                 chunk_overlap int
             );
-            """
-        )
+            """)
 
     def get_collection_settings(self) -> dict[str, str | int | None]:
         """Get settings for the current collection.

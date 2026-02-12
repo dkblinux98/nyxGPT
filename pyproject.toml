@@ -129,7 +129,10 @@ ignore = [
 
 [tool.ruff.per-file-ignores]
 "__init__.py" = ["F401"]
-"tests/**/*.py" = ["ARG"]
+"tests/**/*.py" = ["ARG", "SIM117", "SIM105", "B017"]
+"scripts/**/*.py" = ["SIM102"]
+"src/nyxgpt/ops.py" = ["ARG001"]
+"src/nyxgpt/sessions.py" = ["B904"]
 
 [tool.ruff.isort]
 known-first-party = ["nyxgpt"]
