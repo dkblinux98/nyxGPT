@@ -642,6 +642,73 @@ def get_prompt_mode_long_threshold(cfg: ConfigParser) -> int:
         return 10
 
 
+def get_batch_enabled(cfg: ConfigParser) -> bool:
+    """Get whether request batching is enabled.
+
+    When enabled, multiple chat/RAG requests can be batched together
+    for improved throughput. Disabled by default.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        True if batching is enabled, False otherwise
+    """
+    try:
+        return cfg.getboolean("batch", "enabled", fallback=False)
+    except (ValueError, TypeError) as e:
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.warning("Invalid batch.enabled in config, using False: %s", e)
+        return False
+
+
+def get_batch_size(cfg: ConfigParser) -> int:
+    """Get maximum batch size for request batching.
+
+    Maximum number of requests to batch together before processing.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Maximum batch size (default: 4, range: 1-50)
+    """
+    try:
+        size = cfg.getint("batch", "batch_size", fallback=4)
+        return max(1, min(50, size))  # Clamp to valid range
+    except (ValueError, TypeError) as e:
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.warning("Invalid batch.batch_size in config, using 4: %s", e)
+        return 4
+
+
+def get_batch_wait_time_ms(cfg: ConfigParser) -> int:
+    """Get maximum wait time for batch to fill.
+
+    Maximum time to wait for batch to reach batch_size before
+    processing whatever is available (milliseconds).
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Wait time in milliseconds (default: 100ms, range: 10-5000ms)
+    """
+    try:
+        wait_ms = cfg.getint("batch", "wait_time_ms", fallback=100)
+        return max(10, min(5000, wait_ms))  # Clamp to valid range
+    except (ValueError, TypeError) as e:
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.warning("Invalid batch.wait_time_ms in config, using 100: %s", e)
+        return 100
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "load_config",
@@ -670,6 +737,9 @@ __all__ = [
     "get_prompt_mode_enabled",
     "get_prompt_mode_short_threshold",
     "get_prompt_mode_long_threshold",
+    "get_batch_enabled",
+    "get_batch_size",
+    "get_batch_wait_time_ms",
     "validate_config",
     "ConfigValidationError",
 ]

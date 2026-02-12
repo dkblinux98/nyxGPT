@@ -126,7 +126,7 @@ def test_session_name_validation_rejects_path_traversal(tmp_path: Path, bad_name
     cfg = _cfg_with_sessions_dir(tmp_path / "sessions")
 
     # If your implementation allows these, this test will fail and we can tighten validation.
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         sessions.load_session(bad_name, cfg, new_session=True)
 
 
@@ -461,9 +461,11 @@ def test_file_lock_timeout_when_locked(tmp_path: Path) -> None:
         time.sleep(0.5)
 
         # Try to acquire lock with 0.5s timeout (should fail since lock is held)
-        with pytest.raises(TimeoutError, match="Could not acquire lock"):
-            with sessions.file_lock(test_file, timeout=0.5):
-                pass
+        with (
+            pytest.raises(TimeoutError, match="Could not acquire lock"),
+            sessions.file_lock(test_file, timeout=0.5),
+        ):
+            pass
 
     finally:
         p.join(timeout=5)
@@ -748,9 +750,10 @@ def test_metadata_file_deleted_between_checks(
     def patched_file_lock(file_path: Path, timeout: float = 5.0):
         lock_call_count["count"] += 1
         # Delete metadata file when we try to lock it (simulates race condition)
-        if file_path == mf and lock_call_count["count"] == 2:  # Second lock call is for metadata
-            if mf.exists():
-                mf.unlink()
+        if (
+            file_path == mf and lock_call_count["count"] == 2 and mf.exists()
+        ):  # Second lock call is for metadata
+            mf.unlink()
         return original_file_lock(file_path, timeout)
 
     monkeypatch.setattr("nyxgpt.sessions.file_lock", patched_file_lock)

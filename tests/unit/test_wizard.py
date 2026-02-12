@@ -251,21 +251,23 @@ def test_run_wizard_success_minimal(tmp_path: Path, capsys: pytest.CaptureFixtur
         "n",  # Disable RAG
     ]
 
-    with patch("builtins.input", side_effect=inputs):
-        with patch("nyxgpt.wizard.list_models", return_value=mock_models):
-            exit_code = run_wizard(output_path=output_path)
+    with (
+        patch("builtins.input", side_effect=inputs),
+        patch("nyxgpt.wizard.list_models", return_value=mock_models),
+    ):
+        exit_code = run_wizard(output_path=output_path)
 
-            assert exit_code == 0
+        assert exit_code == 0
 
-            captured = capsys.readouterr()
-            assert "Setup Complete" in captured.out
-            assert str(output_path) in captured.out
+        captured = capsys.readouterr()
+        assert "Setup Complete" in captured.out
+        assert str(output_path) in captured.out
 
-            # Verify config file was created
-            assert output_path.exists()
-            content = output_path.read_text()
-            assert "default_model = qwen2.5:0.5b" in content
-            assert "enable_chat_context = false" in content
+        # Verify config file was created
+        assert output_path.exists()
+        content = output_path.read_text()
+        assert "default_model = qwen2.5:0.5b" in content
+        assert "enable_chat_context = false" in content
 
 
 def test_run_wizard_success_with_rag(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
@@ -282,20 +284,22 @@ def test_run_wizard_success_with_rag(tmp_path: Path, capsys: pytest.CaptureFixtu
         "n",  # Don't customize RAG settings
     ]
 
-    with patch("builtins.input", side_effect=inputs):
-        with patch("nyxgpt.wizard.list_models", return_value=mock_models):
-            exit_code = run_wizard(output_path=output_path)
+    with (
+        patch("builtins.input", side_effect=inputs),
+        patch("nyxgpt.wizard.list_models", return_value=mock_models),
+    ):
+        exit_code = run_wizard(output_path=output_path)
 
-            assert exit_code == 0
+        assert exit_code == 0
 
-            captured = capsys.readouterr()
-            assert "Setup Complete" in captured.out
-            assert "RAG is enabled" in captured.out
+        captured = capsys.readouterr()
+        assert "Setup Complete" in captured.out
+        assert "RAG is enabled" in captured.out
 
-            # Verify config file
-            assert output_path.exists()
-            content = output_path.read_text()
-            assert "enable_chat_context = true" in content
+        # Verify config file
+        assert output_path.exists()
+        content = output_path.read_text()
+        assert "enable_chat_context = true" in content
 
 
 def test_run_wizard_keyboard_interrupt(tmp_path: Path, capsys: pytest.CaptureFixture[str]):

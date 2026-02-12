@@ -24,8 +24,7 @@ def test_parse_gitignore():
         gitignore = repo_path / ".gitignore"
 
         # Create a .gitignore file
-        gitignore.write_text(
-            """
+        gitignore.write_text("""
 # Comment line
 __pycache__/
 *.pyc
@@ -33,8 +32,7 @@ node_modules/
 .env
 dist
 build/
-"""
-        )
+""")
 
         patterns = parse_gitignore(repo_path)
         assert "__pycache__/" in patterns
@@ -256,22 +254,18 @@ def test_index_repository():
 
         # Create a simple Python project
         (repo_path / "src").mkdir()
-        (repo_path / "src" / "main.py").write_text(
-            '''"""Main module."""
+        (repo_path / "src" / "main.py").write_text('''"""Main module."""
 
 def main():
     """Entry point."""
     print("Hello")
-'''
-        )
-        (repo_path / "src" / "utils.py").write_text(
-            '''"""Utilities."""
+''')
+        (repo_path / "src" / "utils.py").write_text('''"""Utilities."""
 
 def helper():
     """Helper function."""
     pass
-'''
-        )
+''')
 
         # Create .gitignore
         (repo_path / ".gitignore").write_text("__pycache__/")
@@ -297,14 +291,12 @@ def test_index_repository_docs_only():
     with tempfile.TemporaryDirectory() as tmpdir:
         repo_path = Path(tmpdir)
 
-        (repo_path / "test.py").write_text(
-            '''"""Module doc."""
+        (repo_path / "test.py").write_text('''"""Module doc."""
 
 def func():
     """Function doc."""
     print("code")
-'''
-        )
+''')
 
         result = index_repository(repo_path, extensions={".py"}, extract_docs_only=True)
 

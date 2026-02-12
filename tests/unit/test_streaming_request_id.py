@@ -29,9 +29,9 @@ def test_streaming_endpoint_captures_request_id():
         yield " "
         yield "World"
 
-    with patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream):
-        # Make streaming request
-        with client.stream(
+    with (
+        patch("nyxgpt.app.chat_stream", side_effect=mock_chat_stream),
+        client.stream(
             "POST",
             "/api/v1/chat/stream",
             json={
@@ -40,12 +40,13 @@ def test_streaming_endpoint_captures_request_id():
                 "model": "test-model",
             },
             headers={"X-Request-ID": test_request_id},
-        ) as response:
-            # Response should have the request ID
-            assert response.headers.get("X-Request-Id") == test_request_id
+        ) as response,
+    ):
+        # Response should have the request ID
+        assert response.headers.get("X-Request-Id") == test_request_id
 
-            # Consume the stream
-            list(response.iter_text())
+        # Consume the stream
+        list(response.iter_text())
 
     # Verify request ID was set when generator executed
     assert len(request_ids_seen) > 0, "chat_stream was not called"
@@ -244,8 +245,9 @@ def test_real_chat_stream_logs_have_request_id(caplog):
         yield " Ollama"
 
     # Mock at Ollama layer, not chat_stream - this lets the real function run
-    with patch("nyxgpt.chat.ollama_chat_stream_tokens", side_effect=mock_ollama_stream):
-        with client.stream(
+    with (
+        patch("nyxgpt.chat.ollama_chat_stream_tokens", side_effect=mock_ollama_stream),
+        client.stream(
             "POST",
             "/api/v1/chat/stream",
             json={
@@ -254,9 +256,10 @@ def test_real_chat_stream_logs_have_request_id(caplog):
                 "model": "test-model",
             },
             headers={"X-Request-ID": test_request_id},
-        ) as response:
-            # Consume stream to trigger generator execution
-            list(response.iter_text())
+        ) as response,
+    ):
+        # Consume stream to trigger generator execution
+        list(response.iter_text())
 
     # Verify the request ID was available during real chat_stream execution
     assert len(captured_request_ids) > 0, "Mock ollama stream was not called"
@@ -286,8 +289,9 @@ def test_real_chat_stream_with_auto_generated_request_id_in_logs():
         yield "Test"
 
     # Mock Ollama, not chat_stream - exercises real implementation
-    with patch("nyxgpt.chat.ollama_chat_stream_tokens", side_effect=mock_ollama_stream):
-        with client.stream(
+    with (
+        patch("nyxgpt.chat.ollama_chat_stream_tokens", side_effect=mock_ollama_stream),
+        client.stream(
             "POST",
             "/api/v1/chat/stream",
             json={
@@ -296,14 +300,15 @@ def test_real_chat_stream_with_auto_generated_request_id_in_logs():
                 "model": "test-model",
             },
             # No X-Request-ID header - should auto-generate
-        ) as response:
-            # Capture the auto-generated request ID
-            auto_request_id = response.headers.get("X-Request-Id")
-            assert auto_request_id is not None, "Expected X-Request-Id header"
-            captured_header_id.append(auto_request_id)
+        ) as response,
+    ):
+        # Capture the auto-generated request ID
+        auto_request_id = response.headers.get("X-Request-Id")
+        assert auto_request_id is not None, "Expected X-Request-Id header"
+        captured_header_id.append(auto_request_id)
 
-            # Consume stream
-            list(response.iter_text())
+        # Consume stream
+        list(response.iter_text())
 
     # Verify the auto-generated request ID was available in the streaming context
     assert len(captured_context_ids) > 0, "Mock ollama stream was not called"

@@ -350,9 +350,11 @@ async def test_on_mount_calls_unlock_prompt(tmp_path: Path) -> None:
         app = NyxGPTTUI()
 
     # Mock _unlock_prompt and _update_session_status
-    with patch.object(app, "_unlock_prompt") as mock_unlock:
-        with patch.object(app, "_update_session_status", new=AsyncMock()):
-            await app.on_mount()
+    with (
+        patch.object(app, "_unlock_prompt") as mock_unlock,
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+    ):
+        await app.on_mount()
 
     # Verify defensive reset was called
     mock_unlock.assert_called_once()
@@ -420,9 +422,11 @@ async def test_input_submitted_locks_prompt(
     event = MagicMock()
     event.value = "Hello"
 
-    with patch("asyncio.create_task") as mock_create_task:
-        with caplog.at_level(logging.DEBUG, logger="nyxgpt.tui"):
-            await app.on_input_submitted(event)
+    with (
+        patch("asyncio.create_task") as mock_create_task,
+        caplog.at_level(logging.DEBUG, logger="nyxgpt.tui"),
+    ):
+        await app.on_input_submitted(event)
 
     # Verify prompt was cleared and locked
     assert app.prompt.value == ""
@@ -491,8 +495,8 @@ async def test_stream_chat_success(tmp_path: Path) -> None:
     assert remove_calls == 1, "Typing indicator should be removed on first content"
 
     # Verify output was updated with chunks
-    # "Assistant: ⋯", remove_typing_indicator(), "Hello", " ", "World", "\n\n"
-    assert app.output.append.call_count >= 5
+    # "Assistant: ⋯", "Hello", " ", "World", "\n\n" (typing indicator removed, not appended)
+    assert app.output.append.call_count >= 4
 
     # Verify prompt was unlocked (called in finally block)
     assert app.prompt.disabled is False
@@ -521,9 +525,11 @@ async def test_stream_chat_error_handling(tmp_path: Path, caplog: pytest.LogCapt
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(side_effect=Exception("Connection error"))
 
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        with caplog.at_level(logging.ERROR, logger="nyxgpt.tui"):
-            await app._stream_chat("Test prompt")
+    with (
+        patch("httpx.AsyncClient", return_value=mock_client),
+        caplog.at_level(logging.ERROR, logger="nyxgpt.tui"),
+    ):
+        await app._stream_chat("Test prompt")
 
     # Verify error was logged
     assert "TUI chat stream failed" in caplog.text
@@ -668,13 +674,15 @@ async def test_session_picker_load_sessions(tmp_path: Path) -> None:
         },
     ]
 
-    with patch("nyxgpt.tui.load_config", return_value=cfg):
-        with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
-            screen = SessionPickerScreen(str(config_file))
+    with (
+        patch("nyxgpt.tui.load_config", return_value=cfg),
+        patch("nyxgpt.tui.list_sessions", return_value=mock_sessions),
+    ):
+        screen = SessionPickerScreen(str(config_file))
 
-            # Mock update_session_list
-            with patch.object(screen, "update_session_list", new=AsyncMock()):
-                await screen.load_sessions()
+        # Mock update_session_list
+        with patch.object(screen, "update_session_list", new=AsyncMock()):
+            await screen.load_sessions()
 
     assert screen.all_sessions == mock_sessions
     assert screen.filtered_sessions == mock_sessions
@@ -710,22 +718,24 @@ async def test_session_picker_search_filter(tmp_path: Path) -> None:
         },
     ]
 
-    with patch("nyxgpt.tui.load_config", return_value=cfg):
-        with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
-            screen = SessionPickerScreen(str(config_file))
-            screen.all_sessions = mock_sessions
-            screen.filtered_sessions = mock_sessions
+    with (
+        patch("nyxgpt.tui.load_config", return_value=cfg),
+        patch("nyxgpt.tui.list_sessions", return_value=mock_sessions),
+    ):
+        screen = SessionPickerScreen(str(config_file))
+        screen.all_sessions = mock_sessions
+        screen.filtered_sessions = mock_sessions
 
-            # Mock update_session_list
-            with patch.object(screen, "update_session_list", new=AsyncMock()):
-                # Create mock input event
-                mock_input = MagicMock(spec=Input)
-                mock_input.id = "search"
-                event = MagicMock()
-                event.input = mock_input
-                event.value = "python"
+        # Mock update_session_list
+        with patch.object(screen, "update_session_list", new=AsyncMock()):
+            # Create mock input event
+            mock_input = MagicMock(spec=Input)
+            mock_input.id = "search"
+            event = MagicMock()
+            event.input = mock_input
+            event.value = "python"
 
-                await screen.on_input_changed(event)
+            await screen.on_input_changed(event)
 
     # Should only have the Python session
     assert len(screen.filtered_sessions) == 1
@@ -817,9 +827,11 @@ async def test_tui_action_pick_session(tmp_path: Path) -> None:
     app.output = MagicMock(spec=ChatOutput)
 
     # Mock push_screen_wait to return selected session
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value="new-session")):
-        with patch.object(app, "_update_session_status", new=AsyncMock()):
-            await app._pick_session_worker()
+    with (
+        patch.object(app, "push_screen_wait", new=AsyncMock(return_value="new-session")),
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+    ):
+        await app._pick_session_worker()
 
     # Verify session was switched
     assert app.session == "new-session"
@@ -1481,10 +1493,12 @@ async def test_tui_action_search_messages_switches_session(tmp_path: Path) -> No
         "message_index": 5,
     }
 
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=search_result)):
-        with patch.object(app, "query_one", return_value=mock_output):
-            with patch.object(app, "notify") as mock_notify:
-                await app._search_messages_worker()
+    with (
+        patch.object(app, "push_screen_wait", new=AsyncMock(return_value=search_result)),
+        patch.object(app, "query_one", return_value=mock_output),
+        patch.object(app, "notify") as mock_notify,
+    ):
+        await app._search_messages_worker()
 
     # Verify session was switched
     assert app.session == "target-session"
@@ -1519,9 +1533,11 @@ async def test_tui_action_search_messages_same_session(tmp_path: Path) -> None:
         "message_index": 3,
     }
 
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=search_result)):
-        with patch.object(app, "notify") as mock_notify:
-            await app._search_messages_worker()
+    with (
+        patch.object(app, "push_screen_wait", new=AsyncMock(return_value=search_result)),
+        patch.object(app, "notify") as mock_notify,
+    ):
+        await app._search_messages_worker()
 
     # Verify session stayed the same
     assert app.session == "current-session"
@@ -1786,9 +1802,11 @@ async def test_tui_update_session_status_api_error(
     mock_client.__aexit__.return_value = None
     mock_client.get = AsyncMock(side_effect=Exception("Connection failed"))
 
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        with caplog.at_level(logging.WARNING, logger="nyxgpt.tui"):
-            await app._update_session_status()
+    with (
+        patch("httpx.AsyncClient", return_value=mock_client),
+        caplog.at_level(logging.WARNING, logger="nyxgpt.tui"),
+    ):
+        await app._update_session_status()
 
     # Verify RAG status defaults to False on error
     assert app.rag_enabled is False
@@ -1822,10 +1840,12 @@ async def test_tui_action_toggle_rag_enable(
     mock_client.__aexit__.return_value = None
     mock_client.post = AsyncMock(return_value=mock_response)
 
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        with patch.object(app, "_update_session_status", new=AsyncMock()):
-            with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
-                await app.action_toggle_rag()
+    with (
+        patch("httpx.AsyncClient", return_value=mock_client),
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+        caplog.at_level(logging.INFO, logger="nyxgpt.tui"),
+    ):
+        await app.action_toggle_rag()
 
     # Verify RAG was enabled
     assert app.rag_enabled is True
@@ -1864,10 +1884,12 @@ async def test_tui_action_toggle_rag_disable(
     mock_client.__aexit__.return_value = None
     mock_client.post = AsyncMock(return_value=mock_response)
 
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        with patch.object(app, "_update_session_status", new=AsyncMock()):
-            with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
-                await app.action_toggle_rag()
+    with (
+        patch("httpx.AsyncClient", return_value=mock_client),
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+        caplog.at_level(logging.INFO, logger="nyxgpt.tui"),
+    ):
+        await app.action_toggle_rag()
 
     # Verify RAG was disabled
     assert app.rag_enabled is False
@@ -1900,9 +1922,11 @@ async def test_tui_action_toggle_rag_error(
     mock_client.__aexit__.return_value = None
     mock_client.post = AsyncMock(side_effect=Exception("Connection failed"))
 
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        with caplog.at_level(logging.ERROR, logger="nyxgpt.tui"):
-            await app.action_toggle_rag()
+    with (
+        patch("httpx.AsyncClient", return_value=mock_client),
+        caplog.at_level(logging.ERROR, logger="nyxgpt.tui"),
+    ):
+        await app.action_toggle_rag()
 
     # Verify error was logged
     assert "Failed to toggle RAG" in caplog.text
@@ -1928,9 +1952,11 @@ async def test_tui_action_models_manager(tmp_path: Path, caplog: pytest.LogCaptu
     with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = NyxGPTTUI(session="test", config_path=str(config_file))
 
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)) as mock_push:
-        with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
-            await app._models_manager_worker()
+    with (
+        patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)) as mock_push,
+        caplog.at_level(logging.INFO, logger="nyxgpt.tui"),
+    ):
+        await app._models_manager_worker()
 
     # Verify push_screen_wait was called
     mock_push.assert_called_once()
@@ -1959,32 +1985,34 @@ async def test_models_manager_refresh_models_success() -> None:
     screen.query_one = MagicMock(return_value=MagicMock())
 
     # Mock update methods
-    with patch.object(screen, "update_status", new=AsyncMock()):
-        with patch.object(screen, "update_models_list", new=AsyncMock()):
-            # Mock httpx responses
-            # First response: list of models
-            mock_list_response = MagicMock()
-            mock_list_response.status_code = 200
-            mock_list_response.json.return_value = {"models": ["model1", "model2"]}
-            mock_list_response.raise_for_status = MagicMock()
+    with (
+        patch.object(screen, "update_status", new=AsyncMock()),
+        patch.object(screen, "update_models_list", new=AsyncMock()),
+    ):
+        # Mock httpx responses
+        # First response: list of models
+        mock_list_response = MagicMock()
+        mock_list_response.status_code = 200
+        mock_list_response.json.return_value = {"models": ["model1", "model2"]}
+        mock_list_response.raise_for_status = MagicMock()
 
-            # Second/third responses: model info
-            mock_info_response = MagicMock()
-            mock_info_response.status_code = 200
-            mock_info_response.json.return_value = {
-                "info": {"size": 1073741824, "modified_at": "2024-01-01"}
-            }
-            mock_info_response.raise_for_status = MagicMock()
+        # Second/third responses: model info
+        mock_info_response = MagicMock()
+        mock_info_response.status_code = 200
+        mock_info_response.json.return_value = {
+            "info": {"size": 1073741824, "modified_at": "2024-01-01"}
+        }
+        mock_info_response.raise_for_status = MagicMock()
 
-            mock_client = AsyncMock()
-            mock_client.__aenter__.return_value = mock_client
-            mock_client.__aexit__.return_value = None
-            mock_client.get = AsyncMock(
-                side_effect=[mock_list_response, mock_info_response, mock_info_response]
-            )
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get = AsyncMock(
+            side_effect=[mock_list_response, mock_info_response, mock_info_response]
+        )
 
-            with patch("httpx.AsyncClient", return_value=mock_client):
-                await screen.refresh_models()
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            await screen.refresh_models()
 
     # Verify models were loaded
     assert len(screen.models) == 2
@@ -2009,9 +2037,11 @@ async def test_models_manager_refresh_models_error(
         mock_client.__aexit__.return_value = None
         mock_client.get = AsyncMock(side_effect=Exception("Connection failed"))
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            with caplog.at_level(logging.ERROR, logger="nyxgpt.tui"):
-                await screen.refresh_models()
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            caplog.at_level(logging.ERROR, logger="nyxgpt.tui"),
+        ):
+            await screen.refresh_models()
 
     # Verify error was logged
     assert "Failed to load models" in caplog.text
@@ -2068,9 +2098,11 @@ def test_session_picker_action_select() -> None:
     mock_highlighted.name = "selected-session"
     mock_list_view.highlighted_child = mock_highlighted
 
-    with patch.object(screen, "query_one", return_value=mock_list_view):
-        with patch.object(screen, "dismiss") as mock_dismiss:
-            screen.action_select()
+    with (
+        patch.object(screen, "query_one", return_value=mock_list_view),
+        patch.object(screen, "dismiss") as mock_dismiss,
+    ):
+        screen.action_select()
 
     # Verify session was selected
     mock_dismiss.assert_called_once_with("selected-session")
@@ -2090,9 +2122,11 @@ def test_session_picker_action_select_no_highlight() -> None:
     mock_list_view = MagicMock()
     mock_list_view.highlighted_child = None
 
-    with patch.object(screen, "query_one", return_value=mock_list_view):
-        with patch.object(screen, "dismiss") as mock_dismiss:
-            screen.action_select()
+    with (
+        patch.object(screen, "query_one", return_value=mock_list_view),
+        patch.object(screen, "dismiss") as mock_dismiss,
+    ):
+        screen.action_select()
 
     # Should not dismiss (no selection)
     mock_dismiss.assert_not_called()
@@ -2320,9 +2354,11 @@ async def test_action_show_help(tmp_path: Path, caplog: pytest.LogCaptureFixture
     with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = NyxGPTTUI(session="test", config_path=str(config_file))
 
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)) as mock_push:
-        with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
-            await app._show_help_worker()
+    with (
+        patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)) as mock_push,
+        caplog.at_level(logging.INFO, logger="nyxgpt.tui"),
+    ):
+        await app._show_help_worker()
 
     # Verify push_screen_wait was called
     mock_push.assert_called_once()
@@ -2343,10 +2379,12 @@ async def test_action_command_palette_execute_command(
     with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = NyxGPTTUI(session="test", config_path=str(config_file))
 
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value="clear_output")):
-        with patch.object(app, "run_action") as mock_run_action:
-            with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
-                await app._command_palette_worker()
+    with (
+        patch.object(app, "push_screen_wait", new=AsyncMock(return_value="clear_output")),
+        patch.object(app, "run_action") as mock_run_action,
+        caplog.at_level(logging.INFO, logger="nyxgpt.tui"),
+    ):
+        await app._command_palette_worker()
 
     # Verify run_action was called with correct command
     mock_run_action.assert_called_once_with("clear_output")
@@ -2365,9 +2403,11 @@ async def test_action_command_palette_cancel(tmp_path: Path) -> None:
     with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = NyxGPTTUI(session="test", config_path=str(config_file))
 
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)):
-        with patch.object(app, "run_action") as mock_run_action:
-            await app._command_palette_worker()
+    with (
+        patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)),
+        patch.object(app, "run_action") as mock_run_action,
+    ):
+        await app._command_palette_worker()
 
     # Verify no action was executed
     mock_run_action.assert_not_called()
@@ -2387,10 +2427,12 @@ async def test_action_command_palette_unknown_command(
     with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = NyxGPTTUI(session="test", config_path=str(config_file))
 
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value="unknown_command")):
-        with patch.object(app, "run_action") as mock_run_action:
-            with caplog.at_level(logging.INFO, logger="nyxgpt.tui"):
-                await app._command_palette_worker()
+    with (
+        patch.object(app, "push_screen_wait", new=AsyncMock(return_value="unknown_command")),
+        patch.object(app, "run_action") as mock_run_action,
+        caplog.at_level(logging.INFO, logger="nyxgpt.tui"),
+    ):
+        await app._command_palette_worker()
 
     # run_action is still called (Textual will handle unknown actions)
     mock_run_action.assert_called_once_with("unknown_command")
@@ -2488,9 +2530,11 @@ async def test_command_palette_screen_action_execute_command() -> None:
     mock_highlighted.name = "clear_output"
     mock_list_view.highlighted_child = mock_highlighted
 
-    with patch.object(screen, "query_one", return_value=mock_list_view):
-        with patch.object(screen, "dismiss") as mock_dismiss:
-            await screen.action_execute_command()
+    with (
+        patch.object(screen, "query_one", return_value=mock_list_view),
+        patch.object(screen, "dismiss") as mock_dismiss,
+    ):
+        await screen.action_execute_command()
 
     # Verify command key was returned
     mock_dismiss.assert_called_once_with("clear_output")
@@ -2580,9 +2624,9 @@ async def test_delete_session_action_success(tmp_path: Path) -> None:
             side_effect=[mock_sessions, [{"name": "session2", "messages": 0}]],
         ),
         patch("nyxgpt.tui.delete_session", return_value=True),
+        patch.object(app, "_update_session_status", new=AsyncMock()),
     ):
-        with patch.object(app, "_update_session_status", new=AsyncMock()):
-            await app._delete_session_worker()
+        await app._delete_session_worker()
 
     # Verify session was switched
     assert app.session == "session2"
@@ -2623,10 +2667,12 @@ async def test_delete_session_action_cancelled(tmp_path: Path) -> None:
     ]
 
     # Mock push_screen_wait to return False (cancelled)
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=False)):
-        with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
-            with patch("nyxgpt.tui.delete_session", return_value=True) as mock_delete:
-                await app._delete_session_worker()
+    with (
+        patch.object(app, "push_screen_wait", new=AsyncMock(return_value=False)),
+        patch("nyxgpt.tui.list_sessions", return_value=mock_sessions),
+        patch("nyxgpt.tui.delete_session", return_value=True) as mock_delete,
+    ):
+        await app._delete_session_worker()
 
     # Verify session was NOT switched
     assert app.session == "session1"
@@ -2663,9 +2709,11 @@ async def test_delete_session_action_last_session(tmp_path: Path) -> None:
     # Mock list_sessions to return only one session
     mock_sessions = [{"name": "session1", "messages": 0}]
 
-    with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
-        with patch("nyxgpt.tui.delete_session", return_value=True) as mock_delete:
-            await app._delete_session_worker()
+    with (
+        patch("nyxgpt.tui.list_sessions", return_value=mock_sessions),
+        patch("nyxgpt.tui.delete_session", return_value=True) as mock_delete,
+    ):
+        await app._delete_session_worker()
 
     # Verify delete was NOT called
     mock_delete.assert_not_called()
@@ -2705,11 +2753,13 @@ async def test_delete_session_action_not_found(tmp_path: Path) -> None:
     ]
 
     # Mock push_screen_wait to return True (confirmed)
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=True)):
-        with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
-            # Mock delete_session to return False (not found)
-            with patch("nyxgpt.tui.delete_session", return_value=False):
-                await app._delete_session_worker()
+    with (
+        patch.object(app, "push_screen_wait", new=AsyncMock(return_value=True)),
+        patch("nyxgpt.tui.list_sessions", return_value=mock_sessions),
+        patch("nyxgpt.tui.delete_session", return_value=False),
+    ):
+        # Mock delete_session to return False (not found)
+        await app._delete_session_worker()
 
     # Verify error message was shown
     app.output.append.assert_called()
@@ -2748,12 +2798,14 @@ async def test_delete_session_action_exception(
     ]
 
     # Mock push_screen_wait to return True (confirmed)
-    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=True)):
-        with patch("nyxgpt.tui.list_sessions", return_value=mock_sessions):
-            # Mock delete_session to raise exception
-            with patch("nyxgpt.tui.delete_session", side_effect=RuntimeError("Delete failed")):
-                with caplog.at_level(logging.ERROR, logger="nyxgpt.tui"):
-                    await app._delete_session_worker()
+    with (
+        patch.object(app, "push_screen_wait", new=AsyncMock(return_value=True)),
+        patch("nyxgpt.tui.list_sessions", return_value=mock_sessions),
+        patch("nyxgpt.tui.delete_session", side_effect=RuntimeError("Delete failed")),
+        caplog.at_level(logging.ERROR, logger="nyxgpt.tui"),
+    ):
+        # Mock delete_session to raise exception
+        await app._delete_session_worker()
 
     # Verify error was logged
     assert "Failed to delete session" in caplog.text

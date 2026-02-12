@@ -554,10 +554,8 @@ def test_summarize_session_success(
             )
     finally:
         # Clean up - delete the test session
-        try:
+        with contextlib.suppress(Exception):
             httpx.delete(f"{api_base_url}/api/v1/sessions/{session_name}", timeout=5.0)
-        except Exception:
-            pass  # Ignore cleanup errors
 
 
 @pytest.mark.integration

@@ -12,12 +12,13 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 44 available endpoints:
+Quick reference of all 45 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check |
 | `/api/v1/info` | GET | Runtime configuration |
+| `/api/v1/batch/metrics` | GET | Request batching metrics |
 | `/api/v1/config` | GET | Get current configuration |
 | `/api/v1/config` | POST | Update configuration (full replace) |
 | `/api/v1/config` | PATCH | Partial configuration update |
@@ -2040,6 +2041,109 @@ Expected:
 
 ```json
 { "status": "ok" }
+```
+
+---
+
+## Request Batching
+
+Request batching groups multiple independent chat/RAG requests together for improved throughput. When enabled, the API collects incoming requests in a queue and processes them in batches, reducing overhead and improving overall system performance.
+
+### Features
+
+- **Configurable batch size**: Control how many requests to group together
+- **Configurable wait time**: Set maximum time to wait for batch to fill
+- **Priority handling**: Interactive requests get higher priority than batch requests
+- **Metrics collection**: Monitor batching efficiency with detailed statistics
+
+### Configuration
+
+Batching is configured in `~/.nyxGPT/config.ini` under the `[batch]` section:
+
+```ini
+[batch]
+# Enable/disable request batching (default: false)
+enabled = false
+
+# Maximum number of requests to batch together (default: 4, range: 1-50)
+batch_size = 4
+
+# Maximum time to wait for batch to fill in milliseconds (default: 100ms, range: 10-5000ms)
+wait_time_ms = 100
+```
+
+### Metrics Endpoint
+
+Monitor batching efficiency via the metrics endpoint:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/batch/metrics
+```
+
+**Response (when batching enabled):**
+
+```json
+{
+  "enabled": true,
+  "total_requests": 150,
+  "total_batches": 42,
+  "avg_batch_size": 3.57,
+  "avg_wait_time_ms": 45.23,
+  "avg_process_time_ms": 234.56,
+  "requests_per_second": 12.5,
+  "interactive_requests": 90,
+  "batch_requests": 60
+}
+```
+
+**Response (when batching disabled):**
+
+```json
+{
+  "enabled": false,
+  "message": "Request batching is not enabled"
+}
+```
+
+### Performance Tuning
+
+**Batch size:**
+- Larger batches improve throughput but add latency
+- Smaller batches reduce latency but may reduce throughput
+- Recommended range: 2-10 for typical workloads
+
+**Wait time:**
+- Lower values reduce latency (more responsive)
+- Higher values improve batching efficiency (better throughput)
+- Recommended range: 50-200ms for interactive use, 200-1000ms for batch processing
+
+**When to enable batching:**
+- Multiple concurrent users or clients
+- Batch processing of many requests
+- High-volume API workloads
+- When throughput is more important than individual request latency
+
+**When to disable batching:**
+- Single-user interactive usage
+- When latency is critical
+- Low-volume workloads
+
+### Example Configuration
+
+**Interactive usage (low latency):**
+```ini
+[batch]
+enabled = true
+batch_size = 2
+wait_time_ms = 50
+```
+
+**Batch processing (high throughput):**
+```ini
+[batch]
+enabled = true
+batch_size = 10
+wait_time_ms = 500
 ```
 
 ---

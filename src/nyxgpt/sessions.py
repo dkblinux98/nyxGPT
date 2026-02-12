@@ -112,11 +112,11 @@ def file_lock(file_path: Path, timeout: float = 5.0):
                 try:
                     msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
                     break
-                except OSError:
+                except OSError as err:
                     if time.time() - start_time > timeout:
                         raise TimeoutError(
                             f"Could not acquire lock on {file_path} within {timeout}s"
-                        )
+                        ) from err
                     time.sleep(0.1)
         else:
             import fcntl
@@ -126,11 +126,11 @@ def file_lock(file_path: Path, timeout: float = 5.0):
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
-                except (OSError, BlockingIOError):
+                except (OSError, BlockingIOError) as err:
                     if time.time() - start_time > timeout:
                         raise TimeoutError(
                             f"Could not acquire lock on {file_path} within {timeout}s"
-                        )
+                        ) from err
                     time.sleep(0.1)
 
         yield fd

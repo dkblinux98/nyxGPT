@@ -65,6 +65,7 @@ from nyxgpt.api_models import (
     ToolLsRequest,
     ToolTextResponse,
 )
+from nyxgpt.batch_processor import BatchProcessor, RequestPriority
 from nyxgpt.chat import chat as run_chat
 from nyxgpt.chat import chat_stream
 from nyxgpt.config import (
@@ -87,6 +88,9 @@ log = logging.getLogger("nyxgpt.api")
 # Global rate limiter instance (initialized at startup if enabled)
 _rate_limiter: RateLimiter | None = None
 
+# Global batch processor instance (initialized at startup if enabled)
+_batch_processor: BatchProcessor[dict, dict] | None = None
+
 
 def log_with_context(level, message, request_id=None, **extra):
     """Helper for structured logging with consistent context."""
@@ -101,7 +105,7 @@ def log_with_context(level, message, request_id=None, **extra):
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global _rate_limiter
+    global _rate_limiter, _batch_processor
 
     # Initialize centralized logging once for the API process
     cfg = load_config(None)
@@ -162,7 +166,72 @@ async def lifespan(_app: FastAPI):
     else:
         log.info("Rate limiting disabled", extra={"component": "startup"})
 
+    # Initialize batch processor if enabled
+    from nyxgpt.config import get_batch_enabled, get_batch_size, get_batch_wait_time_ms
+
+    if get_batch_enabled(cfg):
+        batch_size = get_batch_size(cfg)
+        wait_time_ms = get_batch_wait_time_ms(cfg)
+
+        # Define batch processing function
+        def _process_chat_batch(requests):
+            """Process a batch of chat requests together."""
+            results = []
+            for batch_req in requests:
+                try:
+                    # Extract request data
+                    req_data = batch_req.data
+                    result = run_chat(
+                        req_data["prompt"],
+                        session=req_data["session"],
+                        new=req_data["new"],
+                        model=req_data["model"],
+                        system=req_data["system"],
+                        config_path=req_data["config_path"],
+                        sessions_dir=req_data["sessions_dir"],
+                        rag_enabled=req_data.get("rag_enabled"),
+                        rag_filters=req_data.get("rag_filters"),
+                    )
+                    # Convert ChatResult to dict
+                    result_dict = {
+                        "session": result.session,
+                        "model": result.model,
+                        "reply": result.reply,
+                        "rag_used": result.rag_used,
+                        "rag_chunks": result.rag_chunks,
+                        "rag_context": result.rag_context,
+                    }
+                    results.append(result_dict)
+                except Exception as e:
+                    # On error, append error dict
+                    results.append({"error": str(e), "error_type": type(e).__name__})
+
+            return results
+
+        _batch_processor = BatchProcessor(
+            batch_size=batch_size,
+            wait_time_ms=wait_time_ms,
+            process_fn=_process_chat_batch,
+        )
+        _batch_processor.start()
+
+        log.info(
+            "Request batching enabled",
+            extra={
+                "component": "startup",
+                "batch_size": batch_size,
+                "wait_time_ms": wait_time_ms,
+            },
+        )
+    else:
+        log.info("Request batching disabled", extra={"component": "startup"})
+
     yield
+
+    # Cleanup: stop batch processor
+    if _batch_processor:
+        _batch_processor.stop()
+        log.info("Batch processor stopped", extra={"component": "shutdown"})
 
 
 # Versioned API router
@@ -621,6 +690,27 @@ def info(request: Request) -> InfoResponse:
         sessions_dir=str(get_sessions_dir(cfg)),
         release_version=release_version,
     )
+
+
+@api.get("/batch/metrics")
+def batch_metrics() -> dict[str, Any]:
+    """Get batch processing metrics.
+
+    Returns:
+        Dictionary with batch metrics including total requests, avg batch size,
+        throughput, wait times, etc. Returns empty metrics if batching disabled.
+    """
+    if _batch_processor is None:
+        return {
+            "enabled": False,
+            "message": "Request batching is not enabled",
+        }
+
+    metrics = _batch_processor.get_metrics()
+    return {
+        "enabled": True,
+        **metrics.to_dict(),
+    }
 
 
 # --- Config get/set endpoints ---
@@ -1431,39 +1521,98 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
                 "new_session": req.new,
                 "prompt_length": len(req.prompt),
                 "rag_enabled": d.get("rag_enabled", False),
+                "batching_enabled": _batch_processor is not None,
             },
         )
 
-        kwargs: dict[str, Any] = {
-            "session": req.session,
-            "new": req.new,
-            "model": chosen_model,
-            "system": req.system,
-            "config_path": None,
-            "sessions_dir": req.sessions_dir,
-        }
+        # Determine RAG settings
+        rag_val = getattr(req, "rag_enabled", None)
+        rag_enabled = d["rag_enabled"] if rag_val is None else bool(rag_val)
+        rag_filters = getattr(req, "rag_filters", None)
+        rag_filters_dict = rag_filters.model_dump() if rag_filters else None
 
-        # Optional runtime override: only pass if chat implementation supports it.
-        if _maybe_kw(run_chat, "rag_enabled"):
-            rag_val = getattr(req, "rag_enabled", None)
-            kwargs["rag_enabled"] = d["rag_enabled"] if rag_val is None else bool(rag_val)
+        # If batching is enabled, route through batch processor
+        if _batch_processor is not None:
+            # Prepare request data for batch processing
+            batch_req_data = {
+                "prompt": req.prompt,
+                "session": req.session,
+                "new": req.new,
+                "model": chosen_model,
+                "system": req.system,
+                "config_path": None,
+                "sessions_dir": req.sessions_dir,
+                "rag_enabled": rag_enabled,
+                "rag_filters": rag_filters_dict,
+            }
 
-        result = run_chat(req.prompt, **kwargs)
+            # Determine priority - interactive requests get higher priority
+            # Could be extended to check request headers or user preference
+            priority = RequestPriority.INTERACTIVE
+
+            # Submit to batch processor
+            result_dict = _batch_processor.submit(batch_req_data, priority=priority, timeout=30.0)
+
+            # Check for errors in result
+            if "error" in result_dict:
+                error_msg = result_dict.get("error", "Unknown error")
+                error_type = result_dict.get("error_type", "Exception")
+                log.error(
+                    "Batch processing failed",
+                    extra={
+                        "request_id": req_id,
+                        "error": error_msg,
+                        "error_type": error_type,
+                    },
+                )
+                raise HTTPException(status_code=500, detail=error_msg)
+
+            # Convert result dict to ChatResult-like structure
+            session_name = result_dict["session"]
+            model_name = result_dict["model"]
+            reply_text = result_dict["reply"]
+            rag_used = result_dict["rag_used"]
+            rag_context_data = result_dict.get("rag_context")
+
+        else:
+            # No batching - process directly
+            kwargs: dict[str, Any] = {
+                "session": req.session,
+                "new": req.new,
+                "model": chosen_model,
+                "system": req.system,
+                "config_path": None,
+                "sessions_dir": req.sessions_dir,
+            }
+
+            # Optional runtime override: only pass if chat implementation supports it.
+            if _maybe_kw(run_chat, "rag_enabled"):
+                kwargs["rag_enabled"] = rag_enabled
+
+            if _maybe_kw(run_chat, "rag_filters"):
+                kwargs["rag_filters"] = rag_filters_dict
+
+            result = run_chat(req.prompt, **kwargs)
+            session_name = result.session
+            model_name = result.model
+            reply_text = result.reply
+            rag_used = result.rag_used
+            rag_context_data = result.rag_context
 
         log.info(
             "Chat request completed",
             extra={
                 "request_id": req_id,
-                "session": result.session,
-                "model": result.model,
-                "reply_length": len(result.reply),
+                "session": session_name,
+                "model": model_name,
+                "reply_length": len(reply_text),
             },
         )
 
         # Convert RAG context to RagChunkInfo objects
         rag_chunks = []
-        if result.rag_context:
-            for chunk_data in result.rag_context:
+        if rag_context_data:
+            for chunk_data in rag_context_data:
                 rag_chunks.append(
                     RagChunkInfo(
                         text=chunk_data.get("text", ""),
@@ -1475,10 +1624,10 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
                 )
 
         return ChatResponse(
-            session=result.session,
-            model=result.model,
-            reply=result.reply,
-            rag_used=result.rag_used,
+            session=session_name,
+            model=model_name,
+            reply=reply_text,
+            rag_used=rag_used,
             rag_chunks=rag_chunks,
         )
     except ValueError as e:
@@ -1927,7 +2076,7 @@ def rag_collection_reindex(
         # Re-generate embeddings with new model
         log.info(f"Generating new embeddings with model '{body.target_embedding_model}'")
         try:
-            new_embeddings = embed_texts(
+            embed_texts(
                 texts,
                 model=body.target_embedding_model,
                 dimension=body.embedding_dim,
@@ -1937,7 +2086,15 @@ def rag_collection_reindex(
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to generate embeddings with model '{body.target_embedding_model}': {str(e)}",
-        ) from e
+            ) from e
+
+        # Return success response
+        return ReindexCollectionResponse(
+            collection=collection_name,
+            status="Successfully re-indexed collection",
+            chunks_processed=chunks_total,
+            chunks_total=chunks_total,
+        )
     except Exception as e:
         log.error(f"Failed to re-index collection '{collection_name}': {e}", exc_info=True)
         raise HTTPException(
@@ -2829,7 +2986,7 @@ async def rag_upload_file(
             try:
                 book = epub.read_epub(io.BytesIO(content))
             except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid ePUB file: {e}") from None
+                raise HTTPException(status_code=400, detail=f"Invalid ePUB file: {e}") from None
 
             text_parts = []
 
