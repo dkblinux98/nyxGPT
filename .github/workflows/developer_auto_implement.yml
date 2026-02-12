@@ -27,9 +27,6 @@ jobs:
       id-token: write
       actions: read
 
-    env:
-      GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,10 +35,14 @@ jobs:
           fetch-depth: 0
 
       - name: Auth gh
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: gh auth status
 
       - name: Write ephemeral config.ini (runner temp)
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           set -euo pipefail
           CFG="$RUNNER_TEMP/nyxgpt-config.ini"
@@ -71,6 +72,8 @@ jobs:
 
       - name: Verify config loads
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           set -euo pipefail
           bash -lc '
@@ -127,6 +130,7 @@ jobs:
       - name: Verify issue is In Progress in ProjectV2 (otherwise exit)
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
@@ -215,6 +219,8 @@ jobs:
       - name: Create branch for issue
         id: branch
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
@@ -228,6 +234,8 @@ jobs:
       - name: Check if PR already exists
         id: check_pr
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           set -euo pipefail
           BRANCH="${{ steps.branch.outputs.branch_name }}"
@@ -248,6 +256,8 @@ jobs:
         if: steps.check_pr.outputs.pr_exists == 'true'
         id: check_review
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           set -euo pipefail
           PR="${{ steps.check_pr.outputs.existing_pr }}"
@@ -268,6 +278,18 @@ jobs:
             echo "has_review_issues=false" >> "$GITHUB_OUTPUT"
             echo "::notice::PR has no review issues - skipping"
           fi
+
+      - name: Save review comments to file (if review issues found)
+        if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+        run: |
+          PR="${{ steps.check_pr.outputs.existing_pr }}"
+          gh pr view "$PR" --json comments \
+            --jq '.comments[] | select(.body | startswith("## Code Review - REQUEST_CHANGES")) | .body' \
+            | tail -1 > /tmp/review-comments.txt
+          echo "Saved review comments to /tmp/review-comments.txt"
 
       - name: Post review fix start comment (if review issues found)
         if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true'
@@ -314,7 +336,6 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
@@ -326,21 +347,21 @@ jobs:
             - You are on branch: ${{ steps.branch.outputs.branch_name }}
 
             **Instructions:**
-            1. Get review comments: gh pr view ${{ steps.check_pr.outputs.existing_pr }} --json comments
-            2. Find the most recent "## Code Review - REQUEST_CHANGES" comment
-            3. Identify all Critical and Medium issues
-            4. Implement fixes for each issue
-            5. BEFORE committing, run ALL validation in a 3-try loop:
+            1. Read review comments from: /tmp/review-comments.txt
+            2. Identify all Critical and Medium issues from the review
+            3. Implement fixes for each issue
+            4. BEFORE committing, run ALL validation in a 3-try loop:
                - pytest -v (ALL tests MUST pass)
                - If tests fail: analyze, fix, re-run (up to 3 tries)
                - ruff check src/ tests/
                - mypy src/
                - cd web && npm run type-check (if web files modified)
                - ./scripts/validate-web-routes.sh (if API endpoints added)
-            6. Commit: "fix: address code review findings (#${{ github.event.issue.number }})"
-            7. Push changes
+            5. Commit: "fix: address code review findings (#${{ github.event.issue.number }})"
 
-            **CRITICAL**: Do NOT commit until ALL tests pass with 0 failures and 0 errors.
+            **CRITICAL**:
+            - Do NOT commit until ALL tests pass with 0 failures and 0 errors.
+            - Do NOT create or update PRs - the workflow handles that.
 
       - name: Post implementation start comment
         if: steps.check_pr.outputs.pr_exists == 'false'
@@ -373,7 +394,6 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
@@ -429,6 +449,11 @@ jobs:
             - Sub-issue: "test: add integration tests per review (#2604, #${{ github.event.issue.number }})"
 
             Valid commit types: feat, fix, test, docs, refactor, chore
+
+            **CRITICAL PROHIBITIONS:**
+            - Do NOT create or update pull requests (no `gh pr create`, `gh pr edit`, etc.)
+            - Do NOT use any `gh` CLI commands - you don't have GitHub API access
+            - The workflow will create the PR after verification passes
 
             Output: commit(s) pushed to the current branch with proper issue references.
 
@@ -528,7 +553,6 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
@@ -615,7 +639,6 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
@@ -707,6 +730,8 @@ jobs:
         if: steps.check_pr.outputs.pr_exists == 'false' && success()
         id: pr
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
