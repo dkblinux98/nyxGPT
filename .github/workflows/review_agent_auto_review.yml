@@ -3,6 +3,8 @@ name: Review Agent Execute Decision
 on:
   issue_comment:
     types: [created]
+  pull_request_review:
+    types: [submitted]
 
 jobs:
   execute-review-decision:
@@ -16,11 +18,18 @@ jobs:
     #   - @approve-merge: Manual merge override
     #   - @request-changes: Manual request changes (returns to developer)
     if: |
-      github.event.issue.pull_request &&
-      (contains(github.event.comment.body, '@approve-merge') ||
-       contains(github.event.comment.body, '@request-changes') ||
-       startsWith(github.event.comment.body, '## Code Review - APPROVE') ||
-       startsWith(github.event.comment.body, '## Code Review - REQUEST_CHANGES'))
+      (github.event_name == 'pull_request_review' &&
+       github.event.pull_request &&
+       (github.event.review.state == 'approved' ||
+        github.event.review.state == 'changes_requested') &&
+       (startsWith(github.event.review.body, '## Code Review - APPROVE') ||
+        startsWith(github.event.review.body, '## Code Review - REQUEST_CHANGES'))) ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       (contains(github.event.comment.body, '@approve-merge') ||
+        contains(github.event.comment.body, '@request-changes') ||
+        startsWith(github.event.comment.body, '## Code Review - APPROVE') ||
+        startsWith(github.event.comment.body, '## Code Review - REQUEST_CHANGES')))
     runs-on: ubuntu-latest
 
     permissions:
@@ -98,36 +107,47 @@ jobs:
             echo "config ok: $REPO_OWNER/$REPO_NAME project $PROJECT_OWNER#$PROJECT_NUMBER release=$RELEASE_BRANCH"
           '
 
-      - name: Get PR number from comment event
+      - name: Get PR number from event
         id: get_pr
         shell: bash
         run: |
           set -euo pipefail
 
-          # Get PR number from issue_comment event
-          PR_NUMBER="${{ github.event.issue.number }}"
+          # Get PR number from either pull_request_review or issue_comment event
+          if [[ "${{ github.event_name }}" == "pull_request_review" ]]; then
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+          else
+            PR_NUMBER="${{ github.event.issue.number }}"
+          fi
 
           if [[ -z "$PR_NUMBER" ]]; then
-            echo "::error::No PR number in issue_comment event"
+            echo "::error::No PR number in event"
             exit 1
           fi
 
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           echo "Processing review for PR #$PR_NUMBER"
 
-      - name: Parse human decision from comment
+      - name: Parse decision from event
         id: parse_decision
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "::group::Parsing human decision"
+          echo "::group::Parsing decision"
 
-          # Get comment body from event - use heredoc to safely handle special chars
-          COMMENT=$(cat <<'COMMENT_EOF'
+          # Get body from either pull_request_review or issue_comment event
+          if [[ "${{ github.event_name }}" == "pull_request_review" ]]; then
+            COMMENT=$(cat <<'COMMENT_EOF'
+          ${{ github.event.review.body }}
+          COMMENT_EOF
+          )
+          else
+            COMMENT=$(cat <<'COMMENT_EOF'
           ${{ github.event.comment.body }}
           COMMENT_EOF
           )
+          fi
 
           # Parse decision from either manual trigger or automatic review comment
           # Manual triggers: @approve-merge or @request-changes on own line
