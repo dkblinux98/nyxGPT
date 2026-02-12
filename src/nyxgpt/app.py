@@ -2087,6 +2087,14 @@ def rag_collection_reindex(
                 status_code=500,
                 detail=f"Failed to generate embeddings with model '{body.target_embedding_model}': {str(e)}",
             ) from e
+
+        # Return success response
+        return ReindexCollectionResponse(
+            collection=collection_name,
+            status="Successfully re-indexed collection",
+            chunks_processed=chunks_total,
+            chunks_total=chunks_total,
+        )
     except Exception as e:
         log.error(f"Failed to re-index collection '{collection_name}': {e}", exc_info=True)
         raise HTTPException(
