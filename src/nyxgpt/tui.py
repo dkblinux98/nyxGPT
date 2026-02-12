@@ -1279,9 +1279,7 @@ class NyxGPTTUI(App):
                                         score_style = "red"
 
                                     chunk_ref = (
-                                        f"chunk {chunk_id}"
-                                        if chunk_id is not None
-                                        else "source"
+                                        f"chunk {chunk_id}" if chunk_id is not None else "source"
                                     )
                                     citation_line = f"[dim]  [{idx}] {doc_id} ({chunk_ref}) - score: [{score_style}]{score:.3f}[/{score_style}][/dim]\n"
                                     self.output.append(citation_line)

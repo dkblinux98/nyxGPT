@@ -141,7 +141,9 @@ class BatchProcessor(Generic[T, R]):
 
         # Queue uses priority for ordering
         # Use counter as tie-breaker to avoid comparing BatchRequest objects
-        self._queue: queue.PriorityQueue[tuple[int, int, BatchRequest[T, R]]] = queue.PriorityQueue()
+        self._queue: queue.PriorityQueue[tuple[int, int, BatchRequest[T, R]]] = (
+            queue.PriorityQueue()
+        )
         self._counter = 0
         self._counter_lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -193,7 +195,9 @@ class BatchProcessor(Generic[T, R]):
             else:
                 logger.info("Batch processor stopped")
 
-    def submit(self, data: T, priority: RequestPriority = RequestPriority.BATCH, timeout: float = 30.0) -> R:
+    def submit(
+        self, data: T, priority: RequestPriority = RequestPriority.BATCH, timeout: float = 30.0
+    ) -> R:
         """Submit a request for batch processing.
 
         Args:

@@ -65,6 +65,7 @@ from nyxgpt.api_models import (
     ToolLsRequest,
     ToolTextResponse,
 )
+from nyxgpt.batch_processor import BatchProcessor, RequestPriority
 from nyxgpt.chat import chat as run_chat
 from nyxgpt.chat import chat_stream
 from nyxgpt.config import (
@@ -79,7 +80,6 @@ from nyxgpt.config import (
     load_config,
 )
 from nyxgpt.logging import configure_logging, get_log_dir, request_id_var
-from nyxgpt.batch_processor import BatchMetrics, BatchProcessor, RequestPriority
 from nyxgpt.rag.rag import ingest_document, retrieve_context
 from nyxgpt.rate_limiter import RateLimiter
 
@@ -2076,7 +2076,7 @@ def rag_collection_reindex(
         # Re-generate embeddings with new model
         log.info(f"Generating new embeddings with model '{body.target_embedding_model}'")
         try:
-            new_embeddings = embed_texts(
+            embed_texts(
                 texts,
                 model=body.target_embedding_model,
                 dimension=body.embedding_dim,
@@ -2086,7 +2086,7 @@ def rag_collection_reindex(
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to generate embeddings with model '{body.target_embedding_model}': {str(e)}",
-        ) from e
+            ) from e
     except Exception as e:
         log.error(f"Failed to re-index collection '{collection_name}': {e}", exc_info=True)
         raise HTTPException(
