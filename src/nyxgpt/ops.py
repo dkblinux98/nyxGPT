@@ -463,7 +463,7 @@ def _ensure_web_deps() -> list[OpsResult]:
         return results
 
 
-def install(args) -> int:
+def install(_args) -> int:
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
         ("scripts", _install_scripts),
@@ -495,7 +495,7 @@ def install(args) -> int:
     return 0 if ok else 2
 
 
-def status(args) -> int:
+def status(_args) -> int:
     print("nyxGPT ops status")
 
     if _which("brew"):
@@ -522,7 +522,7 @@ def status(args) -> int:
     return 0
 
 
-def doctor(args) -> int:
+def doctor(_args) -> int:
     issues: list[str] = []
 
     cfg = Path.home() / ".nyxGPT" / "config.ini"

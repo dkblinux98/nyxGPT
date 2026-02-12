@@ -75,7 +75,10 @@ def get_project_id(config: dict[str, str]) -> str | None:
         result = run_gh_command(["api", "graphql", "-f", f"query={query}"])
         if result:
             data = json.loads(result)
-            return data.get("data", {}).get("user", {}).get("projectV2", {}).get("id")
+            project_id: str | None = (
+                data.get("data", {}).get("user", {}).get("projectV2", {}).get("id")
+            )
+            return project_id
     except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
         pass
 
@@ -238,10 +241,13 @@ def get_workflow_runs(
             continue
 
         # If issue specified, only include runs related to that issue
-        if issue is not None:
+        if (
+            issue is not None
+            and f"/{issue}-" not in head_branch
+            and f"-{issue}-" not in head_branch
+        ):
             # Include if branch matches issue pattern (e.g., feat/2678-auto)
-            if f"/{issue}-" not in head_branch and f"-{issue}-" not in head_branch:
-                continue
+            continue
 
         filtered_runs.append(run)
 
