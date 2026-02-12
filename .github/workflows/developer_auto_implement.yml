@@ -776,6 +776,50 @@ jobs:
             **Note:** No PR was created because verification never passed.`
             });
 
+      - name: Request review for existing PR
+        if: |
+          steps.check_pr.outputs.pr_exists == 'true' &&
+          steps.check_review.outputs.has_review_issues == 'false' &&
+          success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+        run: |
+          set -euo pipefail
+          ISSUE="${{ github.event.issue.number }}"
+          echo "::group::Requesting review for existing PR"
+          PR_NUMBER=$(./scripts/agents/developer_submit_for_review.sh "$ISSUE")
+          echo "::notice::Requested review for PR #$PR_NUMBER"
+          echo "::endgroup::"
+
+      - name: Post review requested comment (existing PR)
+        if: |
+          steps.check_pr.outputs.pr_exists == 'true' &&
+          steps.check_review.outputs.has_review_issues == 'false' &&
+          success()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const pr_number = '${{ steps.check_pr.outputs.existing_pr }}';
+            const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+            const body = `✅ **Developer Agent**: Verification passed ` +
+              `for existing PR #${pr_number}\n\n` +
+              `All checks passed:\n` +
+              `- ✅ Black formatting\n` +
+              `- ✅ Ruff linting\n` +
+              `- ✅ Mypy type checking\n` +
+              `- ✅ Pytest unit tests\n\n` +
+              `PR #${pr_number} has been submitted for review.\n\n` +
+              `[View PR](${repoUrl}/pull/${pr_number})`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: body
+            });
+
       - name: Submit PR for review
         if: steps.check_pr.outputs.pr_exists == 'false' && success()
         id: pr
