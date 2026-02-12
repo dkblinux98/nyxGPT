@@ -19,7 +19,6 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
-      projects: write
     uses: dkblinux98/nyxAgent/.github/workflows/qa-agent.yml@v1.0.0
     with:
       pr_number: ${{ github.event.pull_request.number || github.event.inputs.pr_number }}

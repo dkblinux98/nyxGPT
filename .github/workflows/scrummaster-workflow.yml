@@ -11,7 +11,6 @@ jobs:
       pull-requests: write
       issues: write
       id-token: write
-      projects: write
     uses: dkblinux98/nyxAgent/.github/workflows/scrummaster-agent.yml@v1.0.0
     with:
       mode: 'select-next'
