@@ -7,7 +7,7 @@ source "$DIR/lib/gh_project.sh"
 usage() {
   cat <<'EOF'
 Usage:
-  review_trigger.sh <pr_number>
+  manually_trigger_pr_review.sh <pr_number>
 
 Description:
   Manually triggers a code review for a PR. This is useful for:

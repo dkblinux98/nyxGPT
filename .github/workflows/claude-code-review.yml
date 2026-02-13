@@ -299,10 +299,9 @@ jobs:
             - Minor: style/nits, minor optimization opportunities (may proceed)
 
             CRITICAL: Your ONLY task is to post the review comment. DO NOT:
-            - Run review_request_changes.sh
-            - Run review_accept_and_merge.sh
             - Merge the PR
             - Execute any scripts in scripts/agents/
+            - Modify issue status or assignments
 
             A separate automated workflow will read your review decision and execute the appropriate actions.
 

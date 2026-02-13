@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Validate that web proxy routes exist for all frontend API calls
 
 set -euo pipefail

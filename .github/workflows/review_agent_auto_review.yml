@@ -204,7 +204,7 @@ jobs:
           PR="${{ steps.get_pr.outputs.pr_number }}"
           ISSUE="${{ steps.get_issue.outputs.issue_number }}"
 
-          echo "::notice::Human approved merge - executing merge"
+          echo "::notice::Approved - executing merge"
           bash -lc "cd '$GITHUB_WORKSPACE' && \
             source scripts/agents/lib/gh_project.sh && \
             load_config && \
