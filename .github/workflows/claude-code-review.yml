@@ -241,49 +241,38 @@ jobs:
 
             Do not APPROVE until all checks pass, tests are updated, AND documentation is complete.
 
-            ## Review Context
+            ## Review Instructions
+
+            **CRITICAL: Review ALL changes in this PR from base branch to feature branch HEAD**
+            - Use `gh pr diff ${{ steps.pr_number.outputs.pr }}` to see the COMPLETE diff
+            - This shows ALL files that differ between base (v2.0.0) and feature branch
+            - Review the ENTIRE changeset - every file, every line that would be merged
+            - Do NOT review only recent commits - review the complete branch state
 
             ${{ steps.previous_review.outputs.is_rereview == 'true' && format('
-            🔄 **This is a RE-REVIEW after previous REQUEST_CHANGES**
+            ## Previous Review Context
 
-            Previous issues are in: {0}
+            🔄 This is a re-review after previous REQUEST_CHANGES.
 
-            Read the previous review to see Critical and Medium issues that were identified.
+            Previous review is in: {0}
 
-            **TWO-PHASE RE-REVIEW PROCESS:**
+            **For each previous Critical/Medium issue:**
+            - Check if it is FIXED or STILL PRESENT in the current branch state
+            - If STILL PRESENT anywhere in the branch, REQUEST_CHANGES immediately
+            - Note: Developer may have fixed issues but also introduced new ones
 
-            **PHASE 1: Verify Previous Issues Resolved**
-            For each previous Critical/Medium issue:
-            - State the issue title from the previous review
-            - Confirm if it is FIXED or STILL PRESENT
-            - If still present, explain what is still wrong and REQUEST_CHANGES immediately
-            - If fixed, briefly note how it was resolved
+            ', steps.previous_review.outputs.previous_review_file) || '
+            ## Initial Review
 
-            **PHASE 2: Full PR Review**
-            After confirming all previous issues are fixed, perform a FULL review of the ENTIRE PR:
-            - Use `gh pr diff {1}` to see the COMPLETE diff from base to HEAD
-            - Review ALL changes, not just the fixes to previous issues
-            - Check for any new issues introduced by the fixes
-            - Verify Medium issues were addressed (not just Critical)
-            - Check for code quality, maintainability, and best practices
-            - Ensure no new bugs or regressions were introduced
+            📋 No previous reviews found. This is the first review of this PR.
+            ' }}
 
-            **CRITICAL:** Do not APPROVE if:
-            - ANY previous Critical or Medium issue is still present
-            - ANY new issues are found in the full PR review
-            - Tests or documentation are incomplete
-
-            ', steps.previous_review.outputs.previous_review_file, steps.pr_number.outputs.pr) || format('
-            📋 **This is a FULL INITIAL REVIEW**
-
-            No previous REQUEST_CHANGES found. Perform comprehensive code review.
-
-            CRITICAL: Review ALL changes in this PR from base branch to HEAD.
-            - Use `gh pr diff {0}` to see the COMPLETE diff
-            - Review the ENTIRE changeset, not just the most recent commit
-            - This is important for auto-fix loops where multiple commits may exist
-            - Every review must assess the full state of the PR, not incremental changes
-            ', steps.pr_number.outputs.pr) }}
+            **Review Scope (applies to ALL reviews):**
+            - Review every file changed between base branch and feature branch HEAD
+            - Check for correctness, security, maintainability, test coverage
+            - Verify all Critical AND Medium issues are addressed
+            - Look for new issues introduced by changes
+            - Ensure no regressions in existing functionality
 
             Perform comprehensive code review checking:
 
