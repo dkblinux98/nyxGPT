@@ -29,6 +29,7 @@ Your data stays on your machine. No cloud dependency is required.
 - Optional **RAG** using Cassandra 5.0 native vector search
 - **Per‑session RAG controls** via WebUI, TUI, and API
 - Config‑driven RAG context pruning and prompt optimization
+- **Optimized embedding generation** with async processing, GPU utilization, and adaptive batching
 - Streaming responses (CLI, TUI, API, Web UI)
 - Unified core shared between CLI and FastAPI
 - Optional **API rate limiting** (disabled by default for localhost use)

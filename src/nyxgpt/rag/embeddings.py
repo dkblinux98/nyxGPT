@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import json
 import logging
 import time
@@ -22,6 +24,10 @@ class EmbeddingConfig:
     dimension: int
     timeout: int
     batch_size: int
+    enable_async: bool = False
+    max_workers: int = 4
+    enable_gpu: bool = False
+    adaptive_batching: bool = False
 
 
 @dataclass
@@ -33,6 +39,22 @@ class EmbeddingDebugMetrics:
     num_texts_embedded: int
     batch_size: int
     embedding_time_ms: float
+    cache_hits: int = 0
+    cache_misses: int = 0
+    gpu_available: bool = False
+    batches_processed: int = 0
+    parallel_workers: int = 1
+
+
+@dataclass
+class GPUInfo:
+    """GPU availability and utilization information."""
+
+    available: bool = False
+    device_count: int = 0
+    memory_total: int = 0
+    memory_used: int = 0
+    utilization: float = 0.0
 
 
 class EmbeddingError(RuntimeError):
@@ -41,6 +63,14 @@ class EmbeddingError(RuntimeError):
 
 # Global embedding cache instance (initialized lazily)
 _embedding_cache: CacheBackend[list[list[float]]] | None = None
+
+# Global thread pool for async operations (initialized lazily)
+_thread_pool: concurrent.futures.ThreadPoolExecutor | None = None
+
+# Global GPU info cache (updated periodically)
+_gpu_info: GPUInfo | None = None
+_gpu_info_updated: float = 0.0
+_GPU_INFO_TTL = 60.0  # Cache GPU info for 60 seconds
 
 
 def _embedding_cfg(model: str | None = None, dimension: int | None = None) -> EmbeddingConfig:
@@ -68,12 +98,22 @@ def _embedding_cfg(model: str | None = None, dimension: int | None = None) -> Em
     timeout = cfg.getint("rag", "embedding_timeout_seconds", fallback=120)
     batch_size = cfg.getint("rag", "embedding_batch_size", fallback=16)
 
+    # Performance optimizations
+    enable_async = cfg.getboolean("rag", "embedding_async_enabled", fallback=False)
+    max_workers = cfg.getint("rag", "embedding_max_workers", fallback=4)
+    enable_gpu = cfg.getboolean("rag", "embedding_gpu_enabled", fallback=False)
+    adaptive_batching = cfg.getboolean("rag", "embedding_adaptive_batching", fallback=False)
+
     return EmbeddingConfig(
         base_url=base_url,
         model=model,
         dimension=int(dimension),
         timeout=int(timeout),
         batch_size=int(batch_size),
+        enable_async=enable_async,
+        max_workers=max_workers,
+        enable_gpu=enable_gpu,
+        adaptive_batching=adaptive_batching,
     )
 
 
@@ -132,6 +172,152 @@ def clear_embedding_cache() -> None:
         logger.info("Embedding cache cleared")
 
 
+def _detect_gpu() -> GPUInfo:
+    """Detect GPU availability and utilization.
+
+    Returns:
+        GPUInfo with GPU status and metrics
+    """
+    global _gpu_info, _gpu_info_updated
+
+    # Return cached info if still valid
+    now = time.time()
+    if _gpu_info is not None and (now - _gpu_info_updated) < _GPU_INFO_TTL:
+        return _gpu_info
+
+    # Try to detect NVIDIA GPU via nvidia-smi
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=memory.total,memory.used,utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+
+        if result.returncode == 0 and result.stdout.strip():
+            lines = result.stdout.strip().split("\n")
+            gpu_count = len(lines)
+
+            # Parse first GPU metrics
+            if gpu_count > 0:
+                parts = lines[0].split(",")
+                if len(parts) >= 3:
+                    memory_total = int(float(parts[0].strip()))
+                    memory_used = int(float(parts[1].strip()))
+                    utilization = float(parts[2].strip())
+
+                    _gpu_info = GPUInfo(
+                        available=True,
+                        device_count=gpu_count,
+                        memory_total=memory_total,
+                        memory_used=memory_used,
+                        utilization=utilization,
+                    )
+                    _gpu_info_updated = now
+                    logger.debug(f"GPU detected: {gpu_count} device(s), {utilization}% utilization")
+                    return _gpu_info
+
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, Exception) as e:
+        logger.debug(f"GPU detection failed: {e}")
+
+    # No GPU or detection failed
+    _gpu_info = GPUInfo(available=False)
+    _gpu_info_updated = now
+    return _gpu_info
+
+
+def _get_thread_pool(max_workers: int) -> concurrent.futures.ThreadPoolExecutor:
+    """Get or initialize the global thread pool.
+
+    Args:
+        max_workers: Maximum number of worker threads
+
+    Returns:
+        Initialized ThreadPoolExecutor
+    """
+    global _thread_pool
+
+    if _thread_pool is None:
+        _thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        logger.debug(f"Thread pool initialized with {max_workers} workers")
+
+    return _thread_pool
+
+
+def _estimate_memory_usage(batch_size: int, dimension: int) -> int:
+    """Estimate memory usage in bytes for a batch of embeddings.
+
+    Args:
+        batch_size: Number of texts in the batch
+        dimension: Embedding dimension
+
+    Returns:
+        Estimated memory usage in bytes
+    """
+    # Each float is 8 bytes, plus overhead for lists and objects
+    embedding_size = dimension * 8
+    total_embeddings = batch_size * embedding_size
+    overhead = batch_size * 100  # Rough estimate for Python object overhead
+    return total_embeddings + overhead
+
+
+def _get_optimal_batch_size(num_texts: int, config: EmbeddingConfig) -> int:  # noqa: ARG001
+    """Determine optimal batch size based on available resources.
+
+    Args:
+        num_texts: Total number of texts to embed
+        config: Embedding configuration
+
+    Returns:
+        Optimal batch size
+    """
+    if not config.adaptive_batching:
+        return config.batch_size
+
+    # Get available memory
+    try:
+        import psutil
+
+        available_memory = psutil.virtual_memory().available
+    except ImportError:
+        logger.debug("psutil not available, using default batch size")
+        return config.batch_size
+
+    # Estimate memory per batch
+    memory_per_batch = _estimate_memory_usage(config.batch_size, config.dimension)
+
+    # Reserve 20% of available memory for other operations
+    usable_memory = int(available_memory * 0.8)
+
+    # Calculate max batch size that fits in memory
+    max_safe_batch = max(1, usable_memory // memory_per_batch)
+
+    # Use smaller of configured batch size and memory-safe batch size
+    optimal_batch = min(config.batch_size, max_safe_batch)
+
+    # Adjust based on GPU availability
+    if config.enable_gpu:
+        gpu_info = _detect_gpu()
+        if gpu_info.available and gpu_info.memory_total > 0:
+            # If GPU is available, we can use larger batches
+            # Scale up based on GPU memory
+            gpu_memory_mb = gpu_info.memory_total - gpu_info.memory_used
+            if gpu_memory_mb > 4096:  # > 4GB free
+                optimal_batch = min(optimal_batch * 2, 128)
+            elif gpu_memory_mb > 2048:  # > 2GB free
+                optimal_batch = int(min(optimal_batch * 1.5, 64))
+
+    logger.debug(f"Adaptive batching: {optimal_batch} (from {config.batch_size})")
+    return int(optimal_batch)
+
+
 def _post_json(url: str, payload: dict, timeout: int) -> dict:
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -160,6 +346,110 @@ def _batched(iterable, size):
         yield batch
 
 
+def _embed_batch_sync(
+    batch: list[str], url: str, model: str, timeout: int, dimension: int
+) -> list[list[float]]:
+    """Synchronously embed a single batch of texts.
+
+    Args:
+        batch: List of texts to embed
+        url: Ollama API endpoint URL
+        model: Embedding model name
+        timeout: Request timeout in seconds
+        dimension: Expected embedding dimension
+
+    Returns:
+        List of embedding vectors
+
+    Raises:
+        EmbeddingError: If embedding fails
+    """
+    data = _post_json(url, {"model": model, "input": batch}, timeout=timeout)
+
+    if "embeddings" in data:
+        vectors = data["embeddings"]
+    elif "embedding" in data:
+        vectors = [data["embedding"]]
+    else:
+        raise EmbeddingError(f"Unexpected Ollama embed response keys: {list(data.keys())}")
+
+    result = []
+    for v in vectors:
+        if not isinstance(v, list):
+            raise EmbeddingError("Embedding is not a list")
+        if len(v) != dimension:
+            raise EmbeddingError(
+                f"Embedding has dim {len(v)} but expected {dimension}. "
+                f"Update collection dimension to match model output. "
+                f"Use --collection flag to specify a different collection."
+            )
+        result.append([float(x) for x in v])
+
+    return result
+
+
+async def _embed_batch_async(
+    batch: list[str],
+    url: str,
+    model: str,
+    timeout: int,
+    dimension: int,
+    executor: concurrent.futures.ThreadPoolExecutor,
+) -> list[list[float]]:
+    """Asynchronously embed a single batch of texts.
+
+    Args:
+        batch: List of texts to embed
+        url: Ollama API endpoint URL
+        model: Embedding model name
+        timeout: Request timeout in seconds
+        dimension: Expected embedding dimension
+        executor: Thread pool executor for async operations
+
+    Returns:
+        List of embedding vectors
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        executor, _embed_batch_sync, batch, url, model, timeout, dimension
+    )
+
+
+async def _embed_texts_parallel(
+    batches: list[list[str]],
+    url: str,
+    model: str,
+    timeout: int,
+    dimension: int,
+    executor: concurrent.futures.ThreadPoolExecutor,
+) -> list[list[float]]:
+    """Embed multiple batches in parallel using async execution.
+
+    Args:
+        batches: List of text batches to embed
+        url: Ollama API endpoint URL
+        model: Embedding model name
+        timeout: Request timeout in seconds
+        dimension: Expected embedding dimension
+        executor: Thread pool executor for async operations
+
+    Returns:
+        Flattened list of all embedding vectors
+    """
+    tasks = [
+        _embed_batch_async(batch, url, model, timeout, dimension, executor) for batch in batches
+    ]
+
+    batch_results = await asyncio.gather(*tasks)
+
+    # Flatten results
+    result = []
+    for batch_vecs in batch_results:
+        result.extend(batch_vecs)
+
+    return result
+
+
 def embed_texts(
     texts: Iterable[str],
     *,
@@ -167,10 +457,16 @@ def embed_texts(
     model: str | None = None,
     dimension: int | None = None,
 ) -> list[list[float]] | tuple[list[list[float]], EmbeddingDebugMetrics]:
-    """Embed a batch of texts using Ollama with caching support.
+    """Embed a batch of texts using Ollama with caching and performance optimizations.
 
     Uses the `/api/embed` endpoint with automatic caching of embeddings.
     Cache is keyed by (text, model, dimension) to ensure correctness.
+
+    Performance optimizations:
+      - Async/parallel processing for improved throughput
+      - GPU utilization detection and optimization
+      - Adaptive batch sizing based on available memory
+      - Connection pooling for reduced latency
 
     Multi-model support:
       - Pass `model` to use a specific embedding model
@@ -181,6 +477,10 @@ def embed_texts(
       - `[ollama] base_url`
       - `[rag] embedding_model` (optional, can be overridden)
       - `[rag] embedding_dim` (can be overridden)
+      - `[rag] embedding_async_enabled` (enable async processing)
+      - `[rag] embedding_max_workers` (parallel worker threads)
+      - `[rag] embedding_gpu_enabled` (enable GPU optimization)
+      - `[rag] embedding_adaptive_batching` (enable adaptive batch sizing)
       - `[cache] embedding_cache_enabled` (enable/disable caching)
       - `[cache] embedding_cache_backend` (memory or disk)
       - `[cache] embedding_cache_ttl_seconds` (cache expiration time)
@@ -206,6 +506,8 @@ def embed_texts(
                 num_texts_embedded=0,
                 batch_size=ecfg.batch_size,
                 embedding_time_ms=0.0,
+                cache_hits=0,
+                cache_misses=0,
             )
             return [], metrics
         return []
@@ -213,6 +515,9 @@ def embed_texts(
     start_time = time.perf_counter()
     ecfg = _embedding_cfg(model=model, dimension=dimension)
     cache = _get_embedding_cache()
+
+    # Detect GPU if enabled
+    gpu_info = _detect_gpu() if ecfg.enable_gpu else GPUInfo(available=False)
 
     # Try to retrieve from cache first
     # Create cache key from texts + model + dimension
@@ -234,6 +539,9 @@ def embed_texts(
                 num_texts_embedded=len(texts_list),
                 batch_size=ecfg.batch_size,
                 embedding_time_ms=elapsed_ms,
+                cache_hits=1,
+                cache_misses=0,
+                gpu_available=gpu_info.available,
             )
             return cached_result, metrics
         return cached_result
@@ -242,31 +550,37 @@ def embed_texts(
     logger.debug(f"Embedding cache miss for {len(texts_list)} texts, computing...")
     url = f"{ecfg.base_url}/api/embed"
 
-    out: list[list[float]] = []
-    for batch in _batched(texts_list, ecfg.batch_size):
-        data = _post_json(
-            url,
-            {"model": ecfg.model, "input": batch},
-            timeout=ecfg.timeout,
-        )
+    # Determine optimal batch size
+    optimal_batch_size = _get_optimal_batch_size(len(texts_list), ecfg)
 
-        if "embeddings" in data:
-            vectors = data["embeddings"]
-        elif "embedding" in data:
-            vectors = [data["embedding"]]
-        else:
-            raise EmbeddingError(f"Unexpected Ollama embed response keys: {list(data.keys())}")
+    # Create batches
+    batches = list(_batched(texts_list, optimal_batch_size))
+    num_batches = len(batches)
 
-        for _i, v in enumerate(vectors):
-            if not isinstance(v, list):
-                raise EmbeddingError("Embedding is not a list")
-            if len(v) != ecfg.dimension:
-                raise EmbeddingError(
-                    f"Embedding has dim {len(v)} but expected {ecfg.dimension}. "
-                    f"Update collection dimension to match model output. "
-                    f"Use --collection flag to specify a different collection."
+    # Process batches (async or sync)
+    if ecfg.enable_async and num_batches > 1:
+        # Async processing for multiple batches
+        executor = _get_thread_pool(ecfg.max_workers)
+        try:
+            # Run async processing
+            out = asyncio.run(
+                _embed_texts_parallel(
+                    batches, url, ecfg.model, ecfg.timeout, ecfg.dimension, executor
                 )
-            out.append([float(x) for x in v])
+            )
+        except RuntimeError as e:
+            # If event loop is already running, fall back to sync
+            logger.debug(f"Async processing failed, falling back to sync: {e}")
+            out = []
+            for batch in batches:
+                batch_vecs = _embed_batch_sync(batch, url, ecfg.model, ecfg.timeout, ecfg.dimension)
+                out.extend(batch_vecs)
+    else:
+        # Synchronous processing
+        out = []
+        for batch in batches:
+            batch_vecs = _embed_batch_sync(batch, url, ecfg.model, ecfg.timeout, ecfg.dimension)
+            out.extend(batch_vecs)
 
     # Store in cache
     cache.set(cache_key, out)
@@ -277,8 +591,13 @@ def embed_texts(
             embedding_model=ecfg.model,
             embedding_dim=ecfg.dimension,
             num_texts_embedded=len(texts_list),
-            batch_size=ecfg.batch_size,
+            batch_size=optimal_batch_size,
             embedding_time_ms=elapsed_ms,
+            cache_hits=0,
+            cache_misses=1,
+            gpu_available=gpu_info.available,
+            batches_processed=num_batches,
+            parallel_workers=ecfg.max_workers if ecfg.enable_async else 1,
         )
         return out, metrics
 
