@@ -356,67 +356,6 @@ issue_comment() {
 }
 
 # -------------------------
-# Feature branch hierarchy support
-# -------------------------
-# These functions support branching hierarchy where issues can have
-# a "Parent: #N" field in the body to indicate the feature branch should
-# branch off the parent's feature branch instead of the release branch.
-get_parent_issue() {
-  local issue="$1"
-  require_cmd gh
-
-  # Get issue body and check if it starts with "Parent: #N"
-  local body
-  body="$(gh issue view "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json body -q .body)"
-
-  # Extract parent issue number from "Parent: #N" at start of body
-  if [[ "$body" =~ ^Parent:\ \#([0-9]+) ]]; then
-    echo "${BASH_REMATCH[1]}"
-    return 0
-  fi
-
-  return 1
-}
-
-is_sub_issue() {
-  local issue="$1"
-  get_parent_issue "$issue" >/dev/null 2>&1
-  return $?
-}
-
-get_pr_branch_for_issue() {
-  local issue="$1"
-  require_cmd gh
-  require_cmd jq
-
-  # Find PR that closes this issue
-  # Search for open PRs first, then closed PRs
-  # Filter results to ensure PR body contains "Closes #N" not just mentions "#N"
-  local pr_number branch
-
-  # Try open PRs first - filter by body matching "Closes #${issue}"
-  pr_number="$(gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --search "#${issue}" --state open --json number,body --jq ".[] | select(.body | test(\"Closes #${issue}\\\\b\"; \"i\")) | .number" | head -n1)"
-
-  # If no open PR, try closed/merged PRs
-  if [[ -z "$pr_number" ]]; then
-    pr_number="$(gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --search "#${issue}" --state closed --json number,body --jq ".[] | select(.body | test(\"Closes #${issue}\\\\b\"; \"i\")) | .number" | head -n1)"
-  fi
-
-  if [[ -z "$pr_number" ]]; then
-    _die "No PR found for issue #${issue}"
-  fi
-
-  # Get the branch name for this PR
-  branch="$(gh pr view "$pr_number" --repo "${REPO_OWNER}/${REPO_NAME}" --json headRefName -q .headRefName)"
-
-  if [[ -z "$branch" ]]; then
-    _die "Could not determine branch for PR #${pr_number} (issue #${issue})"
-  fi
-
-  echo "$branch"
-}
-
-# -------------------------
 # PR Project Hygiene
 # -------------------------
 ensure_pr_project_hygiene() {

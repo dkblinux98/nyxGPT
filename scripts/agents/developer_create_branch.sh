@@ -49,39 +49,9 @@ fi
 require_gh_auth
 require_cmd git
 
-# Determine base branch: parent feature branch if issue has Parent field, otherwise release branch
-# This supports branching hierarchy for related issues
-if is_sub_issue "$ISSUE"; then
-  parent_issue="$(get_parent_issue "$ISSUE")"
-  base_branch="$(get_pr_branch_for_issue "$parent_issue")"
-
-  # Check if parent branch still exists on remote (it may have been deleted after merging)
-  if ! git ls-remote --exit-code --heads origin "$base_branch" >/dev/null 2>&1; then
-    echo "Parent branch $base_branch no longer exists (likely merged and deleted)" >&2
-
-    # Walk up the tree: check if parent also has a Parent field
-    if is_sub_issue "$parent_issue"; then
-      grandparent_issue="$(get_parent_issue "$parent_issue")"
-      base_branch="$(get_pr_branch_for_issue "$grandparent_issue")"
-      echo "Using ancestor branch: $base_branch (ancestor issue: #$grandparent_issue)" >&2
-
-      # If ancestor branch also doesn't exist, fall back to release branch
-      if ! git ls-remote --exit-code --heads origin "$base_branch" >/dev/null 2>&1; then
-        base_branch="$(get_release_branch)"
-        echo "Ancestor branch also deleted, using release branch: $base_branch" >&2
-      fi
-    else
-      # Parent is top-level, use release branch
-      base_branch="$(get_release_branch)"
-      echo "Parent was top-level, using release branch: $base_branch" >&2
-    fi
-  else
-    echo "Branching off parent feature branch $base_branch (parent issue: #$parent_issue)" >&2
-  fi
-else
-  base_branch="$(get_release_branch)"
-  echo "Branching off release branch $base_branch" >&2
-fi
+# All feature branches come from the release branch
+base_branch="$(get_release_branch)"
+echo "Creating feature branch from release branch $base_branch" >&2
 
 branch="${KIND}/${ISSUE}-${SLUG}"
 branch="$(echo "$branch" | tr ' ' '-' | tr -cd '[:alnum:]/._-')"
