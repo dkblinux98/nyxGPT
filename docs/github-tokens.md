@@ -48,7 +48,7 @@ Configure these in: **Settings → Secrets and variables → Actions → Variabl
 | `HUMAN_OWNER` | `dkblinux98` | Human repository owner |
 | `STATUS_FIELD` | `Status` | Project status field name |
 | `STATUS_BACKLOG` | `Backlog` | Backlog status value |
-| `STATUS_IN_PROGRESS` | `In progress` | In progress status value |
+| `STATUS_IN_PROGRESS` | `In Progress` | In Progress status value |
 | `STATUS_IN_REVIEW` | `In Review` | In review status value |
 | `STATUS_FOR_RELEASE` | `For Release` | For release status value |
 | `RELEASE_BRANCH` | `v1.0.0` | Active release branch name |
