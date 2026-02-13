@@ -218,15 +218,15 @@ jobs:
           set -euo pipefail
           PR="${{ steps.get_pr.outputs.pr_number }}"
 
-          # Query PR comments from claude (Claude Code Action OAuth user)
-          # starting with "## Code Review - REQUEST_CHANGES"
-          # Only count REQUEST_CHANGES iterations, not APPROVE comments
-          COUNT=$(gh pr view "$PR" --json comments --jq '
-            [.comments[] |
-             select(.author.login == "claude" and
-                    (.body | startswith("## Code Review - REQUEST_CHANGES")))] |
+          # Query PR reviews with CHANGES_REQUESTED state from review-agent
+          # Count how many times we've requested changes (excludes APPROVED reviews)
+          REVIEW_AGENT="${{ vars.REVIEW_AGENT }}"
+          COUNT=$(gh api "repos/${{ github.repository }}/pulls/$PR/reviews" --jq "
+            [.[] |
+             select(.user.login == \"$REVIEW_AGENT\" and
+                    .state == \"CHANGES_REQUESTED\")] |
             length
-          ')
+          ")
 
           echo "loop_count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "Review loop count (REQUEST_CHANGES only): $COUNT"
