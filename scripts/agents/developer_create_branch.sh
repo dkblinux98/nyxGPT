@@ -49,7 +49,7 @@ fi
 require_gh_auth
 require_cmd git
 
-# Determine base branch: parent feature branch for sub-issues, release branch for top-level issues
+# Determine base branch: parent feature branch if issue has Parent field, otherwise release branch
 if is_sub_issue "$ISSUE"; then
   parent_issue="$(get_parent_issue "$ISSUE")"
   base_branch="$(get_pr_branch_for_issue "$parent_issue")"
@@ -58,7 +58,7 @@ if is_sub_issue "$ISSUE"; then
   if ! git ls-remote --exit-code --heads origin "$base_branch" >/dev/null 2>&1; then
     echo "Parent branch $base_branch no longer exists (likely merged and deleted)" >&2
 
-    # Walk up the tree: check if parent is also a sub-issue
+    # Walk up the tree: check if parent also has a Parent field
     if is_sub_issue "$parent_issue"; then
       grandparent_issue="$(get_parent_issue "$parent_issue")"
       base_branch="$(get_pr_branch_for_issue "$grandparent_issue")"

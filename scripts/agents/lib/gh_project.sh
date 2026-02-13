@@ -375,14 +375,14 @@ create_sub_issue() {
     --title "$title" \
     --body "$full_body")"
 
-  [[ -n "$issue_url" ]] || _die "Failed to create sub-issue"
+  [[ -n "$issue_url" ]] || _die "Failed to create issue"
 
   # Extract issue number from URL (compatible with macOS grep)
   new_issue_number="$(echo "$issue_url" | sed -n 's|.*/issues/\([0-9]*\)$|\1|p')"
   [[ -n "$new_issue_number" ]] || _die "Failed to parse issue number from: $issue_url"
 
-  # Add comment to parent linking to sub-issue
-  issue_comment "$parent_issue" "Created sub-issue: #${new_issue_number}" || true
+  # Add comment to parent linking to child issue
+  issue_comment "$parent_issue" "Created child issue: #${new_issue_number}" || true
 
   echo "$new_issue_number"
 }

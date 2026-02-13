@@ -51,7 +51,7 @@ require_cmd python3
 
 REPO="${REPO_OWNER}/${REPO_NAME}"
 
-# Determine base branch: parent feature branch for sub-issues, release branch for top-level issues
+# Determine base branch: parent feature branch if issue has Parent field, otherwise release branch
 if is_sub_issue "$ISSUE"; then
   parent_issue="$(get_parent_issue "$ISSUE")"
   BASE_BRANCH="$(get_pr_branch_for_issue "$parent_issue")"

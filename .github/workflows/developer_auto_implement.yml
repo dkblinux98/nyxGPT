@@ -400,10 +400,6 @@ jobs:
           prompt: |
             Implement issue #${{ github.event.issue.number }} on the current branch.
 
-            IMPORTANT: First, check the issue body for "Parent: #N" to determine if this is a sub-issue.
-            - If this is a sub-issue (contains "Parent: #N"), reference BOTH parent and sub-issue numbers in commits
-            - If this is a parent issue, reference only this issue number
-
             Requirements:
             - Make the minimal correct change to resolve the issue.
             - Add/update tests for ALL code changes.
@@ -453,15 +449,12 @@ jobs:
             CRITICAL COMMIT MESSAGE FORMAT:
             All commit messages MUST reference issue numbers using this format:
 
-            For parent issues:
+            Format:
             "<type>: <description> (#${{ github.event.issue.number }})"
 
-            For sub-issues (Acceptance Failures):
-            "<type>: <description> (#PARENT, #${{ github.event.issue.number }})"
-
             Examples:
-            - Parent: "feat: add user authentication (#${{ github.event.issue.number }})"
-            - Parent: "fix: resolve null pointer in validator (#${{ github.event.issue.number }})"
+            - "feat: add user authentication (#${{ github.event.issue.number }})"
+            - "fix: resolve null pointer in validator (#${{ github.event.issue.number }})"
             - Sub-issue: "fix: add missing validation for email field (#2604, #${{ github.event.issue.number }})"
             - Sub-issue: "test: add integration tests per review (#2604, #${{ github.event.issue.number }})"
 

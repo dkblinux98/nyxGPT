@@ -289,7 +289,6 @@ jobs:
             CRITICAL: Your ONLY task is to post the review comment. DO NOT:
             - Run review_request_changes.sh
             - Run review_accept_and_merge.sh
-            - Create sub-issues
             - Merge the PR
             - Execute any scripts in scripts/agents/
 
@@ -355,8 +354,7 @@ jobs:
               * Source code changed without test updates
               * User-facing code changed without documentation updates
             - For re-reviews: MUST verify ALL previous Critical/Medium issues are resolved
-            - Each Critical/Medium issue needs a clear title and description for sub-issue creation
-            - Be specific with file paths and line numbers
+            - Be specific with file paths and line numbers for all issues
             - Explain how to fix blocking issues
             - If tests are missing, add as a Medium issue: "Missing tests for code changes"
             - If documentation is missing, add as a Medium issue: "Missing documentation for user-facing changes"

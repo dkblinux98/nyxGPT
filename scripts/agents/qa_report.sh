@@ -37,7 +37,7 @@ if [ "$UNIT_PASS" = true ] && [ "$INTEGRATION_PASS" = true ] && [ "$E2E_PASS" = 
     RECOMMENDATION="APPROVE - All automated tests pass. This PR is ready for merge after manual verification."
 else
     OVERALL_STATUS="FAIL ✗"
-    RECOMMENDATION="BLOCK - Test failures detected. See details below. QA Failure sub-issues will be created for blocking failures."
+    RECOMMENDATION="BLOCK - Test failures detected. See details below. Manual intervention required for blocking failures."
 fi
 
 # Extract test counts
@@ -113,7 +113,7 @@ $(if [ "$OVERALL_STATUS" = "PASS ✓" ]; then
     echo "- Label: \`qa-pass\`"
 else
     echo "- ✗ Test failures must be fixed before merge"
-    echo "- ✗ QA Failure sub-issues will be created"
+    echo "- ✗ Manual intervention required for blocking failures"
     echo "- ✗ Assign back to developer-agent for fixes"
     echo "- Label: \`qa-fail\`"
 fi)

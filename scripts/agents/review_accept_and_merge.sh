@@ -62,37 +62,31 @@ fi
 # Check if PR has merge conflicts
 if [[ "$pr_mergeable" == "CONFLICTING" ]]; then
   echo "[review] ERROR: PR #${PR} has merge conflicts and cannot be merged automatically." >&2
-  echo "[review] Creating sub-issue for merge conflict resolution..." >&2
+  echo "[review] Assigning to human owner for manual resolution..." >&2
 
-  # Create sub-issue for merge conflicts
-  conflict_body_file="/tmp/merge-conflict-${ISSUE}.md"
-  cat > "$conflict_body_file" <<CONFLICT_EOF
-## Merge Conflict
+  # Keep issue in "In Review" status and assign to human owner
+  # Note: Status is already "In Review" from previous review workflow, so we only reassign
+  issue_assign_only "$ISSUE" "$HUMAN_OWNER"
 
-PR #${PR} cannot be merged automatically due to conflicts with base branch \`${pr_base_branch}\`.
+  # Comment on both PR and issue
+  CONFLICT_MSG="⚠️ **Merge Conflicts Detected**
 
-### How to Fix
+PR #${PR} has merge conflicts with base branch \`${pr_base_branch}\` and cannot be merged automatically.
 
-1. Checkout branch: \`git checkout ${pr_head_branch}\`
-2. Pull latest base: \`git pull origin ${pr_base_branch}\`
-3. Resolve conflicts in the affected files
-4. Commit resolution: \`git add . && git commit\`
-5. Push: \`git push origin ${pr_head_branch}\`
-6. Re-request review
+**To resolve:**
+1. \`git checkout ${pr_head_branch}\`
+2. \`git pull origin ${pr_base_branch}\`
+3. Resolve conflicts in affected files
+4. \`git add . && git commit\`
+5. \`git push origin ${pr_head_branch}\`
 
-### Parent Issue
-Issue #${ISSUE}
-CONFLICT_EOF
+Issue #${ISSUE} has been assigned to @${HUMAN_OWNER} for manual resolution.
+The Slack notification workflow should have alerted about this conflict."
 
-  create_sub_issue "$ISSUE" "Resolve Merge Conflicts" "$conflict_body_file"
-  rm -f "$conflict_body_file"
+  gh pr comment "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --body "$CONFLICT_MSG" || true
+  issue_comment "$ISSUE" "$CONFLICT_MSG"
 
-  # Set parent issue back to In Progress and assign to developer
-  set_issue_status "$ISSUE" "$STATUS_IN_PROGRESS"
-  issue_assign_only "$ISSUE" "$DEV_AGENT"
-  issue_comment "$ISSUE" "Merge conflicts detected in PR #${PR}. Sub-issue created for resolution. Assigned back to @${DEV_AGENT}."
-
-  _die "ERROR: Cannot merge PR #${PR} due to conflicts. Sub-issue created. Workflow stopped."
+  _die "ERROR: Cannot merge PR #${PR} due to conflicts. Assigned to human owner. Workflow stopped."
 fi
 
 # Warn if mergeable state is not clean

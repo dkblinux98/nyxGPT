@@ -17,6 +17,10 @@ Sets:
 Options:
   --dry-run   Print actions without making changes
   -h, --help  Show this help
+
+Environment:
+  GH_TOKEN or SCRUMMASTER_AGENT_TOKEN must be set to the scrummaster agent's GitHub token
+  for proper attribution. Script will fail if neither is set.
 EOF
 }
 
@@ -42,6 +46,21 @@ fi
 if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
   echo "[error] issue_number must be numeric, got: '$ISSUE'" >&2
   exit 2
+fi
+
+# --- Require scrummaster agent token for proper attribution ---
+if [[ -z "${GH_TOKEN:-}" && -z "${SCRUMMASTER_AGENT_TOKEN:-}" ]]; then
+  echo "[error] Neither GH_TOKEN nor SCRUMMASTER_AGENT_TOKEN is set." >&2
+  echo "[error] This script must be run with the scrummaster agent's token for proper attribution." >&2
+  echo "[error] Set one of these environment variables before running:" >&2
+  echo "[error]   export GH_TOKEN=\$SCRUMMASTER_AGENT_TOKEN" >&2
+  echo "[error]   export SCRUMMASTER_AGENT_TOKEN=ghp_xxxxx" >&2
+  exit 1
+fi
+
+# Use SCRUMMASTER_AGENT_TOKEN if GH_TOKEN is not set
+if [[ -z "${GH_TOKEN:-}" ]]; then
+  export GH_TOKEN="$SCRUMMASTER_AGENT_TOKEN"
 fi
 
 # --- config/auth ---
