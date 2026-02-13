@@ -8,7 +8,7 @@ ROLE
 GUARDRAILS
 - Do not change phase ordering or scope
 - CI must pass before APPROVE (review even if CI fails)
-- NEVER create issues or sub-issues
+- NEVER create issues
 - Review ALL code in repository, not just changed files
 - Review ALL changed files in PR, not just new changes
 

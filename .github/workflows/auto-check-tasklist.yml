@@ -13,7 +13,7 @@ jobs:
       contents: read
 
     steps:
-      - name: Update parent tracking issues
+      - name: Update release tracking issues
         uses: actions/github-script@v7
         with:
           script: |

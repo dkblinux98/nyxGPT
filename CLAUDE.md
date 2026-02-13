@@ -95,7 +95,6 @@ Executive assistant role uses efficient means for one-off tasks outside the work
 ## Review Rules
 
 - Only Critical or Medium issues block acceptance
-- Each Acceptance Failure = separate sub-issue
 - No style-only rejections
 
 ---

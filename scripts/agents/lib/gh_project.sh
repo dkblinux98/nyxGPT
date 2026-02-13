@@ -362,7 +362,7 @@ ensure_pr_project_hygiene() {
   local pr_number="$1" issue_number="$2"
   require_cmd jq
 
-  _debug "Ensuring PR #${pr_number} project hygiene (parent issue: #${issue_number})"
+  _debug "Ensuring PR #${pr_number} project hygiene (linked issue: #${issue_number})"
 
   # Add PR to project if not already there
   local pr_item_id issue_item_id

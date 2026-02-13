@@ -95,7 +95,7 @@ The review workflow tracks cumulative review cycles:
   - Slack DM sent to human
   - Human intervenes to resolve
 
-No sub-issues are created. All fixes happen on the PR branch.
+All fixes happen on the PR branch (no separate issues created).
 
 ## 7) Merge criteria
 - All tests and linters passing

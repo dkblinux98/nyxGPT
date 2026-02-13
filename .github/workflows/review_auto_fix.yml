@@ -76,7 +76,7 @@ jobs:
           if [[ "$CI_STATUS" != "SUCCESS" ]]; then
             echo "CI is not green (status: $CI_STATUS)"
 
-            # Set parent issue to In Progress and assign to developer-agent
+            # Set linked issue to In Progress and assign to developer-agent
             # (per review-runbook.md section 3)
             ISSUE=$(gh pr view "$PR" --repo "${{ github.repository }}" --json body -q '.body' |
                     sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
