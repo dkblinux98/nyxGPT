@@ -56,10 +56,10 @@ REPO="${REPO_OWNER}/${REPO_NAME}"
 if is_sub_issue "$ISSUE"; then
   parent_issue="$(get_parent_issue "$ISSUE")"
   BASE_BRANCH="$(get_pr_branch_for_issue "$parent_issue")"
-  echo "[dev] Child issue detected: PR will target parent feature branch $BASE_BRANCH (parent issue: #$parent_issue)" >&2
+  echo "[dev] PR will target parent feature branch $BASE_BRANCH (parent issue: #$parent_issue)" >&2
 else
   BASE_BRANCH="$(get_release_branch)"
-  echo "[dev] Top-level issue: PR will target release branch $BASE_BRANCH" >&2
+  echo "[dev] PR will target release branch $BASE_BRANCH" >&2
 fi
 
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"

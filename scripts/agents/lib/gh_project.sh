@@ -356,11 +356,11 @@ issue_comment() {
 }
 
 # -------------------------
-# Parent issue detection (for branch hierarchy)
+# Feature branch hierarchy support
 # -------------------------
 # These functions support branching hierarchy where issues can have
-# a "Parent: #N" field in the body to indicate they should branch off
-# the parent's PR branch instead of the release branch.
+# a "Parent: #N" field in the body to indicate the feature branch should
+# branch off the parent's feature branch instead of the release branch.
 get_parent_issue() {
   local issue="$1"
   require_cmd gh

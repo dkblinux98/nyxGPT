@@ -63,12 +63,12 @@ if is_sub_issue "$ISSUE"; then
     if is_sub_issue "$parent_issue"; then
       grandparent_issue="$(get_parent_issue "$parent_issue")"
       base_branch="$(get_pr_branch_for_issue "$grandparent_issue")"
-      echo "Using grandparent branch: $base_branch (grandparent issue: #$grandparent_issue)" >&2
+      echo "Using ancestor branch: $base_branch (ancestor issue: #$grandparent_issue)" >&2
 
-      # If grandparent branch also doesn't exist, fall back to release branch
+      # If ancestor branch also doesn't exist, fall back to release branch
       if ! git ls-remote --exit-code --heads origin "$base_branch" >/dev/null 2>&1; then
         base_branch="$(get_release_branch)"
-        echo "Grandparent branch also deleted, using release branch: $base_branch" >&2
+        echo "Ancestor branch also deleted, using release branch: $base_branch" >&2
       fi
     else
       # Parent is top-level, use release branch
@@ -76,11 +76,11 @@ if is_sub_issue "$ISSUE"; then
       echo "Parent was top-level, using release branch: $base_branch" >&2
     fi
   else
-    echo "Child issue detected: branching off parent feature branch $base_branch (parent issue: #$parent_issue)" >&2
+    echo "Branching off parent feature branch $base_branch (parent issue: #$parent_issue)" >&2
   fi
 else
   base_branch="$(get_release_branch)"
-  echo "Top-level issue: branching off release branch $base_branch" >&2
+  echo "Branching off release branch $base_branch" >&2
 fi
 
 branch="${KIND}/${ISSUE}-${SLUG}"
@@ -126,9 +126,9 @@ fi
 
 # Optional breadcrumb on the issue (non-fatal)
 if [[ "$BRANCH_ACTION" == "reused" ]]; then
-  issue_comment "$ISSUE" "Developer branch reused: \`${branch}\` (existing PR will be updated)." >/dev/null 2>&1 || true
+  issue_comment "$ISSUE" "Feature branch reused: \`${branch}\` (existing PR will be updated)." >/dev/null 2>&1 || true
 else
-  issue_comment "$ISSUE" "Developer branch created: \`${branch}\` (base: \`${base_branch}\`)." >/dev/null 2>&1 || true
+  issue_comment "$ISSUE" "Feature branch created: \`${branch}\` (base: \`${base_branch}\`)." >/dev/null 2>&1 || true
 fi
 
 echo "$branch"
