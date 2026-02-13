@@ -906,8 +906,80 @@ jobs:
             echo "::warning::Error type unknown - defaulting to no retry"
           fi
 
-      - name: Auto-retry on failure (Phase 1 - retriable errors only)
+      - name: Attempt intelligent fix (Phase 2)
         if: failure() && steps.classify_error.outputs.retriable == 'true'
+        id: intelligent_fix
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+        continue-on-error: true
+        run: |
+          set +e  # Don't exit on error - we're handling it
+
+          echo "::group::Running intelligent failure analysis"
+
+          # Run the analysis script
+          ./scripts/agents/developer_analyze_failure.sh \
+            "${{ github.event.issue.number }}" \
+            "${{ github.run_id }}"
+
+          RESULT=$?
+
+          echo "::endgroup::"
+
+          # Store the result
+          case $RESULT in
+            0)
+              echo "fix_status=FIXED" >> "$GITHUB_OUTPUT"
+              echo "::notice::Auto-fix successful - problem resolved"
+              ;;
+            1)
+              echo "fix_status=FATAL" >> "$GITHUB_OUTPUT"
+              echo "::warning::Error is fatal - no fix available"
+              ;;
+            2)
+              echo "fix_status=TRANSIENT" >> "$GITHUB_OUTPUT"
+              echo "::notice::Error is transient - retry recommended"
+              ;;
+            *)
+              echo "fix_status=UNKNOWN" >> "$GITHUB_OUTPUT"
+              echo "::error::Analysis script returned unexpected code: $RESULT"
+              ;;
+          esac
+
+          # Read analysis details if available
+          if [[ -f /tmp/analysis_result.txt ]]; then
+            source /tmp/analysis_result.txt
+            echo "action=${ACTION:-none}" >> "$GITHUB_OUTPUT"
+            echo "wait_seconds=${WAIT_SECONDS:-0}" >> "$GITHUB_OUTPUT"
+            echo "::notice::Analysis: $STATUS - $ERROR_TYPE"
+          fi
+
+          exit 0  # Don't fail the workflow - we're handling errors
+
+      - name: Post fix success comment (Phase 2)
+        if: failure() && steps.intelligent_fix.outputs.fix_status == 'FIXED'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const action = '${{ steps.intelligent_fix.outputs.action }}';
+            const repo = context.repo.owner + '/' + context.repo.repo;
+            const runId = context.runId;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: `✅ **Developer Agent**: Problem automatically resolved!\n\n` +
+                    `**Auto-fix applied:** ${action}\n\n` +
+                    `The workflow will now continue from where it left off.\n\n` +
+                    `[Workflow run](https://github.com/${repo}/actions/runs/${runId})`
+            });
+
+      - name: Auto-retry on failure (Phase 2 - transient errors only)
+        if: failure() && steps.intelligent_fix.outputs.fix_status == 'TRANSIENT'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -929,6 +1001,7 @@ jobs:
             ).length;
 
             const MAX_RETRIES = 3;
+            const waitSeconds = parseInt('${{ steps.intelligent_fix.outputs.wait_seconds }}') || 0;
 
             if (retryCount >= MAX_RETRIES) {
               await github.rest.issues.createComment({
@@ -952,14 +1025,21 @@ jobs:
               return;
             }
 
+            // Wait if recommended (e.g., rate limits)
+            if (waitSeconds > 0) {
+              core.notice(`Waiting ${waitSeconds} seconds before retry (rate limit/backoff)...`);
+              await new Promise(resolve => setTimeout(resolve, waitSeconds * 1000));
+            }
+
             // Auto-retry: Post RETRY_IMPLEMENTATION comment
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
               body: `⚠️ **Developer Agent**: Workflow failed (attempt ${retryCount + 1}/${MAX_RETRIES}).\n\n` +
-                    `**Error type:** ${errorClass} (retriable)\n` +
-                    `**Action:** Auto-retry triggered - this type of error may resolve with retry.\n\n` +
+                    `**Error type:** ${errorClass} (transient)\n` +
+                    `**Action:** Auto-retry triggered - this type of error may resolve with retry.\n` +
+                    (waitSeconds > 0 ? `**Wait time:** Waited ${waitSeconds} seconds before retry\n\n` : '\n') +
                     `The agent will attempt to:\n` +
                     `1. Diagnose and fix any infrastructure issues\n` +
                     `2. Handle branch creation/checkout problems\n` +
@@ -970,8 +1050,12 @@ jobs:
 
             core.notice(`Auto-retry triggered (${retryCount + 1}/${MAX_RETRIES}) for ${errorClass}`);
 
-      - name: Escalate fatal error (Phase 1 - no retry)
-        if: failure() && steps.classify_error.outputs.retriable == 'false'
+      - name: Escalate fatal error (Phase 1+2 - no retry)
+        if: |
+          failure() && (
+            steps.classify_error.outputs.retriable == 'false' ||
+            steps.intelligent_fix.outputs.fix_status == 'FATAL'
+          )
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -980,6 +1064,16 @@ jobs:
             const repo = context.repo.owner + '/' + context.repo.repo;
             const runId = context.runId;
             const errorClass = '${{ steps.classify_error.outputs.error_class }}';
+            const fixStatus = '${{ steps.intelligent_fix.outputs.fix_status }}';
+
+            // Read diagnosis from Phase 2 if available
+            const fs = require('fs');
+            let diagnosis = '';
+            try {
+              const result = fs.readFileSync('/tmp/analysis_result.txt', 'utf8');
+              const match = result.match(/DIAGNOSIS=(.+)/);
+              if (match) diagnosis = match[1];
+            } catch (e) {}
 
             // Map error types to human-friendly explanations
             const errorExplanations = {
@@ -990,7 +1084,7 @@ jobs:
               'unknown': 'Error type could not be determined. Manual investigation needed.'
             };
 
-            const explanation = errorExplanations[errorClass] || 'Unrecognized error type.';
+            const explanation = diagnosis || errorExplanations[errorClass] || 'Unrecognized error type.';
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -998,7 +1092,10 @@ jobs:
               issue_number,
               body: `❌ **Developer Agent**: Workflow failed with non-retriable error.\n\n` +
                     `**Error type:** ${errorClass}\n` +
-                    `**Why no auto-retry:** ${explanation}\n\n` +
+                    `**Analysis:** ${explanation}\n` +
+                    (fixStatus === 'FATAL' ?
+                      '**Phase 2 analysis:** Attempted auto-fix but determined error is fatal.\n\n' :
+                      '\n') +
                     `Automatic retries would not resolve this type of error. ` +
                     `Manual intervention is required.\n\n` +
                     `**Next steps:**\n` +
