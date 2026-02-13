@@ -1691,13 +1691,24 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
             import time
 
             event_id = 0
+            start_time = time.time()
+            total_tokens = 0
 
             # Send an immediate heartbeat to establish connection
             event_id += 1
-            yield f"event: heartbeat\ndata: {json.dumps({'timestamp': time.time()})}\nid: {event_id}\n\n"
+            yield f"event: heartbeat\ndata: {json.dumps({'timestamp': start_time})}\nid: {event_id}\n\n"
 
             d = _chat_runtime_defaults(_req_cfg(request))
             chosen_model = req.model or d["default_model"]
+
+            # Send metadata event with session/model info
+            event_id += 1
+            metadata = {
+                "session": req.session,
+                "model": chosen_model,
+                "timestamp": start_time,
+            }
+            yield f"event: metadata\ndata: {json.dumps(metadata)}\nid: {event_id}\n\n"
 
             kwargs: dict[str, Any] = {
                 "session": req.session,
@@ -1719,34 +1730,75 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                     kwargs["rag_filters"] = rag_filters_val.model_dump()
 
             # Process the chat stream and wrap chunks in SSE format
-            for chunk in chat_stream(req.prompt, **kwargs):
+            try:
+                for chunk in chat_stream(req.prompt, **kwargs):
+                    event_id += 1
+
+                    # Check if chunk contains RAG metadata markers
+                    if "__RAG_START__" in chunk and "__RAG_END__" in chunk:
+                        # Extract RAG metadata and send as separate event
+                        rag_start = chunk.find("__RAG_START__") + len("__RAG_START__")
+                        rag_end = chunk.find("__RAG_END__")
+                        rag_json = chunk[rag_start:rag_end]
+
+                        # Send RAG metadata as rag_context event
+                        yield f"event: rag_context\ndata: {rag_json}\nid: {event_id}\n\n"
+
+                        # Send any text before/after RAG markers as text events
+                        text_before = chunk[: chunk.find("__RAG_START__")]
+                        text_after = chunk[rag_end + len("__RAG_END__") :]
+                        remaining_text = text_before + text_after
+
+                        if remaining_text:
+                            event_id += 1
+                            # Count tokens for this chunk
+                            try:
+                                from nyxgpt.token_counter import count_tokens
+
+                                total_tokens += count_tokens(remaining_text)
+                            except Exception:
+                                pass  # Token counting is optional
+
+                            elapsed = time.time() - start_time
+                            yield f"event: text\ndata: {json.dumps({'content': remaining_text, 'tokens': total_tokens, 'elapsed': elapsed})}\nid: {event_id}\n\n"
+                    elif "__RETRY_START__" in chunk and "__RETRY_END__" in chunk:
+                        # Handle retry status messages (already formatted as JSON)
+                        retry_start = chunk.find("__RETRY_START__") + len("__RETRY_START__")
+                        retry_end = chunk.find("__RETRY_END__")
+                        retry_json = chunk[retry_start:retry_end]
+                        yield f"event: retry\ndata: {retry_json}\nid: {event_id}\n\n"
+                    else:
+                        # Regular text content
+                        # Count tokens for this chunk
+                        try:
+                            from nyxgpt.token_counter import count_tokens
+
+                            total_tokens += count_tokens(chunk)
+                        except Exception:
+                            pass  # Token counting is optional
+
+                        elapsed = time.time() - start_time
+                        yield f"event: text\ndata: {json.dumps({'content': chunk, 'tokens': total_tokens, 'elapsed': elapsed})}\nid: {event_id}\n\n"
+
+                # Send done event with final stats
                 event_id += 1
-
-                # Check if chunk contains RAG metadata markers
-                if "__RAG_START__" in chunk and "__RAG_END__" in chunk:
-                    # Extract RAG metadata and send as separate event
-                    rag_start = chunk.find("__RAG_START__") + len("__RAG_START__")
-                    rag_end = chunk.find("__RAG_END__")
-                    rag_json = chunk[rag_start:rag_end]
-
-                    # Send RAG metadata as separate event
-                    yield f"event: rag_metadata\ndata: {rag_json}\nid: {event_id}\n\n"
-
-                    # Send any text before/after RAG markers as message events
-                    text_before = chunk[: chunk.find("__RAG_START__")]
-                    text_after = chunk[rag_end + len("__RAG_END__") :]
-                    remaining_text = text_before + text_after
-
-                    if remaining_text:
-                        event_id += 1
-                        yield f"event: message\ndata: {json.dumps({'content': remaining_text})}\nid: {event_id}\n\n"
-                else:
-                    # Regular message content
-                    yield f"event: message\ndata: {json.dumps({'content': chunk})}\nid: {event_id}\n\n"
-
-            # Send done event
-            event_id += 1
-            yield f"event: done\ndata: {json.dumps({'event_id': event_id})}\nid: {event_id}\n\n"
+                elapsed = time.time() - start_time
+                done_data = {
+                    "event_id": event_id,
+                    "total_tokens": total_tokens,
+                    "elapsed": elapsed,
+                }
+                yield f"event: done\ndata: {json.dumps(done_data)}\nid: {event_id}\n\n"
+            except Exception as e:
+                # Send error event
+                event_id += 1
+                elapsed = time.time() - start_time
+                error_data = {
+                    "error": str(e),
+                    "elapsed": elapsed,
+                }
+                yield f"event: error\ndata: {json.dumps(error_data)}\nid: {event_id}\n\n"
+                raise
 
         return StreamingResponse(
             _stream_sse(),

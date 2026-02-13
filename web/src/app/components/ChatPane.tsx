@@ -908,8 +908,18 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
           if (eventType === 'heartbeat') {
             // Heartbeat received, connection is alive
             continue;
-          } else if (eventType === 'rag_metadata') {
-            // Parse RAG metadata
+          } else if (eventType === 'metadata') {
+            // Parse metadata (session, model, timestamp)
+            try {
+              const metadata = JSON.parse(eventData);
+              // Metadata event can be used for UI indicators if needed
+              // For now, just log it for debugging
+              console.debug('Stream metadata:', metadata);
+            } catch (e) {
+              console.error('Failed to parse metadata:', e);
+            }
+          } else if (eventType === 'rag_context' || eventType === 'rag_metadata') {
+            // Parse RAG context/metadata (support both old and new names)
             try {
               const ragData = JSON.parse(eventData);
               if (ragData.type === 'rag_metadata' && Array.isArray(ragData.chunks)) {
@@ -926,13 +936,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 });
               }
             } catch (e) {
-              console.error('Failed to parse RAG metadata:', e);
+              console.error('Failed to parse RAG context:', e);
             }
-          } else if (eventType === 'message') {
-            // Parse message content
+          } else if (eventType === 'text' || eventType === 'message') {
+            // Parse text content (support both new 'text' and legacy 'message')
             try {
               const messageData = JSON.parse(eventData);
               const content = messageData.content || '';
+              // Note: messageData.tokens and messageData.elapsed are available but not displayed yet
 
               // Append content to the last assistant message
               setMessages((prev) => {
@@ -945,10 +956,36 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 return next;
               });
             } catch (e) {
-              console.error('Failed to parse message data:', e);
+              console.error('Failed to parse text data:', e);
+            }
+          } else if (eventType === 'error') {
+            // Handle error event
+            try {
+              const errorData = JSON.parse(eventData);
+              console.error('Stream error:', errorData);
+              toast.error(`Error: ${errorData.error}`);
+            } catch (e) {
+              console.error('Failed to parse error data:', e);
+            }
+            break;
+          } else if (eventType === 'retry') {
+            // Handle retry status
+            try {
+              const retryData = JSON.parse(eventData);
+              console.debug('Connection retry:', retryData);
+              // Could show a toast notification for retries if desired
+            } catch (e) {
+              console.error('Failed to parse retry data:', e);
             }
           } else if (eventType === 'done') {
             // Stream completed
+            try {
+              const doneData = JSON.parse(eventData);
+              // doneData contains total_tokens and elapsed time
+              console.debug('Stream completed:', doneData);
+            } catch (e) {
+              // Ignore parse errors for done event
+            }
             break;
           }
         }
@@ -1116,8 +1153,18 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
           if (eventType === 'heartbeat') {
             // Heartbeat received, connection is alive
             continue;
-          } else if (eventType === 'rag_metadata') {
-            // Parse RAG metadata
+          } else if (eventType === 'metadata') {
+            // Parse metadata (session, model, timestamp)
+            try {
+              const metadata = JSON.parse(eventData);
+              // Metadata event can be used for UI indicators if needed
+              // For now, just log it for debugging
+              console.debug('Stream metadata:', metadata);
+            } catch (e) {
+              console.error('Failed to parse metadata:', e);
+            }
+          } else if (eventType === 'rag_context' || eventType === 'rag_metadata') {
+            // Parse RAG context/metadata (support both old and new names)
             try {
               const ragData = JSON.parse(eventData);
               if (ragData.type === 'rag_metadata' && Array.isArray(ragData.chunks)) {
@@ -1134,13 +1181,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 });
               }
             } catch (e) {
-              console.error('Failed to parse RAG metadata:', e);
+              console.error('Failed to parse RAG context:', e);
             }
-          } else if (eventType === 'message') {
-            // Parse message content
+          } else if (eventType === 'text' || eventType === 'message') {
+            // Parse text content (support both new 'text' and legacy 'message')
             try {
               const messageData = JSON.parse(eventData);
               const content = messageData.content || '';
+              // Note: messageData.tokens and messageData.elapsed are available but not displayed yet
 
               // Append content to the last assistant message
               setMessages((prev) => {
@@ -1153,10 +1201,36 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 return next;
               });
             } catch (e) {
-              console.error('Failed to parse message data:', e);
+              console.error('Failed to parse text data:', e);
+            }
+          } else if (eventType === 'error') {
+            // Handle error event
+            try {
+              const errorData = JSON.parse(eventData);
+              console.error('Stream error:', errorData);
+              toast.error(`Error: ${errorData.error}`);
+            } catch (e) {
+              console.error('Failed to parse error data:', e);
+            }
+            break;
+          } else if (eventType === 'retry') {
+            // Handle retry status
+            try {
+              const retryData = JSON.parse(eventData);
+              console.debug('Connection retry:', retryData);
+              // Could show a toast notification for retries if desired
+            } catch (e) {
+              console.error('Failed to parse retry data:', e);
             }
           } else if (eventType === 'done') {
             // Stream completed
+            try {
+              const doneData = JSON.parse(eventData);
+              // doneData contains total_tokens and elapsed time
+              console.debug('Stream completed:', doneData);
+            } catch (e) {
+              // Ignore parse errors for done event
+            }
             break;
           }
         }
