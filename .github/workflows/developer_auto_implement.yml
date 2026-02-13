@@ -508,7 +508,7 @@ jobs:
 
           echo "::group::Running black format check"
           if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            black --check . 2>&1 | tee /tmp/black_attempt1.log
+            python -m black --check . 2>&1 | tee /tmp/black_attempt1.log
             [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           else
             echo "No Python files changed, skipping black"
@@ -517,7 +517,7 @@ jobs:
 
           echo "::group::Running ruff"
           if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            ruff check src/ tests/ 2>&1 | tee /tmp/ruff_attempt1.log
+            python -m ruff check src/ tests/ 2>&1 | tee /tmp/ruff_attempt1.log
             [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           else
             echo "No Python files changed, skipping ruff"
@@ -525,13 +525,13 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Running pytest"
-          pytest tests/unit/ -v 2>&1 | tee /tmp/pytest_attempt1.log
+          python -m pytest tests/unit/ -v 2>&1 | tee /tmp/pytest_attempt1.log
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
           echo "::group::Running mypy"
           if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            mypy src/ 2>&1 | tee /tmp/mypy_attempt1.log
+            python -m mypy src/ 2>&1 | tee /tmp/mypy_attempt1.log
             [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           else
             echo "No Python files changed, skipping mypy"
@@ -615,26 +615,26 @@ jobs:
 
           echo "::group::Running black format check"
           if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            black --check . 2>&1 | tee /tmp/black_attempt2.log
+            python -m black --check . 2>&1 | tee /tmp/black_attempt2.log
             [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           fi
           echo "::endgroup::"
 
           echo "::group::Running ruff"
           if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            ruff check src/ tests/ 2>&1 | tee /tmp/ruff_attempt2.log
+            python -m ruff check src/ tests/ 2>&1 | tee /tmp/ruff_attempt2.log
             [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           fi
           echo "::endgroup::"
 
           echo "::group::Running pytest"
-          pytest tests/unit/ -v 2>&1 | tee /tmp/pytest_attempt2.log
+          python -m pytest tests/unit/ -v 2>&1 | tee /tmp/pytest_attempt2.log
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
           echo "::group::Running mypy"
           if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            mypy src/ 2>&1 | tee /tmp/mypy_attempt2.log
+            python -m mypy src/ 2>&1 | tee /tmp/mypy_attempt2.log
             [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           fi
           echo "::endgroup::"
@@ -705,24 +705,24 @@ jobs:
         run: |
           echo "::group::Final black format check"
           if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            black --check .
+            python -m black --check .
           fi
           echo "::endgroup::"
 
           echo "::group::Final ruff verification"
           if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            ruff check src/ tests/
+            python -m ruff check src/ tests/
           fi
           echo "::endgroup::"
 
           echo "::group::Final mypy verification"
           if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            mypy src/
+            python -m mypy src/
           fi
           echo "::endgroup::"
 
           echo "::group::Final pytest verification"
-          pytest tests/unit/ -v
+          python -m pytest tests/unit/ -v
           echo "::endgroup::"
 
           echo "::group::Final TypeScript verification"

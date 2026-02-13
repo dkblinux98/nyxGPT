@@ -75,19 +75,19 @@ jobs:
           # Run ruff (if configured)
           if command -v ruff &> /dev/null; then
             echo "Running ruff..."
-            ruff check . || echo "ruff_failed=true" >> "$GITHUB_OUTPUT"
+            python -m ruff check . || echo "ruff_failed=true" >> "$GITHUB_OUTPUT"
           fi
 
           # Run mypy (if configured)
           if [ -f "pyproject.toml" ] && grep -q "mypy" pyproject.toml; then
             echo "Running mypy..."
-            mypy src/ || echo "mypy_failed=true" >> "$GITHUB_OUTPUT"
+            python -m mypy src/ || echo "mypy_failed=true" >> "$GITHUB_OUTPUT"
           fi
 
           # Run black --check (if configured)
           if command -v black &> /dev/null; then
             echo "Running black --check..."
-            black --check . || echo "black_failed=true" >> "$GITHUB_OUTPUT"
+            python -m black --check . || echo "black_failed=true" >> "$GITHUB_OUTPUT"
           fi
 
           echo "Linter checks complete"
@@ -96,7 +96,7 @@ jobs:
         id: test
         run: |
           echo "Running pytest (unit tests only)..."
-          pytest tests/unit/ -v || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
+          python -m pytest tests/unit/ -v || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
 
       - name: Check test coverage
         id: test_coverage
