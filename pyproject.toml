@@ -20,6 +20,7 @@ dependencies = [
   "pytesseract>=0.3.10",
   "pdf2image>=1.16.0",
   "pillow>=10.0.0",
+  "psutil>=5.9.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +39,7 @@ dev = [
   # Type checking
   "mypy>=1.8",
   "types-Markdown",
+  "types-psutil",
 
   # Linting & formatting
   "ruff>=0.1",
