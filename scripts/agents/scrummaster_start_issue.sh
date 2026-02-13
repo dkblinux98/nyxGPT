@@ -19,8 +19,8 @@ Options:
   -h, --help  Show this help
 
 Environment:
-  GH_TOKEN or SCRUMMASTER_AGENT_TOKEN must be set to the scrummaster agent's GitHub token
-  for proper attribution. Script will fail if neither is set.
+  Reads SCRUMMASTER_AGENT_TOKEN from ~/.nyxGPT/config.ini automatically.
+  Can be overridden by setting GH_TOKEN environment variable.
 EOF
 }
 
@@ -48,23 +48,21 @@ if ! [[ "$ISSUE" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
-# --- Require scrummaster agent token for proper attribution ---
-if [[ -z "${GH_TOKEN:-}" && -z "${SCRUMMASTER_AGENT_TOKEN:-}" ]]; then
-  echo "[error] Neither GH_TOKEN nor SCRUMMASTER_AGENT_TOKEN is set." >&2
-  echo "[error] This script must be run with the scrummaster agent's token for proper attribution." >&2
-  echo "[error] Set one of these environment variables before running:" >&2
-  echo "[error]   export GH_TOKEN=\$SCRUMMASTER_AGENT_TOKEN" >&2
-  echo "[error]   export SCRUMMASTER_AGENT_TOKEN=ghp_xxxxx" >&2
-  exit 1
-fi
-
-# Use SCRUMMASTER_AGENT_TOKEN if GH_TOKEN is not set
-if [[ -z "${GH_TOKEN:-}" ]]; then
-  export GH_TOKEN="$SCRUMMASTER_AGENT_TOKEN"
-fi
-
 # --- config/auth ---
+# Load config first to get SCRUMMASTER_AGENT_TOKEN
 load_config
+
+# Use SCRUMMASTER_AGENT_TOKEN from config if GH_TOKEN is not already set
+if [[ -z "${GH_TOKEN:-}" ]]; then
+  if [[ -n "${SCRUMMASTER_AGENT_TOKEN:-}" ]]; then
+    export GH_TOKEN="$SCRUMMASTER_AGENT_TOKEN"
+  else
+    echo "[error] SCRUMMASTER_AGENT_TOKEN not found in config file: $CONFIG_FILE" >&2
+    echo "[error] Please add SCRUMMASTER_AGENT_TOKEN to the [github] section" >&2
+    exit 1
+  fi
+fi
+
 require_gh_auth
 
 if [[ "$DRY_RUN" == "1" ]]; then
