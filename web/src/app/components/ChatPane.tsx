@@ -872,56 +872,85 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
 
-      let accumulatedText = '';
+      let buffer = '';
       let ragChunks: RagChunk[] | undefined = undefined;
 
+      // SSE parser: processes Server-Sent Events from the stream
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        accumulatedText += chunk;
 
-        // Check for RAG metadata in accumulated text
-        if (!ragChunks && accumulatedText.includes('__RAG_START__')) {
-          const ragEndIndex = accumulatedText.indexOf('__RAG_END__');
-          if (ragEndIndex !== -1) {
-            const ragStartIndex = accumulatedText.indexOf('__RAG_START__') + '__RAG_START__'.length;
-            const ragJson = accumulatedText.substring(ragStartIndex, ragEndIndex);
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE events (events end with \n\n)
+        const events = buffer.split('\n\n');
+        // Keep the last incomplete event in the buffer
+        buffer = events.pop() || '';
+
+        for (const eventText of events) {
+          if (!eventText.trim()) continue;
+
+          // Parse SSE event format
+          const lines = eventText.split('\n');
+          let eventType = 'message'; // default event type
+          let eventData = '';
+
+          for (const line of lines) {
+            if (line.startsWith('event:')) {
+              eventType = line.substring(6).trim();
+            } else if (line.startsWith('data:')) {
+              eventData = line.substring(5).trim();
+            }
+            // id: and comment lines are ignored for now
+          }
+
+          // Handle different event types
+          if (eventType === 'heartbeat') {
+            // Heartbeat received, connection is alive
+            continue;
+          } else if (eventType === 'rag_metadata') {
+            // Parse RAG metadata
             try {
-              const ragData = JSON.parse(ragJson);
+              const ragData = JSON.parse(eventData);
               if (ragData.type === 'rag_metadata' && Array.isArray(ragData.chunks)) {
                 ragChunks = ragData.chunks;
+                // Update message with RAG chunks
+                setMessages((prev) => {
+                  if (prev.length === 0) return prev;
+                  const next = [...prev];
+                  const last = next[next.length - 1];
+                  if (last?.role === 'assistant') {
+                    next[next.length - 1] = { ...last, ragChunks: ragChunks };
+                  }
+                  return next;
+                });
               }
             } catch (e) {
               console.error('Failed to parse RAG metadata:', e);
             }
-            // Remove RAG metadata from accumulated text
-            accumulatedText = accumulatedText.substring(ragEndIndex + '__RAG_END__'.length);
-            // Update message with RAG chunks
-            setMessages((prev) => {
-              if (prev.length === 0) return prev;
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last?.role === 'assistant') {
-                next[next.length - 1] = { ...last, ragChunks: ragChunks, content: accumulatedText.trimStart() };
-              }
-              return next;
-            });
-            continue;
-          }
-        }
+          } else if (eventType === 'message') {
+            // Parse message content
+            try {
+              const messageData = JSON.parse(eventData);
+              const content = messageData.content || '';
 
-        // Append chunk to last assistant message (if not waiting for RAG end marker)
-        if (!accumulatedText.includes('__RAG_START__') || ragChunks !== undefined) {
-          setMessages((prev) => {
-            if (prev.length === 0) return prev;
-            const next = [...prev];
-            const last = next[next.length - 1];
-            if (last?.role === 'assistant') {
-              next[next.length - 1] = { ...last, content: (last.content ?? '') + chunk };
+              // Append content to the last assistant message
+              setMessages((prev) => {
+                if (prev.length === 0) return prev;
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last?.role === 'assistant') {
+                  next[next.length - 1] = { ...last, content: (last.content ?? '') + content };
+                }
+                return next;
+              });
+            } catch (e) {
+              console.error('Failed to parse message data:', e);
             }
-            return next;
-          });
+          } else if (eventType === 'done') {
+            // Stream completed
+            break;
+          }
         }
       }
 
@@ -1051,54 +1080,85 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
 
-      let accumulatedText = '';
+      let buffer = '';
       let ragChunks: RagChunk[] | undefined = undefined;
 
+      // SSE parser: processes Server-Sent Events from the stream
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        accumulatedText += chunk;
 
-        // Check for RAG metadata in accumulated text
-        if (!ragChunks && accumulatedText.includes('__RAG_START__')) {
-          const ragEndIndex = accumulatedText.indexOf('__RAG_END__');
-          if (ragEndIndex !== -1) {
-            const ragStartIndex = accumulatedText.indexOf('__RAG_START__') + '__RAG_START__'.length;
-            const ragJson = accumulatedText.substring(ragStartIndex, ragEndIndex);
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE events (events end with \n\n)
+        const events = buffer.split('\n\n');
+        // Keep the last incomplete event in the buffer
+        buffer = events.pop() || '';
+
+        for (const eventText of events) {
+          if (!eventText.trim()) continue;
+
+          // Parse SSE event format
+          const lines = eventText.split('\n');
+          let eventType = 'message'; // default event type
+          let eventData = '';
+
+          for (const line of lines) {
+            if (line.startsWith('event:')) {
+              eventType = line.substring(6).trim();
+            } else if (line.startsWith('data:')) {
+              eventData = line.substring(5).trim();
+            }
+            // id: and comment lines are ignored for now
+          }
+
+          // Handle different event types
+          if (eventType === 'heartbeat') {
+            // Heartbeat received, connection is alive
+            continue;
+          } else if (eventType === 'rag_metadata') {
+            // Parse RAG metadata
             try {
-              const ragData = JSON.parse(ragJson);
+              const ragData = JSON.parse(eventData);
               if (ragData.type === 'rag_metadata' && Array.isArray(ragData.chunks)) {
                 ragChunks = ragData.chunks;
+                // Update message with RAG chunks
+                setMessages((prev) => {
+                  if (prev.length === 0) return prev;
+                  const next = [...prev];
+                  const last = next[next.length - 1];
+                  if (last?.role === 'assistant') {
+                    next[next.length - 1] = { ...last, ragChunks: ragChunks };
+                  }
+                  return next;
+                });
               }
             } catch (e) {
               console.error('Failed to parse RAG metadata:', e);
             }
-            accumulatedText = accumulatedText.substring(ragEndIndex + '__RAG_END__'.length);
-            setMessages((prev) => {
-              if (prev.length === 0) return prev;
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last?.role === 'assistant') {
-                next[next.length - 1] = { ...last, ragChunks: ragChunks, content: accumulatedText.trimStart() };
-              }
-              return next;
-            });
-            continue;
-          }
-        }
+          } else if (eventType === 'message') {
+            // Parse message content
+            try {
+              const messageData = JSON.parse(eventData);
+              const content = messageData.content || '';
 
-        // Append chunk to last assistant message
-        if (!accumulatedText.includes('__RAG_START__') || ragChunks !== undefined) {
-          setMessages((prev) => {
-            if (prev.length === 0) return prev;
-            const next = [...prev];
-            const last = next[next.length - 1];
-            if (last?.role === 'assistant') {
-              next[next.length - 1] = { ...last, content: (last.content ?? '') + chunk };
+              // Append content to the last assistant message
+              setMessages((prev) => {
+                if (prev.length === 0) return prev;
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last?.role === 'assistant') {
+                  next[next.length - 1] = { ...last, content: (last.content ?? '') + content };
+                }
+                return next;
+              });
+            } catch (e) {
+              console.error('Failed to parse message data:', e);
             }
-            return next;
-          });
+          } else if (eventType === 'done') {
+            // Stream completed
+            break;
+          }
         }
       }
 

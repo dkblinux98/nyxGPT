@@ -1653,12 +1653,14 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
     This helper consolidates the streaming logic used by both versioned and legacy endpoints.
     It handles request ID capture and context setting for proper log traceability.
 
+    Now supports Server-Sent Events (SSE) framing with proper event types, IDs, and heartbeats.
+
     Args:
         request: FastAPI Request object containing state and configuration
         req: Chat request parameters
 
     Returns:
-        StreamingResponse configured for text/plain streaming
+        StreamingResponse configured for text/event-stream (SSE) streaming
 
     Raises:
         HTTPException: 422 for validation errors, 500 for server errors
@@ -1676,7 +1678,8 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
         # Capture request ID before entering generator (context may not propagate)
         req_id = request.state.request_id
 
-        def _stream_with_keepalive():
+        def _stream_sse():
+            """Generate SSE-formatted events from chat stream."""
             # Explicitly set request ID in context for streaming generator
             try:
                 request_id_var.set(req_id)
@@ -1684,8 +1687,15 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                 log.warning(f"Failed to set request ID in streaming context: {e}")
             # Continue regardless - streaming should work even if request ID fails
 
-            # Send an immediate keepalive to prevent client read timeouts
-            yield "\n"
+            import json
+            import time
+
+            event_id = 0
+
+            # Send an immediate heartbeat to establish connection
+            event_id += 1
+            yield f"event: heartbeat\ndata: {json.dumps({'timestamp': time.time()})}\nid: {event_id}\n\n"
+
             d = _chat_runtime_defaults(_req_cfg(request))
             chosen_model = req.model or d["default_model"]
 
@@ -1708,11 +1718,44 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                     # Convert RagFilters model to dict
                     kwargs["rag_filters"] = rag_filters_val.model_dump()
 
-            yield from chat_stream(req.prompt, **kwargs)
+            # Process the chat stream and wrap chunks in SSE format
+            for chunk in chat_stream(req.prompt, **kwargs):
+                event_id += 1
+
+                # Check if chunk contains RAG metadata markers
+                if "__RAG_START__" in chunk and "__RAG_END__" in chunk:
+                    # Extract RAG metadata and send as separate event
+                    rag_start = chunk.find("__RAG_START__") + len("__RAG_START__")
+                    rag_end = chunk.find("__RAG_END__")
+                    rag_json = chunk[rag_start:rag_end]
+
+                    # Send RAG metadata as separate event
+                    yield f"event: rag_metadata\ndata: {rag_json}\nid: {event_id}\n\n"
+
+                    # Send any text before/after RAG markers as message events
+                    text_before = chunk[: chunk.find("__RAG_START__")]
+                    text_after = chunk[rag_end + len("__RAG_END__") :]
+                    remaining_text = text_before + text_after
+
+                    if remaining_text:
+                        event_id += 1
+                        yield f"event: message\ndata: {json.dumps({'content': remaining_text})}\nid: {event_id}\n\n"
+                else:
+                    # Regular message content
+                    yield f"event: message\ndata: {json.dumps({'content': chunk})}\nid: {event_id}\n\n"
+
+            # Send done event
+            event_id += 1
+            yield f"event: done\ndata: {json.dumps({'event_id': event_id})}\nid: {event_id}\n\n"
 
         return StreamingResponse(
-            _stream_with_keepalive(),
-            media_type="text/plain; charset=utf-8",
+            _stream_sse(),
+            media_type="text/event-stream; charset=utf-8",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # Disable proxy buffering
+            },
         )
     except HTTPException:
         # Re-raise HTTP exceptions (e.g., 422 from validation above)

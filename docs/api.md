@@ -973,7 +973,7 @@ These controls allow you to balance answer quality, latency, and prompt size. Se
 
 ### `POST /api/v1/chat/stream`
 
-Stream a chat response token-by-token as plain text.
+Stream a chat response incrementally using Server-Sent Events (SSE) format.
 
 This endpoint is functionally equivalent to `/api/v1/chat` but returns the assistant response incrementally as it is generated, providing a much better user experience for interactive clients such as a TUI or web UI.
 
@@ -1009,8 +1009,50 @@ This endpoint is functionally equivalent to `/api/v1/chat` but returns the assis
 **Response:**
 
 - HTTP 200
-- `Content-Type: text/plain; charset=utf-8`
-- Body is streamed incrementally as text chunks
+- `Content-Type: text/event-stream; charset=utf-8`
+- `Cache-Control: no-cache`
+- `Connection: keep-alive`
+- Body is streamed as Server-Sent Events (SSE)
+
+**SSE Event Format:**
+
+The response uses standard SSE framing with the following event types:
+
+**1. Heartbeat Event** (sent immediately on connection):
+```
+event: heartbeat
+data: {"timestamp": 1234567890.123}
+id: 1
+
+```
+
+**2. Message Events** (content chunks):
+```
+event: message
+data: {"content": "Hello "}
+id: 2
+
+event: message
+data: {"content": "world!"}
+id: 3
+
+```
+
+**3. RAG Metadata Event** (when RAG is enabled):
+```
+event: rag_metadata
+data: {"type":"rag_metadata","chunks":[{"text":"...","score":0.95,"doc_id":"doc123","chunk_id":5}]}
+id: 4
+
+```
+
+**4. Done Event** (end of stream):
+```
+event: done
+data: {"event_id": 5}
+id: 5
+
+```
 
 Example using `curl`:
 
@@ -1020,25 +1062,62 @@ curl -N http://127.0.0.1:8000/api/v1/chat/stream \
   -d '{"prompt":"Write a haiku about streaming","session":"default"}'
 ```
 
-**RAG metadata in streaming responses:**
+**Client Implementation:**
 
-When RAG is enabled, the first chunk contains RAG metadata in the format:
+Clients should parse SSE events and handle each event type:
 
+```javascript
+const response = await fetch('/api/v1/chat/stream', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ prompt: 'Hello', session: 'test' })
+});
+
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+let buffer = '';
+
+while (true) {
+  const { value, done } = await reader.read();
+  if (done) break;
+
+  buffer += decoder.decode(value, { stream: true });
+  const events = buffer.split('\n\n');
+  buffer = events.pop() || '';
+
+  for (const eventText of events) {
+    const lines = eventText.split('\n');
+    let eventType = 'message';
+    let eventData = '';
+
+    for (const line of lines) {
+      if (line.startsWith('event:')) eventType = line.substring(6).trim();
+      else if (line.startsWith('data:')) eventData = line.substring(5).trim();
+    }
+
+    if (eventType === 'heartbeat') {
+      // Connection established
+    } else if (eventType === 'message') {
+      const data = JSON.parse(eventData);
+      // Append data.content to displayed message
+    } else if (eventType === 'rag_metadata') {
+      const ragData = JSON.parse(eventData);
+      // Store ragData.chunks for citation display
+    } else if (eventType === 'done') {
+      // Stream complete
+      break;
+    }
+  }
+}
 ```
-__RAG_START__{"type":"rag_metadata","chunks":[{"text":"...","score":0.95,"doc_id":"doc123","chunk_id":5}]}__RAG_END__
-```
-
-Clients should:
-1. Parse and extract RAG metadata from the first chunk
-2. Remove the `__RAG_START__`...`__RAG_END__` section from displayed content
-3. Display RAG citations separately from the streamed response text
 
 Notes:
 
 - The connection remains open until generation completes
 - Retrieved RAG context (if enabled) is injected *before* streaming begins
-- RAG metadata is emitted as the first chunk when RAG is enabled
+- Event IDs are incremental integers
 - The full response is persisted to the session once streaming completes
+- SSE format provides better structure and reliability than plain text streaming
 
 ---
 
