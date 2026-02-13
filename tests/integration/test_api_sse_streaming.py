@@ -64,8 +64,11 @@ def test_sse_event_format(require_ollama):
         # Verify we have a heartbeat event
         assert "event: heartbeat" in full_response
 
-        # Verify we have message events
-        assert "event: message" in full_response
+        # Verify we have metadata event
+        assert "event: metadata" in full_response
+
+        # Verify we have text events (new structured format)
+        assert "event: text" in full_response
 
         # Verify we have a done event
         assert "event: done" in full_response
@@ -108,7 +111,7 @@ def test_sse_heartbeat_event(require_ollama):
 
 
 def test_sse_message_events(require_ollama):
-    """Verify that message events contain proper JSON data."""
+    """Verify that text events contain proper JSON data with structured fields."""
     client = TestClient(app)
 
     with client.stream(
@@ -130,12 +133,12 @@ def test_sse_message_events(require_ollama):
         full_response = "".join(chunks)
         events = full_response.split("\n\n")
 
-        # Find message events
-        message_events = [e for e in events if "event: message" in e]
-        assert len(message_events) > 0, "Expected at least one message event"
+        # Find text events (new structured format)
+        text_events = [e for e in events if "event: text" in e]
+        assert len(text_events) > 0, "Expected at least one text event"
 
-        # Verify message event structure
-        for event in message_events[:3]:  # Check first 3 message events
+        # Verify text event structure
+        for event in text_events[:3]:  # Check first 3 text events
             lines = event.split("\n")
             event_type_line = [line for line in lines if line.startswith("event:")]
             data_line = [line for line in lines if line.startswith("data:")]
@@ -149,10 +152,12 @@ def test_sse_message_events(require_ollama):
             data_json = data_line[0][5:].strip()
             message_data = json.loads(data_json)
             assert "content" in message_data
+            assert "tokens" in message_data  # New: token count
+            assert "elapsed" in message_data  # New: elapsed time
 
 
 def test_sse_done_event(require_ollama):
-    """Verify that stream ends with a done event."""
+    """Verify that stream ends with a done event containing performance data."""
     client = TestClient(app)
 
     with client.stream(
@@ -188,6 +193,49 @@ def test_sse_done_event(require_ollama):
         data_json = data_line[5:].strip()
         done_data = json.loads(data_json)
         assert "event_id" in done_data
+        assert "total_tokens" in done_data  # New: total token count
+        assert "elapsed" in done_data  # New: total elapsed time
+
+
+def test_sse_metadata_event(require_ollama):
+    """Verify that streaming includes metadata event with session and model info."""
+    client = TestClient(app)
+
+    with client.stream(
+        "POST",
+        "/api/v1/chat/stream",
+        json={
+            "prompt": "Say hello",
+            "session": "test-sse-metadata",
+            "model": "llama3.1:8b",
+        },
+    ) as response:
+        assert response.status_code == 200
+
+        # Collect all chunks
+        chunks = []
+        for chunk in response.iter_text():
+            chunks.append(chunk)
+
+        full_response = "".join(chunks)
+        events = full_response.split("\n\n")
+
+        # Find metadata event
+        metadata_events = [e for e in events if "event: metadata" in e]
+        assert len(metadata_events) >= 1, "Expected at least one metadata event"
+
+        # Parse metadata event
+        metadata_event = metadata_events[0]
+        lines = metadata_event.split("\n")
+        data_line = [line for line in lines if line.startswith("data:")][0]
+        data_json = data_line[5:].strip()
+        metadata = json.loads(data_json)
+
+        assert "session" in metadata
+        assert "model" in metadata
+        assert "timestamp" in metadata
+        assert metadata["session"] == "test-sse-metadata"
+        assert metadata["model"] == "llama3.1:8b"
 
 
 def test_sse_event_ids_incremental(require_ollama):

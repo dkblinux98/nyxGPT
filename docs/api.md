@@ -1016,7 +1016,7 @@ This endpoint is functionally equivalent to `/api/v1/chat` but returns the assis
 
 **SSE Event Format:**
 
-The response uses standard SSE framing with the following event types:
+The response uses standard SSE framing with structured JSON events. Each event includes timing/performance data and incremental metrics:
 
 **1. Heartbeat Event** (sent immediately on connection):
 ```
@@ -1026,31 +1026,47 @@ id: 1
 
 ```
 
-**2. Message Events** (content chunks):
+**2. Metadata Event** (session and model information):
 ```
-event: message
-data: {"content": "Hello "}
+event: metadata
+data: {"session": "default", "model": "llama3.1:8b", "timestamp": 1234567890.123}
 id: 2
 
-event: message
-data: {"content": "world!"}
+```
+
+**3. Text Events** (content chunks with performance data):
+```
+event: text
+data: {"content": "Hello ", "tokens": 5, "elapsed": 0.123}
 id: 3
 
-```
-
-**3. RAG Metadata Event** (when RAG is enabled):
-```
-event: rag_metadata
-data: {"type":"rag_metadata","chunks":[{"text":"...","score":0.95,"doc_id":"doc123","chunk_id":5}]}
+event: text
+data: {"content": "world!", "tokens": 10, "elapsed": 0.456}
 id: 4
 
 ```
 
-**4. Done Event** (end of stream):
+**4. RAG Context Event** (when RAG is enabled):
+```
+event: rag_context
+data: {"type":"rag_metadata","chunks":[{"text":"...","score":0.95,"doc_id":"doc123","chunk_id":5}]}
+id: 5
+
+```
+
+**5. Error Event** (if an error occurs):
+```
+event: error
+data: {"error": "Connection timeout", "elapsed": 30.0}
+id: 6
+
+```
+
+**6. Done Event** (end of stream with final stats):
 ```
 event: done
-data: {"event_id": 5}
-id: 5
+data: {"event_id": 7, "total_tokens": 150, "elapsed": 2.345}
+id: 7
 
 ```
 
@@ -1087,7 +1103,7 @@ while (true) {
 
   for (const eventText of events) {
     const lines = eventText.split('\n');
-    let eventType = 'message';
+    let eventType = '';
     let eventData = '';
 
     for (const line of lines) {
@@ -1097,14 +1113,24 @@ while (true) {
 
     if (eventType === 'heartbeat') {
       // Connection established
-    } else if (eventType === 'message') {
+    } else if (eventType === 'metadata') {
+      const metadata = JSON.parse(eventData);
+      // Store session/model information (metadata.session, metadata.model)
+    } else if (eventType === 'text') {
       const data = JSON.parse(eventData);
       // Append data.content to displayed message
-    } else if (eventType === 'rag_metadata') {
+      // Optional: display token count (data.tokens) and elapsed time (data.elapsed)
+    } else if (eventType === 'rag_context') {
       const ragData = JSON.parse(eventData);
       // Store ragData.chunks for citation display
+    } else if (eventType === 'error') {
+      const errorData = JSON.parse(eventData);
+      // Display error message (errorData.error)
+      break;
     } else if (eventType === 'done') {
-      // Stream complete
+      const doneData = JSON.parse(eventData);
+      // Stream complete - optional: display final stats
+      // (doneData.total_tokens, doneData.elapsed)
       break;
     }
   }
@@ -1118,6 +1144,10 @@ Notes:
 - Event IDs are incremental integers
 - The full response is persisted to the session once streaming completes
 - SSE format provides better structure and reliability than plain text streaming
+- All events include structured JSON data with timing and performance metrics
+- Token counting is incremental (cumulative tokens generated so far)
+- Elapsed time is measured from stream start and included in text, error, and done events
+- Backward compatibility: clients can still handle legacy "message" and "rag_metadata" event names
 
 ---
 
