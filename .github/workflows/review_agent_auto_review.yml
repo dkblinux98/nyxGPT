@@ -320,8 +320,11 @@ jobs:
             "After 3 review cycles, the issue will be escalated to @${HUMAN_OWNER}.")
           gh pr comment "$PR" --body "$BODY"
 
+          # Trigger developer workflow to auto-fix review issues
+          gh issue comment "$ISSUE" --body "RETRY_IMPLEMENTATION"
+
           echo "::endgroup::"
-          echo "✓ Issue returned to developer-agent"
+          echo "✓ Issue returned to developer-agent, auto-fix triggered"
 
       - name: Post completion comment
         if: always() && (steps.parse_decision.outputs.decision == 'APPROVE' || steps.count.outputs.escalate == 'true')
