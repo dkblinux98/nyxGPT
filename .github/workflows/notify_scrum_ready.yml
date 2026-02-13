@@ -78,7 +78,11 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: '🤖 **Scrummaster Agent**: Signal received. Selecting next backlog issue...\n\n[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})'
+              body: (
+                '🤖 **Scrummaster Agent**: Signal received. ' +
+                'Selecting next backlog issue...\n\n' +
+                '[View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})'
+              )
             });
 
       - name: Select next issue
@@ -111,7 +115,10 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: '⚠️ **Scrummaster Agent**: No eligible issues found in Backlog status.\n\nAll work may be complete, or backlog needs replenishment.'
+              body: (
+                '⚠️ **Scrummaster Agent**: No eligible issues found in Backlog status.\n\n' +
+                'All work may be complete, or backlog needs replenishment.'
+              )
             });
 
       - name: Post selection comment
@@ -153,5 +160,10 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `🚀 **Scrummaster Agent**: Issue #${next_issue} has been moved to **In Progress** and assigned to @${dev_agent}\n\nDeveloper auto-implementation workflow will begin momentarily.\n\n[View issue](https://github.com/${context.repo.owner}/${context.repo.repo}/issues/${next_issue})`
+              body: (
+                `🚀 **Scrummaster Agent**: Issue #${next_issue} has been moved to ` +
+                `**In Progress** and assigned to @${dev_agent}\n\n` +
+                `Developer auto-implementation workflow will begin momentarily.\n\n` +
+                `[View issue](https://github.com/${context.repo.owner}/${context.repo.repo}/issues/${next_issue})`
+              )
             });

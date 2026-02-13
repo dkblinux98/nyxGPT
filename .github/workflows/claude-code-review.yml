@@ -23,9 +23,13 @@ jobs:
     # 3. Manual trigger via @review comment on PR
     # 4. Manual trigger via workflow_dispatch
     if: |
-      (github.event_name == 'pull_request' && github.event.action == 'review_requested' && github.event.requested_reviewer.login == vars.REVIEW_AGENT) ||
-      (github.event_name == 'pull_request' && github.event.action == 'synchronize' && contains(toJSON(github.event.pull_request.requested_reviewers.*.login), vars.REVIEW_AGENT)) ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@review')) ||
+      (github.event_name == 'pull_request' && github.event.action == 'review_requested' &&
+       github.event.requested_reviewer.login == vars.REVIEW_AGENT) ||
+      (github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
+       contains(toJSON(github.event.pull_request.requested_reviewers.*.login),
+                vars.REVIEW_AGENT)) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       contains(github.event.comment.body, '@review')) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -107,7 +111,8 @@ jobs:
           CHANGED_FILES=$(gh pr view "$PR" --json files --jq '.files[].path')
 
           # Check if source code changed (src/, excluding test files)
-          SRC_CODE_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^src/.*\.py$' | grep -v -E '(test_|_test\.py|tests/)' || echo "")
+          SRC_CODE_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^src/.*\.py$' |
+                             grep -v -E '(test_|_test\.py|tests/)' || echo "")
 
           # Check if test files changed
           TESTS_CHANGED=$(echo "$CHANGED_FILES" | grep -E '(^tests/|test_.*\.py$|.*_test\.py$)' || echo "")
@@ -146,7 +151,9 @@ jobs:
           DOCS_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^(docs/|README\.md|.*\.md$)' || echo "")
 
           # Check if this is a user-facing change (API, CLI, config)
-          USER_FACING=$(echo "$CHANGED_FILES" | grep -E '^(src/nyxgpt/(api|cli|app)\.py|example\.config\.ini)' || echo "")
+          USER_FACING=$(echo "$CHANGED_FILES" |
+                        grep -E '^(src/nyxgpt/(api|cli|app)\.py|example\.config\.ini)' ||
+                        echo "")
 
           if [[ -n "$CODE_CHANGED" ]]; then
             echo "code_changed=true" >> "$GITHUB_OUTPUT"
@@ -215,12 +222,17 @@ jobs:
             - Pytest: ${{ steps.test.outputs.pytest_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
             - Code changed: ${{ steps.test_coverage.outputs.code_changed }}
             - Tests updated: ${{ steps.test_coverage.outputs.tests_updated }}
-            - Code changed without test updates: ${{ steps.test_coverage.outputs.code_changed == 'true' && steps.test_coverage.outputs.tests_updated == 'false' && '❌ YES (BLOCKS APPROVE)' || '✅ NO' }}
+            - Code changed without test updates: >-
+              ${{ steps.test_coverage.outputs.code_changed == 'true' &&
+                 steps.test_coverage.outputs.tests_updated == 'false' &&
+                 '❌ YES (BLOCKS APPROVE)' || '✅ NO' }}
 
             **Documentation Status:**
             - Code changed: ${{ steps.docs.outputs.code_changed }}
             - Docs updated: ${{ steps.docs.outputs.docs_updated }}
-            - User-facing changes without docs: ${{ steps.docs.outputs.user_facing_undocumented == 'true' && '❌ YES (BLOCKS APPROVE)' || '✅ NO' }}
+            - User-facing changes without docs: >-
+              ${{ steps.docs.outputs.user_facing_undocumented == 'true' &&
+                 '❌ YES (BLOCKS APPROVE)' || '✅ NO' }}
 
             MANDATORY: You MUST REQUEST_CHANGES if:
             - ANY linter or test failed
@@ -304,7 +316,8 @@ jobs:
 
             ### Summary
             [Brief summary of review findings]
-            ${{ steps.previous_review.outputs.is_rereview == 'true' && '[For re-reviews: State whether fixes resolved previous issues]' || '' }}
+            ${{ steps.previous_review.outputs.is_rereview == 'true' &&
+               '[For re-reviews: State whether fixes resolved previous issues]' || '' }}
 
             ### Test/Linter Results
             - All tests: [PASS/FAIL]
@@ -331,7 +344,8 @@ jobs:
 
             ### Findings
             [Detailed findings organized by severity]
-            ${{ steps.previous_review.outputs.is_rereview == 'true' && '[For re-reviews: Only include NEW issues found, not previously reported ones]' || '' }}
+            ${{ steps.previous_review.outputs.is_rereview == 'true' &&
+               '[For re-reviews: Only include NEW issues found, not previously reported ones]' || '' }}
 
             ### Critical Issues (if any)
             - **[Title]**: [Description, file:line references, how to fix]
@@ -363,5 +377,5 @@ jobs:
           # or https://code.claude.com/docs/en/cli-reference for available options
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
-
-      # Note: review_agent_auto_review.yml triggers automatically on the comment via issue_comment event
+          # Note: review_agent_auto_review.yml triggers automatically on the comment
+          # via issue_comment event

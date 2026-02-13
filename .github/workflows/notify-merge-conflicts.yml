@@ -127,7 +127,10 @@ jobs:
                   "fields": [
                     {
                       "type": "mrkdwn",
-                      "text": "*PR:*\n<${{ steps.check.outputs.pr_url }}|#${{ steps.check.outputs.pr_number }} - ${{ steps.check.outputs.pr_title }}>"
+                      "text": >-
+                        *PR:*\n<${{ steps.check.outputs.pr_url }}|#${{
+                        steps.check.outputs.pr_number }} - ${{
+                        steps.check.outputs.pr_title }}>
                     },
                     {
                       "type": "mrkdwn",
@@ -135,7 +138,9 @@ jobs:
                     },
                     {
                       "type": "mrkdwn",
-                      "text": "*Branches:*\n`${{ steps.check.outputs.head_branch }}` → `${{ steps.check.outputs.base_branch }}`"
+                      "text": >-
+                        *Branches:*\n`${{ steps.check.outputs.head_branch }}`
+                        → `${{ steps.check.outputs.base_branch }}`
                     },
                     {
                       "type": "mrkdwn",
@@ -147,7 +152,11 @@ jobs:
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "This PR has merge conflicts with the base branch and cannot be merged until they are resolved. Issue has been assigned to @${{ vars.HUMAN_OWNER }} and remains in 'In Review' status."
+                    "text": >-
+                      This PR has merge conflicts with the base branch
+                      and cannot be merged until they are resolved.
+                      Issue has been assigned to @${{ vars.HUMAN_OWNER }}
+                      and remains in 'In Review' status.
                   }
                 },
                 {

@@ -69,26 +69,32 @@ jobs:
           echo "Checking CI status for PR #$PR..."
 
           # Get CI check status
-          CI_STATUS=$(gh pr view "$PR" --repo "${{ github.repository }}" --json statusCheckRollup --jq '.statusCheckRollup[].state' | grep -v "SUCCESS" | head -1 || echo "SUCCESS")
+          CI_STATUS=$(gh pr view "$PR" --repo "${{ github.repository }}" \
+                      --json statusCheckRollup --jq '.statusCheckRollup[].state' |
+                      grep -v "SUCCESS" | head -1 || echo "SUCCESS")
 
           if [[ "$CI_STATUS" != "SUCCESS" ]]; then
             echo "CI is not green (status: $CI_STATUS)"
 
-            # Set parent issue to In Progress and assign to developer-agent (per review-runbook.md section 3)
-            ISSUE=$(gh pr view "$PR" --repo "${{ github.repository }}" --json body -q '.body' | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
+            # Set parent issue to In Progress and assign to developer-agent
+            # (per review-runbook.md section 3)
+            ISSUE=$(gh pr view "$PR" --repo "${{ github.repository }}" --json body -q '.body' |
+                    sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
 
             if [[ -n "$ISSUE" ]]; then
-              echo "Setting issue #$ISSUE to In Progress and assigning to developer-agent for CI fixes"
-              gh pr comment "$PR" --repo "${{ github.repository }}" --body "⚠️ **Review Agent**: Auto-fix skipped because CI is not green.
+              echo "Setting issue #$ISSUE to In Progress and assigning to developer-agent"
+              gh pr comment "$PR" --repo "${{ github.repository }}" --body \
+                "⚠️ **Review Agent**: Auto-fix skipped because CI is not green.
 
           CI Status: $CI_STATUS
 
-          Issue #$ISSUE has been set to 'In Progress' and assigned to developer-agent to fix CI failures first."
+          Issue #$ISSUE has been set to 'In Progress' and assigned to developer-agent to fix CI failures."
 
               # Note: Would call set_issue_status and issue_assign_only here, but they require full agent script setup
               # For now, just post comment and exit - developer will be notified
             else
-              gh pr comment "$PR" --repo "${{ github.repository }}" --body "⚠️ **Review Agent**: Auto-fix skipped because CI is not green. Please fix CI failures first."
+              gh pr comment "$PR" --repo "${{ github.repository }}" --body \
+                "⚠️ **Review Agent**: Auto-fix skipped because CI is not green. Please fix CI failures first."
             fi
 
             exit 0
@@ -153,7 +159,8 @@ jobs:
           # Only count REQUEST_CHANGES iterations, not APPROVE comments
           COUNT=$(gh pr view "$PR" --repo "${{ github.repository }}" --json comments --jq '
             [.comments[] |
-             select((.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "${{ vars.DEV_AGENT }}") and
+             select((.author.login == "claude" or .author.login == "claude[bot]" or
+                     .author.login == "${{ vars.DEV_AGENT }}") and
                     (.body | startswith("## Code Review - REQUEST_CHANGES")))] |
             length
           ')
@@ -177,7 +184,9 @@ jobs:
 
           echo "Escalating PR #$PR to human after 3 review attempts"
 
-          gh pr comment "$PR" --repo "${{ github.repository }}" --body "@${{ vars.HUMAN_OWNER }} claude bot has attempted to review and fix this PR 3 times but issues persist. Manual intervention is required."
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body \
+            "@${{ vars.HUMAN_OWNER }} claude bot has attempted to review and fix this PR 3 times.
+            Issues persist. Manual intervention is required."
 
           gh pr edit "$PR" --repo "${{ github.repository }}" --add-assignee "${{ vars.HUMAN_OWNER }}"
 
@@ -189,7 +198,8 @@ jobs:
         id: issue
         run: |
           PR="${{ steps.pr.outputs.pr_number }}"
-          ISSUE=$(gh pr view "$PR" --repo "${{ github.repository }}" --json body -q '.body' | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
+          ISSUE=$(gh pr view "$PR" --repo "${{ github.repository }}" --json body -q '.body' |
+                  sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
 
           if [[ -z "$ISSUE" ]]; then
             echo "ERROR: Could not extract issue number from PR body"
@@ -232,7 +242,8 @@ jobs:
           COUNT="${{ steps.count.outputs.loop_count }}"
           NEXT_ITERATION=$(($COUNT + 1))
 
-          gh pr comment "$PR" --repo "${{ github.repository }}" --body "🔧 **Review Agent**: Auto-fix loop iteration $NEXT_ITERATION/3 starting...
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body \
+            "🔧 **Review Agent**: Auto-fix loop iteration $NEXT_ITERATION/3 starting...
 
           Analyzing review findings and implementing fixes.
 
@@ -250,7 +261,8 @@ jobs:
           # Accept comments from claude[bot] or developer-agent
           REVIEW_BODY=$(gh pr view "$PR" --repo "${{ github.repository }}" --json comments --jq '
             [.comments[] |
-             select((.author.login == "claude" or .author.login == "claude[bot]" or .author.login == "${{ vars.DEV_AGENT }}") and
+             select((.author.login == "claude" or .author.login == "claude[bot]" or
+                     .author.login == "${{ vars.DEV_AGENT }}") and
                     (.body | startswith("## Code Review - REQUEST_CHANGES")))] |
             last |
             .body
@@ -269,13 +281,17 @@ jobs:
 
           # Validate presence of Critical or Medium issues sections OR CI/test failures
           # REQUEST_CHANGES can be for code issues OR test failures
-          HAS_CODE_ISSUES=$(echo "$REVIEW_BODY" | grep -qE "^### (Critical|Medium) Issues" && echo "true" || echo "false")
-          HAS_CI_FAILURES=$(echo "$REVIEW_BODY" | grep -qiE "(test.*fail|mypy.*fail|ruff.*fail|black.*fail|CI.*fail|linter.*fail)" && echo "true" || echo "false")
+          HAS_CODE_ISSUES=$(echo "$REVIEW_BODY" | grep -qE "^### (Critical|Medium) Issues" &&
+                            echo "true" || echo "false")
+          HAS_CI_FAILURES=$(echo "$REVIEW_BODY" |
+                            grep -qiE "(test.*fail|mypy.*fail|ruff.*fail|black.*fail|CI.*fail|linter.*fail)" &&
+                            echo "true" || echo "false")
 
           if [[ "$HAS_CODE_ISSUES" == "false" && "$HAS_CI_FAILURES" == "false" ]]; then
-            echo "WARNING: Review has no Critical/Medium issues and no CI/test failures mentioned"
-            echo "This may be a malformed review - skipping auto-fix"
-            gh pr comment "$PR" --repo "${{ github.repository }}" --body "⚠️ **Review Agent**: Auto-fix skipped - review comment appears malformed (no Critical/Medium issues or CI failures found).
+            echo "WARNING: Review has no Critical/Medium issues and no CI/test failures"
+            echo "This may be a malformed review - skipping auto-fix logging"
+            gh pr comment "$PR" --repo "${{ github.repository }}" --body \
+              "⚠️ **Review Agent**: Auto-fix skipped - review comment malformed (no Critical/Medium issues).
 
           @${{ vars.HUMAN_OWNER }} Please review manually."
             exit 1
@@ -286,16 +302,19 @@ jobs:
             echo "Review indicates CI/test failures only (no code issues)"
             echo "Auto-fix cannot resolve test failures - developer intervention required"
 
-            ISSUE=$(gh pr view "$PR" --repo "${{ github.repository }}" --json body -q '.body' | sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
+            ISSUE=$(gh pr view "$PR" --repo "${{ github.repository }}" --json body -q '.body' |
+                    sed -n 's/.*Closes #\([0-9]*\).*/\1/p' | head -1)
 
             if [[ -n "$ISSUE" ]]; then
-              gh pr comment "$PR" --repo "${{ github.repository }}" --body "⚠️ **Review Agent**: Auto-fix skipped - review indicates CI/test failures only.
+              gh pr comment "$PR" --repo "${{ github.repository }}" --body \
+                "⚠️ **Review Agent**: Auto-fix skipped - review indicates CI/test failures only.
 
-          Issue #$ISSUE has been set to 'In Progress' and assigned to developer-agent to fix test failures.
+          Issue #$ISSUE has been set to 'In Progress' and assigned to developer-agent.
 
-          Code issues were resolved, but tests are still failing. Developer must investigate and fix test failures."
+          Code issues were resolved, but tests are still failing. Developer must fix test failures."
             else
-              gh pr comment "$PR" --repo "${{ github.repository }}" --body "⚠️ **Review Agent**: Auto-fix skipped - review indicates CI/test failures only.
+              gh pr comment "$PR" --repo "${{ github.repository }}" --body \
+                "⚠️ **Review Agent**: Auto-fix skipped - review indicates CI/test failures only.
 
           Developer must fix test failures before merge."
             fi
@@ -351,21 +370,25 @@ jobs:
 
             ## Review Findings
 
-            The code review findings are in `${{ steps.findings.outputs.findings_file }}`. Read that file to see all the issues.
+            The code review findings are in `${{ steps.findings.outputs.findings_file }}`.
+            Read that file to see all the issues.
 
             ## Your Task
 
-            Fix ALL Critical and Medium issues identified in the code review. DO NOT fix Minor issues (they are style/nits and don't block merge).
+            Fix ALL Critical and Medium issues identified in the code review.
+            DO NOT fix Minor issues (they are style/nits and don't block merge).
 
             ## Requirements
 
-            1. Read and parse `${{ steps.findings.outputs.findings_file }}` to understand all Critical and Medium issues
+            1. Read and parse `${{ steps.findings.outputs.findings_file }}` to understand all
+               Critical and Medium issues
             2. Fix each issue thoroughly with proper testing
             3. Run relevant tests to verify your fixes work
             4. Make a SINGLE commit with all fixes included
             5. Use this exact commit message format:
                ```
-               fix: address code review findings (review loop $((${{ steps.count.outputs.loop_count }} + 1))) (#${{ steps.issue.outputs.issue_number }})
+               fix: address code review findings (review loop $((${{ steps.count.outputs.loop_count }}
+                    + 1))) (#${{ steps.issue.outputs.issue_number }})
                ```
             6. Push the commit to update the PR
 
@@ -374,7 +397,8 @@ jobs:
             - You are already on the PR branch `${{ steps.branch.outputs.branch_name }}`
             - All fixes must be in ONE commit (not multiple commits)
             - After you push, the PR will be automatically re-reviewed
-            - This is iteration $((${{ steps.count.outputs.loop_count }} + 1)) of maximum 3 loops
+            - This is iteration $((${{ steps.count.outputs.loop_count }} + 1)) of maximum 3
+              loops
 
             Begin by reading the review findings file, then implement all the fixes.
 
@@ -385,17 +409,21 @@ jobs:
           COUNT="${{ steps.count.outputs.loop_count }}"
           NEXT_ITERATION=$(($COUNT + 1))
 
-          gh pr comment "$PR" --repo "${{ github.repository }}" --body "✅ **Review Agent**: Auto-fix iteration $NEXT_ITERATION/3 complete.
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body \
+            "✅ **Review Agent**: Auto-fix iteration $NEXT_ITERATION/3 complete.
 
-          Fixes have been pushed to branch \`${{ steps.branch.outputs.branch_name }}\`. The PR will be automatically re-reviewed shortly."
+          Fixes have been pushed to branch \`${{ steps.branch.outputs.branch_name }}\`.
+          The PR will be automatically re-reviewed shortly."
 
       - name: Post fix failure comment
         if: steps.count.outputs.escalate == 'false' && failure()
         run: |
           PR="${{ steps.pr.outputs.pr_number }}"
 
-          gh pr comment "$PR" --repo "${{ github.repository }}" --body "❌ **Review Agent**: Auto-fix failed during execution.
+          gh pr comment "$PR" --repo "${{ github.repository }}" --body \
+            "❌ **Review Agent**: Auto-fix failed during execution.
 
-          @${{ vars.HUMAN_OWNER }} Manual intervention required. See [workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details."
+          @${{ vars.HUMAN_OWNER }} Manual intervention required.
+          See workflow run for details: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           gh pr edit "$PR" --repo "${{ github.repository }}" --add-assignee "${{ vars.HUMAN_OWNER }}"
