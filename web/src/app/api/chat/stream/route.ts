@@ -67,7 +67,16 @@ export async function POST(req: NextRequest) {
   try {
     upstream = await fetch(upstreamUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        // Client capability hints for content negotiation
+        "Accept": "text/event-stream",
+        "X-Client-Supports-SSE": "true",
+        "X-Client-Supports-Structured-Events": "true",
+        "X-Client-Supports-Streaming": "true",
+        "X-Client-Version": "web-ui/1.0.0",
+        "X-Client-Max-Event-Size": "0",  // 0 = unlimited
+      },
       body: JSON.stringify(body),
       // @ts-expect-error - Next/undici fetch supports dispatcher
       dispatcher: agent,

@@ -1149,6 +1149,100 @@ Notes:
 - Elapsed time is measured from stream start and included in text, error, and done events
 - Backward compatibility: clients can still handle legacy "message" and "rag_metadata" event names
 
+### Client Capability Negotiation
+
+The streaming endpoint supports **client capability hints** for content negotiation, allowing the server to adapt response format based on client capabilities. This enables graceful degradation for legacy clients while providing enhanced features for modern clients.
+
+**Supported Client Hint Headers:**
+
+| Header | Values | Description |
+|--------|--------|-------------|
+| `Accept` | `text/event-stream` | Standard HTTP Accept header for SSE |
+| `X-Client-Supports-SSE` | `true`, `false` | Explicit SSE capability flag |
+| `X-Client-Supports-Structured-Events` | `true`, `false` | Support for typed events (heartbeat, metadata, text, done, error) |
+| `X-Client-Supports-Streaming` | `true`, `false` | Support for streaming responses (default: true) |
+| `X-Client-Version` | String | Client version identifier (e.g., "web-ui/1.0.0") |
+| `X-Client-Max-Event-Size` | Integer | Maximum event payload size in bytes (0 = unlimited) |
+
+**Server Response Headers:**
+
+The server responds with its own capability headers for feature detection:
+
+| Header | Value | Description |
+|--------|-------|-------------|
+| `X-Server-Supports-SSE` | `true` | Server supports Server-Sent Events |
+| `X-Server-Supports-Structured-Events` | `true` | Server supports structured event types |
+| `X-Server-Supports-Streaming` | `true` | Server supports streaming responses |
+| `X-Server-Version` | `nyxgpt/1.0.0` | Server version identifier |
+
+**Response Format Adaptation:**
+
+The server adapts the streaming response based on client capabilities:
+
+1. **Modern clients** (SSE + structured events):
+   - Content-Type: `text/event-stream`
+   - Full structured SSE events (heartbeat, metadata, text, done, error)
+   - Event IDs and timing metadata
+
+2. **SSE-only clients** (SSE without structured events):
+   - Content-Type: `text/event-stream`
+   - Simple SSE `data:` events without typed event names
+   - No metadata or done events
+
+3. **Legacy clients** (no SSE support):
+   - Content-Type: `text/plain`
+   - Plain text streaming without SSE framing
+   - No event structure or metadata
+
+**Example - Modern Client Request:**
+
+```bash
+curl -N http://127.0.0.1:8000/api/v1/chat/stream \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -H "X-Client-Supports-SSE: true" \
+  -H "X-Client-Supports-Structured-Events: true" \
+  -H "X-Client-Version: cli/1.0.0" \
+  -d '{"prompt":"Hello","session":"test"}'
+```
+
+**Example - Legacy Client Request:**
+
+```bash
+curl -N http://127.0.0.1:8000/api/v1/chat/stream \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/plain" \
+  -H "X-Client-Supports-SSE: false" \
+  -d '{"prompt":"Hello","session":"test"}'
+```
+
+**JavaScript/TypeScript Client Example:**
+
+```typescript
+const response = await fetch('/api/v1/chat/stream', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Accept': 'text/event-stream',
+    'X-Client-Supports-SSE': 'true',
+    'X-Client-Supports-Structured-Events': 'true',
+    'X-Client-Version': 'web-ui/1.0.0',
+  },
+  body: JSON.stringify({ prompt: 'Hello', session: 'test' })
+});
+
+// Check server capabilities from response headers
+const serverSupportsSSE = response.headers.get('X-Server-Supports-SSE');
+const serverVersion = response.headers.get('X-Server-Version');
+```
+
+**Benefits:**
+
+- **Backwards compatibility**: Legacy clients continue to work without modifications
+- **Progressive enhancement**: Modern clients receive enhanced features (typed events, metadata, timing)
+- **Version negotiation**: Clients and servers can coordinate on feature sets
+- **Graceful degradation**: Server adapts to client capabilities automatically
+
 ---
 
 ## RAG endpoints
