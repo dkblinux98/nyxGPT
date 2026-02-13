@@ -35,6 +35,72 @@ require_gh_auth() {
 }
 
 # -------------------------
+# Error Classification (for intelligent retry)
+# -------------------------
+
+# Classifies error messages into retriable vs fatal
+# Returns: "retriable", "fatal", or "unknown"
+classify_error() {
+  local error_text="$1"
+
+  # Fatal errors - do NOT retry these
+  if echo "$error_text" | grep -qE "is not OPEN.*state=CLOSED"; then
+    # Issue closed - could be intentional or accidental (Phase 2 will distinguish)
+    echo "fatal:issue_closed"
+    return
+  fi
+
+  if echo "$error_text" | grep -qE "Authentication failed|permission denied|Unauthorized"; then
+    # Auth failures won't fix themselves
+    echo "fatal:auth_failure"
+    return
+  fi
+
+  if echo "$error_text" | grep -qE "already merged|PR.*merged"; then
+    # Work already complete
+    echo "fatal:already_merged"
+    return
+  fi
+
+  # Retriable errors - these might resolve with retry
+  if echo "$error_text" | grep -qE "API rate limit|rate limit exceeded"; then
+    echo "retriable:rate_limit"
+    return
+  fi
+
+  if echo "$error_text" | grep -qE "network.*timeout|connection.*timed out|Connection reset"; then
+    echo "retriable:network_timeout"
+    return
+  fi
+
+  if echo "$error_text" | grep -qE "not a commit|stale ref|couldn't find remote ref"; then
+    echo "retriable:stale_ref"
+    return
+  fi
+
+  if echo "$error_text" | grep -qE "test.*failed|pytest.*FAILED|FAILED.*test"; then
+    # Test failures - let the 3-attempt fix loop handle these
+    echo "retriable:test_failure"
+    return
+  fi
+
+  # Unknown - default to fatal to avoid wasting retries
+  echo "unknown"
+}
+
+# Check if error type is retriable
+is_retriable_error() {
+  local error_class="$1"
+  [[ "$error_class" == retriable:* ]]
+}
+
+# Check if error type is fatal
+is_fatal_error() {
+  local error_class="$1"
+  [[ "$error_class" == fatal:* ]]
+}
+
+# -------------------------
 # Config (from ~/.nyxGPT/config.ini)
 # -------------------------
 CONFIG_FILE="${NYXGPT_CONFIG_FILE:-$HOME/.nyxGPT/config.ini}"

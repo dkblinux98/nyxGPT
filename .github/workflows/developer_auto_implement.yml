@@ -864,8 +864,50 @@ jobs:
                     `[View PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${pr_number})`
             });
 
-      - name: Auto-retry on failure (Option 3)
+      - name: Classify error (Phase 1)
         if: failure()
+        id: classify_error
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+        run: |
+          set +e  # Don't exit on error - we're analyzing the error
+
+          echo "::group::Extracting error from workflow logs"
+
+          # Get error messages from this workflow run
+          ERROR_LOG=$(gh run view ${{ github.run_id }} --log 2>&1 | \
+            grep -E "\[error\]|Error:|fatal:|FAILED" | \
+            head -20)
+
+          echo "Error messages found:"
+          echo "$ERROR_LOG"
+          echo "::endgroup::"
+
+          # Source the library to get classification functions
+          source scripts/agents/lib/gh_project.sh
+
+          # Classify the error
+          ERROR_CLASS=$(classify_error "$ERROR_LOG")
+
+          echo "::notice::Error classification: $ERROR_CLASS"
+          echo "error_class=$ERROR_CLASS" >> "$GITHUB_OUTPUT"
+
+          # Determine if retriable
+          if is_retriable_error "$ERROR_CLASS"; then
+            echo "retriable=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Error is retriable - will attempt auto-retry"
+          elif is_fatal_error "$ERROR_CLASS"; then
+            echo "retriable=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Error is fatal - will NOT retry (would be futile)"
+          else
+            # Unknown - default to not retriable (conservative approach)
+            echo "retriable=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Error type unknown - defaulting to no retry"
+          fi
+
+      - name: Auto-retry on failure (Phase 1 - retriable errors only)
+        if: failure() && steps.classify_error.outputs.retriable == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -873,6 +915,7 @@ jobs:
             const issue_number = context.payload.issue.number;
             const repo = context.repo.owner + '/' + context.repo.repo;
             const runId = context.runId;
+            const errorClass = '${{ steps.classify_error.outputs.error_class }}';
 
             // Count existing RETRY_IMPLEMENTATION comments to avoid infinite loops
             const comments = await github.rest.issues.listComments({
@@ -915,7 +958,9 @@ jobs:
               repo: context.repo.repo,
               issue_number,
               body: `⚠️ **Developer Agent**: Workflow failed (attempt ${retryCount + 1}/${MAX_RETRIES}).\n\n` +
-                    `**Auto-retry triggered.** The agent will attempt to:\n` +
+                    `**Error type:** ${errorClass} (retriable)\n` +
+                    `**Action:** Auto-retry triggered - this type of error may resolve with retry.\n\n` +
+                    `The agent will attempt to:\n` +
                     `1. Diagnose and fix any infrastructure issues\n` +
                     `2. Handle branch creation/checkout problems\n` +
                     `3. Retry the implementation\n\n` +
@@ -923,4 +968,48 @@ jobs:
                     `RETRY_IMPLEMENTATION`
             });
 
-            core.notice(`Auto-retry triggered (${retryCount + 1}/${MAX_RETRIES})`);
+            core.notice(`Auto-retry triggered (${retryCount + 1}/${MAX_RETRIES}) for ${errorClass}`);
+
+      - name: Escalate fatal error (Phase 1 - no retry)
+        if: failure() && steps.classify_error.outputs.retriable == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const repo = context.repo.owner + '/' + context.repo.repo;
+            const runId = context.runId;
+            const errorClass = '${{ steps.classify_error.outputs.error_class }}';
+
+            // Map error types to human-friendly explanations
+            const errorExplanations = {
+              'fatal:issue_closed': 'Issue is closed. This may be intentional or accidental.',
+              'fatal:auth_failure': 'Authentication failed. Requires admin intervention to ' +
+                                    'fix secrets/permissions.',
+              'fatal:already_merged': 'Work already completed in a merged PR.',
+              'unknown': 'Error type could not be determined. Manual investigation needed.'
+            };
+
+            const explanation = errorExplanations[errorClass] || 'Unrecognized error type.';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: `❌ **Developer Agent**: Workflow failed with non-retriable error.\n\n` +
+                    `**Error type:** ${errorClass}\n` +
+                    `**Why no auto-retry:** ${explanation}\n\n` +
+                    `Automatic retries would not resolve this type of error. ` +
+                    `Manual intervention is required.\n\n` +
+                    `**Next steps:**\n` +
+                    `1. Review the [failed workflow logs](https://github.com/${repo}/actions/runs/${runId})\n` +
+                    `2. Address the root cause:\n` +
+                    `   - **issue_closed:** Check if issue should be reopened or work is complete\n` +
+                    `   - **auth_failure:** Verify repository secrets and permissions\n` +
+                    `   - **already_merged:** Work may already be done, check PRs\n` +
+                    `   - **unknown:** Investigate logs for specific error details\n` +
+                    `3. Once fixed, comment \`RETRY_IMPLEMENTATION\` to retry\n\n` +
+                    `**Note:** Phase 2 intelligent analysis will auto-fix many of these errors.`
+            });
+
+            core.setFailed(`Fatal error (${errorClass}) - no auto-retry`);
