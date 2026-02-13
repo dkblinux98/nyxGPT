@@ -138,14 +138,26 @@ if [[ -z "$body_file" ]]; then
   tmp_body="$(mktemp)"
   body_file="$tmp_body"
 
+  # Check if this is an Acceptance Failure issue that blocks another issue
+  BLOCKED_ISSUE=$(gh issue view "$ISSUE" --repo "$REPO" --json comments --jq '.comments[] | select(.author.login == env.GITHUB_USER or .author.login == "github-actions[bot]" or .author.login == env.DEV_AGENT) | .body' | grep -oP "Blocks #\K\d+" | head -1 || echo "")
+
   {
+    # Include Closes for both issues if this is an Acceptance Failure
     echo "Closes #${ISSUE}"
+    if [[ -n "$BLOCKED_ISSUE" ]]; then
+      echo "Closes #${BLOCKED_ISSUE}"
+      echo
+      echo "> **Note:** This PR completes both issue #${ISSUE} (Acceptance Failure) and the original issue #${BLOCKED_ISSUE}."
+    fi
     echo
     echo "## Summary"
     echo "$summary"
     echo
     echo "## Context"
     echo "- Issue: ${issue_url}"
+    if [[ -n "$BLOCKED_ISSUE" ]]; then
+      echo "- Completes original issue: #${BLOCKED_ISSUE} (this is an Acceptance Failure)"
+    fi
     [[ -n "$milestone_title" ]] && echo "- Milestone: ${milestone_title}" || echo "- Milestone: (none)"
     echo "- Label:"
     echo "$labels_md"

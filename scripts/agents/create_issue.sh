@@ -432,10 +432,43 @@ fi
 # --- Step 4: Set relationships ---
 if [[ -n "$BLOCKS" ]]; then
   echo "[create-issue] Setting blocking relationship..." >&2
+
+  # Check if blocked issue is closed
+  BLOCKED_STATE=$(gh issue view "$BLOCKS" --repo "${REPO_OWNER}/${REPO_NAME}" --json state --jq '.state')
+
+  if [[ "$BLOCKED_STATE" == "CLOSED" ]]; then
+    echo "[create-issue]   Blocked issue #${BLOCKS} is closed - reopening..." >&2
+
+    # Reopen the blocked issue
+    gh issue reopen "$BLOCKS" --repo "${REPO_OWNER}/${REPO_NAME}"
+
+    # Post comment explaining why it was reopened
+    gh issue comment "$BLOCKS" --repo "${REPO_OWNER}/${REPO_NAME}" --body "$(cat <<EOF
+⚠️ **Reopened due to Acceptance Failure**
+
+This issue was reopened because issue #${ISSUE_NUMBER} was created to address acceptance failures from the previous implementation.
+
+**Acceptance Failure Issue:** #${ISSUE_NUMBER}
+**Reason:** Unresolved issues from code review that must be completed before this work can be considered done.
+
+**Next Steps:**
+- Issue #${ISSUE_NUMBER} will be implemented
+- When #${ISSUE_NUMBER} is complete and merged, both issues will close together
+- The PR for #${ISSUE_NUMBER} will include: \`Closes #${ISSUE_NUMBER}\` and \`Closes #${BLOCKS}\`
+EOF
+)"
+    echo "[create-issue]   ✓ Reopened issue #${BLOCKS}" >&2
+  fi
+
   # Add "Blocks #N" to issue body via edit
   gh issue edit "$ISSUE_NUMBER" --add-label "blocks" --repo "${REPO_OWNER}/${REPO_NAME}" 2>/dev/null || true
-  # Post comment to create relationship
+
+  # Post comment to create blocking relationship
   gh issue comment "$ISSUE_NUMBER" --body "Blocks #${BLOCKS}" --repo "${REPO_OWNER}/${REPO_NAME}"
+
+  # Post comment to blocked issue
+  gh issue comment "$BLOCKS" --repo "${REPO_OWNER}/${REPO_NAME}" --body "Blocked by #${ISSUE_NUMBER} (Acceptance Failure)"
+
   echo "[create-issue]   Blocks: #$BLOCKS" >&2
 fi
 
