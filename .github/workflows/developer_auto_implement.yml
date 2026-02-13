@@ -957,14 +957,145 @@ jobs:
 
           exit 0  # Don't fail the workflow - we're handling errors
 
-      - name: Post fix success comment (Phase 2)
-        if: failure() && steps.intelligent_fix.outputs.fix_status == 'FIXED'
+      - name: Deep analysis with Claude (Phase 3 - complex reasoning)
+        if: |
+          failure() && (
+            steps.intelligent_fix.outputs.fix_status == 'UNKNOWN' ||
+            steps.classify_error.outputs.error_class == 'unknown'
+          )
+        id: claude_analysis
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: false
+          claude_args: '--allowed-tools "Bash,Read,Grep"'
+          prompt: |
+            The developer workflow failed for issue #${{ github.event.issue.number }}, and automatic
+            analysis was inconclusive. You need to perform deep reasoning to diagnose the failure.
+
+            ## Your Task
+
+            Determine whether this error is:
+            - **AUTO-FIXABLE:** Can be fixed now (reopen issue, fix git state, etc.)
+            - **TRANSIENT:** Should retry (rate limits, network issues)
+            - **FATAL:** Needs human intervention (auth failures, intentional closures)
+
+            ## Step 1: Get Failure Details
+
+            Extract the error from workflow logs:
+            ```bash
+            gh run view ${{ github.run_id }} --log | grep -E "\[error\]|Error:|fatal:" | head -30
+            ```
+
+            ## Step 2: Gather Context
+
+            Based on the error type, gather relevant information:
+
+            **For issue-related errors:**
+            ```bash
+            gh issue view ${{ github.event.issue.number }} \
+              --json state,closedAt,assignees,createdAt,updatedAt
+            ```
+
+            **For PR-related errors:**
+            ```bash
+            gh pr list --search "${{ github.event.issue.number }}" --state all \
+              --json number,state,mergedAt,closedAt
+            ```
+
+            **For rate limits:**
+            ```bash
+            gh api rate_limit
+            ```
+
+            ## Step 3: Reasoning Guidelines
+
+            Use human-like reasoning to make nuanced decisions:
+
+            **Timing matters:**
+            - Closed 30 minutes ago + assigned to dev → Likely accidental
+            - Closed 3 days ago → Likely intentional
+            - Closed with merged PR → Work complete, don't reopen
+
+            **Context matters:**
+            - Issue closed but PR still open → Review in progress, don't interfere
+            - Issue closed, PR merged → Completion, issue should stay closed
+            - Issue closed, no PR → Investigate why
+
+            **Error patterns:**
+            - "Issue is CLOSED" → Check timing and PR status
+            - "No commits between" → Check if work already merged
+            - "Authentication failed" → Always fatal
+            - "Rate limit" → Check reset time
+
+            ## Step 4: Take Action or Recommend
+
+            **If AUTO-FIXABLE:**
+            1. Fix the problem (reopen issue, etc.)
+            2. Write to /tmp/analysis_result.txt:
+               ```
+               STATUS=FIXED
+               ERROR_TYPE=<type>
+               ACTION=<what you did>
+               ```
+
+            **If TRANSIENT:**
+            Write to /tmp/analysis_result.txt:
+            ```
+            STATUS=TRANSIENT
+            ERROR_TYPE=<type>
+            WAIT_SECONDS=<if applicable>
+            ```
+
+            **If FATAL:**
+            Write to /tmp/analysis_result.txt:
+            ```
+            STATUS=FATAL
+            ERROR_TYPE=<type>
+            DIAGNOSIS=<detailed explanation of why this needs human intervention>
+            ```
+
+            ## Critical Rules
+
+            - DO use nuanced reasoning (time elapsed, context clues)
+            - DO fix accidental closures (recent + assigned + no merged PR)
+            - DON'T reopen intentionally closed issues (old + merged PR)
+            - DON'T just retry without understanding WHY it failed
+            - DO provide detailed diagnosis for fatal errors
+
+      - name: Read Claude analysis result (Phase 3)
+        if: failure() && steps.claude_analysis.conclusion == 'success'
+        id: claude_result
+        shell: bash
+        run: |
+          if [[ -f /tmp/analysis_result.txt ]]; then
+            source /tmp/analysis_result.txt
+            echo "status=${STATUS:-UNKNOWN}" >> "$GITHUB_OUTPUT"
+            echo "error_type=${ERROR_TYPE:-unknown}" >> "$GITHUB_OUTPUT"
+            echo "action=${ACTION:-none}" >> "$GITHUB_OUTPUT"
+            echo "diagnosis=${DIAGNOSIS:-}" >> "$GITHUB_OUTPUT"
+            echo "wait_seconds=${WAIT_SECONDS:-0}" >> "$GITHUB_OUTPUT"
+            echo "Claude analysis: $STATUS - $ERROR_TYPE"
+          else
+            echo "status=UNKNOWN" >> "$GITHUB_OUTPUT"
+            echo "error_type=unknown" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post fix success comment (Phase 2+3)
+        if: |
+          failure() && (
+            steps.intelligent_fix.outputs.fix_status == 'FIXED' ||
+            steps.claude_result.outputs.status == 'FIXED'
+          )
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
-            const action = '${{ steps.intelligent_fix.outputs.action }}';
+            const phase2Action = '${{ steps.intelligent_fix.outputs.action }}';
+            const phase3Action = '${{ steps.claude_result.outputs.action }}';
+            const action = phase3Action || phase2Action;
+            const phase = phase3Action ? 'Phase 3 (Claude reasoning)' : 'Phase 2 (Script analysis)';
             const repo = context.repo.owner + '/' + context.repo.repo;
             const runId = context.runId;
 
@@ -973,13 +1104,18 @@ jobs:
               repo: context.repo.repo,
               issue_number,
               body: `✅ **Developer Agent**: Problem automatically resolved!\n\n` +
-                    `**Auto-fix applied:** ${action}\n\n` +
+                    `**Auto-fix applied:** ${action}\n` +
+                    `**Analysis:** ${phase}\n\n` +
                     `The workflow will now continue from where it left off.\n\n` +
                     `[Workflow run](https://github.com/${repo}/actions/runs/${runId})`
             });
 
-      - name: Auto-retry on failure (Phase 2 - transient errors only)
-        if: failure() && steps.intelligent_fix.outputs.fix_status == 'TRANSIENT'
+      - name: Auto-retry on failure (Phase 2+3 - transient errors only)
+        if: |
+          failure() && (
+            steps.intelligent_fix.outputs.fix_status == 'TRANSIENT' ||
+            steps.claude_result.outputs.status == 'TRANSIENT'
+          )
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -988,6 +1124,8 @@ jobs:
             const repo = context.repo.owner + '/' + context.repo.repo;
             const runId = context.runId;
             const errorClass = '${{ steps.classify_error.outputs.error_class }}';
+            const phase3Status = '${{ steps.claude_result.outputs.status }}';
+            const analysisPhase = phase3Status === 'TRANSIENT' ? 'Phase 3 (Claude)' : 'Phase 2 (Script)';
 
             // Count existing RETRY_IMPLEMENTATION comments to avoid infinite loops
             const comments = await github.rest.issues.listComments({
@@ -1001,7 +1139,9 @@ jobs:
             ).length;
 
             const MAX_RETRIES = 3;
-            const waitSeconds = parseInt('${{ steps.intelligent_fix.outputs.wait_seconds }}') || 0;
+            const waitSecondsPhase2 = parseInt('${{ steps.intelligent_fix.outputs.wait_seconds }}') || 0;
+            const waitSecondsPhase3 = parseInt('${{ steps.claude_result.outputs.wait_seconds }}') || 0;
+            const waitSeconds = waitSecondsPhase3 || waitSecondsPhase2;
 
             if (retryCount >= MAX_RETRIES) {
               await github.rest.issues.createComment({
@@ -1038,7 +1178,8 @@ jobs:
               issue_number,
               body: `⚠️ **Developer Agent**: Workflow failed (attempt ${retryCount + 1}/${MAX_RETRIES}).\n\n` +
                     `**Error type:** ${errorClass} (transient)\n` +
-                    `**Action:** Auto-retry triggered - this type of error may resolve with retry.\n` +
+                    `**Analysis:** ${analysisPhase}\n` +
+                    `**Action:** Auto-retry triggered - analysis determined this error may resolve with retry.\n` +
                     (waitSeconds > 0 ? `**Wait time:** Waited ${waitSeconds} seconds before retry\n\n` : '\n') +
                     `The agent will attempt to:\n` +
                     `1. Diagnose and fix any infrastructure issues\n` +
@@ -1050,11 +1191,12 @@ jobs:
 
             core.notice(`Auto-retry triggered (${retryCount + 1}/${MAX_RETRIES}) for ${errorClass}`);
 
-      - name: Escalate fatal error (Phase 1+2 - no retry)
+      - name: Escalate fatal error (Phase 1+2+3 - no retry)
         if: |
           failure() && (
             steps.classify_error.outputs.retriable == 'false' ||
-            steps.intelligent_fix.outputs.fix_status == 'FATAL'
+            steps.intelligent_fix.outputs.fix_status == 'FATAL' ||
+            steps.claude_result.outputs.status == 'FATAL'
           )
         uses: actions/github-script@v7
         with:
@@ -1064,16 +1206,21 @@ jobs:
             const repo = context.repo.owner + '/' + context.repo.repo;
             const runId = context.runId;
             const errorClass = '${{ steps.classify_error.outputs.error_class }}';
-            const fixStatus = '${{ steps.intelligent_fix.outputs.fix_status }}';
+            const phase2Status = '${{ steps.intelligent_fix.outputs.fix_status }}';
+            const phase3Status = '${{ steps.claude_result.outputs.status }}';
+            const phase3Diagnosis = '${{ steps.claude_result.outputs.diagnosis }}';
 
             // Read diagnosis from Phase 2 if available
             const fs = require('fs');
-            let diagnosis = '';
+            let phase2Diagnosis = '';
             try {
               const result = fs.readFileSync('/tmp/analysis_result.txt', 'utf8');
               const match = result.match(/DIAGNOSIS=(.+)/);
-              if (match) diagnosis = match[1];
+              if (match) phase2Diagnosis = match[1];
             } catch (e) {}
+
+            // Use Phase 3 diagnosis if available, otherwise Phase 2
+            let diagnosis = phase3Diagnosis || phase2Diagnosis;
 
             // Map error types to human-friendly explanations
             const errorExplanations = {
@@ -1085,6 +1232,9 @@ jobs:
             };
 
             const explanation = diagnosis || errorExplanations[errorClass] || 'Unrecognized error type.';
+            const analysisPhase = phase3Status === 'FATAL' ? 'Phase 3 (Claude reasoning)' :
+                                 phase2Status === 'FATAL' ? 'Phase 2 (Script analysis)' :
+                                 'Phase 1 (Error classification)';
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -1092,10 +1242,11 @@ jobs:
               issue_number,
               body: `❌ **Developer Agent**: Workflow failed with non-retriable error.\n\n` +
                     `**Error type:** ${errorClass}\n` +
-                    `**Analysis:** ${explanation}\n` +
-                    (fixStatus === 'FATAL' ?
-                      '**Phase 2 analysis:** Attempted auto-fix but determined error is fatal.\n\n' :
-                      '\n') +
+                    `**Analysis:** ${analysisPhase}\n` +
+                    `**Diagnosis:** ${explanation}\n\n` +
+                    (phase3Status === 'FATAL' || phase2Status === 'FATAL' ?
+                      'Intelligent analysis attempted auto-fix but determined error is fatal.\n\n' :
+                      '') +
                     `Automatic retries would not resolve this type of error. ` +
                     `Manual intervention is required.\n\n` +
                     `**Next steps:**\n` +
