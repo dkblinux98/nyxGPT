@@ -37,6 +37,8 @@ Closed       – released (human only)
 
 **Important**: After merge, issues remain in "In Review" status (CLOSED in GitHub, but "In Review" in project) until human stakeholder acceptance. The human owner moves accepted issues to "For Release".
 
+**Note**: "In Progress" uses uppercase P for consistency across all systems.
+
 ---
 
 ## scrummaster-agent
@@ -73,6 +75,13 @@ Allowed:
 Scripts:
 - developer_create_branch.sh <ISSUE>
 - developer_submit_for_review.sh <ISSUE> "<PR TITLE>"
+- validate-web-routes.sh (validates web proxy routes match backend endpoints)
+
+Validation Requirements:
+- All pre-commit hooks MUST pass before commit succeeds
+- Developer keeps working until all checks pass: black, ruff, mypy, pytest
+- Only after all checks pass can commit/push/PR creation happen
+- This ensures CI checks during review should not fail
 
 Forbidden:
 - Merging PRs
@@ -94,69 +103,43 @@ Review Trigger:
 
 Workflow:
 1. Review workflow triggers when review-agent is assigned as reviewer
-2. Run CI checks (linters, tests, test coverage, documentation)
-3. Review code + CI results
+2. Run CI checks on ALL code in repository (not just changed files)
+3. Review ALL changed files in PR (not just new changes from current cycle)
 4. Post review comment with recommendation (APPROVE or REQUEST_CHANGES)
 5. Review workflow executes automatically:
-   - Review agent runs all tests and linters
-   - Reviews code against acceptance criteria and quality standards
+   - Review agent runs all tests and linters on entire codebase
+   - Reviews all code changes in PR against acceptance criteria and quality standards
    - Posts structured review comment: "## Code Review - [APPROVE|REQUEST_CHANGES]"
    - Automation executes decision automatically (no human confirmation needed)
 
-On CI failure:
-- Set parent issue → In Progress
-- Assign parent issue → developer-agent
-- Comment with CI failure details
-- Switch role to developer-agent and fix
+On CI failure (should not happen if developer phase worked correctly):
+- Review-agent still reviews code
+- Captures all issues (CI failures + code review findings)
+- Proceeds with normal REQUEST_CHANGES flow
+- Set issue → In Progress
+- Assign issue → developer-agent
+- Comment with all findings
 
 On code review decision:
-- **APPROVE**: Automation merges PR immediately, assigns issue to human for acceptance
+- **APPROVE**: Automation merges PR immediately via review_accept_and_merge.sh, assigns issue to human for acceptance
 - **REQUEST_CHANGES**:
   - Issue returns to developer-agent with "In Progress" status
   - Developer reads review comment and fixes all Critical/Medium issues
   - Developer runs tests in 3-try loop (resets each time) BEFORE committing
   - Developer commits fixes and re-submits for review (triggers re-review)
   - Review cycle continues (cumulative count)
-  - After 3 review cycles with REQUEST_CHANGES: Issue stays "In Review", escalates to human
+  - **After 3rd REQUEST_CHANGES cycle**:
+    - Issue remains "In Review" status
+    - Reassign issue to HUMAN_OWNER
+    - Send Slack DM to human
+    - Human intervenes to resolve
 
 Scripts:
-- review_trigger.sh <PR> - Manually trigger review workflow (for re-reviews or if auto-trigger failed)
-- review_request_changes.sh <ISSUE> "<TITLE>" <BODY_FILE> - Executed by automation after human approval
-- review_accept_and_merge.sh <PR> <ISSUE> - Executed by automation after human approval
+- manually_trigger_pr_review.sh <PR> - Manually trigger review workflow (for re-reviews or if auto-trigger failed)
+- review_accept_and_merge.sh <PR> <ISSUE> - Executed by automation to merge approved PRs
 
 Note: Review workflow triggers automatically when developer-agent runs
 developer_submit_for_review.sh and assigns review-agent as reviewer
-
----
-
-## qa-agent
-
-Performs quality assurance checks before merge.
-
-Allowed:
-- Run full test suite (unit + integration + E2E)
-- Execute TUI smoke tests
-- Execute WebUI smoke tests
-- Create QA Failure sub-issues for test failures
-- Approve or block PR based on QA results
-
-Scripts:
-- qa_run_full_suite.sh <PR>
-- qa_manual_checklist.sh <PR>
-- qa_report.sh <PR> <FINDINGS_FILE>
-
-Workflow:
-1. Triggered when PR assigned to qa-agent
-2. Run automated test suite
-3. Run manual smoke test checklists
-4. Create QA report with findings
-5. If critical failures: Create QA Failure sub-issues
-6. Comment on PR with QA status (PASS/FAIL)
-
-Forbidden:
-- Merging PRs
-- Bypassing test failures
-- Modifying code
 
 ---
 

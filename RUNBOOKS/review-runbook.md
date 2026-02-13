@@ -27,6 +27,11 @@ The review-agent OWNS the review process:
 
 ## 1) Review checklist
 
+**IMPORTANT:**
+- Run CI checks on ALL code in the repository (not just changed files)
+- Review ALL changed files in the PR (not just new changes from current cycle)
+- This ensures comprehensive quality coverage across the entire codebase
+
 ### Core Requirements (from project standards)
 - Correctness vs issue acceptance criteria
 - Tests added/updated and meaningful
@@ -48,14 +53,15 @@ The review-agent OWNS the review process:
 - Minor: style/nits, minor optimization opportunities; may proceed
 
 ## 3) CI failure handling
-If CI fails after PR is opened:
-- Set parent issue status -> In Progress
-- Assign parent issue -> developer-agent
-- Comment on issue with CI failure details
-- Switch role to developer-agent
-- Fix the CI failures
-- Update PR and ensure CI passes
-- Re-submit for review
+If CI fails during review (should not happen if developer phase worked correctly):
+- Still review the code changes
+- Capture all issues (CI failures + code review findings)
+- Proceed with normal REQUEST_CHANGES flow
+- Set issue status -> In Progress
+- Assign issue -> developer-agent
+- Comment with all findings (CI + code issues)
+
+Note: Pre-commit hooks should prevent CI failures. If they occur, treat as REQUEST_CHANGES.
 
 ## 4) Review and recommendation
 After completing the review:
@@ -83,7 +89,11 @@ The review workflow tracks cumulative review cycles:
 - Each REQUEST_CHANGES increments the cycle counter
 - Developer 3-try loop (for test failures) resets each time issue is reassigned
 - Review 3-cycle limit is cumulative across all reviews for this PR
-- After 3 REQUEST_CHANGES reviews: Issue stays "In Review", assigned to human owner
+- After 3rd REQUEST_CHANGES review:
+  - Issue remains Status -> In Review
+  - Issue reassigned to HUMAN_OWNER
+  - Slack DM sent to human
+  - Human intervenes to resolve
 
 No sub-issues are created. All fixes happen on the PR branch.
 

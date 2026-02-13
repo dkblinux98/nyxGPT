@@ -11,17 +11,28 @@ GUARDRAILS
 
 PROCEDURE
 Follow RUNBOOKS/developer-runbook.md. In particular:
-- Create a short-lived feature/fix branch off the active release branch.
-- Implement code + tests + docs.
-- Run tests until green; ensure CI green.
-- Open PR targeting active release branch.
-- Move issue Status -> In Review and assign to review-agent.
+- Create a short-lived feature/fix branch off the active release branch
+- Implement code + tests + docs
+- Run ALL validation checks until they pass (pre-commit hooks MUST pass):
+  - black --check . (code formatting)
+  - ruff check src/ tests/ (linting)
+  - mypy src/ (type checking)
+  - pytest -v (all tests pass)
+  - validate-web-routes.sh (if web routes changed)
+- Keep working until all checks pass (like a human developer would)
+- Only after all checks pass: commit, push, open PR
+- Open PR targeting active release branch with "Closes #ISSUE" in body
+- Move issue Status -> In Review and assign review-agent as PR reviewer
 
-ACCEPTANCE FAILURE LOOP
-- If review-agent creates Acceptance Failure sub-issues labeled 'Acceptance Failure':
-  - treat them as blocking
-  - implement fixes and update PR(s) accordingly
-  - keep parent issue in review loop until cleared
+REQUEST_CHANGES LOOP
+- If review-agent posts REQUEST_CHANGES review:
+  - Issue automatically reassigned to you with Status -> In Progress
+  - Read the review comment for all Critical/Medium findings
+  - Implement fixes for ALL Critical/Medium issues
+  - Run all validation checks again (full suite)
+  - Commit and push fixes (triggers automatic re-review)
+  - Review cycle count increments
+  - After 3rd REQUEST_CHANGES: issue escalates to human owner
 
 ESCALATION
 Escalate to human owner if:
