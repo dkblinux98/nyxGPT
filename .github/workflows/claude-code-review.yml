@@ -250,21 +250,30 @@ jobs:
 
             Read the previous review to see Critical and Medium issues that were identified.
 
-            FOCUS YOUR REVIEW ON:
-            1. Verify each Critical issue from the previous review has been FULLY resolved
-            2. Verify each Medium issue from the previous review has been FULLY resolved
-            3. Check that fixes did not introduce new bugs
-            4. Ensure tests were added/updated to prevent regression
+            **TWO-PHASE RE-REVIEW PROCESS:**
 
-            DO NOT re-evaluate the entire codebase. Your job is to verify the fixes to previously identified issues.
-
+            **PHASE 1: Verify Previous Issues Resolved**
             For each previous Critical/Medium issue:
             - State the issue title from the previous review
             - Confirm if it is FIXED or STILL PRESENT
-            - If still present, explain what is still wrong
+            - If still present, explain what is still wrong and REQUEST_CHANGES immediately
             - If fixed, briefly note how it was resolved
 
-            ', steps.previous_review.outputs.previous_review_file) || format('
+            **PHASE 2: Full PR Review**
+            After confirming all previous issues are fixed, perform a FULL review of the ENTIRE PR:
+            - Use `gh pr diff {1}` to see the COMPLETE diff from base to HEAD
+            - Review ALL changes, not just the fixes to previous issues
+            - Check for any new issues introduced by the fixes
+            - Verify Medium issues were addressed (not just Critical)
+            - Check for code quality, maintainability, and best practices
+            - Ensure no new bugs or regressions were introduced
+
+            **CRITICAL:** Do not APPROVE if:
+            - ANY previous Critical or Medium issue is still present
+            - ANY new issues are found in the full PR review
+            - Tests or documentation are incomplete
+
+            ', steps.previous_review.outputs.previous_review_file, steps.pr_number.outputs.pr) || format('
             📋 **This is a FULL INITIAL REVIEW**
 
             No previous REQUEST_CHANGES found. Perform comprehensive code review.

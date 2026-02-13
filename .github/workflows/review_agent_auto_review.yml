@@ -17,6 +17,7 @@ jobs:
     # Manual triggers:
     #   - @approve-merge: Manual merge override
     #   - @request-changes: Manual request changes (returns to developer)
+    #   - @send-to-developer: Send back to developer after escalation (human override)
     if: |
       (github.event_name == 'pull_request_review' &&
        github.event.pull_request &&
@@ -28,6 +29,7 @@ jobs:
        github.event.issue.pull_request &&
        (contains(github.event.comment.body, '@approve-merge') ||
         contains(github.event.comment.body, '@request-changes') ||
+        contains(github.event.comment.body, '@send-to-developer') ||
         startsWith(github.event.comment.body, '## Code Review - APPROVE') ||
         startsWith(github.event.comment.body, '## Code Review - REQUEST_CHANGES')))
     runs-on: ubuntu-latest
@@ -150,7 +152,7 @@ jobs:
           fi
 
           # Parse decision from either manual trigger or automatic review comment
-          # Manual triggers: @approve-merge or @request-changes on own line
+          # Manual triggers: @approve-merge, @request-changes, @send-to-developer
           # Auto triggers: ## Code Review - APPROVE or ## Code Review - REQUEST_CHANGES
           if echo "$COMMENT" | grep -qE '^## Code Review - APPROVE'; then
             DECISION="APPROVE"
@@ -168,8 +170,13 @@ jobs:
             DECISION="REQUEST_CHANGES"
             TRIGGER_TYPE="manual"
             echo "::notice::Human requested changes"
+          elif echo "$COMMENT" | grep -qE '^\s*@send-to-developer\s*$'; then
+            DECISION="SEND_TO_DEVELOPER"
+            TRIGGER_TYPE="manual"
+            echo "::notice::Human sending PR back to developer"
           else
-            echo "::error::No valid trigger phrase found (@approve-merge, @request-changes, or review decision comment)"
+            echo "::error::No valid trigger phrase found"
+            echo "::error::Expected: @approve-merge, @request-changes, @send-to-developer, or review comment"
             exit 1
           fi
 
@@ -322,6 +329,42 @@ jobs:
 
           echo "::endgroup::"
           echo "✓ Issue returned to developer-agent, auto-fix triggered"
+
+      - name: Send to developer (human override after escalation)
+        if: steps.parse_decision.outputs.decision == 'SEND_TO_DEVELOPER'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PR="${{ steps.get_pr.outputs.pr_number }}"
+          ISSUE="${{ steps.get_issue.outputs.issue_number }}"
+
+          echo "::group::Human override: sending issue #$ISSUE back to developer"
+
+          # Set issue status to "In Progress" and assign to developer-agent (with workflow trigger)
+          bash -lc "cd '$GITHUB_WORKSPACE' && \
+            source scripts/agents/lib/gh_project.sh && \
+            load_config && \
+            require_gh_auth && \
+            set_issue_status '$ISSUE' \"\$STATUS_IN_PROGRESS\" && \
+            assign_and_trigger_developer '$ISSUE'"
+
+          # Post comment to PR explaining human override
+          DEV_AGENT="${{ vars.DEV_AGENT }}"
+          HUMAN_OWNER="${{ vars.HUMAN_OWNER }}"
+          COMMENTER="${{ github.event.comment.user.login }}"
+          BODY=$(printf '%s\n\n%s\n\n%s\n%s\n%s\n%s\n%s\n%s' \
+            "👤 **Human Override by @${COMMENTER}**: Sent back to developer" \
+            "Issue #${ISSUE} has been returned to **In Progress** and assigned to @${DEV_AGENT}." \
+            "**Developer Instructions:**" \
+            "1. Review the feedback from @${COMMENTER} above" \
+            "2. Address all identified issues" \
+            "3. Run all tests locally and ensure they pass" \
+            "4. Commit and push your fixes" \
+            "5. The PR will be automatically re-reviewed")
+          gh pr comment "$PR" --body "$BODY"
+
+          echo "::endgroup::"
+          echo "✓ Issue sent to developer-agent by human override"
 
       - name: Post completion comment
         if: always() && (steps.parse_decision.outputs.decision == 'APPROVE' || steps.count.outputs.escalate == 'true')

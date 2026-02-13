@@ -519,8 +519,9 @@ jobs:
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
-          echo "::group::Running pytest (full test suite)"
-          python -m pytest tests/ -v 2>&1 | tee /tmp/pytest_attempt1.log
+          echo "::group::Running pytest (unit tests - integration tests skipped in CI)"
+          # Integration tests require running API server (not available in CI)
+          python -m pytest tests/unit/ -v 2>&1 | tee /tmp/pytest_attempt1.log
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
@@ -607,8 +608,9 @@ jobs:
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
-          echo "::group::Running pytest (full test suite)"
-          python -m pytest tests/ -v 2>&1 | tee /tmp/pytest_attempt2.log
+          echo "::group::Running pytest (unit tests - integration tests skipped in CI)"
+          # Integration tests require running API server (not available in CI)
+          python -m pytest tests/unit/ -v 2>&1 | tee /tmp/pytest_attempt2.log
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
@@ -692,8 +694,9 @@ jobs:
           python -m mypy src/
           echo "::endgroup::"
 
-          echo "::group::Final pytest verification (full test suite)"
-          python -m pytest tests/ -v
+          echo "::group::Final pytest verification (unit tests - integration tests skipped in CI)"
+          # Integration tests require running API server (not available in CI)
+          python -m pytest tests/unit/ -v
           echo "::endgroup::"
 
           echo "::group::Final TypeScript verification"
