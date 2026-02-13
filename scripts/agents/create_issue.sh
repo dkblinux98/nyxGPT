@@ -375,8 +375,7 @@ echo "[create-issue] ✓ Created issue #${ISSUE_NUMBER}" >&2
 # --- Step 2: Add to project ---
 echo "[create-issue] Adding issue #${ISSUE_NUMBER} to project..." >&2
 
-CONTENT_ID=$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${ISSUE_NUMBER}" --jq '.node_id')
-ITEM_ID=$(add_to_project "$CONTENT_ID")
+ITEM_ID=$(ensure_issue_in_project "$ISSUE_NUMBER")
 
 if [[ -z "$ITEM_ID" || "$ITEM_ID" == "null" ]]; then
   echo "[warning] Failed to add issue to project - continuing with field updates" >&2
