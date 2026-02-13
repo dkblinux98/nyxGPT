@@ -245,6 +245,10 @@ cassandra_table = rag_chunks
 | `embedding_dim` | Vector dimensionality (must match Cassandra VECTOR dimension) |
 | `embedding_batch_size` | Batch size for embedding requests (smaller = lower memory, slower) |
 | `embedding_timeout_seconds` | Timeout for each embedding batch request to Ollama |
+| `embedding_async_enabled` | Enable async/parallel processing for embedding generation (default: false) |
+| `embedding_max_workers` | Maximum number of parallel workers for async embedding (default: 4, recommended: 2-8) |
+| `embedding_gpu_enabled` | Enable GPU optimization and detection (default: false, requires nvidia-smi for NVIDIA GPUs) |
+| `embedding_adaptive_batching` | Enable adaptive batch sizing based on available memory and GPU (default: false) |
 | `chunk_size` | Maximum characters per text chunk |
 | `chunk_overlap` | Character overlap between adjacent chunks |
 | `overlap_strategy` | Overlap method: `trailing` (characters), `sentence` (complete sentences), or `semantic` (paragraphs) |
