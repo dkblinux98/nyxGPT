@@ -11,6 +11,7 @@ import urllib.request
 import uuid
 from configparser import ConfigParser
 from contextlib import asynccontextmanager, redirect_stderr, redirect_stdout, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -90,6 +91,73 @@ _rate_limiter: RateLimiter | None = None
 
 # Global batch processor instance (initialized at startup if enabled)
 _batch_processor: BatchProcessor[dict, dict] | None = None
+
+
+@dataclass
+class ClientCapabilities:
+    """Client capability hints for content negotiation.
+
+    Attributes:
+        supports_sse: Client supports Server-Sent Events (text/event-stream)
+        supports_structured_events: Client supports structured event types (metadata, text, done, error)
+        supports_streaming: Client supports streaming responses
+        client_version: Optional client version string (e.g., "web-ui/1.0.0", "tui/1.0.0")
+        max_event_size: Maximum event payload size in bytes (0 = unlimited)
+    """
+
+    supports_sse: bool = False
+    supports_structured_events: bool = False
+    supports_streaming: bool = True
+    client_version: str | None = None
+    max_event_size: int = 0
+
+
+def _parse_client_capabilities(request: Request) -> ClientCapabilities:
+    """Parse client capability hints from request headers.
+
+    Examines standard and custom headers to determine client capabilities:
+    - Accept: text/event-stream indicates SSE support
+    - X-Client-Supports-SSE: Explicit SSE capability flag
+    - X-Client-Supports-Structured-Events: Structured event support flag
+    - X-Client-Version: Client version identifier
+    - X-Client-Max-Event-Size: Maximum event size in bytes
+
+    Args:
+        request: FastAPI Request object
+
+    Returns:
+        ClientCapabilities with detected or default capabilities
+    """
+    capabilities = ClientCapabilities()
+
+    # Check Accept header for text/event-stream
+    accept = request.headers.get("accept", "")
+    capabilities.supports_sse = "text/event-stream" in accept.lower()
+
+    # Check explicit capability headers
+    supports_sse_header = request.headers.get("x-client-supports-sse", "").lower()
+    if supports_sse_header in ("true", "1", "yes"):
+        capabilities.supports_sse = True
+
+    supports_structured = request.headers.get("x-client-supports-structured-events", "").lower()
+    if supports_structured in ("true", "1", "yes"):
+        capabilities.supports_structured_events = True
+
+    # Check for streaming support (default true)
+    supports_streaming = request.headers.get("x-client-supports-streaming", "true").lower()
+    capabilities.supports_streaming = supports_streaming not in ("false", "0", "no")
+
+    # Get client version
+    capabilities.client_version = request.headers.get("x-client-version") or None
+
+    # Get max event size
+    max_size_str = request.headers.get("x-client-max-event-size", "0")
+    try:
+        capabilities.max_event_size = int(max_size_str)
+    except ValueError:
+        capabilities.max_event_size = 0
+
+    return capabilities
 
 
 def log_with_context(level, message, request_id=None, **extra):
@@ -1654,13 +1722,14 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
     It handles request ID capture and context setting for proper log traceability.
 
     Now supports Server-Sent Events (SSE) framing with proper event types, IDs, and heartbeats.
+    Adapts response format based on client capability hints for backwards compatibility.
 
     Args:
         request: FastAPI Request object containing state and configuration
         req: Chat request parameters
 
     Returns:
-        StreamingResponse configured for text/event-stream (SSE) streaming
+        StreamingResponse configured for text/event-stream (SSE) streaming or plain text
 
     Raises:
         HTTPException: 422 for validation errors, 500 for server errors
@@ -1675,11 +1744,30 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
 
+        # Parse client capabilities for content negotiation
+        capabilities = _parse_client_capabilities(request)
+
+        # Log client capabilities for debugging
+        log.debug(
+            "Client capabilities detected",
+            extra={
+                "supports_sse": capabilities.supports_sse,
+                "supports_structured_events": capabilities.supports_structured_events,
+                "client_version": capabilities.client_version,
+            },
+        )
+
         # Capture request ID before entering generator (context may not propagate)
         req_id = request.state.request_id
 
         def _stream_sse():
-            """Generate SSE-formatted events from chat stream."""
+            """Generate SSE-formatted events from chat stream.
+
+            Adapts output format based on client capabilities:
+            - Legacy clients (no SSE): Plain text streaming
+            - SSE clients (no structured events): Simple SSE text events
+            - Modern clients: Full structured SSE events (metadata, text, done, error)
+            """
             # Explicitly set request ID in context for streaming generator
             try:
                 request_id_var.set(req_id)
@@ -1694,21 +1782,23 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
             start_time = time.time()
             total_tokens = 0
 
-            # Send an immediate heartbeat to establish connection
-            event_id += 1
-            yield f"event: heartbeat\ndata: {json.dumps({'timestamp': start_time})}\nid: {event_id}\n\n"
-
             d = _chat_runtime_defaults(_req_cfg(request))
             chosen_model = req.model or d["default_model"]
 
-            # Send metadata event with session/model info
-            event_id += 1
-            metadata = {
-                "session": req.session,
-                "model": chosen_model,
-                "timestamp": start_time,
-            }
-            yield f"event: metadata\ndata: {json.dumps(metadata)}\nid: {event_id}\n\n"
+            # Only send structured events if client supports them
+            if capabilities.supports_sse and capabilities.supports_structured_events:
+                # Send an immediate heartbeat to establish connection
+                event_id += 1
+                yield f"event: heartbeat\ndata: {json.dumps({'timestamp': start_time})}\nid: {event_id}\n\n"
+
+                # Send metadata event with session/model info
+                event_id += 1
+                metadata = {
+                    "session": req.session,
+                    "model": chosen_model,
+                    "timestamp": start_time,
+                }
+                yield f"event: metadata\ndata: {json.dumps(metadata)}\nid: {event_id}\n\n"
 
             kwargs: dict[str, Any] = {
                 "session": req.session,
@@ -1729,11 +1819,35 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                     # Convert RagFilters model to dict
                     kwargs["rag_filters"] = rag_filters_val.model_dump()
 
-            # Process the chat stream and wrap chunks in SSE format
+            # Process the chat stream and wrap chunks in appropriate format
             try:
                 for chunk in chat_stream(req.prompt, **kwargs):
+                    # Strip RAG/retry markers for legacy clients
+                    clean_chunk = chunk
+                    if "__RAG_START__" in chunk and "__RAG_END__" in chunk:
+                        rag_start = chunk.find("__RAG_START__")
+                        rag_end = chunk.find("__RAG_END__") + len("__RAG_END__")
+                        clean_chunk = chunk[:rag_start] + chunk[rag_end:]
+                    if "__RETRY_START__" in clean_chunk and "__RETRY_END__" in clean_chunk:
+                        retry_start = clean_chunk.find("__RETRY_START__")
+                        retry_end = clean_chunk.find("__RETRY_END__") + len("__RETRY_END__")
+                        clean_chunk = clean_chunk[:retry_start] + clean_chunk[retry_end:]
+
+                    # Legacy client: plain text streaming (no SSE)
+                    if not capabilities.supports_sse:
+                        if clean_chunk:
+                            yield clean_chunk
+                        continue
+
                     event_id += 1
 
+                    # SSE client without structured events: simple data streaming
+                    if not capabilities.supports_structured_events:
+                        if clean_chunk:
+                            yield f"data: {clean_chunk}\n\n"
+                        continue
+
+                    # Modern client: full structured SSE events
                     # Check if chunk contains RAG metadata markers
                     if "__RAG_START__" in chunk and "__RAG_END__" in chunk:
                         # Extract RAG metadata and send as separate event
@@ -1780,34 +1894,49 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                         elapsed = time.time() - start_time
                         yield f"event: text\ndata: {json.dumps({'content': chunk, 'tokens': total_tokens, 'elapsed': elapsed})}\nid: {event_id}\n\n"
 
-                # Send done event with final stats
-                event_id += 1
-                elapsed = time.time() - start_time
-                done_data = {
-                    "event_id": event_id,
-                    "total_tokens": total_tokens,
-                    "elapsed": elapsed,
-                }
-                yield f"event: done\ndata: {json.dumps(done_data)}\nid: {event_id}\n\n"
+                # Send done event with final stats (only for modern clients)
+                if capabilities.supports_sse and capabilities.supports_structured_events:
+                    event_id += 1
+                    elapsed = time.time() - start_time
+                    done_data = {
+                        "event_id": event_id,
+                        "total_tokens": total_tokens,
+                        "elapsed": elapsed,
+                    }
+                    yield f"event: done\ndata: {json.dumps(done_data)}\nid: {event_id}\n\n"
             except Exception as e:
-                # Send error event
-                event_id += 1
-                elapsed = time.time() - start_time
-                error_data = {
-                    "error": str(e),
-                    "elapsed": elapsed,
-                }
-                yield f"event: error\ndata: {json.dumps(error_data)}\nid: {event_id}\n\n"
+                # Send error event (only for SSE clients)
+                if capabilities.supports_sse and capabilities.supports_structured_events:
+                    event_id += 1
+                    elapsed = time.time() - start_time
+                    error_data = {
+                        "error": str(e),
+                        "elapsed": elapsed,
+                    }
+                    yield f"event: error\ndata: {json.dumps(error_data)}\nid: {event_id}\n\n"
                 raise
+
+        # Adapt response headers based on client capabilities
+        if capabilities.supports_sse:
+            media_type = "text/event-stream; charset=utf-8"
+        else:
+            media_type = "text/plain; charset=utf-8"
+
+        response_headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable proxy buffering
+            # Inform client of server capabilities
+            "X-Server-Supports-SSE": "true",
+            "X-Server-Supports-Structured-Events": "true",
+            "X-Server-Supports-Streaming": "true",
+            "X-Server-Version": "nyxgpt/1.0.0",
+        }
 
         return StreamingResponse(
             _stream_sse(),
-            media_type="text/event-stream; charset=utf-8",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",  # Disable proxy buffering
-            },
+            media_type=media_type,
+            headers=response_headers,
         )
     except HTTPException:
         # Re-raise HTTP exceptions (e.g., 422 from validation above)
