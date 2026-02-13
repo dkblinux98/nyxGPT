@@ -1127,39 +1127,66 @@ jobs:
             const phase3Status = '${{ steps.claude_result.outputs.status }}';
             const analysisPhase = phase3Status === 'TRANSIENT' ? 'Phase 3 (Claude)' : 'Phase 2 (Script)';
 
-            // Count existing RETRY_IMPLEMENTATION comments to avoid infinite loops
+            // Intelligent retry counting - context-aware, error-type specific
             const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issue_number
             });
 
-            const retryCount = comments.data.filter(c =>
-              c.body.includes('RETRY_IMPLEMENTATION')
-            ).length;
-
             const MAX_RETRIES = 3;
             const waitSecondsPhase2 = parseInt('${{ steps.intelligent_fix.outputs.wait_seconds }}') || 0;
             const waitSecondsPhase3 = parseInt('${{ steps.claude_result.outputs.wait_seconds }}') || 0;
             const waitSeconds = waitSecondsPhase3 || waitSecondsPhase2;
 
-            if (retryCount >= MAX_RETRIES) {
+            // Parse retry history with context
+            const retryHistory = comments.data
+              .filter(c => c.body.includes('RETRY_IMPLEMENTATION'))
+              .map(c => ({
+                timestamp: c.created_at,
+                isManual: c.user.login !== 'github-actions[bot]',
+                errorType: c.body.match(/\*\*Error type:\*\* ([\w:]+)/)?.[1] || 'unknown'
+              }));
+
+            // Find last manual intervention (resets the count)
+            const lastManualIndex = retryHistory.findIndex(r => r.isManual);
+
+            // Only count retries AFTER last manual intervention
+            const relevantRetries = lastManualIndex >= 0
+              ? retryHistory.slice(0, lastManualIndex)
+              : retryHistory;
+
+            // Count retries for THIS specific error type
+            const retriesForCurrentError = relevantRetries.filter(r =>
+              r.errorType === errorClass
+            ).length;
+
+            // Total retries (for context)
+            const totalRetries = relevantRetries.length;
+
+            core.notice(
+              `Retry analysis: ${retriesForCurrentError} for error ${errorClass}, ` +
+              `${totalRetries} total since last manual intervention`
+            );
+
+            // Only escalate if SAME error persists 3+ times
+            if (retriesForCurrentError >= MAX_RETRIES) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number,
-                body: `❌ **Developer Agent**: Workflow failed after ${retryCount} retry attempts.\n\n` +
-                      `Maximum retry limit (${MAX_RETRIES}) reached. This issue requires human intervention.\n\n` +
+                body: `❌ **Developer Agent**: Same error persisted through ${MAX_RETRIES} retry attempts.\n\n` +
+                      `**Error type:** ${errorClass}\n` +
+                      `**Retry count:** ${retriesForCurrentError} attempts for this specific error\n` +
+                      `**Total retries:** ${totalRetries} (since last manual intervention)\n\n` +
+                      `The same error has failed ${MAX_RETRIES} times, indicating a persistent issue ` +
+                      `that cannot be resolved by automatic retries. Human intervention is required.\n\n` +
                       `**What to do:**\n` +
                       `1. Review the [failed workflow logs](https://github.com/${repo}/actions/runs/${runId})\n` +
-                      `2. Identify the root cause of the failure\n` +
+                      `2. Identify why **${errorClass}** keeps failing\n` +
                       `3. Fix the underlying problem manually\n` +
                       `4. Comment \`RETRY_IMPLEMENTATION\` to try again once fixed\n\n` +
-                      `Common issues:\n` +
-                      `- Infrastructure problems (GitHub API rate limits, network issues)\n` +
-                      `- Repository state issues (corrupted refs, merge conflicts)\n` +
-                      `- Configuration problems (missing secrets, incorrect permissions)\n` +
-                      `- Implementation issues (tests fundamentally broken, unfixable errors)`
+                      `**Note:** Manual intervention resets the retry counter.`
               });
               core.setFailed('Maximum retry limit reached');
               return;
@@ -1176,10 +1203,12 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `⚠️ **Developer Agent**: Workflow failed (attempt ${retryCount + 1}/${MAX_RETRIES}).\n\n` +
+              body: `⚠️ **Developer Agent**: Workflow failed - auto-retry triggered.\n\n` +
                     `**Error type:** ${errorClass} (transient)\n` +
                     `**Analysis:** ${analysisPhase}\n` +
-                    `**Action:** Auto-retry triggered - analysis determined this error may resolve with retry.\n` +
+                    `**Retry count:** ${retriesForCurrentError + 1}/${MAX_RETRIES} attempts for this specific error\n` +
+                    `**Total retries:** ${totalRetries} (since last manual intervention)\n` +
+                    `**Action:** Analysis determined this error may resolve with retry.\n` +
                     (waitSeconds > 0 ? `**Wait time:** Waited ${waitSeconds} seconds before retry\n\n` : '\n') +
                     `The agent will attempt to:\n` +
                     `1. Diagnose and fix any infrastructure issues\n` +
@@ -1189,7 +1218,10 @@ jobs:
                     `RETRY_IMPLEMENTATION`
             });
 
-            core.notice(`Auto-retry triggered (${retryCount + 1}/${MAX_RETRIES}) for ${errorClass}`);
+            core.notice(
+              `Auto-retry triggered (${retriesForCurrentError + 1}/${MAX_RETRIES}) ` +
+              `for ${errorClass} (${totalRetries} total retries since last manual intervention)`
+            );
 
       - name: Escalate fatal error (Phase 1+2+3 - no retry)
         if: |
