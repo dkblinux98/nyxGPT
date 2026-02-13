@@ -247,6 +247,14 @@ def _detect_gpu() -> GPUInfo:
     return _gpu_info
 
 
+def _cleanup_thread_pool() -> None:
+    """Clean up global thread pool on shutdown."""
+    global _thread_pool
+    if _thread_pool is not None:
+        _thread_pool.shutdown(wait=True)
+        _thread_pool = None
+
+
 def _get_thread_pool(max_workers: int) -> concurrent.futures.ThreadPoolExecutor:
     """Get or initialize the global thread pool.
 
@@ -263,6 +271,10 @@ def _get_thread_pool(max_workers: int) -> concurrent.futures.ThreadPoolExecutor:
         logger.debug(f"Thread pool initialized with {max_workers} workers")
 
     return _thread_pool
+
+
+# Register cleanup handler for thread pool
+atexit.register(_cleanup_thread_pool)
 
 
 def _estimate_memory_usage(batch_size: int, dimension: int) -> int:
