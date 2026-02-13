@@ -74,6 +74,9 @@ if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
   BRANCH_ACTION="reused"
   echo "Remote branch $branch already exists, reusing it..." >&2
 
+  # Fetch the existing branch so we can check it out
+  git fetch origin "$branch" >&2
+
   # Delete local branch if it exists
   if git show-ref --verify --quiet "refs/heads/${branch}"; then
     git branch -D "$branch" >&2 || true
