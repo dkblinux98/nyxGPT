@@ -203,34 +203,6 @@ jobs:
           '
           echo "::endgroup::"
 
-      - name: Post branch creation comment
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
-          script: |
-            const issue_number = context.payload.issue.number;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number,
-              body: '🌿 **Developer Agent**: Creating feature branch...'
-            });
-
-      - name: Create branch for issue
-        id: branch
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
-        run: |
-          set -euo pipefail
-          ISSUE="${{ github.event.issue.number }}"
-          echo "::group::Creating branch for issue #$ISSUE"
-          # Pass "auto" to derive branch slug from issue title (e.g., feat/2680-bundle-size-reduction)
-          BRANCH=$(./scripts/agents/developer_create_branch.sh "$ISSUE" feat auto)
-          echo "::notice::Created branch: $BRANCH"
-          echo "branch_name=$BRANCH" >> "$GITHUB_OUTPUT"
-          echo "::endgroup::"
-
       - name: Check if PR already exists
         id: check_pr
         shell: bash
@@ -238,18 +210,21 @@ jobs:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           set -euo pipefail
-          BRANCH="${{ steps.branch.outputs.branch_name }}"
+          ISSUE="${{ github.event.issue.number }}"
 
-          # Check if PR exists for this branch
-          EXISTING_PR=$(gh pr list --head "$BRANCH" --json number -q '.[0].number' || echo "")
+          # Check for existing PRs linked to this issue
+          # Look for PRs that have "Closes #ISSUE" in the body
+          EXISTING_PR=$(gh pr list --json number,body \
+            --jq ".[] | select(.body | contains(\"Closes #${ISSUE}\")) | .number" \
+            | head -1 || echo "")
 
           if [[ -n "$EXISTING_PR" ]]; then
             echo "pr_exists=true" >> "$GITHUB_OUTPUT"
             echo "existing_pr=$EXISTING_PR" >> "$GITHUB_OUTPUT"
-            echo "::notice::PR already exists for branch $BRANCH: #$EXISTING_PR"
+            echo "::notice::PR already exists for issue #$ISSUE: #$EXISTING_PR"
           else
             echo "pr_exists=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::No existing PR found for branch $BRANCH"
+            echo "::notice::No existing PR found for issue #$ISSUE"
           fi
 
       - name: Check for review comments (if PR exists)
@@ -344,23 +319,41 @@ jobs:
             **Context:**
             - PR exists: #${{ steps.check_pr.outputs.existing_pr }}
             - Code review requested changes
-            - You are on branch: ${{ steps.branch.outputs.branch_name }}
 
             **Instructions:**
+
+            ### Step 1: Ensure you're on the correct branch
+            First, determine which branch this PR is from:
+            ```bash
+            gh pr view ${{ steps.check_pr.outputs.existing_pr }} --json headRefName -q .headRefName
+            ```
+
+            Then check it out. If checkout fails (branch doesn't exist locally, ref issues, etc.):
+            - Diagnose the problem (read error message)
+            - Fix it yourself (fetch, clean stale refs, recreate if needed)
+            - Do NOT wait for human intervention
+
+            ### Step 2: Fix review issues
             1. Read review comments from: /tmp/review-comments.txt
             2. Identify all Critical and Medium issues from the review
             3. Implement fixes for each issue
-            4. BEFORE committing, run ALL validation checks (ALL must pass):
-               - black --check . (if fails: black . then re-check)
-               - ruff check src/ tests/ (0 errors required)
-               - mypy src/ (0 errors required)
-               - pytest -v (0 failures, 0 errors required)
-               - cd web && npm run type-check (if web files modified)
-               - ./scripts/agents/validate-web-routes.sh (if API endpoints added)
-            5. If any check fails: fix and re-run ALL checks (up to 3 attempts)
-            6. Commit: "fix: address code review findings (#${{ github.event.issue.number }})"
+
+            ### Step 3: Validate before committing
+            BEFORE committing, run ALL validation checks (ALL must pass):
+            - black --check . (if fails: black . then re-check)
+            - ruff check src/ tests/ (0 errors required)
+            - mypy src/ (0 errors required)
+            - pytest tests/unit/ -v (0 failures, 0 errors required)
+            - cd web && npm run type-check (if web files modified)
+            - ./scripts/agents/validate-web-routes.sh (if API endpoints added)
+
+            If any check fails: fix and re-run ALL checks (up to 3 attempts)
+
+            ### Step 4: Commit and push
+            Commit: "fix: address code review findings (#${{ github.event.issue.number }})"
 
             **CRITICAL**:
+            - Handle ALL infrastructure errors yourself (branch checkout, git operations)
             - Do NOT commit until ALL checks pass with 0 errors/failures
             - Do NOT create or update PRs - the workflow handles that
 
@@ -371,14 +364,13 @@ jobs:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
-            const branch_name = '${{ steps.branch.outputs.branch_name }}';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `✅ **Developer Agent**: Branch created: \`${branch_name}\`\n\n` +
-                    `🤖 Starting Claude Code implementation...\n\n` +
+              body: `🤖 **Developer Agent**: Starting implementation...\n\n` +
                     `This may take several minutes. Claude will:\n` +
+                    `- Create/checkout feature branch\n` +
                     `- Analyze the issue requirements\n` +
                     `- Implement the solution\n` +
                     `- Add/update tests\n` +
@@ -398,13 +390,40 @@ jobs:
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
-            Implement issue #${{ github.event.issue.number }} on the current branch.
+            Implement issue #${{ github.event.issue.number }}.
+
+            ## Step 1: Create/Checkout Feature Branch
+
+            Run this command to create the feature branch:
+            ```bash
+            ./scripts/agents/developer_create_branch.sh ${{ github.event.issue.number }} feat auto
+            ```
+
+            This will create a branch like `feat/ISSUE-slug` and check it out.
+
+            **If the command fails:**
+            - Read the error message carefully
+            - Diagnose the problem (branch exists? fetch failed? permissions? git state?)
+            - Fix it yourself using appropriate git commands
+            - Examples of fixes you might need:
+              - If branch exists remotely but checkout fails:
+                `git fetch origin BRANCH && git checkout -b BRANCH origin/BRANCH`
+              - If stale refs: `git remote prune origin`
+              - If local branch conflicts: `git branch -D BRANCH` then retry
+              - If script has a bug: read the script, fix it, then retry
+            - Do NOT wait for human intervention - you are responsible for handling this
+
+            Once you have successfully checked out the feature branch, proceed to implementation.
+
+            ## Step 2: Implement the Solution
 
             Requirements:
             - Make the minimal correct change to resolve the issue.
             - Add/update tests for ALL code changes.
-            - **MANDATORY VALIDATION BEFORE COMMIT**:
-              You MUST run ALL of the following checks and ensure they ALL PASS before committing:
+
+            ## Step 3: Mandatory Validation Before Commit
+
+            You MUST run ALL of the following checks and ensure they ALL PASS before committing:
 
               1. **Code Formatting (ALWAYS RUN)**:
                  - Run: black --check .
@@ -561,6 +580,9 @@ jobs:
             VERIFICATION FAILED - YOU MUST FIX THE ISSUES
 
             The previous implementation for issue #${{ github.event.issue.number }} failed verification checks.
+
+            **Important:** You should already be on the feature branch from the previous step.
+            If for some reason you're not, check out the branch yourself using git commands.
 
             Failure logs have been saved to:
             - /tmp/pytest_attempt1.log (if pytest failed)
@@ -841,3 +863,64 @@ jobs:
                     `3. Either merge or request changes\n\n` +
                     `[View PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${pr_number})`
             });
+
+      - name: Auto-retry on failure (Option 3)
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const repo = context.repo.owner + '/' + context.repo.repo;
+            const runId = context.runId;
+
+            // Count existing RETRY_IMPLEMENTATION comments to avoid infinite loops
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue_number
+            });
+
+            const retryCount = comments.data.filter(c =>
+              c.body.includes('RETRY_IMPLEMENTATION')
+            ).length;
+
+            const MAX_RETRIES = 3;
+
+            if (retryCount >= MAX_RETRIES) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number,
+                body: `❌ **Developer Agent**: Workflow failed after ${retryCount} retry attempts.\n\n` +
+                      `Maximum retry limit (${MAX_RETRIES}) reached. This issue requires human intervention.\n\n` +
+                      `**What to do:**\n` +
+                      `1. Review the [failed workflow logs](https://github.com/${repo}/actions/runs/${runId})\n` +
+                      `2. Identify the root cause of the failure\n` +
+                      `3. Fix the underlying problem manually\n` +
+                      `4. Comment \`RETRY_IMPLEMENTATION\` to try again once fixed\n\n` +
+                      `Common issues:\n` +
+                      `- Infrastructure problems (GitHub API rate limits, network issues)\n` +
+                      `- Repository state issues (corrupted refs, merge conflicts)\n` +
+                      `- Configuration problems (missing secrets, incorrect permissions)\n` +
+                      `- Implementation issues (tests fundamentally broken, unfixable errors)`
+              });
+              core.setFailed('Maximum retry limit reached');
+              return;
+            }
+
+            // Auto-retry: Post RETRY_IMPLEMENTATION comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: `⚠️ **Developer Agent**: Workflow failed (attempt ${retryCount + 1}/${MAX_RETRIES}).\n\n` +
+                    `**Auto-retry triggered.** The agent will attempt to:\n` +
+                    `1. Diagnose and fix any infrastructure issues\n` +
+                    `2. Handle branch creation/checkout problems\n` +
+                    `3. Retry the implementation\n\n` +
+                    `[Previous failed run](https://github.com/${repo}/actions/runs/${runId})\n\n` +
+                    `RETRY_IMPLEMENTATION`
+            });
+
+            core.notice(`Auto-retry triggered (${retryCount + 1}/${MAX_RETRIES})`);
