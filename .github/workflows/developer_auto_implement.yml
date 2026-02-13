@@ -356,7 +356,7 @@ jobs:
                - mypy src/ (0 errors required)
                - pytest -v (0 failures, 0 errors required)
                - cd web && npm run type-check (if web files modified)
-               - ./scripts/validate-web-routes.sh (if API endpoints added)
+               - ./scripts/agents/validate-web-routes.sh (if API endpoints added)
             5. If any check fails: fix and re-run ALL checks (up to 3 attempts)
             6. Commit: "fix: address code review findings (#${{ github.event.issue.number }})"
 
@@ -432,7 +432,7 @@ jobs:
                  - Fix any TypeScript errors before committing
 
               6. **Route Validation (if you added backend API endpoints)**:
-                 - Run: ./scripts/validate-web-routes.sh
+                 - Run: ./scripts/agents/validate-web-routes.sh
                  - Fix any missing routes before committing
 
               **CRITICAL**: Do NOT commit until ALL checks pass. Run checks in a loop:
@@ -550,7 +550,7 @@ jobs:
           echo "::group::Running web route validation"
           if git diff --name-only HEAD~1 | grep -q '^web/\|^src/nyxgpt/app\.py$'; then
             chmod +x scripts/validate-web-routes.sh
-            ./scripts/validate-web-routes.sh 2>&1 | tee /tmp/routes_attempt1.log
+            ./scripts/agents/validate-web-routes.sh 2>&1 | tee /tmp/routes_attempt1.log
             [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           else
             echo "No web files changed, skipping route validation"
@@ -597,7 +597,7 @@ jobs:
                - mypy src/
                - pytest -v
                - cd web && npm run type-check (if web files modified)
-               - ./scripts/validate-web-routes.sh (if API endpoints added)
+               - ./scripts/agents/validate-web-routes.sh (if API endpoints added)
             5. Do NOT commit until ALL checks pass with 0 errors/failures
             6. Commit your fixes with message:
                "fix: address verification failures (attempt 2) (#${{ github.event.issue.number }})"
@@ -648,7 +648,7 @@ jobs:
 
           echo "::group::Running web route validation"
           if git diff --name-only HEAD~1 | grep -q '^web/\|^src/nyxgpt/app\.py$'; then
-            ./scripts/validate-web-routes.sh 2>&1 | tee /tmp/routes_attempt2.log
+            ./scripts/agents/validate-web-routes.sh 2>&1 | tee /tmp/routes_attempt2.log
             [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           fi
           echo "::endgroup::"
@@ -695,7 +695,7 @@ jobs:
                - mypy src/
                - pytest -v
                - cd web && npm run type-check (if web files modified)
-               - ./scripts/validate-web-routes.sh (if API endpoints added)
+               - ./scripts/agents/validate-web-routes.sh (if API endpoints added)
             5. Do NOT commit until ALL checks pass with 0 errors/failures
             6. Commit with message:
                "fix: address remaining verification failures (attempt 3) (#${{ github.event.issue.number }})"
@@ -733,7 +733,7 @@ jobs:
 
           echo "::group::Final route validation"
           if git diff --name-only HEAD~1 | grep -q '^web/\|^src/nyxgpt/app\.py$'; then
-            ./scripts/validate-web-routes.sh
+            ./scripts/agents/validate-web-routes.sh
           fi
           echo "::endgroup::"
 

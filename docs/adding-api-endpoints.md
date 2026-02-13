@@ -130,7 +130,7 @@ async function fetchData() {
 Run the validation script to check for missing routes:
 
 ```bash
-./scripts/validate-web-routes.sh
+./scripts/agents/validate-web-routes.sh
 ```
 
 This script:
@@ -170,7 +170,7 @@ This script:
 
 1. **Always create web proxy routes** for endpoints called from frontend
 2. **Restart services** after adding endpoints
-3. **Run validation script** before committing: `./scripts/validate-web-routes.sh`
+3. **Run validation script** before committing: `./scripts/agents/validate-web-routes.sh`
 4. **Use TypeScript types** for request/response (create in `web/src/types/`)
 5. **Add error handling** in web proxy routes
 6. **Document new endpoints** in this file or OpenAPI schema
@@ -204,7 +204,7 @@ When adding a new endpoint, verify:
 - [ ] Endpoint appears in OpenAPI schema
 - [ ] Web proxy route created at `web/src/app/api/v1/.../route.ts`
 - [ ] Web service restarted (`nyxgpt ops restart web`)
-- [ ] Validation script passes (`./scripts/validate-web-routes.sh`)
+- [ ] Validation script passes (`./scripts/agents/validate-web-routes.sh`)
 - [ ] Frontend can fetch from `/api/v1/...` successfully
 
 ## Example: Full Implementation

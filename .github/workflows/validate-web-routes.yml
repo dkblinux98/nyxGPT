@@ -33,8 +33,8 @@ jobs:
 
       - name: Validate web proxy routes exist
         run: |
-          chmod +x scripts/validate-web-routes.sh
-          ./scripts/validate-web-routes.sh
+          chmod +x scripts/agents/validate-web-routes.sh
+          ./scripts/agents/validate-web-routes.sh
 
       - name: Set up Python
         uses: actions/setup-python@v5
