@@ -52,10 +52,11 @@ require_cmd python3
 REPO="${REPO_OWNER}/${REPO_NAME}"
 
 # Determine base branch: parent feature branch if issue has Parent field, otherwise release branch
+# This supports branching hierarchy for related issues
 if is_sub_issue "$ISSUE"; then
   parent_issue="$(get_parent_issue "$ISSUE")"
   BASE_BRANCH="$(get_pr_branch_for_issue "$parent_issue")"
-  echo "[dev] Sub-issue detected: PR will target parent feature branch $BASE_BRANCH (parent issue: #$parent_issue)" >&2
+  echo "[dev] Child issue detected: PR will target parent feature branch $BASE_BRANCH (parent issue: #$parent_issue)" >&2
 else
   BASE_BRANCH="$(get_release_branch)"
   echo "[dev] Top-level issue: PR will target release branch $BASE_BRANCH" >&2

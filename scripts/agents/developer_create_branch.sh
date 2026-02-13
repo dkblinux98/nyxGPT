@@ -50,6 +50,7 @@ require_gh_auth
 require_cmd git
 
 # Determine base branch: parent feature branch if issue has Parent field, otherwise release branch
+# This supports branching hierarchy for related issues
 if is_sub_issue "$ISSUE"; then
   parent_issue="$(get_parent_issue "$ISSUE")"
   base_branch="$(get_pr_branch_for_issue "$parent_issue")"
@@ -75,7 +76,7 @@ if is_sub_issue "$ISSUE"; then
       echo "Parent was top-level, using release branch: $base_branch" >&2
     fi
   else
-    echo "Sub-issue detected: branching off parent feature branch $base_branch (parent issue: #$parent_issue)" >&2
+    echo "Child issue detected: branching off parent feature branch $base_branch (parent issue: #$parent_issue)" >&2
   fi
 else
   base_branch="$(get_release_branch)"

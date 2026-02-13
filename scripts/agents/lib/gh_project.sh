@@ -355,41 +355,12 @@ issue_comment() {
   gh api -X POST "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/comments" -f "body=${body}" >/dev/null
 }
 
-create_sub_issue() {
-  local parent_issue="$1" title="$2" body_file="$3"
-  require_cmd gh
-  require_cmd jq
-  [[ -f "$body_file" ]] || _die "Body file not found: $body_file"
-
-  local body_content
-  body_content="$(cat "$body_file")"
-
-  # Prepend parent link to body
-  local full_body
-  full_body="Parent: #${parent_issue}"$'\n\n'"${body_content}"
-
-  # Create the issue
-  local issue_url new_issue_number
-  issue_url="$(gh issue create \
-    --repo "${REPO_OWNER}/${REPO_NAME}" \
-    --title "$title" \
-    --body "$full_body")"
-
-  [[ -n "$issue_url" ]] || _die "Failed to create issue"
-
-  # Extract issue number from URL (compatible with macOS grep)
-  new_issue_number="$(echo "$issue_url" | sed -n 's|.*/issues/\([0-9]*\)$|\1|p')"
-  [[ -n "$new_issue_number" ]] || _die "Failed to parse issue number from: $issue_url"
-
-  # Add comment to parent linking to child issue
-  issue_comment "$parent_issue" "Created child issue: #${new_issue_number}" || true
-
-  echo "$new_issue_number"
-}
-
 # -------------------------
-# Sub-issue detection
+# Parent issue detection (for branch hierarchy)
 # -------------------------
+# These functions support branching hierarchy where issues can have
+# a "Parent: #N" field in the body to indicate they should branch off
+# the parent's PR branch instead of the release branch.
 get_parent_issue() {
   local issue="$1"
   require_cmd gh

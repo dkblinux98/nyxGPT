@@ -455,8 +455,8 @@ jobs:
             Examples:
             - "feat: add user authentication (#${{ github.event.issue.number }})"
             - "fix: resolve null pointer in validator (#${{ github.event.issue.number }})"
-            - Sub-issue: "fix: add missing validation for email field (#2604, #${{ github.event.issue.number }})"
-            - Sub-issue: "test: add integration tests per review (#2604, #${{ github.event.issue.number }})"
+            - "test: add integration tests per review (#${{ github.event.issue.number }})"
+            - "docs: update API documentation (#${{ github.event.issue.number }})"
 
             Valid commit types: feat, fix, test, docs, refactor, chore
 

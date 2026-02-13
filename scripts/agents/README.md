@@ -58,8 +58,11 @@ This preserves your release-issue checklist signal: unchecked = planned, checked
 - `developer_submit_for_review.sh <ISSUE_NUMBER> "<PR_TITLE>" [PR_BODY_FILE]` — open PR + set issue -> In Review, assign review-agent
 
 ### review-agent
-- `review_request_changes.sh <ISSUE_NUMBER> "<TITLE>" <BODY_FILE>` — create Acceptance Failure sub-issue and bounce parent -> In Progress
+- `manually_trigger_pr_review.sh <PR_NUMBER>` — manually trigger review workflow (for re-reviews or if auto-trigger failed)
 - `review_accept_and_merge.sh <PR_NUMBER_OR_URL> <ISSUE_NUMBER>` — merge PR to release branch, delete branch, close issue, set status -> In Review, assign human owner for stakeholder acceptance
+
+### validation
+- `validate-web-routes.sh` — validates that web proxy routes exist for all backend API endpoints
 
 ## Troubleshooting
 - Run with `DEBUG=1` to print GraphQL responses and commands.
