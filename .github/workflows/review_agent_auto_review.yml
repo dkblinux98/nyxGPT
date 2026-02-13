@@ -294,13 +294,13 @@ jobs:
 
           echo "::group::Returning issue #$ISSUE to developer"
 
-          # Set issue status to "In Progress" and assign to developer-agent
+          # Set issue status to "In Progress" and assign to developer-agent (with workflow trigger)
           bash -lc "cd '$GITHUB_WORKSPACE' && \
             source scripts/agents/lib/gh_project.sh && \
             load_config && \
             require_gh_auth && \
             set_issue_status '$ISSUE' \"\$STATUS_IN_PROGRESS\" && \
-            issue_assign_only '$ISSUE' \"\$DEV_AGENT\""
+            assign_and_trigger_developer '$ISSUE'"
 
           LOOP_NUM=$((${{ steps.count.outputs.loop_count }} + 1))
 
@@ -319,9 +319,6 @@ jobs:
             "**Note:** This is review iteration ${LOOP_NUM} of 3." \
             "After 3 review cycles, the issue will be escalated to @${HUMAN_OWNER}.")
           gh pr comment "$PR" --body "$BODY"
-
-          # Trigger developer workflow to auto-fix review issues
-          gh issue comment "$ISSUE" --body "RETRY_IMPLEMENTATION"
 
           echo "::endgroup::"
           echo "✓ Issue returned to developer-agent, auto-fix triggered"

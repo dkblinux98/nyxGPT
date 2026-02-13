@@ -75,7 +75,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
 fi
 
 set_issue_status "$ISSUE" "$STATUS_IN_PROGRESS"
-issue_assign_only "$ISSUE" "$DEV_AGENT"
+assign_and_trigger_developer "$ISSUE"
 issue_comment "$ISSUE" "@${DEV_AGENT} selected as next work item by @${SCRUM_AGENT}. Status -> ${STATUS_IN_PROGRESS}."
 
 echo "Started issue #$ISSUE -> ${STATUS_IN_PROGRESS}, assignee: $DEV_AGENT"

@@ -355,6 +355,16 @@ issue_comment() {
   gh api -X POST "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/comments" -f "body=${body}" >/dev/null
 }
 
+# Assign issue to developer and trigger workflow
+# GitHub's security model prevents API assignment from triggering workflows,
+# so we also post a trigger comment to ensure the developer workflow runs
+assign_and_trigger_developer() {
+  local issue="$1"
+  issue_assign_only "$issue" "$DEV_AGENT"
+  # Post trigger comment to ensure workflow runs (API assignments don't trigger workflows)
+  issue_comment "$issue" "RETRY_IMPLEMENTATION"
+}
+
 # -------------------------
 # PR Project Hygiene
 # -------------------------
