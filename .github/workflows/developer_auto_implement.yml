@@ -506,55 +506,37 @@ jobs:
           set +e  # Don't exit immediately on error - we want to capture all failures
           FAILED=0
 
+          # Run ALL checks unconditionally on the entire codebase
+          # This ensures no regressions are introduced regardless of what files changed
+
           echo "::group::Running black format check"
-          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            python -m black --check . 2>&1 | tee /tmp/black_attempt1.log
-            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
-          else
-            echo "No Python files changed, skipping black"
-          fi
+          python -m black --check . 2>&1 | tee /tmp/black_attempt1.log
+          [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
           echo "::group::Running ruff"
-          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            python -m ruff check src/ tests/ 2>&1 | tee /tmp/ruff_attempt1.log
-            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
-          else
-            echo "No Python files changed, skipping ruff"
-          fi
+          python -m ruff check src/ tests/ 2>&1 | tee /tmp/ruff_attempt1.log
+          [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
-          echo "::group::Running pytest"
-          python -m pytest tests/unit/ -v 2>&1 | tee /tmp/pytest_attempt1.log
+          echo "::group::Running pytest (full test suite)"
+          python -m pytest tests/ -v 2>&1 | tee /tmp/pytest_attempt1.log
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
           echo "::group::Running mypy"
-          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            python -m mypy src/ 2>&1 | tee /tmp/mypy_attempt1.log
-            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
-          else
-            echo "No Python files changed, skipping mypy"
-          fi
+          python -m mypy src/ 2>&1 | tee /tmp/mypy_attempt1.log
+          [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
           echo "::group::Running TypeScript type check"
-          if git diff --name-only HEAD~1 | grep -q '^web/.*\.tsx\?$'; then
-            (cd web && npm run type-check) 2>&1 | tee /tmp/tsc_attempt1.log
-            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
-          else
-            echo "No TypeScript files changed, skipping type check"
-          fi
+          (cd web && npm run type-check) 2>&1 | tee /tmp/tsc_attempt1.log
+          [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
           echo "::group::Running web route validation"
-          if git diff --name-only HEAD~1 | grep -q '^web/\|^src/nyxgpt/app\.py$'; then
-            chmod +x scripts/validate-web-routes.sh
-            ./scripts/agents/validate-web-routes.sh 2>&1 | tee /tmp/routes_attempt1.log
-            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
-          else
-            echo "No web files changed, skipping route validation"
-          fi
+          ./scripts/agents/validate-web-routes.sh 2>&1 | tee /tmp/routes_attempt1.log
+          [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
           if [ $FAILED -eq 1 ]; then
@@ -613,44 +595,36 @@ jobs:
           set +e
           FAILED=0
 
+          # Run ALL checks unconditionally on the entire codebase
+
           echo "::group::Running black format check"
-          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            python -m black --check . 2>&1 | tee /tmp/black_attempt2.log
-            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
-          fi
+          python -m black --check . 2>&1 | tee /tmp/black_attempt2.log
+          [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
           echo "::group::Running ruff"
-          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            python -m ruff check src/ tests/ 2>&1 | tee /tmp/ruff_attempt2.log
-            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
-          fi
+          python -m ruff check src/ tests/ 2>&1 | tee /tmp/ruff_attempt2.log
+          [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
-          echo "::group::Running pytest"
-          python -m pytest tests/unit/ -v 2>&1 | tee /tmp/pytest_attempt2.log
+          echo "::group::Running pytest (full test suite)"
+          python -m pytest tests/ -v 2>&1 | tee /tmp/pytest_attempt2.log
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
           echo "::group::Running mypy"
-          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            python -m mypy src/ 2>&1 | tee /tmp/mypy_attempt2.log
-            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
-          fi
+          python -m mypy src/ 2>&1 | tee /tmp/mypy_attempt2.log
+          [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
           echo "::group::Running TypeScript type check"
-          if git diff --name-only HEAD~1 | grep -q '^web/.*\.tsx\?$'; then
-            (cd web && npm run type-check) 2>&1 | tee /tmp/tsc_attempt2.log
-            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
-          fi
+          (cd web && npm run type-check) 2>&1 | tee /tmp/tsc_attempt2.log
+          [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
           echo "::group::Running web route validation"
-          if git diff --name-only HEAD~1 | grep -q '^web/\|^src/nyxgpt/app\.py$'; then
-            ./scripts/agents/validate-web-routes.sh 2>&1 | tee /tmp/routes_attempt2.log
-            [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
-          fi
+          ./scripts/agents/validate-web-routes.sh 2>&1 | tee /tmp/routes_attempt2.log
+          [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
           if [ $FAILED -eq 1 ]; then
@@ -703,38 +677,31 @@ jobs:
       - name: Final Verification (Must Pass)
         id: verify_final
         run: |
+          # Run ALL checks unconditionally on the entire codebase
+          # This is the final gate - no regressions allowed
+
           echo "::group::Final black format check"
-          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            python -m black --check .
-          fi
+          python -m black --check .
           echo "::endgroup::"
 
           echo "::group::Final ruff verification"
-          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            python -m ruff check src/ tests/
-          fi
+          python -m ruff check src/ tests/
           echo "::endgroup::"
 
           echo "::group::Final mypy verification"
-          if git diff --name-only HEAD~1 | grep -q '\.py$'; then
-            python -m mypy src/
-          fi
+          python -m mypy src/
           echo "::endgroup::"
 
-          echo "::group::Final pytest verification"
-          python -m pytest tests/unit/ -v
+          echo "::group::Final pytest verification (full test suite)"
+          python -m pytest tests/ -v
           echo "::endgroup::"
 
           echo "::group::Final TypeScript verification"
-          if git diff --name-only HEAD~1 | grep -q '^web/.*\.tsx\?$'; then
-            (cd web && npm run type-check)
-          fi
+          (cd web && npm run type-check)
           echo "::endgroup::"
 
           echo "::group::Final route validation"
-          if git diff --name-only HEAD~1 | grep -q '^web/\|^src/nyxgpt/app\.py$'; then
-            ./scripts/agents/validate-web-routes.sh
-          fi
+          ./scripts/agents/validate-web-routes.sh
           echo "::endgroup::"
 
           echo "✅ All verification checks passed on final attempt!"
