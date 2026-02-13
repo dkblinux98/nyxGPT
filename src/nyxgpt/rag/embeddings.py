@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import concurrent.futures
 import json
 import logging
@@ -71,6 +72,18 @@ _thread_pool: concurrent.futures.ThreadPoolExecutor | None = None
 _gpu_info: GPUInfo | None = None
 _gpu_info_updated: float = 0.0
 _GPU_INFO_TTL = 60.0  # Cache GPU info for 60 seconds
+
+
+def _cleanup_thread_pool() -> None:
+    """Clean up global thread pool on shutdown."""
+    global _thread_pool
+    if _thread_pool is not None:
+        _thread_pool.shutdown(wait=True)
+        _thread_pool = None
+
+
+# Register cleanup handler to ensure thread pool is properly shut down
+atexit.register(_cleanup_thread_pool)
 
 
 def _embedding_cfg(model: str | None = None, dimension: int | None = None) -> EmbeddingConfig:
@@ -199,6 +212,7 @@ def _detect_gpu() -> GPUInfo:
             text=True,
             timeout=2,
             check=False,
+            shell=False,
         )
 
         if result.returncode == 0 and result.stdout.strip():
@@ -409,7 +423,11 @@ async def _embed_batch_async(
     Returns:
         List of embedding vectors
     """
-    loop = asyncio.get_event_loop()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
     return await loop.run_in_executor(
         executor, _embed_batch_sync, batch, url, model, timeout, dimension
     )
