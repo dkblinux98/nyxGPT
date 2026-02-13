@@ -130,6 +130,16 @@ echo "[review] ✓ PR #${PR} merged successfully" >&2
 echo "[review] Closing issue #${ISSUE}..." >&2
 if ! gh issue close "$ISSUE" --repo "${REPO_OWNER}/${REPO_NAME}" --comment "Merged via review-agent. Issue closed and moved to In Review status for stakeholder acceptance." 2>&1; then
   _warn "Failed to close issue #${ISSUE}. PR is merged but issue may still be open. Continuing..."
+else
+  # Manually trigger auto-check-tasklist workflow as safety measure
+  # GitHub's anti-loop security may prevent issues: [closed] from triggering workflows when done via API
+  echo "[review] Triggering auto-check-tasklist workflow via repository_dispatch..." >&2
+  if ! gh api "repos/${REPO_OWNER}/${REPO_NAME}/dispatches" \
+    -X POST \
+    -f event_type="issue-closed" \
+    -f "client_payload[issue_number]=${ISSUE}" 2>&1; then
+    _warn "Failed to trigger auto-check-tasklist workflow manually. Workflow may not run. Continuing..."
+  fi
 fi
 
 # Set issue status to In Review

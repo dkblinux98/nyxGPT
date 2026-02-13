@@ -3,6 +3,8 @@ name: Auto-check Release Tracking Issues
 on:
   issues:
     types: [closed]
+  repository_dispatch:
+    types: [issue-closed]
 
 jobs:
   update-tracking-issues:
@@ -17,7 +19,15 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const closedIssueNumber = context.issue.number;
+            // Get issue number from either issues event or repository_dispatch event
+            const closedIssueNumber = context.issue?.number ||
+              context.payload?.client_payload?.issue_number;
+
+            if (!closedIssueNumber) {
+              console.log('No issue number found in event context');
+              return;
+            }
+
             console.log(`Issue #${closedIssueNumber} was closed`);
 
             // Search for issues that reference this issue in task lists
