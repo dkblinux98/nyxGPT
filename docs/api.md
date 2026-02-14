@@ -12,13 +12,14 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 45 available endpoints:
+Quick reference of all 46 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check |
 | `/api/v1/info` | GET | Runtime configuration |
 | `/api/v1/batch/metrics` | GET | Request batching metrics |
+| `/api/v1/metrics` | GET | Resource usage monitoring (memory, CPU, latency, queue depth) |
 | `/api/v1/config` | GET | Get current configuration |
 | `/api/v1/config` | POST | Update configuration (full replace) |
 | `/api/v1/config` | PATCH | Partial configuration update |
@@ -2325,6 +2326,76 @@ curl http://127.0.0.1:8000/api/v1/batch/metrics
 - Batch processing of many requests
 - High-volume API workloads
 - When throughput is more important than individual request latency
+
+---
+
+## Resource Usage Monitoring
+
+### `GET /api/v1/metrics`
+
+Monitor system resource usage including memory, CPU, request latency, and queue depth.
+
+**Request:**
+
+```bash
+curl http://127.0.0.1:8000/api/v1/metrics
+```
+
+**Response:**
+
+```json
+{
+  "memory": {
+    "rss_mb": 245.32,
+    "vms_mb": 512.45,
+    "percent": 3.21,
+    "available_mb": 8192.00
+  },
+  "cpu": {
+    "process_percent": 12.5,
+    "system_percent": 45.8
+  },
+  "latency": {
+    "avg_ms": 23.45,
+    "p50_ms": 18.23,
+    "p95_ms": 89.12,
+    "p99_ms": 156.78
+  },
+  "queue": {
+    "depth": 3,
+    "total_requests": 1234
+  }
+}
+```
+
+**Response Fields:**
+
+**Memory Metrics:**
+- `rss_mb` - Resident Set Size (physical memory used by process) in MB
+- `vms_mb` - Virtual Memory Size in MB
+- `percent` - Percentage of system memory used by process
+- `available_mb` - Available system memory in MB
+
+**CPU Metrics:**
+- `process_percent` - CPU usage percentage for this process (0-100 per core)
+- `system_percent` - Overall system CPU usage percentage
+
+**Latency Metrics:**
+- `avg_ms` - Average request latency in milliseconds
+- `p50_ms` - 50th percentile (median) request latency
+- `p95_ms` - 95th percentile request latency (95% of requests faster than this)
+- `p99_ms` - 99th percentile request latency (99% of requests faster than this)
+
+**Queue Metrics:**
+- `depth` - Current number of requests in batch processing queue (0 if batching disabled)
+- `total_requests` - Total number of requests tracked since server startup
+
+**Use Cases:**
+- Performance monitoring and alerting
+- Capacity planning and resource optimization
+- Identifying performance bottlenecks
+- Tracking request latency over time
+- Monitoring system health during high load
 
 **When to disable batching:**
 - Single-user interactive usage

@@ -442,3 +442,33 @@ class SearchResponse(BaseModel):
     query: str = Field(..., description="The search query that was executed")
     total_results: int = Field(..., description="Total number of results found")
     results: list[SearchResultItem] = Field(..., description="List of matching messages")
+
+
+# ----------------------------
+# Resource Monitoring API models
+# ----------------------------
+
+
+class ResourceMetricsResponse(BaseModel):
+    """Response model for resource usage metrics endpoint.
+
+    Provides comprehensive resource monitoring including memory, CPU,
+    request latency, and queue depth metrics.
+    """
+
+    memory: dict[str, float] = Field(
+        ...,
+        description="Memory metrics (rss_mb, vms_mb, percent, available_mb)",
+    )
+    cpu: dict[str, float] = Field(
+        ...,
+        description="CPU metrics (process_percent, system_percent)",
+    )
+    latency: dict[str, float] = Field(
+        ...,
+        description="Request latency metrics (avg_ms, p50_ms, p95_ms, p99_ms)",
+    )
+    queue: dict[str, int] = Field(
+        ...,
+        description="Queue metrics (depth, total_requests)",
+    )
