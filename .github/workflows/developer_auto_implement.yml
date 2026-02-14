@@ -237,21 +237,21 @@ jobs:
           set -euo pipefail
           PR="${{ steps.check_pr.outputs.existing_pr }}"
 
-          # Check if there are REQUEST_CHANGES review comments
-          # Review comments come from review-agent, not "claude"
-          REVIEW_COMMENT=$(gh pr view "$PR" --json comments --jq '
-            [.comments[] |
-             select((.body | startswith("## Code Review - REQUEST_CHANGES")))] |
+          # Check if there are CHANGES_REQUESTED reviews (not comments!)
+          # Review agent posts actual GitHub PR Reviews with state CHANGES_REQUESTED
+          REVIEW_COMMENT=$(gh pr view "$PR" --json reviews --jq '
+            [.reviews[] |
+             select(.state == "CHANGES_REQUESTED")] |
             last |
             .body // ""
           ')
 
           if [[ -n "$REVIEW_COMMENT" ]]; then
             echo "has_review_issues=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::PR has review comments requesting changes - will fix issues"
+            echo "::notice::PR has CHANGES_REQUESTED review - will fix issues"
           else
             echo "has_review_issues=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::PR has no review issues - skipping"
+            echo "::notice::PR has no pending review changes - skipping"
           fi
 
       - name: Save review comments to file (if review issues found)
@@ -261,10 +261,11 @@ jobs:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
           PR="${{ steps.check_pr.outputs.existing_pr }}"
-          gh pr view "$PR" --json comments \
-            --jq '.comments[] | select(.body | startswith("## Code Review - REQUEST_CHANGES")) | .body' \
-            | tail -1 > /tmp/review-comments.txt
-          echo "Saved review comments to /tmp/review-comments.txt"
+          # Get the latest CHANGES_REQUESTED review (not comment)
+          gh pr view "$PR" --json reviews \
+            --jq '[.reviews[] | select(.state == "CHANGES_REQUESTED")] | last | .body' \
+            > /tmp/review-comments.txt
+          echo "Saved review feedback to /tmp/review-comments.txt"
 
       - name: Post review fix start comment (if review issues found)
         if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true'
