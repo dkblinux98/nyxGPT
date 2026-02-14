@@ -8,7 +8,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 import pytest
+from fastapi.testclient import TestClient
 
+from nyxgpt.app import app
 from nyxgpt.config import load_config
 
 
@@ -357,3 +359,13 @@ def cleanup_test_sessions(api_base_url):
 
     except Exception as e:
         print(f"[INTEGRATION TESTS] Session cleanup failed: {e}")
+
+
+@pytest.fixture
+def client() -> TestClient:
+    """Provide a FastAPI TestClient for integration tests.
+
+    This creates a TestClient instance that can be used to make requests
+    to the FastAPI app without needing a running server.
+    """
+    return TestClient(app)
