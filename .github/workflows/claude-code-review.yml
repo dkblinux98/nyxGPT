@@ -182,11 +182,11 @@ jobs:
         run: |
           PR="${{ steps.pr_number.outputs.pr }}"
 
-          # Get most recent REQUEST_CHANGES comment from claude[bot]
-          PREVIOUS_ISSUES=$(gh pr view "$PR" --json comments --jq '
-            [.comments[] |
-             select(.author.login == "claude" and
-                    (.body | startswith("## Code Review - REQUEST_CHANGES")))] |
+          # Get most recent CHANGES_REQUESTED review
+          # Check actual GitHub reviews, not comments
+          PREVIOUS_ISSUES=$(gh pr view "$PR" --json reviews --jq '
+            [.reviews[] |
+             select(.state == "CHANGES_REQUESTED")] |
             last |
             .body // ""
           ')
