@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import secrets
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -58,6 +59,7 @@ from nyxgpt.api_models import (
     ReindexCollectionRequest,
     ReindexCollectionResponse,
     RenameRequest,
+    ResourceMetricsResponse,
     SessionsListResponse,
     TagsRequest,
     TitleRequest,
@@ -83,6 +85,7 @@ from nyxgpt.config import (
 from nyxgpt.logging import configure_logging, get_log_dir, request_id_var
 from nyxgpt.rag.rag import ingest_document, retrieve_context
 from nyxgpt.rate_limiter import RateLimiter
+from nyxgpt.resource_monitor import ResourceMonitor, get_resource_monitor, init_resource_monitor
 
 log = logging.getLogger("nyxgpt.api")
 
@@ -91,6 +94,9 @@ _rate_limiter: RateLimiter | None = None
 
 # Global batch processor instance (initialized at startup if enabled)
 _batch_processor: BatchProcessor[dict, dict] | None = None
+
+# Global resource monitor instance (initialized at startup)
+_resource_monitor: ResourceMonitor | None = None
 
 
 @dataclass
@@ -294,6 +300,10 @@ async def lifespan(_app: FastAPI):
     else:
         log.info("Request batching disabled", extra={"component": "startup"})
 
+    # Initialize resource monitor
+    global _resource_monitor
+    _resource_monitor = init_resource_monitor(batch_processor=_batch_processor)
+
     yield
 
     # Cleanup: stop batch processor
@@ -472,6 +482,28 @@ async def rate_limit_middleware(request: Request, call_next):
     response = await call_next(request)
     for key, value in headers.items():
         response.headers[key] = value
+
+    return response
+
+
+@app.middleware("http")
+async def request_latency_middleware(request: Request, call_next):
+    """Track request latency for resource monitoring.
+
+    Measures total request processing time and records it in the resource monitor.
+    """
+    start_time = time.time()
+
+    # Process request
+    response = await call_next(request)
+
+    # Calculate latency
+    latency_ms = (time.time() - start_time) * 1000
+
+    # Record in resource monitor
+    monitor = get_resource_monitor()
+    if monitor is not None:
+        monitor.record_request_latency(latency_ms)
 
     return response
 
@@ -779,6 +811,33 @@ def batch_metrics() -> dict[str, Any]:
         "enabled": True,
         **metrics.to_dict(),
     }
+
+
+@api.get("/metrics", response_model=ResourceMetricsResponse)
+def resource_metrics() -> ResourceMetricsResponse:
+    """Get system resource usage metrics.
+
+    Returns comprehensive resource monitoring including:
+    - Memory usage (RSS, VMS, available)
+    - CPU utilization (process and system)
+    - Request latency (avg, p50, p95, p99)
+    - Queue depth (current and total requests)
+
+    Returns:
+        ResourceMetricsResponse with current resource metrics
+    """
+    monitor = get_resource_monitor()
+    if monitor is None:
+        # Return zero metrics if monitor not initialized
+        return ResourceMetricsResponse(
+            memory={"rss_mb": 0, "vms_mb": 0, "percent": 0, "available_mb": 0},
+            cpu={"process_percent": 0, "system_percent": 0},
+            latency={"avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "p99_ms": 0},
+            queue={"depth": 0, "total_requests": 0},
+        )
+
+    metrics = monitor.get_metrics()
+    return ResourceMetricsResponse(**metrics.to_dict())
 
 
 # --- Config get/set endpoints ---
