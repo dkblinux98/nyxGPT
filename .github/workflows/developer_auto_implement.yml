@@ -947,9 +947,14 @@ jobs:
               ;;
           esac
 
-          # Read analysis details if available
+          # Read analysis details if available (parse safely)
           if [[ -f /tmp/analysis_result.txt ]]; then
-            source /tmp/analysis_result.txt
+            while IFS='=' read -r key value; do
+              [[ -z "$key" || "$key" =~ ^# || -z "$value" ]] && continue
+              [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || continue
+              export "$key=$value"
+            done < /tmp/analysis_result.txt
+
             echo "action=${ACTION:-none}" >> "$GITHUB_OUTPUT"
             echo "wait_seconds=${WAIT_SECONDS:-0}" >> "$GITHUB_OUTPUT"
             echo "::notice::Analysis: $STATUS - $ERROR_TYPE"
@@ -1069,7 +1074,16 @@ jobs:
         shell: bash
         run: |
           if [[ -f /tmp/analysis_result.txt ]]; then
-            source /tmp/analysis_result.txt
+            # Parse file safely - only read KEY=VALUE lines
+            while IFS='=' read -r key value; do
+              # Skip empty lines, comments, and lines without =
+              [[ -z "$key" || "$key" =~ ^# || -z "$value" ]] && continue
+              # Only process valid variable names
+              [[ "$key" =~ ^[A-Z_][A-Z0-9_]*$ ]] || continue
+              # Export the variable
+              export "$key=$value"
+            done < /tmp/analysis_result.txt
+
             echo "status=${STATUS:-UNKNOWN}" >> "$GITHUB_OUTPUT"
             echo "error_type=${ERROR_TYPE:-unknown}" >> "$GITHUB_OUTPUT"
             echo "action=${ACTION:-none}" >> "$GITHUB_OUTPUT"
