@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
+import ResourceMetrics from '../../components/ResourceMetrics';
 
 type ConfigData = {
   ollama_base_url: string;
@@ -11,7 +12,7 @@ type ConfigData = {
   log_level: string;
 };
 
-type WizardStep = 'model' | 'rag' | 'api' | 'summary';
+type WizardStep = 'model' | 'rag' | 'api' | 'metrics' | 'summary';
 
 export default function AdminPage() {
   const [config, setConfig] = useState<ConfigData | null>(null);
@@ -87,6 +88,7 @@ export default function AdminPage() {
     { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
     { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
     { id: 'api', label: 'API Settings', description: 'Configure logging and API settings' },
+    { id: 'metrics', label: 'Resource Usage', description: 'Monitor system performance and metrics' },
     { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
   ];
 
@@ -524,6 +526,12 @@ export default function AdminPage() {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {currentStep === 'metrics' && (
+          <div>
+            <ResourceMetrics />
           </div>
         )}
 

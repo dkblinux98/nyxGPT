@@ -1180,6 +1180,26 @@ function Home() {
                 <span>Configuration Wizard</span>
               </a>
 
+              {/* Resource Usage */}
+              <a
+                href="/settings"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '8px 16px',
+                  textDecoration: 'none',
+                  color: 'var(--foreground)',
+                  fontSize: 14,
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={() => setShowSettingsMenu(false)}
+              >
+                <span>📊</span>
+                <span>Resource Usage</span>
+              </a>
+
               {/* View Logs */}
               <a
                 href="/admin/logs"
