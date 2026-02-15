@@ -356,12 +356,15 @@ The web UI includes a step-by-step configuration wizard for easy system setup. A
 1. **Model Selection** - Choose your default LLM model from available Ollama models
 2. **RAG Configuration** - Enable/disable retrieval-augmented generation
 3. **API Settings** - Configure log level and test API connectivity
-4. **Summary** - Review and save your configuration
+4. **Resource Usage** - Monitor system performance and resource metrics
+5. **Summary** - Review and save your configuration
 
 **Features:**
 - Visual progress indicator showing current step
 - Form validation for required fields
 - Connection testing to verify API connectivity
+- Real-time resource monitoring dashboard
+- Metrics export (JSON/CSV)
 - Hot-reloadable settings (no service restart required)
 - Clear navigation between steps
 - **Keyboard shortcuts:**
@@ -375,6 +378,25 @@ The wizard updates your `~/.nyxGPT/config.ini` file with the following settings:
 - `log_level` - Logging verbosity (DEBUG, INFO, WARNING, ERROR)
 
 Changes take effect immediately without requiring a service restart.
+
+**Resource Usage Monitoring:**
+
+The wizard includes a real-time resource monitoring dashboard accessible from the Resource Usage step. This dashboard provides comprehensive system performance metrics:
+
+- **Memory Usage** - Process memory consumption (RSS, VMS), percentage, and available memory
+- **CPU Usage** - Process and system-wide CPU utilization
+- **Request Latency** - Average, P50, P95, and P99 latency percentiles
+- **Queue Status** - Current batch processing queue depth and total requests
+
+**Dashboard Features:**
+- Real-time auto-refresh (5-second interval, toggle on/off)
+- Visual status indicators (normal/warning/critical thresholds)
+- Export metrics to JSON or CSV format
+- Manual refresh control
+- Color-coded alerts based on resource thresholds:
+  - **Green (Normal)**: < 60% utilization
+  - **Yellow (Warning)**: 60-80% utilization
+  - **Red (Critical)**: > 80% utilization
 
 **Prerequisites:**
 - FastAPI backend must be running (`nyxgpt ops install` or `nyxgpt ops restart api`)
