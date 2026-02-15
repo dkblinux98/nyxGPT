@@ -2397,6 +2397,29 @@ curl http://127.0.0.1:8000/api/v1/metrics
 - Tracking request latency over time
 - Monitoring system health during high load
 
+### Web UI Dashboard
+
+The web UI provides a visual dashboard for resource usage metrics accessible from the Settings menu:
+
+**Accessing the Dashboard:**
+1. Open the web UI at `http://localhost:3000`
+2. Click the Settings menu (⚙️ icon)
+3. Select "Resource Usage"
+
+**Dashboard Features:**
+- Real-time metric updates (auto-refresh every 5 seconds)
+- Visual display of memory, CPU, latency, and queue metrics
+- Color-coded warning indicators (normal/warning/critical thresholds)
+- Historical trends with configurable time ranges (1 hour, 24 hours, 7 days)
+- Export functionality (CSV and JSON formats)
+- Toggle auto-refresh on/off
+
+**Warning Thresholds:**
+- Memory: >75% warning, >90% critical
+- CPU (Process): >60% warning, >80% critical
+- CPU (System): >75% warning, >90% critical
+- Latency (P99): >500ms warning, >1000ms critical
+
 **When to disable batching:**
 - Single-user interactive usage
 - When latency is critical
