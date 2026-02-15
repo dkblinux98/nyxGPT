@@ -44,13 +44,35 @@ jobs:
 
           echo "NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini" >> "$GITHUB_ENV"
 
-      - name: Set all required project fields
+      - name: Check if hygiene needed
+        id: check_hygiene
         env:
           GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
         run: |
           ISSUE=${{ github.event.issue.number }}
 
-          echo "Ensuring issue #$ISSUE has proper project hygiene..."
+          # Check if issue already has Status set (web UI issues will)
+          STATUS=$(gh issue view "$ISSUE" --json projectItems \
+                   --jq '.projectItems[0].status.name // empty' \
+                   2>/dev/null || echo "")
+
+          if [[ -n "$STATUS" ]]; then
+            echo "Issue #$ISSUE already has Status: $STATUS"
+            echo "Skipping - likely created via web UI with proper hygiene"
+            echo "needs_hygiene=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Issue #$ISSUE has no Status - needs hygiene setup"
+            echo "needs_hygiene=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set all required project fields
+        if: steps.check_hygiene.outputs.needs_hygiene == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+        run: |
+          ISSUE=${{ github.event.issue.number }}
+
+          echo "Setting up project hygiene for issue #$ISSUE..."
 
           # Source library functions
           source scripts/agents/lib/gh_project.sh
