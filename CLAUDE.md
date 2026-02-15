@@ -74,6 +74,50 @@ Executive assistant role uses efficient means for one-off tasks outside the work
 
 ---
 
+## Creating Issues
+
+When creating GitHub issues:
+
+**Title Format:**
+- Clear, concise, actionable (under 80 characters)
+- Format: `[type]: [action/problem] - [component if relevant]`
+- Examples: `feat: Add metrics dashboard`, `bug: RAG crashes on epub`, `fix: Agent ignoring reviews`
+
+**Body Structure:**
+```markdown
+## Problem / Motivation
+[Why is this needed? What problem does it solve?]
+
+## Acceptance Criteria
+- [ ] [Specific, testable criterion 1]
+- [ ] [Specific, testable criterion 2]
+
+## Technical Details (if applicable)
+- Files affected: [list]
+- Dependencies: [if any]
+
+## Related Issues/PRs
+- Related to #[number]
+```
+
+**Required Project Fields:**
+- Status: Backlog
+- Priority: P1 - High (default)
+- Effort: XS (default)
+- Module: Auto-detect from keywords (web-ui, api, rag, cli, tui, testing, documentation, security, observability), fallback to "api"
+- Label: "Feature" (or "Acceptance Failure" for bugs)
+- Sprint: Current sprint (if active)
+- Milestone: Current open milestone (if exists)
+
+**CRITICAL: Always verify fields were set**
+- Re-query issue after creation: `gh issue view $ISSUE --json projectItems,labels,milestone`
+- Never assume success from non-error response
+- Report actual field values to user
+
+Use `/issue` skill for full guided workflow.
+
+---
+
 ## Tooling
 
 - Use gh CLI
