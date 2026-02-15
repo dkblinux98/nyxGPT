@@ -38,12 +38,24 @@ Claude must not invent workflow, authority, or automation.
 
 ---
 
+## Project Environment
+
+This project uses Python (primary), TypeScript, YAML workflows, and Markdown docs. Tools: mypy, ruff, pre-commit hooks, pytest. IDE: IntelliJ (not PyCharm). Platform: Apple Silicon (ARM64).
+
+---
+
 ## Sources of Truth
 
 - AGENTS.md
 - scripts/agents/*
 - GitHub Issues
 - Release Issues
+
+---
+
+## General Guidelines
+
+Do not spend excessive time reading bootstrap/context files before addressing the user's actual request. Start with the specific problem, then read context as needed.
 
 ---
 
@@ -89,6 +101,24 @@ Executive assistant role uses efficient means for one-off tasks outside the work
 - PRs are created only via developer_submit_for_review.sh
 - PR body must include: Closes #ISSUE
 - Issues close only on merge
+
+---
+
+## Code Changes
+
+When renaming/migrating projects, do a comprehensive grep for ALL references (config files, env vars, docs, tests, scripts, workflows, directory names) before declaring the task complete. Never rename a working directory mid-session.
+
+---
+
+## GitHub Workflows
+
+When setting GitHub project fields via CLI/API, always verify the fields were actually set by re-querying the project item. Never assume success from a non-error response.
+
+---
+
+## CI/CD
+
+When fixing CI/CD failures, reproduce the issue locally with the same environment constraints (missing stubs, unmocked connections, pre-commit hooks) before pushing fixes. Avoid multiple push-and-pray cycles.
 
 ---
 
