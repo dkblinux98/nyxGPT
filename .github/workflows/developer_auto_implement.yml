@@ -3,21 +3,15 @@ name: Developer Agent Auto-Implement
 on:
   issues:
     types: [assigned]
-  issue_comment:
-    types: [created]
 
 jobs:
   implement:
-    # Triggers on:
-    # 1. Assignment to DEV_AGENT
-    # 2. Comment containing RETRY_IMPLEMENTATION on an issue assigned to DEV_AGENT
+    # Triggers on assignment to DEV_AGENT
+    # Developer agent reads issue history to determine if this is new work or a retry
     # Status verification will exit early if not "In Progress"
     if: >-
       ${{ vars.AGENTS_ENABLED == 'true'
-          && (
-            (github.event_name == 'issues' && github.event.assignee.login == vars.DEV_AGENT)
-            || (github.event_name == 'issue_comment' && contains(github.event.comment.body, 'RETRY_IMPLEMENTATION'))
-          ) }}
+          && github.event.assignee.login == vars.DEV_AGENT }}
     runs-on: ubuntu-latest
 
     permissions:
