@@ -44,7 +44,7 @@ jobs:
 
           echo "NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini" >> "$GITHUB_ENV"
 
-      - name: Ensure issue in project with default status
+      - name: Set all required project fields
         env:
           GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
         run: |
@@ -61,16 +61,106 @@ jobs:
           ITEM_ID=$(ensure_issue_in_project "$ISSUE")
           echo "Issue #$ISSUE in project: $ITEM_ID"
 
-          # Check if status is already set
-          STATUS=$(gh issue view "$ISSUE" --json projectItems --jq '.projectItems[0].status.name // empty')
+          # Get issue details for intelligent defaults
+          ISSUE_DATA=$(gh issue view "$ISSUE" --json title,body,labels)
+          TITLE=$(echo "$ISSUE_DATA" | jq -r '.title')
+          BODY=$(echo "$ISSUE_DATA" | jq -r '.body // ""')
+          LABELS=$(echo "$ISSUE_DATA" | jq -r '.labels[].name' | tr '\n' ' ')
 
-          if [[ -z "$STATUS" ]]; then
-            echo "No status set - setting to Backlog"
-            set_issue_status "$ISSUE" "$STATUS_BACKLOG"
-            echo "✓ Status set to Backlog"
+          # Set Status to Backlog (required)
+          set_issue_status "$ISSUE" "Backlog"
+          echo "✓ Status: Backlog"
+
+          # Set Priority to P1 (required default)
+          set_project_field_value "$ITEM_ID" "Priority" "P1 - High"
+          echo "✓ Priority: P1 - High"
+
+          # Set Effort to XS (required default)
+          set_project_field_value "$ITEM_ID" "Effort" "XS"
+          echo "✓ Effort: XS"
+
+          # Set Label (Feature by default, unless already has Acceptance Failure)
+          if ! echo "$LABELS" | grep -q "Acceptance Failure"; then
+            gh issue edit "$ISSUE" --add-label "Feature"
+            echo "✓ Label: Feature"
           else
-            echo "Status already set to: $STATUS"
+            echo "✓ Label: Acceptance Failure (already set)"
           fi
+
+          # Determine Module based on title/body keywords
+          MODULE=""
+          if echo "$TITLE $BODY" | grep -qiE "web|ui|frontend|react|vue"; then
+            MODULE="web-ui"
+          elif echo "$TITLE $BODY" | grep -qiE "api|endpoint|rest|graphql"; then
+            MODULE="api"
+          elif echo "$TITLE $BODY" | grep -qiE "rag|embedding|vector|semantic"; then
+            MODULE="rag"
+          elif echo "$TITLE $BODY" | grep -qiE "cli|command.line|terminal"; then
+            MODULE="cli"
+          elif echo "$TITLE $BODY" | grep -qiE "tui|terminal.ui"; then
+            MODULE="tui"
+          elif echo "$TITLE $BODY" | grep -qiE "test|testing|pytest"; then
+            MODULE="testing"
+          elif echo "$TITLE $BODY" | grep -qiE "doc|documentation|readme"; then
+            MODULE="documentation"
+          elif echo "$TITLE $BODY" | grep -qiE "security|auth|permission"; then
+            MODULE="security"
+          elif echo "$TITLE $BODY" | grep -qiE "observ|monitor|metric|log"; then
+            MODULE="observability"
+          else
+            MODULE="api"  # Default fallback
+          fi
+          set_project_field_value "$ITEM_ID" "Module" "$MODULE"
+          echo "✓ Module: $MODULE"
+
+          # Set Sprint to current sprint (get first active/current sprint)
+          CURRENT_SPRINT=$(gh api graphql -f query='
+            query($owner:String!, $number:Int!) {
+              user(login:$owner) {
+                projectV2(number:$number) {
+                  fields(first:20) {
+                    nodes {
+                      ... on ProjectV2IterationField {
+                        name
+                        configuration {
+                          iterations {
+                            id
+                            title
+                            startDate
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }' -F owner="$PROJECT_OWNER" -F number="$PROJECT_NUMBER" | \
+            jq -r '.data.user.projectV2.fields.nodes[] |
+                   select(.name=="Sprint") |
+                   .configuration.iterations |
+                   sort_by(.startDate) |
+                   reverse[0].id // empty' || echo "")
+
+          if [[ -n "$CURRENT_SPRINT" ]]; then
+            set_project_field_value "$ITEM_ID" "Sprint" "$CURRENT_SPRINT"
+            echo "✓ Sprint: Current sprint set"
+          else
+            echo "⚠ Sprint: No active sprint found"
+          fi
+
+          # Set Milestone to current open milestone
+          CURRENT_MILESTONE=$(gh api repos/"$REPO_OWNER"/"$REPO_NAME"/milestones \
+            --jq 'map(select(.state=="open")) | sort_by(.due_on) | .[0].title // empty')
+
+          if [[ -n "$CURRENT_MILESTONE" ]]; then
+            gh issue edit "$ISSUE" --milestone "$CURRENT_MILESTONE"
+            echo "✓ Milestone: $CURRENT_MILESTONE"
+          else
+            echo "⚠ Milestone: No open milestone found"
+          fi
+
+          echo ""
+          echo "✅ Project hygiene complete for issue #$ISSUE"
 
       - name: Comment on issue
         if: success()
@@ -84,5 +174,12 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `✅ **Project Hygiene**: Issue added to project and set to Backlog status.`
+              body: `✅ **Project Hygiene**: Issue automatically configured with required fields:\n\n` +
+                    `- Status: Backlog\n` +
+                    `- Priority: P1 - High\n` +
+                    `- Effort: XS\n` +
+                    `- Label: Feature\n` +
+                    `- Module: (auto-detected)\n` +
+                    `- Sprint: Current sprint\n` +
+                    `- Milestone: Current open milestone`
             });
