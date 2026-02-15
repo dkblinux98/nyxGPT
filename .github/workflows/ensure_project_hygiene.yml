@@ -1,0 +1,88 @@
+name: Ensure Project Hygiene
+
+on:
+  issues:
+    types: [opened, reopened]
+
+jobs:
+  add-to-project:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Setup environment
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+        run: |
+          # Write config for scripts
+          cat > /tmp/nyxgpt-config.ini <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          EOF
+
+          echo "NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini" >> "$GITHUB_ENV"
+
+      - name: Ensure issue in project with default status
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+        run: |
+          ISSUE=${{ github.event.issue.number }}
+
+          echo "Ensuring issue #$ISSUE has proper project hygiene..."
+
+          # Source library functions
+          source scripts/agents/lib/gh_project.sh
+          load_config
+          require_gh_auth
+
+          # Add to project if not already there
+          ITEM_ID=$(ensure_issue_in_project "$ISSUE")
+          echo "Issue #$ISSUE in project: $ITEM_ID"
+
+          # Check if status is already set
+          STATUS=$(gh issue view "$ISSUE" --json projectItems --jq '.projectItems[0].status.name // empty')
+
+          if [[ -z "$STATUS" ]]; then
+            echo "No status set - setting to Backlog"
+            set_issue_status "$ISSUE" "$STATUS_BACKLOG"
+            echo "✓ Status set to Backlog"
+          else
+            echo "Status already set to: $STATUS"
+          fi
+
+      - name: Comment on issue
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: `✅ **Project Hygiene**: Issue added to project and set to Backlog status.`
+            });
