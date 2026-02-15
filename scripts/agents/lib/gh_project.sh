@@ -426,9 +426,21 @@ issue_comment() {
 # so we also post a trigger comment to ensure the developer workflow runs
 assign_and_trigger_developer() {
   local issue="$1"
-  issue_assign_only "$issue" "$DEV_AGENT"
-  # Post trigger comment to ensure workflow runs (API assignments don't trigger workflows)
-  issue_comment "$issue" "RETRY_IMPLEMENTATION"
+
+  # Check if developer is already assigned
+  local current_assignee
+  current_assignee=$(gh issue view "$issue" --json assignees --jq '.assignees[].login' | grep -x "$DEV_AGENT" || echo "")
+
+  if [[ -n "$current_assignee" ]]; then
+    # Developer already assigned - post RETRY comment to trigger workflow
+    # (GitHub doesn't fire 'assigned' event when assignee hasn't changed)
+    issue_comment "$issue" "RETRY_IMPLEMENTATION"
+    _debug "Developer already assigned to #$issue - posted RETRY_IMPLEMENTATION comment"
+  else
+    # New assignment - assign developer (will trigger workflow via 'issues.assigned' event)
+    issue_assign_only "$issue" "$DEV_AGENT"
+    _debug "Assigned developer to #$issue - workflow will trigger via assignment event"
+  fi
 }
 
 # -------------------------
