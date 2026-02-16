@@ -206,23 +206,31 @@ jobs:
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
 
-          # Check for existing PRs linked to this issue
+          # Check for existing PRs linked to this issue (including merged/closed ones)
           # Look for PRs that have "Closes #ISSUE" in the body
-          EXISTING_PR=$(gh pr list --json number,body \
-            --jq ".[] | select(.body | contains(\"Closes #${ISSUE}\")) | .number" \
+          PR_DATA=$(gh pr list --state all --json number,body,state,headRefName \
+            --jq ".[] | select(.body | contains(\"Closes #${ISSUE}\")) | {number, state, headRefName}" \
             | head -1 || echo "")
 
-          if [[ -n "$EXISTING_PR" ]]; then
+          if [[ -n "$PR_DATA" ]]; then
+            EXISTING_PR=$(echo "$PR_DATA" | jq -r '.number')
+            PR_STATE=$(echo "$PR_DATA" | jq -r '.state')
+            PR_BRANCH=$(echo "$PR_DATA" | jq -r '.headRefName')
+
             echo "pr_exists=true" >> "$GITHUB_OUTPUT"
             echo "existing_pr=$EXISTING_PR" >> "$GITHUB_OUTPUT"
-            echo "::notice::PR already exists for issue #$ISSUE: #$EXISTING_PR"
+            echo "pr_state=$PR_STATE" >> "$GITHUB_OUTPUT"
+            echo "pr_branch=$PR_BRANCH" >> "$GITHUB_OUTPUT"
+            echo "::notice::PR #$EXISTING_PR found for issue #$ISSUE (state: $PR_STATE, branch: $PR_BRANCH)"
           else
             echo "pr_exists=false" >> "$GITHUB_OUTPUT"
+            echo "pr_state=" >> "$GITHUB_OUTPUT"
+            echo "pr_branch=" >> "$GITHUB_OUTPUT"
             echo "::notice::No existing PR found for issue #$ISSUE"
           fi
 
-      - name: Check for review comments (if PR exists)
-        if: steps.check_pr.outputs.pr_exists == 'true'
+      - name: Check for review comments (if PR exists and is OPEN)
+        if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_pr.outputs.pr_state == 'OPEN'
         id: check_review
         shell: bash
         env:
@@ -247,6 +255,111 @@ jobs:
             echo "has_review_issues=false" >> "$GITHUB_OUTPUT"
             echo "::notice::PR has no pending review changes - skipping"
           fi
+
+      - name: Handle acceptance failure (merged PR with bug)
+        if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_pr.outputs.pr_state == 'MERGED'
+        id: acceptance_failure
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+        run: |
+          set -euo pipefail
+          ISSUE="${{ github.event.issue.number }}"
+          MERGED_PR="${{ steps.check_pr.outputs.existing_pr }}"
+          FEATURE_BRANCH="${{ steps.check_pr.outputs.pr_branch }}"
+
+          echo "::notice::Acceptance failure detected - PR #$MERGED_PR was merged but issue #$ISSUE was reopened"
+          echo "::notice::Will create new branch from feature branch: $FEATURE_BRANCH"
+
+          # Fetch the feature branch
+          git fetch origin "$FEATURE_BRANCH" || {
+            echo "::error::Failed to fetch feature branch $FEATURE_BRANCH - may have been deleted"
+            exit 1
+          }
+
+          # Create new acceptance failure branch
+          NEW_BRANCH="fix/$ISSUE-acceptance-failure"
+          git checkout -b "$NEW_BRANCH" "origin/$FEATURE_BRANCH"
+          git push -u origin "$NEW_BRANCH"
+
+          echo "acceptance_branch=$NEW_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "::notice::Created acceptance failure branch: $NEW_BRANCH"
+
+      - name: Post acceptance failure start comment
+        if: steps.acceptance_failure.conclusion == 'success'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          script: |
+            const issue_number = context.payload.issue.number;
+            const merged_pr = '${{ steps.check_pr.outputs.existing_pr }}';
+            const new_branch = '${{ steps.acceptance_failure.outputs.acceptance_branch }}';
+            const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body: `🔧 **Developer Agent**: Acceptance failure detected\n\n` +
+                    `PR #${merged_pr} was merged but a bug was found. Starting fix...\n\n` +
+                    `Created new branch: \`${new_branch}\`\n\n` +
+                    `Claude will:\n` +
+                    `- Fix the reported issue\n` +
+                    `- Run all tests\n` +
+                    `- Create a new PR for the fix\n\n` +
+                    `[View workflow logs](${repoUrl}/actions/runs/${context.runId})`
+            });
+
+      - name: Run Claude Code to fix acceptance failure
+        if: steps.acceptance_failure.conclusion == 'success'
+        id: claude_acceptance_fix
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: true
+          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
+          prompt: |
+            Fix the acceptance failure for issue #${{ github.event.issue.number }}.
+
+            **Context:**
+            - Original PR #${{ steps.check_pr.outputs.existing_pr }} was merged
+            - A bug was found after merge, issue was reopened
+            - You are on acceptance failure branch: ${{ steps.acceptance_failure.outputs.acceptance_branch }}
+
+            **Instructions:**
+
+            ### Step 1: Verify you're on the correct branch
+            You should already be on branch `${{ steps.acceptance_failure.outputs.acceptance_branch }}`.
+            Verify with:
+            ```bash
+            git branch --show-current
+            ```
+
+            If not, check it out yourself using git commands.
+
+            ### Step 2: Fix the acceptance failure
+            1. Read the issue #${{ github.event.issue.number }} to understand what bug was found
+            2. Look for "ACCEPTANCE_FAILURE" comments describing the problem
+            3. Implement the minimal fix to resolve the bug
+            4. Add/update tests to cover the bug scenario
+
+            ### Step 3: Validate before committing
+            BEFORE committing, run ALL validation checks (ALL must pass):
+            - black --check . (if fails: black . then re-check)
+            - ruff check src/ tests/ (0 errors required)
+            - mypy src/ (0 errors required)
+            - pytest tests/unit/ -v (0 failures, 0 errors required)
+            - cd web && npm run type-check (if web files modified)
+            - ./scripts/agents/validate-web-routes.sh (if API endpoints added)
+
+            If any check fails: fix and re-run ALL checks (up to 3 attempts)
+
+            ### Step 4: Commit and push
+            Commit: "fix: address acceptance failure (#${{ github.event.issue.number }})"
+
+            **CRITICAL**:
+            - Handle ALL infrastructure errors yourself (branch checkout, git operations)
+            - Do NOT commit until ALL checks pass with 0 errors/failures
+            - Do NOT create or update PRs - the workflow handles that
 
       - name: Save review comments to file (if review issues found)
         if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true'
@@ -284,8 +397,11 @@ jobs:
                     `[View workflow logs](${repoUrl}/actions/runs/${context.runId})`
             });
 
-      - name: Post PR exists notice (if no review issues)
-        if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'false'
+      - name: Post PR exists notice (if no review issues and not merged)
+        if: |
+          steps.check_pr.outputs.pr_exists == 'true' &&
+          steps.check_pr.outputs.pr_state == 'OPEN' &&
+          steps.check_review.outputs.has_review_issues == 'false'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -820,7 +936,7 @@ jobs:
             });
 
       - name: Submit PR for review
-        if: steps.check_pr.outputs.pr_exists == 'false' && success()
+        if: (steps.check_pr.outputs.pr_exists == 'false' || steps.check_pr.outputs.pr_state == 'MERGED') && success()
         id: pr
         shell: bash
         env:
@@ -835,7 +951,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Post PR created comment
-        if: steps.check_pr.outputs.pr_exists == 'false'
+        if: steps.pr.conclusion == 'success'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -843,11 +959,15 @@ jobs:
             const issue_number = context.payload.issue.number;
             const pr_number = '${{ steps.pr.outputs.pr_number }}';
             const review_agent = '${{ vars.REVIEW_AGENT }}';
+            const is_acceptance = '${{ steps.check_pr.outputs.pr_state }}' === 'MERGED';
+            const prefix = is_acceptance
+              ? '🔧 **Developer Agent**: Acceptance failure fix complete!'
+              : '🎉 **Developer Agent**: Implementation complete!';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: `🎉 **Developer Agent**: Implementation complete!\n\n` +
+              body: `${prefix}\n\n` +
                     `📝 Pull Request: #${pr_number}\n` +
                     `📊 Status: **In Review**\n` +
                     `👤 Assigned to: @${review_agent}\n\n` +
