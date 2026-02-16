@@ -422,13 +422,25 @@ issue_comment() {
 }
 
 # Assign issue to developer and trigger workflow
-# GitHub's security model prevents API assignment from triggering workflows,
-# so we also post a trigger comment to ensure the developer workflow runs
+# Forces a new assignment event even if developer already assigned
+# by unassigning first, then reassigning
 assign_and_trigger_developer() {
   local issue="$1"
 
-  # Simply assign the developer - workflow triggers on assignment
-  # Developer agent is smart enough to read issue history and determine if this is new work or a retry
+  # Check if developer is already assigned
+  local current_assignee
+  current_assignee=$(gh issue view "$issue" --json assignees --jq '.assignees[].login' | grep -x "$DEV_AGENT" || echo "")
+
+  if [[ -n "$current_assignee" ]]; then
+    # Developer already assigned - unassign first to force new assignment event
+    # This ensures workflow triggers even on retry/reopen scenarios
+    _debug "Developer already assigned to #$issue - unassigning first to force event"
+    gh issue edit "$issue" --remove-assignee "$DEV_AGENT"
+    sleep 1  # Brief pause to ensure event processes
+  fi
+
+  # Assign developer - this will trigger workflow via 'issues.assigned' event
+  # Developer agent reads issue history to determine if this is new work or a retry
   issue_assign_only "$issue" "$DEV_AGENT"
   _debug "Assigned developer to #$issue - workflow will trigger via assignment event"
 }
