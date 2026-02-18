@@ -270,12 +270,21 @@ jobs:
 
           echo "::notice::Acceptance failure detected - PR #$MERGED_PR was merged but issue #$ISSUE was reopened"
 
-          # Create new acceptance failure branch from release branch
+          # Create or reuse acceptance failure branch
           # (feature branch is deleted after merge - changes are already in release branch)
           NEW_BRANCH="fix/$ISSUE-acceptance-failure"
-          git fetch origin "${{ vars.RELEASE_BRANCH }}"
-          git checkout -b "$NEW_BRANCH" "origin/${{ vars.RELEASE_BRANCH }}"
-          git push -u origin "$NEW_BRANCH"
+          git fetch origin --prune
+
+          if git ls-remote --exit-code origin "$NEW_BRANCH" >/dev/null 2>&1; then
+            # Branch already exists - check it out
+            git checkout -b "$NEW_BRANCH" "origin/$NEW_BRANCH"
+            echo "::notice::Reusing existing branch: $NEW_BRANCH"
+          else
+            # Create new branch from release branch
+            git checkout -b "$NEW_BRANCH" "origin/${{ vars.RELEASE_BRANCH }}"
+            git push -u origin "$NEW_BRANCH"
+            echo "::notice::Created new branch: $NEW_BRANCH"
+          fi
 
           echo "acceptance_branch=$NEW_BRANCH" >> "$GITHUB_OUTPUT"
           echo "::notice::Created acceptance failure branch: $NEW_BRANCH"
