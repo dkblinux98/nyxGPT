@@ -106,6 +106,17 @@ module = [
     "pytesseract",
     "pdf2image",
     "PIL.*",
+    "fastapi",
+    "fastapi.*",
+    "starlette.*",
+    "pydantic",
+    "pydantic.*",
+    "bs4",
+    "pypdf",
+    "httpx",
+    "tiktoken",
+    "psutil",
+    "markdown",
 ]
 ignore_missing_imports = true
 
