@@ -270,16 +270,6 @@ jobs:
 
           echo "::notice::Acceptance failure detected - PR #$MERGED_PR was merged but issue #$ISSUE was reopened"
 
-          # Swap issue label to "Acceptance Failure" so the new PR gets the correct label/title
-          # Remove all existing labels first, then apply the acceptance failure label
-          CURRENT_LABELS=$(gh issue view "$ISSUE" --json labels --jq '.labels[].name')
-          for label in $CURRENT_LABELS; do
-            gh issue edit "$ISSUE" --remove-label "$label" || \
-              echo "::warning::Could not remove label '$label'"
-          done
-          gh issue edit "$ISSUE" --add-label "Acceptance Failure"
-          echo "::notice::Issue label updated to 'Acceptance Failure'"
-
           # Create or reuse acceptance failure branch
           # (feature branch is deleted after merge - changes are already in release branch)
           NEW_BRANCH="fix/$ISSUE-acceptance-failure"
@@ -969,6 +959,14 @@ jobs:
           PR_NUMBER=$(./scripts/agents/developer_submit_for_review.sh "$ISSUE")
           echo "::notice::Created PR #$PR_NUMBER"
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+          # For acceptance failures (merged PR), apply the Acceptance Failure label to the new PR
+          if [[ "${{ steps.check_pr.outputs.pr_state }}" == "MERGED" ]]; then
+            gh pr edit "$PR_NUMBER" --add-label "Acceptance Failure" || \
+              echo "::warning::Could not add Acceptance Failure label to PR #$PR_NUMBER"
+            echo "::notice::Applied 'Acceptance Failure' label to PR #$PR_NUMBER"
+          fi
+
           echo "::endgroup::"
 
       - name: Post PR created comment
