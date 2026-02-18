@@ -3,14 +3,23 @@ export async function GET() {
     process.env.NYXGPT_API_BASE_URL ??
     "http://127.0.0.1:8000";
 
-  const r = await fetch(`${base}/api/v1/metrics`, {
-    cache: "no-store",
-  });
+  try {
+    const r = await fetch(`${base}/api/v1/metrics`, {
+      cache: "no-store",
+    });
 
-  return new Response(r.body, {
-    status: r.status,
-    headers: {
-      "Content-Type": "application/json",
-    },
-  });
+    return new Response(r.body, {
+      status: r.status,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+  } catch {
+    return new Response(JSON.stringify({ error: "metrics backend unavailable" }), {
+      status: 502,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+  }
 }

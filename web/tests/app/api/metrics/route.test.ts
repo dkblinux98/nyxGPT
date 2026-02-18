@@ -8,13 +8,6 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const mockMetricsData = {
-  memory: { rss_mb: 256.5, vms_mb: 512.0, percent: 15.2, available_mb: 8192.0 },
-  cpu: { process_percent: 5.3, system_percent: 25.8 },
-  latency: { avg_ms: 45.2, p50_ms: 42.0, p95_ms: 85.5, p99_ms: 120.3 },
-  queue: { depth: 3, total_requests: 1250 },
-};
-
 describe('/api/v1/metrics proxy route', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -86,5 +79,16 @@ describe('/api/v1/metrics proxy route', () => {
     const response = await GET() as Response;
 
     expect(response.status).toBe(503);
+  });
+
+  it('returns 502 with structured error when backend is unreachable', async () => {
+    global.fetch = vi.fn().mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    const { GET } = await import('../../../../src/app/api/v1/metrics/route');
+    const response = await GET() as Response;
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body).toEqual({ error: 'metrics backend unavailable' });
   });
 });

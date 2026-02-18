@@ -113,11 +113,11 @@ class RateLimiter:
         if forwarded_for:
             # X-Forwarded-For can contain multiple IPs (client, proxy1, proxy2, ...)
             # Use the first (leftmost) IP as the client
-            return str(forwarded_for.split(",")[0].strip())
+            return forwarded_for.split(",")[0].strip()
 
         # Fall back to direct client IP
         if request.client:
-            return str(request.client.host)
+            return request.client.host
 
         # Default fallback (should rarely happen)
         return "unknown"
