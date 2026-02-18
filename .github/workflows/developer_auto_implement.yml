@@ -256,37 +256,13 @@ jobs:
             echo "::notice::PR has no pending review changes - skipping"
           fi
 
-      - name: Handle acceptance failure (merged PR with bug)
+      - name: Detect acceptance failure (merged PR with bug)
         if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_pr.outputs.pr_state == 'MERGED'
         id: acceptance_failure
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
         run: |
-          set -euo pipefail
-          ISSUE="${{ github.event.issue.number }}"
           MERGED_PR="${{ steps.check_pr.outputs.existing_pr }}"
-          FEATURE_BRANCH="${{ steps.check_pr.outputs.pr_branch }}"
-
-          echo "::notice::Acceptance failure detected - PR #$MERGED_PR was merged but issue #$ISSUE was reopened"
-
-          # Create or reuse acceptance failure branch
-          # (feature branch is deleted after merge - changes are already in release branch)
-          NEW_BRANCH="fix/$ISSUE-acceptance-failure"
-          git fetch origin --prune
-
-          if git ls-remote --exit-code origin "$NEW_BRANCH" >/dev/null 2>&1; then
-            # Branch already exists - check it out
-            git checkout -b "$NEW_BRANCH" "origin/$NEW_BRANCH"
-            echo "::notice::Reusing existing branch: $NEW_BRANCH"
-          else
-            # Create new branch from release branch
-            git checkout -b "$NEW_BRANCH" "origin/${{ vars.RELEASE_BRANCH }}"
-            git push -u origin "$NEW_BRANCH"
-            echo "::notice::Created new branch: $NEW_BRANCH"
-          fi
-
-          echo "acceptance_branch=$NEW_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "::notice::Acceptance failure - PR #$MERGED_PR was merged but issue was reopened"
 
       - name: Post acceptance failure start comment
         if: steps.acceptance_failure.conclusion == 'success'
@@ -296,7 +272,6 @@ jobs:
           script: |
             const issue_number = context.payload.issue.number;
             const merged_pr = '${{ steps.check_pr.outputs.existing_pr }}';
-            const new_branch = '${{ steps.acceptance_failure.outputs.acceptance_branch }}';
             const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -304,8 +279,8 @@ jobs:
               issue_number,
               body: `🔧 **Developer Agent**: Acceptance failure detected\n\n` +
                     `PR #${merged_pr} was merged but a bug was found. Starting fix...\n\n` +
-                    `Created new branch: \`${new_branch}\`\n\n` +
                     `Claude will:\n` +
+                    `- Create a new fix branch\n` +
                     `- Fix the reported issue\n` +
                     `- Run all tests\n` +
                     `- Create a new PR for the fix\n\n` +
@@ -325,19 +300,18 @@ jobs:
 
             **Context:**
             - Original PR #${{ steps.check_pr.outputs.existing_pr }} was merged
-            - A bug was found after merge, issue was reopened
-            - You are on acceptance failure branch: ${{ steps.acceptance_failure.outputs.acceptance_branch }}
+            - A bug was found after merge and the issue was reopened by the human owner
 
             **Instructions:**
 
-            ### Step 1: Verify you're on the correct branch
-            You should already be on branch `${{ steps.acceptance_failure.outputs.acceptance_branch }}`.
-            Verify with:
+            ### Step 1: Create a fix branch
+            Run this command to create the branch using the standard naming convention:
             ```bash
-            git branch --show-current
+            ./scripts/agents/developer_create_branch.sh ${{ github.event.issue.number }} fix auto
             ```
 
-            If not, check it out yourself using git commands.
+            The script handles both creating a new branch and reusing an existing one.
+            If it fails, diagnose and fix the problem yourself — do NOT wait for intervention.
 
             ### Step 2: Understand and fix the problem
             1. Read the full issue #${{ github.event.issue.number }} including all comments
