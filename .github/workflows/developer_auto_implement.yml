@@ -270,6 +270,16 @@ jobs:
 
           echo "::notice::Acceptance failure detected - PR #$MERGED_PR was merged but issue #$ISSUE was reopened"
 
+          # Swap issue label to "Acceptance Failure" so the new PR gets the correct label/title
+          # Remove all existing labels first, then apply the acceptance failure label
+          CURRENT_LABELS=$(gh issue view "$ISSUE" --json labels --jq '.labels[].name')
+          for label in $CURRENT_LABELS; do
+            gh issue edit "$ISSUE" --remove-label "$label" || \
+              echo "::warning::Could not remove label '$label'"
+          done
+          gh issue edit "$ISSUE" --add-label "Acceptance Failure"
+          echo "::notice::Issue label updated to 'Acceptance Failure'"
+
           # Create or reuse acceptance failure branch
           # (feature branch is deleted after merge - changes are already in release branch)
           NEW_BRANCH="fix/$ISSUE-acceptance-failure"
@@ -287,7 +297,6 @@ jobs:
           fi
 
           echo "acceptance_branch=$NEW_BRANCH" >> "$GITHUB_OUTPUT"
-          echo "::notice::Created acceptance failure branch: $NEW_BRANCH"
 
       - name: Post acceptance failure start comment
         if: steps.acceptance_failure.conclusion == 'success'
@@ -340,11 +349,11 @@ jobs:
 
             If not, check it out yourself using git commands.
 
-            ### Step 2: Fix the acceptance failure
-            1. Read the issue #${{ github.event.issue.number }} to understand what bug was found
-            2. Look for "ACCEPTANCE_FAILURE" comments describing the problem
-            3. Implement the minimal fix to resolve the bug
-            4. Add/update tests to cover the bug scenario
+            ### Step 2: Understand and fix the problem
+            1. Read the full issue #${{ github.event.issue.number }} including all comments
+            2. The human owner has left a comment explaining what is broken — read it carefully
+            3. Implement the minimal fix to resolve the reported problem
+            4. Add/update tests to cover the fixed scenario
 
             ### Step 3: Validate before committing
             BEFORE committing, run ALL validation checks (ALL must pass):
