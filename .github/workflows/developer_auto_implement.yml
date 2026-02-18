@@ -269,17 +269,12 @@ jobs:
           FEATURE_BRANCH="${{ steps.check_pr.outputs.pr_branch }}"
 
           echo "::notice::Acceptance failure detected - PR #$MERGED_PR was merged but issue #$ISSUE was reopened"
-          echo "::notice::Will create new branch from feature branch: $FEATURE_BRANCH"
 
-          # Fetch the feature branch
-          git fetch origin "$FEATURE_BRANCH" || {
-            echo "::error::Failed to fetch feature branch $FEATURE_BRANCH - may have been deleted"
-            exit 1
-          }
-
-          # Create new acceptance failure branch
+          # Create new acceptance failure branch from release branch
+          # (feature branch is deleted after merge - changes are already in release branch)
           NEW_BRANCH="fix/$ISSUE-acceptance-failure"
-          git checkout -b "$NEW_BRANCH" "origin/$FEATURE_BRANCH"
+          git fetch origin "${{ vars.RELEASE_BRANCH }}"
+          git checkout -b "$NEW_BRANCH" "origin/${{ vars.RELEASE_BRANCH }}"
           git push -u origin "$NEW_BRANCH"
 
           echo "acceptance_branch=$NEW_BRANCH" >> "$GITHUB_OUTPUT"
