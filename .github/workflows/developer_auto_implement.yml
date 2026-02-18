@@ -354,7 +354,9 @@ jobs:
             **CRITICAL**:
             - Handle ALL infrastructure errors yourself (branch checkout, git operations)
             - Do NOT commit until ALL checks pass with 0 errors/failures
-            - Do NOT create or update PRs - the workflow handles that
+            - Do NOT use any `gh` CLI commands - no `gh issue`, `gh pr`, etc.
+            - Do NOT close issues, create PRs, or edit issues/PRs in any way
+            - The workflow manages all GitHub state (issues, PRs, status)
 
       - name: Save review comments to file (if review issues found)
         if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true'
@@ -461,7 +463,9 @@ jobs:
             **CRITICAL**:
             - Handle ALL infrastructure errors yourself (branch checkout, git operations)
             - Do NOT commit until ALL checks pass with 0 errors/failures
-            - Do NOT create or update PRs - the workflow handles that
+            - Do NOT use any `gh` CLI commands - no `gh issue`, `gh pr`, etc.
+            - Do NOT close issues, create PRs, or edit issues/PRs in any way
+            - The workflow manages all GitHub state (issues, PRs, status)
 
       - name: Post implementation start comment
         if: steps.check_pr.outputs.pr_exists == 'false'
@@ -586,9 +590,9 @@ jobs:
             Valid commit types: feat, fix, test, docs, refactor, chore
 
             **CRITICAL PROHIBITIONS:**
-            - Do NOT create or update pull requests (no `gh pr create`, `gh pr edit`, etc.)
-            - Do NOT use any `gh` CLI commands - you don't have GitHub API access
-            - The workflow will create the PR after verification passes
+            - Do NOT use any `gh` CLI commands - no `gh issue`, `gh pr`, `gh api`, etc.
+            - Do NOT close issues, create PRs, or edit issues/PRs in any way
+            - The workflow manages all GitHub state (issues, PRs, status, assignments)
 
             Output: commit(s) pushed to the current branch with proper issue references.
 
@@ -713,8 +717,9 @@ jobs:
             6. Commit your fixes with message:
                "fix: address verification failures (attempt 2) (#${{ github.event.issue.number }})"
 
-            DO NOT create a PR. Just fix the code and commit.
-            The workflow will handle PR creation after verification passes.
+            Do NOT use any `gh` CLI commands - no `gh issue`, `gh pr`, `gh api`, etc.
+            Do NOT close issues, create PRs, or edit issues/PRs in any way.
+            The workflow manages all GitHub state - just fix the code and commit.
 
       - name: Run Verification (Attempt 2)
         if: steps.claude_fix2.conclusion == 'success'
@@ -801,7 +806,9 @@ jobs:
                - cd web && npm run type-check (if web files modified)
                - ./scripts/agents/validate-web-routes.sh (if API endpoints added)
             5. Do NOT commit until ALL checks pass with 0 errors/failures
-            6. Commit with message:
+            6. Do NOT use any `gh` CLI commands - no `gh issue`, `gh pr`, `gh api`, etc.
+               Do NOT close issues, create PRs, or edit issues/PRs in any way.
+            7. Commit with message:
                "fix: address remaining verification failures (attempt 3) (#${{ github.event.issue.number }})"
 
       - name: Final Verification (Must Pass)
@@ -870,6 +877,7 @@ jobs:
       - name: Request review for existing PR
         if: |
           steps.check_pr.outputs.pr_exists == 'true' &&
+          steps.check_pr.outputs.pr_state == 'OPEN' &&
           success()
         shell: bash
         env:
