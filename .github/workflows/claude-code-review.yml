@@ -278,7 +278,10 @@ jobs:
 
             From RUNBOOKS/review-runbook.md checklist:
             - Correctness vs issue acceptance criteria
-            - Tests added/updated and meaningful
+            - Tests added/updated AND effective: for each new/changed test, ask "would this
+              test fail if the implementation was wrong?" If a test would pass even with a
+              broken implementation (wrong URL, wrong return value, missing logic, etc.),
+              it does not count as test coverage — treat it as missing tests (Medium issue).
             - No architecture boundary violations
             - No secrets committed
             - Clear docs updates for user-facing changes
@@ -324,7 +327,12 @@ jobs:
             ### Test Coverage
             - Source code changed: [YES/NO]
             - Test files updated: [YES/NO]
+            - Tests are effective: [YES/NO/N/A]
+              [For each new or changed test, verify: would it fail if the implementation
+              was wrong? e.g. wrong URL, wrong return value, missing logic, off-by-one.
+              If a test would pass even with a broken implementation, answer NO.]
             [If source code changed without test updates, this BLOCKS APPROVE]
+            [If tests exist but would not catch a broken implementation, this BLOCKS APPROVE]
 
             ### Documentation Status
             - User-facing code changed: [YES/NO]
