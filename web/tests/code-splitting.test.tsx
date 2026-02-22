@@ -1,8 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
+import { render } from '@testing-library/react';
 import React from 'react';
-import LoadingSpinner from '../src/components/LoadingSpinner';
-import { SessionListSkeleton } from '../src/components/SkeletonLoader';
+import nextDynamic from 'next/dynamic';
 
 /**
  * Code Splitting Tests
@@ -11,135 +10,248 @@ import { SessionListSkeleton } from '../src/components/SkeletonLoader';
  *   - Component lazy loading: ChatPane and VirtualizedSessionList use
  *     next/dynamic with loading fallbacks.
  *   - Chunk optimization: react-virtuoso is split into its own vendor chunk
- *     via webpack splitChunks config.
+ *     via webpack splitChunks config in next.config.ts.
  *   - Preloading critical paths: /admin, /models, and /settings are prefetched
  *     via <link rel="prefetch"> in layout.tsx.
+ *
+ * All three suites exercise the REAL implementation files so that removing
+ * or breaking the code splitting features causes test failures.
  */
 
+// ─── Module-level mocks (hoisted by vitest before any imports) ────────────────
+
+// Intercept next/dynamic so we can assert it is called with loading options.
+vi.mock('next/dynamic', () => ({
+  default: vi.fn((_loader: unknown, _options: unknown) => {
+    // Return a stub functional component so the module-level const assignments
+    // in page.tsx succeed without importing the real lazy components.
+    return function DynamicStub() { return null; };
+  }),
+}));
+
+// Bypass the next-pwa service-worker setup so next.config.ts can be imported
+// directly.  The passthrough (() => (cfg) => cfg) means the exported config is
+// exactly the nextConfig object defined in next.config.ts, including the
+// custom webpack function.
+vi.mock('@ducanh2912/next-pwa', () => ({
+  default: () => (config: unknown) => config,
+}));
+
+// Replace Next.js font loader with a minimal stub so layout.tsx can be
+// imported without the build-time font pipeline.
+vi.mock('next/font/google', () => ({
+  Geist: (_opts: unknown) => ({ variable: '--font-geist-sans', className: 'mock-geist' }),
+  Geist_Mono: (_opts: unknown) => ({ variable: '--font-geist-mono', className: 'mock-geist-mono' }),
+}));
+
+// ─── Import page.tsx once to trigger module-level dynamic() calls ─────────────
+// Must happen after the vi.mock declarations above so the mock is in place
+// when page.tsx executes `const ChatPane = dynamic(...)`.
+beforeAll(async () => {
+  await import('../src/app/page');
+});
+
+// ─── Suite 1: Loading fallbacks ───────────────────────────────────────────────
+// These tests verify that the dynamic() calls in page.tsx actually supply a
+// loading option.  They fail if the dynamic() calls are reverted to static
+// imports or if the loading option is removed.
+
 describe('Code Splitting – loading fallbacks', () => {
-  describe('ChatPane dynamic loading fallback', () => {
-    it('renders LoadingSpinner as the ChatPane loading fallback', () => {
-      // ChatPane uses `loading: () => <LoadingSpinner />` in its dynamic()
-      // config. Verify the spinner renders with the correct ARIA role so
-      // assistive technology announces a loading state to the user.
-      render(<LoadingSpinner />);
-      const spinner = screen.getByRole('status');
-      expect(spinner).toBeInTheDocument();
-      expect(spinner).toHaveAttribute('aria-label', 'Loading');
-    });
+  it('page.tsx calls next/dynamic at least twice (ChatPane + VirtualizedSessionList)', () => {
+    const mockedDynamic = vi.mocked(nextDynamic);
+    expect(mockedDynamic).toHaveBeenCalled();
+    expect(mockedDynamic.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
 
-    it('centers LoadingSpinner in a flex container matching ChatPane loading layout', () => {
-      const container = document.createElement('div');
-      container.style.display = 'flex';
-      container.style.alignItems = 'center';
-      container.style.justifyContent = 'center';
-      container.style.height = '100%';
+  it('every dynamic() call in page.tsx includes a loading fallback function', () => {
+    const mockedDynamic = vi.mocked(nextDynamic);
+    const calls = mockedDynamic.mock.calls;
 
-      expect(container.style.display).toBe('flex');
-      expect(container.style.alignItems).toBe('center');
-      expect(container.style.justifyContent).toBe('center');
+    // All dynamic() calls must supply a loading option – this test fails if the
+    // loading: () => <LoadingSpinner /> or loading: () => <SessionListSkeleton />
+    // lines are removed from page.tsx.
+    calls.forEach((call, index) => {
+      const options = call[1] as { loading?: unknown };
+      expect(
+        typeof options?.loading,
+        `dynamic() call #${index} is missing a loading option`,
+      ).toBe('function');
     });
   });
 
-  describe('VirtualizedSessionList dynamic loading fallback', () => {
-    it('renders SessionListSkeleton as the VirtualizedSessionList loading fallback', () => {
-      // VirtualizedSessionList uses `loading: () => <SessionListSkeleton />`
-      // in its dynamic() config.  The skeleton must render at least one
-      // visible placeholder element.
-      render(<SessionListSkeleton />);
-      // The skeleton renders at least one element in the document.
-      const container = document.querySelector('[data-testid="session-list-skeleton"]')
-        ?? document.body.firstChild;
-      expect(container).toBeTruthy();
-    });
+  it('ChatPane loading fallback returns a renderable React element', () => {
+    const mockedDynamic = vi.mocked(nextDynamic);
 
-    it('renders SessionListSkeleton without throwing', () => {
-      expect(() => render(<SessionListSkeleton />)).not.toThrow();
-    });
+    // ChatPane is the first dynamic() call; it wraps a <LoadingSpinner />
+    // inside a flex container.
+    const firstCall = mockedDynamic.mock.calls[0];
+    expect(firstCall).toBeDefined();
+
+    const options = firstCall[1] as { ssr?: boolean; loading?: () => React.ReactNode };
+    expect(typeof options?.loading).toBe('function');
+
+    // Calling loading() must not throw and must return a React element.
+    const element = options.loading!();
+    expect(element).not.toBeUndefined();
+    expect(element).not.toBeNull();
+  });
+
+  it('VirtualizedSessionList loading fallback returns a renderable React element', () => {
+    const mockedDynamic = vi.mocked(nextDynamic);
+
+    // VirtualizedSessionList is the second dynamic() call; it uses
+    // loading: () => <SessionListSkeleton />.
+    const secondCall = mockedDynamic.mock.calls[1];
+    expect(secondCall).toBeDefined();
+
+    const options = secondCall[1] as { ssr?: boolean; loading?: () => React.ReactNode };
+    expect(typeof options?.loading).toBe('function');
+
+    const element = options.loading!();
+    expect(element).not.toBeUndefined();
+    expect(element).not.toBeNull();
   });
 });
 
+// ─── Suite 2: Chunk optimization ──────────────────────────────────────────────
+// These tests import the REAL next.config.ts, invoke its webpack() function with
+// a mock webpack configuration, and verify that the virtuosoVendor cache group
+// is present.  They fail if the webpack block is removed from next.config.ts.
+
 describe('Code Splitting – chunk optimization configuration', () => {
-  it('defines a virtuosoVendor cache group that targets react-virtuoso', () => {
-    // Mirror the splitChunks.cacheGroups.virtuosoVendor entry from
-    // next.config.ts to verify the regex matches the expected module path.
-    const virtuosoGroup = {
-      test: /[\\/]node_modules[\\/]react-virtuoso[\\/]/,
+  it('next.config.ts webpack() injects the virtuosoVendor cache group into splitChunks', async () => {
+    // @ducanh2912/next-pwa is mocked as a passthrough so the exported default
+    // IS nextConfig (with the custom webpack function intact).
+    const { default: nextConfig } = await import('../next.config');
+
+    type WebpackFn = (config: {
+      optimization: { splitChunks: { cacheGroups: Record<string, unknown> } };
+    }) => { optimization: { splitChunks: { cacheGroups: Record<string, unknown> } } };
+
+    const config = nextConfig as { webpack?: WebpackFn };
+    expect(config.webpack, 'next.config.ts must export a webpack function').toBeTypeOf('function');
+
+    // Provide the minimal webpack config structure that the function inspects.
+    const mockWebpack = {
+      optimization: { splitChunks: { cacheGroups: {} as Record<string, unknown> } },
+    };
+
+    const result = config.webpack!(mockWebpack);
+    const cacheGroups = result.optimization.splitChunks.cacheGroups;
+
+    expect(cacheGroups.virtuosoVendor).toBeDefined();
+    expect(cacheGroups.virtuosoVendor).toMatchObject({
       name: 'vendor-virtuoso',
       chunks: 'all',
       priority: 30,
       reuseExistingChunk: true,
-    };
-
-    // The regex must match a typical node_modules path for react-virtuoso.
-    expect(virtuosoGroup.test.test('/home/user/project/node_modules/react-virtuoso/dist/index.js')).toBe(true);
-    expect(virtuosoGroup.test.test('C:\\project\\node_modules\\react-virtuoso\\dist\\index.js')).toBe(true);
-
-    // The regex must NOT match unrelated packages.
-    expect(virtuosoGroup.test.test('/node_modules/react/index.js')).toBe(false);
-    expect(virtuosoGroup.test.test('/node_modules/react-dom/index.js')).toBe(false);
-    expect(virtuosoGroup.test.test('/node_modules/next/dist/index.js')).toBe(false);
+    });
   });
 
-  it('configures the vendor-virtuoso chunk with higher priority than default', () => {
-    const virtuosoGroup = {
-      name: 'vendor-virtuoso',
-      chunks: 'all',
-      priority: 30,
+  it('virtuosoVendor cache group regex matches react-virtuoso paths and rejects others', async () => {
+    const { default: nextConfig } = await import('../next.config');
+
+    type WebpackFn = (config: {
+      optimization: { splitChunks: { cacheGroups: Record<string, unknown> } };
+    }) => { optimization: { splitChunks: { cacheGroups: Record<string, unknown> } } };
+
+    const mockWebpack = {
+      optimization: { splitChunks: { cacheGroups: {} as Record<string, unknown> } },
+    };
+    const result = (nextConfig as { webpack?: WebpackFn }).webpack!(mockWebpack);
+    const { test: regex } = result.optimization.splitChunks.cacheGroups
+      .virtuosoVendor as { test: RegExp };
+
+    // Must match react-virtuoso in node_modules (both POSIX and Windows paths).
+    expect(regex.test('/home/user/project/node_modules/react-virtuoso/dist/index.js')).toBe(true);
+    expect(regex.test('C:\\project\\node_modules\\react-virtuoso\\dist\\index.js')).toBe(true);
+
+    // Must NOT match unrelated packages.
+    expect(regex.test('/node_modules/react/index.js')).toBe(false);
+    expect(regex.test('/node_modules/react-dom/index.js')).toBe(false);
+    expect(regex.test('/node_modules/next/dist/index.js')).toBe(false);
+  });
+
+  it('virtuosoVendor chunk priority exceeds the default Next.js framework chunk priority (20)', async () => {
+    const { default: nextConfig } = await import('../next.config');
+
+    type WebpackFn = (config: {
+      optimization: { splitChunks: { cacheGroups: Record<string, unknown> } };
+    }) => { optimization: { splitChunks: { cacheGroups: Record<string, unknown> } } };
+
+    const mockWebpack = {
+      optimization: { splitChunks: { cacheGroups: {} as Record<string, unknown> } },
+    };
+    const result = (nextConfig as { webpack?: WebpackFn }).webpack!(mockWebpack);
+    const group = result.optimization.splitChunks.cacheGroups.virtuosoVendor as {
+      priority: number;
+      chunks: string;
     };
 
-    // Priority must be above 20 (the default Next.js framework chunk priority)
-    // so react-virtuoso is reliably extracted into its own chunk.
-    expect(virtuosoGroup.priority).toBeGreaterThan(20);
-    expect(virtuosoGroup.chunks).toBe('all');
-    expect(virtuosoGroup.name).toBe('vendor-virtuoso');
+    expect(group.priority).toBeGreaterThan(20);
+    expect(group.chunks).toBe('all');
   });
 });
+
+// ─── Suite 3: Prefetch route hints ────────────────────────────────────────────
+// These tests render the REAL layout.tsx component and assert that the
+// <link rel="prefetch"> elements are present in document.head.  In the
+// happy-dom test environment, Next.js layout head elements are promoted to
+// document.head (not the container div), so we query document.head directly.
+// They fail if the prefetch links are removed from layout.tsx.
 
 describe('Code Splitting – prefetch route hints', () => {
-  const CRITICAL_ROUTES = ['/admin', '/models', '/settings'] as const;
+  it('layout.tsx renders a <link rel="prefetch" href="/admin" as="document"> element', async () => {
+    const { default: RootLayout } = await import('../src/app/layout');
+    render(React.createElement(RootLayout, null, React.createElement('span', null, 'test')));
 
-  it('lists the three critical routes that should be prefetched', () => {
-    // These are the routes reachable from the main-page settings menu.
-    // Each must have a corresponding <link rel="prefetch"> in layout.tsx.
-    expect(CRITICAL_ROUTES).toHaveLength(3);
-    expect(CRITICAL_ROUTES).toContain('/admin');
-    expect(CRITICAL_ROUTES).toContain('/models');
-    expect(CRITICAL_ROUTES).toContain('/settings');
+    const adminLink = document.head.querySelector('link[rel="prefetch"][href="/admin"]');
+    expect(adminLink, '<link rel="prefetch" href="/admin"> not found in document.head').not.toBeNull();
+    expect(adminLink!.getAttribute('as')).toBe('document');
   });
 
-  it('creates valid <link rel="prefetch"> elements for each critical route', () => {
-    CRITICAL_ROUTES.forEach((route) => {
-      const link = document.createElement('link');
-      link.rel = 'prefetch';
-      link.href = route;
-      link.setAttribute('as', 'document');
+  it('layout.tsx renders <link rel="prefetch"> elements for /models and /settings', async () => {
+    const { default: RootLayout } = await import('../src/app/layout');
+    render(React.createElement(RootLayout, null, React.createElement('span', null, 'test')));
 
-      expect(link.rel).toBe('prefetch');
-      expect(link.href).toContain(route);
-      expect(link.getAttribute('as')).toBe('document');
-    });
+    const modelsLink = document.head.querySelector('link[rel="prefetch"][href="/models"]');
+    const settingsLink = document.head.querySelector('link[rel="prefetch"][href="/settings"]');
+
+    expect(modelsLink, '<link rel="prefetch" href="/models"> not found in document.head').not.toBeNull();
+    expect(settingsLink, '<link rel="prefetch" href="/settings"> not found in document.head').not.toBeNull();
+    expect(modelsLink!.getAttribute('as')).toBe('document');
+    expect(settingsLink!.getAttribute('as')).toBe('document');
   });
 
-  it('does not prefetch non-critical or infrequently accessed routes', () => {
-    const nonCriticalRoutes = ['/admin/logs', '/admin/collections', '/admin/playground'];
+  it('layout.tsx renders exactly three <link rel="prefetch" as="document"> hints', async () => {
+    const { default: RootLayout } = await import('../src/app/layout');
+    render(React.createElement(RootLayout, null, React.createElement('span', null, 'test')));
 
-    nonCriticalRoutes.forEach((route) => {
-      expect(CRITICAL_ROUTES as readonly string[]).not.toContain(route);
-    });
+    const prefetchLinks = document.head.querySelectorAll('link[rel="prefetch"][as="document"]');
+    expect(
+      prefetchLinks.length,
+      'Expected exactly 3 prefetch links (/admin, /models, /settings)',
+    ).toBe(3);
   });
 });
 
+// ─── Suite 4: Dynamic import pattern ─────────────────────────────────────────
+// These tests import the real component modules and verify the export shapes
+// that the dynamic() wrappers in page.tsx depend on.
+
 describe('Code Splitting – dynamic import pattern', () => {
-  it('can resolve VirtualizedSessionList as a default export via named re-export', async () => {
-    // Simulate the .then(mod => ({ default: mod.VirtualizedSessionList }))
-    // pattern used in the dynamic() call.  The named export must exist on the
-    // module so the transform produces a valid default-export object.
+  it('can resolve VirtualizedSessionList as a valid React component via named re-export', async () => {
+    // Simulate the .then(mod => ({ default: mod.VirtualizedSessionList })) pattern
+    // used in the dynamic() call.  The named export must exist.
     const mod = await import('../src/components/VirtualizedSessionList');
-    expect(typeof mod.VirtualizedSessionList).toBe('function');
+    expect(mod.VirtualizedSessionList).toBeDefined();
+
+    // React.memo() returns an object (not a plain function), so we accept both.
+    const t = typeof mod.VirtualizedSessionList;
+    expect(['function', 'object']).toContain(t);
 
     const reExported = { default: mod.VirtualizedSessionList };
-    expect(typeof reExported.default).toBe('function');
+    expect(reExported.default).toBeDefined();
   });
 
   it('can resolve ChatPane as a default export directly', async () => {
