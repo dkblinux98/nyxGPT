@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from cassandra.cluster import Cluster
 from cassandra.query import SimpleStatement
@@ -18,6 +20,11 @@ class CassandraConfig:
     port: int
     keyspace: str
     table: str
+    pool_size: int = 2
+    pool_max_size: int = 4
+    pool_min_requests: int = 5
+    pool_max_requests: int = 100
+    reconnect_delay: float = 5.0
 
 
 @dataclass
@@ -56,6 +63,114 @@ class VectorStoreError(RuntimeError):
     pass
 
 
+class CassandraPool:
+    """Shared Cassandra Cluster and Session for connection reuse.
+
+    All CassandraVectorStore instances share one pool, avoiding redundant
+    connections to the same cluster. Supports configurable pool sizing,
+    health checking, and graceful reconnection.
+    """
+
+    def __init__(self, cfg: CassandraConfig) -> None:
+        self._cfg = cfg
+        self._lock = threading.Lock()
+        self._cluster: Any = None
+        self._session: Any = None
+        self._connect()
+
+    def _connect(self) -> None:
+        """Create cluster and session with configured pool settings."""
+        from cassandra.policies import ConstantReconnectionPolicy
+
+        kw: dict[str, Any] = {
+            "reconnection_policy": ConstantReconnectionPolicy(delay=self._cfg.reconnect_delay),
+        }
+        try:
+            from cassandra.pool import HostDistance, PoolingOptions
+
+            options = PoolingOptions()
+            options.set_core_connections_per_host(HostDistance.LOCAL, self._cfg.pool_size)
+            options.set_max_connections_per_host(HostDistance.LOCAL, self._cfg.pool_max_size)
+            options.set_min_requests_per_connection(HostDistance.LOCAL, self._cfg.pool_min_requests)
+            options.set_max_requests_per_connection(HostDistance.LOCAL, self._cfg.pool_max_requests)
+            kw["pooling_options"] = options
+        except Exception:
+            pass  # pool sizing unavailable for this driver version; fallback to defaults
+
+        self._cluster = Cluster(self._cfg.hosts, port=self._cfg.port, **kw)
+        self._session = self._cluster.connect()
+
+    @property
+    def cluster(self) -> Any:
+        return self._cluster
+
+    def get_session(self) -> Any:
+        """Return the shared session."""
+        with self._lock:
+            return self._session
+
+    def health_check(self) -> bool:
+        """Return True if the session can reach Cassandra."""
+        with self._lock:
+            try:
+                if self._session is None:
+                    return False
+                self._session.execute("SELECT now() FROM system.local")
+                return True
+            except Exception:
+                return False
+
+    def reconnect(self) -> None:
+        """Gracefully close existing connections and establish new ones."""
+        with self._lock:
+            self._shutdown_internal()
+            self._connect()
+
+    def _shutdown_internal(self) -> None:
+        try:
+            if self._session is not None:
+                self._session.shutdown()
+        except Exception:
+            pass
+        finally:
+            self._session = None
+        try:
+            if self._cluster is not None:
+                self._cluster.shutdown()
+        except Exception:
+            pass
+        finally:
+            self._cluster = None
+
+    def close(self) -> None:
+        """Shutdown the pool entirely."""
+        with self._lock:
+            self._shutdown_internal()
+
+
+_POOL: CassandraPool | None = None
+_POOL_LOCK = threading.Lock()
+
+
+def get_pool(cfg: CassandraConfig) -> CassandraPool:
+    """Return the module-level singleton pool, creating it if necessary."""
+    global _POOL
+    if _POOL is None:
+        with _POOL_LOCK:
+            if _POOL is None:
+                _POOL = CassandraPool(cfg)
+    return _POOL
+
+
+def close_pool() -> None:
+    """Shutdown and discard the module-level singleton pool."""
+    global _POOL
+    with _POOL_LOCK:
+        if _POOL is not None:
+            _POOL.close()
+            _POOL = None
+
+
 def _cassandra_cfg() -> CassandraConfig:
     cfg = load_config(None)
 
@@ -64,24 +179,45 @@ def _cassandra_cfg() -> CassandraConfig:
     port = cfg.getint("rag", "cassandra_port", fallback=9042)
     keyspace = cfg.get("rag", "cassandra_keyspace", fallback="nyxgpt")
     table = cfg.get("rag", "cassandra_table", fallback="rag_chunks")
+    pool_size = cfg.getint("rag", "cassandra_pool_size", fallback=2)
+    pool_max_size = cfg.getint("rag", "cassandra_pool_max_size", fallback=4)
+    pool_min_requests = cfg.getint("rag", "cassandra_pool_min_requests", fallback=5)
+    pool_max_requests = cfg.getint("rag", "cassandra_pool_max_requests", fallback=100)
+    reconnect_delay = cfg.getfloat("rag", "cassandra_reconnect_delay", fallback=5.0)
 
-    return CassandraConfig(hosts=hosts, port=port, keyspace=keyspace, table=table)
+    return CassandraConfig(
+        hosts=hosts,
+        port=port,
+        keyspace=keyspace,
+        table=table,
+        pool_size=pool_size,
+        pool_max_size=pool_max_size,
+        pool_min_requests=pool_min_requests,
+        pool_max_requests=pool_max_requests,
+        reconnect_delay=reconnect_delay,
+    )
 
 
 class CassandraVectorStore:
     def __init__(self, *, collection: str = "default") -> None:
         """Initialize Cassandra vector store.
 
+        Uses the module-level shared pool for connection reuse.
+
         Args:
             collection: Collection name for multi-model support (default: "default")
         """
         self.cfg = _cassandra_cfg()
         self.collection = collection
-        self.cluster = Cluster(self.cfg.hosts, port=self.cfg.port)
-        # Connect without a keyspace so we can create it if missing.
-        self.session = self.cluster.connect()
+        self._pool = get_pool(self.cfg)
+        self.session = self._pool.get_session()
         self._keyspace_ready = False
         self._migration_checked = False
+
+    @property
+    def cluster(self) -> Any:
+        """Backward-compatible access to the underlying Cassandra cluster."""
+        return self._pool.cluster
 
     @property
     def table_name(self) -> str:
@@ -151,8 +287,11 @@ class CassandraVectorStore:
             pass
 
     def close(self) -> None:
-        self.session.shutdown()
-        self.cluster.shutdown()
+        """Release this store's reference to the shared pool.
+
+        The pool and its connections remain active for other users.
+        Call close_pool() to shut down all Cassandra connections entirely.
+        """
 
     # ----------------------------
     # Schema helpers (optional)

@@ -240,14 +240,13 @@ def test_cassandra_vectorstore_initialization(monkeypatch: pytest.MonkeyPatch) -
     }
 
     monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
 
     mock_cluster = Mock()
     mock_session = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
-    )
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *_a, **_kw: mock_cluster)
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -265,14 +264,13 @@ def test_cassandra_vectorstore_upsert_chunks(monkeypatch: pytest.MonkeyPatch) ->
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
     monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
 
     mock_session = Mock()
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
-    )
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *_a, **_kw: mock_cluster)
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -300,14 +298,13 @@ def test_cassandra_vectorstore_upsert_length_mismatch(
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
     monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
 
     mock_session = Mock()
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
-    )
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *_a, **_kw: mock_cluster)
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore, VectorStoreError
 
@@ -327,6 +324,7 @@ def test_cassandra_vectorstore_query_by_embedding(
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
     monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
 
     # Mock database rows
     mock_row1 = Mock()
@@ -349,9 +347,7 @@ def test_cassandra_vectorstore_query_by_embedding(
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
-    )
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *_a, **_kw: mock_cluster)
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -377,6 +373,7 @@ def test_cassandra_vectorstore_query_with_metrics(
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
     monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
 
     mock_row = Mock()
     mock_row.doc_id = "doc1"
@@ -391,9 +388,7 @@ def test_cassandra_vectorstore_query_with_metrics(
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
-    )
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *_a, **_kw: mock_cluster)
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -417,6 +412,7 @@ def test_cassandra_vectorstore_list_docs(monkeypatch: pytest.MonkeyPatch) -> Non
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
     monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
 
     # After GROUP BY fix, list_docs fetches individual rows and aggregates in Python
     # So we mock individual chunk rows instead of pre-aggregated results
@@ -435,9 +431,7 @@ def test_cassandra_vectorstore_list_docs(monkeypatch: pytest.MonkeyPatch) -> Non
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
-    )
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *_a, **_kw: mock_cluster)
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -461,14 +455,13 @@ def test_cassandra_vectorstore_delete_doc(monkeypatch: pytest.MonkeyPatch) -> No
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
     monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
 
     mock_session = Mock()
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
-    )
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *_a, **_kw: mock_cluster)
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -492,14 +485,13 @@ def test_cassandra_vectorstore_truncate(monkeypatch: pytest.MonkeyPatch) -> None
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
     monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
 
     mock_session = Mock()
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
-    )
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *_a, **_kw: mock_cluster)
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -518,14 +510,13 @@ def test_cassandra_vectorstore_ensure_schema(monkeypatch: pytest.MonkeyPatch) ->
     cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
 
     monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
 
     mock_session = Mock()
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
 
-    monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, port: mock_cluster
-    )
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *_a, **_kw: mock_cluster)
 
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
@@ -535,6 +526,174 @@ def test_cassandra_vectorstore_ensure_schema(monkeypatch: pytest.MonkeyPatch) ->
     # Should execute 6 statements: CREATE KEYSPACE, USE, CREATE TABLE, CREATE INDEX (vector), CREATE INDEX (embedding_model), CREATE TABLE (collection_settings)
     assert mock_session.execute.call_count == 6
     assert store._keyspace_ready
+
+
+@pytest.mark.unit
+def test_cassandra_pool_connection_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Multiple CassandraVectorStore instances should share one pool session."""
+    cfg = ConfigParser()
+    cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
+
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
+
+    mock_session = Mock()
+    mock_cluster = Mock()
+    mock_cluster.connect.return_value = mock_session
+
+    connect_call_count = 0
+
+    def counting_cluster(*_a: object, **_kw: object) -> Mock:
+        nonlocal connect_call_count
+        connect_call_count += 1
+        return mock_cluster
+
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", counting_cluster)
+
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+    store1 = CassandraVectorStore()
+    store2 = CassandraVectorStore()
+    store3 = CassandraVectorStore()
+
+    # Cluster should only be instantiated once regardless of store count
+    assert connect_call_count == 1
+    # All stores share the same session
+    assert store1.session is store2.session
+    assert store2.session is store3.session
+
+
+@pytest.mark.unit
+def test_cassandra_pool_health_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CassandraPool.health_check should return True when session is healthy."""
+    cfg = ConfigParser()
+    cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
+
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
+
+    mock_session = Mock()
+    mock_cluster = Mock()
+    mock_cluster.connect.return_value = mock_session
+
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *_a, **_kw: mock_cluster)
+
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+    store = CassandraVectorStore()
+
+    assert store._pool.health_check() is True
+    mock_session.execute.assert_called_with("SELECT now() FROM system.local")
+
+
+@pytest.mark.unit
+def test_cassandra_pool_health_check_unhealthy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CassandraPool.health_check should return False when session raises."""
+    cfg = ConfigParser()
+    cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
+
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
+
+    mock_session = Mock()
+    mock_session.execute.side_effect = RuntimeError("connection lost")
+    mock_cluster = Mock()
+    mock_cluster.connect.return_value = mock_session
+
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *_a, **_kw: mock_cluster)
+
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+    store = CassandraVectorStore()
+
+    assert store._pool.health_check() is False
+
+
+@pytest.mark.unit
+def test_cassandra_pool_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CassandraPool.reconnect should shut down old session and create a new one."""
+    cfg = ConfigParser()
+    cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
+
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
+
+    mock_session1 = Mock()
+    mock_session2 = Mock()
+    mock_cluster = Mock()
+    mock_cluster.connect.side_effect = [mock_session1, mock_session2]
+
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *_a, **_kw: mock_cluster)
+
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+    store = CassandraVectorStore()
+    assert store._pool.get_session() is mock_session1
+
+    store._pool.reconnect()
+
+    assert mock_session1.shutdown.called
+    assert store._pool.get_session() is mock_session2
+
+
+@pytest.mark.unit
+def test_cassandra_pool_config_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CassandraConfig should load pool settings from config."""
+    cfg = ConfigParser()
+    cfg["rag"] = {
+        "cassandra_keyspace": "test_ks",
+        "cassandra_table": "test_tbl",
+        "cassandra_pool_size": "3",
+        "cassandra_pool_max_size": "6",
+        "cassandra_pool_min_requests": "10",
+        "cassandra_pool_max_requests": "200",
+        "cassandra_reconnect_delay": "2.5",
+    }
+
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
+
+    mock_session = Mock()
+    mock_cluster = Mock()
+    mock_cluster.connect.return_value = mock_session
+
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *_a, **_kw: mock_cluster)
+
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+    store = CassandraVectorStore()
+    assert store.cfg.pool_size == 3
+    assert store.cfg.pool_max_size == 6
+    assert store.cfg.pool_min_requests == 10
+    assert store.cfg.pool_max_requests == 200
+    assert store.cfg.reconnect_delay == 2.5
+
+
+@pytest.mark.unit
+def test_close_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """close_pool should shut down connections and reset the singleton."""
+    cfg = ConfigParser()
+    cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
+
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra._POOL", None)
+
+    mock_session = Mock()
+    mock_cluster = Mock()
+    mock_cluster.connect.return_value = mock_session
+
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.Cluster", lambda *_a, **_kw: mock_cluster)
+
+    import nyxgpt.rag.vectorstore_cassandra as vc
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore, close_pool
+
+    CassandraVectorStore()  # creates the pool
+    assert vc._POOL is not None
+
+    close_pool()
+
+    assert vc._POOL is None
+    assert mock_session.shutdown.called
 
 
 # =============================================================================
