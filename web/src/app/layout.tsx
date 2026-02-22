@@ -39,6 +39,14 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <head>
+        {/* Preload critical navigation routes so page transitions are instant.
+            These are the routes users navigate to most often from the main
+            chat page settings menu. */}
+        <link rel="prefetch" href="/admin" as="document" />
+        <link rel="prefetch" href="/models" as="document" />
+        <link rel="prefetch" href="/settings" as="document" />
+      </head>
       <body className={`${geistSans.variable} ${geistMono.variable}`}>
         <ThemeProvider>
           <ToastProvider>

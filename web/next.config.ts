@@ -13,6 +13,33 @@ const nextConfig: NextConfig = {
   devIndicators: {
     position: "top-right", // top-right, bottom-right, top-left, bottom-left
   },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  webpack: (config: any) => {
+    // Chunk optimization: split react-virtuoso into a dedicated vendor chunk so
+    // it is loaded only when the virtualized list is needed, not in the initial
+    // JS payload for every page.
+    const splitChunks = config?.optimization?.splitChunks as
+      | Record<string, unknown>
+      | false
+      | undefined;
+    if (splitChunks && typeof splitChunks === "object") {
+      const existingGroups =
+        (splitChunks.cacheGroups as Record<string, unknown>) ?? {};
+      splitChunks.cacheGroups = {
+        ...existingGroups,
+        // Isolate react-virtuoso so it is only fetched when the
+        // VirtualizedSessionList or ChatPane chunks are loaded.
+        virtuosoVendor: {
+          test: /[\\/]node_modules[\\/]react-virtuoso[\\/]/,
+          name: "vendor-virtuoso",
+          chunks: "all",
+          priority: 30,
+          reuseExistingChunk: true,
+        },
+      };
+    }
+    return config;
+  },
 };
 
 export default withPWA({
