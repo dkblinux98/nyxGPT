@@ -190,12 +190,20 @@ class CassandraConnectionPool:
     def health_check(self) -> bool:
         """Check whether the pool connection is alive.
 
-        Executes a lightweight ``SELECT now() FROM system.local`` query.
-        Returns ``True`` if the connection is healthy, ``False`` otherwise.
+        Reads a cached session directly from ``_sessions`` under the lock —
+        it must never call :meth:`get_session` to avoid mutual recursion with
+        the health-check trigger inside ``get_session``.
+
+        Returns ``True`` if no session exists yet (nothing to check) or if the
+        lightweight ``SELECT now() FROM system.local`` query succeeds.
+        Returns ``False`` when the query raises, and logs a warning.
         Updates the internal last-check timestamp on success.
         """
+        with self._lock:
+            session = next(iter(self._sessions.values()), None)
+        if session is None:
+            return True  # no connection established yet; nothing to check
         try:
-            session = self.get_session()
             session.execute("SELECT now() FROM system.local")
             self._last_health_check = time.monotonic()
             return True

@@ -150,10 +150,21 @@ def test_pool_health_check_success():
     pool = CassandraConnectionPool(cfg)
 
     with patch("nyxgpt.rag.vectorstore_cassandra.Cluster", return_value=mock_cluster):
+        pool.get_session()  # populate _sessions so health_check has something to ping
         result = pool.health_check()
 
     assert result is True
     mock_session.execute.assert_called_once_with("SELECT now() FROM system.local")
+
+
+@pytest.mark.unit
+def test_pool_health_check_no_session_returns_true():
+    """health_check() returns True (skip) when no session has been established yet."""
+    from nyxgpt.rag.vectorstore_cassandra import CassandraConnectionPool
+
+    pool = CassandraConnectionPool(_make_cfg())
+    # _sessions is empty — nothing to check
+    assert pool.health_check() is True
 
 
 @pytest.mark.unit
@@ -170,6 +181,7 @@ def test_pool_health_check_failure():
     pool = CassandraConnectionPool(cfg)
 
     with patch("nyxgpt.rag.vectorstore_cassandra.Cluster", return_value=mock_cluster):
+        pool.get_session()  # populate _sessions
         result = pool.health_check()
 
     assert result is False
@@ -198,9 +210,42 @@ def test_pool_needs_health_check_false_after_recent_check():
     pool = CassandraConnectionPool(cfg)
 
     with patch("nyxgpt.rag.vectorstore_cassandra.Cluster", return_value=mock_cluster):
+        pool.get_session()  # populate _sessions
         pool.health_check()
 
     assert pool.needs_health_check() is False
+
+
+@pytest.mark.unit
+def test_pool_get_session_triggers_health_check_on_established_connection():
+    """get_session() executes health-check query when called on an already-connected pool.
+
+    This test exercises the path that previously caused mutual recursion:
+      get_session() → health_check() → get_session() → …
+
+    After the fix, health_check() reads _sessions directly, so the chain
+    terminates correctly and session.execute is called exactly once.
+    """
+    from nyxgpt.rag.vectorstore_cassandra import CassandraConnectionPool
+
+    mock_session = Mock()
+    mock_cluster = Mock()
+    mock_cluster.connect.return_value = mock_session
+
+    # Short interval so needs_health_check() is always True
+    cfg = _make_cfg(health_check_interval=0.0)
+    pool = CassandraConnectionPool(cfg)
+
+    with patch("nyxgpt.rag.vectorstore_cassandra.Cluster", return_value=mock_cluster):
+        # First call: _connected is False, no health check triggered
+        pool.get_session()
+        mock_session.execute.assert_not_called()
+
+        # Second call: _connected is True, needs_health_check() returns True
+        # → health_check() should fire and execute the SELECT query
+        pool.get_session()
+
+    mock_session.execute.assert_called_once_with("SELECT now() FROM system.local")
 
 
 # ---------------------------------------------------------------------------
