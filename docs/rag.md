@@ -117,6 +117,11 @@ cassandra_hosts = 127.0.0.1
 cassandra_port = 9042
 cassandra_keyspace = nyxgpt
 cassandra_table = rag_chunks
+
+# Connection pool settings (new in v2.0)
+# cassandra_pool_size = 2              # Core connections per host (integer ≥ 1, default: 2)
+# cassandra_health_check_interval = 30.0  # Seconds between health checks (default: 30.0)
+# cassandra_reconnect_max_attempts = 3    # Max reconnect attempts (integer ≥ 1, default: 3)
 ```
 
 ---

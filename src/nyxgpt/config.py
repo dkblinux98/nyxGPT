@@ -642,6 +642,57 @@ def get_prompt_mode_long_threshold(cfg: ConfigParser) -> int:
         return 10
 
 
+def get_cassandra_pool_size(cfg: ConfigParser) -> int:
+    """Get the Cassandra connection pool size (connections per host).
+
+    Controls how many driver-level connections are maintained to each
+    Cassandra host.  Higher values support more concurrent RAG queries.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Pool size (default: 2, range: 1-16)
+    """
+    try:
+        size = cfg.getint("rag", "cassandra_pool_size", fallback=2)
+        return max(1, min(16, size))
+    except Exception:
+        return 2
+
+
+def get_cassandra_health_check_interval(cfg: ConfigParser) -> float:
+    """Get the interval between Cassandra connection health checks (seconds).
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Health check interval in seconds (default: 30.0)
+    """
+    try:
+        interval = cfg.getfloat("rag", "cassandra_health_check_interval", fallback=30.0)
+        return max(5.0, min(300.0, interval))
+    except Exception:
+        return 30.0
+
+
+def get_cassandra_reconnect_max_attempts(cfg: ConfigParser) -> int:
+    """Get the maximum number of Cassandra reconnection attempts.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Max reconnect attempts (default: 3, range: 1-10)
+    """
+    try:
+        attempts = cfg.getint("rag", "cassandra_reconnect_max_attempts", fallback=3)
+        return max(1, min(10, attempts))
+    except Exception:
+        return 3
+
+
 def get_batch_enabled(cfg: ConfigParser) -> bool:
     """Get whether request batching is enabled.
 
@@ -740,6 +791,9 @@ __all__ = [
     "get_batch_enabled",
     "get_batch_size",
     "get_batch_wait_time_ms",
+    "get_cassandra_pool_size",
+    "get_cassandra_health_check_interval",
+    "get_cassandra_reconnect_max_attempts",
     "validate_config",
     "ConfigValidationError",
 ]
