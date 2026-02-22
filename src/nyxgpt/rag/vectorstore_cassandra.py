@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
+import threading
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
-from cassandra.cluster import Cluster
+from cassandra.cluster import Cluster, Session
 from cassandra.query import SimpleStatement
 
 from nyxgpt.config import load_config
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -18,6 +23,9 @@ class CassandraConfig:
     port: int
     keyspace: str
     table: str
+    pool_size: int = 2
+    health_check_interval: float = 30.0
+    reconnect_max_attempts: int = 3
 
 
 @dataclass
@@ -64,22 +72,253 @@ def _cassandra_cfg() -> CassandraConfig:
     port = cfg.getint("rag", "cassandra_port", fallback=9042)
     keyspace = cfg.get("rag", "cassandra_keyspace", fallback="nyxgpt")
     table = cfg.get("rag", "cassandra_table", fallback="rag_chunks")
+    pool_size = cfg.getint("rag", "cassandra_pool_size", fallback=2)
+    health_check_interval = cfg.getfloat("rag", "cassandra_health_check_interval", fallback=30.0)
+    reconnect_max_attempts = cfg.getint("rag", "cassandra_reconnect_max_attempts", fallback=3)
 
-    return CassandraConfig(hosts=hosts, port=port, keyspace=keyspace, table=table)
+    return CassandraConfig(
+        hosts=hosts,
+        port=port,
+        keyspace=keyspace,
+        table=table,
+        pool_size=pool_size,
+        health_check_interval=health_check_interval,
+        reconnect_max_attempts=reconnect_max_attempts,
+    )
+
+
+class CassandraConnectionPool:
+    """Shared connection pool for Cassandra.
+
+    Maintains a single Cluster and per-keyspace Session objects that are
+    reused across CassandraVectorStore instances. Provides health checking
+    and graceful reconnection.
+
+    Use :func:`get_connection_pool` to obtain the module-level singleton.
+    Use :func:`reset_connection_pool` to clear the singleton (for testing).
+    """
+
+    def __init__(self, cfg: CassandraConfig) -> None:
+        self.cfg = cfg
+        self._lock = threading.Lock()
+        self._cluster: Cluster | None = None
+        self._sessions: dict[str | None, Session] = {}
+        self._last_health_check: float = 0.0
+        self._connected = False
+
+    def _make_cluster(self) -> Cluster:
+        """Create a new Cluster with pooling and reconnection settings."""
+        try:
+            from cassandra.policies import ExponentialReconnectionPolicy
+
+            reconnection_policy = ExponentialReconnectionPolicy(
+                base_delay=1.0,
+                max_delay=60.0,
+            )
+        except Exception:
+            reconnection_policy = None
+
+        kwargs: dict = {
+            "port": self.cfg.port,
+        }
+        if reconnection_policy is not None:
+            kwargs["reconnection_policy"] = reconnection_policy
+
+        # Configure driver-level connection pool size
+        try:
+            from cassandra.cluster import PoolingOptions
+            from cassandra.policies import HostDistance
+
+            pooling_opts = PoolingOptions()
+            pooling_opts.core_connections_per_host[HostDistance.LOCAL] = self.cfg.pool_size
+            pooling_opts.max_connections_per_host[HostDistance.LOCAL] = max(
+                self.cfg.pool_size * 2, 4
+            )
+            kwargs["pooling_options"] = pooling_opts
+        except Exception:
+            # PoolingOptions not available or misconfigured — proceed without it
+            pass
+
+        return Cluster(self.cfg.hosts, **kwargs)
+
+    def _connect(self) -> Session:
+        """Connect to Cassandra and return a session."""
+        if self._cluster is None:
+            self._cluster = self._make_cluster()
+        session = self._cluster.connect()
+        self._connected = True
+        return session
+
+    def get_session(self, keyspace: str | None = None) -> Session:
+        """Return a cached session, creating one if needed.
+
+        Sessions are cached per keyspace key.  A ``None`` keyspace means no
+        keyspace has been selected on the session yet (the caller is
+        responsible for issuing ``USE <keyspace>`` or using fully qualified
+        table names).
+
+        Args:
+            keyspace: Optional keyspace to cache the session under.
+
+        Returns:
+            A connected Cassandra Session.
+        """
+        with self._lock:
+            if keyspace not in self._sessions:
+                try:
+                    self._sessions[keyspace] = self._connect()
+                except Exception as exc:
+                    raise VectorStoreError(
+                        f"Failed to connect to Cassandra at "
+                        f"{self.cfg.hosts}:{self.cfg.port}: {exc}"
+                    ) from exc
+            return self._sessions[keyspace]
+
+    def health_check(self) -> bool:
+        """Check whether the pool connection is alive.
+
+        Executes a lightweight ``SELECT now() FROM system.local`` query.
+        Returns ``True`` if the connection is healthy, ``False`` otherwise.
+        Updates the internal last-check timestamp on success.
+        """
+        try:
+            session = self.get_session()
+            session.execute("SELECT now() FROM system.local")
+            self._last_health_check = time.monotonic()
+            return True
+        except Exception as exc:
+            log.warning("Cassandra health check failed: %s", exc)
+            return False
+
+    def needs_health_check(self) -> bool:
+        """Return True if enough time has elapsed since the last health check."""
+        if self._last_health_check == 0.0:
+            return True
+        return (time.monotonic() - self._last_health_check) >= self.cfg.health_check_interval
+
+    def reconnect(self) -> bool:
+        """Attempt to reconnect to Cassandra, replacing all cached state.
+
+        Tries up to ``cfg.reconnect_max_attempts`` times with exponential
+        back-off (1 s, 2 s, 4 s, …).
+
+        Returns:
+            ``True`` if reconnection succeeded, ``False`` otherwise.
+        """
+        with self._lock:
+            self._sessions.clear()
+            old_cluster = self._cluster
+            self._cluster = None
+            self._connected = False
+
+            # Shut down old cluster quietly
+            if old_cluster is not None:
+                with contextlib.suppress(Exception):
+                    old_cluster.shutdown()
+
+        delay = 1.0
+        for attempt in range(1, self.cfg.reconnect_max_attempts + 1):
+            try:
+                log.info(
+                    "Cassandra reconnect attempt %d/%d",
+                    attempt,
+                    self.cfg.reconnect_max_attempts,
+                )
+                self.get_session()
+                log.info("Cassandra reconnected successfully")
+                return True
+            except Exception as exc:
+                log.warning("Reconnect attempt %d failed: %s", attempt, exc)
+                if attempt < self.cfg.reconnect_max_attempts:
+                    time.sleep(delay)
+                    delay = min(delay * 2, 60.0)
+
+        log.error(
+            "Failed to reconnect to Cassandra after %d attempts",
+            self.cfg.reconnect_max_attempts,
+        )
+        return False
+
+    def shutdown(self) -> None:
+        """Gracefully shut down all sessions and the cluster."""
+        with self._lock:
+            for session in self._sessions.values():
+                with contextlib.suppress(Exception):
+                    session.shutdown()
+            self._sessions.clear()
+
+            if self._cluster is not None:
+                with contextlib.suppress(Exception):
+                    self._cluster.shutdown()
+                self._cluster = None
+            self._connected = False
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton pool management
+# ---------------------------------------------------------------------------
+
+_pool_lock: threading.Lock = threading.Lock()
+_pool_instance: CassandraConnectionPool | None = None
+
+
+def get_connection_pool(cfg: CassandraConfig) -> CassandraConnectionPool:
+    """Return the module-level singleton connection pool.
+
+    Creates the pool on first call.  Subsequent calls with a *different*
+    ``cfg`` will replace the existing pool (useful when config is reloaded).
+
+    Args:
+        cfg: Cassandra configuration.  When the config changes the old pool
+            is shut down and a new one is created.
+
+    Returns:
+        The active :class:`CassandraConnectionPool` instance.
+    """
+    global _pool_instance
+
+    with _pool_lock:
+        if _pool_instance is None or _pool_instance.cfg != cfg:
+            if _pool_instance is not None:
+                with contextlib.suppress(Exception):
+                    _pool_instance.shutdown()
+            _pool_instance = CassandraConnectionPool(cfg)
+
+    return _pool_instance
+
+
+def reset_connection_pool() -> None:
+    """Shut down and discard the module-level pool.
+
+    Intended for use in tests and teardown scenarios.  After calling this
+    function the next call to :func:`get_connection_pool` will create a
+    fresh pool.
+    """
+    global _pool_instance
+
+    with _pool_lock:
+        if _pool_instance is not None:
+            with contextlib.suppress(Exception):
+                _pool_instance.shutdown()
+            _pool_instance = None
 
 
 class CassandraVectorStore:
     def __init__(self, *, collection: str = "default") -> None:
         """Initialize Cassandra vector store.
 
+        Connections are reused from the module-level
+        :class:`CassandraConnectionPool` singleton so that multiple store
+        instances share the same underlying Cluster.
+
         Args:
             collection: Collection name for multi-model support (default: "default")
         """
         self.cfg = _cassandra_cfg()
         self.collection = collection
-        self.cluster = Cluster(self.cfg.hosts, port=self.cfg.port)
-        # Connect without a keyspace so we can create it if missing.
-        self.session = self.cluster.connect()
+        self._pool = get_connection_pool(self.cfg)
+        # Obtain a shared session from the pool (no keyspace selected yet).
+        self.session = self._pool.get_session()
         self._keyspace_ready = False
         self._migration_checked = False
 
@@ -151,8 +390,32 @@ class CassandraVectorStore:
             pass
 
     def close(self) -> None:
-        self.session.shutdown()
-        self.cluster.shutdown()
+        """Release this store's reference to the shared pool session.
+
+        The underlying Cluster and Session are *not* shut down here because
+        they are shared across all CassandraVectorStore instances via the
+        connection pool.  Call :func:`reset_connection_pool` or
+        :meth:`CassandraConnectionPool.shutdown` when the process is exiting
+        and a full teardown is required.
+        """
+        # The pool manages the actual connection lifetime.
+        # No teardown needed here; call reset_connection_pool() for a full shutdown.
+
+    def reconnect(self) -> bool:
+        """Reconnect to Cassandra via the connection pool.
+
+        Delegates to :meth:`CassandraConnectionPool.reconnect` and refreshes
+        the local session reference on success.
+
+        Returns:
+            ``True`` if reconnection succeeded, ``False`` otherwise.
+        """
+        success = self._pool.reconnect()
+        if success:
+            self.session = self._pool.get_session()
+            self._keyspace_ready = False
+            self._migration_checked = False
+        return success
 
     # ----------------------------
     # Schema helpers (optional)
