@@ -884,7 +884,8 @@ def config_update(request: Request, payload: dict[str, Any] = Body(...)) -> dict
 # PATCH endpoint for config updates
 @api.patch("/config")
 def config_patch(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    return config_update(request, payload)
+    result: dict[str, Any] = config_update(request, payload)
+    return result
 
 
 # --- Model management endpoints ---
