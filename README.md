@@ -333,6 +333,15 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
 - Session picker and management
 - **Client-side session metadata cache** - Stale-while-revalidate pattern for faster UI updates with automatic background refresh
 - **Optimistic UI updates** for instant feedback on session operations (pin, rename, delete, create)
+- **Code splitting and lazy loading** - `ChatPane` and `VirtualizedSessionList` are loaded on demand
+  via `next/dynamic`, reducing the initial JavaScript bundle size. `react-virtuoso` is isolated into
+  a dedicated `vendor-virtuoso` webpack chunk so it is only fetched when the session list is visible.
+  Critical navigation routes (`/admin`, `/models`, `/settings`) are prefetched via
+  `<link rel="prefetch">` for instant page transitions.
+  **UX note:** On the first page load (or on slow networks), a spinner appears where the chat pane
+  would be and a skeleton placeholder replaces the session list while their JavaScript chunks are
+  downloaded. Both loading states disappear as soon as the chunks arrive, typically within
+  milliseconds on a local network.
 - RAG document upload and toggle
 - **RAG Collections management** at `/admin/collections` for multi-model embedding support
 - **RAG Playground** at `/admin/playground` for interactive query testing and A/B comparison

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Image from 'next/image';
-import ChatPane from './components/ChatPane';
+import dynamic from 'next/dynamic';
 import ThemeToggle from '../components/ThemeToggle';
 import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
@@ -10,10 +10,33 @@ import { SessionListSkeleton } from '../components/SkeletonLoader';
 import { SessionListErrorBoundary } from '../components/SessionListErrorBoundary';
 import { SessionCacheErrorBoundary } from '../components/SessionCacheErrorBoundary';
 import { UnifiedSearch, UnifiedSearchRef } from '../components/UnifiedSearch';
-import { VirtualizedSessionList } from '../components/VirtualizedSessionList';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { useSessionCache } from '../hooks/useSessionCache';
+
+// Route-based code splitting: ChatPane is large (2000+ lines) and only needed
+// after initial render; lazy-load it to reduce the initial bundle size.
+const ChatPane = dynamic(() => import('./components/ChatPane'), {
+  ssr: false,
+  loading: () => (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+      <LoadingSpinner />
+    </div>
+  ),
+});
+
+// VirtualizedSessionList depends on react-virtuoso; split into its own chunk so
+// the virtuoso library is not included in the initial JS payload.
+const VirtualizedSessionList = dynamic(
+  () =>
+    import('../components/VirtualizedSessionList').then((mod) => ({
+      default: mod.VirtualizedSessionList,
+    })),
+  {
+    ssr: false,
+    loading: () => <SessionListSkeleton />,
+  }
+);
 
 type Info = {
   ollama_base_url: string;

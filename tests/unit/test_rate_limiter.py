@@ -312,3 +312,51 @@ def test_rate_limiter_respects_burst_cap():
 
     # Bucket should have burst_size - 1 tokens (capped, then 1 consumed)
     assert limiter._clients["client1"].tokens <= limiter._burst_size
+
+
+def test_get_client_ip_returns_str_type_for_direct_connection():
+    """get_client_ip always returns str (not None or other type) for direct client."""
+    # Covers src/nyxgpt/rate_limiter.py:120 – the str() cast ensures the return
+    # type is str even when mypy strict mode is active.
+    limiter = RateLimiter(requests_per_second=10, burst_size=20)
+
+    request = Mock()
+    request.headers = {}
+    request.client = Mock(host="10.0.0.1")
+
+    result = limiter.get_client_ip(request)
+
+    assert isinstance(result, str), "get_client_ip must return str, not a subtype or None"
+    assert result == "10.0.0.1"
+
+
+def test_get_client_ip_returns_str_type_for_forwarded_header():
+    """get_client_ip always returns str for X-Forwarded-For (with leading whitespace stripped)."""
+    # Covers src/nyxgpt/rate_limiter.py:116 – str() cast plus .strip() removes
+    # any whitespace that X-Forwarded-For proxies may add around the IP address.
+    limiter = RateLimiter(requests_per_second=10, burst_size=20)
+
+    # Header with extra whitespace around the first IP (common in some proxies)
+    request = Mock()
+    request.headers = {"x-forwarded-for": "  198.51.100.42  , 192.168.0.1"}
+    request.client = Mock(host="192.168.0.1")
+
+    result = limiter.get_client_ip(request)
+
+    assert isinstance(result, str), "get_client_ip must return str"
+    assert result == "198.51.100.42", "Leading/trailing whitespace must be stripped from IP"
+
+
+def test_get_client_ip_returns_str_type_when_no_client():
+    """get_client_ip returns the literal str 'unknown' when no client is available."""
+    # Covers the fallback branch at src/nyxgpt/rate_limiter.py:123.
+    limiter = RateLimiter(requests_per_second=10, burst_size=20)
+
+    request = Mock()
+    request.headers = {}
+    request.client = None
+
+    result = limiter.get_client_ip(request)
+
+    assert isinstance(result, str), "get_client_ip must return str even for the fallback branch"
+    assert result == "unknown"
