@@ -271,6 +271,9 @@ cassandra_table = rag_chunks
 | `cassandra_port` | Cassandra port |
 | `cassandra_keyspace` | Cassandra keyspace for RAG |
 | `cassandra_table` | Cassandra table name for RAG chunks |
+| `cassandra_pool_size` | Number of core connections per host in the driver-level pool (integer ≥ 1, default: `2`) |
+| `cassandra_health_check_interval` | Seconds between automatic health check queries; a check is run on the next `get_session()` call once this interval has elapsed (float > 0, default: `30.0`) |
+| `cassandra_reconnect_max_attempts` | Maximum number of reconnection attempts before giving up (integer ≥ 1, default: `3`) |
 
 **RAG Prompt Templates:**
 

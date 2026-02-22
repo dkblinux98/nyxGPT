@@ -157,12 +157,25 @@ class CassandraConnectionPool:
         responsible for issuing ``USE <keyspace>`` or using fully qualified
         table names).
 
+        If enough time has elapsed since the last health check
+        (:meth:`needs_health_check` returns ``True``) and a connection already
+        exists, a lightweight health check query is executed before returning
+        the cached session.  If the check fails a warning is logged but the
+        session is still returned; call :meth:`reconnect` explicitly when
+        stricter error handling is required.
+
         Args:
             keyspace: Optional keyspace to cache the session under.
 
         Returns:
             A connected Cassandra Session.
         """
+        # Run the health check *outside* the lock so that the I/O does not
+        # block other threads.  Only check when there is an established
+        # connection – the very first call will create the session below.
+        if self._connected and self.needs_health_check():
+            self.health_check()
+
         with self._lock:
             if keyspace not in self._sessions:
                 try:
