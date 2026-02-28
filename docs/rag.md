@@ -284,6 +284,83 @@ Disable RAG for a specific session.
 }
 ```
 
+### Per-Session Document Attachment (Force-Include Mode)
+
+Force-include mode lets you pin specific documents to a session so their chunks are **always** retrieved, regardless of semantic relevance. This is useful when you want the model to reference a particular document in every response.
+
+#### How It Works
+
+When one or more documents are attached to a session, nyxGPT performs **two** retrieval passes during chat:
+
+1. **Normal RAG pass** — semantic retrieval based on your query (subject to `rag_filters` if set)
+2. **Force-include pass** — targeted retrieval filtered to the attached `doc_id`s
+
+Results are merged with deduplication by `(doc_id, chunk_id)`. Force-included chunks appear **first** in the context, giving them higher priority.
+
+**Note:** The doc_id must already be ingested into the RAG index. Attaching an unknown doc_id silently produces no chunks for that document.
+
+#### `GET /api/v1/sessions/{name}/documents`
+
+List documents currently attached to a session.
+
+**Response:**
+```json
+{
+  "session": "my-session",
+  "attached_doc_ids": ["report-2025.pdf", "spec-v2.md"]
+}
+```
+
+#### `POST /api/v1/sessions/{name}/documents`
+
+Attach a document to a session. Idempotent — attaching the same doc_id twice has no effect.
+
+**Request body:**
+```json
+{
+  "doc_id": "report-2025.pdf"
+}
+```
+
+**Response:**
+```json
+{
+  "session": "my-session",
+  "attached_doc_ids": ["report-2025.pdf"]
+}
+```
+
+#### `DELETE /api/v1/sessions/{name}/documents/{doc_id}`
+
+Detach a document from a session.
+
+**Response:**
+```json
+{
+  "session": "my-session",
+  "attached_doc_ids": []
+}
+```
+
+#### Example: Attach and chat
+
+```bash
+# Ingest a document
+curl -X POST http://127.0.0.1:8000/api/v1/rag/upload -F "file=@spec.md"
+
+# Attach it to your session
+curl -X POST http://127.0.0.1:8000/api/v1/sessions/my-session/documents \
+  -H "Content-Type: application/json" \
+  -d '{"doc_id": "spec.md"}'
+
+# Chat — spec.md chunks are always included regardless of query
+curl -X POST http://127.0.0.1:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Summarise the key requirements", "session": "my-session"}'
+```
+
+---
+
 ### Document Upload
 
 #### `POST /api/v1/rag/upload`

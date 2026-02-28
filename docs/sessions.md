@@ -142,6 +142,7 @@ Each session has a metadata file (`<name>.meta.json`) containing comprehensive i
 **Analysis metadata:**
 - `token_estimate` (int) - Estimated total tokens in conversation
 - `rag_enabled` (bool) - Whether RAG is enabled for this session
+- `attached_doc_ids` (list, optional) - Document IDs force-included in every RAG retrieval (see [Force-Include Mode](#force-include-document-attachment))
 
 Metadata is updated automatically on each interaction and supports rich organizational features.
 
@@ -325,6 +326,67 @@ nyxgpt sessions batch-update-meta --rag-enabled true -- session1 session2
 # Disable RAG for multiple sessions
 nyxgpt sessions batch-update-meta --rag-enabled false -- session1 session2
 ```
+
+---
+
+## Force-Include Document Attachment
+
+Attach specific documents to a session so their chunks are **always** retrieved during RAG, regardless of query relevance. See [docs/rag.md — Per-Session Document Attachment](rag.md#per-session-document-attachment-force-include-mode) for full details.
+
+### API Endpoints
+
+#### List attached documents
+
+```bash
+GET /api/v1/sessions/{name}/documents
+```
+
+**Response:**
+```json
+{
+  "session": "my-session",
+  "attached_doc_ids": ["report-2025.pdf", "spec-v2.md"]
+}
+```
+
+#### Attach a document
+
+```bash
+POST /api/v1/sessions/{name}/documents
+Content-Type: application/json
+
+{"doc_id": "report-2025.pdf"}
+```
+
+**Response:**
+```json
+{
+  "session": "my-session",
+  "attached_doc_ids": ["report-2025.pdf"]
+}
+```
+
+Attaching the same `doc_id` twice is idempotent.
+
+#### Detach a document
+
+```bash
+DELETE /api/v1/sessions/{name}/documents/{doc_id}
+```
+
+**Response:**
+```json
+{
+  "session": "my-session",
+  "attached_doc_ids": []
+}
+```
+
+### Notes
+
+- Attached doc IDs are stored in the session's `.meta.json` file under `attached_doc_ids`.
+- The doc must already be ingested into the RAG index; attaching an unknown ID produces no chunks but does not error.
+- Force-included chunks appear **before** normal RAG chunks in the merged context.
 
 ---
 
