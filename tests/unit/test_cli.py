@@ -1267,14 +1267,16 @@ def test_models_show(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
 
 
 def test_sessions_documents_empty(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """Test 'sessions documents' when no documents are attached."""
+    """Test 'sessions list-attachments' when no documents are attached."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
 
     session_file = sessions.session_file_for("my-session", sessions_dir)
     sessions.save_session_messages(session_file, [])
 
-    exit_code = cli(["sessions", "documents", "my-session", "--sessions-dir", str(sessions_dir)])
+    exit_code = cli(
+        ["sessions", "list-attachments", "my-session", "--sessions-dir", str(sessions_dir)]
+    )
 
     assert exit_code == 0
     captured = capsys.readouterr()
@@ -1297,7 +1299,9 @@ def test_sessions_attach_and_list(tmp_path: Path, capsys: pytest.CaptureFixture[
     assert "doc-abc" in captured.out
 
     # Now list documents
-    exit_code = cli(["sessions", "documents", "my-session", "--sessions-dir", str(sessions_dir)])
+    exit_code = cli(
+        ["sessions", "list-attachments", "my-session", "--sessions-dir", str(sessions_dir)]
+    )
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "doc-abc" in captured.out
@@ -1359,9 +1363,9 @@ def test_sessions_attach_missing_args(tmp_path: Path, capsys: pytest.CaptureFixt
 def test_sessions_documents_missing_name(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Test that documents requires a session name."""
+    """Test that list-attachments requires a session name."""
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
 
-    exit_code = cli(["sessions", "documents", "--sessions-dir", str(sessions_dir)])
+    exit_code = cli(["sessions", "list-attachments", "--sessions-dir", str(sessions_dir)])
     assert exit_code == 2

@@ -56,6 +56,12 @@ nyxgpt chat "Hello" --session default
 
 If the session does not exist, it is created automatically.
 
+To enable RAG for a single chat request (overriding the session's RAG setting), pass `--rag-mode`:
+
+```bash
+nyxgpt chat "Summarise the attached report" --session research --rag-mode
+```
+
 ---
 
 ### List sessions
@@ -332,6 +338,56 @@ nyxgpt sessions batch-update-meta --rag-enabled false -- session1 session2
 ## Force-Include Document Attachment
 
 Attach specific documents to a session so their chunks are **always** retrieved during RAG, regardless of query relevance. See [docs/rag.md — Force-Include Mode](rag.md#force-include-mode-per-session-document-attachment) for full details.
+
+### CLI Subcommands
+
+#### Attach a document to a session
+
+```bash
+nyxgpt sessions attach <session> <doc_id>
+```
+
+Example:
+
+```bash
+nyxgpt sessions attach research report-2025.pdf
+# Attached document 'report-2025.pdf' to session 'research'
+```
+
+#### Detach a document from a session
+
+```bash
+nyxgpt sessions detach <session> <doc_id>
+```
+
+Example:
+
+```bash
+nyxgpt sessions detach research report-2025.pdf
+# Detached document 'report-2025.pdf' from session 'research'
+```
+
+#### List attached documents for a session
+
+```bash
+nyxgpt sessions list-attachments <session>
+```
+
+Example:
+
+```bash
+nyxgpt sessions list-attachments research
+# Attached documents for session 'research':
+#   - report-2025.pdf
+```
+
+### TUI (Terminal UI)
+
+Press **Ctrl+A** to open the document attachment manager for the current session. The modal lets you attach new documents (by entering a `doc_id`) and detach existing ones. The status bar at the bottom of the screen shows a `Docs:<count>` indicator whenever one or more documents are attached to the current session.
+
+### Web UI
+
+In the Web UI, click the **Docs** button (toolbar, bottom of the chat panel) to open the attached documents panel. Use the text input to enter a `doc_id` and click **Attach**; click the **×** button next to a document to detach it. The Docs button displays the current attachment count, e.g. `Docs (2)`.
 
 ### API Endpoints
 
