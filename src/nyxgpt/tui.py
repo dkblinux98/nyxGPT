@@ -72,27 +72,37 @@ class SessionStatusBar(Static):
         self.message_count: int = 0
         self.model: str = ""
         self.rag_enabled: bool = False
+        self.attached_doc_count: int = 0
 
     def update_info(
-        self, session_name: str, message_count: int, model: str, rag_enabled: bool
+        self,
+        session_name: str,
+        message_count: int,
+        model: str,
+        rag_enabled: bool,
+        attached_doc_count: int = 0,
     ) -> None:
         """Update session information and refresh display."""
         self.session_name = session_name
         self.message_count = message_count
         self.model = model
         self.rag_enabled = rag_enabled
+        self.attached_doc_count = attached_doc_count
         self._refresh_display()
 
     def _refresh_display(self) -> None:
         """Refresh the status bar display with current info."""
         rag_indicator = "RAG:ON" if self.rag_enabled else "RAG:OFF"
-        status_text = (
-            f"Session: {self.session_name} | "
-            f"Messages: {self.message_count} | "
-            f"Model: {self.model} | "
-            f"{rag_indicator}"
-        )
-        self.update(status_text)
+        docs_indicator = f"Docs:{self.attached_doc_count}" if self.attached_doc_count > 0 else ""
+        parts = [
+            f"Session: {self.session_name}",
+            f"Messages: {self.message_count}",
+            f"Model: {self.model}",
+            rag_indicator,
+        ]
+        if docs_indicator:
+            parts.append(docs_indicator)
+        self.update(" | ".join(parts))
 
 
 class SessionMetadataPreview(Static):
@@ -870,6 +880,18 @@ class NyxGPTTUI(App):
                 session_res.raise_for_status()
                 session_data = session_res.json()
 
+                # Fetch attached documents count
+                attached_doc_count = 0
+                try:
+                    docs_res = await client.get(
+                        f"{self.api_base_url}/api/v1/sessions/{self.session}/documents"
+                    )
+                    if docs_res.is_success:
+                        docs_data = docs_res.json()
+                        attached_doc_count = len(docs_data.get("attached_doc_ids", []))
+                except Exception:
+                    pass
+
                 # Extract info
                 self.rag_enabled = metadata.get("rag_enabled", False)
                 model = metadata.get("model", "unknown")
@@ -883,6 +905,7 @@ class NyxGPTTUI(App):
                         message_count=message_count,
                         model=model,
                         rag_enabled=self.rag_enabled,
+                        attached_doc_count=attached_doc_count,
                     )
 
         except Exception as e:

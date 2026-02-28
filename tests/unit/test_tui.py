@@ -1765,10 +1765,17 @@ async def test_tui_update_session_status_success(tmp_path: Path) -> None:
     }
     mock_session_response.raise_for_status = MagicMock()
 
+    mock_docs_response = MagicMock()
+    mock_docs_response.status_code = 200
+    mock_docs_response.is_success = True
+    mock_docs_response.json.return_value = {"attached_doc_ids": []}
+
     mock_client = AsyncMock()
     mock_client.__aenter__.return_value = mock_client
     mock_client.__aexit__.return_value = None
-    mock_client.get = AsyncMock(side_effect=[mock_metadata_response, mock_session_response])
+    mock_client.get = AsyncMock(
+        side_effect=[mock_metadata_response, mock_session_response, mock_docs_response]
+    )
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         await app._update_session_status()
@@ -1780,6 +1787,7 @@ async def test_tui_update_session_status_success(tmp_path: Path) -> None:
         message_count=5,
         model="llama3.1:8b",
         rag_enabled=True,
+        attached_doc_count=0,
     )
 
 

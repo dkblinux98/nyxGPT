@@ -552,6 +552,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
 
     // Fetch attached documents for this session
     setAttachedDocIds([]);
+    setShowAttachedDocs(false);
     fetch(`/api/sessions/${encodeURIComponent(sessionName)}/documents`)
       .then(async (res) => {
         if (res.ok) {
@@ -749,18 +750,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       }
     } catch (err) {
       console.error('Failed to fetch available documents:', err);
-    }
-  }
-
-  async function fetchAttachedDocuments() {
-    try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/documents`);
-      if (res.ok) {
-        const data = await res.json();
-        setAttachedDocIds(data.attached_doc_ids || []);
-      }
-    } catch (err) {
-      console.error('Failed to fetch attached documents:', err);
     }
   }
 

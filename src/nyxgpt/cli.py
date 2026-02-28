@@ -74,6 +74,7 @@ def cmd_chat(
     session_name: str,
     new_session: bool,
     sessions_dir: Path | None,
+    rag_mode: bool | None = None,
 ) -> int:
     cfg = load_config(cfg_path)
 
@@ -91,6 +92,7 @@ def cmd_chat(
                 system=system,
                 config_path=str(cfg_path) if cfg_path else None,
                 sessions_dir=str(sessions_dir) if sessions_dir else None,
+                rag_enabled=rag_mode,
             ):
                 if first_chunk:
                     # Clear typing indicator on first token
@@ -108,6 +110,7 @@ def cmd_chat(
                 system=system,
                 config_path=str(cfg_path) if cfg_path else None,
                 sessions_dir=str(sessions_dir) if sessions_dir else None,
+                rag_enabled=rag_mode,
             )
             print(result.reply)
             return 0
@@ -142,6 +145,7 @@ def cmd_chat(
                     system=system,
                     config_path=str(cfg_path) if cfg_path else None,
                     sessions_dir=str(sessions_dir) if sessions_dir else None,
+                    rag_enabled=rag_mode,
                 ):
                     if first_chunk:
                         # Clear typing indicator on first token
@@ -158,6 +162,7 @@ def cmd_chat(
                     system=system,
                     config_path=str(cfg_path) if cfg_path else None,
                     sessions_dir=str(sessions_dir) if sessions_dir else None,
+                    rag_enabled=rag_mode,
                 )
                 print(result.reply)
         except KeyboardInterrupt:
@@ -646,7 +651,7 @@ def cmd_sessions(
 
         return 0
 
-    if action == "documents":
+    if action == "list-attachments":
         if not name:
             print("ERROR: session name is required", file=sys.stderr)
             return 2
@@ -1171,6 +1176,12 @@ def cli(argv: list[str] | None = None) -> int:
     chat_p.add_argument("--session", default="default", help="Conversation session name")
     chat_p.add_argument("--new", action="store_true", help="Start a fresh session")
     chat_p.add_argument("--sessions-dir", type=Path, help="Override sessions directory")
+    chat_p.add_argument(
+        "--rag-mode",
+        action="store_true",
+        default=None,
+        help="Enable RAG for this chat request",
+    )
 
     sessions_p = sub.add_parser("sessions", help="Manage stored chat sessions")
     sessions_p.add_argument(
@@ -1201,7 +1212,7 @@ def cli(argv: list[str] | None = None) -> int:
             "stats",
             "attach",
             "detach",
-            "documents",
+            "list-attachments",
         ],
     )
     sessions_p.add_argument("name", nargs="?", help="Session name")
@@ -1458,6 +1469,7 @@ def cli(argv: list[str] | None = None) -> int:
             session_name=args.session,
             new_session=args.new,
             sessions_dir=args.sessions_dir,
+            rag_mode=getattr(args, "rag_mode", None),
         )
 
     if cmd == "sessions":
