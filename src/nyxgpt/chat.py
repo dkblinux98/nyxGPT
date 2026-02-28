@@ -23,6 +23,7 @@ from nyxgpt.config import (
 )
 from nyxgpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
 from nyxgpt.rag.rag import compose_context, retrieve_context
+from nyxgpt.rag.vectorstore_cassandra import MetadataFilter
 from nyxgpt.sessions import load_session, save_session
 from nyxgpt.token_counter import count_message_tokens
 
@@ -436,8 +437,6 @@ def _prepare_chat_context(
         if rag_filters:
             from datetime import datetime
 
-            from nyxgpt.rag.vectorstore_cassandra import MetadataFilter
-
             # Parse dates if provided
             date_from_dt = None
             date_to_dt = None
@@ -464,6 +463,30 @@ def _prepare_chat_context(
         rows_result = retrieve_context(prompt, debug_mode=False, metadata_filter=metadata_filter)
         # Type narrowing: debug_mode=False means result is list[dict], not tuple
         rows = cast(list[dict], rows_result)
+
+        # Force-include attached documents from session metadata.
+        # These are always retrieved regardless of rag_filters, merged with normal results.
+        attached_doc_ids = state.meta.get("attached_doc_ids", [])
+        if attached_doc_ids and isinstance(attached_doc_ids, list):
+            force_filter = MetadataFilter(doc_ids=list(attached_doc_ids))
+            force_result = retrieve_context(prompt, debug_mode=False, metadata_filter=force_filter)
+            force_rows = cast(list[dict], force_result)
+
+            # Merge: deduplicate by (doc_id, chunk_id), force-included rows take precedence
+            seen_keys: set[tuple] = set()
+            merged: list[dict] = []
+            for r in force_rows:
+                key = (r.get("doc_id"), r.get("chunk_id"))
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    merged.append(r)
+            for r in rows:
+                key = (r.get("doc_id"), r.get("chunk_id"))
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    merged.append(r)
+            rows = merged
+
         rag_chunks = len(rows)
         rag_rows = rows  # Save raw results
         rag_context = compose_context(rows)

@@ -35,6 +35,7 @@ import nyxgpt.config
 from nyxgpt import api_models, models, sessions, tools_fs
 from nyxgpt import chat as chat_module
 from nyxgpt.api_models import (
+    AttachDocumentRequest,
     ChatRequest,
     ChatResponse,
     CollectionDeleteResponse,
@@ -60,6 +61,7 @@ from nyxgpt.api_models import (
     ReindexCollectionResponse,
     RenameRequest,
     ResourceMetricsResponse,
+    SessionDocumentsResponse,
     SessionsListResponse,
     TagsRequest,
     TitleRequest,
@@ -2877,6 +2879,81 @@ def disable_session_rag(name: str) -> dict[str, Any]:
     sessions.save_session_meta(mf, meta)
 
     return {"session": name, "rag_enabled": False}
+
+
+@api.get("/sessions/{name}/documents", response_model=SessionDocumentsResponse)
+def list_session_documents(name: str) -> SessionDocumentsResponse:
+    """List document IDs force-included for a session's RAG context.
+
+    Returns the list of documents attached to the session that are
+    always retrieved when RAG is enabled, regardless of other filters.
+    """
+    cfg = load_config(None)
+    sessions_dir = get_sessions_dir(cfg)
+    sf = sessions.session_file_for(name, sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    meta = sessions.load_session_meta(mf)
+    attached = meta.get("attached_doc_ids", [])
+    if not isinstance(attached, list):
+        attached = []
+
+    return SessionDocumentsResponse(session=name, attached_doc_ids=attached)
+
+
+@api.post("/sessions/{name}/documents", response_model=SessionDocumentsResponse)
+def attach_document_to_session(name: str, req: AttachDocumentRequest) -> SessionDocumentsResponse:
+    """Attach a document to a session for force-inclusion in RAG context.
+
+    Attached documents are always retrieved when RAG is enabled for the
+    session, regardless of any other metadata filters in the chat request.
+    """
+    cfg = load_config(None)
+    sessions_dir = get_sessions_dir(cfg)
+    sf = sessions.session_file_for(name, sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    if not sf.exists():
+        sessions.save_session_messages(sf, [])
+
+    meta = sessions.load_session_meta(mf)
+    meta = sessions.ensure_meta_defaults(meta)
+
+    raw = meta.get("attached_doc_ids", [])
+    attached: list[str] = raw if isinstance(raw, list) else []
+
+    if req.doc_id not in attached:
+        attached = attached + [req.doc_id]
+        meta["attached_doc_ids"] = attached
+        sessions.save_session_meta(mf, meta)
+
+    return SessionDocumentsResponse(session=name, attached_doc_ids=attached)
+
+
+@api.delete("/sessions/{name}/documents/{doc_id}", response_model=SessionDocumentsResponse)
+def detach_document_from_session(name: str, doc_id: str) -> SessionDocumentsResponse:
+    """Detach a document from a session, removing it from force-inclusion.
+
+    After detaching, the document will no longer be force-included in
+    RAG retrieval for this session.
+    """
+    cfg = load_config(None)
+    sessions_dir = get_sessions_dir(cfg)
+    sf = sessions.session_file_for(name, sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    meta = sessions.load_session_meta(mf)
+    meta = sessions.ensure_meta_defaults(meta)
+
+    raw = meta.get("attached_doc_ids", [])
+    attached: list[str] = raw if isinstance(raw, list) else []
+
+    if doc_id in attached:
+        attached = [d for d in attached if d != doc_id]
+        meta["attached_doc_ids"] = attached
+        sessions.save_session_meta(mf, meta)
+
+    return SessionDocumentsResponse(session=name, attached_doc_ids=attached)
 
 
 @api.post("/rag/upload", response_model=RagIngestResponse)

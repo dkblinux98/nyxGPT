@@ -170,6 +170,7 @@ class SessionMetadata(TypedDict):
     summary: NotRequired[str]
     model: NotRequired[str]
     rag_enabled: NotRequired[bool]  # Per-session RAG enable/disable
+    attached_doc_ids: NotRequired[list[str]]  # Force-included document IDs for RAG
 
 
 # For backwards compatibility, keep dict[str, Any] in function signatures
