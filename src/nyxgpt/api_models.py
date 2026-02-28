@@ -449,6 +449,22 @@ class SearchResponse(BaseModel):
 # ----------------------------
 
 
+class AttachDocumentRequest(BaseModel):
+    """Request model for attaching a document to a session."""
+
+    doc_id: str = Field(..., min_length=1, description="Document ID to attach to the session")
+
+
+class SessionDocumentsResponse(BaseModel):
+    """Response model for session document attachment operations."""
+
+    session: str = Field(..., description="Session name")
+    attached_doc_ids: list[str] = Field(
+        default_factory=list,
+        description="List of document IDs force-included for this session's RAG context",
+    )
+
+
 class ResourceMetricsResponse(BaseModel):
     """Response model for resource usage metrics endpoint.
 
