@@ -646,6 +646,61 @@ def cmd_sessions(
 
         return 0
 
+    if action == "documents":
+        if not name:
+            print("ERROR: session name is required", file=sys.stderr)
+            return 2
+        sf = sessions.session_file_for(name, effective_dir)
+        mf = sessions.meta_file_for(sf)
+        meta = sessions.load_session_meta(mf)
+        raw = meta.get("attached_doc_ids", [])
+        attached: list[str] = raw if isinstance(raw, list) else []
+        if not attached:
+            print(f"No documents attached to session: {name}")
+        else:
+            print(f"Attached documents for session '{name}':")
+            for doc_id in attached:
+                print(f"  - {doc_id}")
+        return 0
+
+    if action == "attach":
+        if not name or not new_name:
+            print("ERROR: session name and doc_id are required", file=sys.stderr)
+            return 2
+        doc_id = new_name
+        sf = sessions.session_file_for(name, effective_dir)
+        mf = sessions.meta_file_for(sf)
+        if not sf.exists():
+            sessions.save_session_messages(sf, [])
+        meta = sessions.load_session_meta(mf)
+        meta = sessions.ensure_meta_defaults(meta)
+        raw = meta.get("attached_doc_ids", [])
+        cur: list[str] = raw if isinstance(raw, list) else []
+        if doc_id not in cur:
+            cur = cur + [doc_id]
+            meta["attached_doc_ids"] = cur
+            sessions.save_session_meta(mf, meta)
+        print(f"Attached document '{doc_id}' to session '{name}'")
+        return 0
+
+    if action == "detach":
+        if not name or not new_name:
+            print("ERROR: session name and doc_id are required", file=sys.stderr)
+            return 2
+        doc_id = new_name
+        sf = sessions.session_file_for(name, effective_dir)
+        mf = sessions.meta_file_for(sf)
+        meta = sessions.load_session_meta(mf)
+        meta = sessions.ensure_meta_defaults(meta)
+        raw = meta.get("attached_doc_ids", [])
+        cur = raw if isinstance(raw, list) else []
+        if doc_id in cur:
+            cur = [d for d in cur if d != doc_id]
+            meta["attached_doc_ids"] = cur
+            sessions.save_session_meta(mf, meta)
+        print(f"Detached document '{doc_id}' from session '{name}'")
+        return 0
+
     print(f"Unknown sessions action: {action}", file=sys.stderr)
     return 2
 
@@ -1144,10 +1199,13 @@ def cli(argv: list[str] | None = None) -> int:
             "batch-unpin",
             "batch-update-meta",
             "stats",
+            "attach",
+            "detach",
+            "documents",
         ],
     )
     sessions_p.add_argument("name", nargs="?", help="Session name")
-    sessions_p.add_argument("new_name", nargs="?", help="Second argument (rename/title)")
+    sessions_p.add_argument("new_name", nargs="?", help="Second argument (rename/title/doc_id)")
     sessions_p.add_argument("extras", nargs="*", help="Extra args (tags)")
     sessions_p.add_argument("--sessions-dir", type=Path, help="Override sessions directory")
     sessions_p.add_argument(

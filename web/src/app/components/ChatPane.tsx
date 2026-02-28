@@ -453,6 +453,11 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     ingested_at: string | null;
   }>>([]);
 
+  // Attached documents state (force-include for RAG)
+  const [attachedDocIds, setAttachedDocIds] = useState<string[]>([]);
+  const [showAttachedDocs, setShowAttachedDocs] = useState<boolean>(false);
+  const [attachDocInput, setAttachDocInput] = useState<string>('');
+
   // Upload menu state
   const [showUploadMenu, setShowUploadMenu] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -543,6 +548,19 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         setRagEnabled(false); // Default to disabled if fetch fails
         setSessionTitle(''); // Default to empty title
         setSelectedModel(''); // Default to empty (will use first available model)
+      });
+
+    // Fetch attached documents for this session
+    setAttachedDocIds([]);
+    fetch(`/api/sessions/${encodeURIComponent(sessionName)}/documents`)
+      .then(async (res) => {
+        if (res.ok) {
+          const data = await res.json();
+          setAttachedDocIds(data.attached_doc_ids || []);
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to fetch attached documents:', err);
       });
 
     // Load most recent messages with pagination
@@ -731,6 +749,47 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       }
     } catch (err) {
       console.error('Failed to fetch available documents:', err);
+    }
+  }
+
+  async function fetchAttachedDocuments() {
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/documents`);
+      if (res.ok) {
+        const data = await res.json();
+        setAttachedDocIds(data.attached_doc_ids || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch attached documents:', err);
+    }
+  }
+
+  async function attachDocument(docId: string) {
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/documents`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc_id: docId }),
+      });
+      if (!res.ok) throw new Error('Failed to attach document');
+      const data = await res.json();
+      setAttachedDocIds(data.attached_doc_ids || []);
+    } catch (err) {
+      console.error('Failed to attach document:', err);
+    }
+  }
+
+  async function detachDocument(docId: string) {
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionName)}/documents/${encodeURIComponent(docId)}`,
+        { method: 'DELETE' }
+      );
+      if (!res.ok) throw new Error('Failed to detach document');
+      const data = await res.json();
+      setAttachedDocIds(data.attached_doc_ids || []);
+    } catch (err) {
+      console.error('Failed to detach document:', err);
     }
   }
 
@@ -1752,6 +1811,108 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         </div>
       )}
 
+      {/* Attached Documents Panel */}
+      {showAttachedDocs && ragEnabled && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: 12,
+            border: '1px solid var(--border)',
+            borderRadius: 10,
+            background: 'var(--input-bg)',
+          }}
+        >
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>Force-Included Documents</h3>
+            <span style={{ fontSize: 12, opacity: 0.6 }}>{attachedDocIds.length} attached</span>
+          </div>
+
+          {/* Attached doc list */}
+          <div style={{ maxHeight: 120, overflowY: 'auto', marginBottom: 10 }}>
+            {attachedDocIds.length === 0 ? (
+              <div style={{ fontSize: 12, opacity: 0.6, textAlign: 'center', padding: 8 }}>
+                No documents attached
+              </div>
+            ) : (
+              attachedDocIds.map((docId) => (
+                <div
+                  key={docId}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '4px 8px',
+                    borderRadius: 4,
+                    fontSize: 12,
+                  }}
+                >
+                  <span style={{ fontFamily: 'monospace' }}>{docId}</span>
+                  <button
+                    onClick={() => void detachDocument(docId)}
+                    style={{
+                      padding: '2px 6px',
+                      fontSize: 11,
+                      border: '1px solid var(--border)',
+                      borderRadius: 4,
+                      background: 'transparent',
+                      color: 'var(--foreground)',
+                      cursor: 'pointer',
+                    }}
+                    title="Detach document"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+
+          {/* Attach input */}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              type="text"
+              value={attachDocInput}
+              onChange={(e) => setAttachDocInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && attachDocInput.trim()) {
+                  void attachDocument(attachDocInput.trim());
+                  setAttachDocInput('');
+                }
+              }}
+              placeholder="Enter doc_id to attach..."
+              style={{
+                flex: 1,
+                padding: '6px 10px',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                background: 'var(--background)',
+                color: 'var(--foreground)',
+                fontSize: 12,
+              }}
+            />
+            <button
+              onClick={() => {
+                if (attachDocInput.trim()) {
+                  void attachDocument(attachDocInput.trim());
+                  setAttachDocInput('');
+                }
+              }}
+              style={{
+                padding: '6px 12px',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                background: 'var(--button-hover)',
+                color: 'var(--foreground)',
+                cursor: 'pointer',
+                fontSize: 12,
+              }}
+            >
+              Attach
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Message input box - two lines */}
       <div
         style={{
@@ -1967,6 +2128,27 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 title="Filter RAG documents"
               >
                 Filters {(ragFilters.doc_ids?.length || ragFilters.filename || ragFilters.tags?.length || ragFilters.date_from || ragFilters.date_to) ? '(active)' : ''}
+              </button>
+            )}
+
+            {/* Attached Docs toggle button */}
+            {ragEnabled && (
+              <button
+                onClick={() => setShowAttachedDocs(!showAttachedDocs)}
+                disabled={isStreaming}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  border: '1px solid var(--border)',
+                  background: showAttachedDocs ? 'var(--button-hover)' : 'transparent',
+                  color: 'var(--foreground)',
+                  cursor: isStreaming ? 'not-allowed' : 'pointer',
+                  fontSize: 12,
+                  fontWeight: 500,
+                }}
+                title="Manage force-included documents"
+              >
+                Docs {attachedDocIds.length > 0 ? `(${attachedDocIds.length})` : ''}
               </button>
             )}
 

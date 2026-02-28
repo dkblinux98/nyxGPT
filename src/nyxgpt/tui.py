@@ -550,6 +550,99 @@ class DeleteConfirmationScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class ManageDocumentsScreen(ModalScreen[None]):
+    """Modal screen for managing documents attached to the current session."""
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        ("ctrl+c", "close", "Close"),
+    ]
+
+    def __init__(self, api_base_url: str, session: str) -> None:
+        super().__init__()
+        self.api_base_url = api_base_url
+        self.session = session
+        self._attached: list[str] = []
+
+    def compose(self) -> ComposeResult:
+        with Container(id="docs-dialog"):
+            yield Label(f"Attached documents: {self.session}")
+            self.docs_list = ListView(id="docs-listview")
+            yield self.docs_list
+            self.attach_input = Input(placeholder="Enter doc_id to attach", id="attach-input")
+            yield self.attach_input
+            with Container(classes="rename-buttons"):
+                yield Button("Attach", variant="primary", id="attach-btn")
+                yield Button("Detach selected", variant="warning", id="detach-btn")
+                yield Button("Close", id="close-btn")
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        self.attach_input.focus()
+        await self._refresh_list()
+
+    async def _refresh_list(self) -> None:
+        try:
+            async with httpx.AsyncClient() as client:
+                res = await client.get(
+                    f"{self.api_base_url}/api/v1/sessions/{self.session}/documents"
+                )
+                res.raise_for_status()
+                data = res.json()
+                self._attached = data.get("attached_doc_ids", [])
+        except Exception as e:
+            log.error(f"Failed to fetch attached documents: {e}")
+            self._attached = []
+        await self._populate_list()
+
+    async def _populate_list(self) -> None:
+        await self.docs_list.clear()
+        if not self._attached:
+            await self.docs_list.append(ListItem(Label("(no documents attached)")))
+        else:
+            for doc_id in self._attached:
+                await self.docs_list.append(ListItem(Label(doc_id)))
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "attach-btn":
+            doc_id = self.attach_input.value.strip()
+            if not doc_id:
+                return
+            try:
+                async with httpx.AsyncClient() as client:
+                    res = await client.post(
+                        f"{self.api_base_url}/api/v1/sessions/{self.session}/documents",
+                        json={"doc_id": doc_id},
+                    )
+                    res.raise_for_status()
+                self.attach_input.value = ""
+                await self._refresh_list()
+            except Exception as e:
+                log.error(f"Failed to attach document '{doc_id}': {e}")
+        elif event.button.id == "detach-btn":
+            highlighted = self.docs_list.highlighted_child
+            if highlighted is None or not self._attached:
+                return
+            idx = self.docs_list.index
+            if idx is None or idx >= len(self._attached):
+                return
+            doc_id = self._attached[idx]
+            try:
+                async with httpx.AsyncClient() as client:
+                    res = await client.delete(
+                        f"{self.api_base_url}/api/v1/sessions/{self.session}/documents/{doc_id}"
+                    )
+                    res.raise_for_status()
+                await self._refresh_list()
+            except Exception as e:
+                log.error(f"Failed to detach document '{doc_id}': {e}")
+        elif event.button.id == "close-btn":
+            self.dismiss(None)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class CommandPaletteScreen(ModalScreen[str | None]):
     """Modal screen for quick command access with fuzzy search."""
 
@@ -695,6 +788,7 @@ class NyxGPTTUI(App):
         ("ctrl+n", "rename_session", "Rename"),
         ("ctrl+d", "delete_session", "Delete"),
         ("ctrl+l", "clear_output", "Clear"),
+        ("ctrl+a", "manage_documents", "Docs"),
     ]
 
     def __init__(
@@ -962,6 +1056,15 @@ class NyxGPTTUI(App):
         except Exception as e:
             log.error(f"Failed to rename session: {type(e).__name__}: {e}")
             self.output.append(f"\n[error] Failed to rename session: {e}\n\n")
+
+    def action_manage_documents(self) -> None:
+        """Open the document attachment manager for the current session."""
+        self.run_worker(self._manage_documents_worker())
+
+    async def _manage_documents_worker(self) -> None:
+        """Worker to handle document attachment management."""
+        await self.push_screen_wait(ManageDocumentsScreen(self.api_base_url, self.session))
+        log.info("Document manager closed")
 
     def action_index_repository(self) -> None:
         """Index a code repository for RAG."""

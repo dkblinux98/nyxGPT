@@ -1261,3 +1261,107 @@ def test_models_show(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixt
     captured = capsys.readouterr()
     assert "Model: llama3.1:8b" in captured.out
     assert "Modelfile:" in captured.out
+
+
+# --- Document attachment CLI tests ---
+
+
+def test_sessions_documents_empty(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test 'sessions documents' when no documents are attached."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    session_file = sessions.session_file_for("my-session", sessions_dir)
+    sessions.save_session_messages(session_file, [])
+
+    exit_code = cli(["sessions", "documents", "my-session", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "No documents attached" in captured.out
+
+
+def test_sessions_attach_and_list(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test attaching a document and then listing it."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    session_file = sessions.session_file_for("my-session", sessions_dir)
+    sessions.save_session_messages(session_file, [])
+
+    exit_code = cli(
+        ["sessions", "attach", "my-session", "doc-abc", "--sessions-dir", str(sessions_dir)]
+    )
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "doc-abc" in captured.out
+
+    # Now list documents
+    exit_code = cli(["sessions", "documents", "my-session", "--sessions-dir", str(sessions_dir)])
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "doc-abc" in captured.out
+
+
+def test_sessions_attach_idempotent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test that attaching the same document twice is idempotent."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    session_file = sessions.session_file_for("my-session", sessions_dir)
+    sessions.save_session_messages(session_file, [])
+
+    cli(["sessions", "attach", "my-session", "doc-abc", "--sessions-dir", str(sessions_dir)])
+    cli(["sessions", "attach", "my-session", "doc-abc", "--sessions-dir", str(sessions_dir)])
+
+    mf = sessions.meta_file_for(session_file)
+    meta = sessions.load_session_meta(mf)
+    raw = meta.get("attached_doc_ids", [])
+    attached = raw if isinstance(raw, list) else []
+    assert attached.count("doc-abc") == 1
+
+
+def test_sessions_detach(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test detaching a document from a session."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    session_file = sessions.session_file_for("my-session", sessions_dir)
+    sessions.save_session_messages(session_file, [])
+
+    cli(["sessions", "attach", "my-session", "doc-abc", "--sessions-dir", str(sessions_dir)])
+    cli(["sessions", "attach", "my-session", "doc-xyz", "--sessions-dir", str(sessions_dir)])
+
+    exit_code = cli(
+        ["sessions", "detach", "my-session", "doc-abc", "--sessions-dir", str(sessions_dir)]
+    )
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "doc-abc" in captured.out
+
+    mf = sessions.meta_file_for(session_file)
+    meta = sessions.load_session_meta(mf)
+    raw = meta.get("attached_doc_ids", [])
+    attached = raw if isinstance(raw, list) else []
+    assert "doc-abc" not in attached
+    assert "doc-xyz" in attached
+
+
+def test_sessions_attach_missing_args(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test that attach requires both session name and doc_id."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    exit_code = cli(["sessions", "attach", "my-session", "--sessions-dir", str(sessions_dir)])
+    assert exit_code == 2
+
+
+def test_sessions_documents_missing_name(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test that documents requires a session name."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    exit_code = cli(["sessions", "documents", "--sessions-dir", str(sessions_dir)])
+    assert exit_code == 2
