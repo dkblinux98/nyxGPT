@@ -331,7 +331,7 @@ nyxgpt sessions batch-update-meta --rag-enabled false -- session1 session2
 
 ## Force-Include Document Attachment
 
-Attach specific documents to a session so their chunks are **always** retrieved during RAG, regardless of query relevance. See [docs/rag.md — Per-Session Document Attachment](rag.md#per-session-document-attachment-force-include-mode) for full details.
+Attach specific documents to a session so their chunks are **always** retrieved during RAG, regardless of query relevance. See [docs/rag.md — Force-Include Mode](rag.md#force-include-mode-per-session-document-attachment) for full details.
 
 ### API Endpoints
 
@@ -366,7 +366,7 @@ Content-Type: application/json
 }
 ```
 
-Attaching the same `doc_id` twice is idempotent.
+Attaching the same `doc_id` twice is idempotent — the ID appears only once in the list.
 
 #### Detach a document
 
@@ -384,7 +384,7 @@ DELETE /api/v1/sessions/{name}/documents/{doc_id}
 
 ### Notes
 
-- Attached doc IDs are stored in the session's `.meta.json` file under `attached_doc_ids`.
+- Attached doc IDs are stored in the session's `.meta.json` file under `attached_doc_ids`. The field is absent when no documents are attached.
 - The doc must already be ingested into the RAG index; attaching an unknown ID produces no chunks but does not error.
 - Force-included chunks appear **before** normal RAG chunks in the merged context.
 

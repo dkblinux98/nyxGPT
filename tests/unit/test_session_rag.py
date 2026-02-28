@@ -1,9 +1,14 @@
 """Unit tests for per-session RAG functionality."""
 
+import configparser
+from pathlib import Path
+
 import pytest
 
+from nyxgpt.chat import _prepare_chat_context
 from nyxgpt.sessions import (
     SessionMetadata,
+    SessionState,
     ensure_meta_defaults,
     load_session_meta,
     meta_file_for,
@@ -204,3 +209,166 @@ def test_attach_document_idempotent(tmp_path, monkeypatch):
         data = resp.json()
         # Should appear only once
         assert data["attached_doc_ids"].count("doc-idempotent") == 1
+
+
+# --- Tests for force-include merge logic in _prepare_chat_context (chat.py) ---
+
+
+def _make_test_cfg(tmp_path: Path) -> configparser.ConfigParser:
+    """Create a minimal ConfigParser for force-include tests."""
+    cfg = configparser.ConfigParser()
+    cfg["nyxgpt"] = {
+        "default_model": "llama3.1:8b",
+        "sessions_dir": str(tmp_path / "sessions"),
+        "chat_timeout_seconds": "5",
+    }
+    cfg["ollama"] = {"base_url": "http://example"}
+    cfg["rag"] = {"enable_chat_context": "true"}
+    return cfg
+
+
+def _make_test_state(tmp_path: Path, meta: dict | None = None) -> SessionState:
+    """Create a minimal SessionState for force-include tests."""
+    return SessionState(
+        name="test-session",
+        session_file=tmp_path / "test-session.json",
+        meta_file=tmp_path / "test-session.meta.json",
+        messages=[],
+        meta=meta or {},
+    )
+
+
+@pytest.mark.unit
+def test_force_include_makes_second_retrieve_call_with_correct_filter(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When attached_doc_ids is set, retrieve_context is called twice: once for
+    normal RAG and once for the force-include filter with the correct doc_ids."""
+    cfg = _make_test_cfg(tmp_path)
+    attached_ids = ["doc-aaa", "doc-bbb"]
+    state = _make_test_state(tmp_path, meta={"attached_doc_ids": attached_ids})
+
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_session", lambda *_a, **_k: state)
+    monkeypatch.setattr("nyxgpt.chat.compose_context", lambda rows: "")
+
+    retrieve_calls: list = []
+
+    def fake_retrieve(query, **kwargs):
+        retrieve_calls.append(kwargs.get("metadata_filter"))
+        return []
+
+    monkeypatch.setattr("nyxgpt.chat.retrieve_context", fake_retrieve)
+
+    _prepare_chat_context("hello", rag_enabled=True)
+
+    # Two retrieve_context calls: one for normal RAG, one for force-include
+    assert len(retrieve_calls) == 2, f"Expected 2 calls, got {len(retrieve_calls)}"
+
+    # The second call must have a MetadataFilter with the attached doc_ids
+    force_filter = retrieve_calls[1]
+    assert force_filter is not None, "Second call should have a metadata_filter"
+    assert hasattr(force_filter, "doc_ids"), "filter should have doc_ids attribute"
+    assert set(force_filter.doc_ids) == set(attached_ids)
+
+
+@pytest.mark.unit
+def test_force_include_rows_take_precedence_in_merged_list(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Force-included rows appear before normal RAG rows in the merged list."""
+    cfg = _make_test_cfg(tmp_path)
+    state = _make_test_state(tmp_path, meta={"attached_doc_ids": ["doc-forced"]})
+
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_session", lambda *_a, **_k: state)
+
+    normal_rows = [{"doc_id": "doc-normal", "chunk_id": "c1", "text": "Normal chunk"}]
+    force_rows = [{"doc_id": "doc-forced", "chunk_id": "c2", "text": "Forced chunk"}]
+    call_count = 0
+
+    def fake_retrieve(query, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        # First call = normal RAG, second call = force-include
+        return normal_rows if call_count == 1 else force_rows
+
+    captured_rows: list = []
+
+    def fake_compose(rows):
+        captured_rows.extend(rows)
+        return ""
+
+    monkeypatch.setattr("nyxgpt.chat.retrieve_context", fake_retrieve)
+    monkeypatch.setattr("nyxgpt.chat.compose_context", fake_compose)
+
+    _prepare_chat_context("hello", rag_enabled=True)
+
+    assert len(captured_rows) == 2
+    # Force-included row must come first
+    assert captured_rows[0]["doc_id"] == "doc-forced"
+    assert captured_rows[1]["doc_id"] == "doc-normal"
+
+
+@pytest.mark.unit
+def test_force_include_deduplication_by_doc_and_chunk_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When normal and force-include retrieval return the same (doc_id, chunk_id),
+    the row appears only once in the merged output (force-include copy is kept)."""
+    cfg = _make_test_cfg(tmp_path)
+    state = _make_test_state(tmp_path, meta={"attached_doc_ids": ["doc-dup"]})
+
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.load_session", lambda *_a, **_k: state)
+
+    shared_row = {"doc_id": "doc-dup", "chunk_id": "c1", "text": "Shared chunk"}
+
+    monkeypatch.setattr("nyxgpt.chat.retrieve_context", lambda *_a, **_k: [shared_row])
+
+    captured_rows: list = []
+
+    def fake_compose(rows):
+        captured_rows.extend(rows)
+        return ""
+
+    monkeypatch.setattr("nyxgpt.chat.compose_context", fake_compose)
+
+    _prepare_chat_context("hello", rag_enabled=True)
+
+    # Duplicate (doc_id, chunk_id) should appear only once
+    assert len(captured_rows) == 1
+    assert captured_rows[0]["doc_id"] == "doc-dup"
+    assert captured_rows[0]["chunk_id"] == "c1"
+
+
+@pytest.mark.unit
+def test_force_include_skipped_when_no_attached_docs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When attached_doc_ids is empty or absent, only one retrieve_context call is made."""
+    cfg = _make_test_cfg(tmp_path)
+
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.compose_context", lambda rows: "")
+
+    for label, meta in [
+        ("empty list", {"attached_doc_ids": []}),
+        ("absent key", {}),
+    ]:
+        retrieve_calls: list = []
+
+        def fake_retrieve(query, _calls=retrieve_calls, **kwargs):
+            _calls.append(1)
+            return []
+
+        state = _make_test_state(tmp_path, meta=meta)
+        monkeypatch.setattr("nyxgpt.chat.load_session", lambda *_a, _s=state, **_k: _s)
+        monkeypatch.setattr("nyxgpt.chat.retrieve_context", fake_retrieve)
+
+        _prepare_chat_context("hello", rag_enabled=True)
+
+        assert len(retrieve_calls) == 1, (
+            f"Expected exactly one retrieve_context call when attached_doc_ids is {label}, "
+            f"got {len(retrieve_calls)}"
+        )

@@ -1463,3 +1463,97 @@ chat_top_k = 10
 enable_reranking = false
 chat_top_k = 5
 ```
+
+---
+
+## Force-Include Mode (Per-Session Document Attachment)
+
+nyxGPT supports **force-include mode**, which guarantees that specific documents are always retrieved and injected into the chat context for a session, regardless of the standard RAG relevance scoring.
+
+### How It Works
+
+When documents are attached to a session, the `_prepare_chat_context` function performs two retrieval passes:
+
+1. **Normal RAG retrieval** — ranked by vector similarity for the user's query
+2. **Force-include retrieval** — always retrieves chunks from the attached document IDs using a `MetadataFilter`
+
+The two result sets are then merged with these rules:
+- Force-included rows appear **first** in the merged list (highest priority)
+- Deduplication by `(doc_id, chunk_id)` ensures no row appears twice
+- If a chunk appears in both passes, the force-included copy is kept
+
+### Use Cases
+
+- Pin a reference document to every turn of a research session
+- Ensure a specific policy or specification is always in context
+- Work intensively with a single document without relying on relevance scoring
+
+### API Endpoints
+
+Three REST endpoints manage per-session document attachments:
+
+#### List attached documents
+
+```
+GET /api/v1/sessions/{name}/documents
+```
+
+Response:
+```json
+{
+  "session": "my-session",
+  "attached_doc_ids": ["doc-abc", "doc-xyz"]
+}
+```
+
+#### Attach a document
+
+```
+POST /api/v1/sessions/{name}/documents
+Content-Type: application/json
+
+{"doc_id": "doc-abc"}
+```
+
+Response (200 OK):
+```json
+{
+  "session": "my-session",
+  "attached_doc_ids": ["doc-abc"]
+}
+```
+
+The operation is idempotent — attaching the same `doc_id` twice results in a single entry.
+
+> **Note:** There is no validation that the `doc_id` exists in the RAG index. An unknown ID silently produces no force-included chunks.
+
+#### Detach a document
+
+```
+DELETE /api/v1/sessions/{name}/documents/{doc_id}
+```
+
+Response (200 OK):
+```json
+{
+  "session": "my-session",
+  "attached_doc_ids": []
+}
+```
+
+### Session Metadata
+
+Attached document IDs are persisted in the session metadata file (`<name>.meta.json`) under the key `attached_doc_ids`:
+
+```json
+{
+  "rag_enabled": true,
+  "attached_doc_ids": ["doc-abc", "doc-xyz"]
+}
+```
+
+The field is absent when no documents are attached (it is not initialised to an empty list by default).
+
+### Interaction with RAG Filters
+
+Force-include retrieval always uses the attached doc IDs as its filter and **ignores** any `rag_filters` passed to the chat endpoint. Normal RAG retrieval respects `rag_filters` as usual.
