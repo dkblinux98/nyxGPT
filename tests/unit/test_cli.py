@@ -1369,3 +1369,92 @@ def test_sessions_documents_missing_name(
 
     exit_code = cli(["sessions", "list-attachments", "--sessions-dir", str(sessions_dir)])
     assert exit_code == 2
+
+
+# --- --rag-mode CLI flag tests ---
+
+
+def test_chat_rag_mode_flag_forwarded_to_chat_stream(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--rag-mode flag must be forwarded to chat_stream as rag_enabled=True."""
+    import nyxgpt.cli as cli_mod
+
+    calls: list[dict] = []
+
+    def fake_chat_stream(prompt, *, rag_enabled=None, **kwargs):
+        calls.append({"rag_enabled": rag_enabled})
+        return iter(["Hello"])
+
+    monkeypatch.setattr(cli_mod, "chat_stream", fake_chat_stream)
+
+    exit_code = cli(["chat", "Hello", "--session", "default", "--rag-mode"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["rag_enabled"] is True
+
+
+def test_chat_no_rag_mode_flag_passes_none_to_chat_stream(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without --rag-mode, rag_enabled must be None (not False) in chat_stream."""
+    import nyxgpt.cli as cli_mod
+
+    calls: list[dict] = []
+
+    def fake_chat_stream(prompt, *, rag_enabled=None, **kwargs):
+        calls.append({"rag_enabled": rag_enabled})
+        return iter(["Hello"])
+
+    monkeypatch.setattr(cli_mod, "chat_stream", fake_chat_stream)
+
+    exit_code = cli(["chat", "Hello", "--session", "default"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["rag_enabled"] is None
+
+
+def test_chat_rag_mode_flag_forwarded_to_chat_no_stream(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--rag-mode flag must be forwarded to chat (non-streaming) as rag_enabled=True."""
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.chat import ChatResult
+
+    calls: list[dict] = []
+
+    def fake_chat(prompt, *, rag_enabled=None, **kwargs):
+        calls.append({"rag_enabled": rag_enabled})
+        return ChatResult(session="default", model="test", reply="Hi", rag_used=False, rag_chunks=0)
+
+    monkeypatch.setattr(cli_mod, "chat", fake_chat)
+
+    exit_code = cli(["chat", "Hello", "--session", "default", "--no-stream", "--rag-mode"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["rag_enabled"] is True
+
+
+def test_chat_no_rag_mode_flag_passes_none_to_chat_no_stream(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without --rag-mode, rag_enabled must be None in chat (non-streaming)."""
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.chat import ChatResult
+
+    calls: list[dict] = []
+
+    def fake_chat(prompt, *, rag_enabled=None, **kwargs):
+        calls.append({"rag_enabled": rag_enabled})
+        return ChatResult(session="default", model="test", reply="Hi", rag_used=False, rag_chunks=0)
+
+    monkeypatch.setattr(cli_mod, "chat", fake_chat)
+
+    exit_code = cli(["chat", "Hello", "--session", "default", "--no-stream"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0]["rag_enabled"] is None
