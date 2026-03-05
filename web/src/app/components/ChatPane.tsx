@@ -1801,7 +1801,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       )}
 
       {/* Attached Documents Panel */}
-      {showAttachedDocs && ragEnabled && (
+      {showAttachedDocs && (
         <div
           style={{
             marginTop: 12,
@@ -2120,8 +2120,8 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               </button>
             )}
 
-            {/* Attached Docs toggle button */}
-            {ragEnabled && (
+            {/* Attached Docs toggle button — always visible so docs can be managed even when RAG is off */}
+            {(ragEnabled || attachedDocIds.length > 0) && (
               <button
                 onClick={() => setShowAttachedDocs(!showAttachedDocs)}
                 disabled={isStreaming}
