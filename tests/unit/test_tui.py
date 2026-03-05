@@ -13,6 +13,7 @@ from nyxgpt.tui import (  # type: ignore[import-untyped]
     CommandPaletteScreen,
     DeleteConfirmationScreen,
     HelpOverlayScreen,
+    ManageDocumentsScreen,
     NyxGPTTUI,
     SearchResultsScreen,
     SessionMetadataPreview,
@@ -1764,10 +1765,17 @@ async def test_tui_update_session_status_success(tmp_path: Path) -> None:
     }
     mock_session_response.raise_for_status = MagicMock()
 
+    mock_docs_response = MagicMock()
+    mock_docs_response.status_code = 200
+    mock_docs_response.is_success = True
+    mock_docs_response.json.return_value = {"attached_doc_ids": []}
+
     mock_client = AsyncMock()
     mock_client.__aenter__.return_value = mock_client
     mock_client.__aexit__.return_value = None
-    mock_client.get = AsyncMock(side_effect=[mock_metadata_response, mock_session_response])
+    mock_client.get = AsyncMock(
+        side_effect=[mock_metadata_response, mock_session_response, mock_docs_response]
+    )
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         await app._update_session_status()
@@ -1779,6 +1787,7 @@ async def test_tui_update_session_status_success(tmp_path: Path) -> None:
         message_count=5,
         model="llama3.1:8b",
         rag_enabled=True,
+        attached_doc_count=0,
     )
 
 
@@ -2813,3 +2822,88 @@ async def test_delete_session_action_exception(
     # Verify error message was shown
     app.output.append.assert_called()
     assert "failed to delete session" in app.output.append.call_args[0][0].lower()
+
+
+# ============================================================================
+# ManageDocumentsScreen Tests
+# ============================================================================
+
+
+def test_manage_documents_screen_initialization() -> None:
+    """Test that ManageDocumentsScreen initializes with correct attributes."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="test-session")
+    assert screen.api_base_url == "http://127.0.0.1:8000"
+    assert screen.session == "test-session"
+    assert screen._attached == []
+
+
+@pytest.mark.asyncio
+async def test_manage_documents_screen_refresh_list_success() -> None:
+    """Test _refresh_list fetches and stores attached document IDs."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="my-session")
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = MagicMock(
+        return_value={"session": "my-session", "attached_doc_ids": ["doc-abc", "doc-xyz"]}
+    )
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(return_value=mock_response)
+
+    with (
+        patch("nyxgpt.tui.httpx.AsyncClient", return_value=mock_client),
+        patch.object(screen, "_populate_list", new=AsyncMock()),
+    ):
+        await screen._refresh_list()
+
+    assert screen._attached == ["doc-abc", "doc-xyz"]
+
+
+@pytest.mark.asyncio
+async def test_manage_documents_screen_refresh_list_error() -> None:
+    """Test _refresh_list handles errors gracefully."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="my-session")
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(side_effect=RuntimeError("Connection refused"))
+
+    with (
+        patch("nyxgpt.tui.httpx.AsyncClient", return_value=mock_client),
+        patch.object(screen, "_populate_list", new=AsyncMock()),
+    ):
+        await screen._refresh_list()
+
+    assert screen._attached == []
+
+
+def test_nyx_gpt_tui_has_manage_documents_binding() -> None:
+    """Test that NyxGPTTUI has a ctrl+a binding for manage_documents."""
+    # BINDINGS may contain Binding objects or raw tuples (key, action, description)
+    binding_keys = [b.key if hasattr(b, "key") else b[0] for b in NyxGPTTUI.BINDINGS]
+    assert "ctrl+a" in binding_keys
+
+
+@pytest.mark.asyncio
+async def test_action_manage_documents_opens_screen(tmp_path: Path) -> None:
+    """Test that action_manage_documents calls _manage_documents_worker."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["nyxgpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session", config_path=str(config_file))
+
+    with patch.object(app, "push_screen_wait", new=AsyncMock(return_value=None)):
+        await app._manage_documents_worker()
+        app.push_screen_wait.assert_called_once()
+        call_args = app.push_screen_wait.call_args[0][0]
+        assert isinstance(call_args, ManageDocumentsScreen)
+        assert call_args.session == "test-session"

@@ -74,6 +74,7 @@ def cmd_chat(
     session_name: str,
     new_session: bool,
     sessions_dir: Path | None,
+    rag_mode: bool | None = None,
 ) -> int:
     cfg = load_config(cfg_path)
 
@@ -91,6 +92,7 @@ def cmd_chat(
                 system=system,
                 config_path=str(cfg_path) if cfg_path else None,
                 sessions_dir=str(sessions_dir) if sessions_dir else None,
+                rag_enabled=rag_mode,
             ):
                 if first_chunk:
                     # Clear typing indicator on first token
@@ -108,6 +110,7 @@ def cmd_chat(
                 system=system,
                 config_path=str(cfg_path) if cfg_path else None,
                 sessions_dir=str(sessions_dir) if sessions_dir else None,
+                rag_enabled=rag_mode,
             )
             print(result.reply)
             return 0
@@ -142,6 +145,7 @@ def cmd_chat(
                     system=system,
                     config_path=str(cfg_path) if cfg_path else None,
                     sessions_dir=str(sessions_dir) if sessions_dir else None,
+                    rag_enabled=rag_mode,
                 ):
                     if first_chunk:
                         # Clear typing indicator on first token
@@ -158,6 +162,7 @@ def cmd_chat(
                     system=system,
                     config_path=str(cfg_path) if cfg_path else None,
                     sessions_dir=str(sessions_dir) if sessions_dir else None,
+                    rag_enabled=rag_mode,
                 )
                 print(result.reply)
         except KeyboardInterrupt:
@@ -646,6 +651,61 @@ def cmd_sessions(
 
         return 0
 
+    if action == "list-attachments":
+        if not name:
+            print("ERROR: session name is required", file=sys.stderr)
+            return 2
+        sf = sessions.session_file_for(name, effective_dir)
+        mf = sessions.meta_file_for(sf)
+        meta = sessions.load_session_meta(mf)
+        raw = meta.get("attached_doc_ids", [])
+        attached: list[str] = raw if isinstance(raw, list) else []
+        if not attached:
+            print(f"No documents attached to session: {name}")
+        else:
+            print(f"Attached documents for session '{name}':")
+            for doc_id in attached:
+                print(f"  - {doc_id}")
+        return 0
+
+    if action == "attach":
+        if not name or not new_name:
+            print("ERROR: session name and doc_id are required", file=sys.stderr)
+            return 2
+        doc_id = new_name
+        sf = sessions.session_file_for(name, effective_dir)
+        mf = sessions.meta_file_for(sf)
+        if not sf.exists():
+            sessions.save_session_messages(sf, [])
+        meta = sessions.load_session_meta(mf)
+        meta = sessions.ensure_meta_defaults(meta)
+        raw = meta.get("attached_doc_ids", [])
+        cur: list[str] = raw if isinstance(raw, list) else []
+        if doc_id not in cur:
+            cur = cur + [doc_id]
+            meta["attached_doc_ids"] = cur
+            sessions.save_session_meta(mf, meta)
+        print(f"Attached document '{doc_id}' to session '{name}'")
+        return 0
+
+    if action == "detach":
+        if not name or not new_name:
+            print("ERROR: session name and doc_id are required", file=sys.stderr)
+            return 2
+        doc_id = new_name
+        sf = sessions.session_file_for(name, effective_dir)
+        mf = sessions.meta_file_for(sf)
+        meta = sessions.load_session_meta(mf)
+        meta = sessions.ensure_meta_defaults(meta)
+        raw = meta.get("attached_doc_ids", [])
+        cur = raw if isinstance(raw, list) else []
+        if doc_id in cur:
+            cur = [d for d in cur if d != doc_id]
+            meta["attached_doc_ids"] = cur
+            sessions.save_session_meta(mf, meta)
+        print(f"Detached document '{doc_id}' from session '{name}'")
+        return 0
+
     print(f"Unknown sessions action: {action}", file=sys.stderr)
     return 2
 
@@ -1116,6 +1176,12 @@ def cli(argv: list[str] | None = None) -> int:
     chat_p.add_argument("--session", default="default", help="Conversation session name")
     chat_p.add_argument("--new", action="store_true", help="Start a fresh session")
     chat_p.add_argument("--sessions-dir", type=Path, help="Override sessions directory")
+    chat_p.add_argument(
+        "--rag-mode",
+        action="store_true",
+        default=None,
+        help="Enable RAG for this chat request",
+    )
 
     sessions_p = sub.add_parser("sessions", help="Manage stored chat sessions")
     sessions_p.add_argument(
@@ -1144,10 +1210,13 @@ def cli(argv: list[str] | None = None) -> int:
             "batch-unpin",
             "batch-update-meta",
             "stats",
+            "attach",
+            "detach",
+            "list-attachments",
         ],
     )
     sessions_p.add_argument("name", nargs="?", help="Session name")
-    sessions_p.add_argument("new_name", nargs="?", help="Second argument (rename/title)")
+    sessions_p.add_argument("new_name", nargs="?", help="Second argument (rename/title/doc_id)")
     sessions_p.add_argument("extras", nargs="*", help="Extra args (tags)")
     sessions_p.add_argument("--sessions-dir", type=Path, help="Override sessions directory")
     sessions_p.add_argument(
@@ -1400,6 +1469,7 @@ def cli(argv: list[str] | None = None) -> int:
             session_name=args.session,
             new_session=args.new,
             sessions_dir=args.sessions_dir,
+            rag_mode=getattr(args, "rag_mode", None),
         )
 
     if cmd == "sessions":
