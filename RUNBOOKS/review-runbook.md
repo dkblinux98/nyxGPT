@@ -147,7 +147,7 @@ That's it. The system will automatically:
 When the human owner moves the last issue in the active Phase to "For Release" (human stakeholder acceptance):
 - Notify human owner that phase is complete and ready for release
 
-## 10) Configuration
+## 11) Configuration
 
 ### Required Secrets
 The review workflow requires these secrets to be configured:
