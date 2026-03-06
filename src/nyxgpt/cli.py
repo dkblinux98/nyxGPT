@@ -186,6 +186,7 @@ def cmd_sessions(
     limit: int = 50,
     model: str | None = None,
     rag_enabled: bool | None = None,
+    force_include: bool = False,
 ) -> int:
     cfg = load_config(None)
     effective_dir = sessions_dir or get_sessions_dir(cfg)
@@ -685,7 +686,8 @@ def cmd_sessions(
             cur = cur + [doc_id]
             meta["attached_doc_ids"] = cur
             sessions.save_session_meta(mf, meta)
-        print(f"Attached document '{doc_id}' to session '{name}'")
+        fi_note = " (force-include: enabled)" if force_include else ""
+        print(f"Attached document '{doc_id}' to session '{name}'{fi_note}")
         return 0
 
     if action == "detach":
@@ -1250,6 +1252,13 @@ def cli(argv: list[str] | None = None) -> int:
         type=lambda x: x.lower() in ("true", "1", "yes"),
         help="RAG enabled flag for batch-update-meta (batch-update-meta only)",
     )
+    sessions_p.add_argument(
+        "--force-include",
+        action="store_true",
+        default=False,
+        dest="force_include",
+        help="Force-include attached document in every RAG query (attach only)",
+    )
 
     tools_p = sub.add_parser("tools", help="Explicit local filesystem tools")
     tools_p.add_argument("action", choices=["ls", "cat", "grep"], help="Tool to run")
@@ -1486,6 +1495,7 @@ def cli(argv: list[str] | None = None) -> int:
             limit=getattr(args, "limit", 50),
             model=getattr(args, "model", None),
             rag_enabled=getattr(args, "rag_enabled", None),
+            force_include=getattr(args, "force_include", False),
         )
 
     if cmd == "tools":

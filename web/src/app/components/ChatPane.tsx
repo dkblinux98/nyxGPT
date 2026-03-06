@@ -1858,8 +1858,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
 
           {/* Attach input */}
           <div style={{ display: 'flex', gap: 8 }}>
+            <datalist id="available-docs-list">
+              {availableDocuments.map((doc) => (
+                <option key={doc.doc_id} value={doc.doc_id} label={doc.filename || doc.doc_id} />
+              ))}
+            </datalist>
             <input
               type="text"
+              list="available-docs-list"
               value={attachDocInput}
               onChange={(e) => setAttachDocInput(e.target.value)}
               onKeyDown={(e) => {
@@ -2123,7 +2129,12 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
             {/* Attached Docs toggle button — always visible so docs can be managed even when RAG is off */}
             {(ragEnabled || attachedDocIds.length > 0) && (
               <button
-                onClick={() => setShowAttachedDocs(!showAttachedDocs)}
+                onClick={() => {
+                  if (!showAttachedDocs && availableDocuments.length === 0) {
+                    void fetchAvailableDocuments();
+                  }
+                  setShowAttachedDocs(!showAttachedDocs);
+                }}
                 disabled={isStreaming}
                 style={{
                   padding: '6px 10px',

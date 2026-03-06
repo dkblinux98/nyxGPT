@@ -93,7 +93,7 @@ class SessionStatusBar(Static):
     def _refresh_display(self) -> None:
         """Refresh the status bar display with current info."""
         rag_indicator = "RAG:ON" if self.rag_enabled else "RAG:OFF"
-        docs_indicator = f"Docs:{self.attached_doc_count}" if self.attached_doc_count > 0 else ""
+        docs_indicator = f"FI:{self.attached_doc_count}" if self.attached_doc_count > 0 else ""
         parts = [
             f"Session: {self.session_name}",
             f"Messages: {self.message_count}",
@@ -503,6 +503,7 @@ class HelpOverlayScreen(ModalScreen[None]):
             yield Label("\n[bold]Features:[/bold]")
             yield Label("  Ctrl+F         - Search messages")
             yield Label("  Ctrl+R         - Toggle RAG")
+            yield Label("  Ctrl+A         - Manage force-included documents")
             yield Label("  Ctrl+I         - Index code repository")
             yield Label("  Ctrl+M         - Models manager")
             yield Label("  Ctrl+L         - Clear output")

@@ -1371,6 +1371,30 @@ def test_sessions_documents_missing_name(
     assert exit_code == 2
 
 
+def test_sessions_attach_force_include_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test that --force-include flag is accepted and noted in attach output."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    exit_code = cli(
+        [
+            "sessions",
+            "attach",
+            "my-session",
+            "doc-abc",
+            "--force-include",
+            "--sessions-dir",
+            str(sessions_dir),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "doc-abc" in captured.out
+    assert "force-include: enabled" in captured.out
+
+
 # --- --rag-mode CLI flag tests ---
 
 
