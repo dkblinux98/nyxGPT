@@ -982,10 +982,32 @@ jobs:
 
           echo "::group::Extracting error from workflow logs"
 
-          # Get error messages from this workflow run
-          ERROR_LOG=$(gh run view ${{ github.run_id }} --log 2>&1 | \
-            grep -E "\[error\]|Error:|fatal:|FAILED" | \
-            head -20)
+          # NOTE: gh run view --log downloads a zip archive that only exists after the
+          # run completes. Calling it mid-run (while this error handler is executing)
+          # always returns 403 regardless of token permissions.
+          # Use the jobs API instead — step-level status is available mid-run.
+          JOBS_JSON=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs 2>&1)
+          JOB_ID=$(echo "$JOBS_JSON" | jq -r '.jobs[0].id // empty')
+
+          # Failed step names are always available mid-run
+          FAILED_STEPS=$(echo "$JOBS_JSON" | jq -r '
+            .jobs[0].steps[] |
+            select(.conclusion == "failure") |
+            .name' 2>/dev/null || echo "")
+
+          echo "Failed steps: $FAILED_STEPS"
+
+          # Try per-job log endpoint — works for completed jobs, may work mid-run
+          ERROR_LOG=""
+          if [[ -n "$JOB_ID" ]]; then
+            ERROR_LOG=$(gh api repos/${{ github.repository }}/actions/jobs/$JOB_ID/logs 2>/dev/null | \
+              grep -E "\[error\]|Error:|fatal:|FAILED" | head -20 || echo "")
+          fi
+
+          # Fall back to failed step names when log content is unavailable
+          if [[ -z "$ERROR_LOG" && -n "$FAILED_STEPS" ]]; then
+            ERROR_LOG="$FAILED_STEPS"
+          fi
 
           echo "Error messages found:"
           echo "$ERROR_LOG"
@@ -1094,9 +1116,19 @@ jobs:
 
             ## Step 1: Get Failure Details
 
-            Extract the error from workflow logs:
+            The run log archive (gh run view --log) is unavailable while the run is
+            in progress — it only exists after the run completes and always returns 403
+            mid-run. Use the jobs API instead:
             ```bash
-            gh run view ${{ github.run_id }} --log | grep -E "\[error\]|Error:|fatal:" | head -30
+            # Get failed step names (always available mid-run)
+            gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs \
+              | jq -r '.jobs[0].steps[] | select(.conclusion == "failure") | .name'
+
+            # Get job logs if needed (works for completed jobs)
+            JOB_ID=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs \
+              | jq -r '.jobs[0].id')
+            gh api repos/${{ github.repository }}/actions/jobs/$JOB_ID/logs 2>/dev/null \
+              | grep -E "\[error\]|Error:|fatal:" | head -30
             ```
 
             ## Step 2: Gather Context
