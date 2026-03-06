@@ -120,6 +120,13 @@ class ChatRequest(BaseModel):
     rag_enabled: bool | None = None  # Override session RAG setting
     rag_filters: RagFilters | None = None  # Metadata filters for RAG queries
     attachments: list[AttachmentBlock] | None = None  # Inline file attachments
+    output_format: dict[str, Any] | None = Field(
+        None,
+        description=(
+            "Optional JSON schema for structured output. "
+            "When provided, the model is constrained to produce JSON matching the schema."
+        ),
+    )
 
 
 class RagChunkInfo(BaseModel):

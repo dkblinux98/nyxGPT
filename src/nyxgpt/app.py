@@ -910,12 +910,56 @@ def models_list(request: Request) -> dict[str, Any]:
 
 
 @api.post("/models/pull")
-def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> Response:
+    """Pull a model from Ollama.
+
+    When ``stream=true`` in the request body, returns a Server-Sent Events (SSE)
+    stream with progress events (``status``, ``completed``, ``total``, ``percent``).
+    Each event is a JSON object sent as ``data: {...}\\n\\n``.
+
+    When ``stream`` is omitted or ``false``, returns a single JSON response on
+    completion.
+    """
+    import json as _json
+
     cfg = _req_cfg(request)
     model = payload.get("model")
     if not isinstance(model, str) or not model.strip():
         raise HTTPException(status_code=400, detail="Missing 'model'")
     model = model.strip()
+    stream = bool(payload.get("stream", False))
+
+    if stream:
+        base_url = get_ollama_base_url(cfg)
+
+        def _progress_generator():
+            from nyxgpt.ollama_client import post_json_lines
+
+            url = base_url.rstrip("/") + "/api/pull"
+            pull_payload = {"name": model, "stream": True}
+            try:
+                for event in post_json_lines(url, pull_payload, timeout_s=600.0):
+                    status = event.get("status", "")
+                    completed = event.get("completed", 0)
+                    total = event.get("total", 0)
+                    percent = round(completed / total * 100, 1) if total > 0 else 0.0
+                    data = {
+                        "status": status,
+                        "completed": completed,
+                        "total": total,
+                        "percent": percent,
+                    }
+                    yield f"data: {_json.dumps(data)}\n\n"
+                yield f"data: {_json.dumps({'status': 'success', 'ok': True, 'model': model})}\n\n"
+            except Exception as exc:
+                yield f"data: {_json.dumps({'error': str(exc)})}\n\n"
+
+        return StreamingResponse(
+            _progress_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     try:
         # Non-streaming pull; Ollama may take a while.
         data = _ollama_post_json(
@@ -923,7 +967,7 @@ def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> dict[s
             {"name": model, "stream": False},
             timeout_s=600.0,
         )
-        return {"ok": True, "model": model, "result": data}
+        return JSONResponse({"ok": True, "model": model, "result": data})
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to pull model via Ollama: {e}") from e
 
@@ -1727,6 +1771,11 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
                 if attachments_val:
                     kwargs["attachments"] = [a.model_dump() for a in attachments_val]
 
+            if _maybe_kw(run_chat, "output_format"):
+                output_format_val = getattr(req, "output_format", None)
+                if output_format_val is not None:
+                    kwargs["output_format"] = output_format_val
+
             result = run_chat(req.prompt, **kwargs)
             session_name = result.session
             model_name = result.model
@@ -1891,6 +1940,11 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                 if attachments_val:
                     # Convert AttachmentBlock models to dicts
                     kwargs["attachments"] = [a.model_dump() for a in attachments_val]
+
+            if _maybe_kw(chat_stream, "output_format"):
+                output_format_val = getattr(req, "output_format", None)
+                if output_format_val is not None:
+                    kwargs["output_format"] = output_format_val
 
             # Process the chat stream and wrap chunks in appropriate format
             try:
