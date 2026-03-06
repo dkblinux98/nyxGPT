@@ -96,6 +96,18 @@ class RagFilters(BaseModel):
     date_to: str | None = Field(None, description="Filter by ingestion date <= (ISO format)")
 
 
+class AttachmentBlock(BaseModel):
+    """A single inline file attachment for chat messages."""
+
+    type: str = Field(..., description="Attachment type: 'image' or 'document'")
+    media_type: str = Field(
+        ...,
+        description="MIME type, e.g. 'image/jpeg', 'image/png', 'application/pdf', 'text/plain'",
+    )
+    data: str = Field(..., description="Base64-encoded file content")
+    filename: str | None = Field(None, description="Original filename")
+
+
 class ChatRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     session: str = "default"
@@ -105,6 +117,7 @@ class ChatRequest(BaseModel):
     sessions_dir: str | None = None
     rag_enabled: bool | None = None  # Override session RAG setting
     rag_filters: RagFilters | None = None  # Metadata filters for RAG queries
+    attachments: list[AttachmentBlock] | None = None  # Inline file attachments
 
 
 class RagChunkInfo(BaseModel):

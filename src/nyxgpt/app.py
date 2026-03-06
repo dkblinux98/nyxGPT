@@ -1722,6 +1722,11 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
             if _maybe_kw(run_chat, "rag_filters"):
                 kwargs["rag_filters"] = rag_filters_dict
 
+            if _maybe_kw(run_chat, "attachments"):
+                attachments_val = getattr(req, "attachments", None)
+                if attachments_val:
+                    kwargs["attachments"] = [a.model_dump() for a in attachments_val]
+
             result = run_chat(req.prompt, **kwargs)
             session_name = result.session
             model_name = result.model
@@ -1880,6 +1885,12 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                 if rag_filters_val:
                     # Convert RagFilters model to dict
                     kwargs["rag_filters"] = rag_filters_val.model_dump()
+
+            if _maybe_kw(chat_stream, "attachments"):
+                attachments_val = getattr(req, "attachments", None)
+                if attachments_val:
+                    # Convert AttachmentBlock models to dicts
+                    kwargs["attachments"] = [a.model_dump() for a in attachments_val]
 
             # Process the chat stream and wrap chunks in appropriate format
             try:
