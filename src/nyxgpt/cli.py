@@ -1154,6 +1154,28 @@ def cmd_models_show(name: str) -> int:
         return 1
 
 
+def cmd_mcp() -> int:
+    """Run the nyxGPT MCP server on stdio.
+
+    Starts a Model Context Protocol (MCP) server that exposes nyxGPT as a
+    tool provider. Connect it from Claude Desktop or any other MCP-compatible
+    client by configuring it as a stdio-transport server.
+
+    Returns:
+        0 on clean exit, 1 on error.
+    """
+    try:
+        from nyxgpt.mcp_server import serve
+
+        serve()
+        return 0
+    except KeyboardInterrupt:
+        return 0
+    except Exception as exc:
+        print(f"ERROR: MCP server failed: {exc}", file=sys.stderr)
+        return 1
+
+
 def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="nyxgpt")
     parser.add_argument(
@@ -1406,6 +1428,12 @@ def cli(argv: list[str] | None = None) -> int:
     models_show_p = models_sub.add_parser("show", help="Show detailed model information")
     models_show_p.add_argument("model", help="Model name to inspect")
 
+    # Add mcp command
+    sub.add_parser(
+        "mcp",
+        help="Start the MCP (Model Context Protocol) server on stdio",
+    )
+
     # Add wizard command
     wizard_p = sub.add_parser("wizard", help="Run interactive configuration wizard")
     wizard_p.add_argument(
@@ -1577,6 +1605,9 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.doctor(args)
         if args.ops_cmd == "restart":
             return ops_mod.restart(args)
+
+    if cmd == "mcp":
+        return cmd_mcp()
 
     parser.print_help()
     return 2

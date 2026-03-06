@@ -167,10 +167,32 @@ def post_json_lines(
 
 
 def ollama_chat(
-    base_url: str, model: str, messages: list[dict[str, str]], timeout_s: float = 120.0
+    base_url: str,
+    model: str,
+    messages: list[dict[str, str]],
+    timeout_s: float = 120.0,
+    output_format: dict[str, Any] | None = None,
 ) -> str:
+    """Send a chat request to Ollama and return the assistant reply.
+
+    Args:
+        base_url: Ollama base URL
+        model: Model name to use
+        messages: Chat message history
+        timeout_s: Request timeout in seconds
+        output_format: Optional JSON schema for structured output (Ollama ``format`` field).
+            When provided, the model is constrained to produce JSON matching the schema.
+
+    Returns:
+        Assistant reply text
+
+    Raises:
+        RuntimeError: If the request fails or Ollama returns an unexpected response
+    """
     url = base_url.rstrip("/") + "/api/chat"
-    payload = {"model": model, "messages": messages, "stream": False}
+    payload: dict[str, Any] = {"model": model, "messages": messages, "stream": False}
+    if output_format is not None:
+        payload["format"] = output_format
     data = post_json(url, payload, timeout_s=timeout_s)
 
     msg = data.get("message") or {}
@@ -187,6 +209,7 @@ def ollama_chat_stream_tokens(
     timeout_s: float = 120.0,
     max_retries: int = 3,
     on_retry: Callable[[int, float, Exception], None] | None = None,
+    output_format: dict[str, Any] | None = None,
 ) -> Iterator[str]:
     """Yield incremental assistant text chunks from Ollama (no printing, no buffering).
 
@@ -197,6 +220,8 @@ def ollama_chat_stream_tokens(
         timeout_s: Request timeout in seconds
         max_retries: Maximum number of connection retry attempts
         on_retry: Optional callback(attempt, delay, error) called before each retry
+        output_format: Optional JSON schema for structured output (Ollama ``format`` field).
+            When provided, the model is constrained to produce JSON matching the schema.
 
     Yields:
         Text chunks from assistant response
@@ -205,7 +230,9 @@ def ollama_chat_stream_tokens(
         RuntimeError: If connection fails after retries or HTTP error occurs
     """
     url = base_url.rstrip("/") + "/api/chat"
-    payload = {"model": model, "messages": messages, "stream": True}
+    payload: dict[str, Any] = {"model": model, "messages": messages, "stream": True}
+    if output_format is not None:
+        payload["format"] = output_format
 
     for obj in post_json_lines(
         url, payload, timeout_s=timeout_s, max_retries=max_retries, on_retry=on_retry

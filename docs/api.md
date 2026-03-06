@@ -317,7 +317,7 @@ List all available Ollama models.
 
 Pull (download) a model from the Ollama library.
 
-**Request:**
+**Request (non-streaming):**
 
 ```json
 {
@@ -325,7 +325,7 @@ Pull (download) a model from the Ollama library.
 }
 ```
 
-**Response:**
+**Response (non-streaming):**
 
 ```json
 {
@@ -335,9 +335,29 @@ Pull (download) a model from the Ollama library.
 }
 ```
 
+**Request (streaming progress via SSE):**
+
+```json
+{
+  "model": "llama3.1:8b",
+  "stream": true
+}
+```
+
+When `stream` is `true`, the response is a `text/event-stream` (SSE) with one JSON
+object per event line:
+
+```
+data: {"status": "pulling manifest", "completed": 0, "total": 0, "percent": 0.0}
+
+data: {"status": "downloading", "completed": 524288000, "total": 4700000000, "percent": 11.2}
+
+data: {"status": "success", "ok": true, "model": "llama3.1:8b"}
+```
+
 **Notes:**
 - Downloads can take several minutes for large models
-- Non-streaming pull (no progress updates)
+- Use `stream: true` for real-time progress updates
 - Timeout: 600 seconds
 
 ### `DELETE /api/v1/models/{model_name}`
@@ -911,6 +931,25 @@ Send a chat prompt and receive a model response.
   "model": "llama3.1:8b"
 }
 ```
+
+**Structured output** – pass an `output_format` JSON schema to constrain the model's
+reply to valid JSON:
+
+```json
+{
+  "prompt": "Extract the name and age from: 'Alice is 30 years old'",
+  "output_format": {
+    "type": "object",
+    "properties": {
+      "name": { "type": "string" },
+      "age": { "type": "integer" }
+    },
+    "required": ["name", "age"]
+  }
+}
+```
+
+The model will produce JSON conforming to the schema (Ollama `format` parameter).
 
 **Response:**
 
@@ -2500,6 +2539,45 @@ wait_time_ms = 500
 - All errors return JSON
 - HTTP status codes are used consistently
 - Internal errors are logged to `~/.nyxGPT/logs/nyxgpt.log`
+
+---
+
+## MCP Server
+
+nyxGPT ships a minimal [Model Context Protocol](https://modelcontextprotocol.io) (MCP)
+server that exposes nyxGPT as a tool provider over **stdio**. MCP-compatible clients
+(e.g. Claude Desktop) can connect to it directly.
+
+### Starting the server
+
+```bash
+nyxgpt mcp
+```
+
+The server reads JSON-RPC 2.0 requests from stdin and writes responses to stdout.
+Protocol version: `2024-11-05`.
+
+### Exposed tools
+
+| Tool | Description |
+|------|-------------|
+| `chat` | Send a message to nyxGPT and receive a reply. Supports `prompt`, `session`, and `model` arguments. |
+| `list_sessions` | List all available chat sessions. |
+
+### Claude Desktop integration
+
+Add to `~/Library/Application\ Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "nyxgpt": {
+      "command": "nyxgpt",
+      "args": ["mcp"]
+    }
+  }
+}
+```
 
 ---
 
