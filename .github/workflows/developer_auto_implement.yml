@@ -28,6 +28,11 @@ jobs:
           ref: ${{ vars.RELEASE_BRANCH }}
           fetch-depth: 0
 
+      - name: Configure git identity
+        run: |
+          git config --global user.name "myGPT-developer-agent"
+          git config --global user.email "253622687+myGPT-developer-agent@users.noreply.github.com"
+
       - name: Auth gh
         env:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -293,6 +298,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
@@ -401,6 +407,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
@@ -479,6 +486,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
@@ -666,6 +674,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
@@ -759,6 +768,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
@@ -1101,6 +1111,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           show_full_output: false
           claude_args: '--allowed-tools "Bash,Read,Grep"'
           prompt: |
