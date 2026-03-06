@@ -53,7 +53,7 @@ class ChatContext:
     streaming and non-streaming chat.
     """
 
-    messages: list[dict[str, str]]
+    messages: list[dict[str, Any]]
     state: Any  # SessionState
     chosen_model: str
     base_url: str
@@ -256,11 +256,11 @@ def _get_prompt_template(mode: str) -> str:
 
 
 def _truncate_messages_to_budget(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     max_tokens: int,
     cfg: Any,
     model: str,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Truncate message history to fit within token budget.
 
     Preserves system messages and recent history. Removes oldest user/assistant
@@ -351,6 +351,57 @@ def _truncate_messages_to_budget(
     return minimal
 
 
+def _build_user_message(
+    prompt: str,
+    attachments: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """Build a user message dict, including multimodal content blocks when attachments are present.
+
+    For image attachments, the base64 data is placed in the Ollama ``images`` field.
+    For document attachments (PDF, plain-text), the decoded text is prepended to the prompt.
+
+    Args:
+        prompt: The user's text prompt.
+        attachments: Optional list of attachment dicts with keys ``type``, ``media_type``,
+            ``data`` (base64), and optionally ``filename``.
+
+    Returns:
+        A message dict suitable for the Ollama /api/chat payload.
+    """
+    if not attachments:
+        return {"role": "user", "content": prompt}
+
+    import base64
+
+    image_data: list[str] = []
+    doc_text_parts: list[str] = []
+
+    for att in attachments:
+        att_type = att.get("type", "")
+        raw_data = att.get("data", "")
+        filename = att.get("filename") or "attachment"
+
+        if att_type == "image":
+            # Ollama accepts base64 image strings in the `images` array
+            image_data.append(raw_data)
+        elif att_type == "document":
+            # Decode document text and prepend to prompt
+            try:
+                text = base64.b64decode(raw_data).decode("utf-8", errors="replace")
+                doc_text_parts.append(f"[Attached document: {filename}]\n{text}")
+            except Exception:
+                logger.warning("Failed to decode document attachment: %s", filename)
+
+    full_prompt = prompt
+    if doc_text_parts:
+        full_prompt = "\n\n".join(doc_text_parts) + "\n\n" + prompt
+
+    msg: dict[str, Any] = {"role": "user", "content": full_prompt}
+    if image_data:
+        msg["images"] = image_data
+    return msg
+
+
 def _prepare_chat_context(
     prompt: str,
     *,
@@ -362,6 +413,7 @@ def _prepare_chat_context(
     sessions_dir: str | None = None,
     rag_enabled: bool | None = None,
     rag_filters: dict[str, Any] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> ChatContext:
     """Prepare messages and context for a chat interaction.
 
@@ -379,6 +431,7 @@ def _prepare_chat_context(
         sessions_dir: Path to sessions directory
         rag_enabled: Enable/disable RAG for this request
         rag_filters: Metadata filters for RAG document selection
+        attachments: Optional inline file attachments (images/documents)
 
     Returns:
         ChatContext with all prepared data needed for the LLM call
@@ -395,7 +448,7 @@ def _prepare_chat_context(
     if new:
         state.messages = []
 
-    messages: list[dict[str, str]] = []
+    messages: list[dict[str, Any]] = []
 
     # System prompt with adaptive mode
     sys_msg = system or _get_str(cfg, "nyxgpt", "system_prompt", "")
@@ -516,8 +569,8 @@ def _prepare_chat_context(
         if content:
             messages.append({"role": role, "content": content})
 
-    # Add this turn
-    messages.append({"role": "user", "content": prompt})
+    # Add this turn (with optional multimodal attachments)
+    messages.append(_build_user_message(prompt, attachments))
 
     # Enforce context window budget
     max_tokens = get_context_window_size(cfg, chosen_model)
@@ -592,6 +645,7 @@ def chat(
     sessions_dir: str | None = None,
     rag_enabled: bool | None = None,
     rag_filters: dict[str, Any] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> ChatResult:
     """Run a chat turn with optional response caching, persisting session history.
 
@@ -613,6 +667,7 @@ def chat(
         sessions_dir: Path to sessions directory
         rag_enabled: Enable/disable RAG for this request
         rag_filters: Metadata filters for RAG document selection
+        attachments: Optional inline file attachments (images/documents)
 
     Returns:
         ChatResult with reply and metadata
@@ -628,6 +683,7 @@ def chat(
         sessions_dir=sessions_dir,
         rag_enabled=rag_enabled,
         rag_filters=rag_filters,
+        attachments=attachments,
     )
 
     # Try to retrieve from cache first
@@ -690,6 +746,7 @@ def chat_stream(
     sessions_dir: str | None = None,
     rag_enabled: bool | None = None,
     rag_filters: dict[str, Any] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
     on_retry: Callable[[int, float, Exception], None] | None = None,
 ) -> Iterator[str]:
     """Yield assistant text chunks for a chat turn while persisting the final reply.
@@ -707,6 +764,7 @@ def chat_stream(
         sessions_dir: Override sessions directory
         rag_enabled: Enable/disable RAG for this request
         rag_filters: Metadata filters for RAG document selection
+        attachments: Optional inline file attachments (images/documents)
         on_retry: Optional callback(attempt, delay, error) for connection retries
     """
 
@@ -720,6 +778,7 @@ def chat_stream(
         sessions_dir=sessions_dir,
         rag_enabled=rag_enabled,
         rag_filters=rag_filters,
+        attachments=attachments,
     )
 
     logger.debug("Starting chat stream for session=%s, model=%s", session, context.chosen_model)

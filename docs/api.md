@@ -1006,6 +1006,56 @@ This endpoint is functionally equivalent to `/api/v1/chat` but returns the assis
   - `tags` (list[str]) - Filter by tags (must have ALL tags)
   - `date_from` (str) - Filter by ingestion date >= (ISO format)
   - `date_to` (str) - Filter by ingestion date <= (ISO format)
+- `attachments` (optional) - List of inline file attachments (see `AttachmentBlock` schema below)
+
+#### `AttachmentBlock` Schema
+
+Each element in the `attachments` list must conform to the following schema:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"image"` \| `"document"` | Yes | Attachment type |
+| `media_type` | string | Yes | MIME type of the file |
+| `data` | string | Yes | Base64-encoded file content (max ~20 MB, i.e. 27,000,000 base64 chars) |
+| `filename` | string | No | Original filename (for display purposes) |
+
+**Supported `media_type` values:**
+
+- `image/jpeg`
+- `image/png`
+- `image/gif`
+- `image/webp`
+- `application/pdf`
+- `text/plain`
+
+**Example request with attachments:**
+
+```json
+{
+  "prompt": "Summarise this document",
+  "session": "default",
+  "attachments": [
+    {
+      "type": "document",
+      "media_type": "application/pdf",
+      "data": "<base64-encoded PDF content>",
+      "filename": "report.pdf"
+    },
+    {
+      "type": "image",
+      "media_type": "image/png",
+      "data": "<base64-encoded PNG content>",
+      "filename": "screenshot.png"
+    }
+  ]
+}
+```
+
+**Notes:**
+- Image attachments are passed directly to the model's vision API (Ollama multimodal models).
+- Document attachments (PDF, plain text) are base64-decoded and their text content is prepended to the prompt.
+- Attachments with an unrecognised `type` are rejected at the API boundary with a 422 validation error.
+- The `data` field is limited to 27,000,000 characters (~20 MB base64) to protect server memory.
 
 **Response:**
 

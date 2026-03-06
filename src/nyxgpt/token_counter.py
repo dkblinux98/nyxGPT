@@ -51,7 +51,7 @@ def count_tokens(text: str) -> int:
     return len(encoder.encode(text))
 
 
-def count_message_tokens(messages: list[dict[str, str]]) -> int:
+def count_message_tokens(messages: list[dict]) -> int:
     """Count total tokens in a list of chat messages.
 
     This accounts for message formatting overhead in addition to content tokens.
@@ -86,8 +86,13 @@ def count_message_tokens(messages: list[dict[str, str]]) -> int:
         if role:
             total_tokens += len(encoder.encode(role))
 
-        # Count content tokens
+        # Count content tokens (handle both string and list content for multimodal messages)
         content = message.get("content", "")
+        if isinstance(content, list):
+            # Multimodal content blocks: extract text from text-type blocks
+            content = " ".join(
+                block.get("text", "") for block in content if isinstance(block, dict)
+            )
         if content:
             total_tokens += len(encoder.encode(content))
 
