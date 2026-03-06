@@ -135,11 +135,21 @@ class VirtuosoErrorBoundary extends Component<
   }
 }
 
+type AttachmentFile = {
+  file: File;
+  preview: string; // data URL for images, empty for documents
+  type: 'image' | 'document';
+  media_type: string;
+  data: string; // base64-encoded content
+  filename: string;
+};
+
 type ChatMessage = {
   role: 'user' | 'assistant';
   content: string;
   ragChunks?: RagChunk[];
   rag_chunks?: RagChunk[]; // Backend uses snake_case
+  attachments?: AttachmentFile[]; // Inline attachments shown in message bubble
   id?: string;
   timestamp?: string;
   edited_at?: string;
@@ -461,6 +471,11 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   // Upload menu state
   const [showUploadMenu, setShowUploadMenu] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Inline attachment state
+  const [pendingAttachments, setPendingAttachments] = useState<AttachmentFile[]>([]);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
 
   // Rename state
   const [sessionTitle, setSessionTitle] = useState<string>('');
@@ -865,9 +880,63 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     }
   }
 
+  async function processFilesAsAttachments(files: FileList | File[]): Promise<void> {
+    const fileArray = Array.from(files);
+    const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    const DOC_TYPES = ['application/pdf', 'text/plain'];
+    const allowed = [...IMAGE_TYPES, ...DOC_TYPES];
+
+    const newAttachments: AttachmentFile[] = [];
+
+    for (const file of fileArray) {
+      if (!allowed.includes(file.type)) {
+        toast.error(`Unsupported file type: ${file.name} (${file.type})`);
+        continue;
+      }
+
+      try {
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = reader.result as string;
+            // Strip data URL prefix to get raw base64
+            const base64Data = result.split(',')[1] ?? '';
+            resolve(base64Data);
+          };
+          reader.onerror = () => reject(new Error('Failed to read file'));
+          reader.readAsDataURL(file);
+        });
+
+        const isImage = IMAGE_TYPES.includes(file.type);
+        const preview = isImage
+          ? await new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result as string);
+              reader.readAsDataURL(file);
+            })
+          : '';
+
+        newAttachments.push({
+          file,
+          preview,
+          type: isImage ? 'image' : 'document',
+          media_type: file.type,
+          data: base64,
+          filename: file.name,
+        });
+      } catch {
+        toast.error(`Failed to process file: ${file.name}`);
+      }
+    }
+
+    if (newAttachments.length > 0) {
+      setPendingAttachments((prev) => [...prev, ...newAttachments]);
+    }
+  }
+
   async function send() {
     const text = input.trim();
-    if (!text || isStreamingRef.current) return;
+    if ((!text && pendingAttachments.length === 0) || isStreamingRef.current) return;
 
     // Clear edit state if we were editing
     if (editingIndex !== null) {
@@ -877,10 +946,18 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     // Check if this is the first message (for auto-titling)
     const isFirstMessage = messages.length === 0;
 
-    // Optimistic append user message
-    setMessages((prev) => [...prev, { role: 'user', content: text }, { role: 'assistant', content: '' }]);
+    // Snapshot attachments before clearing
+    const attachmentsSnapshot = [...pendingAttachments];
+
+    // Optimistic append user message (with attachments)
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', content: text, attachments: attachmentsSnapshot.length > 0 ? attachmentsSnapshot : undefined },
+      { role: 'assistant', content: '' },
+    ]);
     setStatus('connecting');
     setInput('');
+    setPendingAttachments([]);
     setIsStreaming(true);
     isStreamingRef.current = true;
     setLastError(null);
@@ -889,10 +966,10 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     abortRef.current = controller;
 
     try {
-      // Build request body with optional rag_filters
+      // Build request body with optional rag_filters and attachments
       const requestBody: any = {
         session: sessionName,
-        prompt: text,
+        prompt: text || ' ',
         model: selectedModel || undefined,
         rag_enabled: ragEnabled,
       };
@@ -900,6 +977,16 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       // Add rag_filters if any filters are set
       if (ragEnabled && (ragFilters.doc_ids?.length || ragFilters.filename || ragFilters.tags?.length || ragFilters.date_from || ragFilters.date_to)) {
         requestBody.rag_filters = ragFilters;
+      }
+
+      // Add attachments if any
+      if (attachmentsSnapshot.length > 0) {
+        requestBody.attachments = attachmentsSnapshot.map((a) => ({
+          type: a.type,
+          media_type: a.media_type,
+          data: a.data,
+          filename: a.filename,
+        }));
       }
 
       const res = await fetch('/api/chat/stream', {
@@ -1354,6 +1441,59 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                   });
                 }}
               />
+            )}
+
+            {/* Inline attachment thumbnails in message bubble */}
+            {isUser && m.attachments && m.attachments.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                {m.attachments.map((att, attIdx) => (
+                  <div
+                    key={attIdx}
+                    style={{
+                      width: 72,
+                      height: 72,
+                      borderRadius: 8,
+                      overflow: 'hidden',
+                      border: '1px solid rgba(0,0,0,0.15)',
+                      background: 'rgba(0,0,0,0.05)',
+                      flexShrink: 0,
+                      cursor: att.type === 'image' ? 'pointer' : 'default',
+                    }}
+                    onClick={() => {
+                      if (att.type === 'image' && att.preview) {
+                        window.open(att.preview, '_blank');
+                      }
+                    }}
+                    title={att.filename}
+                  >
+                    {att.type === 'image' && att.preview ? (
+                      <img
+                        src={att.preview}
+                        alt={att.filename}
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                      />
+                    ) : (
+                      <div style={{
+                        width: '100%',
+                        height: '100%',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: 4,
+                      }}>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5 }}>
+                          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                          <polyline points="14 2 14 8 20 8" />
+                        </svg>
+                        <span style={{ fontSize: 9, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%', padding: '0 2px', opacity: 0.6 }}>
+                          {att.filename}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
             )}
 
             <div style={{ whiteSpace: 'pre-wrap' }}>
@@ -1908,14 +2048,39 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         </div>
       )}
 
+      {/* Hidden inline attachment file input */}
+      <input
+        ref={attachmentInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,text/plain"
+        multiple
+        onChange={(e) => {
+          if (e.target.files && e.target.files.length > 0) {
+            void processFilesAsAttachments(e.target.files);
+          }
+          e.target.value = '';
+        }}
+        style={{ display: 'none' }}
+      />
+
       {/* Message input box - two lines */}
       <div
         style={{
           marginTop: 12,
-          border: '1px solid var(--border)',
+          border: isDragOver ? '2px dashed #E45801' : '1px solid var(--border)',
           borderRadius: 10,
-          background: 'var(--input-bg)',
+          background: isDragOver ? 'rgba(228,88,1,0.05)' : 'var(--input-bg)',
           overflow: 'hidden',
+          transition: 'border-color 0.15s, background 0.15s',
+        }}
+        onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+        onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setIsDragOver(false); }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setIsDragOver(false);
+          if (e.dataTransfer.files.length > 0) {
+            void processFilesAsAttachments(e.dataTransfer.files);
+          }
         }}
       >
         {/* Edit header - shown when editing a message */}
@@ -1961,6 +2126,88 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
           </div>
         )}
 
+        {/* Attachment thumbnail preview strip */}
+        {pendingAttachments.length > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 8,
+              padding: '8px 12px',
+              borderBottom: '1px solid var(--border)',
+            }}
+          >
+            {pendingAttachments.map((att, idx) => (
+              <div
+                key={idx}
+                style={{
+                  position: 'relative',
+                  width: 64,
+                  height: 64,
+                  borderRadius: 8,
+                  overflow: 'hidden',
+                  border: '1px solid var(--border)',
+                  background: 'var(--button-hover)',
+                  flexShrink: 0,
+                }}
+              >
+                {att.type === 'image' && att.preview ? (
+                  <img
+                    src={att.preview}
+                    alt={att.filename}
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                ) : (
+                  <div
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: 4,
+                    }}
+                  >
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.6 }}>
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
+                    </svg>
+                    <span style={{ fontSize: 9, textAlign: 'center', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%', padding: '0 2px', opacity: 0.7 }}>
+                      {att.filename}
+                    </span>
+                  </div>
+                )}
+                {/* Remove button */}
+                <button
+                  onClick={() => setPendingAttachments((prev) => prev.filter((_, i) => i !== idx))}
+                  style={{
+                    position: 'absolute',
+                    top: 2,
+                    right: 2,
+                    width: 16,
+                    height: 16,
+                    borderRadius: '50%',
+                    border: 'none',
+                    background: 'rgba(0,0,0,0.6)',
+                    color: 'white',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: 0,
+                    fontSize: 10,
+                    lineHeight: 1,
+                  }}
+                  title={`Remove ${att.filename}`}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Line 1: Text input */}
         <input
           value={input}
@@ -1971,7 +2218,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               void send();
             }
           }}
-          placeholder="Type your message…"
+          placeholder={pendingAttachments.length > 0 ? 'Add a message (optional)…' : 'Type your message…'}
           disabled={isStreaming}
           style={{
             width: '100%',
@@ -2087,6 +2334,53 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               )}
             </div>
 
+            {/* Inline attachment (paperclip) button */}
+            <button
+              onClick={() => attachmentInputRef.current?.click()}
+              disabled={isStreaming}
+              style={{
+                width: 32,
+                height: 32,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                borderRadius: 8,
+                border: pendingAttachments.length > 0 ? '1px solid #E45801' : 'none',
+                background: pendingAttachments.length > 0 ? 'rgba(228,88,1,0.1)' : 'transparent',
+                cursor: isStreaming ? 'not-allowed' : 'pointer',
+                color: pendingAttachments.length > 0 ? '#E45801' : 'var(--foreground)',
+                opacity: isStreaming ? 0.4 : 0.7,
+                transition: 'opacity 0.15s, background 0.15s',
+                position: 'relative',
+              }}
+              onMouseEnter={(e) => { if (!isStreaming) e.currentTarget.style.opacity = '1'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.opacity = isStreaming ? '0.4' : '0.7'; }}
+              title="Attach image or document"
+            >
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+              {pendingAttachments.length > 0 && (
+                <span style={{
+                  position: 'absolute',
+                  top: -4,
+                  right: -4,
+                  background: '#E45801',
+                  color: 'white',
+                  borderRadius: '50%',
+                  width: 14,
+                  height: 14,
+                  fontSize: 9,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontWeight: 700,
+                }}>
+                  {pendingAttachments.length}
+                </span>
+              )}
+            </button>
+
             {/* RAG toggle */}
             <button
               onClick={() => void toggleRag()}
@@ -2182,21 +2476,21 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
           ) : (
             <button
               onClick={() => void send()}
-              disabled={!input.trim()}
+              disabled={!input.trim() && pendingAttachments.length === 0}
               title="Send message"
               style={{
                 width: 32,
                 height: 32,
                 borderRadius: '50%',
                 border: 'none',
-                background: input.trim() ? '#E45801' : 'var(--button-hover)',
+                background: (input.trim() || pendingAttachments.length > 0) ? '#E45801' : 'var(--button-hover)',
                 color: 'white',
-                cursor: input.trim() ? 'pointer' : 'not-allowed',
+                cursor: (input.trim() || pendingAttachments.length > 0) ? 'pointer' : 'not-allowed',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 flexShrink: 0,
-                opacity: input.trim() ? 1 : 0.5,
+                opacity: (input.trim() || pendingAttachments.length > 0) ? 1 : 0.5,
                 transition: 'background 0.2s, opacity 0.2s',
               }}
             >
