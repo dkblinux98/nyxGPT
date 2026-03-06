@@ -61,6 +61,7 @@ class ChatContext:
     rag_used: bool
     rag_chunks: int
     rag_context: list[dict] | None = None  # RAG retrieval results
+    output_format: dict[str, Any] | None = None  # JSON schema for structured output
 
 
 def _cfg(config_path: str | None) -> Any:
@@ -414,6 +415,7 @@ def _prepare_chat_context(
     rag_enabled: bool | None = None,
     rag_filters: dict[str, Any] | None = None,
     attachments: list[dict[str, Any]] | None = None,
+    output_format: dict[str, Any] | None = None,
 ) -> ChatContext:
     """Prepare messages and context for a chat interaction.
 
@@ -588,6 +590,7 @@ def _prepare_chat_context(
         rag_used=should_use_rag,
         rag_chunks=rag_chunks,
         rag_context=rag_rows,
+        output_format=output_format,
     )
 
 
@@ -646,6 +649,7 @@ def chat(
     rag_enabled: bool | None = None,
     rag_filters: dict[str, Any] | None = None,
     attachments: list[dict[str, Any]] | None = None,
+    output_format: dict[str, Any] | None = None,
 ) -> ChatResult:
     """Run a chat turn with optional response caching, persisting session history.
 
@@ -684,6 +688,7 @@ def chat(
         rag_enabled=rag_enabled,
         rag_filters=rag_filters,
         attachments=attachments,
+        output_format=output_format,
     )
 
     # Try to retrieve from cache first
@@ -717,6 +722,7 @@ def chat(
         model=context.chosen_model,
         messages=context.messages,
         timeout_s=context.chat_timeout_s,
+        output_format=context.output_format,
     )
 
     # Store in cache
@@ -748,6 +754,7 @@ def chat_stream(
     rag_filters: dict[str, Any] | None = None,
     attachments: list[dict[str, Any]] | None = None,
     on_retry: Callable[[int, float, Exception], None] | None = None,
+    output_format: dict[str, Any] | None = None,
 ) -> Iterator[str]:
     """Yield assistant text chunks for a chat turn while persisting the final reply.
 
@@ -779,6 +786,7 @@ def chat_stream(
         rag_enabled=rag_enabled,
         rag_filters=rag_filters,
         attachments=attachments,
+        output_format=output_format,
     )
 
     logger.debug("Starting chat stream for session=%s, model=%s", session, context.chosen_model)
@@ -832,6 +840,7 @@ def chat_stream(
             messages=context.messages,
             timeout_s=context.chat_timeout_s,
             on_retry=_retry_callback,
+            output_format=context.output_format,
         ):
             # Yield any queued retry messages first
             for retry_msg in retry_messages:

@@ -203,7 +203,7 @@ response_cache_enabled = false
 
         call_count = 0
 
-        def mock_ollama_chat(base_url, model, messages, timeout_s):
+        def mock_ollama_chat(base_url, model, messages, timeout_s, output_format=None):
             nonlocal call_count
             call_count += 1
             return "Test response"
@@ -258,7 +258,7 @@ response_cache_ttl_seconds = 1800
 
         call_count = 0
 
-        def mock_ollama_chat(base_url, model, messages, timeout_s):
+        def mock_ollama_chat(base_url, model, messages, timeout_s, output_format=None):
             nonlocal call_count
             call_count += 1
             return f"Response {call_count}"
@@ -313,7 +313,7 @@ response_cache_backend = memory
 
         call_count = 0
 
-        def mock_ollama_chat(base_url, model, messages, timeout_s):
+        def mock_ollama_chat(base_url, model, messages, timeout_s, output_format=None):
             nonlocal call_count
             call_count += 1
             return f"Response {call_count}"
