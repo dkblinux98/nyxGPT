@@ -116,7 +116,34 @@ When PR is merged (automatically on APPROVE or via human `@approve-merge` overri
 - Automation manually closes issues after merging to release branch
 - Post-merge: issue should be CLOSED (GitHub state) + In Review (project status) + assigned to human
 
-## 9) Phase completion
+## 9) Human stakeholder acceptance
+
+After merge, each issue is assigned to the human owner with status "In Review" for final acceptance.
+
+### If acceptance passes
+Move the issue to "For Release" in the project board. No action needed in GitHub.
+
+### If acceptance fails (bug found after merge)
+
+1. **Go to the issue** (it is assigned to you and closed)
+2. **Add a comment** describing what is broken — be specific:
+   - What you expected
+   - What actually happened
+   - Steps to reproduce if relevant
+3. **On the same or a separate comment, write:** `@acceptance-failure`
+
+That's it. The system will automatically:
+- Reopen the issue
+- Add the "Acceptance Failure" label
+- Set status back to "In Progress"
+- Assign to the developer agent to create a `fix/N-...` branch and PR with correct `Closes #N` body
+
+> **Note:** `@acceptance-failure` is only accepted from the human owner account and only on
+> issues (not PRs). It is entirely separate from the review-loop overrides
+> (`@approve-merge`, `@request-changes`, `@send-to-developer`) which apply to PRs
+> during the automated code review cycle.
+
+## 10) Phase completion
 When the human owner moves the last issue in the active Phase to "For Release" (human stakeholder acceptance):
 - Notify human owner that phase is complete and ready for release
 
