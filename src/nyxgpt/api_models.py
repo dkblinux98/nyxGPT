@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any, TypedDict
+from typing import Any, Literal, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -99,12 +99,14 @@ class RagFilters(BaseModel):
 class AttachmentBlock(BaseModel):
     """A single inline file attachment for chat messages."""
 
-    type: str = Field(..., description="Attachment type: 'image' or 'document'")
+    type: Literal["image", "document"] = Field(
+        ..., description="Attachment type: 'image' or 'document'"
+    )
     media_type: str = Field(
         ...,
         description="MIME type, e.g. 'image/jpeg', 'image/png', 'application/pdf', 'text/plain'",
     )
-    data: str = Field(..., description="Base64-encoded file content")
+    data: str = Field(..., description="Base64-encoded file content", max_length=27_000_000)
     filename: str | None = Field(None, description="Original filename")
 
 

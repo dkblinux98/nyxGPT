@@ -197,6 +197,41 @@ The web UI includes a toast notification system for user feedback:
 
 Toasts appear in the bottom-right corner, auto-dismiss after 5 seconds (configurable), and can be manually dismissed by clicking the × button. Multiple toasts stack vertically.
 
+#### File Attachments
+
+The chat interface supports inline file attachments. Users can attach images and documents directly to a chat message before sending.
+
+**How to attach files:**
+
+- **Paperclip button** — Click the 📎 paperclip icon in the chat input toolbar to open a file picker. Supported file types are filtered automatically.
+- **Drag and drop** — Drag one or more files from the desktop or file manager and drop them onto the chat input area. A visual drop zone indicator appears while dragging.
+
+**Thumbnail strip:**
+
+Attached files are previewed in a horizontal thumbnail strip above the chat input:
+
+- Image attachments show a miniature image preview.
+- Document attachments (PDF, plain text) show a file-type icon and filename.
+- Click the × on any thumbnail to remove that attachment before sending.
+
+**Supported file types:**
+
+| Type | MIME types |
+|------|-----------|
+| Images | `image/jpeg`, `image/png`, `image/gif`, `image/webp` |
+| Documents | `application/pdf`, `text/plain` |
+
+**Size limit:** Attachments are capped at approximately 20 MB per file.
+
+**How attachments are processed:**
+
+- Image attachments are forwarded to the model's vision API (requires a multimodal Ollama model).
+- Document attachments are decoded and their text content is prepended to the chat prompt before sending.
+
+**API:** Attachments are sent as the `attachments` field on the `POST /api/v1/chat/stream` request body. See [api.md — AttachmentBlock Schema](api.md#attachmentblock-schema) for details.
+
+---
+
 #### Message Search
 
 Search across all chat sessions with Ctrl+F (Cmd+F on Mac):
