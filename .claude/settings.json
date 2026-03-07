@@ -1,0 +1,29 @@
+{
+  "enabledPlugins": {
+    "claude-code-setup@claude-plugins-official": true
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "file=$(echo \"$CLAUDE_TOOL_INPUT\" | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get('file_path',''))\" 2>/dev/null); [[ \"$file\" == *.py ]] && python -m ruff check --fix \"$file\" 2>/dev/null && python -m black --quiet \"$file\" 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "file=$(echo \"$CLAUDE_TOOL_INPUT\" | python3 -c \"import sys,json; d=json.load(sys.stdin); print(d.get('file_path',''))\" 2>/dev/null); [[ \"$file\" == */.github/workflows/* ]] && echo '{\"decision\":\"ask\",\"message\":\"About to modify a workflow file. Confirm this is intentional.\"}' || true"
+          }
+        ]
+      }
+    ]
+  }
+}
