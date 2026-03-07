@@ -396,7 +396,13 @@ jobs:
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
           show_full_output: true
-          track_progress: true
+          # track_progress only supported for: opened, synchronize, ready_for_review, reopened
+          # NOT supported for: review_requested (which is our primary trigger)
+          # yamllint disable-line rule:truthy
+          track_progress: >-
+            ${{ github.event_name != 'pull_request' ||
+                contains(fromJSON('["opened","synchronize","ready_for_review","reopened"]'),
+                         github.event.action) }}
           # yamllint disable rule:line-length
           claude_args: >-
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
