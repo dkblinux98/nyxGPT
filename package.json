@@ -1,0 +1,8 @@
+{
+  "name": "nyxgpt",
+  "private": true,
+  "devDependencies": {
+    "@modelcontextprotocol/server-github": "*",
+    "@upstash/context7-mcp": "*"
+  }
+}
