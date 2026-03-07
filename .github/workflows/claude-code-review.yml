@@ -405,3 +405,18 @@ jobs:
           # yamllint enable rule:line-length
           # Note: review_agent_auto_review.yml triggers automatically on the comment
           # via issue_comment event
+
+      - name: Persist structured review output to PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+          STRUCTURED_OUTPUT: ${{ steps.claude-review.outputs.structured_output }}
+        run: |
+          PR="${{ github.event.pull_request.number }}"
+          if [[ -z "$STRUCTURED_OUTPUT" || "$STRUCTURED_OUTPUT" == "null" ]]; then
+            echo "No structured output to persist"
+            exit 0
+          fi
+          BODY="<!-- nyxgpt-structured-review: ${STRUCTURED_OUTPUT} -->"
+          gh pr comment "$PR" --body "$BODY"
+          echo "Persisted structured review output to PR #$PR"

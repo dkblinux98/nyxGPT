@@ -379,6 +379,21 @@ jobs:
             > /tmp/review-comments.txt
           echo "Saved review feedback to /tmp/review-comments.txt"
 
+          # Extract structured critical_issues from hidden review comment if available
+          STRUCTURED_COMMENT=$(gh pr view "$PR" --json comments \
+            --jq '[.comments[] | select(.body | startswith("<!-- nyxgpt-structured-review:"))] | last | .body // ""')
+          if [[ -n "$STRUCTURED_COMMENT" ]]; then
+            CRITICAL_ISSUES=$(echo "$STRUCTURED_COMMENT" \
+              | sed 's/<!-- nyxgpt-structured-review: //' \
+              | sed 's/ -->//' \
+              | jq -r '.critical_issues[]? // empty' 2>/dev/null || true)
+            if [[ -n "$CRITICAL_ISSUES" ]]; then
+              echo "=== STRUCTURED CRITICAL ISSUES ===" > /tmp/critical-issues.txt
+              echo "$CRITICAL_ISSUES" >> /tmp/critical-issues.txt
+              echo "Extracted $(echo "$CRITICAL_ISSUES" | wc -l | tr -d ' ') critical issues from structured output"
+            fi
+          fi
+
       - name: Post review fix start comment (if review issues found)
         if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true'
         uses: actions/github-script@v7
@@ -454,7 +469,9 @@ jobs:
             - Do NOT wait for human intervention
 
             ### Step 2: Fix review issues
-            1. Read review comments from: /tmp/review-comments.txt
+            1. Read the issues to fix:
+               - If /tmp/critical-issues.txt exists, these are the exact blocking issues (structured list — start here)
+               - Read /tmp/review-comments.txt for full review context and medium/minor issues
             2. Use sequential-thinking to plan your fixes before touching any code:
                - List every Critical and Medium issue
                - For each: identify the root cause, plan the fix, and anticipate side effects
