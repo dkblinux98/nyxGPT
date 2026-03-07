@@ -638,17 +638,56 @@ jobs:
 
             Output: commit(s) pushed to the current branch with proper issue references.
 
+      - name: Check Claude progress completion
+        id: check_progress
+        if: |
+          always() &&
+          (steps.claude_initial.conclusion == 'success' ||
+           steps.claude_review_fix.conclusion == 'success' ||
+           steps.claude_acceptance_fix.conclusion == 'success')
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+        run: |
+          ISSUE="${{ github.event.issue.number }}"
+          # Find the most recent progress comment posted by track_progress
+          PROGRESS_BODY=$(gh issue view "$ISSUE" --json comments \
+            --jq '[.comments[] | select(.body | test("- \\[[ x]\\]"))] | last | .body // ""')
+          if [[ -n "$PROGRESS_BODY" ]]; then
+            TOTAL=$(echo "$PROGRESS_BODY" | grep -cE -- "- \[[ x]\]" || true)
+            DONE=$(echo "$PROGRESS_BODY" | grep -cE -- "- \[x\]" || true)
+            PENDING=$(( TOTAL - DONE ))
+            echo "progress_total=$TOTAL" >> "$GITHUB_OUTPUT"
+            echo "progress_done=$DONE" >> "$GITHUB_OUTPUT"
+            echo "Progress: $DONE/$TOTAL items completed"
+            if [[ $PENDING -gt 0 ]]; then
+              echo "::warning::$PENDING of $TOTAL planned tasks not marked complete in progress comment"
+              echo "progress_complete=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "::notice::All $TOTAL planned tasks completed"
+              echo "progress_complete=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "No progress comment with checkboxes found"
+            echo "progress_complete=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Post implementation complete comment
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
+            const progressComplete = '${{ steps.check_progress.outputs.progress_complete }}';
+            const progressDone = '${{ steps.check_progress.outputs.progress_done }}';
+            const progressTotal = '${{ steps.check_progress.outputs.progress_total }}';
+            const progressSuffix = progressTotal
+              ? ` (${progressDone}/${progressTotal} tasks completed)`
+              : '';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number,
-              body: '✅ **Developer Agent**: Implementation complete. Running verification checks...'
+              body: '✅ **Developer Agent**: Implementation complete. Running verification checks...' + progressSuffix
             });
 
       - name: Set up Python

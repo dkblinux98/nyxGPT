@@ -420,3 +420,26 @@ jobs:
           BODY="<!-- nyxgpt-structured-review: ${STRUCTURED_OUTPUT} -->"
           gh pr comment "$PR" --body "$BODY"
           echo "Persisted structured review output to PR #$PR"
+
+      - name: Check Claude review progress completion
+        if: always() && steps.claude-review.conclusion == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+        run: |
+          PR="${{ github.event.pull_request.number }}"
+          # Find the most recent progress comment posted by track_progress
+          PROGRESS_BODY=$(gh pr view "$PR" --json comments \
+            --jq '[.comments[] | select(.body | test("- \\[[ x]\\]"))] | last | .body // ""')
+          if [[ -n "$PROGRESS_BODY" ]]; then
+            TOTAL=$(echo "$PROGRESS_BODY" | grep -cE -- "- \[[ x]\]" || true)
+            DONE=$(echo "$PROGRESS_BODY" | grep -cE -- "- \[x\]" || true)
+            PENDING=$(( TOTAL - DONE ))
+            echo "Review progress: $DONE/$TOTAL items completed"
+            if [[ $PENDING -gt 0 ]]; then
+              echo "::warning::$PENDING of $TOTAL review tasks not marked complete in progress comment"
+            else
+              echo "::notice::All $TOTAL review tasks completed"
+            fi
+          else
+            echo "No progress comment with checkboxes found on PR #$PR"
+          fi
