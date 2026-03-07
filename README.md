@@ -985,6 +985,28 @@ The workflow will:
 
 For details, see **docs/development.md** and **RUNBOOKS/**.
 
+### Claude Code Local Automations
+
+This repository includes Claude Code automations that activate automatically when using `claude` in the project directory:
+
+| Automation | Type | Description |
+|---|---|---|
+| GitHub MCP server | MCP | Native GitHub API access (issues, PRs, Actions, project board) — no `gh` CLI syntax needed |
+| context7 MCP | MCP | Live, version-correct docs for FastAPI, Cassandra, React, Next.js, Anthropic SDK, etc. |
+| Auto-lint on edit | Hook | Runs `ruff --fix` + `black` automatically after every Python file edit |
+| Workflow guard | Hook | Prompts for confirmation before editing any `.github/workflows/` file |
+| `test-gap-detector` | Subagent | Ask "check test coverage" — runs pytest with `--cov` and reports files under 80% |
+| `/workflow-status` | Skill | Shows all open issues, PRs, and recent workflow run status in one table |
+
+**Required:** The GitHub MCP server reads your PAT from `~/.nyxGPT/config.ini`:
+
+```ini
+[github]
+pat = ghp_your_personal_access_token
+```
+
+The PAT needs `repo` and `project` scopes. All other automations (context7, hooks, subagent, skill) work with no additional setup.
+
 ---
 
 ## Project notes
@@ -1005,6 +1027,3 @@ Future work focuses on:
 - performance tuning
 - richer session metadata and search
 - optional multi‑user and auth extensions
-
-
-
