@@ -7,8 +7,6 @@ on:
       - 'web/**/*.tsx'
       - 'src/nyxgpt/app.py'
   push:
-    branches:
-      - v2.0.0
     paths:
       - 'web/**/*.ts'
       - 'web/**/*.tsx'
@@ -17,6 +15,9 @@ on:
 jobs:
   validate-web:
     runs-on: ubuntu-latest
+    # For push events, only run on the configured release branch (vars.RELEASE_BRANCH).
+    # pull_request events always run regardless of target branch.
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
     steps:
       - uses: actions/checkout@v4
 
