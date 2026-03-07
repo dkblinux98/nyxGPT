@@ -221,7 +221,6 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.REVIEW_AGENT_TOKEN }}
-          track_progress: true
           prompt: |
             Review PR #${{ steps.pr_number.outputs.pr }} according to the review-agent charter and runbook.
 
@@ -398,6 +397,20 @@ jobs:
           claude_args: |
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config $RUNNER_TEMP/mcp-config.json
-            --json-schema '{"type":"object","properties":{"decision":{"type":"string","enum":["APPROVE","REQUEST_CHANGES"]},"summary":{"type":"string"},"blocking_issues":{"type":"array","items":{"type":"string"}}},"required":["decision","summary"]}'
+            --json-schema '{
+              "type": "object",
+              "properties": {
+                "decision": {
+                  "type": "string",
+                  "enum": ["APPROVE", "REQUEST_CHANGES"]
+                },
+                "summary": {"type": "string"},
+                "blocking_issues": {
+                  "type": "array",
+                  "items": {"type": "string"}
+                }
+              },
+              "required": ["decision", "summary"]
+            }'
           # Note: review_agent_auto_review.yml triggers automatically on the comment
           # via issue_comment event
