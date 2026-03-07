@@ -386,9 +386,21 @@ def _build_user_message(
             # Ollama accepts base64 image strings in the `images` array
             image_data.append(raw_data)
         elif att_type == "document":
-            # Decode document text and prepend to prompt
+            # Extract document text and prepend to prompt
             try:
-                text = base64.b64decode(raw_data).decode("utf-8", errors="replace")
+                raw_bytes = base64.b64decode(raw_data)
+                media_type = att.get("media_type", "")
+                if media_type == "application/pdf":
+                    import io
+
+                    import pdfplumber
+
+                    with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
+                        text = "\n".join(page.extract_text() or "" for page in pdf.pages).strip()
+                    if not text:
+                        text = f"[PDF: {filename} — no extractable text found]"
+                else:
+                    text = raw_bytes.decode("utf-8", errors="replace")
                 doc_text_parts.append(f"[Attached document: {filename}]\n{text}")
             except Exception:
                 logger.warning("Failed to decode document attachment: %s", filename)

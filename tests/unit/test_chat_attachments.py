@@ -90,6 +90,68 @@ def test_build_user_message_mixed_image_and_document() -> None:
     assert "analyze" in msg["content"]
 
 
+def test_build_user_message_with_pdf_document(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PDF attachments should extract text via pdfplumber, not raw UTF-8 decode."""
+    from unittest.mock import MagicMock, patch
+
+    fake_pdf_bytes = b"%PDF-1.4 fake pdf binary content"
+    pdf_b64 = base64.b64encode(fake_pdf_bytes).decode()
+    extracted_text = "CHROMOSOME KARYOTYPE REPORT\nNormal female karyotype: 46,XX"
+
+    mock_page = MagicMock()
+    mock_page.extract_text.return_value = extracted_text
+    mock_pdf = MagicMock()
+    mock_pdf.__enter__ = MagicMock(return_value=mock_pdf)
+    mock_pdf.__exit__ = MagicMock(return_value=False)
+    mock_pdf.pages = [mock_page]
+
+    with patch("pdfplumber.open", return_value=mock_pdf):
+        attachments = [
+            {
+                "type": "document",
+                "media_type": "application/pdf",
+                "data": pdf_b64,
+                "filename": "report.pdf",
+            }
+        ]
+        msg = _build_user_message("interpret this", attachments)
+
+    assert "CHROMOSOME KARYOTYPE REPORT" in msg["content"]
+    assert "46,XX" in msg["content"]
+    assert "interpret this" in msg["content"]
+    assert "Attached document: report.pdf" in msg["content"]
+    assert "images" not in msg
+
+
+def test_build_user_message_pdf_no_extractable_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PDFs with no extractable text get a clear fallback message."""
+    from unittest.mock import MagicMock, patch
+
+    pdf_b64 = base64.b64encode(b"%PDF-1.4 scanned only").decode()
+
+    mock_page = MagicMock()
+    mock_page.extract_text.return_value = None
+    mock_pdf = MagicMock()
+    mock_pdf.__enter__ = MagicMock(return_value=mock_pdf)
+    mock_pdf.__exit__ = MagicMock(return_value=False)
+    mock_pdf.pages = [mock_page]
+
+    with patch("pdfplumber.open", return_value=mock_pdf):
+        attachments = [
+            {
+                "type": "document",
+                "media_type": "application/pdf",
+                "data": pdf_b64,
+                "filename": "scan.pdf",
+            }
+        ]
+        msg = _build_user_message("what is this?", attachments)
+
+    assert "no extractable text found" in msg["content"]
+    assert "scan.pdf" in msg["content"]
+    assert "what is this?" in msg["content"]
+
+
 def test_build_user_message_document_bad_base64_skipped() -> None:
     attachments = [
         {
