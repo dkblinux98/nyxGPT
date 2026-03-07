@@ -107,6 +107,24 @@ jobs:
               body: body
             });
 
+      - name: Write MCP config
+        if: steps.check.outputs.has_conflicts == 'true'
+        run: |
+          cat > $RUNNER_TEMP/mcp-config.json <<'EOF'
+          {
+            "mcpServers": {
+              "slack": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-slack"],
+                "env": {
+                  "SLACK_BOT_TOKEN": "${{ secrets.SLACK_BOT_TOKEN }}",
+                  "SLACK_TEAM_ID": "${{ vars.SLACK_TEAM_ID }}"
+                }
+              }
+            }
+          }
+          EOF
+
       - name: Send Slack notification
         if: steps.check.outputs.has_conflicts == 'true'
         uses: slackapi/slack-github-action@v1.26.0

@@ -23,15 +23,12 @@ jobs:
        github.event.pull_request &&
        (github.event.review.state == 'approved' ||
         github.event.review.state == 'changes_requested') &&
-       (startsWith(github.event.review.body, '## Code Review - APPROVE') ||
-        startsWith(github.event.review.body, '## Code Review - REQUEST_CHANGES'))) ||
+       github.event.review.user.login == vars.REVIEW_AGENT) ||
       (github.event_name == 'issue_comment' &&
        github.event.issue.pull_request &&
        (contains(github.event.comment.body, '@approve-merge') ||
         contains(github.event.comment.body, '@request-changes') ||
-        contains(github.event.comment.body, '@send-to-developer') ||
-        startsWith(github.event.comment.body, '## Code Review - APPROVE') ||
-        startsWith(github.event.comment.body, '## Code Review - REQUEST_CHANGES')))
+        contains(github.event.comment.body, '@send-to-developer')))
     runs-on: ubuntu-latest
 
     permissions:
@@ -138,46 +135,46 @@ jobs:
 
           echo "::group::Parsing decision"
 
-          # Get body from either pull_request_review or issue_comment event
+          # Parse decision from structured review state or manual trigger commands
+          # Auto triggers: pull_request_review with approved/changes_requested state from review agent
+          # Manual triggers: @approve-merge, @request-changes, @send-to-developer in issue comments
           if [[ "${{ github.event_name }}" == "pull_request_review" ]]; then
-            COMMENT=$(cat <<'COMMENT_EOF'
-          ${{ github.event.review.body }}
-          COMMENT_EOF
-          )
+            # Use structured review state instead of brittle text matching
+            REVIEW_STATE="${{ github.event.review.state }}"
+            if [[ "$REVIEW_STATE" == "approved" ]]; then
+              DECISION="APPROVE"
+              TRIGGER_TYPE="auto"
+              echo "::notice::Auto-approved by review agent (structured review state)"
+            elif [[ "$REVIEW_STATE" == "changes_requested" ]]; then
+              DECISION="REQUEST_CHANGES"
+              TRIGGER_TYPE="auto"
+              echo "::notice::Review agent requested changes (structured review state)"
+            else
+              echo "::error::Unexpected review state: $REVIEW_STATE"
+              exit 1
+            fi
           else
             COMMENT=$(cat <<'COMMENT_EOF'
           ${{ github.event.comment.body }}
           COMMENT_EOF
           )
-          fi
-
-          # Parse decision from either manual trigger or automatic review comment
-          # Manual triggers: @approve-merge, @request-changes, @send-to-developer
-          # Auto triggers: ## Code Review - APPROVE or ## Code Review - REQUEST_CHANGES
-          if echo "$COMMENT" | grep -qE '^## Code Review - APPROVE'; then
-            DECISION="APPROVE"
-            TRIGGER_TYPE="auto"
-            echo "::notice::Auto-approved by review agent"
-          elif echo "$COMMENT" | grep -qE '^\s*@approve-merge\s*$'; then
-            DECISION="APPROVE"
-            TRIGGER_TYPE="manual"
-            echo "::notice::Human approved merge"
-          elif echo "$COMMENT" | grep -qE '^## Code Review - REQUEST_CHANGES'; then
-            DECISION="REQUEST_CHANGES"
-            TRIGGER_TYPE="auto"
-            echo "::notice::Review agent requested changes"
-          elif echo "$COMMENT" | grep -qE '^\s*@request-changes\s*$'; then
-            DECISION="REQUEST_CHANGES"
-            TRIGGER_TYPE="manual"
-            echo "::notice::Human requested changes"
-          elif echo "$COMMENT" | grep -qE '^\s*@send-to-developer\s*$'; then
-            DECISION="SEND_TO_DEVELOPER"
-            TRIGGER_TYPE="manual"
-            echo "::notice::Human sending PR back to developer"
-          else
-            echo "::error::No valid trigger phrase found"
-            echo "::error::Expected: @approve-merge, @request-changes, @send-to-developer, or review comment"
-            exit 1
+            if echo "$COMMENT" | grep -qE '^\s*@approve-merge\s*$'; then
+              DECISION="APPROVE"
+              TRIGGER_TYPE="manual"
+              echo "::notice::Human approved merge"
+            elif echo "$COMMENT" | grep -qE '^\s*@request-changes\s*$'; then
+              DECISION="REQUEST_CHANGES"
+              TRIGGER_TYPE="manual"
+              echo "::notice::Human requested changes"
+            elif echo "$COMMENT" | grep -qE '^\s*@send-to-developer\s*$'; then
+              DECISION="SEND_TO_DEVELOPER"
+              TRIGGER_TYPE="manual"
+              echo "::notice::Human sending PR back to developer"
+            else
+              echo "::error::No valid trigger phrase found"
+              echo "::error::Expected: @approve-merge, @request-changes, or @send-to-developer"
+              exit 1
+            fi
           fi
 
           echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
