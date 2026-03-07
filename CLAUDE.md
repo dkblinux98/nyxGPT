@@ -38,6 +38,12 @@ Claude must not invent workflow, authority, or automation.
 
 ---
 
+## Commit and Push Policy
+
+Always commit and push code changes after making them, unless the user explicitly says not to.
+
+---
+
 ## Project Environment
 
 This project uses Python (primary), TypeScript, YAML workflows, and Markdown docs. Tools: mypy, ruff, pre-commit hooks, pytest. IDE: IntelliJ (not PyCharm). Platform: Apple Silicon (ARM64).
