@@ -463,11 +463,56 @@ def _ensure_web_deps() -> list[OpsResult]:
         return results
 
 
+def _ensure_mcp_deps() -> list[OpsResult]:
+    """Ensure root node_modules are present for Claude Code MCP servers."""
+    results: list[OpsResult] = []
+    root_dir = REPO_ROOT
+    pkg_json = root_dir / "package.json"
+
+    if not pkg_json.exists():
+        return [OpsResult(True, "No root package.json found (skipped)", str(root_dir))]
+
+    if _which("npm") is None:
+        return [
+            OpsResult(
+                False,
+                "npm not found; cannot install MCP deps",
+                "Install Node.js/npm and ensure `npm` is on PATH",
+            )
+        ]
+
+    sentinel = root_dir / "node_modules" / "@modelcontextprotocol" / "server-github"
+    if sentinel.exists():
+        results.append(
+            OpsResult(True, "MCP deps already installed", str(root_dir / "node_modules"))
+        )
+        return results
+
+    try:
+        cp = subprocess.run(["npm", "install"], cwd=str(root_dir), text=True, capture_output=True)
+        if cp.returncode == 0:
+            results.append(
+                OpsResult(
+                    True, "Installed MCP deps via npm install", str(root_dir / "node_modules")
+                )
+            )
+        else:
+            details = (cp.stdout or "").strip() + (
+                "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+            )
+            results.append(OpsResult(False, "Failed to install MCP deps", details.strip()))
+    except Exception as e:
+        results.append(OpsResult(False, "Failed to install MCP deps", f"{type(e).__name__}: {e}"))
+
+    return results
+
+
 def install(_args) -> int:
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
         ("scripts", _install_scripts),
         ("web deps", _ensure_web_deps),
+        ("mcp deps", _ensure_mcp_deps),
         ("cassandra launchagent", _install_cassandra_launchagent),
         ("homebrew api", _install_homebrew_api),
         ("homebrew web", _install_homebrew_web),
