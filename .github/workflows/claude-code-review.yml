@@ -96,7 +96,9 @@ jobs:
         id: test
         run: |
           echo "Running pytest (unit tests only)..."
-          python -m pytest tests/unit/ -v || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
+          python -m pytest tests/unit/ -v \
+            --cov=src/nyxgpt --cov-report=term-missing \
+            || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
 
       - name: Check test coverage
         id: test_coverage
@@ -395,9 +397,11 @@ jobs:
           # or https://code.claude.com/docs/en/cli-reference for available options
           show_full_output: true
           track_progress: true
+          # yamllint disable rule:line-length
           claude_args: >-
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
             --mcp-config ${{ runner.temp }}/mcp-config.json
             --json-schema '{"type":"object","properties":{"decision":{"type":"string","enum":["APPROVE","REQUEST_CHANGES"]},"summary":{"type":"string"},"critical_issues":{"type":"array","items":{"type":"string"}},"medium_issues":{"type":"array","items":{"type":"string"}}},"required":["decision"]}'
+          # yamllint enable rule:line-length
           # Note: review_agent_auto_review.yml triggers automatically on the comment
           # via issue_comment event

@@ -33,6 +33,23 @@ jobs:
           git config --global user.name "myGPT-developer-agent"
           git config --global user.email "253622687+myGPT-developer-agent@users.noreply.github.com"
 
+      - name: Write MCP config
+        run: |
+          cat > $RUNNER_TEMP/mcp-config.json <<'EOF'
+          {
+            "mcpServers": {
+              "sequential-thinking": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+              },
+              "context7": {
+                "command": "npx",
+                "args": ["-y", "@upstash/context7-mcp"]
+              }
+            }
+          }
+          EOF
+
       - name: Auth gh
         env:
           GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
@@ -301,7 +318,9 @@ jobs:
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           track_progress: true
           show_full_output: true
-          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
+          claude_args: >-
+            --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
+            --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
             Fix the acceptance failure for issue #${{ github.event.issue.number }}.
 
@@ -411,7 +430,9 @@ jobs:
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           track_progress: true
           show_full_output: true
-          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
+          claude_args: >-
+            --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
+            --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
             Fix the code review issues for issue #${{ github.event.issue.number }}.
 
@@ -491,7 +512,9 @@ jobs:
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           track_progress: true
           show_full_output: true
-          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
+          claude_args: >-
+            --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
+            --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
             Implement issue #${{ github.event.issue.number }}.
 
@@ -643,7 +666,7 @@ jobs:
 
           echo "::group::Running pytest (unit tests - integration tests skipped in CI)"
           # Integration tests require running API server (not available in CI)
-          python -m pytest tests/unit/ -v 2>&1 | tee /tmp/pytest_attempt1.log
+          python -m pytest tests/unit/ -v --cov=src/nyxgpt --cov-report=term-missing 2>&1 | tee /tmp/pytest_attempt1.log
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
@@ -680,7 +703,9 @@ jobs:
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           track_progress: true
           show_full_output: true
-          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
+          claude_args: >-
+            --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
+            --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
             VERIFICATION FAILED - YOU MUST FIX THE ISSUES
 
@@ -738,7 +763,7 @@ jobs:
 
           echo "::group::Running pytest (unit tests - integration tests skipped in CI)"
           # Integration tests require running API server (not available in CI)
-          python -m pytest tests/unit/ -v 2>&1 | tee /tmp/pytest_attempt2.log
+          python -m pytest tests/unit/ -v --cov=src/nyxgpt --cov-report=term-missing 2>&1 | tee /tmp/pytest_attempt2.log
           [ ${PIPESTATUS[0]} -eq 0 ] || FAILED=1
           echo "::endgroup::"
 
@@ -775,7 +800,9 @@ jobs:
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           track_progress: true
           show_full_output: true
-          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
+          claude_args: >-
+            --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
+            --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
             VERIFICATION STILL FAILING - FINAL ATTEMPT TO FIX
 
@@ -828,7 +855,7 @@ jobs:
 
           echo "::group::Final pytest verification (unit tests - integration tests skipped in CI)"
           # Integration tests require running API server (not available in CI)
-          python -m pytest tests/unit/ -v
+          python -m pytest tests/unit/ -v --cov=src/nyxgpt --cov-report=term-missing
           echo "::endgroup::"
 
           echo "::group::Final TypeScript verification"
@@ -1119,7 +1146,9 @@ jobs:
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           track_progress: true
           show_full_output: false
-          claude_args: '--allowed-tools "Bash,Read,Grep"'
+          claude_args: >-
+            --allowed-tools "Bash,Read,Grep"
+            --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
             The developer workflow failed for issue #${{ github.event.issue.number }}, and automatic
             analysis was inconclusive. You need to perform deep reasoning to diagnose the failure.
