@@ -202,6 +202,19 @@ jobs:
             echo "::notice::No previous REQUEST_CHANGES - will perform full review"
           fi
 
+      - name: Write MCP config
+        run: |
+          cat > $RUNNER_TEMP/mcp-config.json <<'EOF'
+          {
+            "mcpServers": {
+              "sequential-thinking": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+              }
+            }
+          }
+          EOF
+
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
@@ -381,6 +394,10 @@ jobs:
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
           show_full_output: true
-          claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
+          track_progress: true
+          claude_args: >-
+            --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
+            --mcp-config ${{ runner.temp }}/mcp-config.json
+            --json-schema '{"type":"object","properties":{"decision":{"type":"string","enum":["APPROVE","REQUEST_CHANGES"]},"summary":{"type":"string"},"critical_issues":{"type":"array","items":{"type":"string"}},"medium_issues":{"type":"array","items":{"type":"string"}}},"required":["decision"]}'
           # Note: review_agent_auto_review.yml triggers automatically on the comment
           # via issue_comment event

@@ -299,6 +299,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          track_progress: true
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
@@ -408,6 +409,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          track_progress: true
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
@@ -487,6 +489,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          track_progress: true
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
@@ -675,6 +678,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          track_progress: true
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
@@ -769,6 +773,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          track_progress: true
           show_full_output: true
           claude_args: '--allowed-tools "Bash,Read,Write,Edit,Glob,Grep"'
           prompt: |
@@ -1112,6 +1117,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          track_progress: true
           show_full_output: false
           claude_args: '--allowed-tools "Bash,Read,Grep"'
           prompt: |
