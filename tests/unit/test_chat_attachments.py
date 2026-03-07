@@ -90,6 +90,98 @@ def test_build_user_message_mixed_image_and_document() -> None:
     assert "analyze" in msg["content"]
 
 
+def test_extract_document_text_docx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DOCX attachments extract paragraph and table text."""
+    from unittest.mock import MagicMock, patch
+
+    from nyxgpt.chat import _extract_document_text
+
+    fake_para = MagicMock()
+    fake_para.text = "Report findings for patient."
+    fake_cell = MagicMock()
+    fake_cell.text = "46,XX"
+    fake_row = MagicMock()
+    fake_row.cells = [fake_cell]
+    fake_table = MagicMock()
+    fake_table.rows = [fake_row]
+    mock_doc = MagicMock()
+    mock_doc.paragraphs = [fake_para]
+    mock_doc.tables = [fake_table]
+
+    with patch("docx.Document", return_value=mock_doc):
+        text = _extract_document_text(
+            b"fake docx bytes",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "report.docx",
+        )
+
+    assert "Report findings" in text
+    assert "46,XX" in text
+
+
+def test_extract_document_text_pptx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PPTX attachments extract slide text."""
+    from unittest.mock import MagicMock, patch
+
+    from nyxgpt.chat import _extract_document_text
+
+    mock_shape = MagicMock()
+    mock_shape.text = "Oncology Summary"
+    mock_slide = MagicMock()
+    mock_slide.shapes = [mock_shape]
+    mock_prs = MagicMock()
+    mock_prs.slides = [mock_slide]
+
+    with patch("pptx.Presentation", return_value=mock_prs):
+        text = _extract_document_text(
+            b"fake pptx bytes",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "slides.pptx",
+        )
+
+    assert "[Slide 1]" in text
+    assert "Oncology Summary" in text
+
+
+def test_extract_document_text_epub(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ePUB attachments extract chapter text via BeautifulSoup."""
+    from unittest.mock import MagicMock, patch
+
+    from nyxgpt.chat import _extract_document_text
+
+    mock_item = MagicMock()
+    mock_item.get_content.return_value = b"<html><body><p>Chapter one text.</p></body></html>"
+    mock_book = MagicMock()
+    mock_book.get_items_of_type.return_value = [mock_item]
+
+    with patch("ebooklib.epub.read_epub", return_value=mock_book):
+        text = _extract_document_text(b"fake epub bytes", "application/epub+zip", "book.epub")
+
+    assert "Chapter one text." in text
+
+
+def test_extract_document_text_html() -> None:
+    """HTML attachments strip tags and return readable text."""
+    from nyxgpt.chat import _extract_document_text
+
+    html = b"<html><body><script>alert(1)</script><p>Patient data.</p></body></html>"
+    text = _extract_document_text(html, "text/html", "report.html")
+
+    assert "Patient data." in text
+    assert "alert" not in text
+
+
+def test_extract_document_text_plain() -> None:
+    """Plain text is returned as-is (UTF-8 decode)."""
+    from nyxgpt.chat import _extract_document_text
+
+    raw = b"Plain text content.\nSecond line."
+    text = _extract_document_text(raw, "text/plain", "notes.txt")
+
+    assert "Plain text content." in text
+    assert "Second line." in text
+
+
 def test_build_user_message_with_pdf_document(monkeypatch: pytest.MonkeyPatch) -> None:
     """PDF attachments should extract text via pdfplumber, not raw UTF-8 decode."""
     from unittest.mock import MagicMock, patch

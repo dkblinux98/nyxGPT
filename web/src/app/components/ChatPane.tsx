@@ -883,7 +883,16 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   async function processFilesAsAttachments(files: FileList | File[]): Promise<void> {
     const fileArray = Array.from(files);
     const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-    const DOC_TYPES = ['application/pdf', 'text/plain'];
+    const DOC_TYPES = [
+      'application/pdf',
+      'text/plain',
+      'text/html',
+      'text/markdown',
+      'text/x-markdown',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/epub+zip',
+    ];
     const allowed = [...IMAGE_TYPES, ...DOC_TYPES];
 
     const newAttachments: AttachmentFile[] = [];
@@ -2052,7 +2061,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       <input
         ref={attachmentInputRef}
         type="file"
-        accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,text/plain"
+        accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,text/plain,text/html,text/markdown,.md,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx,application/vnd.openxmlformats-officedocument.presentationml.presentation,.pptx,application/epub+zip,.epub"
         multiple
         onChange={(e) => {
           if (e.target.files && e.target.files.length > 0) {

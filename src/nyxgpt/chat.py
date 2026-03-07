@@ -352,6 +352,86 @@ def _truncate_messages_to_budget(
     return minimal
 
 
+def _extract_document_text(raw_bytes: bytes, media_type: str, filename: str) -> str:
+    """Extract readable text from a document's raw bytes.
+
+    Supports: PDF, DOCX, PPTX, ePUB, HTML, Markdown, plain text.
+    Falls back to UTF-8 decode for unrecognised types.
+    """
+    import io
+
+    fname = filename.lower()
+
+    # PDF
+    if media_type == "application/pdf" or fname.endswith(".pdf"):
+        import pdfplumber
+
+        with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
+            text = "\n".join(page.extract_text() or "" for page in pdf.pages).strip()
+        return text or f"[PDF: {filename} — no extractable text found]"
+
+    # DOCX
+    if media_type == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ) or fname.endswith(".docx"):
+        from docx import Document
+
+        doc = Document(io.BytesIO(raw_bytes))
+        parts = [p.text for p in doc.paragraphs if p.text.strip()]
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = " | ".join(cell.text.strip() for cell in row.cells)
+                if row_text:
+                    parts.append(row_text)
+        return "\n\n".join(parts) or f"[DOCX: {filename} — no extractable text found]"
+
+    # PPTX
+    if media_type == (
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    ) or fname.endswith(".pptx"):
+        from pptx import Presentation
+
+        prs = Presentation(io.BytesIO(raw_bytes))
+        parts = []
+        for i, slide in enumerate(prs.slides, 1):
+            slide_texts = [
+                shape.text.strip()
+                for shape in slide.shapes
+                if hasattr(shape, "text") and shape.text.strip()
+            ]
+            if slide_texts:
+                parts.append(f"[Slide {i}]\n" + "\n\n".join(slide_texts))
+        return "\n\n".join(parts) or f"[PPTX: {filename} — no extractable text found]"
+
+    # ePUB
+    if media_type == "application/epub+zip" or fname.endswith(".epub"):
+        import ebooklib
+        from bs4 import BeautifulSoup
+        from ebooklib import epub
+
+        book = epub.read_epub(io.BytesIO(raw_bytes))
+        parts = []
+        for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
+            soup = BeautifulSoup(item.get_content(), "html.parser")
+            page_text = soup.get_text(separator="\n").strip()
+            if page_text:
+                parts.append(page_text)
+        return "\n\n".join(parts) or f"[ePUB: {filename} — no extractable text found]"
+
+    # HTML
+    if media_type == "text/html" or fname.endswith((".html", ".htm")):
+        from bs4 import BeautifulSoup
+
+        html_content = raw_bytes.decode("utf-8", errors="replace")
+        soup = BeautifulSoup(html_content, "html.parser")
+        for tag in soup(["script", "style", "nav", "header", "footer"]):
+            tag.decompose()
+        return soup.get_text(separator="\n").strip()
+
+    # Plain text / Markdown / fallback
+    return raw_bytes.decode("utf-8", errors="replace")
+
+
 def _build_user_message(
     prompt: str,
     attachments: list[dict[str, Any]] | None,
@@ -390,17 +470,7 @@ def _build_user_message(
             try:
                 raw_bytes = base64.b64decode(raw_data)
                 media_type = att.get("media_type", "")
-                if media_type == "application/pdf":
-                    import io
-
-                    import pdfplumber
-
-                    with pdfplumber.open(io.BytesIO(raw_bytes)) as pdf:
-                        text = "\n".join(page.extract_text() or "" for page in pdf.pages).strip()
-                    if not text:
-                        text = f"[PDF: {filename} — no extractable text found]"
-                else:
-                    text = raw_bytes.decode("utf-8", errors="replace")
+                text = _extract_document_text(raw_bytes, media_type, filename)
                 doc_text_parts.append(f"[Attached document: {filename}]\n{text}")
             except Exception:
                 logger.warning("Failed to decode document attachment: %s", filename)
