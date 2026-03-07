@@ -455,7 +455,10 @@ jobs:
 
             ### Step 2: Fix review issues
             1. Read review comments from: /tmp/review-comments.txt
-            2. Identify all Critical and Medium issues from the review
+            2. Use sequential-thinking to plan your fixes before touching any code:
+               - List every Critical and Medium issue
+               - For each: identify the root cause, plan the fix, and anticipate side effects
+               - Confirm your plan covers all issues before writing a single line
             3. Implement fixes for each issue
 
             ### Step 3: Validate before committing
@@ -542,6 +545,12 @@ jobs:
             Once you have successfully checked out the feature branch, proceed to implementation.
 
             ## Step 2: Implement the Solution
+
+            **Before writing any code**, if your implementation touches an external library
+            (FastAPI, SQLAlchemy, Pydantic, httpx, etc.), use context7 to fetch current docs:
+            1. Call `resolve-library-id` with the library name to get its context7 ID
+            2. Call `get-library-docs` to retrieve the relevant module/API docs
+            This ensures you use current APIs rather than outdated patterns from training data.
 
             Requirements:
             - Make the minimal correct change to resolve the issue.
@@ -723,6 +732,10 @@ jobs:
             - /tmp/routes_attempt1.log (if route validation failed)
 
             YOUR TASK:
+            0. Use sequential-thinking to diagnose before touching any code:
+               - Read each log file and identify the root cause (not just the symptom)
+               - Determine whether failures are related or independent
+               - Plan your fix completely before writing a single line of code
             1. Read each log file that exists using the Read tool
             2. Understand what failed and why
             3. Fix ALL the issues in the code
@@ -819,6 +832,11 @@ jobs:
             This is your LAST CHANCE to fix the issues before the workflow fails completely.
 
             YOUR TASK:
+            0. Use sequential-thinking for exhaustive diagnosis before touching any code:
+               - Compare /tmp/*_attempt2.log vs /tmp/*_attempt1.log line by line
+               - Identify exactly what changed and what did NOT change between attempts
+               - Determine the true root cause of each remaining failure
+               - Produce a complete fix plan before writing a single line of code
             1. Read the latest failure logs
             2. Compare with previous logs at /tmp/*_attempt1.log to see if you made progress
             3. Fix ALL remaining issues
@@ -1199,6 +1217,10 @@ jobs:
             ```
 
             ## Step 3: Reasoning Guidelines
+
+            Use sequential-thinking to work through your diagnosis — this is a multi-step
+            reasoning problem with conditional branches. Think through each signal before
+            reaching a conclusion, and revise your assessment if new evidence contradicts it.
 
             Use human-like reasoning to make nuanced decisions:
 
