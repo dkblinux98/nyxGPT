@@ -1,7 +1,14 @@
 import type { NextConfig } from "next";
 import withPWA from "@ducanh2912/next-pwa";
 
+export const imageConfig = {
+  formats: ["image/avif", "image/webp"] as Array<"image/avif" | "image/webp">,
+  deviceSizes: [640, 750, 828, 1080, 1200, 1920],
+  imageSizes: [16, 32, 48, 64, 96, 128, 256],
+};
+
 const nextConfig: NextConfig = {
+  images: imageConfig,
   allowedDevOrigins: [
     "localhost",
     "127.0.0.1",
