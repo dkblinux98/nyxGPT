@@ -15,7 +15,7 @@ LOG_FILE="$LOG_DIR/cassandra.log"
 CONTAINER_NAME="nyxgpt-cassandra"
 MAX_BYTES=$((50 * 1024 * 1024))   # 50 MB per file
 KEEP_BACKUPS=3                      # cassandra.log.1 .. cassandra.log.3
-CHECK_INTERVAL=30                   # seconds between size checks
+CHECK_INTERVAL=10                   # seconds between size checks
 
 mkdir -p "$LOG_DIR"
 touch "$LOG_FILE"
@@ -42,8 +42,12 @@ done
 
 # Follow logs with rotation: restart docker logs after each rotation so the new
 # file descriptor points at the fresh log file.
+#
+# IMPORTANT: use `--tail 0` so we only capture NEW lines from this point forward.
+# Without it, every (re)start re-dumps the container's entire history, which (a)
+# defeats rotation and (b) compounds every time launchd respawns the follower.
 while true; do
-  docker logs -f "$CONTAINER_NAME" >>"$LOG_FILE" 2>&1 &
+  docker logs --tail 0 -f "$CONTAINER_NAME" >>"$LOG_FILE" 2>&1 &
   DOCKER_PID=$!
 
   while kill -0 "$DOCKER_PID" 2>/dev/null; do

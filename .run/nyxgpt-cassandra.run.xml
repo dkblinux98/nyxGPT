@@ -4,6 +4,7 @@
       <settings>
         <option name="imageTag" value="cassandra:5.0" />
         <option name="containerName" value="nyxgpt-cassandra" />
+        <option name="runCliOptions" value="--log-opt max-size=20m --log-opt max-file=3" />
         <option name="envVars">
           <list>
             <DockerEnvVarImpl>
