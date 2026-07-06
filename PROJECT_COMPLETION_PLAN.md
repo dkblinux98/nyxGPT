@@ -134,6 +134,31 @@ Per VISION.md these cannot be delegated:
 1. ~~**Descope #2684 (materialized views) and #2685 (read replicas)?**~~ **DECIDED 2026-07-06:** owner approved descoping the multi-node Cassandra issues. Both closed as not planned, moved to Phase X: Rejected, reassigned to the human owner per the closed-issue convention (RUNBOOKS/review-runbook.md), tracker #2759 annotated. *Remaining manual step:* update their project-board Status (Projects v2 field — only settable via `scripts/agents/lib/gh_project.sh` with gh CLI, or manually on the board).
 2. **Ratify the Phase 5 re-scope** in §5 (keep 5, optional 2, defer 6).
 3. **Phase acceptance** of merged-but-unaccepted "In Review" items on the project board → For Release.
+4. **Agent identity for interactive sessions** (§6a): dedicated `myGPT-executive-agent` account vs. reusing scrummaster-agent; and provisioning agent PATs to remote Claude environments so session work is authored by agents, not the owner's user.
+
+---
+
+## 6a. Identity & attribution policy (standing point of contention)
+
+**Principle (owner requirement):** the defined agents must be the actors and authors of the activities they perform. The human owner's GitHub user should author only human-only decisions (VISION.md: scope changes, acceptance, releases).
+
+**Infrastructure already in place:** bot accounts `myGPT-scrummaster-agent`, `myGPT-developer-agent`, `myGPT-review-agent` with `*_AGENT_TOKEN` secrets wired through the agent workflows; scripts in `scripts/agents/` export the role's token as `GH_TOKEN`; #3140 fixed `claude[bot]` commit attribution by adding `github_token` to the claude-code-action steps.
+
+**Remaining attribution leaks, audited 2026-07-06:**
+
+| Leak | Wrong actor today | Correct actor | Fix |
+|---|---|---|---|
+| Interactive Claude sessions (remote Claude Code, GitHub MCP) | `dkblinux98` — the MCP authenticates as the connected user | role being performed | Provision an agent PAT in the remote environment (env secret); session performs GitHub *writes* via REST API with that token; reads can stay on the MCP |
+| Local Claude Code sessions | whoever's PAT is in `~/.nyxGPT/config.ini` `[github] pat` | role being performed | Point `[github] pat` at an agent PAT instead of the owner's |
+| `auto-check-tasklist.yml` (tracker checkbox edits) | `github-actions[bot]` (default token) | scrummaster-agent | Use `SCRUMMASTER_AGENT_TOKEN` in the github-script step |
+| `add-to-release-issue-on-milestone.yml` | `github-actions[bot]` | scrummaster-agent | Same |
+| `notify-merge-conflicts.yml` (2 steps) | `github-actions[bot]` | scrummaster- or review-agent | Same pattern; owner to pick the role |
+
+**Open decision for the owner:** whether ad-hoc executive-assistant work gets (a) a fourth bot account (e.g. `myGPT-executive-agent`) with its own PAT, or (b) reuses `myGPT-scrummaster-agent` for administrative/backlog actions. (a) is cleaner in the audit trail; (b) avoids another account. Creating an account/token is a security-posture change — human-only per VISION.md.
+
+**Applied to Sprint 0:** the manual unwedging of PR #3145 must be executed under agent identities — the test-fix push as `myGPT-developer-agent` (`DEVELOPER_AGENT_TOKEN`), the re-review and merge as `myGPT-review-agent` (via `review_accept_and_merge.sh` / the review workflow) — not as the human owner. From a remote session this requires the agent PATs to be provisioned as environment secrets first, or the work routed through the existing `workflow_dispatch`/comment-trigger paths that already run under the correct tokens.
+
+**Acknowledged violation (this session, 2026-07-06):** the descope of #2684/#2685 was executed under `dkblinux98` because that is the only identity available to remote sessions today. The *decision* being attributed to the owner is correct (descoping is human-only), but the mechanical edits (comments, reassignment, tracker annotation) would properly have been scrummaster-agent actions. GitHub does not allow reassigning authorship after the fact; the fix is forward-looking (rows above).
 
 ---
 
