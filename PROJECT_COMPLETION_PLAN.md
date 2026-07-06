@@ -134,7 +134,7 @@ Per VISION.md these cannot be delegated:
 1. ~~**Descope #2684 (materialized views) and #2685 (read replicas)?**~~ **DECIDED 2026-07-06:** owner approved descoping the multi-node Cassandra issues. Both closed as not planned, moved to Phase X: Rejected, reassigned to the human owner per the closed-issue convention (RUNBOOKS/review-runbook.md), tracker #2759 annotated. *Remaining manual step:* update their project-board Status (Projects v2 field — only settable via `scripts/agents/lib/gh_project.sh` with gh CLI, or manually on the board).
 2. **Ratify the Phase 5 re-scope** in §5 (keep 5, optional 2, defer 6).
 3. **Phase acceptance** of merged-but-unaccepted "In Review" items on the project board → For Release.
-4. **Agent identity for interactive sessions** (§6a): dedicated `myGPT-executive-agent` account vs. reusing scrummaster-agent; and provisioning agent PATs to remote Claude environments so session work is authored by agents, not the owner's user.
+4. ~~**Agent identity for interactive sessions** (§6a)~~ **DECIDED 2026-07-06:** reuse `myGPT-scrummaster-agent` for administrative actions; implemented via SessionStart hook. Remote-session agent identity is architecturally impossible (proxy credential injection) — remote writes route through Actions triggers instead.
 
 ---
 
@@ -148,13 +148,13 @@ Per VISION.md these cannot be delegated:
 
 | Leak | Wrong actor today | Correct actor | Fix |
 |---|---|---|---|
-| Interactive Claude sessions (remote Claude Code, GitHub MCP) | `dkblinux98` — the MCP authenticates as the connected user | role being performed | Provision an agent PAT in the remote environment (env secret); session performs GitHub *writes* via REST API with that token; reads can stay on the MCP |
-| Local Claude Code sessions | whoever's PAT is in `~/.nyxGPT/config.ini` `[github] pat` | role being performed | Point `[github] pat` at an agent PAT instead of the owner's |
+| Remote Claude Code sessions (web) | `dkblinux98` — the environment proxy injects the connected user's credentials into every `api.github.com` request and **overrides any Authorization header** (verified 2026-07-06) | role being performed | **Not fixable in-session** — agent PATs cannot take effect behind the proxy. Policy: remote sessions do GitHub *reads* only; writes route through the Actions triggers (`READY_FOR_NEXT_ISSUE`, `RETRY_IMPLEMENTATION`, acceptance-failure trigger, `@claude`) or a local session. Enforced as a SessionStart warning (`.claude/hooks/session-start.sh`) |
+| Local Claude Code sessions | whoever's PAT is in `~/.nyxGPT/config.ini` `[github] pat` / gh's own auth | scrummaster-agent (owner decision, see below) | SessionStart hook wires `GH_TOKEN` from `SCRUMMASTER_AGENT_TOKEN` in `~/.nyxGPT/config.ini`; role scripts still override with their own tokens |
 | `auto-check-tasklist.yml` (tracker checkbox edits) | `github-actions[bot]` (default token) | scrummaster-agent | Use `SCRUMMASTER_AGENT_TOKEN` in the github-script step |
 | `add-to-release-issue-on-milestone.yml` | `github-actions[bot]` | scrummaster-agent | Same |
 | `notify-merge-conflicts.yml` (2 steps) | `github-actions[bot]` | scrummaster- or review-agent | Same pattern; owner to pick the role |
 
-**Open decision for the owner:** whether ad-hoc executive-assistant work gets (a) a fourth bot account (e.g. `myGPT-executive-agent`) with its own PAT, or (b) reuses `myGPT-scrummaster-agent` for administrative/backlog actions. (a) is cleaner in the audit trail; (b) avoids another account. Creating an account/token is a security-posture change — human-only per VISION.md.
+**DECIDED 2026-07-06 (owner):** ad-hoc administrative/executive-assistant work **reuses `myGPT-scrummaster-agent`** — no fourth bot account. Implemented via `.claude/hooks/session-start.sh` (registered in `.claude/settings.json`): local sessions export `GH_TOKEN` from `SCRUMMASTER_AGENT_TOKEN` so interactive `gh` commands are scrummaster-authored; remote sessions get an attribution warning injected into session context instead, because the proxy makes agent identity impossible there.
 
 **Applied to Sprint 0:** the manual unwedging of PR #3145 must be executed under agent identities — the test-fix push as `myGPT-developer-agent` (`DEVELOPER_AGENT_TOKEN`), the re-review and merge as `myGPT-review-agent` (via `review_accept_and_merge.sh` / the review workflow) — not as the human owner. From a remote session this requires the agent PATs to be provisioned as environment secrets first, or the work routed through the existing `workflow_dispatch`/comment-trigger paths that already run under the correct tokens.
 
