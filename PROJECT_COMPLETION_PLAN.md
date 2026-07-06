@@ -24,6 +24,29 @@
 
 ---
 
+## 1a. What the closed-issue history shows (199 closed issues examined)
+
+**Delivery record.** v1.0.0 shipped (tracker #2709 closed 2026-01). Closed issues by milestone: Phase 2 UX 90, Phase 1 Quality/Security 40, Phase 3 Intelligence 29, Phase 4 21, Phase 0 Scaffolding 11, Phase 3.5 Post-1.0 Fixes 4, Phase X: Rejected 3. All but 3 closed as `completed` (2 duplicates, 1 not-planned).
+
+**Velocity.** 177 issues closed in January 2026 (the v1.0.0 push with the agent loop at full throttle), 16 in February, 6 in March, **zero since March 7**. The loop is capable of very high throughput when healthy — the bottleneck is loop health, not implementation capacity.
+
+**Rework rate.** 77 of 199 closed issues (39%) carry the **Acceptance Failure** label — follow-up fixes spawned by review/acceptance loops. The trend is strongly positive: Phase 2 was 52% rework (47/90), Phase 1 50% (20/40), but Phase 4 only 14% (3/21). Planning implication: budget roughly **1 acceptance-failure follow-up per 5–7 features** at current quality levels; the Sprint estimates in §8 include this buffer.
+
+**Overlap with remaining work — three open Phase 4 issues are increments on shipped work, not greenfield:**
+- #2687 (query result caching) — #2618 already shipped embedding + response caching; this extends `cache.py` to RAG query results.
+- #2681 (service worker/offline) — #2682 already shipped the PWA (`@ducanh2912/next-pwa` integrated); only offline-fallback/cache-strategy gaps remain.
+- #2680 (bundle size) — #2678 already shipped code splitting and vendor chunking; this is an audit/prune pass.
+
+**#3112 is a same-day regression** from the SSE framing feature #2621 (closed 2026-02-13; bug filed 2026-02-13). The fix should include the fragmented-frame test that #2621 evidently lacked.
+
+**The last work before the stall was loop-repair work** — #3132/#3143 (MCP servers, structured output, progress tracking in agent workflows), #3134 (acceptance-failure comment trigger to reopen + reassign), #3140 (jobs API + git identity fixes). The owner was already hardening the pipeline; the PR-branch-targeting bug in §2.1 is the piece that was missed.
+
+**Precedents worth reusing:**
+- The **`Phase X: Rejected` milestone already exists** as a parking spot for rejected/duplicate work — the Phase 5 descopes in §5 can be moved there (owner action; no new milestone needed).
+- The **acceptance-failure reopen trigger (#3134)** and `handle_acceptance_failure.yml` are in place — once the loop is unwedged, #3112 can be driven through the normal automated path rather than by hand.
+
+---
+
 ## 2. Why the pipeline is stalled — fix this first (Sprint 0)
 
 ### 2.1 PR #3145 is wedged in a review loop
@@ -94,7 +117,7 @@ Phase 5 as written (Kubernetes, Terraform, canary/blue-green deployment, ELK, Ja
 - #2696 Grafana dashboards — consuming #2693's metrics
 - #2697 Log aggregation — if kept, Loki (lightweight) in the same optional profile; full ELK is oversized
 
-**Defer to a future v3 / close as out-of-scope:**
+**Defer to a future v3 / close as out-of-scope (move to existing `Phase X: Rejected` milestone):**
 - #2688 Kubernetes, #2690 Terraform, #2691 blue-green, #2692 canary — cloud deployment machinery with no local-first user
 - #2694 distributed tracing — no distributed system exists to trace
 - #2695 Sentry — third-party telemetry contradicts "no silent data exfiltration"; if ever kept, strictly opt-in
@@ -137,3 +160,5 @@ When Sprints 0–3 are merged to `v2.0.0`:
 | Closure | Regression, docs, acceptance, tag | 2–3 days |
 
 **Total: roughly 5–6 calendar weeks** with the agent loop running, assuming the Sprint 0 workflow fix holds. The critical path is Sprint 0 — every subsequent stage depends on the develop→review→merge loop actually converging.
+
+Two calibration points from the closed-issue history (§1a): the loop closed 177 issues in January when healthy, so the ~16 remaining feature issues are well within a few weeks of loop capacity; and the recent rework rate (~14% in Phase 4) means expect roughly 2–3 acceptance-failure follow-ups across Sprints 1–3, which the estimates absorb.
