@@ -131,7 +131,7 @@ Phase 5 as written (Kubernetes, Terraform, canary/blue-green deployment, ELK, Ja
 
 Per VISION.md these cannot be delegated:
 
-1. ~~**Descope #2684 (materialized views) and #2685 (read replicas)?**~~ **DECIDED 2026-07-06:** owner approved descoping the multi-node Cassandra issues. Both closed as not planned, moved to Phase X: Rejected, tracker #2759 annotated.
+1. ~~**Descope #2684 (materialized views) and #2685 (read replicas)?**~~ **DECIDED 2026-07-06:** owner approved descoping the multi-node Cassandra issues. Both closed as not planned, moved to Phase X: Rejected, reassigned to the human owner per the closed-issue convention (RUNBOOKS/review-runbook.md), tracker #2759 annotated. *Remaining manual step:* update their project-board Status (Projects v2 field — only settable via `scripts/agents/lib/gh_project.sh` with gh CLI, or manually on the board).
 2. **Ratify the Phase 5 re-scope** in §5 (keep 5, optional 2, defer 6).
 3. **Phase acceptance** of merged-but-unaccepted "In Review" items on the project board → For Release.
 
