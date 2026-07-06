@@ -85,7 +85,7 @@ Recommended order, with notes from code inspection:
 | 3 | #2683 Cassandra query optimization | Pairs naturally with #2686; do back-to-back | M |
 | 4 | #2681 Service worker for offline | **Mostly done already** — `@ducanh2912/next-pwa` is integrated in `next.config.ts`. Verify offline fallback page + cache strategies, fill gaps, close | S |
 | 5 | #2680 Bundle size reduction | Code splitting/vendor chunking already substantial; run bundle analyzer, prune deps | S |
-| 6–7 | #2684 Materialized views, #2685 Read replicas | **Recommend descope** (see §6) — poor fit for a single-node, local-first Cassandra deployment | — |
+| — | #2684 Materialized views, #2685 Read replicas | **Descoped 2026-07-06 by owner decision** — require multi-node Cassandra; closed as not planned, moved to Phase X: Rejected, tracker #2759 annotated | done |
 
 ---
 
@@ -131,7 +131,7 @@ Phase 5 as written (Kubernetes, Terraform, canary/blue-green deployment, ELK, Ja
 
 Per VISION.md these cannot be delegated:
 
-1. **Descope #2684 (materialized views) and #2685 (read replicas)?** Both presume multi-node Cassandra; recommend closing as out-of-scope or reducing to documentation of the config knobs.
+1. ~~**Descope #2684 (materialized views) and #2685 (read replicas)?**~~ **DECIDED 2026-07-06:** owner approved descoping the multi-node Cassandra issues. Both closed as not planned, moved to Phase X: Rejected, tracker #2759 annotated.
 2. **Ratify the Phase 5 re-scope** in §5 (keep 5, optional 2, defer 6).
 3. **Phase acceptance** of merged-but-unaccepted "In Review" items on the project board → For Release.
 
