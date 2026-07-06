@@ -499,6 +499,37 @@ jobs:
             - Do NOT close issues, create PRs, or edit issues/PRs in any way
             - The workflow manages all GitHub state (issues, PRs, status)
 
+      - name: Ensure review fixes landed on PR branch
+        if: steps.check_pr.outputs.pr_exists == 'true' && steps.check_review.outputs.has_review_issues == 'true' && steps.claude_review_fix.conclusion == 'success'
+        shell: bash
+        env:
+          PR_BRANCH: ${{ steps.check_pr.outputs.pr_branch }}
+        run: |
+          set -euo pipefail
+          # claude-code-action in issue context can create its own
+          # claude/issue-N-<timestamp> branch instead of committing to the PR head
+          # branch (this wedged PR #3145: three identical reviews of an unchanged
+          # PR while correct fixes landed on stray branches). Deterministically
+          # sync whatever branch Claude pushed onto the PR branch so the review
+          # loop converges.
+          git fetch origin --prune
+          CURRENT="$(git branch --show-current || true)"
+          if [ -z "$CURRENT" ]; then
+            echo "::warning::Detached HEAD after review fix; cannot determine work branch. Manual check needed."
+            exit 0
+          fi
+          if [ "$CURRENT" = "$PR_BRANCH" ]; then
+            echo "Fixes are on the PR branch ($PR_BRANCH); nothing to sync."
+            exit 0
+          fi
+          if git diff --quiet "origin/$PR_BRANCH" "$CURRENT" 2>/dev/null; then
+            echo "Stray branch $CURRENT matches PR branch content; cleaning up stray branch only."
+          else
+            echo "Syncing $CURRENT -> $PR_BRANCH (force: review fix supersedes stale PR tip)"
+            git push --force origin "HEAD:refs/heads/$PR_BRANCH"
+          fi
+          git push origin --delete "$CURRENT" || echo "Could not delete stray branch $CURRENT (non-fatal)"
+
       - name: Post implementation start comment
         if: steps.check_pr.outputs.pr_exists == 'false'
         uses: actions/github-script@v7
