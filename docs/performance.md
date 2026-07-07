@@ -411,7 +411,7 @@ enable_query_expansion = false    # Default
 When query expansion is enabled, the resulting query variants are searched in a single batched round trip via `CassandraVectorStore.query_by_embeddings_batch`, which runs all ANN searches concurrently at the driver level instead of issuing one blocking call per variant:
 
 ```ini
-[cassandra]
+[rag]
 enable_query_expansion = true
 cassandra_batch_query_concurrency = 4    # Default: 4, recommended: 2-8
 ```
