@@ -72,6 +72,8 @@ The review agent rejected PR #3145 (image optimization, closes #2679) three time
 
 **Sprint 0 total: ~1–2 days. Nothing else should proceed until 2.1 is done, because the entire automated loop depends on it.**
 
+> **SPRINT 0 COMPLETED 2026-07-07.** PR #3145 merged (closes #2679) and PR #3146 merged (closes #3112), both APPROVEd by myGPT-review-agent and auto-merged by the pipeline. Fixes landed on v2.0.0 along the way: deterministic review-fix→PR-branch sync step (+ empty-branch guard) in `developer_auto_implement.yml`, and a pre-existing mypy baseline error in `app.py` that was REQUEST_CHANGES-blocking every PR at the review gate. Residual known issues for later: the `workflow_dispatch` path of `claude-code-review.yml` resolves the PR from the branch instead of the `pr_number` input (post-steps fail; the review itself posts), and the review-fix Claude step ran with restricted tools (no Edit/Write) in its last execution — watch the next organic review-fix cycle.
+
 ---
 
 ## 3. Sprint 1 — Finish Phase 4 (7 open issues)
