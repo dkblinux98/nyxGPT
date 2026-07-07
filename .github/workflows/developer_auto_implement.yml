@@ -522,6 +522,14 @@ jobs:
             echo "Fixes are on the PR branch ($PR_BRANCH); nothing to sync."
             exit 0
           fi
+          # Safety: only sync when Claude actually committed new work. A
+          # fresh action branch with no commits beyond the release branch
+          # must never be force-pushed over the PR branch (it would destroy
+          # the PR's commits).
+          if [ -z "$(git rev-list "origin/${{ vars.RELEASE_BRANCH }}..HEAD" 2>/dev/null)" ]; then
+            echo "No new commits beyond ${{ vars.RELEASE_BRANCH }} on $CURRENT; nothing to sync."
+            exit 0
+          fi
           if git diff --quiet "origin/$PR_BRANCH" "$CURRENT" 2>/dev/null; then
             echo "Stray branch $CURRENT matches PR branch content; cleaning up stray branch only."
           else
