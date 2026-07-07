@@ -7,7 +7,6 @@ import statistics
 import time
 import uuid
 from collections.abc import Iterable
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import cast
 
@@ -20,7 +19,6 @@ from nyxgpt.config import (
     get_rag_include_scores,
     get_rag_max_chunks,
     get_rag_min_score,
-    get_rag_query_parallel_workers,
     load_config,
 )
 from nyxgpt.rag.bm25 import BM25Index
@@ -918,9 +916,13 @@ def _execute_query_parallel(
     k: int,
     actual_model: str,
     metadata_filter: MetadataFilter | None,
-    max_workers: int,
 ) -> tuple[dict[tuple, dict], list[float], int]:
-    """Execute multiple vector searches in parallel using ThreadPoolExecutor.
+    """Execute multiple vector searches as a single batched driver round trip.
+
+    Uses :meth:`CassandraVectorStore.query_by_embeddings_batch`, which issues
+    all ANN searches concurrently via the driver's native
+    ``execute_concurrent_with_args`` instead of one blocking call per query
+    variant, bounded by the store's configured ``cassandra_batch_query_concurrency``.
 
     Args:
         queries: List of query strings (for logging/debugging)
@@ -929,7 +931,6 @@ def _execute_query_parallel(
         k: Number of results to retrieve per query
         actual_model: Embedding model name for filtering results
         metadata_filter: Optional metadata filter to apply
-        max_workers: Number of parallel worker threads
 
     Returns:
         Tuple of (results_map, all_scores, total_raw_results):
@@ -937,52 +938,32 @@ def _execute_query_parallel(
         - all_scores: List of all similarity scores
         - total_raw_results: Total number of raw results before deduplication
     """
-
-    def _query_vector_store(embedding: list[float]) -> list[dict]:
-        """Helper function to query vector store (executed in thread pool)."""
-        return cast(
-            list[dict],
-            store.query_by_embedding(
-                embedding, k=k, embedding_model=actual_model, metadata_filter=metadata_filter
-            ),
-        )
-
     results_map: dict[tuple, dict] = {}
     all_scores: list[float] = []
 
-    # Execute vector searches in parallel using ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all queries to thread pool
-        future_to_idx = {
-            executor.submit(_query_vector_store, emb): idx
-            for idx, emb in enumerate(query_embeddings)
-        }
+    batch_results = store.query_by_embeddings_batch(
+        query_embeddings, k=k, embedding_model=actual_model, metadata_filter=metadata_filter
+    )
 
-        # Collect results as they complete
-        for future in future_to_idx:
-            try:
-                results = future.result()
+    for idx, results in enumerate(batch_results):
+        if not results:
+            query_str = queries[idx] if idx < len(queries) else "unknown"
+            log.debug("Vector search returned no results for query %d (%s)", idx, query_str)
 
-                # Deduplicate and collect results
-                for r in results:
-                    text = (r.get("text") or "").strip()
-                    if not text:
-                        continue
+        for r in results:
+            text = (r.get("text") or "").strip()
+            if not text:
+                continue
 
-                    # Use (doc_id, chunk_id) as unique key
-                    chunk_key = (r.get("doc_id"), r.get("chunk_id"))
-                    if chunk_key not in results_map:
-                        results_map[chunk_key] = r
+            # Use (doc_id, chunk_id) as unique key
+            chunk_key = (r.get("doc_id"), r.get("chunk_id"))
+            if chunk_key not in results_map:
+                results_map[chunk_key] = r
 
-                    # Collect score for statistics
-                    score = r.get("score")
-                    if score is not None:
-                        all_scores.append(float(score))
-
-            except Exception as e:
-                idx = future_to_idx[future]
-                query_str = queries[idx] if idx < len(queries) else "unknown"
-                log.warning("Vector search failed for query %d (%s): %s", idx, query_str, e)
+            # Collect score for statistics
+            score = r.get("score")
+            if score is not None:
+                all_scores.append(float(score))
 
     total_raw_results = len(all_scores)  # Approximation: total results before dedup
     return results_map, all_scores, total_raw_results
@@ -1101,16 +1082,13 @@ def retrieve_context(
                 embed_text(queries[0], model=embedding_model, dimension=embedding_dim)
             ]
 
-        # Parallel execution for multiple queries (performance optimization)
+        # Batched execution for multiple queries (performance optimization)
         if len(queries) > 1 and not collect_debug:
-            # Load parallel workers config
-            cfg = load_config()
-            max_workers = get_rag_query_parallel_workers(cfg)
-            log.debug("Executing %d queries in parallel with %d workers", len(queries), max_workers)
+            log.debug("Executing %d queries via batched ANN search", len(queries))
 
-            # Execute vector searches in parallel
+            # Execute vector searches as a single batched round trip
             vector_results_map, all_scores, total_raw_results = _execute_query_parallel(
-                queries, query_embeddings, store, k, actual_model, metadata_filter, max_workers
+                queries, query_embeddings, store, k, actual_model, metadata_filter
             )
         else:
             # Sequential execution for single query or debug mode

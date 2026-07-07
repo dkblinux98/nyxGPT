@@ -406,27 +406,27 @@ enable_query_expansion = false    # Default
 
 **Performance impact**: Adds 1-3 seconds per query (LLM call to generate expansions).
 
-**Parallel Query Execution**:
+**Batched Query Execution**:
 
-When query expansion is enabled, multiple query variants are executed concurrently for better performance:
+When query expansion is enabled, the resulting query variants are searched in a single batched round trip via `CassandraVectorStore.query_by_embeddings_batch`, which runs all ANN searches concurrently at the driver level instead of issuing one blocking call per variant:
 
 ```ini
-[rag]
+[cassandra]
 enable_query_expansion = true
-query_parallel_workers = 4    # Default: 4, recommended: 2-8
+cassandra_batch_query_concurrency = 4    # Default: 4, recommended: 2-8
 ```
 
 **Tuning guidance**:
-- **Lower (2-3)**: Less CPU usage, slightly slower for multiple queries
+- **Lower (2-3)**: Less peak in-flight load on Cassandra, slightly slower for multiple queries
 - **Medium (4-6)**: Balanced performance (recommended)
-- **Higher (7-10)**: Faster parallel execution but higher CPU/memory usage
+- **Higher (7-10)**: Faster batched execution but higher peak load/memory usage
 
 **Performance impact**:
 - Sequential: 3 queries × 100ms = 300ms total
-- Parallel (4 workers): 3 queries executed concurrently ≈ 100-150ms total
+- Batched (concurrency 4): 3 queries executed concurrently ≈ 100-150ms total
 - Improvement: 2-3x faster when query expansion generates multiple variants
 
-**Note**: Parallel execution is automatically enabled when `enable_query_expansion = true` and multiple query variants are generated. Single queries use sequential execution (no parallelism overhead).
+**Note**: Batched execution is automatically used when `enable_query_expansion = true` and multiple query variants are generated. Single queries use sequential execution (no batching overhead).
 
 ### Deduplication
 
