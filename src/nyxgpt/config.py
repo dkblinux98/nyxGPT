@@ -713,6 +713,66 @@ def get_cassandra_batch_size(cfg: ConfigParser) -> int:
         return 20
 
 
+def get_vector_similarity_function(cfg: ConfigParser) -> str:
+    """Get the ANN similarity function used for vector search.
+
+    Determines both how the Cassandra SAI vector index scores candidates
+    (index build option) and which CQL similarity function is used to
+    compute the returned score, so the two must stay in sync.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        One of "cosine", "dot_product", "euclidean" (default: "cosine")
+    """
+    try:
+        value = cfg.get("rag", "vector_similarity_function", fallback="cosine").strip().lower()
+    except Exception:
+        return "cosine"
+    return value if value in ("cosine", "dot_product", "euclidean") else "cosine"
+
+
+def get_ann_oversample_factor(cfg: ConfigParser) -> float:
+    """Get the ANN oversampling factor for candidate retrieval.
+
+    Multiplies the number of candidates fetched from the ANN index beyond
+    what metadata filtering alone requires, trading additional query cost
+    for improved recall on approximate search.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Oversampling factor (default: 1.0, range: 1.0-5.0)
+    """
+    try:
+        factor = cfg.getfloat("rag", "ann_oversample_factor", fallback=1.0)
+        return max(1.0, min(5.0, factor))
+    except Exception:
+        return 1.0
+
+
+def get_cassandra_batch_query_concurrency(cfg: ConfigParser) -> int:
+    """Get the concurrency cap for batched ANN vector searches.
+
+    Bounds how many ANN queries run in flight at once when searching
+    multiple query embeddings in a single batch call, limiting peak
+    memory and connection usage.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Concurrency cap (default: 4, range: 1-32)
+    """
+    try:
+        concurrency = cfg.getint("rag", "cassandra_batch_query_concurrency", fallback=4)
+        return max(1, min(32, concurrency))
+    except Exception:
+        return 4
+
+
 def get_batch_enabled(cfg: ConfigParser) -> bool:
     """Get whether request batching is enabled.
 
@@ -815,6 +875,9 @@ __all__ = [
     "get_cassandra_health_check_interval",
     "get_cassandra_reconnect_max_attempts",
     "get_cassandra_batch_size",
+    "get_vector_similarity_function",
+    "get_ann_oversample_factor",
+    "get_cassandra_batch_query_concurrency",
     "validate_config",
     "ConfigValidationError",
 ]

@@ -10,11 +10,32 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from cassandra.cluster import Cluster, Session
+from cassandra.concurrent import execute_concurrent_with_args
 from cassandra.query import BatchStatement, BatchType, PreparedStatement, SimpleStatement
 
-from nyxgpt.config import load_config
+from nyxgpt.config import (
+    get_ann_oversample_factor,
+    get_cassandra_batch_query_concurrency,
+    get_vector_similarity_function,
+    load_config,
+)
 
 log = logging.getLogger(__name__)
+
+# Maps the config-level similarity function name to the CQL function used to
+# compute a result's score and the Cassandra SAI index build option. These
+# must stay in sync: scoring a COSINE-built index with similarity_dot_product
+# (or vice versa) produces meaningless scores.
+_SIMILARITY_CQL_FUNCTION = {
+    "cosine": "similarity_cosine",
+    "dot_product": "similarity_dot_product",
+    "euclidean": "similarity_euclidean",
+}
+_SIMILARITY_SAI_OPTION = {
+    "cosine": "COSINE",
+    "dot_product": "DOT_PRODUCT",
+    "euclidean": "EUCLIDEAN",
+}
 
 
 @dataclass(frozen=True)
@@ -27,6 +48,9 @@ class CassandraConfig:
     health_check_interval: float = 30.0
     reconnect_max_attempts: int = 3
     batch_size: int = 20
+    similarity_function: str = "cosine"
+    ann_oversample_factor: float = 1.0
+    batch_query_concurrency: int = 4
 
 
 @dataclass
@@ -105,6 +129,76 @@ def _candidate_fetch_multiplier(metadata_filter: MetadataFilter | None) -> int:
     return min(2 + active_filters, 6)
 
 
+def _filter_and_score_rows(
+    rows: Iterable,
+    k: int,
+    embedding_model: str | None,
+    metadata_filter: MetadataFilter | None,
+) -> tuple[list[dict], list[float]]:
+    """Apply embedding-model/metadata filtering to raw ANN rows and score them.
+
+    Shared between :meth:`CassandraVectorStore.query_by_embedding` and
+    :meth:`CassandraVectorStore.query_by_embeddings_batch` so both the single-
+    and batch-query paths post-filter identically.
+
+    Returns:
+        Tuple of (result dicts limited to ``k``, scores for those results).
+    """
+    out: list[dict] = []
+    scores: list[float] = []
+    for r in rows:
+        if (
+            embedding_model is not None
+            and hasattr(r, "embedding_model")
+            and r.embedding_model != embedding_model
+        ):
+            continue
+
+        metadata = json.loads(r.metadata) if r.metadata else {}
+
+        if metadata_filter:
+            if metadata_filter.doc_ids and r.doc_id not in metadata_filter.doc_ids:
+                continue
+
+            if metadata_filter.filename:
+                doc_filename = metadata.get("filename", "")
+                if metadata_filter.filename.lower() not in doc_filename.lower():
+                    continue
+
+            if metadata_filter.tags:
+                doc_tags = metadata.get("tags", [])
+                if not isinstance(doc_tags, list):
+                    continue
+                if not all(tag in doc_tags for tag in metadata_filter.tags):
+                    continue
+
+            if metadata_filter.date_from or metadata_filter.date_to:
+                if not hasattr(r, "ingested_at") or r.ingested_at is None:
+                    continue
+                if metadata_filter.date_from and r.ingested_at < metadata_filter.date_from:
+                    continue
+                if metadata_filter.date_to and r.ingested_at > metadata_filter.date_to:
+                    continue
+
+        score = float(r.score) if hasattr(r, "score") and r.score is not None else 0.0
+        result = {
+            "doc_id": r.doc_id,
+            "chunk_id": r.chunk_id,
+            "text": r.text,
+            "metadata": metadata,
+            "score": score,
+            "embedding_model": r.embedding_model if hasattr(r, "embedding_model") else None,
+            "embedding_dim": r.embedding_dim if hasattr(r, "embedding_dim") else None,
+        }
+        out.append(result)
+        scores.append(score)
+
+        if len(out) >= k:
+            break
+
+    return out, scores
+
+
 def _cassandra_cfg() -> CassandraConfig:
     cfg = load_config(None)
 
@@ -117,6 +211,9 @@ def _cassandra_cfg() -> CassandraConfig:
     health_check_interval = cfg.getfloat("rag", "cassandra_health_check_interval", fallback=30.0)
     reconnect_max_attempts = cfg.getint("rag", "cassandra_reconnect_max_attempts", fallback=3)
     batch_size = cfg.getint("rag", "cassandra_batch_size", fallback=20)
+    similarity_function = get_vector_similarity_function(cfg)
+    ann_oversample_factor = get_ann_oversample_factor(cfg)
+    batch_query_concurrency = get_cassandra_batch_query_concurrency(cfg)
 
     return CassandraConfig(
         hosts=hosts,
@@ -127,6 +224,9 @@ def _cassandra_cfg() -> CassandraConfig:
         health_check_interval=health_check_interval,
         reconnect_max_attempts=reconnect_max_attempts,
         batch_size=batch_size,
+        similarity_function=similarity_function,
+        ann_oversample_factor=ann_oversample_factor,
+        batch_query_concurrency=batch_query_concurrency,
     )
 
 
@@ -542,9 +642,11 @@ class CassandraVectorStore:
             );
             """)
 
+        sai_similarity = _SIMILARITY_SAI_OPTION[self.cfg.similarity_function]
         self.session.execute(f"""
             CREATE INDEX IF NOT EXISTS {tbl}_embedding_sai
-            ON {tbl}(embedding) USING 'sai';
+            ON {tbl}(embedding) USING 'sai'
+            WITH OPTIONS = {{'similarity_function': '{sai_similarity}'}};
             """)
 
         # Add index on embedding_model for efficient model-based filtering
@@ -689,85 +791,12 @@ class CassandraVectorStore:
             self._ensure_keyspace_selected()
 
         start_time = time.perf_counter()
-
-        # Widen the ANN candidate pool based on how many post-filter predicates
-        # are active - each active filter can independently reject candidates,
-        # so a flat 2x multiplier under-fetches once more than one filter is set.
-        fetch_n = k * _candidate_fetch_multiplier(metadata_filter)
-
-        # Prepare once per instance and reuse - avoids re-parsing the ANN
-        # query CQL on every search call (the table name is fixed per instance).
-        if self._ann_query_stmt is None:
-            self._ann_query_stmt = self.session.prepare(f"""
-                SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim, ingested_at, similarity_cosine(embedding, ?) AS score
-                FROM {self.table_name}
-                ORDER BY embedding ANN OF ?
-                LIMIT ?
-                """)
-
-        bound = self._ann_query_stmt.bind((embedding, embedding, fetch_n))
+        fetch_n = self._ann_fetch_n(k, metadata_filter)
+        bound = self._prepare_ann_stmt().bind((embedding, embedding, fetch_n))
         bound.fetch_size = fetch_n
 
         rows = self.session.execute(bound)
-        out: list[dict] = []
-        scores: list[float] = []
-        for r in rows:
-            # Filter by embedding_model if specified
-            if (
-                embedding_model is not None
-                and hasattr(r, "embedding_model")
-                and r.embedding_model != embedding_model
-            ):
-                continue
-
-            # Parse metadata
-            metadata = json.loads(r.metadata) if r.metadata else {}
-
-            # Apply metadata filters
-            if metadata_filter:
-                # Filter by doc_ids (OR logic)
-                if metadata_filter.doc_ids and r.doc_id not in metadata_filter.doc_ids:
-                    continue
-
-                # Filter by filename (case-insensitive partial match)
-                if metadata_filter.filename:
-                    doc_filename = metadata.get("filename", "")
-                    if metadata_filter.filename.lower() not in doc_filename.lower():
-                        continue
-
-                # Filter by tags (doc must have ALL specified tags)
-                if metadata_filter.tags:
-                    doc_tags = metadata.get("tags", [])
-                    if not isinstance(doc_tags, list):
-                        continue
-                    if not all(tag in doc_tags for tag in metadata_filter.tags):
-                        continue
-
-                # Filter by date range
-                if metadata_filter.date_from or metadata_filter.date_to:
-                    if not hasattr(r, "ingested_at") or r.ingested_at is None:
-                        continue
-                    if metadata_filter.date_from and r.ingested_at < metadata_filter.date_from:
-                        continue
-                    if metadata_filter.date_to and r.ingested_at > metadata_filter.date_to:
-                        continue
-
-            score = float(r.score) if hasattr(r, "score") and r.score is not None else 0.0
-            result = {
-                "doc_id": r.doc_id,
-                "chunk_id": r.chunk_id,
-                "text": r.text,
-                "metadata": metadata,
-                "score": score,
-                "embedding_model": r.embedding_model if hasattr(r, "embedding_model") else None,
-                "embedding_dim": r.embedding_dim if hasattr(r, "embedding_dim") else None,
-            }
-            out.append(result)
-            scores.append(score)
-
-            # Stop if we have enough results
-            if len(out) >= k:
-                break
+        out, scores = _filter_and_score_rows(rows, k, embedding_model, metadata_filter)
 
         if collect_metrics:
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0
@@ -781,6 +810,89 @@ class CassandraVectorStore:
             return out, metrics
 
         return out
+
+    def query_by_embeddings_batch(
+        self,
+        embeddings: list[list[float]],
+        k: int = 5,
+        *,
+        embedding_model: str | None = None,
+        metadata_filter: MetadataFilter | None = None,
+    ) -> list[list[dict]]:
+        """Search multiple query embeddings in a single batched round trip.
+
+        Uses the driver's :func:`~cassandra.concurrent.execute_concurrent_with_args`
+        to run all ANN queries concurrently against the shared session instead
+        of opening one blocking call per embedding, bounded by
+        ``cassandra_batch_query_concurrency`` to cap peak in-flight requests
+        (and therefore memory) regardless of how many embeddings are passed.
+
+        Args:
+            embeddings: Query vectors to search for, one ANN search each
+            k: Number of results to return per embedding
+            embedding_model: Filter results by embedding model (for multi-model support)
+            metadata_filter: Optional metadata filter criteria
+
+        Returns:
+            List of result lists, one per input embedding, in the same order.
+            A search that fails (e.g. driver timeout) yields an empty list
+            for that position rather than failing the whole batch.
+        """
+        if not self._keyspace_ready:
+            self._ensure_keyspace_selected()
+
+        if not embeddings:
+            return []
+
+        stmt = self._prepare_ann_stmt()
+        params = [(emb, emb, self._ann_fetch_n(k, metadata_filter)) for emb in embeddings]
+
+        responses = execute_concurrent_with_args(
+            self.session,
+            stmt,
+            params,
+            concurrency=self.cfg.batch_query_concurrency,
+            raise_on_first_error=False,
+        )
+
+        batch_results: list[list[dict]] = []
+        for idx, (success, rows_or_exc) in enumerate(responses):
+            if not success:
+                log.warning("Batch ANN query %d failed: %s", idx, rows_or_exc)
+                batch_results.append([])
+                continue
+            out, _scores = _filter_and_score_rows(rows_or_exc, k, embedding_model, metadata_filter)
+            batch_results.append(out)
+
+        return batch_results
+
+    def _ann_fetch_n(self, k: int, metadata_filter: MetadataFilter | None) -> int:
+        """Compute how many ANN candidates to fetch for a search of ``k`` results.
+
+        Widens the candidate pool based on how many post-filter predicates are
+        active - each active filter can independently reject candidates, so a
+        flat multiplier under-fetches once more than one filter is set - and
+        further scales by the configurable oversampling factor to trade
+        recall for query cost.
+        """
+        multiplier = _candidate_fetch_multiplier(metadata_filter) * self.cfg.ann_oversample_factor
+        return max(k, int(round(k * multiplier)))
+
+    def _prepare_ann_stmt(self) -> PreparedStatement:
+        """Prepare (once per instance) and return the ANN search statement.
+
+        Reused across calls to avoid re-parsing the ANN query CQL on every
+        search (the table name and similarity function are fixed per instance).
+        """
+        if self._ann_query_stmt is None:
+            similarity_fn = _SIMILARITY_CQL_FUNCTION[self.cfg.similarity_function]
+            self._ann_query_stmt = self.session.prepare(f"""
+                SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim, ingested_at, {similarity_fn}(embedding, ?) AS score
+                FROM {self.table_name}
+                ORDER BY embedding ANN OF ?
+                LIMIT ?
+                """)
+        return self._ann_query_stmt
 
     def list_docs(self) -> list[dict]:
         """Return a list of documents currently stored: {doc_id, chunks, embedding_model}."""
