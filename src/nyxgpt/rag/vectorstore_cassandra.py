@@ -65,6 +65,17 @@ class VectorStoreError(RuntimeError):
     pass
 
 
+# Stay well under Cassandra's default batch_size_fail_threshold_in_kb (50KB) -
+# a row's embedding vector alone can be several KB, so the configured
+# cassandra_batch_size row count is not sufficient to bound payload size.
+_MAX_BATCH_BYTES = 40 * 1024
+
+
+def _estimate_row_bytes(text: str, embedding: list[float], metadata_json: str) -> int:
+    """Rough estimate of a chunk row's serialized CQL payload size in bytes."""
+    return len(text.encode("utf-8")) + len(embedding) * 4 + len(metadata_json.encode("utf-8")) + 128
+
+
 def _candidate_fetch_multiplier(metadata_filter: MetadataFilter | None) -> int:
     """Determine how many extra ANN candidates to fetch per requested result.
 
@@ -599,51 +610,54 @@ class CassandraVectorStore:
         stmt = self._insert_stmt
 
         # Group inserts into batches to cut down on network round trips -
-        # a single-chunk document skips batching overhead entirely.
+        # a single-chunk document skips batching overhead entirely. Batches
+        # are flushed once either cassandra_batch_size rows or _MAX_BATCH_BYTES
+        # of estimated payload is reached, whichever comes first, so large
+        # embeddings/chunks can't build a batch that a real Cassandra cluster
+        # rejects with "Batch too large".
         batch_size = max(1, self.cfg.batch_size)
-        rows = list(zip(texts_l, embs_l, metas_l, strict=False))
 
-        for batch_start in range(0, len(rows), batch_size):
-            batch_rows = rows[batch_start : batch_start + batch_size]
-            if len(batch_rows) == 1:
-                idx = batch_start
-                text, emb, meta = batch_rows[0]
-                self.session.execute(
-                    stmt,
-                    (
-                        doc_id,
-                        idx,
-                        text,
-                        json.dumps(meta),
-                        emb,
-                        embedding_model,
-                        embedding_dim,
-                        doc_hash,
-                        ingested_at,
-                        now,
-                    ),
-                )
-                continue
+        def _row_params(idx: int, text: str, emb: list[float], meta_json: str) -> tuple:
+            return (
+                doc_id,
+                idx,
+                text,
+                meta_json,
+                emb,
+                embedding_model,
+                embedding_dim,
+                doc_hash,
+                ingested_at,
+                now,
+            )
 
-            batch = BatchStatement(batch_type=BatchType.UNLOGGED)
-            for offset, (text, emb, meta) in enumerate(batch_rows):
-                idx = batch_start + offset
-                batch.add(
-                    stmt,
-                    (
-                        doc_id,
-                        idx,
-                        text,
-                        json.dumps(meta),
-                        emb,
-                        embedding_model,
-                        embedding_dim,
-                        doc_hash,
-                        ingested_at,
-                        now,
-                    ),
-                )
-            self.session.execute(batch)
+        pending: list[tuple] = []
+
+        def _flush() -> None:
+            if not pending:
+                return
+            if len(pending) == 1:
+                self.session.execute(stmt, pending[0])
+            else:
+                batch = BatchStatement(batch_type=BatchType.UNLOGGED)
+                for params in pending:
+                    batch.add(stmt, params)
+                self.session.execute(batch)
+            pending.clear()
+
+        pending_bytes = 0
+        for idx, (text, emb, meta) in enumerate(zip(texts_l, embs_l, metas_l, strict=False)):
+            meta_json = json.dumps(meta)
+            row_bytes = _estimate_row_bytes(text, emb, meta_json)
+            if pending and (
+                len(pending) >= batch_size or pending_bytes + row_bytes > _MAX_BATCH_BYTES
+            ):
+                _flush()
+                pending_bytes = 0
+            pending.append(_row_params(idx, text, emb, meta_json))
+            pending_bytes += row_bytes
+
+        _flush()
 
     # ----------------------------
     # Query

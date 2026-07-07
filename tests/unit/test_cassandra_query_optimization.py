@@ -5,6 +5,8 @@ Tests cover:
 - CassandraConfig.batch_size field and wiring through _cassandra_cfg()
 - upsert_chunks batches multiple chunks into a single BatchStatement
 - upsert_chunks splits into multiple batches once cassandra_batch_size is exceeded
+- upsert_chunks splits into multiple batches once the estimated payload size
+  nears Cassandra's batch size limit, even under cassandra_batch_size
 - upsert_chunks skips batching entirely for a single chunk
 - query_by_embedding prepares the ANN statement once and reuses it across calls
 - _candidate_fetch_multiplier scales the ANN candidate pool with active filters
@@ -182,6 +184,32 @@ def test_upsert_chunks_splits_across_batch_size(monkeypatch: pytest.MonkeyPatch)
 
     # 5 chunks with batch_size=2 -> batches of [2, 2, 1] = 3 execute() calls
     assert mock_session.execute.call_count == 3
+
+
+@pytest.mark.unit
+def test_upsert_chunks_splits_across_byte_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Large rows are split across batches by estimated size even under cassandra_batch_size.
+
+    Each row here is ~48KB (768-dim embedding + 40KB of text), so packing
+    cassandra_batch_size=20 of them into one BatchStatement would produce a
+    ~960KB payload - far past what a real Cassandra cluster accepts. The
+    _MAX_BATCH_BYTES cap should force a flush after each row.
+    """
+    store, mock_session = _make_store(monkeypatch, batch_size="20")
+
+    large_text = "x" * 40_000
+    embedding = [0.1] * 768
+    texts = [large_text for _ in range(4)]
+    embeddings = [embedding for _ in range(4)]
+    metadatas = [{} for _ in range(4)]
+
+    store.upsert_chunks("doc1", texts, embeddings, metadatas)
+
+    # Each ~48KB row exceeds _MAX_BATCH_BYTES (40KB) on its own, so every row
+    # is flushed individually -> 4 execute() calls, none of them batches.
+    assert mock_session.execute.call_count == 4
+    for call in mock_session.execute.call_args_list:
+        assert not isinstance(call[0][0], BatchStatement)
 
 
 @pytest.mark.unit

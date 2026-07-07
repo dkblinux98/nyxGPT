@@ -274,7 +274,7 @@ cassandra_table = rag_chunks
 | `cassandra_pool_size` | Number of core connections per host in the driver-level pool (integer ≥ 1, default: `2`) |
 | `cassandra_health_check_interval` | Seconds between automatic health check queries; a check is run on the next `get_session()` call once this interval has elapsed (float > 0, default: `30.0`) |
 | `cassandra_reconnect_max_attempts` | Maximum number of reconnection attempts before giving up (integer ≥ 1, default: `3`) |
-| `cassandra_batch_size` | Number of chunk upserts grouped into a single Cassandra batch during ingestion (integer 1-100, default: `20`) |
+| `cassandra_batch_size` | Maximum number of chunk upserts grouped into a single Cassandra batch during ingestion (integer 1-100, default: `20`); batches are also flushed early once their estimated payload nears Cassandra's default 50KB batch size limit, so this is a ceiling and does not need to be tuned down for larger `embedding_dim`/`chunk_size` values |
 
 **RAG Prompt Templates:**
 
