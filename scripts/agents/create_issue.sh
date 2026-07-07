@@ -80,8 +80,8 @@ BODY
 Labels:
   Agents use exactly two labels: "Feature" for planned work and
   "Acceptance Failure" for bugs/defects found before release.
-  NEVER apply the "Bug" label -- it is reserved for production issues
-  and set only by the human owner.
+  NEVER apply the "Production Defect" label (formerly "Bug") -- it is
+  reserved for production issues and set only by the human owner.
 
 Environment:
   Requires GH_TOKEN or agent token to be set
