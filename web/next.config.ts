@@ -111,6 +111,37 @@ export default withPWA({
           },
         },
       },
+      // Background sync: queue session mutations (rename, pin/unpin, delete,
+      // title, filename sync) made while offline and replay them once
+      // connectivity returns, instead of just failing the request. These
+      // routes are safe to queue because the UI already applies optimistic
+      // updates and the requests are small, idempotent-ish state changes.
+      {
+        urlPattern: /^\/api\/sessions\/[^/]+\/(rename|title|pin|unpin|delete|sync-filename)$/i,
+        method: "POST",
+        handler: "NetworkOnly",
+        options: {
+          backgroundSync: {
+            name: "session-mutations-queue",
+            options: {
+              maxRetentionTime: 24 * 60, // 24 hours in minutes
+            },
+          },
+        },
+      },
+      {
+        urlPattern: /^\/api\/sessions\/[^/]+\/documents\/[^/]+$/i,
+        method: "DELETE",
+        handler: "NetworkOnly",
+        options: {
+          backgroundSync: {
+            name: "session-mutations-queue",
+            options: {
+              maxRetentionTime: 24 * 60, // 24 hours in minutes
+            },
+          },
+        },
+      },
     ],
   },
 })(analyzedConfig);

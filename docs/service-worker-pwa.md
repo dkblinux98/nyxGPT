@@ -106,6 +106,20 @@ API Cache:       50 entries, 5 minutes
 3. Clear cache and reload to see caching behavior
 4. Use Network tab to verify cache hits vs network requests
 
+### Test Background Sync
+1. Build and start the production server, open the app, and go offline
+   (DevTools > Network > Offline)
+2. Rename, pin/unpin, or delete a session, or delete a document
+3. Confirm the UI updates optimistically and *stays* updated (no rollback
+   or "failed" toast) — instead you should see an info toast noting the
+   change will complete once you're back online
+4. Open DevTools > Application > Background Services > Background Sync (or
+   inspect the `session-mutations-queue` IndexedDB store) to see the queued
+   request
+5. Go back online and confirm the queued request fires automatically
+   (visible in the Network tab or by reloading and seeing the change
+   persisted server-side)
+
 ### Test Service Worker Updates
 1. Make changes to the app
 2. Build and deploy
@@ -113,30 +127,43 @@ API Cache:       50 entries, 5 minutes
 4. Service worker will download new version in background
 5. Close all tabs and reopen - new version activates
 
-## Background Sync (Future Enhancement)
+## Background Sync
 
-Current implementation focuses on:
+Implemented:
 - ✅ Cache static assets
 - ✅ Offline fallback page
 - ✅ Cache strategies
+- ✅ Background sync
 
-Background sync for queueing offline actions (e.g., sending messages while offline) can be added in a future iteration by:
+Session-mutation requests made while offline are queued by the service
+worker and automatically replayed once connectivity returns, instead of
+simply failing:
 
-```typescript
-// In next.config.ts, add to runtimeCaching:
-{
-  urlPattern: /^\/api\/chat\/.*/i,
-  handler: "NetworkOnly",
-  options: {
-    backgroundSync: {
-      name: "chat-queue",
-      options: {
-        maxRetentionTime: 24 * 60, // 24 hours in minutes
-      },
-    },
-  },
-}
-```
+- **`session-mutations-queue`**: `POST /api/sessions/{name}/rename`,
+  `/pin`, `/unpin`, `/delete`, `/title`, `/sync-filename`, and
+  `DELETE /api/sessions/{name}/documents/{doc_id}`.
+- Uses the `NetworkOnly` handler with a `backgroundSync` plugin
+  (`workbox-background-sync`), retaining queued requests for 24 hours
+  (`maxRetentionTime: 24 * 60`).
+- The browser replays the queue via the Background Sync API when available,
+  falling back to a retry-on-reconnect strategy otherwise.
+- These routes are safe to queue because the UI already applies optimistic
+  updates (see `web/src/hooks/useSessionCache.ts`). However, Workbox's
+  `NetworkOnly` strategy still rejects the calling `fetch()` even for a
+  queued request — the call sites in `web/src/app/page.tsx` (`deleteSession`,
+  `renameSession`, `togglePin`) and `web/src/app/components/ChatPane.tsx`
+  (`detachDocument`) use `isQueuedForBackgroundSync()`
+  (`web/src/app/lib/backgroundSync.ts`) to detect that case — offline, with
+  an active service worker controller, and a network-error `TypeError` — and
+  skip the rollback/error-toast so the optimistic update sticks and the user
+  sees an informational toast instead.
+
+Chat streaming (`/api/chat/stream`) is intentionally excluded from
+background sync: it's a long-lived SSE response, and replaying a queued
+request has no live client to stream the reply to. File uploads
+(`POST /api/sessions/{name}/documents`) are also excluded, since large
+request bodies are a poor fit for the background-sync queue and users
+expect immediate upload feedback rather than a silent retry.
 
 ## Monitoring
 
