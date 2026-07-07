@@ -18,9 +18,13 @@ export const metadata: Metadata = {
   title: "nyxGPT",
   description: "Your private AI assistant powered by local LLMs",
   icons: {
-    icon: "/stone-soup-creative-logo.png",
-    shortcut: "/stone-soup-creative-logo.png",
-    apple: "/stone-soup-creative-logo.png",
+    icon: [
+      { url: "/favicon-16x16.png", sizes: "16x16", type: "image/png" },
+      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+      { url: "/favicon.ico", sizes: "any" },
+    ],
+    shortcut: "/favicon.ico",
+    apple: "/apple-touch-icon.png",
   },
   manifest: "/manifest.json",
 };
