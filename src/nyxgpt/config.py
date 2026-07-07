@@ -693,6 +693,26 @@ def get_cassandra_reconnect_max_attempts(cfg: ConfigParser) -> int:
         return 3
 
 
+def get_cassandra_batch_size(cfg: ConfigParser) -> int:
+    """Get the number of chunk upserts grouped into a single Cassandra batch.
+
+    Larger batches reduce network round trips during ingestion at the cost of
+    larger individual requests; the driver enforces its own batch size limits,
+    so this is clamped to a conservative range.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Batch size (default: 20, range: 1-100)
+    """
+    try:
+        size = cfg.getint("rag", "cassandra_batch_size", fallback=20)
+        return max(1, min(100, size))
+    except Exception:
+        return 20
+
+
 def get_batch_enabled(cfg: ConfigParser) -> bool:
     """Get whether request batching is enabled.
 
@@ -794,6 +814,7 @@ __all__ = [
     "get_cassandra_pool_size",
     "get_cassandra_health_check_interval",
     "get_cassandra_reconnect_max_attempts",
+    "get_cassandra_batch_size",
     "validate_config",
     "ConfigValidationError",
 ]

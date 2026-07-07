@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from cassandra.cluster import Cluster, Session
-from cassandra.query import SimpleStatement
+from cassandra.query import BatchStatement, BatchType, PreparedStatement, SimpleStatement
 
 from nyxgpt.config import load_config
 
@@ -26,6 +26,7 @@ class CassandraConfig:
     pool_size: int = 2
     health_check_interval: float = 30.0
     reconnect_max_attempts: int = 3
+    batch_size: int = 20
 
 
 @dataclass
@@ -64,6 +65,35 @@ class VectorStoreError(RuntimeError):
     pass
 
 
+def _candidate_fetch_multiplier(metadata_filter: MetadataFilter | None) -> int:
+    """Determine how many extra ANN candidates to fetch per requested result.
+
+    Each active metadata filter predicate can independently reject a
+    candidate row, so the more filters are active the more candidates need
+    to be pulled from the ANN search to still end up with ``k`` results
+    after post-filtering. Capped to avoid pulling excessive rows when many
+    filters are combined.
+    """
+    if metadata_filter is None:
+        return 1
+
+    active_filters = sum(
+        1
+        for value in (
+            metadata_filter.doc_ids,
+            metadata_filter.filename,
+            metadata_filter.tags,
+            metadata_filter.date_from,
+            metadata_filter.date_to,
+        )
+        if value
+    )
+    if active_filters == 0:
+        return 1
+
+    return min(2 + active_filters, 6)
+
+
 def _cassandra_cfg() -> CassandraConfig:
     cfg = load_config(None)
 
@@ -75,6 +105,7 @@ def _cassandra_cfg() -> CassandraConfig:
     pool_size = cfg.getint("rag", "cassandra_pool_size", fallback=2)
     health_check_interval = cfg.getfloat("rag", "cassandra_health_check_interval", fallback=30.0)
     reconnect_max_attempts = cfg.getint("rag", "cassandra_reconnect_max_attempts", fallback=3)
+    batch_size = cfg.getint("rag", "cassandra_batch_size", fallback=20)
 
     return CassandraConfig(
         hosts=hosts,
@@ -84,6 +115,7 @@ def _cassandra_cfg() -> CassandraConfig:
         pool_size=pool_size,
         health_check_interval=health_check_interval,
         reconnect_max_attempts=reconnect_max_attempts,
+        batch_size=batch_size,
     )
 
 
@@ -342,6 +374,11 @@ class CassandraVectorStore:
         self.session = self._pool.get_session()
         self._keyspace_ready = False
         self._migration_checked = False
+        # Prepared statements are cached per instance (table_name is fixed for
+        # the instance's lifetime) so the read/write paths only pay CQL
+        # parsing cost once per collection instead of on every call.
+        self._insert_stmt: PreparedStatement | None = None
+        self._ann_query_stmt: PreparedStatement | None = None
 
     @property
     def table_name(self) -> str:
@@ -436,6 +473,10 @@ class CassandraVectorStore:
             self.session = self._pool.get_session()
             self._keyspace_ready = False
             self._migration_checked = False
+            # Prepared statements are bound to the old session; drop the cache
+            # so they get re-prepared against the new one on next use.
+            self._insert_stmt = None
+            self._ann_query_stmt = None
         return success
 
     # ----------------------------
@@ -548,30 +589,61 @@ class CassandraVectorStore:
 
         # Current timestamp
         now = datetime.utcnow()
+        ingested_at = original_ingested_at if original_ingested_at else now
 
-        stmt = self.session.prepare(f"""
-            INSERT INTO {self.table_name} (doc_id, chunk_id, text, metadata, embedding, embedding_model, embedding_dim, doc_hash, ingested_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """)
+        if self._insert_stmt is None:
+            self._insert_stmt = self.session.prepare(f"""
+                INSERT INTO {self.table_name} (doc_id, chunk_id, text, metadata, embedding, embedding_model, embedding_dim, doc_hash, ingested_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """)
+        stmt = self._insert_stmt
 
-        for idx, (text, emb, meta) in enumerate(zip(texts_l, embs_l, metas_l, strict=False)):
-            # For updates, preserve original ingested_at; for new docs, use current time
-            ingested_at = original_ingested_at if original_ingested_at else now
-            self.session.execute(
-                stmt,
-                (
-                    doc_id,
-                    idx,
-                    text,
-                    json.dumps(meta),
-                    emb,
-                    embedding_model,
-                    embedding_dim,
-                    doc_hash,
-                    ingested_at,
-                    now,
-                ),
-            )
+        # Group inserts into batches to cut down on network round trips -
+        # a single-chunk document skips batching overhead entirely.
+        batch_size = max(1, self.cfg.batch_size)
+        rows = list(zip(texts_l, embs_l, metas_l, strict=False))
+
+        for batch_start in range(0, len(rows), batch_size):
+            batch_rows = rows[batch_start : batch_start + batch_size]
+            if len(batch_rows) == 1:
+                idx = batch_start
+                text, emb, meta = batch_rows[0]
+                self.session.execute(
+                    stmt,
+                    (
+                        doc_id,
+                        idx,
+                        text,
+                        json.dumps(meta),
+                        emb,
+                        embedding_model,
+                        embedding_dim,
+                        doc_hash,
+                        ingested_at,
+                        now,
+                    ),
+                )
+                continue
+
+            batch = BatchStatement(batch_type=BatchType.UNLOGGED)
+            for offset, (text, emb, meta) in enumerate(batch_rows):
+                idx = batch_start + offset
+                batch.add(
+                    stmt,
+                    (
+                        doc_id,
+                        idx,
+                        text,
+                        json.dumps(meta),
+                        emb,
+                        embedding_model,
+                        embedding_dim,
+                        doc_hash,
+                        ingested_at,
+                        now,
+                    ),
+                )
+            self.session.execute(batch)
 
     # ----------------------------
     # Query
@@ -604,18 +676,25 @@ class CassandraVectorStore:
 
         start_time = time.perf_counter()
 
-        # Build query - include ingested_at for date filtering
-        stmt = SimpleStatement(
-            f"""
-            SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim, ingested_at, similarity_cosine(embedding, %s) AS score
-            FROM {self.table_name}
-            ORDER BY embedding ANN OF %s
-            LIMIT %s
-            """,
-            fetch_size=k * 2 if metadata_filter else k,  # Fetch more if filtering
-        )
+        # Widen the ANN candidate pool based on how many post-filter predicates
+        # are active - each active filter can independently reject candidates,
+        # so a flat 2x multiplier under-fetches once more than one filter is set.
+        fetch_n = k * _candidate_fetch_multiplier(metadata_filter)
 
-        rows = self.session.execute(stmt, (embedding, embedding, k * 2 if metadata_filter else k))
+        # Prepare once per instance and reuse - avoids re-parsing the ANN
+        # query CQL on every search call (the table name is fixed per instance).
+        if self._ann_query_stmt is None:
+            self._ann_query_stmt = self.session.prepare(f"""
+                SELECT doc_id, chunk_id, text, metadata, embedding_model, embedding_dim, ingested_at, similarity_cosine(embedding, ?) AS score
+                FROM {self.table_name}
+                ORDER BY embedding ANN OF ?
+                LIMIT ?
+                """)
+
+        bound = self._ann_query_stmt.bind((embedding, embedding, fetch_n))
+        bound.fetch_size = fetch_n
+
+        rows = self.session.execute(bound)
         out: list[dict] = []
         scores: list[float] = []
         for r in rows:

@@ -266,9 +266,26 @@ def test_cassandra_vectorstore_upsert_chunks(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
 
+    from cassandra.query import BatchStatement, BoundStatement, PreparedStatement
+
     mock_session = Mock()
     mock_cluster = Mock()
     mock_cluster.connect.return_value = mock_session
+
+    # BatchStatement.add() type-checks its statement argument against the
+    # real driver classes, so the prepared statement mock must carry a spec.
+    mock_prepared = Mock(spec=PreparedStatement)
+
+    def _bind(params):
+        bound = Mock(spec=BoundStatement)
+        bound.values = params
+        bound.custom_payload = None
+        bound.keyspace = None
+        bound.routing_key = None
+        return bound
+
+    mock_prepared.bind.side_effect = _bind
+    mock_session.prepare.return_value = mock_prepared
 
     monkeypatch.setattr(
         "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, **kwargs: mock_cluster
@@ -285,10 +302,13 @@ def test_cassandra_vectorstore_upsert_chunks(monkeypatch: pytest.MonkeyPatch) ->
 
     store.upsert_chunks("doc1", texts, embeddings, metadatas)
 
-    # Verify session.prepare was called
-    assert mock_session.prepare.called
-    # Verify session.execute was called twice (once per chunk)
-    assert mock_session.execute.call_count == 2
+    # Verify session.prepare was called (once, statement is cached on the instance)
+    assert mock_session.prepare.call_count == 1
+    # Both chunks fit under the default batch size, so they're sent as a
+    # single BatchStatement instead of one execute() per chunk.
+    assert mock_session.execute.call_count == 1
+    executed = mock_session.execute.call_args[0][0]
+    assert isinstance(executed, BatchStatement)
 
 
 @pytest.mark.unit
