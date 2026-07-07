@@ -3,6 +3,7 @@
 import { Component, useCallback, useEffect, useRef, useState } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import LoadingSpinner from '../../components/LoadingSpinner';
+import { extractSseEvents, safeJsonParse } from '../lib/sse';
 import { useToast } from '../../contexts/ToastContext';
 
 // Error Boundary for Virtuoso rendering
@@ -1026,27 +1027,12 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
 
         buffer += decoder.decode(value, { stream: true });
 
-        // Process complete SSE events (events end with \n\n)
-        const events = buffer.split('\n\n');
-        // Keep the last incomplete event in the buffer
-        buffer = events.pop() || '';
+        // Process complete SSE events; framing, comment/keep-alive frames,
+        // multi-line data fields, and CRLF handled by the shared parser (#3112)
+        const { events, rest } = extractSseEvents(buffer);
+        buffer = rest;
 
-        for (const eventText of events) {
-          if (!eventText.trim()) continue;
-
-          // Parse SSE event format
-          const lines = eventText.split('\n');
-          let eventType = 'message'; // default event type
-          let eventData = '';
-
-          for (const line of lines) {
-            if (line.startsWith('event:')) {
-              eventType = line.substring(6).trim();
-            } else if (line.startsWith('data:')) {
-              eventData = line.substring(5).trim();
-            }
-            // id: and comment lines are ignored for now
-          }
+        for (const { event: eventType, data: eventData } of events) {
 
           // Handle different event types
           if (eventType === 'heartbeat') {
@@ -1054,18 +1040,19 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
             continue;
           } else if (eventType === 'metadata') {
             // Parse metadata (session, model, timestamp)
-            try {
-              const metadata = JSON.parse(eventData);
+            const metadata = safeJsonParse(eventData);
+            if (metadata) {
               // Metadata event can be used for UI indicators if needed
-              // For now, just log it for debugging
               console.debug('Stream metadata:', metadata);
-            } catch (e) {
-              console.error('Failed to parse metadata:', e);
+            } else if (eventData) {
+              console.error('Failed to parse metadata:', eventData);
             }
           } else if (eventType === 'rag_context' || eventType === 'rag_metadata') {
             // Parse RAG context/metadata (support both old and new names)
-            try {
-              const ragData = JSON.parse(eventData);
+            const ragData = safeJsonParse<{ type?: string; chunks?: RagChunk[] }>(eventData);
+            if (!ragData) {
+              if (eventData) console.error('Failed to parse RAG context:', eventData);
+            } else {
               if (ragData.type === 'rag_metadata' && Array.isArray(ragData.chunks)) {
                 ragChunks = ragData.chunks;
                 // Update message with RAG chunks
@@ -1079,13 +1066,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                   return next;
                 });
               }
-            } catch (e) {
-              console.error('Failed to parse RAG context:', e);
             }
           } else if (eventType === 'text' || eventType === 'message') {
             // Parse text content (support both new 'text' and legacy 'message')
-            try {
-              const messageData = JSON.parse(eventData);
+            const messageData = safeJsonParse<{ content?: string }>(eventData);
+            if (!messageData) {
+              // Empty or fragmented payloads are skipped instead of crashing (#3112)
+              if (eventData) console.error('Failed to parse text data:', eventData);
+            } else {
               const content = messageData.content || '';
               // Note: messageData.tokens and messageData.elapsed are available but not displayed yet
 
@@ -1099,37 +1087,26 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 }
                 return next;
               });
-            } catch (e) {
-              console.error('Failed to parse text data:', e);
             }
           } else if (eventType === 'error') {
             // Handle error event
-            try {
-              const errorData = JSON.parse(eventData);
+            const errorData = safeJsonParse<{ error?: string }>(eventData);
+            if (errorData) {
               console.error('Stream error:', errorData);
               toast.error(`Error: ${errorData.error}`);
-            } catch (e) {
-              console.error('Failed to parse error data:', e);
+            } else {
+              console.error('Stream error event with unparseable payload:', eventData);
+              toast.error('Streaming error');
             }
             break;
           } else if (eventType === 'retry') {
             // Handle retry status
-            try {
-              const retryData = JSON.parse(eventData);
-              console.debug('Connection retry:', retryData);
-              // Could show a toast notification for retries if desired
-            } catch (e) {
-              console.error('Failed to parse retry data:', e);
-            }
+            const retryData = safeJsonParse(eventData);
+            if (retryData) console.debug('Connection retry:', retryData);
           } else if (eventType === 'done') {
-            // Stream completed
-            try {
-              const doneData = JSON.parse(eventData);
-              // doneData contains total_tokens and elapsed time
-              console.debug('Stream completed:', doneData);
-            } catch (e) {
-              // Ignore parse errors for done event
-            }
+            // Stream completed; parse errors on the done payload are ignored
+            const doneData = safeJsonParse(eventData);
+            if (doneData) console.debug('Stream completed:', doneData);
             break;
           }
         }
@@ -1271,27 +1248,12 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
 
         buffer += decoder.decode(value, { stream: true });
 
-        // Process complete SSE events (events end with \n\n)
-        const events = buffer.split('\n\n');
-        // Keep the last incomplete event in the buffer
-        buffer = events.pop() || '';
+        // Process complete SSE events; framing, comment/keep-alive frames,
+        // multi-line data fields, and CRLF handled by the shared parser (#3112)
+        const { events, rest } = extractSseEvents(buffer);
+        buffer = rest;
 
-        for (const eventText of events) {
-          if (!eventText.trim()) continue;
-
-          // Parse SSE event format
-          const lines = eventText.split('\n');
-          let eventType = 'message'; // default event type
-          let eventData = '';
-
-          for (const line of lines) {
-            if (line.startsWith('event:')) {
-              eventType = line.substring(6).trim();
-            } else if (line.startsWith('data:')) {
-              eventData = line.substring(5).trim();
-            }
-            // id: and comment lines are ignored for now
-          }
+        for (const { event: eventType, data: eventData } of events) {
 
           // Handle different event types
           if (eventType === 'heartbeat') {
@@ -1299,18 +1261,19 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
             continue;
           } else if (eventType === 'metadata') {
             // Parse metadata (session, model, timestamp)
-            try {
-              const metadata = JSON.parse(eventData);
+            const metadata = safeJsonParse(eventData);
+            if (metadata) {
               // Metadata event can be used for UI indicators if needed
-              // For now, just log it for debugging
               console.debug('Stream metadata:', metadata);
-            } catch (e) {
-              console.error('Failed to parse metadata:', e);
+            } else if (eventData) {
+              console.error('Failed to parse metadata:', eventData);
             }
           } else if (eventType === 'rag_context' || eventType === 'rag_metadata') {
             // Parse RAG context/metadata (support both old and new names)
-            try {
-              const ragData = JSON.parse(eventData);
+            const ragData = safeJsonParse<{ type?: string; chunks?: RagChunk[] }>(eventData);
+            if (!ragData) {
+              if (eventData) console.error('Failed to parse RAG context:', eventData);
+            } else {
               if (ragData.type === 'rag_metadata' && Array.isArray(ragData.chunks)) {
                 ragChunks = ragData.chunks;
                 // Update message with RAG chunks
@@ -1324,13 +1287,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                   return next;
                 });
               }
-            } catch (e) {
-              console.error('Failed to parse RAG context:', e);
             }
           } else if (eventType === 'text' || eventType === 'message') {
             // Parse text content (support both new 'text' and legacy 'message')
-            try {
-              const messageData = JSON.parse(eventData);
+            const messageData = safeJsonParse<{ content?: string }>(eventData);
+            if (!messageData) {
+              // Empty or fragmented payloads are skipped instead of crashing (#3112)
+              if (eventData) console.error('Failed to parse text data:', eventData);
+            } else {
               const content = messageData.content || '';
               // Note: messageData.tokens and messageData.elapsed are available but not displayed yet
 
@@ -1344,37 +1308,26 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 }
                 return next;
               });
-            } catch (e) {
-              console.error('Failed to parse text data:', e);
             }
           } else if (eventType === 'error') {
             // Handle error event
-            try {
-              const errorData = JSON.parse(eventData);
+            const errorData = safeJsonParse<{ error?: string }>(eventData);
+            if (errorData) {
               console.error('Stream error:', errorData);
               toast.error(`Error: ${errorData.error}`);
-            } catch (e) {
-              console.error('Failed to parse error data:', e);
+            } else {
+              console.error('Stream error event with unparseable payload:', eventData);
+              toast.error('Streaming error');
             }
             break;
           } else if (eventType === 'retry') {
             // Handle retry status
-            try {
-              const retryData = JSON.parse(eventData);
-              console.debug('Connection retry:', retryData);
-              // Could show a toast notification for retries if desired
-            } catch (e) {
-              console.error('Failed to parse retry data:', e);
-            }
+            const retryData = safeJsonParse(eventData);
+            if (retryData) console.debug('Connection retry:', retryData);
           } else if (eventType === 'done') {
-            // Stream completed
-            try {
-              const doneData = JSON.parse(eventData);
-              // doneData contains total_tokens and elapsed time
-              console.debug('Stream completed:', doneData);
-            } catch (e) {
-              // Ignore parse errors for done event
-            }
+            // Stream completed; parse errors on the done payload are ignored
+            const doneData = safeJsonParse(eventData);
+            if (doneData) console.debug('Stream completed:', doneData);
             break;
           }
         }
