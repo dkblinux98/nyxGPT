@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import withPWA from "@ducanh2912/next-pwa";
+import withBundleAnalyzer from "@next/bundle-analyzer";
 
 export const imageConfig = {
   formats: ["image/avif", "image/webp"] as Array<"image/avif" | "image/webp">,
@@ -9,6 +10,11 @@ export const imageConfig = {
 
 const nextConfig: NextConfig = {
   images: imageConfig,
+  // Lets Next.js tree-shake named imports from these packages down to only
+  // the members actually used, instead of pulling in the whole module.
+  experimental: {
+    optimizePackageImports: ["react-virtuoso"],
+  },
   allowedDevOrigins: [
     "localhost",
     "127.0.0.1",
@@ -48,6 +54,10 @@ const nextConfig: NextConfig = {
     return config;
   },
 };
+
+const analyzedConfig = withBundleAnalyzer({
+  enabled: process.env.ANALYZE === "true",
+})(nextConfig);
 
 export default withPWA({
   dest: "public",
@@ -103,4 +113,4 @@ export default withPWA({
       },
     ],
   },
-})(nextConfig);
+})(analyzedConfig);

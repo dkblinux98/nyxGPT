@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev --webpack",
     "build": "next build --webpack",
+    "analyze": "ANALYZE=true next build --webpack",
     "start": "next start",
     "lint": "eslint",
     "type-check": "tsc --noEmit",
@@ -22,6 +23,7 @@
     "undici": "^6.15.0"
   },
   "devDependencies": {
+    "@next/bundle-analyzer": "^16.2.10",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.1",
     "@testing-library/user-event": "^14.6.1",

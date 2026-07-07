@@ -493,6 +493,35 @@ This ensures tests verify that virtualization prevents rendering all 1000+ items
 
 ---
 
+#### Bundle Size Optimization
+
+The web UI is kept lean via a small set of build-time practices:
+
+- **Code splitting** — `ChatPane` and `VirtualizedSessionList` are loaded with
+  `next/dynamic` (see `src/app/page.tsx`) so they ship in separate chunks
+  fetched only when needed, not in the initial page payload.
+- **Vendor chunk isolation** — `web/next.config.ts` splits `react-virtuoso`
+  into its own `vendor-virtuoso` chunk so it's fetched only alongside the
+  virtualized list, not on every route.
+- **Tree shaking** — `experimental.optimizePackageImports` is enabled for
+  `react-virtuoso` so only the imports actually used are bundled.
+- **Dependency audit** — run `npx depcheck` from `web/` to confirm every
+  declared dependency is still used before adding new ones.
+
+**Analyzing the bundle:**
+
+```bash
+cd web
+npm run analyze
+```
+
+This produces interactive treemaps at `web/.next/analyze/client.html`,
+`nodejs.html`, and `edge.html` showing exactly what contributes to each
+chunk's size (via `@next/bundle-analyzer`). Use this before/after adding a
+new dependency or page to catch regressions.
+
+---
+
 ## Operational dependencies
 
 For reliable UI operation, ensure the following are active:
