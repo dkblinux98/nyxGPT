@@ -1539,8 +1539,8 @@ def test_chunk_text_backward_compatibility(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.unit
-def test_parallel_query_execution(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test parallel execution of multiple query variants."""
+def test_batched_query_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test batched execution of multiple query variants via query_by_embeddings_batch."""
     cfg = ConfigParser()
     cfg["rag"] = {
         "chat_top_k": "5",
@@ -1548,7 +1548,6 @@ def test_parallel_query_execution(monkeypatch: pytest.MonkeyPatch) -> None:
         "max_chunks": "5",
         "dedupe": "true",
         "enable_query_expansion": "true",
-        "query_parallel_workers": "4",
     }
 
     monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
@@ -1582,30 +1581,25 @@ def test_parallel_query_execution(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("nyxgpt.rag.rag.embed_texts", mock_embed_texts)
     monkeypatch.setattr("nyxgpt.rag.rag.embed_text", lambda _q, **kwargs: [0.1, 0.2, 0.3])
 
-    # Mock vector store that tracks parallel execution
+    # Mock vector store that tracks the batched search call
     class FakeStore:
         def __init__(self, **kwargs):
-            self.query_count = 0
-            self.queries_started = []
-            self.queries_completed = []
+            self.batch_calls: list[list[list[float]]] = []
 
-        def query_by_embedding(self, _emb, k: int, **kwargs):
-            self.query_count += 1
-            self.queries_started.append(self.query_count)
+        def query_by_embeddings_batch(self, embeddings, k: int, **kwargs):
+            self.batch_calls.append(embeddings)
             # Simulate varying results from different query variants
-            import time
-
-            time.sleep(0.01)  # Small delay to test parallelism
-            result = [
-                {
-                    "text": f"result {self.query_count}",
-                    "score": 0.90 - (self.query_count * 0.05),
-                    "doc_id": f"doc{self.query_count}",
-                    "chunk_id": 0,
-                },
+            return [
+                [
+                    {
+                        "text": f"result {idx}",
+                        "score": 0.90 - (idx * 0.05),
+                        "doc_id": f"doc{idx}",
+                        "chunk_id": 0,
+                    },
+                ]
+                for idx in range(1, len(embeddings) + 1)
             ]
-            self.queries_completed.append(self.query_count)
-            return result
 
         def list_docs(self):
             return []
@@ -1616,19 +1610,15 @@ def test_parallel_query_execution(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_store = FakeStore()
     monkeypatch.setattr("nyxgpt.rag.rag.CassandraVectorStore", lambda **kw: fake_store)
 
-    # Execute retrieval with multiple query variants
-    import time
-
     from nyxgpt.rag.rag import retrieve_context
 
-    start_time = time.perf_counter()
     results = retrieve_context("test query")
-    elapsed_time = time.perf_counter() - start_time
 
-    # Verify all three queries were executed
-    assert fake_store.query_count == 3
+    # Verify all three query embeddings were sent in a single batched call
+    assert len(fake_store.batch_calls) == 1
+    assert len(fake_store.batch_calls[0]) == 3
 
-    # Verify all queries were embedded in batch (parallel embedding)
+    # Verify all queries were embedded in batch
     assert len(embedded_texts) == 3
     assert embedded_texts[0] == "test query"
     assert embedded_texts[1] == "test query variant 1"
@@ -1636,11 +1626,6 @@ def test_parallel_query_execution(monkeypatch: pytest.MonkeyPatch) -> None:
 
     # Verify results were deduplicated and returned
     assert len(results) > 0
-
-    # Verify parallel execution completed faster than sequential would
-    # (With 3 queries each sleeping 0.01s, parallel should be ~0.01s vs sequential ~0.03s)
-    # Allow generous margin for test stability
-    assert elapsed_time < 0.05  # Should be much faster than sequential
 
 
 @pytest.mark.unit

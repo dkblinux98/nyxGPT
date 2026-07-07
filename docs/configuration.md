@@ -264,7 +264,6 @@ cassandra_table = rag_chunks
 | `dedupe` | Remove duplicate or near-duplicate chunks before injection |
 | `enable_query_expansion` | Generate alternative phrasings to improve retrieval |
 | `expansion_model` | Model for query expansion (optional, defaults to nyxgpt.default_model) |
-| `query_parallel_workers` | Number of worker threads for parallel vector searches when query expansion is enabled (default: 4, recommended: 2-8) |
 | `include_scores` | Include similarity scores in context headers (debugging only) |
 | `include_headers` | Include per-chunk headers like "[Context 1]" in injected context |
 | `cassandra_hosts` | Cassandra host(s) |

@@ -133,6 +133,18 @@ cassandra_table = rag_chunks
 > CQL similarity function used to score results, so changing it requires recreating the
 > vector index (drop and re-run `ensure_schema`) to take effect on existing collections.
 
+> **Note:** `ann_oversample_factor` compounds with the existing metadata-filter candidate
+> multiplier (up to 6x when a restrictive metadata filter is present), so the two can stack
+> up to 30x candidates fetched per query at the extremes of the configurable range. Tune
+> `ann_oversample_factor` down if you also apply heavy metadata filters.
+
+When query expansion (`enable_query_expansion = true`) produces multiple query variants,
+`retrieve_context` searches them with a single call to
+`CassandraVectorStore.query_by_embeddings_batch`, which runs all of the ANN searches
+concurrently via the driver's `execute_concurrent_with_args`, bounded by
+`cassandra_batch_query_concurrency`, instead of issuing one blocking `query_by_embedding`
+call per variant.
+
 ---
 
 ## Document Update Detection
