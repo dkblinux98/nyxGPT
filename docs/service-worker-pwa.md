@@ -110,7 +110,9 @@ API Cache:       50 entries, 5 minutes
 1. Build and start the production server, open the app, and go offline
    (DevTools > Network > Offline)
 2. Rename, pin/unpin, or delete a session, or delete a document
-3. Confirm the UI updates optimistically even though the network is offline
+3. Confirm the UI updates optimistically and *stays* updated (no rollback
+   or "failed" toast) — instead you should see an info toast noting the
+   change will complete once you're back online
 4. Open DevTools > Application > Background Services > Background Sync (or
    inspect the `session-mutations-queue` IndexedDB store) to see the queued
    request
@@ -146,8 +148,15 @@ simply failing:
 - The browser replays the queue via the Background Sync API when available,
   falling back to a retry-on-reconnect strategy otherwise.
 - These routes are safe to queue because the UI already applies optimistic
-  updates (see `web/src/hooks/useSessionCache.ts`), so the user sees the
-  change immediately and the request simply catches up in the background.
+  updates (see `web/src/hooks/useSessionCache.ts`). However, Workbox's
+  `NetworkOnly` strategy still rejects the calling `fetch()` even for a
+  queued request — the call sites in `web/src/app/page.tsx` (`deleteSession`,
+  `renameSession`, `togglePin`) and `web/src/app/components/ChatPane.tsx`
+  (`detachDocument`) use `isQueuedForBackgroundSync()`
+  (`web/src/app/lib/backgroundSync.ts`) to detect that case — offline, with
+  an active service worker controller, and a network-error `TypeError` — and
+  skip the rollback/error-toast so the optimistic update sticks and the user
+  sees an informational toast instead.
 
 Chat streaming (`/api/chat/stream`) is intentionally excluded from
 background sync: it's a long-lived SSE response, and replaying a queued

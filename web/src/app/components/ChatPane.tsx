@@ -4,6 +4,7 @@ import { Component, useCallback, useEffect, useRef, useState } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import { extractSseEvents, safeJsonParse } from '../lib/sse';
+import { isQueuedForBackgroundSync } from '../lib/backgroundSync';
 import { useToast } from '../../contexts/ToastContext';
 
 // Error Boundary for Virtuoso rendering
@@ -794,6 +795,13 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       const data = await res.json();
       setAttachedDocIds(data.attached_doc_ids || []);
     } catch (err) {
+      if (isQueuedForBackgroundSync(err)) {
+        // Request was queued by the service worker for replay once back
+        // online; the document will actually be detached once it fires.
+        setAttachedDocIds((prev) => prev.filter((id) => id !== docId));
+        toast.info('You are offline — document removal will complete when you reconnect');
+        return;
+      }
       console.error('Failed to detach document:', err);
     }
   }

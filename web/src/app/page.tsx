@@ -13,6 +13,7 @@ import { UnifiedSearch, UnifiedSearchRef } from '../components/UnifiedSearch';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { useSessionCache } from '../hooks/useSessionCache';
+import { isQueuedForBackgroundSync } from './lib/backgroundSync';
 
 // Route-based code splitting: ChatPane is large (2000+ lines) and only needed
 // after initial render; lazy-load it to reduce the initial bundle size.
@@ -297,6 +298,12 @@ function Home() {
         // Revalidate to ensure consistency
         await revalidate();
       } catch (e) {
+        if (isQueuedForBackgroundSync(e)) {
+          // Request was queued by the service worker for replay once back
+          // online; keep the optimistic update instead of rolling it back.
+          toast.info('You are offline — session deletion will complete when you reconnect');
+          return;
+        }
         // Rollback on failure: restore previous cache state
         rollback();
         setSelectedSession(previousSelection);
@@ -367,6 +374,12 @@ function Home() {
         // Revalidate to ensure consistency
         await revalidate();
       } catch (e) {
+        if (isQueuedForBackgroundSync(e)) {
+          // Request was queued by the service worker for replay once back
+          // online; keep the optimistic update instead of rolling it back.
+          toast.info('You are offline — rename will complete when you reconnect');
+          return;
+        }
         // Rollback on failure: restore previous cache state
         rollback();
         setSelectedSession(previousSelection);
@@ -462,6 +475,12 @@ function Home() {
         // Revalidate to ensure consistency
         await revalidate();
       } catch (e) {
+        if (isQueuedForBackgroundSync(e)) {
+          // Request was queued by the service worker for replay once back
+          // online; keep the optimistic update instead of rolling it back.
+          toast.info(`You are offline — ${action} will complete when you reconnect`);
+          return;
+        }
         // Rollback on failure: restore previous cache state
         rollback();
         toast.error(`Failed to ${action} session: ${e instanceof Error ? e.message : String(e)}`);
