@@ -3326,8 +3326,9 @@ async def rag_upload_file(
             # Parse frontmatter and content
             post = frontmatter.loads(content.decode("utf-8"))
 
-            # Extract metadata from frontmatter
-            metadata = dict(post.metadata) if post.metadata else {}
+            # Extract metadata from frontmatter (values stringified: `metadata`
+            # is dict[str, str] in this scope and is only string-formatted below)
+            metadata = {str(k): str(v) for k, v in post.metadata.items()} if post.metadata else {}
 
             # Convert markdown to plain text (strip HTML tags)
             # This preserves structure while making it searchable
