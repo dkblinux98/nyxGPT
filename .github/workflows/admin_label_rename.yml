@@ -1,0 +1,53 @@
+name: Admin - Rename Label
+
+# Owner-triggered administrative utility. Runs under the scrummaster agent
+# token per the identity policy (administrative actions are performed by
+# myGPT-scrummaster-agent). Renaming preserves the label on all issues/PRs
+# that carry it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_name:
+        description: 'Current label name'
+        required: true
+        type: string
+      to_name:
+        description: 'New label name'
+        required: true
+        type: string
+      description:
+        description: 'Optional new label description'
+        required: false
+        type: string
+
+permissions:
+  issues: write
+
+jobs:
+  rename-label:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+      FROM: ${{ inputs.from_name }}
+      TO: ${{ inputs.to_name }}
+      DESC: ${{ inputs.description }}
+    steps:
+      - name: Rename label
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Renaming label '$FROM' -> '$TO' in ${{ github.repository }}"
+
+          ENCODED_FROM=$(printf '%s' "$FROM" | jq -sRr @uri)
+          if [ -n "$DESC" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/labels/$ENCODED_FROM" \
+              -f new_name="$TO" -f description="$DESC"
+          else
+            gh api -X PATCH "repos/${{ github.repository }}/labels/$ENCODED_FROM" \
+              -f new_name="$TO"
+          fi
+
+          echo "Verifying..."
+          gh api "repos/${{ github.repository }}/labels" \
+            --jq ".[] | select(.name==\"$TO\") | {name, description}"
