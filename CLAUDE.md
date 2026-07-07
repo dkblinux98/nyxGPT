@@ -111,7 +111,8 @@ When creating GitHub issues:
 - Priority: P1 - High (default)
 - Effort: XS (default)
 - Module: Auto-detect from keywords (web-ui, api, rag, cli, tui, testing, documentation, security, observability), fallback to "api"
-- Label: "Feature" (or "Acceptance Failure" for bugs)
+- Label: "Feature" (or "Acceptance Failure" for bugs/defects found before release)
+- **NEVER use the "Bug" label.** It is reserved for production issues and applied only by the human owner. A `bug:` title prefix is fine; the label for any pre-release defect is always "Acceptance Failure".
 - Sprint: Current sprint (if active)
 - Milestone: Current open milestone (if exists)
 

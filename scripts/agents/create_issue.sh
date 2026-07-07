@@ -50,7 +50,7 @@ Examples:
   # Basic issue
   create_issue.sh \
     --title "Fix: memory leak in embeddings" \
-    --label Bug \
+    --label "Acceptance Failure" \
     --body "Description here"
 
   # Full project hygiene
@@ -66,8 +66,8 @@ Examples:
 
   # From heredoc
   create_issue.sh \
-    --title "Bug: timeout in API" \
-    --label Bug \
+    --title "bug: timeout in API" \
+    --label "Acceptance Failure" \
     --body "$(cat <<'BODY'
 ## Problem
 API times out after 30s
@@ -76,6 +76,12 @@ API times out after 30s
 1. Call /api/chat with large prompt
 BODY
 )"
+
+Labels:
+  Agents use exactly two labels: "Feature" for planned work and
+  "Acceptance Failure" for bugs/defects found before release.
+  NEVER apply the "Bug" label -- it is reserved for production issues
+  and set only by the human owner.
 
 Environment:
   Requires GH_TOKEN or agent token to be set
