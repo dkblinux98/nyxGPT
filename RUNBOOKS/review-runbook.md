@@ -39,6 +39,7 @@ The review-agent OWNS the review process:
 - No secrets committed
 - Clear docs updates for user-facing changes
 - Reasonable maintainability
+- **End-to-end usability (Definition of Done, CLAUDE.md):** nyxGPT user features must be usable from the web interface; ops/SRE features must be operable from the SRE/admin dashboard. A backend-only implementation is a Medium (blocking) finding unless the issue explicitly scopes it backend-only with owner approval and a linked frontend follow-up issue.
 
 ### Additional Quality Checks (comprehensive review)
 - Code quality and best practices (use CLAUDE.md for guidance)

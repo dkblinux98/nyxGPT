@@ -65,6 +65,17 @@ Do not spend excessive time reading bootstrap/context files before addressing th
 
 ---
 
+## Definition of Done (Owner Requirement, 2026-07-08)
+
+**A feature is complete only when it is usable end-to-end, not merely implemented in the backend:**
+
+- **nyxGPT user features** MUST be usable from the **web interface**. An API endpoint or CLI command with no web UI surface is an incomplete implementation.
+- **Ops/SRE features** (deploy, launch, control, monitor, heal) MUST be operable from the **SRE/admin dashboard**.
+- The developer agent must implement the frontend surface as part of the same issue, and the review agent must treat a missing frontend surface as a **Medium (blocking) finding** — unless the issue body explicitly scopes the work as backend-only with an owner-approved rationale and a linked follow-up issue for the frontend.
+- Context: several past issues were merged with backend-only implementations that no user could reach (e.g. #2688 shipped Kubernetes manifests for the API pod only — deploying them does not produce a working nyxGPT). This rule exists to prevent that pattern.
+
+---
+
 ## Operating Mode
 
 Claude must adopt exactly one role at a time:
