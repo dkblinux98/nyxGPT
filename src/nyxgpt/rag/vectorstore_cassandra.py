@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from cassandra.cluster import Cluster, Session
-from cassandra.concurrent import execute_concurrent_with_args
+from cassandra.concurrent import execute_concurrent
 from cassandra.query import BatchStatement, BatchType, PreparedStatement, SimpleStatement
 
 from nyxgpt.config import (
@@ -821,11 +821,16 @@ class CassandraVectorStore:
     ) -> list[list[dict]]:
         """Search multiple query embeddings in a single batched round trip.
 
-        Uses the driver's :func:`~cassandra.concurrent.execute_concurrent_with_args`
-        to run all ANN queries concurrently against the shared session instead
+        Uses the driver's :func:`~cassandra.concurrent.execute_concurrent` to
+        run all ANN queries concurrently against the shared session instead
         of opening one blocking call per embedding, bounded by
         ``cassandra_batch_query_concurrency`` to cap peak in-flight requests
         (and therefore memory) regardless of how many embeddings are passed.
+
+        Each bound statement has ``fetch_size`` capped to the same tuned
+        ``fetch_n`` used by :meth:`query_by_embedding`, so batched searches
+        get the same per-query memory bound instead of falling back to the
+        driver's default page size (5000 rows).
 
         Args:
             embeddings: Query vectors to search for, one ANN search each
@@ -845,12 +850,16 @@ class CassandraVectorStore:
             return []
 
         stmt = self._prepare_ann_stmt()
-        params = [(emb, emb, self._ann_fetch_n(k, metadata_filter)) for emb in embeddings]
+        fetch_n = self._ann_fetch_n(k, metadata_filter)
+        statements_and_params = []
+        for emb in embeddings:
+            bound = stmt.bind((emb, emb, fetch_n))
+            bound.fetch_size = fetch_n
+            statements_and_params.append((bound, ()))
 
-        responses = execute_concurrent_with_args(
+        responses = execute_concurrent(
             self.session,
-            stmt,
-            params,
+            statements_and_params,
             concurrency=self.cfg.batch_query_concurrency,
             raise_on_first_error=False,
         )
