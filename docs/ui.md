@@ -185,6 +185,18 @@ The web UI includes:
 - **Model management** page (`/models`) for pulling, deleting, and viewing Ollama models
 - **Configuration wizard** (`/admin`) for step-by-step system setup
 - **Log viewer** (`/admin/logs`) for viewing and searching application logs
+- **Mobile-responsive layout** — the session sidebar collapses into a dismissible overlay below the `useIsMobile` breakpoint (768px), chat controls grow to touch-friendly tap targets, and inputs use a 16px minimum font size to prevent iOS Safari's auto-zoom-on-focus
+
+#### Mobile Responsiveness
+
+Below a 768px viewport width, the layout switches from a permanent two-column sidebar + chat view to a single-column view:
+
+- The session sidebar (`web/src/app/page.tsx`) renders as a fixed-position overlay with a tap-to-dismiss backdrop instead of a static column, and starts collapsed by default.
+- Selecting a session automatically closes the sidebar overlay so the chat is immediately visible.
+- Icon buttons in the sidebar header and the chat input toolbar (`web/src/app/components/ChatPane.tsx`) expand to at least 44×44px touch targets.
+- `input`, `textarea`, and `select` elements use a 16px minimum font size on small viewports (`web/src/app/globals.css`) to avoid the automatic zoom iOS Safari applies to focused inputs smaller than that.
+
+The breakpoint detection lives in the `useIsMobile` hook (`web/src/hooks/useIsMobile.ts`), which tracks `window.matchMedia('(max-width: 767px)')` and starts as `false` so the first client render matches the server-rendered desktop markup before updating post-mount.
 
 #### Toast Notifications
 

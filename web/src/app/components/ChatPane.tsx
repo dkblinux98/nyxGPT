@@ -6,6 +6,7 @@ import LoadingSpinner from '../../components/LoadingSpinner';
 import { extractSseEvents, safeJsonParse } from '../lib/sse';
 import { isQueuedForBackgroundSync } from '../lib/backgroundSync';
 import { useToast } from '../../contexts/ToastContext';
+import { useIsMobile } from '../../hooks/useIsMobile';
 
 // Error Boundary for Virtuoso rendering
 class VirtuosoErrorBoundary extends Component<
@@ -425,6 +426,7 @@ function RagCitationsCollapsible({
 
 export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessageIndex, releaseVersion }: Props) {
   const toast = useToast();
+  const isMobile = useIsMobile();
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -1488,12 +1490,20 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                   toast.success('Copied to clipboard');
                 }}
                 title="Copy message"
+                aria-label="Copy message"
                 style={{
                   padding: 4,
+                  width: isMobile ? 44 : undefined,
+                  height: isMobile ? 44 : undefined,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                   background: 'transparent',
                   border: 'none',
                   cursor: 'pointer',
-                  opacity: 0,
+                  // Hover-revealed on desktop (see .message-bubble:hover .edit-icon in
+                  // globals.css); touch devices have no hover, so keep it visible on mobile.
+                  opacity: isMobile ? 1 : 0,
                   transition: 'opacity 0.2s',
                   color: '#666',
                 }}
@@ -1508,12 +1518,18 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 className="edit-icon"
                 onClick={() => handleEditMessage(idx)}
                 title="Edit message"
+                aria-label="Edit message"
                 style={{
                   padding: 4,
+                  width: isMobile ? 44 : undefined,
+                  height: isMobile ? 44 : undefined,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                   background: 'transparent',
                   border: 'none',
                   cursor: 'pointer',
-                  opacity: 0,
+                  opacity: isMobile ? 1 : 0,
                   transition: 'opacity 0.2s',
                   color: '#666',
                 }}
@@ -1535,8 +1551,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                   toast.success('Copied to clipboard');
                 }}
                 title="Copy response"
+                aria-label="Copy response"
                 style={{
                   padding: 4,
+                  width: isMobile ? 44 : undefined,
+                  height: isMobile ? 44 : undefined,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                   background: 'transparent',
                   border: 'none',
                   cursor: 'pointer',
@@ -1556,8 +1578,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               <button
                 onClick={() => handleRegenerate(idx)}
                 title="Regenerate response"
+                aria-label="Regenerate response"
                 style={{
                   padding: 4,
+                  width: isMobile ? 44 : undefined,
+                  height: isMobile ? 44 : undefined,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                   background: 'transparent',
                   border: 'none',
                   cursor: 'pointer',
@@ -1587,6 +1615,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       status,
       editingIndex,
       isStreaming,
+      isMobile,
       toast,
     ]
   );
@@ -2226,8 +2255,8 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 }}
                 disabled={isStreaming}
                 style={{
-                  width: 32,
-                  height: 32,
+                  width: isMobile ? 44 : 32,
+                  height: isMobile ? 44 : 32,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -2313,8 +2342,8 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               onClick={() => attachmentInputRef.current?.click()}
               disabled={isStreaming}
               style={{
-                width: 32,
-                height: 32,
+                width: isMobile ? 44 : 32,
+                height: isMobile ? 44 : 32,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -2360,7 +2389,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               onClick={() => void toggleRag()}
               disabled={isStreaming}
               style={{
-                padding: '6px 10px',
+                padding: isMobile ? '10px 14px' : '6px 10px',
                 borderRadius: 6,
                 border: '1px solid var(--border)',
                 background: ragEnabled ? '#E45801' : 'var(--button-hover)',
@@ -2379,7 +2408,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 onClick={() => setShowRagFilters(!showRagFilters)}
                 disabled={isStreaming}
                 style={{
-                  padding: '6px 10px',
+                  padding: isMobile ? '10px 14px' : '6px 10px',
                   borderRadius: 6,
                   border: '1px solid var(--border)',
                   background: showRagFilters ? 'var(--button-hover)' : 'transparent',
@@ -2405,7 +2434,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 }}
                 disabled={isStreaming}
                 style={{
-                  padding: '6px 10px',
+                  padding: isMobile ? '10px 14px' : '6px 10px',
                   borderRadius: 6,
                   border: '1px solid var(--border)',
                   background: showAttachedDocs ? 'var(--button-hover)' : 'transparent',
@@ -2430,8 +2459,8 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               onClick={stop}
               title="Stop generating"
               style={{
-                width: 32,
-                height: 32,
+                width: isMobile ? 44 : 32,
+                height: isMobile ? 44 : 32,
                 borderRadius: '50%',
                 border: 'none',
                 background: '#dc2626',
@@ -2453,8 +2482,8 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               disabled={!input.trim() && pendingAttachments.length === 0}
               title="Send message"
               style={{
-                width: 32,
-                height: 32,
+                width: isMobile ? 44 : 32,
+                height: isMobile ? 44 : 32,
                 borderRadius: '50%',
                 border: 'none',
                 background: (input.trim() || pendingAttachments.length > 0) ? '#E45801' : 'var(--button-hover)',
