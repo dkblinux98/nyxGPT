@@ -202,6 +202,21 @@ class RagDocumentInfo(BaseModel):
     embedding_model: str | None = Field(None, description="Embedding model used for this document")
 
 
+class QueryCacheStatsResponse(BaseModel):
+    """Hit rate and size statistics for the RAG query result cache."""
+
+    hits: int = Field(description="Number of cache hits since the cache was created/cleared")
+    misses: int = Field(description="Number of cache misses since the cache was created/cleared")
+    hit_rate: float = Field(description="hits / (hits + misses), 0.0 if no queries yet")
+    size: int = Field(description="Current number of cached query results")
+
+
+class QueryCacheClearResponse(BaseModel):
+    """Response model for manually clearing the RAG query result cache."""
+
+    status: str = Field(description="Confirmation message")
+
+
 class RagIndexRepoRequest(BaseModel):
     repo_path: str = Field(..., description="Path to repository root")
     doc_id_prefix: str = Field("code", description="Prefix for document IDs")

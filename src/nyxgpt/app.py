@@ -46,6 +46,8 @@ from nyxgpt.api_models import (
     CreateCollectionRequest,
     CreateCollectionResponse,
     InfoResponse,
+    QueryCacheClearResponse,
+    QueryCacheStatsResponse,
     RagChunkInfo,
     RagDocumentInfo,
     RagIndexRepoRequest,
@@ -85,7 +87,12 @@ from nyxgpt.config import (
     load_config,
 )
 from nyxgpt.logging import configure_logging, get_log_dir, request_id_var
-from nyxgpt.rag.rag import ingest_document, retrieve_context
+from nyxgpt.rag.rag import (
+    clear_query_cache,
+    get_query_cache_stats,
+    ingest_document,
+    retrieve_context,
+)
 from nyxgpt.rate_limiter import RateLimiter
 from nyxgpt.resource_monitor import ResourceMonitor, get_resource_monitor, init_resource_monitor
 
@@ -2180,6 +2187,34 @@ def rag_config(request: Request) -> dict[str, Any]:
     }
 
 
+@api.get("/rag/cache/stats", response_model=QueryCacheStatsResponse)
+def rag_cache_stats(_request: Request) -> QueryCacheStatsResponse:
+    """Get hit rate and size statistics for the RAG query result cache.
+
+    Returns zeroed stats if query result caching is disabled
+    (`[cache] query_cache_enabled = false`).
+    """
+    stats = get_query_cache_stats()
+    return QueryCacheStatsResponse(
+        hits=int(stats["hits"]),
+        misses=int(stats["misses"]),
+        hit_rate=float(stats["hit_rate"]),
+        size=int(stats["size"]),
+    )
+
+
+@api.post("/rag/cache/clear", response_model=QueryCacheClearResponse)
+def rag_cache_clear(_request: Request) -> QueryCacheClearResponse:
+    """Manually clear the RAG query result cache.
+
+    The cache is also cleared automatically on document ingestion/update,
+    collection deletion, and collection re-indexing, so this is mainly
+    useful for manual troubleshooting.
+    """
+    clear_query_cache()
+    return QueryCacheClearResponse(status="Query result cache cleared")
+
+
 @api.get("/rag/collections", response_model=CollectionsListResponse)
 def rag_collections_list(_request: Request) -> CollectionsListResponse:
     """List all RAG collections with their statistics.
@@ -2340,6 +2375,11 @@ def rag_collection_delete(_request: Request, collection_name: str) -> Collection
     try:
         # Truncate the collection (remove all data)
         store.truncate()
+
+        # Invalidate query result cache: the document set changed, so any
+        # cached retrieval results may now be stale.
+        clear_query_cache()
+
         return CollectionDeleteResponse(
             collection=collection_name,
             status=f"Collection '{collection_name}' has been cleared (truncated)",
@@ -2438,6 +2478,10 @@ def rag_collection_reindex(
                 status_code=500,
                 detail=f"Failed to generate embeddings with model '{body.target_embedding_model}': {str(e)}",
             ) from e
+
+        # Invalidate query result cache: cached results may reflect the
+        # collection's pre-reindex embeddings.
+        clear_query_cache()
 
         # Return success response
         return ReindexCollectionResponse(
