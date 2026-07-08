@@ -122,7 +122,7 @@ Phase 5 as written (Kubernetes, Terraform, canary/blue-green deployment, ELK, Ja
 - #2697 Log aggregation — if kept, Loki (lightweight) in the same optional profile; full ELK is oversized
 
 **Defer to a future v3 / close as out-of-scope (move to existing `Phase X: Rejected` milestone):**
-- #2688 Kubernetes, #2690 Terraform, #2691 blue-green, #2692 canary — cloud deployment machinery with no local-first user
+- ~~#2688 Kubernetes~~ (**reversed by owner 2026-07-07**: "kubernetes can be implemented locally" — reopened, re-scoped to local-cluster kind/minikube/k3s deployment, implemented via PR #3158), #2690 Terraform, #2691 blue-green, #2692 canary — cloud deployment machinery with no local-first user
 - #2694 distributed tracing — no distributed system exists to trace
 - #2695 Sentry — third-party telemetry contradicts "no silent data exfiltration"; if ever kept, strictly opt-in
 
@@ -136,7 +136,7 @@ Phase 5 as written (Kubernetes, Terraform, canary/blue-green deployment, ELK, Ja
 Per VISION.md these cannot be delegated:
 
 1. ~~**Descope #2684 (materialized views) and #2685 (read replicas)?**~~ **DECIDED 2026-07-06:** owner approved descoping the multi-node Cassandra issues. Both closed as not planned, moved to Phase X: Rejected, reassigned to the human owner per the closed-issue convention (RUNBOOKS/review-runbook.md), tracker #2759 annotated. *Remaining manual step:* update their project-board Status (Projects v2 field — only settable via `scripts/agents/lib/gh_project.sh` with gh CLI, or manually on the board).
-2. ~~**Ratify the Phase 5 re-scope** in §5 (keep 5, optional 2, defer 6).~~ **RATIFIED 2026-07-07 by owner.** Executed same day: #2688, #2690, #2691, #2692, #2694, #2695 closed as not planned → Phase X: Rejected with per-issue rationale; #2696/#2697 annotated with the optional Compose-profile scope (Loki-lite instead of ELK) and sequencing (#2689 → #2693 → #2696 → #2697); tracker #2759 annotated. Remaining Phase 5 scope: #2689, #2693, #2698, #2699, #2700 + the two optional profiles.
+2. ~~**Ratify the Phase 5 re-scope** in §5 (keep 5, optional 2, defer 6).~~ **RATIFIED 2026-07-07 by owner.** Executed same day: #2688, #2690, #2691, #2692, #2694, #2695 closed as not planned → Phase X: Rejected with per-issue rationale; #2696/#2697 annotated with the optional Compose-profile scope (Loki-lite instead of ELK) and sequencing (#2689 → #2693 → #2696 → #2697); tracker #2759 annotated. Remaining Phase 5 scope: #2689, #2693, #2698, #2699, #2700 + the two optional profiles. **Amendment 2026-07-07/08:** the owner reversed the #2688 descope ("kubernetes can be implemented locally") — reopened and re-scoped to a local-cluster (kind/minikube/k3s) deployment of the FastAPI backend, consistent with VISION.md; implementation submitted as PR #3158.
 3. **Phase acceptance** of merged-but-unaccepted "In Review" items on the project board → For Release.
 4. ~~**Agent identity for interactive sessions** (§6a)~~ **DECIDED 2026-07-06:** reuse `myGPT-scrummaster-agent` for administrative actions; implemented via SessionStart hook. Remote-session agent identity is architecturally impossible (proxy credential injection) — remote writes route through Actions triggers instead.
 
