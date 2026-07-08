@@ -1490,12 +1490,20 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                   toast.success('Copied to clipboard');
                 }}
                 title="Copy message"
+                aria-label="Copy message"
                 style={{
                   padding: 4,
+                  width: isMobile ? 44 : undefined,
+                  height: isMobile ? 44 : undefined,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                   background: 'transparent',
                   border: 'none',
                   cursor: 'pointer',
-                  opacity: 0,
+                  // Hover-revealed on desktop (see .message-bubble:hover .edit-icon in
+                  // globals.css); touch devices have no hover, so keep it visible on mobile.
+                  opacity: isMobile ? 1 : 0,
                   transition: 'opacity 0.2s',
                   color: '#666',
                 }}
@@ -1510,12 +1518,18 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 className="edit-icon"
                 onClick={() => handleEditMessage(idx)}
                 title="Edit message"
+                aria-label="Edit message"
                 style={{
                   padding: 4,
+                  width: isMobile ? 44 : undefined,
+                  height: isMobile ? 44 : undefined,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                   background: 'transparent',
                   border: 'none',
                   cursor: 'pointer',
-                  opacity: 0,
+                  opacity: isMobile ? 1 : 0,
                   transition: 'opacity 0.2s',
                   color: '#666',
                 }}
@@ -1537,8 +1551,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                   toast.success('Copied to clipboard');
                 }}
                 title="Copy response"
+                aria-label="Copy response"
                 style={{
                   padding: 4,
+                  width: isMobile ? 44 : undefined,
+                  height: isMobile ? 44 : undefined,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                   background: 'transparent',
                   border: 'none',
                   cursor: 'pointer',
@@ -1558,8 +1578,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               <button
                 onClick={() => handleRegenerate(idx)}
                 title="Regenerate response"
+                aria-label="Regenerate response"
                 style={{
                   padding: 4,
+                  width: isMobile ? 44 : undefined,
+                  height: isMobile ? 44 : undefined,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                   background: 'transparent',
                   border: 'none',
                   cursor: 'pointer',
@@ -1589,6 +1615,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       status,
       editingIndex,
       isStreaming,
+      isMobile,
       toast,
     ]
   );

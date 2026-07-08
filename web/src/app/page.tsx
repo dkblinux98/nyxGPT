@@ -14,6 +14,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { useSessionCache } from '../hooks/useSessionCache';
 import { useIsMobile } from '../hooks/useIsMobile';
+import { useSidebarVisibility } from '../hooks/useSidebarVisibility';
 import { isQueuedForBackgroundSync } from './lib/backgroundSync';
 
 // Route-based code splitting: ChatPane is large (2000+ lines) and only needed
@@ -86,19 +87,12 @@ function Home() {
   });
 
   const [selectedSession, setSelectedSession] = useState<string>('default');
-  const [sidebarVisible, setSidebarVisible] = useState<boolean>(true);
 
   // Mobile layout: the sidebar becomes a collapsible overlay instead of a
-  // permanent column. Collapse it by default the first time we detect a
-  // mobile viewport, but don't fight the user's own toggling afterwards.
+  // permanent column, collapsed by default on mobile until the user
+  // explicitly toggles it (see useSidebarVisibility for details).
   const isMobile = useIsMobile();
-  const appliedMobileDefaultRef = useRef(false);
-  useEffect(() => {
-    if (isMobile && !appliedMobileDefaultRef.current) {
-      appliedMobileDefaultRef.current = true;
-      setSidebarVisible(false);
-    }
-  }, [isMobile]);
+  const [sidebarVisible, setSidebarVisible] = useSidebarVisibility(isMobile);
 
   // Message search state
   const [scrollToMessageIndex, setScrollToMessageIndex] = useState<number | null>(null);
@@ -649,7 +643,7 @@ function Home() {
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [contextMenu, createNewChat, announce]);
+  }, [contextMenu, createNewChat, announce, setSidebarVisible]);
 
   // Highlight search matches in text
   const highlightText = useCallback((text: string, search: string) => {
@@ -681,7 +675,7 @@ function Home() {
   const selectSession = useCallback((sessionName: string) => {
     setSelectedSession(sessionName);
     if (isMobile) setSidebarVisible(false);
-  }, [isMobile]);
+  }, [isMobile, setSidebarVisible]);
 
   return (
     <main

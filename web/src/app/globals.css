@@ -156,7 +156,9 @@ html.no-transition * {
 }
 
 /* Mobile responsiveness */
-@media (max-width: 768px) {
+/* Matches the useIsMobile() hook's boundary (MOBILE_BREAKPOINT_PX - 1 = 767px)
+   so the CSS and JS layout logic agree on what counts as "mobile". */
+@media (max-width: 767px) {
   /* Inputs below 16px trigger an unwanted auto-zoom on focus in iOS Safari;
      force 16px regardless of any inline font-size set by a component. */
   input,
