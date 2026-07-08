@@ -1,0 +1,227 @@
+# Security Best Practices
+
+nyxGPT is **local-first**: by default it binds to `127.0.0.1`, has authentication
+disabled, and applies no rate limiting, because it assumes a single trusted user
+running everything on their own machine. If you expose nyxGPT beyond `localhost`
+(a shared network, a VM, a container reachable from other hosts, etc.), you are
+responsible for enabling the hardening options described below.
+
+This guide covers:
+
+- [API key management](#api-key-management)
+- [Network security](#network-security)
+- [Authentication configuration](#authentication-configuration)
+- [Session security](#session-security)
+- [Rate limiting configuration](#rate-limiting-configuration)
+- [Security headers](#security-headers)
+- [Deployment checklist](#deployment-checklist)
+
+---
+
+## API key management
+
+nyxGPT's `~/.nyxGPT/config.ini` holds several categories of secrets:
+
+| Section | Key | Purpose |
+|---|---|---|
+| `[auth]` | `api_key` | Shared secret clients must send to reach `/api/v1/*` |
+| `[openai]` | `api_key` | OpenAI API key, if using OpenAI-backed models |
+| `[github]` | `pat`, `*_agent_token`, `claude_code_oauth_token` | GitHub automation tokens |
+
+**Best practices:**
+
+- **Generate strong, random keys.** For the API auth key:
+  ```bash
+  python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+  ```
+- **Restrict file permissions** on the config file, since it contains plaintext
+  secrets:
+  ```bash
+  chmod 600 ~/.nyxGPT/config.ini
+  ```
+- **Never commit `config.ini` to version control.** Runtime configuration lives
+  outside the repository under `~/.nyxGPT/` for exactly this reason — only
+  `example.config.ini` (with blank/placeholder secrets) is tracked in git.
+- **Use least-privilege tokens.** For GitHub integration, prefer fine-grained
+  PATs scoped to `repo`/`project` only, and use separate per-agent tokens
+  rather than one shared PAT — see [`docs/github-tokens.md`](github-tokens.md).
+- **Rotate keys regularly**, and immediately if a key may have been exposed
+  (committed by mistake, logged, shared in a support channel, etc.).
+- **Monitor usage.** For OpenAI keys, check https://platform.openai.com/usage;
+  for GitHub tokens, check the repository's audit log.
+
+---
+
+## Network security
+
+nyxGPT binds every service to `127.0.0.1` by default:
+
+```ini
+[api]
+host = 127.0.0.1
+port = 8000
+
+[web]
+host = 127.0.0.1
+port = 3000
+```
+
+If you need to reach nyxGPT from another machine, prefer one of these over
+binding directly to `0.0.0.0`:
+
+- **SSH tunnel / VPN** — keep the services bound to `127.0.0.1` and tunnel in
+  (`ssh -L 8000:127.0.0.1:8000 -L 3000:127.0.0.1:3000 user@host`). No config
+  changes required, and nothing is exposed on the network interface.
+- **Reverse proxy with TLS** (nginx, Caddy, Traefik) — terminate HTTPS at the
+  proxy and forward to the local API/web ports. This also lets the
+  [`Strict-Transport-Security`](#security-headers) header take effect, since
+  it is only sent for HTTPS requests.
+- **Firewall rules** — if you must bind to a non-loopback address, restrict
+  inbound access to the API/web ports (8000/3000) to known source IPs at the
+  host or network firewall.
+
+**CORS:** the API only allows cross-origin requests from `127.0.0.1`/`localhost`
+on the default web UI ports by default. Override with the `NYXGPT_CORS_ORIGINS`
+environment variable (comma-separated) if the web UI is served from a
+different origin — do not use a wildcard (`*`) in a deployment reachable from
+untrusted networks, since `allow_credentials=True` is set:
+
+```bash
+export NYXGPT_CORS_ORIGINS="https://nyxgpt.example.com"
+```
+
+**Cassandra** (used for RAG) is configured via `[rag] cassandra_hosts` /
+`cassandra_port` and, like the API, should stay bound to localhost or a
+private network segment — it has no authentication of its own in the default
+Docker Desktop setup used by `nyxgpt ops install`.
+
+---
+
+## Authentication configuration
+
+The API supports optional shared-secret authentication, configured in
+`~/.nyxGPT/config.ini` under `[auth]` (disabled by default):
+
+```ini
+[auth]
+enabled = true
+api_key = <generate-strong-random-key>
+header = X-API-Key
+```
+
+When enabled:
+
+- All `/api/v1/*` endpoints require the configured header with a matching key.
+- `/health`, `/docs`, `/openapi*`, and `/redoc` remain publicly accessible.
+- Missing or incorrect keys return `401 Unauthorized`, logged with a request
+  ID for auditing.
+- Keys are compared with `secrets.compare_digest` (constant-time comparison)
+  to prevent timing attacks (`src/nyxgpt/app.py`).
+- Auth settings are **hot-reloadable** — edits to `config.ini` take effect on
+  the next request, no restart required.
+
+**Enable authentication whenever the API is reachable from anything other
+than your own local machine** — a shared network, a container, a VPN with
+other users, etc. See [`docs/api.md#authentication`](api.md#authentication)
+for full request/response examples and troubleshooting.
+
+**What API key auth does *not* protect against:** it is a single shared
+secret, not per-user auth, and provides no authorization/RBAC. For
+multi-user deployments, put a reverse proxy with proper authentication (OAuth2,
+mTLS, SSO) in front of nyxGPT rather than relying on the shared API key alone.
+
+---
+
+## Session security
+
+Conversation sessions (`~/.nyxGPT/sessions/`) and RAG-uploaded documents are
+stored as plaintext files/vectors outside the repository, under your home
+directory. They are not encrypted at rest.
+
+**Best practices:**
+
+- Restrict directory permissions to the owning user:
+  ```bash
+  chmod 700 ~/.nyxGPT
+  chmod 700 ~/.nyxGPT/sessions
+  ```
+- If nyxGPT runs on a shared or multi-user host, run it under a dedicated
+  service account rather than a shared login, so other local users cannot
+  read session content, config secrets, or logs.
+- Session/message edit and rename operations use exclusive file locks
+  (`src/nyxgpt/sessions.py`) to prevent corruption from concurrent writers —
+  this protects data integrity, but is not an access-control mechanism.
+- Treat exported sessions and citation exports (`sessions batch-export`,
+  `/citations/export`) as sensitive: they can contain full conversation
+  content and RAG source excerpts. Store/share exports with the same care as
+  the sessions themselves.
+- Logs under `~/.nyxGPT/logs/` may include request metadata (IPs, request
+  IDs, auth failures); avoid setting `[logging] level = DEBUG` in a shared
+  deployment, since debug logs can be more verbose about request contents.
+
+---
+
+## Rate limiting configuration
+
+The API includes optional token-bucket rate limiting per client IP, disabled
+by default (localhost-only use case doesn't need it):
+
+```ini
+[rate_limit]
+enabled = true
+requests_per_second = 10
+burst_size = 20
+```
+
+When enabled, all responses include `X-RateLimit-Limit`, `X-RateLimit-Remaining`,
+and `X-RateLimit-Reset` headers, and requests over the limit receive
+`429 Too Many Requests`. Client IP is taken from `X-Forwarded-For` when
+present (falls back to the direct connection IP) — **only trust
+`X-Forwarded-For` when the API sits behind a proxy you control**, since it is
+otherwise a client-supplied, spoofable header.
+
+**Enable rate limiting alongside authentication** any time the API is
+network-reachable, to blunt both credential-stuffing attempts against
+`[auth]` and general abuse/DoS. Combine with a `NYXGPT_MAX_BODY_BYTES`
+override (default 1 MiB) if you expect larger request bodies than the
+default limit allows:
+
+```bash
+export NYXGPT_MAX_BODY_BYTES=2097152  # 2 MiB
+```
+
+---
+
+## Security headers
+
+The API applies the following headers to every response by default (no
+configuration needed, see `security_headers_middleware` in `src/nyxgpt/app.py`):
+
+- `Content-Security-Policy` — restricts script/style/image/connect sources to
+  `'self'`, blocks framing (`frame-ancestors 'none'`) and base-tag injection.
+- `X-Content-Type-Options: nosniff` — prevents MIME-type sniffing.
+- `X-Frame-Options: DENY` — prevents clickjacking via iframes.
+- `Strict-Transport-Security` — sent only on HTTPS requests (max-age 1 year,
+  includes subdomains); requires a TLS-terminating reverse proxy to take
+  effect, since the API itself serves plain HTTP.
+
+---
+
+## Deployment checklist
+
+Before exposing nyxGPT beyond your own machine:
+
+- [ ] `[auth] enabled = true` with a freshly generated `api_key`
+- [ ] `[rate_limit] enabled = true` with limits appropriate to your traffic
+- [ ] `chmod 600 ~/.nyxGPT/config.ini` and `chmod 700 ~/.nyxGPT`
+- [ ] API/web bound to `127.0.0.1` behind an SSH tunnel, VPN, or TLS-terminating
+      reverse proxy — not directly exposed on `0.0.0.0`
+- [ ] `NYXGPT_CORS_ORIGINS` set to the exact origin(s) serving the web UI (no
+      wildcards)
+- [ ] Secrets (`auth.api_key`, `openai.api_key`, `github.*token*`) rotated on
+      any suspected exposure
+- [ ] `[logging] level` kept at `INFO` (not `DEBUG`) in shared environments
+
+For related configuration details, see [`docs/configuration.md`](configuration.md)
+and [`docs/api.md`](api.md#authentication). For GitHub automation token setup,
+see [`docs/github-tokens.md`](github-tokens.md).
