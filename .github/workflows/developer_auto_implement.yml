@@ -1084,6 +1084,19 @@ jobs:
         run: |
           set -euo pipefail
           ISSUE="${{ github.event.issue.number }}"
+
+          # If the implementation deliberately produced no commits (e.g. the
+          # developer agent stopped on a scope conflict per CLAUDE.md), there
+          # is nothing to submit — exit cleanly instead of failing on
+          # "No commits between" and triggering the failure-diagnosis chain.
+          git fetch origin "${{ vars.RELEASE_BRANCH }}" --quiet
+          if [ -z "$(git rev-list "origin/${{ vars.RELEASE_BRANCH }}..HEAD" 2>/dev/null)" ]; then
+            echo "::warning::No commits beyond ${{ vars.RELEASE_BRANCH }} — implementation produced no changes (likely blocked/no-op). Skipping PR submission."
+            gh issue comment "$ISSUE" --body "⏸️ **Developer Agent**: Implementation produced no changes (see the blockage report above). No PR submitted; awaiting human decision." || true
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           echo "::group::Submitting PR for review"
           PR_NUMBER=$(./scripts/agents/developer_submit_for_review.sh "$ISSUE")
           echo "::notice::Created PR #$PR_NUMBER"
