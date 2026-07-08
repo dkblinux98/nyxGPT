@@ -851,15 +851,15 @@ class CassandraVectorStore:
 
         stmt = self._prepare_ann_stmt()
         fetch_n = self._ann_fetch_n(k, metadata_filter)
-        bound_statements = []
+        statements_and_params = []
         for emb in embeddings:
             bound = stmt.bind((emb, emb, fetch_n))
             bound.fetch_size = fetch_n
-            bound_statements.append(bound)
+            statements_and_params.append((bound, ()))
 
         responses = execute_concurrent(
             self.session,
-            bound_statements,
+            statements_and_params,
             concurrency=self.cfg.batch_query_concurrency,
             raise_on_first_error=False,
         )
