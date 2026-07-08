@@ -28,6 +28,9 @@ coverage/
 # Kubernetes (real secrets - copy from k8s/secret.example.yaml)
 /k8s/secret.yaml
 
+# Docker Compose (real secrets - copy from .env.example)
+/.env
+
 # Codex/Github/Jupyter
 chat_history.md
 jupyter-notebooks/

@@ -1,0 +1,85 @@
+networks:
+  nyxgpt:
+    driver: bridge
+
+volumes:
+  ollama_data:
+  cassandra_data:
+  nyxgpt_data:
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    networks:
+      - nyxgpt
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  cassandra:
+    image: cassandra:5.0
+    restart: unless-stopped
+    networks:
+      - nyxgpt
+    ports:
+      - "${CASSANDRA_PORT:-9042}:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nyxgpt-api:${NYXGPT_API_IMAGE_TAG:-local}
+    restart: unless-stopped
+    networks:
+      - nyxgpt
+    ports:
+      - "${NYXGPT_API_PORT:-8000}:8000"
+    environment:
+      NYXGPT_AUTH_API_KEY: ${NYXGPT_AUTH_API_KEY:-}
+      NYXGPT_CORS_ORIGINS: ${NYXGPT_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+    volumes:
+      - ./docker/config.docker.ini:/etc/nyxgpt/config/config.ini:ro
+      - nyxgpt_data:/root/.nyxGPT
+    depends_on:
+      ollama:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    image: nyxgpt-web:${NYXGPT_WEB_IMAGE_TAG:-local}
+    restart: unless-stopped
+    networks:
+      - nyxgpt
+    ports:
+      - "${NYXGPT_WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy

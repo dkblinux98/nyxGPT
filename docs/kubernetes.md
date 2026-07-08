@@ -11,8 +11,9 @@ Scope: this deploys the FastAPI backend (`nyxgpt-api`) only. Ollama keeps
 running on the host (as it already does today), and Cassandra/RAG stay
 disabled unless you point the manifests at your own Cassandra instance. The
 web UI and a bundled Cassandra StatefulSet are not part of this deployment —
-see [ops.md](ops.md) / `nyxgpt ops` for running the full local stack, or the
-Docker Compose setup for one-command bring-up of every component.
+see [ops.md](ops.md) / `nyxgpt ops` for running the full local stack, or
+[docker-compose.md](docker-compose.md) for one-command bring-up of every
+component.
 
 ## Prerequisites
 
