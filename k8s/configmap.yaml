@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nyxgpt-config
+  namespace: nyxgpt
+data:
+  config.ini: |
+    [nyxgpt]
+    default_model = qwen2.5:0.5b
+    chat_timeout_seconds = 180
+    sessions_dir = /root/.nyxGPT/sessions
+    vectorstore_dir = /root/.nyxGPT/vectorstore
+
+    [logging]
+    level = INFO
+    dir = /root/.nyxGPT/logs
+
+    [ollama]
+    # Ollama runs on the host, not in this cluster. host.docker.internal
+    # resolves out of the box on Docker Desktop (kind/minikube using the
+    # docker driver). On Linux, point this at a reachable ClusterIP or
+    # ExternalName Service instead - see docs/kubernetes.md.
+    base_url = http://host.docker.internal:11434
+
+    [api]
+    host = 0.0.0.0
+    port = 8000
+
+    [auth]
+    # The API is reachable cluster-wide rather than just localhost, so auth
+    # is enabled here. The key itself is injected from the nyxgpt-secrets
+    # Secret (see secret.example.yaml) and merged in by docker/entrypoint.sh.
+    enabled = true
+    api_key =
+    header = X-API-Key
+
+    [rate_limit]
+    enabled = false
+
+    [rag]
+    # Disabled by default: this deployment does not include a Cassandra
+    # StatefulSet. Enable and point cassandra_hosts at your own in-cluster
+    # or external Cassandra if you want RAG.
+    enable_chat_context = false
+    cassandra_hosts = cassandra
+    cassandra_port = 9042
+    cassandra_keyspace = nyxgpt
+    cassandra_table = rag_chunks
