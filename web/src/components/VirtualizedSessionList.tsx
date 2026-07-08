@@ -56,6 +56,7 @@ const SessionItem = memo(function SessionItem({
       style={{
         textAlign: 'left',
         padding: '10px 10px',
+        minHeight: 44,
         borderRadius: 8,
         border: '1px solid ' + (isActive ? 'var(--border)' : 'var(--border-light)'),
         background: isActive ? 'var(--active-bg)' : 'var(--sidebar-bg)',

@@ -13,6 +13,7 @@ import { UnifiedSearch, UnifiedSearchRef } from '../components/UnifiedSearch';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { useSessionCache } from '../hooks/useSessionCache';
+import { useIsMobile } from '../hooks/useIsMobile';
 import { isQueuedForBackgroundSync } from './lib/backgroundSync';
 
 // Route-based code splitting: ChatPane is large (2000+ lines) and only needed
@@ -86,6 +87,18 @@ function Home() {
 
   const [selectedSession, setSelectedSession] = useState<string>('default');
   const [sidebarVisible, setSidebarVisible] = useState<boolean>(true);
+
+  // Mobile layout: the sidebar becomes a collapsible overlay instead of a
+  // permanent column. Collapse it by default the first time we detect a
+  // mobile viewport, but don't fight the user's own toggling afterwards.
+  const isMobile = useIsMobile();
+  const appliedMobileDefaultRef = useRef(false);
+  useEffect(() => {
+    if (isMobile && !appliedMobileDefaultRef.current) {
+      appliedMobileDefaultRef.current = true;
+      setSidebarVisible(false);
+    }
+  }, [isMobile]);
 
   // Message search state
   const [scrollToMessageIndex, setScrollToMessageIndex] = useState<number | null>(null);
@@ -663,6 +676,13 @@ function Home() {
     });
   }, []);
 
+  // Selecting a session on mobile should dismiss the sidebar overlay so the
+  // chat is immediately visible, matching typical mobile chat app behavior.
+  const selectSession = useCallback((sessionName: string) => {
+    setSelectedSession(sessionName);
+    if (isMobile) setSidebarVisible(false);
+  }, [isMobile]);
+
   return (
     <main
       style={{
@@ -713,11 +733,26 @@ function Home() {
         </div>
       )}
 
+      {/* Backdrop: dismisses the sidebar overlay on mobile when tapped */}
+      {isMobile && sidebarVisible && (
+        <div
+          onClick={() => setSidebarVisible(false)}
+          aria-hidden="true"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.5)',
+            zIndex: 150,
+          }}
+        />
+      )}
+
       <SessionListErrorBoundary>
       {sidebarVisible && (
         <aside
           style={{
-            width: 320,
+            width: isMobile ? '85vw' : 320,
+            maxWidth: isMobile ? 320 : undefined,
             height: '100vh',
             borderRight: '1px solid var(--border)',
             padding: '1rem',
@@ -725,6 +760,9 @@ function Home() {
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
+            ...(isMobile
+              ? { position: 'fixed' as const, top: 0, left: 0, zIndex: 200, boxShadow: '2px 0 16px rgba(0,0,0,0.25)' }
+              : {}),
           }}
         >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
@@ -743,7 +781,7 @@ function Home() {
               aria-label={`Toggle sidebar (${modKey}+/)`}
               title={`Toggle sidebar (${modKey}+/)`}
               style={{
-                padding: 8,
+                padding: isMobile ? 12 : 8,
                 background: 'transparent',
                 border: '1px solid var(--border)',
                 borderRadius: 6,
@@ -794,7 +832,7 @@ function Home() {
               aria-label={`Create new chat (${modKey}+K)`}
               title={`Create new chat (${modKey}+K)`}
               style={{
-                padding: 8,
+                padding: isMobile ? 12 : 8,
                 background: 'transparent',
                 border: '1px solid var(--border)',
                 borderRadius: 6,
@@ -841,7 +879,7 @@ function Home() {
         <UnifiedSearch
           ref={searchRef}
           sessions={sessions}
-          onSelectSession={setSelectedSession}
+          onSelectSession={selectSession}
           onMessageClick={handleSearchResultClick}
           modKey={modKey}
         />
@@ -961,7 +999,7 @@ function Home() {
                 <VirtualizedSessionList
                   sessions={filteredSessions}
                   selectedSession={selectedSession}
-                  onSelectSession={setSelectedSession}
+                  onSelectSession={selectSession}
                   onContextMenu={handleContextMenu}
                   pendingSessions={pendingSessions}
                   highlightText={highlightText}
@@ -1416,7 +1454,7 @@ function Home() {
       )}
       </SessionListErrorBoundary>
 
-      <section style={{ flex: 1, padding: '1.5rem', overflowY: 'auto', background: 'var(--background)', color: 'var(--foreground)' }}>
+      <section style={{ flex: 1, minWidth: 0, padding: isMobile ? '1rem' : '1.5rem', overflowY: 'auto', background: 'var(--background)', color: 'var(--foreground)' }}>
         {!sidebarVisible && (
           <button
             onClick={() => setSidebarVisible(true)}

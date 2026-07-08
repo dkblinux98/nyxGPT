@@ -6,6 +6,7 @@ import LoadingSpinner from '../../components/LoadingSpinner';
 import { extractSseEvents, safeJsonParse } from '../lib/sse';
 import { isQueuedForBackgroundSync } from '../lib/backgroundSync';
 import { useToast } from '../../contexts/ToastContext';
+import { useIsMobile } from '../../hooks/useIsMobile';
 
 // Error Boundary for Virtuoso rendering
 class VirtuosoErrorBoundary extends Component<
@@ -425,6 +426,7 @@ function RagCitationsCollapsible({
 
 export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessageIndex, releaseVersion }: Props) {
   const toast = useToast();
+  const isMobile = useIsMobile();
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -2226,8 +2228,8 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 }}
                 disabled={isStreaming}
                 style={{
-                  width: 32,
-                  height: 32,
+                  width: isMobile ? 44 : 32,
+                  height: isMobile ? 44 : 32,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -2313,8 +2315,8 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               onClick={() => attachmentInputRef.current?.click()}
               disabled={isStreaming}
               style={{
-                width: 32,
-                height: 32,
+                width: isMobile ? 44 : 32,
+                height: isMobile ? 44 : 32,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -2360,7 +2362,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               onClick={() => void toggleRag()}
               disabled={isStreaming}
               style={{
-                padding: '6px 10px',
+                padding: isMobile ? '10px 14px' : '6px 10px',
                 borderRadius: 6,
                 border: '1px solid var(--border)',
                 background: ragEnabled ? '#E45801' : 'var(--button-hover)',
@@ -2379,7 +2381,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 onClick={() => setShowRagFilters(!showRagFilters)}
                 disabled={isStreaming}
                 style={{
-                  padding: '6px 10px',
+                  padding: isMobile ? '10px 14px' : '6px 10px',
                   borderRadius: 6,
                   border: '1px solid var(--border)',
                   background: showRagFilters ? 'var(--button-hover)' : 'transparent',
@@ -2405,7 +2407,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 }}
                 disabled={isStreaming}
                 style={{
-                  padding: '6px 10px',
+                  padding: isMobile ? '10px 14px' : '6px 10px',
                   borderRadius: 6,
                   border: '1px solid var(--border)',
                   background: showAttachedDocs ? 'var(--button-hover)' : 'transparent',
@@ -2430,8 +2432,8 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               onClick={stop}
               title="Stop generating"
               style={{
-                width: 32,
-                height: 32,
+                width: isMobile ? 44 : 32,
+                height: isMobile ? 44 : 32,
                 borderRadius: '50%',
                 border: 'none',
                 background: '#dc2626',
@@ -2453,8 +2455,8 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
               disabled={!input.trim() && pendingAttachments.length === 0}
               title="Send message"
               style={{
-                width: 32,
-                height: 32,
+                width: isMobile ? 44 : 32,
+                height: isMobile ? 44 : 32,
                 borderRadius: '50%',
                 border: 'none',
                 background: (input.trim() || pendingAttachments.length > 0) ? '#E45801' : 'var(--button-hover)',

@@ -154,3 +154,20 @@ html.no-transition * {
 .edit-icon:hover {
   color: #E45801 !important;
 }
+
+/* Mobile responsiveness */
+@media (max-width: 768px) {
+  /* Inputs below 16px trigger an unwanted auto-zoom on focus in iOS Safari;
+     force 16px regardless of any inline font-size set by a component. */
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+@media (max-width: 480px) {
+  body {
+    font-size: 15px;
+  }
+}
