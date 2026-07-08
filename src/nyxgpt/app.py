@@ -2207,9 +2207,9 @@ def rag_cache_stats(_request: Request) -> QueryCacheStatsResponse:
 def rag_cache_clear(_request: Request) -> QueryCacheClearResponse:
     """Manually clear the RAG query result cache.
 
-    The cache is also cleared automatically on document ingestion/update
-    and collection deletion, so this is only needed for edge cases (e.g.
-    a collection reindex that doesn't go through ingest_document).
+    The cache is also cleared automatically on document ingestion/update,
+    collection deletion, and collection re-indexing, so this is mainly
+    useful for manual troubleshooting.
     """
     clear_query_cache()
     return QueryCacheClearResponse(status="Query result cache cleared")
@@ -2478,6 +2478,10 @@ def rag_collection_reindex(
                 status_code=500,
                 detail=f"Failed to generate embeddings with model '{body.target_embedding_model}': {str(e)}",
             ) from e
+
+        # Invalidate query result cache: cached results may reflect the
+        # collection's pre-reindex embeddings.
+        clear_query_cache()
 
         # Return success response
         return ReindexCollectionResponse(

@@ -1183,6 +1183,8 @@ def retrieve_context(
         )
         cached_results = query_cache.get(cache_key)
         if cached_results is not None:
+            # Returned by reference and shared across all callers of this
+            # cache key; callers must treat the result as read-only.
             log.debug(f"Query result cache hit for query={query!r}")
             return cached_results
 
@@ -1511,8 +1513,8 @@ def retrieve_context(
     filtering_time_ms = (time.perf_counter() - filter_start) * 1000.0 if filter_start else 0.0
 
     if not collect_debug:
-        assert cache_key is not None
-        query_cache.set(cache_key, filtered)
+        if cache_key is not None:
+            query_cache.set(cache_key, filtered)
         return filtered
 
     # Build debug info

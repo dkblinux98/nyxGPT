@@ -278,7 +278,7 @@ The cache key (fingerprint) is built from the query text plus every input that a
 - **Cache hit**: ~1ms vs the full pipeline cost (embedding + ANN search + BM25 indexing + fusion + optional reranking), which can be 100ms-2s+ depending on collection size and whether reranking is enabled
 - **Memory overhead**: proportional to `max_chunks` × average chunk size × `query_cache_max_size`
 
-**Automatic invalidation**: The cache is cleared automatically whenever the document set changes — on document ingestion/update (`ingest_document`) and on collection deletion (`DELETE /rag/collections/{name}`). A short TTL is a safety net, not the primary invalidation mechanism.
+**Automatic invalidation**: The cache is cleared automatically whenever the document set or its embeddings change — on document ingestion/update (`ingest_document`), collection deletion (`DELETE /rag/collections/{name}`), and collection re-indexing (`POST /rag/collections/{name}/reindex`). A short TTL is a safety net, not the primary invalidation mechanism.
 
 **Monitoring hit rate**: `GET /rag/cache/stats` returns `{hits, misses, hit_rate, size}`. Manually clear with `POST /rag/cache/clear`.
 
