@@ -35,6 +35,7 @@ Your data stays on your machine. No cloud dependency is required.
 - Optional **API rate limiting** (disabled by default for localhost use)
 - Homebrew‑managed background services
 - Optional **Kubernetes deployment** for local clusters (kind/minikube/k3s)
+- Optional **Docker Compose** stack for one-command bring-up of every component
 - Robust unit and integration test suite
 
 ---
@@ -316,6 +317,16 @@ The API can also be deployed to a local Kubernetes cluster (kind, minikube,
 k3s) instead of running via `nyxgpt ops`. Manifests (Deployment, Service,
 ConfigMap, Secret, HorizontalPodAutoscaler) live in `k8s/`; see
 [docs/kubernetes.md](docs/kubernetes.md) for the full walkthrough.
+
+#### Docker Compose (full stack, optional)
+
+For a one-command bring-up of every component (API, web UI, Ollama, and
+Cassandra for RAG) in containers, see [docs/docker-compose.md](docs/docker-compose.md):
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
 
 ---
 
