@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nyxgpt-api
+  namespace: nyxgpt
+  labels:
+    app: nyxgpt-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nyxgpt-api
+  template:
+    metadata:
+      labels:
+        app: nyxgpt-api
+    spec:
+      containers:
+        - name: nyxgpt-api
+          image: nyxgpt-api:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: NYXGPT_AUTH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: nyxgpt-secrets
+                  key: api-key
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nyxgpt/config
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: config
+          configMap:
+            name: nyxgpt-config

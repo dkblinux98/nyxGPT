@@ -34,6 +34,7 @@ Your data stays on your machine. No cloud dependency is required.
 - Unified core shared between CLI and FastAPI
 - Optional **API rate limiting** (disabled by default for localhost use)
 - Homebrew‑managed background services
+- Optional **Kubernetes deployment** for local clusters (kind/minikube/k3s)
 - Robust unit and integration test suite
 
 ---
@@ -308,6 +309,13 @@ If the limit is exceeded, the API returns a `429 Too Many Requests` error:
   }
 }
 ```
+
+#### Kubernetes deployment (optional)
+
+The API can also be deployed to a local Kubernetes cluster (kind, minikube,
+k3s) instead of running via `nyxgpt ops`. Manifests (Deployment, Service,
+ConfigMap, Secret, HorizontalPodAutoscaler) live in `k8s/`; see
+[docs/kubernetes.md](docs/kubernetes.md) for the full walkthrough.
 
 ---
 
