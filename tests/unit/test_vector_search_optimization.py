@@ -295,7 +295,7 @@ def test_query_by_embeddings_batch_preserves_order(monkeypatch: pytest.MonkeyPat
         (True, [_mock_row(doc_id="doc-c")]),
     ]
     monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.execute_concurrent_with_args",
+        "nyxgpt.rag.vectorstore_cassandra.execute_concurrent",
         lambda *_a, **_k: responses,
     )
 
@@ -318,7 +318,7 @@ def test_query_by_embeddings_batch_tolerates_per_item_failure(
         (False, RuntimeError("driver timeout")),
     ]
     monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.execute_concurrent_with_args",
+        "nyxgpt.rag.vectorstore_cassandra.execute_concurrent",
         lambda *_a, **_k: responses,
     )
 
@@ -339,15 +339,41 @@ def test_query_by_embeddings_batch_passes_configured_concurrency(
 
     captured_kwargs = {}
 
-    def _fake_execute_concurrent(_session, _stmt, params, **kwargs):
+    def _fake_execute_concurrent(_session, statements, **kwargs):
         captured_kwargs.update(kwargs)
-        return [(True, []) for _ in params]
+        return [(True, []) for _ in statements]
 
     monkeypatch.setattr(
-        "nyxgpt.rag.vectorstore_cassandra.execute_concurrent_with_args",
+        "nyxgpt.rag.vectorstore_cassandra.execute_concurrent",
         _fake_execute_concurrent,
     )
 
     store.query_by_embeddings_batch([[0.1], [0.2]], k=1)
 
     assert captured_kwargs["concurrency"] == 7
+
+
+@pytest.mark.unit
+def test_query_by_embeddings_batch_caps_fetch_size_per_statement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Batched searches should cap fetch_size the same way query_by_embedding does,
+    instead of falling back to the driver's default page size (5000 rows)."""
+    store, mock_session = _make_store(monkeypatch, extra_rag_cfg={"ann_oversample_factor": "2.0"})
+
+    captured_statements = []
+
+    def _fake_execute_concurrent(_session, statements, **_kwargs):
+        captured_statements.extend(statements)
+        return [(True, []) for _ in statements]
+
+    monkeypatch.setattr(
+        "nyxgpt.rag.vectorstore_cassandra.execute_concurrent",
+        _fake_execute_concurrent,
+    )
+
+    store.query_by_embeddings_batch([[0.1], [0.2]], k=3)
+
+    # No metadata filter -> multiplier 1, oversample 2.0 -> fetch_n = 6
+    assert len(captured_statements) == 2
+    assert all(s.fetch_size == 6 for s in captured_statements)

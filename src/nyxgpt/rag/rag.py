@@ -921,7 +921,7 @@ def _execute_query_parallel(
 
     Uses :meth:`CassandraVectorStore.query_by_embeddings_batch`, which issues
     all ANN searches concurrently via the driver's native
-    ``execute_concurrent_with_args`` instead of one blocking call per query
+    ``execute_concurrent`` instead of one blocking call per query
     variant, bounded by the store's configured ``cassandra_batch_query_concurrency``.
 
     Args:

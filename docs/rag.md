@@ -141,7 +141,7 @@ cassandra_table = rag_chunks
 When query expansion (`enable_query_expansion = true`) produces multiple query variants,
 `retrieve_context` searches them with a single call to
 `CassandraVectorStore.query_by_embeddings_batch`, which runs all of the ANN searches
-concurrently via the driver's `execute_concurrent_with_args`, bounded by
+concurrently via the driver's `execute_concurrent`, bounded by
 `cassandra_batch_query_concurrency`, instead of issuing one blocking `query_by_embedding`
 call per variant.
 
