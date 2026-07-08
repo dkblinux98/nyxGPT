@@ -928,6 +928,7 @@ Detailed documentation is organized under `docs/`:
 - **Testing** – `docs/testing.md`
 - **Architecture** – `docs/architecture.md`
 - **Development** – `docs/development.md`
+- **Security Best Practices** – `docs/security.md`
 - **Troubleshooting** – `docs/troubleshooting.md`
 
 If you are new to the project, start with **architecture**, then **api**, then **ui**.
