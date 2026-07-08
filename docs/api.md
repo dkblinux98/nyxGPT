@@ -1348,6 +1348,7 @@ At a high level, the API supports:
 - RAG-assisted chat
 - **metadata filtering** - filter queries by doc_id, filename, tags, or date range
 - **collection management** - manage multi-model embedding collections
+- **query result caching** - cache repeated query results with TTL expiration and automatic invalidation; monitor hit rate via `GET /api/v1/rag/cache/stats` or clear via `POST /api/v1/rag/cache/clear`
 
 ### `GET /api/v1/rag/collections`
 

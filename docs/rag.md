@@ -145,6 +145,14 @@ concurrently via the driver's `execute_concurrent`, bounded by
 `cassandra_batch_query_concurrency`, instead of issuing one blocking `query_by_embedding`
 call per variant.
 
+> **Query result caching:** repeated identical queries (same query text, top_k, collection,
+> embedding model/dim, metadata filters, and retrieval settings) can skip the entire
+> retrieval pipeline via `[cache] query_cache_enabled = true`. The cache is invalidated
+> automatically on document ingestion/update and collection deletion. See
+> [`docs/performance.md`](performance.md#query-result-cache) for full configuration and
+> tuning details, and [`GET /api/v1/rag/cache/stats`](#query-result-cache) below to
+> monitor hit rate.
+
 ---
 
 ## Document Update Detection
@@ -450,6 +458,39 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
   "detail": "File type .exe not supported. Allowed: {'.txt', '.md', '.json', '.pdf', '.pptx', '.docx', '.epub', '.html', '.htm'}"
 }
 ```
+
+### Query Result Cache
+
+Monitor and manage the query result cache described in [Configuration](#configuration) above (see [`docs/performance.md`](performance.md#query-result-cache) for tuning guidance).
+
+#### `GET /api/v1/rag/cache/stats`
+
+Get hit rate and size statistics for the RAG query result cache.
+
+**Response:**
+```json
+{
+  "hits": 42,
+  "misses": 8,
+  "hit_rate": 0.84,
+  "size": 5
+}
+```
+
+Returns zeroed stats (`hits=0, misses=0, hit_rate=0.0, size=0`) if `query_cache_enabled = false`.
+
+#### `POST /api/v1/rag/cache/clear`
+
+Manually clear the query result cache.
+
+**Response:**
+```json
+{
+  "status": "Query result cache cleared"
+}
+```
+
+The cache is already cleared automatically on document ingestion/update and collection deletion, so this endpoint is mainly useful for out-of-band changes (e.g. a direct Cassandra write bypassing `ingest_document`).
 
 ---
 
