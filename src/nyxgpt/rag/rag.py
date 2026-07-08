@@ -10,6 +10,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import cast
 
+from nyxgpt.cache import CacheBackend, DiskCache, MemoryCache, NoOpCache, hash_text
 from nyxgpt.config import (
     get_rag_chat_context_max_chars,
     get_rag_chat_top_k,
@@ -159,6 +160,132 @@ class RAGEvaluationMetrics:
 
 class RAGError(RuntimeError):
     pass
+
+
+# ----------------------------
+# Query Result Cache
+# ----------------------------
+# Caches the fully retrieved/fused/reranked results of retrieve_context() so
+# repeated identical queries skip vector search, BM25 indexing, fusion, and
+# reranking entirely. Keyed by a fingerprint of the query plus every input
+# that can change the result set. Only non-debug calls are cached, since
+# debug mode exists to report *live* timing/metrics for a single call.
+
+# Global query result cache instance (initialized lazily)
+_query_result_cache: CacheBackend[list[dict]] | None = None
+
+
+def _get_query_result_cache() -> CacheBackend[list[dict]]:
+    """Get or initialize the global query result cache.
+
+    Returns:
+        Initialized cache backend based on config settings
+    """
+    global _query_result_cache
+
+    if _query_result_cache is not None:
+        return _query_result_cache
+
+    cfg = load_config(None)
+    cache_enabled = cfg.getboolean("cache", "query_cache_enabled", fallback=False)
+
+    if not cache_enabled:
+        log.debug("Query result cache disabled")
+        _query_result_cache = NoOpCache()
+        return _query_result_cache
+
+    cache_backend = cfg.get("cache", "query_cache_backend", fallback="memory").lower()
+
+    if cache_backend == "memory":
+        max_size = cfg.getint("cache", "query_cache_max_size", fallback=500)
+        ttl = cfg.getint("cache", "query_cache_ttl_seconds", fallback=300)
+        _query_result_cache = MemoryCache(max_size=max_size, default_ttl=ttl)
+        log.debug(f"Query result cache initialized: memory (max_size={max_size}, ttl={ttl}s)")
+    elif cache_backend == "disk":
+        cache_dir = cfg.get("cache", "query_cache_dir", fallback="~/.nyxGPT/cache/queries")
+        ttl = cfg.getint("cache", "query_cache_ttl_seconds", fallback=600)
+        _query_result_cache = DiskCache(cache_dir=cache_dir, default_ttl=ttl)
+        log.debug(f"Query result cache initialized: disk (dir={cache_dir}, ttl={ttl}s)")
+    else:
+        log.warning(f"Unknown cache backend '{cache_backend}', disabling query result cache")
+        _query_result_cache = NoOpCache()
+
+    return _query_result_cache
+
+
+def clear_query_cache() -> None:
+    """Clear the global query result cache.
+
+    Called automatically whenever the underlying document set changes
+    (ingestion, update, or collection deletion) so stale results are never
+    served. Can also be called manually (e.g. via the /rag/cache/clear API).
+    """
+    global _query_result_cache
+    if _query_result_cache is not None:
+        _query_result_cache.clear()
+        log.info("Query result cache cleared")
+
+
+def get_query_cache_stats() -> dict[str, int | float]:
+    """Return hit rate and size statistics for the query result cache.
+
+    Returns:
+        Dict with hits, misses, hit_rate, and size. All zero/empty if the
+        cache is disabled (NoOpCache has no stats() method).
+    """
+    cache = _get_query_result_cache()
+    if isinstance(cache, (MemoryCache, DiskCache)):
+        return cache.stats()
+    return {"hits": 0, "misses": 0, "hit_rate": 0.0, "size": 0}
+
+
+def _query_cache_key(
+    *,
+    query: str,
+    k: int,
+    collection: str,
+    embedding_model: str,
+    embedding_dim: int | None,
+    metadata_filter: MetadataFilter | None,
+    min_score: float,
+    max_chunks: int,
+    use_expansion: bool,
+    use_hybrid: bool,
+    hybrid_alpha: float | None,
+    reranking_enabled: bool,
+) -> str:
+    """Build a stable fingerprint for a retrieve_context() call.
+
+    Includes every input that can change the returned result set, so a
+    cache hit is only ever served for a byte-for-byte equivalent query.
+    """
+    filter_data = None
+    if metadata_filter is not None:
+        filter_data = {
+            "doc_ids": metadata_filter.doc_ids,
+            "filename": metadata_filter.filename,
+            "tags": metadata_filter.tags,
+            "date_from": (
+                metadata_filter.date_from.isoformat() if metadata_filter.date_from else None
+            ),
+            "date_to": metadata_filter.date_to.isoformat() if metadata_filter.date_to else None,
+        }
+
+    key_data = {
+        "query": query,
+        "k": k,
+        "collection": collection,
+        "embedding_model": embedding_model,
+        "embedding_dim": embedding_dim,
+        "metadata_filter": filter_data,
+        "min_score": min_score,
+        "max_chunks": max_chunks,
+        "use_expansion": use_expansion,
+        "use_hybrid": use_hybrid,
+        "hybrid_alpha": hybrid_alpha,
+        "reranking_enabled": reranking_enabled,
+    }
+    return hash_text(json.dumps(key_data, sort_keys=True))
 
 
 def _chunking_cfg() -> ChunkingConfig:
@@ -810,6 +937,10 @@ def ingest_document(
         status = "updated" if is_update else "ingested"
         log.info(f"Document {doc_id} {status}: {len(chunks)} chunks")
 
+        # Invalidate query result cache: the document set changed, so any
+        # cached retrieval results may now be stale.
+        clear_query_cache()
+
         return {
             "status": status,
             "chunks_ingested": len(chunks),
@@ -1028,6 +1159,32 @@ def retrieve_context(
     use_expansion = cfg.getboolean("rag", "enable_query_expansion", fallback=False)
     use_hybrid = cfg.getboolean("rag", "enable_hybrid_search", fallback=True)
     hybrid_alpha = cfg.getfloat("rag", "hybrid_alpha", fallback=None)
+    reranking_enabled = cfg.getboolean("rag", "enable_reranking", fallback=False)
+
+    # Query result cache: skip the entire retrieval pipeline on a hit.
+    # Debug-mode calls are never cached/served from cache since they exist
+    # to report live timing/metrics for that specific call.
+    query_cache = _get_query_result_cache()
+    cache_key = None
+    if not collect_debug:
+        cache_key = _query_cache_key(
+            query=query,
+            k=k,
+            collection=collection,
+            embedding_model=actual_model,
+            embedding_dim=ecfg.dimension,
+            metadata_filter=metadata_filter,
+            min_score=min_score,
+            max_chunks=max_chunks,
+            use_expansion=use_expansion,
+            use_hybrid=use_hybrid,
+            hybrid_alpha=hybrid_alpha,
+            reranking_enabled=reranking_enabled,
+        )
+        cached_results = query_cache.get(cache_key)
+        if cached_results is not None:
+            log.debug(f"Query result cache hit for query={query!r}")
+            return cached_results
 
     # Track debug metrics
     query_expansion_time_ms = None
@@ -1317,7 +1474,6 @@ def retrieve_context(
     # RERANKING
     # ======================================================================
     reranking_metrics: RerankerDebugMetrics | None = None
-    reranking_enabled = cfg.getboolean("rag", "enable_reranking", fallback=False)
 
     if reranking_enabled and all_results:
         log.debug("Applying reranking to %d results", len(all_results))
@@ -1355,6 +1511,8 @@ def retrieve_context(
     filtering_time_ms = (time.perf_counter() - filter_start) * 1000.0 if filter_start else 0.0
 
     if not collect_debug:
+        assert cache_key is not None
+        query_cache.set(cache_key, filtered)
         return filtered
 
     # Build debug info

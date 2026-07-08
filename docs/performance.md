@@ -135,7 +135,7 @@ After:  "a helpful assistant. respond to user queries carefully. be accurate and
 
 ## Caching
 
-Caching dramatically improves performance by avoiding redundant computations. nyxGPT supports two types of caching:
+Caching dramatically improves performance by avoiding redundant computations. nyxGPT supports three types of caching:
 
 ### Embedding Cache
 
@@ -239,24 +239,73 @@ response_cache_dir = ~/.nyxGPT/cache/responses
 - Best suited for testing, CI/CD, or batch processing
 - Clear cache when changing models or system prompts
 
+### Query Result Cache
+
+Cache the fully retrieved RAG results (vector search + BM25 + fusion + reranking) for repeated queries, so identical queries skip the entire retrieval pipeline.
+
+```ini
+[cache]
+# Enable query result caching
+query_cache_enabled = true
+
+# Backend: "memory" or "disk"
+query_cache_backend = memory
+
+# Memory backend: max number of cached query results
+query_cache_max_size = 500
+
+# TTL in seconds
+# Memory default: 300s (5 minutes)
+# Disk default: 600s (10 minutes)
+query_cache_ttl_seconds = 300
+
+# Disk backend only: cache directory
+query_cache_dir = ~/.nyxGPT/cache/queries
+```
+
+The cache key (fingerprint) is built from the query text plus every input that affects the result set: `top_k`, collection, embedding model/dimension, metadata filters (doc IDs, filename, tags, date range), `min_score`, `max_chunks`, query expansion, hybrid search settings, and reranking. Two calls only share a cache entry if all of these match exactly.
+
+**When to enable**:
+- Chat UIs where users often re-ask or re-run the same question
+- RAG evaluation/benchmarking with repeated queries
+- High-traffic RAG APIs with a long tail of duplicate queries
+
+**When NOT to enable**:
+- Rapidly changing document sets with a long TTL (see invalidation below)
+- Debug/evaluation endpoints (`debug_mode=True` calls always bypass the cache, since they report live timing metrics)
+
+**Performance impact**:
+- **Cache hit**: ~1ms vs the full pipeline cost (embedding + ANN search + BM25 indexing + fusion + optional reranking), which can be 100ms-2s+ depending on collection size and whether reranking is enabled
+- **Memory overhead**: proportional to `max_chunks` × average chunk size × `query_cache_max_size`
+
+**Automatic invalidation**: The cache is cleared automatically whenever the document set changes — on document ingestion/update (`ingest_document`) and on collection deletion (`DELETE /rag/collections/{name}`). A short TTL is a safety net, not the primary invalidation mechanism.
+
+**Monitoring hit rate**: `GET /rag/cache/stats` returns `{hits, misses, hit_rate, size}`. Manually clear with `POST /rag/cache/clear`.
+
 ### Cache Invalidation
 
-Both caches support TTL-based automatic expiration. Manual invalidation:
+All three caches support TTL-based automatic expiration. Manual invalidation:
 
 **Via Python**:
 ```python
 from nyxgpt.rag.embeddings import clear_embedding_cache
 from nyxgpt.chat import clear_response_cache
+from nyxgpt.rag.rag import clear_query_cache
 
 clear_embedding_cache()
 clear_response_cache()
+clear_query_cache()
 ```
+
+**Via API** (query result cache only): `POST /rag/cache/clear`
 
 **Via config change**: Set `ttl_seconds = 0` for unlimited caching (cache persists until manually cleared or restart).
 
 ### Monitoring Cache Performance
 
-Enable debug logging to see cache hits/misses:
+For the query result cache, `GET /rag/cache/stats` returns hit/miss counts and hit rate directly — no log scraping needed.
+
+For embedding/response caches, enable debug logging to see cache hits/misses:
 
 ```ini
 [logging]
