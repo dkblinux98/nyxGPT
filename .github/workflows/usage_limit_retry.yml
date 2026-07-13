@@ -1,0 +1,70 @@
+name: Usage Limit Auto-Retry
+
+# Self-healing companion to developer_auto_implement.yml's usage-limit
+# detection (Phase 0). When a developer run dies because the Claude usage
+# window is exhausted, the failure handler labels the issue
+# "usage-limit-retry" and records a retry-after timestamp in a marker
+# comment. This cron re-fires the developer agent (via the proven
+# unassign/re-assign trigger) once that timestamp has passed.
+#
+# Runs under SCRUMMASTER_AGENT_TOKEN per the identity policy
+# (administrative actions are performed by myGPT-scrummaster-agent).
+
+on:
+  schedule:
+    - cron: '13,43 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+
+jobs:
+  retry:
+    if: vars.AGENTS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+      REPO: ${{ github.repository }}
+      DEV_AGENT: ${{ vars.DEV_AGENT }}
+    steps:
+      - name: Retry usage-limited issues
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOW=$(date +%s)
+
+          ISSUES=$(gh issue list --repo "$REPO" --label "usage-limit-retry" \
+            --state open --json number --jq '.[].number' || true)
+
+          if [ -z "$ISSUES" ]; then
+            echo "No issues pending usage-limit retry."
+            exit 0
+          fi
+
+          for ISSUE in $ISSUES; do
+            echo "::group::Issue #$ISSUE"
+
+            RETRY_AFTER=$(gh issue view "$ISSUE" --repo "$REPO" --json comments \
+              --jq '[.comments[].body | capture("<!-- usage-limit-retry-after: (?<t>[0-9]+) -->").t] | last // empty' \
+              2>/dev/null || true)
+
+            if [ -n "$RETRY_AFTER" ] && [ "$NOW" -lt "$RETRY_AFTER" ]; then
+              echo "Not yet: retry scheduled for epoch $RETRY_AFTER (now $NOW)."
+              echo "::endgroup::"
+              continue
+            fi
+
+            echo "Retry window reached — re-firing developer agent."
+            gh issue edit "$ISSUE" --repo "$REPO" --remove-label "usage-limit-retry"
+            gh issue comment "$ISSUE" --repo "$REPO" --body "🔁 **Scrummaster Agent**: Usage-limit retry window reached — re-assigning @$DEV_AGENT to resume implementation."
+
+            # Unassign then re-assign to emit the 'assigned' event that
+            # triggers developer_auto_implement.yml (its only trigger).
+            gh api -X DELETE "repos/$REPO/issues/$ISSUE/assignees" \
+              -f "assignees[]=$DEV_AGENT" >/dev/null 2>&1 || true
+            sleep 3
+            gh api -X POST "repos/$REPO/issues/$ISSUE/assignees" \
+              -f "assignees[]=$DEV_AGENT" >/dev/null
+
+            echo "::endgroup::"
+          done

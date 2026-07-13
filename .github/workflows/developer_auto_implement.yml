@@ -1139,8 +1139,67 @@ jobs:
                     `[View PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${pr_number})`
             });
 
-      - name: Classify error (Phase 1)
+      - name: Detect usage-limit signature (Phase 0 - self-heal)
         if: failure()
+        id: usage_limit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          set +e
+          # Usage-limit exhaustion signature: a Claude implementation/fix step
+          # "completes" in seconds because every model call fails immediately.
+          # Observed 1-17s vs 4-25 min for real work (runs 28810049590,
+          # 28909002900, 29220860744). When detected, schedule a delayed
+          # retry via the usage-limit-retry label + cron workflow instead of
+          # escalating "unknown fatal - manual intervention".
+          echo "handled=false" >> "$GITHUB_OUTPUT"
+
+          JOBS_JSON=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" 2>/dev/null)
+          [ -z "$JOBS_JSON" ] && exit 0
+
+          FAST_CLAUDE_STEPS=$(echo "$JOBS_JSON" | jq -r '
+            [.jobs[].steps[]?
+             | select(.name | test("Run Claude Code|Claude Fix Issues|Claude review fix"; "i"))
+             | select(.started_at != null and .completed_at != null)
+             | ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601))
+             | select(. >= 0 and . < 90)
+            ] | length' 2>/dev/null)
+          [ -z "$FAST_CLAUDE_STEPS" ] && FAST_CLAUDE_STEPS=0
+
+          if [ "$FAST_CLAUDE_STEPS" -lt 1 ]; then
+            echo "::notice::No usage-limit signature (no sub-90s Claude steps)"
+            exit 0
+          fi
+          echo "::warning::Usage-limit signature detected: $FAST_CLAUDE_STEPS Claude step(s) finished in <90s"
+
+          # Count prior scheduled retries for this issue; give up after 8.
+          ATTEMPTS=$(gh issue view "$ISSUE" --json comments \
+            --jq '[.comments[].body | select(test("<!-- usage-limit-retry-after:"))] | length' 2>/dev/null || echo 0)
+          if [ "${ATTEMPTS:-0}" -ge 8 ]; then
+            gh issue comment "$ISSUE" --body "🛑 **Developer Agent**: Usage-limit auto-retry gave up after $ATTEMPTS attempts. The Claude usage window does not appear to be recovering — manual investigation needed (check the CLAUDE_CODE_OAUTH_TOKEN account's limits). Re-assign @${{ vars.DEV_AGENT }} to try again."
+            gh issue edit "$ISSUE" --remove-label "usage-limit-retry" 2>/dev/null || true
+            echo "handled=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Ensure the label exists (idempotent), then schedule the retry.
+          gh label create "usage-limit-retry" \
+            --description "Auto-retry pending: run hit Claude usage limits; cron retries after the window resets" \
+            --color "C5DEF5" 2>/dev/null || true
+
+          RETRY_AFTER=$(( $(date +%s) + 3600 ))
+          RETRY_AT_UTC=$(date -u -d "@$RETRY_AFTER" '+%H:%M UTC' 2>/dev/null || echo "in ~1h")
+          gh issue edit "$ISSUE" --add-label "usage-limit-retry"
+          gh issue comment "$ISSUE" --body "⏳ **Developer Agent**: This run hit the Claude usage limit (model calls terminating in ~1s). **Auto-retry $((ATTEMPTS + 1))/8 scheduled** for ~$RETRY_AT_UTC — the retry cron will re-assign @${{ vars.DEV_AGENT }} automatically once the window has had time to reset. No manual action needed unless retries keep failing.
+          <!-- usage-limit-retry-after: $RETRY_AFTER -->"
+
+          echo "handled=true" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Classify error (Phase 1)
+        if: failure() && steps.usage_limit.outputs.handled != 'true'
         id: classify_error
         shell: bash
         env:
