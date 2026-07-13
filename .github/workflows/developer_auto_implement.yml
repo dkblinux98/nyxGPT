@@ -1189,9 +1189,9 @@ jobs:
             --description "Auto-retry pending: run hit Claude usage limits; cron retries after the window resets" \
             --color "C5DEF5" 2>/dev/null || true
 
-          # Owner-confirmed: the Claude usage window takes ~3 hours to reset.
-          RETRY_AFTER=$(( $(date +%s) + 10800 ))
-          RETRY_AT_UTC=$(date -u -d "@$RETRY_AFTER" '+%H:%M UTC' 2>/dev/null || echo "in ~3h")
+          # Owner-confirmed: the Claude usage window takes ~5 hours to reset.
+          RETRY_AFTER=$(( $(date +%s) + 18000 ))
+          RETRY_AT_UTC=$(date -u -d "@$RETRY_AFTER" '+%H:%M UTC' 2>/dev/null || echo "in ~5h")
           gh issue edit "$ISSUE" --add-label "usage-limit-retry"
           gh issue comment "$ISSUE" --body "⏳ **Developer Agent**: This run hit the Claude usage limit (model calls terminating in ~1s). **Auto-retry $((ATTEMPTS + 1))/8 scheduled** for ~$RETRY_AT_UTC — the retry cron will re-assign @${{ vars.DEV_AGENT }} automatically once the window has had time to reset. No manual action needed unless retries keep failing.
           <!-- usage-limit-retry-after: $RETRY_AFTER -->"
