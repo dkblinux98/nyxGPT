@@ -108,6 +108,48 @@ def test_metrics_to_dict():
     assert "depth" in metrics_dict["queue"]
     assert "total_requests" in metrics_dict["queue"]
 
+    # Check error fields
+    assert "errors" in metrics_dict
+    assert "count" in metrics_dict["errors"]
+    assert "rate_percent" in metrics_dict["errors"]
+
+
+@pytest.mark.unit
+def test_record_request_latency_defaults_to_no_error():
+    monitor = ResourceMonitor(max_samples=100)
+    monitor.record_request_latency(10.0)
+
+    metrics = monitor.get_metrics()
+    assert metrics.error_count == 0
+    assert metrics.error_rate_percent == 0.0
+
+
+@pytest.mark.unit
+def test_error_rate_tracks_errors():
+    monitor = ResourceMonitor(max_samples=100)
+    monitor.record_request_latency(10.0, is_error=False)
+    monitor.record_request_latency(20.0, is_error=True)
+    monitor.record_request_latency(30.0, is_error=True)
+    monitor.record_request_latency(40.0, is_error=False)
+
+    metrics = monitor.get_metrics()
+    assert metrics.error_count == 2
+    assert metrics.error_rate_percent == 50.0
+
+
+@pytest.mark.unit
+def test_error_rate_respects_sliding_window():
+    monitor = ResourceMonitor(max_samples=2)
+    monitor.record_request_latency(10.0, is_error=True)
+    monitor.record_request_latency(20.0, is_error=False)
+    monitor.record_request_latency(30.0, is_error=False)
+
+    metrics = monitor.get_metrics()
+    # Only the last 2 samples (False, False) remain in the window.
+    assert metrics.error_count == 0
+    assert metrics.error_rate_percent == 0.0
+    assert metrics.total_requests == 3
+
 
 @pytest.mark.unit
 def test_percentile_calculation():

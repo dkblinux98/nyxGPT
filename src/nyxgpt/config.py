@@ -256,6 +256,45 @@ def get_deploy_namespace(cfg: ConfigParser) -> str:
     return cfg.get("deploy", "namespace", fallback="nyxgpt")
 
 
+def get_canary_namespace(cfg: ConfigParser) -> str:
+    return cfg.get("canary", "namespace", fallback=get_deploy_namespace(cfg))
+
+
+def get_canary_total_replicas(cfg: ConfigParser) -> int:
+    try:
+        return max(1, cfg.getint("canary", "total_replicas", fallback=4))
+    except (ValueError, TypeError):
+        return 4
+
+
+def get_canary_step_percent(cfg: ConfigParser) -> int:
+    try:
+        return min(100, max(1, cfg.getint("canary", "step_percent", fallback=25)))
+    except (ValueError, TypeError):
+        return 25
+
+
+def get_canary_error_rate_threshold(cfg: ConfigParser) -> float:
+    try:
+        return cfg.getfloat("canary", "error_rate_threshold_percent", fallback=5.0)
+    except (ValueError, TypeError):
+        return 5.0
+
+
+def get_canary_latency_p95_threshold_ms(cfg: ConfigParser) -> float:
+    try:
+        return cfg.getfloat("canary", "latency_p95_threshold_ms", fallback=2000.0)
+    except (ValueError, TypeError):
+        return 2000.0
+
+
+def get_canary_min_requests(cfg: ConfigParser) -> int:
+    try:
+        return max(1, cfg.getint("canary", "min_requests_for_evaluation", fallback=20))
+    except (ValueError, TypeError):
+        return 20
+
+
 def get_rag_enabled(cfg: ConfigParser) -> bool:
     """Primary RAG on/off switch.
 

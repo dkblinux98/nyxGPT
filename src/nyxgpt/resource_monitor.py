@@ -37,6 +37,8 @@ class ResourceMetrics:
         p99_request_latency_ms: 99th percentile request latency
         queue_depth: Current number of requests in batch queue
         total_requests: Total number of requests tracked
+        error_count: Number of error responses (HTTP 5xx) in the sliding window
+        error_rate_percent: Percentage of sampled requests that were errors
     """
 
     memory_rss_mb: float
@@ -51,6 +53,8 @@ class ResourceMetrics:
     p99_request_latency_ms: float
     queue_depth: int
     total_requests: int
+    error_count: int = 0
+    error_rate_percent: float = 0.0
 
     def to_dict(self) -> dict:
         """Convert metrics to dictionary for JSON serialization."""
@@ -74,6 +78,10 @@ class ResourceMetrics:
             "queue": {
                 "depth": self.queue_depth,
                 "total_requests": self.total_requests,
+            },
+            "errors": {
+                "count": self.error_count,
+                "rate_percent": round(self.error_rate_percent, 2),
             },
         }
 
@@ -102,6 +110,7 @@ class ResourceMonitor:
         self._process = psutil.Process()
         self._max_samples = max_samples
         self._latency_samples: deque[float] = deque(maxlen=max_samples)
+        self._error_samples: deque[bool] = deque(maxlen=max_samples)
         self._total_requests = 0
         self._lock = threading.Lock()
         self._batch_processor = batch_processor
@@ -109,14 +118,18 @@ class ResourceMonitor:
         # Initialize CPU percent (first call always returns 0.0)
         self._process.cpu_percent()
 
-    def record_request_latency(self, latency_ms: float) -> None:
+    def record_request_latency(self, latency_ms: float, is_error: bool = False) -> None:
         """Record a request latency sample.
 
         Args:
             latency_ms: Request latency in milliseconds
+            is_error: Whether the request resulted in an error response (HTTP 5xx).
+                Used to compute a sliding-window error rate for metrics-based
+                canary promotion/rollback decisions.
         """
         with self._lock:
             self._latency_samples.append(latency_ms)
+            self._error_samples.append(is_error)
             self._total_requests += 1
 
     def get_metrics(self) -> ResourceMetrics:
@@ -137,6 +150,7 @@ class ResourceMonitor:
         # Calculate latency percentiles
         with self._lock:
             samples = sorted(self._latency_samples)
+            error_samples = list(self._error_samples)
             total_requests = self._total_requests
 
         if samples:
@@ -146,6 +160,9 @@ class ResourceMonitor:
             p99_latency = self._percentile(samples, 99)
         else:
             avg_latency = p50_latency = p95_latency = p99_latency = 0.0
+
+        error_count = sum(1 for is_error in error_samples if is_error)
+        error_rate_percent = (error_count / len(error_samples)) * 100 if error_samples else 0.0
 
         # Get queue depth from batch processor if available
         queue_depth = 0
@@ -170,6 +187,8 @@ class ResourceMonitor:
             p99_request_latency_ms=p99_latency,
             queue_depth=queue_depth,
             total_requests=total_requests,
+            error_count=error_count,
+            error_rate_percent=error_rate_percent,
         )
 
     @staticmethod
