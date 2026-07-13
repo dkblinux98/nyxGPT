@@ -677,6 +677,13 @@ jobs:
 
             Output: commit(s) pushed to the current branch with proper issue references.
 
+            **COMMIT INCREMENTALLY**: commit and push after EACH completed component
+            (backend module, endpoints, CLI, UI page, tests, docs) — do NOT save all
+            committing for the end. If your session hits its turn/time limit,
+            uncommitted work is lost with the runner. The workflow snapshots leftover
+            changes as a safety net, but deliberate incremental commits with real
+            messages are strongly preferred.
+
       - name: Check Claude progress completion
         id: check_progress
         if: |
@@ -728,6 +735,38 @@ jobs:
               issue_number,
               body: '✅ **Developer Agent**: Implementation complete. Running verification checks...' + progressSuffix
             });
+
+      - name: Snapshot uncommitted implementation work
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Long implementations can hit the Claude step's turn/time limit
+          # before committing (observed: run 29256847864 lost a complete,
+          # verified canary backend that was never committed). Snapshot any
+          # uncommitted work so verification, PR submission, and the review
+          # cycle proceed on it — partial work then converges via review-fix
+          # cycles instead of evaporating with the runner.
+          BRANCH="$(git branch --show-current || true)"
+          [ -z "$BRANCH" ] && { echo "Detached HEAD; nothing to snapshot."; exit 0; }
+          [ "$BRANCH" = "${{ vars.RELEASE_BRANCH }}" ] && { echo "On release branch; nothing to snapshot."; exit 0; }
+
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "wip: snapshot uncommitted implementation work (#${{ github.event.issue.number }})" \
+              -m "Auto-committed by the workflow: the implementation step ended with uncommitted changes (e.g. the Claude step hit its turn/time limit before committing). Verification and review proceed on this snapshot; gaps are completed in review-fix cycles."
+            echo "::warning::Snapshot-committed uncommitted implementation work on $BRANCH"
+          fi
+
+          # Make sure the branch (and any local-only commits) reach origin so
+          # PR submission has a ref to target.
+          if ! git ls-remote --exit-code origin "refs/heads/$BRANCH" >/dev/null 2>&1; then
+            git push -u origin "$BRANCH"
+            echo "::notice::Pushed new branch $BRANCH to origin"
+          elif [ -n "$(git rev-list "origin/$BRANCH..HEAD" 2>/dev/null)" ]; then
+            git push origin "$BRANCH"
+            echo "::notice::Pushed local-only commits on $BRANCH to origin"
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -1112,7 +1151,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Post PR created comment
-        if: steps.pr.conclusion == 'success'
+        if: steps.pr.conclusion == 'success' && steps.pr.outputs.pr_number != ''
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
