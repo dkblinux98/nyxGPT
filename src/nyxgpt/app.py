@@ -34,6 +34,7 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 import nyxgpt.config
 from nyxgpt import api_models, models, sessions, tools_fs
 from nyxgpt import chat as chat_module
+from nyxgpt import deploy as deploy_module
 from nyxgpt.api_models import (
     AttachDocumentRequest,
     ChatRequest,
@@ -77,6 +78,7 @@ from nyxgpt.chat import chat as run_chat
 from nyxgpt.chat import chat_stream
 from nyxgpt.config import (
     get_default_model,
+    get_deploy_namespace,
     get_ollama_base_url,
     get_rag_good_score_threshold,
     get_rag_medium_score_threshold,
@@ -895,6 +897,36 @@ def config_update(request: Request, payload: dict[str, Any] = Body(...)) -> dict
 def config_patch(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     result: dict[str, Any] = config_update(request, payload)
     return result
+
+
+# --- Local blue/green deployment endpoints (SRE/admin dashboard) ---
+@api.get("/deploy/status")
+def deploy_status(request: Request) -> dict[str, Any]:
+    cfg = _req_cfg(request)
+    return deploy_module.status(get_deploy_namespace(cfg))
+
+
+@api.post("/deploy/switch")
+def deploy_switch(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    cfg = _req_cfg(request)
+    target = payload.get("to")
+    if target is not None and target not in deploy_module.COLORS:
+        raise HTTPException(status_code=400, detail=f"Invalid color: {target!r}")
+    result = deploy_module.switch(
+        target=target, namespace=get_deploy_namespace(cfg), force=bool(payload.get("force", False))
+    )
+    if not result.ok:
+        raise HTTPException(status_code=409, detail=result.message)
+    return {"ok": result.ok, "message": result.message}
+
+
+@api.post("/deploy/rollback")
+def deploy_rollback(request: Request) -> dict[str, Any]:
+    cfg = _req_cfg(request)
+    result = deploy_module.rollback(get_deploy_namespace(cfg))
+    if not result.ok:
+        raise HTTPException(status_code=409, detail=result.message)
+    return {"ok": result.ok, "message": result.message}
 
 
 # --- Model management endpoints ---

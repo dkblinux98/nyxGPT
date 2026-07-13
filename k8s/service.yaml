@@ -4,8 +4,13 @@ metadata:
   name: nyxgpt-api
   namespace: nyxgpt
 spec:
+  # selector.color determines which of nyxgpt-api-blue / nyxgpt-api-green
+  # receives traffic. Do not edit this by hand -- it is managed by
+  # `nyxgpt deploy switch` / `nyxgpt deploy rollback` (see docs/kubernetes.md).
+  # "blue" is the default active color on first apply.
   selector:
     app: nyxgpt-api
+    color: blue
   ports:
     - name: http
       port: 8000

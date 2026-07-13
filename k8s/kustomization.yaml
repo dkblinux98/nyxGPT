@@ -5,6 +5,8 @@ resources:
   - namespace.yaml
   - configmap.yaml
   - secret.yaml
-  - deployment.yaml
+  - deployment-blue.yaml
+  - deployment-green.yaml
   - service.yaml
-  - hpa.yaml
+  - hpa-blue.yaml
+  - hpa-green.yaml

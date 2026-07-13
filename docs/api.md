@@ -12,7 +12,7 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 46 available endpoints:
+Quick reference of all 49 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -23,6 +23,9 @@ Quick reference of all 46 available endpoints:
 | `/api/v1/config` | GET | Get current configuration |
 | `/api/v1/config` | POST | Update configuration (full replace) |
 | `/api/v1/config` | PATCH | Partial configuration update |
+| `/api/v1/deploy/status` | GET | Blue/green deployment status (active color, health, history) |
+| `/api/v1/deploy/switch` | POST | Cut traffic over to a color (health-checked) |
+| `/api/v1/deploy/rollback` | POST | Switch traffic back to the previously active color |
 | `/api/v1/models` | GET | List Ollama models |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
@@ -465,6 +468,69 @@ Update configuration (full replace). Only provided keys are updated.
 ### `PATCH /api/v1/config`
 
 Partial configuration update (same as POST, provided for semantic clarity).
+
+---
+
+## Deployment (Blue/Green)
+
+Local blue/green deployment for `nyxgpt-api` on a local Kubernetes cluster
+(kind/minikube/k3s) — see [kubernetes.md](kubernetes.md#bluegreen-deployment)
+for the full workflow and the `nyxgpt deploy` CLI. These endpoints back the
+SRE/admin dashboard at `/admin/deploy`.
+
+### `GET /api/v1/deploy/status`
+
+Return which color is active, each color's health, and recent switch history.
+
+**Response:**
+
+```json
+{
+  "namespace": "nyxgpt",
+  "active": "blue",
+  "inactive": "green",
+  "colors": {
+    "blue": { "healthy": true, "message": "nyxgpt-api-blue healthy (1/1 ready)" },
+    "green": { "healthy": true, "message": "nyxgpt-api-green healthy (1/1 ready)" }
+  },
+  "history": [{ "from": "green", "to": "blue", "ts": 1730000000.0 }]
+}
+```
+
+### `POST /api/v1/deploy/switch`
+
+Cut traffic over to a color. Refuses (`409`) unless the target Deployment is
+healthy, unless `force` is set.
+
+**Request:**
+
+```json
+{ "to": "green", "force": false }
+```
+
+`to` is optional; if omitted, the target defaults to whichever color is
+currently inactive. `force` is optional (default `false`).
+
+**Response:**
+
+```json
+{ "ok": true, "message": "Switched traffic from blue to green" }
+```
+
+Returns `400` if `to` is not `"blue"` or `"green"`, and `409` if the switch
+was refused (e.g. the target is unhealthy).
+
+### `POST /api/v1/deploy/rollback`
+
+Switch traffic back to the color that was active before the last switch.
+Unlike `switch`, this bypasses the health gate — it's the emergency escape
+hatch. Returns `409` if there is no switch history to roll back to.
+
+**Response:**
+
+```json
+{ "ok": true, "message": "Switched traffic from green to blue" }
+```
 
 ---
 

@@ -252,6 +252,10 @@ def get_api_port(cfg: ConfigParser) -> int:
         return 8000
 
 
+def get_deploy_namespace(cfg: ConfigParser) -> str:
+    return cfg.get("deploy", "namespace", fallback="nyxgpt")
+
+
 def get_rag_enabled(cfg: ConfigParser) -> bool:
     """Primary RAG on/off switch.
 
