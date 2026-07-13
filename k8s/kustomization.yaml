@@ -10,3 +10,6 @@ resources:
   - service.yaml
   - hpa-blue.yaml
   - hpa-green.yaml
+  - deployment-stable.yaml
+  - deployment-canary.yaml
+  - service-canary.yaml
