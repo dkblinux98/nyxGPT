@@ -1482,3 +1482,92 @@ def test_chat_no_rag_mode_flag_passes_none_to_chat_no_stream(
     assert exit_code == 0
     assert len(calls) == 1
     assert calls[0]["rag_enabled"] is None
+
+
+def test_deploy_status(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """Test `nyxgpt deploy status` prints active color and per-color health."""
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod.deploy_mod,
+        "status",
+        lambda namespace: {
+            "namespace": namespace,
+            "active": "blue",
+            "inactive": "green",
+            "colors": {
+                "blue": {"healthy": True, "message": "blue healthy (1/1 ready)"},
+                "green": {"healthy": False, "message": "green not healthy (0/1 ready)"},
+            },
+            "history": [{"from": "green", "to": "blue", "ts": 1000.0}],
+        },
+    )
+
+    exit_code = cli(["deploy", "status", "--namespace", "test-ns"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Active color: blue (namespace=test-ns)" in out
+    assert "blue: healthy" in out
+    assert "green: unhealthy" in out
+    assert "green -> blue" in out
+
+
+def test_deploy_switch_success(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test `nyxgpt deploy switch --to green` reports success and exit code 0."""
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.deploy import DeployResult
+
+    calls: list[dict] = []
+
+    def fake_switch(*, target, namespace, force):
+        calls.append({"target": target, "namespace": namespace, "force": force})
+        return DeployResult(True, "Switched traffic from blue to green")
+
+    monkeypatch.setattr(cli_mod.deploy_mod, "switch", fake_switch)
+
+    exit_code = cli(["deploy", "switch", "--to", "green", "--namespace", "test-ns"])
+
+    assert exit_code == 0
+    assert calls == [{"target": "green", "namespace": "test-ns", "force": False}]
+    assert "[OK] Switched traffic from blue to green" in capsys.readouterr().out
+
+
+def test_deploy_switch_failure_returns_nonzero(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test `nyxgpt deploy switch` surfaces a failure with a nonzero exit code."""
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.deploy import DeployResult
+
+    monkeypatch.setattr(
+        cli_mod.deploy_mod,
+        "switch",
+        lambda **kwargs: DeployResult(False, "Refusing to switch: green not ready"),
+    )
+
+    exit_code = cli(["deploy", "switch", "--namespace", "test-ns"])
+
+    assert exit_code == 2
+    assert "[FAIL] Refusing to switch: green not ready" in capsys.readouterr().out
+
+
+def test_deploy_rollback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test `nyxgpt deploy rollback` reports success and exit code 0."""
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.deploy import DeployResult
+
+    monkeypatch.setattr(
+        cli_mod.deploy_mod,
+        "rollback",
+        lambda namespace: DeployResult(True, "Switched traffic from green to blue"),
+    )
+
+    exit_code = cli(["deploy", "rollback", "--namespace", "test-ns"])
+
+    assert exit_code == 0
+    assert "[OK] Switched traffic from green to blue" in capsys.readouterr().out

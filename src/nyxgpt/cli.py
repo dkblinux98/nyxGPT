@@ -6,13 +6,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+# Deploy (blue/green) and ops implementations live in separate modules for testability.
+from nyxgpt import deploy as deploy_mod
 from nyxgpt import models, sessions, tools_fs
-
-# Ops implementation lives in a separate module for testability.
 from nyxgpt import ops as ops_mod
 from nyxgpt.chat import chat, chat_stream
 from nyxgpt.config import (
     get_default_model,
+    get_deploy_namespace,
     get_ollama_base_url,
     get_sessions_dir,
     load_config,
@@ -1176,6 +1177,47 @@ def cmd_mcp() -> int:
         return 1
 
 
+def _deploy_namespace(cfg_path: Path | None, override: str | None) -> str:
+    if override:
+        return override
+    return get_deploy_namespace(load_config(cfg_path))
+
+
+def cmd_deploy_status(cfg_path: Path | None, namespace: str | None) -> int:
+    ns = _deploy_namespace(cfg_path, namespace)
+    data = deploy_mod.status(ns)
+    print(f"Active color: {data['active']} (namespace={data['namespace']})")
+    for color, info in data["colors"].items():
+        marker = "*" if color == data["active"] else " "
+        state = "healthy" if info["healthy"] else "unhealthy"
+        print(f" {marker} {color}: {state} - {info['message']}")
+    if data["history"]:
+        print("\nRecent switches:")
+        for entry in data["history"]:
+            print(f"  {entry['from']} -> {entry['to']} (ts={entry['ts']})")
+    return 0
+
+
+def cmd_deploy_switch(
+    cfg_path: Path | None, namespace: str | None, target: str | None, force: bool
+) -> int:
+    ns = _deploy_namespace(cfg_path, namespace)
+    result = deploy_mod.switch(target=target, namespace=ns, force=force)
+    print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
+    if result.details:
+        print(f"  {result.details}")
+    return 0 if result.ok else 2
+
+
+def cmd_deploy_rollback(cfg_path: Path | None, namespace: str | None) -> int:
+    ns = _deploy_namespace(cfg_path, namespace)
+    result = deploy_mod.rollback(ns)
+    print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
+    if result.details:
+        print(f"  {result.details}")
+    return 0 if result.ok else 2
+
+
 def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="nyxgpt")
     parser.add_argument(
@@ -1477,6 +1519,39 @@ def cli(argv: list[str] | None = None) -> int:
         help="Service to restart",
     )
 
+    # Add deploy command (local blue/green switching on a local k8s cluster)
+    deploy_p = sub.add_parser(
+        "deploy", help="Local blue/green deployment (kind/minikube/k3s cluster)"
+    )
+    deploy_sub = deploy_p.add_subparsers(dest="deploy_cmd", required=True)
+
+    deploy_status = deploy_sub.add_parser(
+        "status", help="Show which color is active and each color's health"
+    )
+    deploy_status.add_argument(
+        "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
+    )
+
+    deploy_switch = deploy_sub.add_parser(
+        "switch", help="Cut traffic over to a color (health-checked before switching)"
+    )
+    deploy_switch.add_argument(
+        "--to", choices=list(deploy_mod.COLORS), help="Target color (default: the inactive one)"
+    )
+    deploy_switch.add_argument(
+        "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
+    )
+    deploy_switch.add_argument(
+        "--force", action="store_true", help="Switch even if the target is unhealthy"
+    )
+
+    deploy_rollback = deploy_sub.add_parser(
+        "rollback", help="Switch traffic back to the previously active color"
+    )
+    deploy_rollback.add_argument(
+        "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
+    )
+
     args = parser.parse_args(argv)
     cmd = args.command or "info"
 
@@ -1605,6 +1680,14 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.doctor(args)
         if args.ops_cmd == "restart":
             return ops_mod.restart(args)
+
+    if cmd == "deploy":
+        if args.deploy_cmd == "status":
+            return cmd_deploy_status(args.config, args.namespace)
+        if args.deploy_cmd == "switch":
+            return cmd_deploy_switch(args.config, args.namespace, args.to, args.force)
+        if args.deploy_cmd == "rollback":
+            return cmd_deploy_rollback(args.config, args.namespace)
 
     if cmd == "mcp":
         return cmd_mcp()

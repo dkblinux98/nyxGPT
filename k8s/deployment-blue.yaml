@@ -1,19 +1,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: nyxgpt-api
+  name: nyxgpt-api-blue
   namespace: nyxgpt
   labels:
     app: nyxgpt-api
+    color: blue
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: nyxgpt-api
+      color: blue
   template:
     metadata:
       labels:
         app: nyxgpt-api
+        color: blue
     spec:
       containers:
         - name: nyxgpt-api
