@@ -16,6 +16,16 @@ local-first [VISION.md](../VISION.md):
 - No remote state backend — state is a local file (see
   [State Management](#state-management) below).
 
+> **Scope note:** issue #2690 originally asked for cloud provider modules,
+> cloud networking/security groups, and remote state management. The owner
+> explicitly descoped that to local-only IaC on 2026-07-07 as out of step
+> with `VISION.md`'s local-first constraint, then reversed and re-scoped the
+> issue on 2026-07-09 with the local-only requirements implemented here
+> (docker provider, no cloud networking/security groups, local state) —
+> see the issue's comment thread for the full rationale. Cloud provider
+> modules are intentionally not planned; there is no follow-up issue for
+> them because the project has no cloud infrastructure to provision.
+
 Scope: this covers the core stack only (`ollama`, `cassandra`, `api`, `web`).
 The opt-in Compose profiles (`monitoring`, `logging`, `tracing`, `errors`) are
 not modeled here — use
