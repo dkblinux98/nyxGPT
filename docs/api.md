@@ -157,7 +157,10 @@ scrape_configs:
 
 The admin dashboard's Resource Usage panel (`/admin`) surfaces this
 endpoint under a "Prometheus Endpoint" card, with a link to view current
-metrics.
+metrics. Pre-built Grafana dashboards over these metrics (system overview,
+RAG performance, API metrics) are available via the opt-in, local-only
+`monitoring` Compose profile — see
+[Monitoring Dashboards](docker-compose.md#monitoring-dashboards).
 
 ---
 
