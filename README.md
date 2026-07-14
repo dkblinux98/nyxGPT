@@ -1059,6 +1059,10 @@ To run collection automatically, add a scheduled GitHub Actions workflow that in
 `collect_workflow_logs.sh collect` (this requires editing `.github/workflows/`, which Claude Code
 is not permitted to do — a human maintainer needs to add it).
 
+Once history has been collected, it's also visible in the admin dashboard at
+**`/admin/workflow-analytics`** (linked from `/admin/dashboard`) — summary stats, a per-workflow
+breakdown, top failing workflows, and a recent-runs table, backed by `GET /api/v1/admin/workflow-analytics`.
+
 For details, see **docs/development.md** and **RUNBOOKS/**.
 
 ### Claude Code Local Automations
