@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 import nyxgpt.config
+from nyxgpt import admin_activity as admin_activity_module
 from nyxgpt import api_models, models, sessions, tools_fs
 from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
@@ -769,6 +770,64 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _apply_auth_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
+    """Apply auth-section updates to ~/.nyxGPT/config.ini.
+
+    Supported updates:
+    - enabled (bool) -> [auth] enabled
+    - header (str)   -> [auth] header
+    - api_key (str)  -> [auth] api_key
+
+    Auth config is read fresh on every request (see `_auth_cfg`), so
+    changes take effect immediately without a service restart.
+    """
+
+    cfg_path = _config_file_path()
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+
+    parser = ConfigParser()
+    parser.optionxform = str  # type: ignore[assignment]
+    if cfg_path.exists():
+        parser.read(cfg_path)
+
+    if not parser.has_section("auth"):
+        parser.add_section("auth")
+
+    out: dict[str, Any] = {}
+
+    if "enabled" in updates:
+        val = bool(updates["enabled"])
+        parser.set("auth", "enabled", "true" if val else "false")
+        out["enabled"] = val
+
+    if "header" in updates and isinstance(updates.get("header"), str):
+        header = updates["header"].strip()
+        parser.set("auth", "header", header)
+        out["header"] = header
+
+    if "api_key" in updates and isinstance(updates.get("api_key"), str):
+        parser.set("auth", "api_key", updates["api_key"])
+        out["api_key"] = updates["api_key"]
+
+    with cfg_path.open("w", encoding="utf-8") as f:
+        parser.write(f)
+
+    nyxgpt.config._CACHED_CFG = None
+    nyxgpt.config._CACHED_PATH = None
+    nyxgpt.config._CACHED_MTIME_NS = None
+
+    return out
+
+
+def _mask_api_key(api_key: str) -> str:
+    """Mask an API key for display, keeping only a few edge characters."""
+    if not api_key:
+        return ""
+    if len(api_key) <= 8:
+        return "*" * len(api_key)
+    return f"{api_key[:4]}{'*' * (len(api_key) - 8)}{api_key[-4:]}"
+
+
 # Ollama model management helpers
 def _ollama_url(cfg: ConfigParser, path: str) -> str:
     base = get_ollama_base_url(cfg).rstrip("/")
@@ -1042,6 +1101,10 @@ def config_update(request: Request, payload: dict[str, Any] = Body(...)) -> dict
         updates["log_level"] = payload.get("log_level")
 
     changed = _apply_hot_config_updates(updates)
+    if changed:
+        admin_activity_module.record(
+            "config.updated", ", ".join(f"{k}={v}" for k, v in changed.items())
+        )
 
     # After applying, reload config and update request.state.cfg
     request.state.cfg = load_config(None)
@@ -1064,6 +1127,127 @@ def config_patch(request: Request, payload: dict[str, Any] = Body(...)) -> dict[
     return result
 
 
+# --- Admin dashboard endpoints (system status overview, activity log, access) ---
+
+
+@api.get("/admin/overview")
+def admin_overview(request: Request) -> dict[str, Any]:
+    """Aggregate system status for the admin dashboard overview panel.
+
+    Combines app info, resource metrics, deploy/canary status, and the
+    enabled/disabled state of opt-in observability stacks into a single
+    response so the dashboard can render a status summary in one request.
+    Individual sub-sections degrade to an `{"error": ...}` payload instead
+    of failing the whole request when a backing service (e.g. a local K8s
+    cluster for deploy/canary) is unavailable.
+    """
+    cfg = _req_cfg(request)
+
+    def _safe(fn, *args, **kwargs) -> dict[str, Any]:
+        try:
+            result: dict[str, Any] = fn(*args, **kwargs)
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+
+    monitor = get_resource_monitor()
+    resource_metrics_summary = monitor.get_metrics().to_dict() if monitor is not None else None
+
+    return {
+        "info": {
+            "ollama_base_url": get_ollama_base_url(cfg),
+            "default_model": get_default_model(cfg),
+            "rag_enabled": cfg.getboolean("rag", "enabled", fallback=False),
+        },
+        "resource_metrics": resource_metrics_summary,
+        "deploy": _safe(deploy_module.status, get_deploy_namespace(cfg)),
+        "canary": _safe(canary_module.status, get_canary_namespace(cfg)),
+        "observability": {
+            "monitoring": get_monitoring_config(cfg)["enabled"],
+            "tracing": get_tracing_config(cfg)["enabled"],
+            "error_tracking": get_error_tracking_config(cfg)["enabled"],
+            "log_aggregation": get_log_aggregation_config(cfg)["enabled"],
+        },
+        "auth_enabled": _auth_cfg(cfg)["enabled"],
+    }
+
+
+@api.get("/admin/activity")
+def admin_activity_list(request: Request, limit: int = 50) -> dict[str, Any]:
+    """Return recent admin dashboard activity (audit trail)."""
+    cfg = _req_cfg(request)
+    bounded_limit = max(1, min(limit, 500))
+    return {"events": admin_activity_module.recent(bounded_limit, cfg=cfg)}
+
+
+@api.get("/admin/access")
+def admin_access_get(request: Request) -> dict[str, Any]:
+    """Return the current API-key access configuration (key masked)."""
+    cfg = _req_cfg(request)
+    auth = _auth_cfg(cfg)
+    return {
+        "enabled": auth["enabled"],
+        "header": auth["header"],
+        "api_key_set": bool(auth["api_key"]),
+        "api_key_masked": _mask_api_key(auth["api_key"]) if auth["api_key"] else None,
+    }
+
+
+@api.post("/admin/access")
+def admin_access_update(
+    request: Request, payload: dict[str, Any] = Body(default={})
+) -> dict[str, Any]:
+    """Update API-key access configuration: enable/disable auth, change the
+    header name, or rotate the API key.
+
+    On rotation, the newly generated key is returned once in the response
+    body (`api_key`) so the operator can copy it; it is never returned
+    again by `GET /admin/access`, which only shows a masked value.
+    """
+    cfg = _req_cfg(request)
+    auth = _auth_cfg(cfg)
+
+    updates: dict[str, Any] = {}
+    if "enabled" in payload:
+        updates["enabled"] = bool(payload["enabled"])
+    if "header" in payload and isinstance(payload.get("header"), str) and payload["header"].strip():
+        updates["header"] = payload["header"]
+
+    rotate = bool(payload.get("rotate"))
+    new_key: str | None = None
+    if rotate:
+        new_key = secrets.token_urlsafe(32)
+        updates["api_key"] = new_key
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+
+    _apply_auth_config_updates(updates)
+
+    request.state.cfg = load_config(None)
+    cfg = _req_cfg(request)
+    auth = _auth_cfg(cfg)
+
+    changes = []
+    if "enabled" in updates:
+        changes.append("enabled" if updates["enabled"] else "disabled")
+    if "header" in updates:
+        changes.append("header changed")
+    if rotate:
+        changes.append("API key rotated")
+    admin_activity_module.record("access.updated", ", ".join(changes) or "access settings updated")
+
+    result: dict[str, Any] = {
+        "enabled": auth["enabled"],
+        "header": auth["header"],
+        "api_key_set": bool(auth["api_key"]),
+        "api_key_masked": _mask_api_key(auth["api_key"]) if auth["api_key"] else None,
+    }
+    if new_key is not None:
+        result["api_key"] = new_key
+    return result
+
+
 # --- Local blue/green deployment endpoints (SRE/admin dashboard) ---
 @api.get("/deploy/status")
 def deploy_status(request: Request) -> dict[str, Any]:
@@ -1082,6 +1266,7 @@ def deploy_switch(request: Request, payload: dict[str, Any] = Body(default={})) 
     )
     if not result.ok:
         raise HTTPException(status_code=409, detail=result.message)
+    admin_activity_module.record("deploy.switch", result.message)
     return {"ok": result.ok, "message": result.message}
 
 
@@ -1091,6 +1276,7 @@ def deploy_rollback(request: Request) -> dict[str, Any]:
     result = deploy_module.rollback(get_deploy_namespace(cfg))
     if not result.ok:
         raise HTTPException(status_code=409, detail=result.message)
+    admin_activity_module.record("deploy.rollback", result.message)
     return {"ok": result.ok, "message": result.message}
 
 
@@ -1112,6 +1298,7 @@ def canary_start(request: Request, payload: dict[str, Any] = Body(default={})) -
     )
     if not result.ok:
         raise HTTPException(status_code=409, detail=result.message)
+    admin_activity_module.record("canary.start", result.message)
     return {"ok": result.ok, "message": result.message}
 
 
@@ -1126,6 +1313,7 @@ def canary_evaluate(request: Request) -> dict[str, Any]:
     )
     if not result.ok:
         raise HTTPException(status_code=409, detail=result.message)
+    admin_activity_module.record("canary.evaluate", result.message)
     return {"ok": result.ok, "message": result.message}
 
 
@@ -1142,6 +1330,7 @@ def canary_promote(request: Request, payload: dict[str, Any] = Body(default={}))
     )
     if not result.ok:
         raise HTTPException(status_code=409, detail=result.message)
+    admin_activity_module.record("canary.promote", result.message)
     return {"ok": result.ok, "message": result.message}
 
 
@@ -1153,6 +1342,7 @@ def canary_rollback(request: Request) -> dict[str, Any]:
     )
     if not result.ok:
         raise HTTPException(status_code=409, detail=result.message)
+    admin_activity_module.record("canary.rollback", result.message)
     return {"ok": result.ok, "message": result.message}
 
 
@@ -1216,6 +1406,7 @@ def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> Respon
                         "percent": percent,
                     }
                     yield f"data: {_json.dumps(data)}\n\n"
+                admin_activity_module.record("model.pull", model)
                 yield f"data: {_json.dumps({'status': 'success', 'ok': True, 'model': model})}\n\n"
             except Exception as exc:
                 yield f"data: {_json.dumps({'error': str(exc)})}\n\n"
@@ -1233,6 +1424,7 @@ def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> Respon
             {"name": model, "stream": False},
             timeout_s=600.0,
         )
+        admin_activity_module.record("model.pull", model)
         return JSONResponse({"ok": True, "model": model, "result": data})
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to pull model via Ollama: {e}") from e
@@ -1244,6 +1436,7 @@ def models_delete(request: Request, model_name: str) -> dict[str, Any]:
     cfg = _req_cfg(request)
     try:
         models.delete_model(model_name, base_url=get_ollama_base_url(cfg))
+        admin_activity_module.record("model.delete", model_name)
         return {"ok": True, "model": model_name}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
