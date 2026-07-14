@@ -204,4 +204,65 @@ export const handlers = [
       updated_at: '2026-01-01T00:00:00Z',
     });
   }),
+
+  // GET /api/v1/admin/overview
+  http.get('/api/v1/admin/overview', () => {
+    return HttpResponse.json({
+      info: {
+        ollama_base_url: 'http://127.0.0.1:11434',
+        default_model: 'llama3.1:8b',
+        rag_enabled: false,
+      },
+      resource_metrics: {
+        memory: { rss_mb: 128, vms_mb: 256, percent: 5, available_mb: 8000 },
+        cpu: { process_percent: 2.5, system_percent: 10 },
+        latency: { avg_ms: 10, p50_ms: 8, p95_ms: 20, p99_ms: 30 },
+        queue: { depth: 0, total_requests: 42 },
+      },
+      deploy: { namespace: 'nyxgpt', active: 'blue', inactive: 'green' },
+      canary: { namespace: 'nyxgpt', active: false },
+      observability: {
+        monitoring: false,
+        tracing: false,
+        error_tracking: false,
+        log_aggregation: false,
+      },
+      auth_enabled: false,
+    });
+  }),
+
+  // GET /api/v1/admin/activity
+  http.get('/api/v1/admin/activity', () => {
+    return HttpResponse.json({
+      events: [
+        { ts: 1768300800, action: 'config.updated', detail: 'log_level=DEBUG' },
+        { ts: 1768300900, action: 'deploy.switch', detail: 'blue -> green' },
+      ],
+    });
+  }),
+
+  // GET /api/v1/admin/access
+  http.get('/api/v1/admin/access', () => {
+    return HttpResponse.json({
+      enabled: false,
+      header: 'X-API-Key',
+      api_key_set: false,
+      api_key_masked: null,
+    });
+  }),
+
+  // POST /api/v1/admin/access
+  http.post('/api/v1/admin/access', async ({ request }) => {
+    const body = (await request.json()) as Record<string, unknown>;
+    const response: Record<string, unknown> = {
+      enabled: body.enabled ?? false,
+      header: body.header ?? 'X-API-Key',
+      api_key_set: true,
+      api_key_masked: 'newk********-key',
+    };
+    if (body.rotate) {
+      response.api_key = 'newly-generated-key-value';
+    }
+    return HttpResponse.json(response);
+  }),
 ];
