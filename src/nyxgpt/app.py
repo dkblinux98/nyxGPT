@@ -36,6 +36,7 @@ from nyxgpt import api_models, models, sessions, tools_fs
 from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
 from nyxgpt import deploy as deploy_module
+from nyxgpt import metrics as prom_metrics
 from nyxgpt.api_models import (
     AttachDocumentRequest,
     ChatRequest,
@@ -581,6 +582,34 @@ async def api_key_auth(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def prometheus_metrics_middleware(request: Request, call_next):
+    """Record Prometheus HTTP metrics for every request.
+
+    Registered after api_key_auth so it becomes the outermost middleware,
+    ensuring it observes the final response status even for requests
+    rejected by auth, rate limiting, or the body-size guard.
+    """
+    start_time = time.time()
+    response = await call_next(request)
+    duration_s = time.time() - start_time
+
+    route = request.scope.get("route")
+    path_label = route.path if route is not None else request.url.path
+    status_label = str(response.status_code)
+
+    prom_metrics.HTTP_REQUESTS_TOTAL.labels(
+        method=request.method, path=path_label, status=status_label
+    ).inc()
+    prom_metrics.HTTP_REQUEST_DURATION_SECONDS.labels(
+        method=request.method, path=path_label
+    ).observe(duration_s)
+    if response.status_code >= 500:
+        prom_metrics.HTTP_ERRORS_TOTAL.labels(method=request.method, path=path_label).inc()
+
+    return response
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     req_id = getattr(request.state, "request_id", None)
@@ -796,6 +825,19 @@ def _capture_stdout(fn, *args, **kwargs) -> tuple[int, str, str]:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/metrics")
+def prometheus_metrics_endpoint() -> Response:
+    """Expose metrics in Prometheus text exposition format for scraping.
+
+    Includes HTTP request counts, latency histograms, and error rates
+    (all endpoints) plus business metrics (chat requests, RAG queries).
+    Left unauthenticated like /health since Prometheus scrapers typically
+    don't send an API key.
+    """
+    body, content_type = prom_metrics.render_metrics()
+    return Response(content=body, media_type=content_type)
 
 
 @api.get("/info", response_model=InfoResponse)
@@ -1901,6 +1943,10 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
             },
         )
 
+        prom_metrics.CHAT_REQUESTS_TOTAL.labels(model=model_name, streaming="false").inc()
+        if rag_used:
+            prom_metrics.RAG_QUERIES_TOTAL.labels(source="chat").inc()
+
         # Convert RAG context to RagChunkInfo objects
         rag_chunks = []
         if rag_context_data:
@@ -2008,6 +2054,7 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
 
             d = _chat_runtime_defaults(_req_cfg(request))
             chosen_model = req.model or d["default_model"]
+            prom_metrics.CHAT_REQUESTS_TOTAL.labels(model=chosen_model, streaming="true").inc()
 
             # Only send structured events if client supports them
             if capabilities.supports_sse and capabilities.supports_structured_events:
@@ -2899,6 +2946,7 @@ def rag_query(_request: Request, req: RagQueryRequest) -> RagQueryResponse:
             )
             for r in results
         ]
+        prom_metrics.RAG_QUERIES_TOTAL.labels(source="rag_query").inc()
         return RagQueryResponse(results=out, debug_info=api_debug_info)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

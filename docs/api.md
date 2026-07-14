@@ -12,11 +12,12 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 55 available endpoints:
+Quick reference of all 56 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check |
+| `/metrics` | GET | Prometheus-format metrics (request counts, latency histograms, error rates, chat/RAG business metrics) |
 | `/api/v1/info` | GET | Runtime configuration |
 | `/api/v1/batch/metrics` | GET | Request batching metrics |
 | `/api/v1/metrics` | GET | Resource usage monitoring (memory, CPU, latency, queue depth) |
@@ -123,6 +124,37 @@ Simple health check.
 Used by:
 - integration tests
 - service monitors
+
+### `GET /metrics`
+
+Prometheus text exposition format metrics for scraping. Unauthenticated
+(like `/health`), since Prometheus scrapers typically don't send an API key.
+
+**Metrics exposed:**
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|--------------|
+| `nyxgpt_http_requests_total` | Counter | `method`, `path`, `status` | Total HTTP requests handled |
+| `nyxgpt_http_request_duration_seconds` | Histogram | `method`, `path` | HTTP request latency |
+| `nyxgpt_http_errors_total` | Counter | `method`, `path` | Requests that resulted in a 5xx error |
+| `nyxgpt_chat_requests_total` | Counter | `model`, `streaming` | Chat requests processed |
+| `nyxgpt_rag_queries_total` | Counter | `source` | RAG retrieval queries executed (`chat` or `rag_query`) |
+
+`path` labels use the route's path template (e.g. `/api/v1/sessions/{name}`),
+not the raw request path, to keep cardinality bounded.
+
+Example Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: nyxgpt
+    static_configs:
+      - targets: ["127.0.0.1:8000"]
+```
+
+The admin dashboard's Resource Usage panel (`/admin`) surfaces this
+endpoint under a "Prometheus Endpoint" card, with a link to view current
+metrics.
 
 ---
 
