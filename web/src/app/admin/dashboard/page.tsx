@@ -221,9 +221,9 @@ export default function AdminDashboardPage() {
                 <StatusBadge ok={!overview.deploy.error} label={`Deploy: ${overview.deploy.active ?? 'unknown'}`} />
                 <StatusBadge ok={!!overview.canary.active} label={overview.canary.active ? 'Canary: active' : 'Canary: idle'} />
                 <StatusBadge
-                  ok={!!overview.self_heal.enabled && !overview.self_heal.unhealthy_count}
+                  ok={!!overview.self_heal?.enabled && !overview.self_heal?.unhealthy_count}
                   label={
-                    overview.self_heal.enabled
+                    overview.self_heal?.enabled
                       ? `Self-heal: on${overview.self_heal.unhealthy_count ? ` (${overview.self_heal.unhealthy_count} unhealthy)` : ''}`
                       : 'Self-heal: off'
                   }
