@@ -5,6 +5,7 @@ import LoadingSpinner from './LoadingSpinner';
 import ErrorMessage from './ErrorMessage';
 import TracingPanel from './TracingPanel';
 import ErrorTrackingPanel from './ErrorTrackingPanel';
+import GrafanaPanel from './GrafanaPanel';
 
 type MetricsData = {
   memory: {
@@ -463,6 +464,9 @@ export default function ResourceMetrics() {
           </a>
         </div>
       </div>
+
+      {/* Monitoring dashboards (Grafana + Prometheus) */}
+      <GrafanaPanel />
 
       {/* Distributed tracing (Jaeger) */}
       <TracingPanel />

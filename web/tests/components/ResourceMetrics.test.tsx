@@ -63,6 +63,23 @@ describe('ResourceMetrics (admin dashboard)', () => {
     expect(screen.getByText('<nyxgpt-api-host>/metrics')).toBeInTheDocument();
   });
 
+  it('shows a Monitoring Dashboards card with a link to the local Grafana instance', async () => {
+    server.use(
+      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled)),
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled))
+    );
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Monitoring Dashboards')).toBeInTheDocument();
+    });
+
+    const link = screen.getByRole('link', { name: /Open Grafana/i });
+    expect(link).toHaveAttribute('href', 'http://localhost:3001');
+  });
+
   it('shows a Distributed Tracing card', async () => {
     server.use(
       http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
