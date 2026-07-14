@@ -341,6 +341,21 @@ cp .env.example .env
 docker compose up --build
 ```
 
+#### Terraform (local infrastructure as code, optional)
+
+For `terraform apply`/`destroy` semantics over the same core stack (Ollama,
+Cassandra, API, web UI) instead of `docker compose up`/`down`, see
+[docs/terraform.md](docs/terraform.md). This is local-only IaC via the
+`kreuzwerker/docker` provider — no cloud provider modules, no cloud
+networking, local state:
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+terraform init
+terraform apply
+```
+
 ---
 
 ### Local Web UI (Next.js)
