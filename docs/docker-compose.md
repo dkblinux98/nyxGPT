@@ -16,7 +16,9 @@ command, e.g. for evaluation or a non-macOS host.
 | `api`       | built from `Dockerfile`     | FastAPI backend (`nyxgpt-api`)  | `8000`               |
 | `web`       | built from `web/Dockerfile` | Next.js web UI (`nyxgpt-web`)   | `3000`               |
 | `prometheus` <sup>*</sup> | `prom/prometheus` | Scrapes the API's `/metrics` endpoint, evaluates alerting rules | `9090` |
-| `grafana` <sup>*</sup> | `grafana/grafana` | Pre-provisioned dashboards (system overview, RAG performance, API metrics) | `3001` |
+| `grafana` <sup>*</sup> | `grafana/grafana` | Pre-provisioned dashboards (system overview, RAG performance, API metrics, logs explorer) | `3001` |
+| `loki` <sup>§</sup> | `grafana/loki` | Log storage + search API, with retention | — |
+| `promtail` <sup>§</sup> | `grafana/promtail` | Tails `~/.nyxGPT/logs` and ships to Loki | — |
 | `otel-collector` <sup>†</sup> | `otel/opentelemetry-collector-contrib` | Receives OTLP spans from the API, forwards to Jaeger | — |
 | `jaeger` <sup>†</sup> | `jaegertracing/all-in-one` | Trace storage + UI              | `16686`              |
 | `glitchtip` <sup>‡</sup> | `glitchtip/glitchtip` | Self-hosted error tracker UI + ingest | `8080` |
@@ -34,18 +36,24 @@ command, e.g. for evaluation or a non-macOS host.
 <sup>‡</sup> Only started with the opt-in `errors` profile — see
 [Error Tracking](#error-tracking) below.
 
+<sup>§</sup> Only started with the opt-in `logging` profile — see
+[Log Aggregation](#log-aggregation) below.
+
 All services share a single bridge network (`nyxgpt`) and reach each other by
 service name (e.g. the API talks to Ollama at `http://ollama:11434` and to
 Cassandra at `cassandra:9042` — see `docker/config.docker.ini`).
 
 ## Volumes
 
-Three named volumes persist state across `docker compose down` / `up`:
+Named volumes persist state across `docker compose down` / `up`:
 
 - `ollama_data` — pulled models (`/root/.ollama`)
 - `cassandra_data` — Cassandra's data directory (`/var/lib/cassandra`)
 - `nyxgpt_data` — chat sessions, vector store, and logs (`/root/.nyxGPT` in
   the `api` container)
+- `prometheus_data` / `grafana_data` — the opt-in `monitoring` profile's
+  metrics and dashboard state
+- `loki_data` — the opt-in `logging` profile's indexed/stored log chunks
 
 Run `docker compose down -v` to discard all persisted state, including
 Cassandra data and pulled models.
@@ -141,6 +149,38 @@ becomes unreachable, its 5xx error rate exceeds 5%, or its p95 latency
 exceeds 2 seconds. This is local-only rule evaluation — no Alertmanager or
 external notification channel (email/Slack/PagerDuty) is deployed by
 default.
+
+## Log Aggregation
+
+Centralized log search (Loki + promtail) is opt-in and local-only — logs
+never leave this machine. It's a reduced-footprint alternative to a full
+ELK stack, sized for a single-workstation, local-first system. It ships as
+a separate `logging` Compose profile so it doesn't run unless you ask for
+it:
+
+```bash
+docker compose --profile logging up
+```
+
+This starts `promtail` (tails the API's log files under `~/.nyxGPT/logs` —
+the same `nyxgpt_data` volume the `api` service writes to — using
+`docker/promtail-config.yml`) and `loki` (stores and indexes log lines
+using `docker/loki-config.yml`, which sets a 14-day retention policy via
+the compactor). Search logs in the Grafana instance from the `monitoring`
+profile (also required — start both profiles together), which is
+pre-provisioned with a Loki datasource and a **Logs Explorer** dashboard
+under `docker/grafana/dashboards` (log volume by level, plus a filterable
+live log view):
+
+```bash
+docker compose --profile monitoring --profile logging up
+```
+
+The API container still needs `[log_aggregation] enabled = true` set in
+`docker/config.docker.ini` (disabled by default) for the SRE/admin
+dashboard's "Log Aggregation" card to show the Grafana Explore link -- see
+[configuration.md](configuration.md#log_aggregation-section) and
+[api.md](api.md#log-aggregation).
 
 ## Distributed Tracing
 

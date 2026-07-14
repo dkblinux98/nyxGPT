@@ -2960,6 +2960,65 @@ SRE/admin dashboard's Resource Usage step — see
 
 ---
 
+## Log Aggregation
+
+### `GET /api/v1/log-aggregation`
+
+Report log aggregation stack status: whether it's enabled in config and
+where to search logs in Grafana.
+
+**Request:**
+
+```bash
+curl http://127.0.0.1:8000/api/v1/log-aggregation
+```
+
+**Response:**
+
+```json
+{
+  "enabled": true,
+  "grafana_explore_url": "http://localhost:3001/explore",
+  "active": true
+}
+```
+
+**Response Fields:**
+- `enabled` - Whether `[log_aggregation] enabled = true` in config.ini
+- `grafana_explore_url` - URL of the Grafana Explore view for searching logs
+- `active` - Mirrors `enabled` (the Loki/promtail stack itself runs outside this process, as Docker Compose services)
+
+**How it works:**
+
+Log aggregation is Loki/promtail-based, opt-in, and strictly local — there
+is no external/cloud log service, and it's a reduced footprint compared to
+a full ELK stack. Promtail tails this API's log files under
+`~/.nyxGPT/logs` and ships them into Loki, which applies a retention
+policy (14 days by default) and is searched via a Grafana Logs Explorer
+dashboard, pre-provisioned alongside the Prometheus dashboards from
+[Monitoring Dashboards](#monitoring-dashboards).
+
+**Enabling log aggregation:**
+
+```ini
+[log_aggregation]
+enabled = true
+grafana_explore_url = http://localhost:3001/explore
+```
+
+Then start the local Loki + promtail instances (opt-in Compose profile),
+alongside the `monitoring` profile for Grafana:
+
+```bash
+docker compose --profile monitoring --profile logging up
+```
+
+Search logs at `http://localhost:3001/explore` (also linked from the
+SRE/admin dashboard's Resource Usage step — see
+[`docs/docker-compose.md`](docker-compose.md#log-aggregation)).
+
+---
+
 ## Error handling
 
 - All errors return JSON

@@ -549,6 +549,37 @@ See [`docs/api.md`](api.md#monitoring-dashboards) for the
 
 ---
 
+## `[log_aggregation]` section
+
+Centralized log search backed by Loki + promtail, shipping this API's log
+files under `~/.nyxGPT/logs`. Opt-in, local-only, and reduced-footprint --
+not a full ELK stack -- since no logs are ever sent to an external/cloud
+service.
+
+```ini
+[log_aggregation]
+enabled = false
+grafana_explore_url = http://localhost:3001/explore
+```
+
+| Key | Description |
+|---|---|
+| `enabled` | Enable log aggregation (default: `false`) |
+| `grafana_explore_url` | URL of the Grafana Explore view (pointed at the Loki datasource), used for the "Log Aggregation" link in the SRE/admin dashboard |
+
+Requires the `logging` Compose profile (local Loki + promtail), plus the
+`monitoring` profile (Grafana, pre-provisioned with a Loki datasource and a
+Logs Explorer dashboard):
+
+```bash
+docker compose --profile monitoring --profile logging up
+```
+
+See [`docs/api.md`](api.md#log-aggregation) for the
+`GET /api/v1/log-aggregation` status endpoint.
+
+---
+
 ## Hot-reloadable settings
 
 - `nyxgpt.default_model`
