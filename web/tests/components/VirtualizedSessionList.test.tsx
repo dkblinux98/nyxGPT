@@ -336,12 +336,14 @@ describe('VirtualizedSessionList', () => {
     );
 
     const list = screen.getByTestId('virtualized-list');
-    const styles = list.getAttribute('style');
+    // The responsive flex sizing lives on Virtuoso's wrapping container;
+    // Virtuoso itself just fills that container at height: 100%.
+    const wrapperStyles = list.parentElement?.getAttribute('style');
 
     // Should use flex: 1 (or expanded flex-grow: 1) instead of fixed height
-    expect(styles).toMatch(/flex: 1|flex-grow: 1/);
-    expect(styles).toContain('min-height: 0');
-    expect(styles).not.toContain('height: 600px');
+    expect(wrapperStyles).toMatch(/flex: 1|flex-grow: 1/);
+    expect(wrapperStyles).toContain('min-height: 0');
+    expect(list.getAttribute('style')).not.toContain('height: 600px');
   });
 
   it('includes proper ARIA attributes for accessibility', () => {

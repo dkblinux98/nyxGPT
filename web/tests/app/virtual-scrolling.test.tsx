@@ -202,7 +202,8 @@ describe('Virtual Scrolling Implementation', () => {
 
       await waitFor(() => {
         expect(screen.getByPlaceholderText('Type your message…')).toBeInTheDocument();
-        expect(screen.getByText('Send')).toBeInTheDocument();
+        // The send control is an icon-only button, not a text "Send" label.
+        expect(screen.getByTitle('Send message')).toBeInTheDocument();
       });
     });
 

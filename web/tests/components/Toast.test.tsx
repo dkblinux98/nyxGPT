@@ -8,7 +8,9 @@ describe('Toast', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.useFakeTimers();
+    // shouldAdvanceTime keeps real time passing, which userEvent.click()
+    // needs internally (its own setTimeout(0) yields never fire otherwise).
+    vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
   afterEach(() => {
