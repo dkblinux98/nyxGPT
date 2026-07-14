@@ -8,6 +8,8 @@ import urllib.request
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
+from nyxgpt.tracing import traced_span
+
 logger = logging.getLogger(__name__)
 
 
@@ -86,23 +88,24 @@ def _retry_with_backoff(
 
 
 def post_json(url: str, payload: dict[str, Any], timeout_s: float = 120.0) -> dict[str, Any]:
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url=url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    with traced_span("ollama.request", url=url):
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url=url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
 
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            body = resp.read().decode("utf-8")
-            return json.loads(body) if body else {}
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Ollama HTTP {e.code}: {body}") from e
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Failed to reach Ollama at {url}: {e}") from e
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                body = resp.read().decode("utf-8")
+                return json.loads(body) if body else {}
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Ollama HTTP {e.code}: {body}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"Failed to reach Ollama at {url}: {e}") from e
 
 
 def post_json_lines(
@@ -127,43 +130,44 @@ def post_json_lines(
     Raises:
         RuntimeError: If connection fails after retries or HTTP error occurs
     """
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url=url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-
-    def _attempt_request():
-        try:
-            return urllib.request.urlopen(req, timeout=timeout_s)
-        except urllib.error.HTTPError as e:
-            # HTTP errors should not be retried, convert to RuntimeError
-            body = e.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Ollama HTTP {e.code}: {body}") from e
-        # Let URLError propagate for retry logic to catch
-
-    # Use retry logic to establish connection
-    try:
-        resp = _retry_with_backoff(
-            _attempt_request,
-            max_retries=max_retries,
-            on_retry=on_retry,
+    with traced_span("ollama.request.stream", url=url):
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url=url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
-    except urllib.error.URLError as e:
-        # Convert to RuntimeError after all retries exhausted
-        raise RuntimeError(f"Failed to reach Ollama at {url}: {e}") from e
 
-    try:
-        with resp:
-            for raw in resp:
-                line = raw.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
-                yield json.loads(line)
-    finally:
-        resp.close()
+        def _attempt_request():
+            try:
+                return urllib.request.urlopen(req, timeout=timeout_s)
+            except urllib.error.HTTPError as e:
+                # HTTP errors should not be retried, convert to RuntimeError
+                body = e.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"Ollama HTTP {e.code}: {body}") from e
+            # Let URLError propagate for retry logic to catch
+
+        # Use retry logic to establish connection
+        try:
+            resp = _retry_with_backoff(
+                _attempt_request,
+                max_retries=max_retries,
+                on_retry=on_retry,
+            )
+        except urllib.error.URLError as e:
+            # Convert to RuntimeError after all retries exhausted
+            raise RuntimeError(f"Failed to reach Ollama at {url}: {e}") from e
+
+        try:
+            with resp:
+                for raw in resp:
+                    line = raw.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    yield json.loads(line)
+        finally:
+            resp.close()
 
 
 def ollama_chat(

@@ -448,6 +448,39 @@ claude_code_oauth_token =
 
 ---
 
+## `[tracing]` section
+
+Distributed tracing via OpenTelemetry. Opt-in and local-only: no data is
+ever sent to an external/cloud endpoint, only to a local collector.
+
+```ini
+[tracing]
+enabled = false
+service_name = nyxgpt-api
+otlp_endpoint = http://localhost:4318/v1/traces
+jaeger_ui_url = http://localhost:16686
+```
+
+| Key | Description |
+|---|---|
+| `enabled` | Enable distributed tracing (default: `false`) |
+| `service_name` | Service name attached to every span |
+| `otlp_endpoint` | OTLP/HTTP endpoint of the local collector spans are exported to |
+| `jaeger_ui_url` | URL of the local Jaeger UI, used for the "Distributed Tracing" link in the SRE/admin dashboard |
+
+When enabled, HTTP requests (chat/RAG paths), Ollama calls, and Cassandra
+queries all get their own spans. Requires the `tracing` Compose profile
+(local OTel collector + Jaeger all-in-one):
+
+```bash
+docker compose --profile tracing up
+```
+
+See [`docs/api.md`](api.md#distributed-tracing) for the `GET /api/v1/tracing`
+status endpoint.
+
+---
+
 ## Hot-reloadable settings
 
 - `nyxgpt.default_model`

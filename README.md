@@ -38,6 +38,7 @@ Your data stays on your machine. No cloud dependency is required.
 - **Local blue/green deployment** with health-checked cutover and instant rollback, operable from the SRE/admin dashboard (`nyxgpt deploy` CLI or `/admin/deploy`)
 - **Local canary deployment** with gradual weighted rollout, metrics-based promotion, and automatic rollback, operable from the SRE/admin dashboard (`nyxgpt canary` CLI or `/admin/canary`)
 - **Prometheus metrics** (`/metrics`) — request counts, latency histograms, error rates, and chat/RAG business metrics, surfaced in the SRE/admin dashboard (`/admin`)
+- **Distributed tracing** (OpenTelemetry) — opt-in, local-only request/RAG/Ollama/Cassandra spans exported to a local Jaeger instance (`docker compose --profile tracing up`), linked from the SRE/admin dashboard (`/admin`)
 - Optional **Docker Compose** stack for one-command bring-up of every component
 - Robust unit and integration test suite
 
@@ -424,6 +425,7 @@ The wizard includes a real-time resource monitoring dashboard accessible from th
 - **Request Latency** - Average, P50, P95, and P99 latency percentiles
 - **Queue Status** - Current batch processing queue depth and total requests
 - **Prometheus Endpoint** - Card showing the `/metrics` scrape path for external Prometheus servers, with a link to view current metrics (see [`docs/api.md`](docs/api.md#get-metrics))
+- **Distributed Tracing** - Card showing whether OpenTelemetry tracing is enabled, with a link to the local Jaeger UI when active (see [`docs/api.md`](docs/api.md#distributed-tracing))
 
 **Dashboard Features:**
 - Real-time auto-refresh (5-second interval, toggle on/off)

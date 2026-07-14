@@ -870,6 +870,44 @@ def get_batch_wait_time_ms(cfg: ConfigParser) -> int:
         return 100
 
 
+def get_tracing_enabled(cfg: ConfigParser) -> bool:
+    """Get whether distributed tracing is enabled.
+
+    Disabled by default. When enabled, spans are exported via OTLP to a
+    local collector (e.g. the `tracing` Compose profile's OTel collector +
+    Jaeger all-in-one) -- traces never leave the machine.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        True if tracing is enabled, False otherwise
+    """
+    try:
+        return cfg.getboolean("tracing", "enabled", fallback=False)
+    except Exception:
+        return False
+
+
+def get_tracing_config(cfg: ConfigParser) -> dict:
+    """Get distributed tracing configuration.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Dictionary with keys: enabled, service_name, otlp_endpoint, jaeger_ui_url
+    """
+    return {
+        "enabled": get_tracing_enabled(cfg),
+        "service_name": cfg.get("tracing", "service_name", fallback="nyxgpt-api"),
+        "otlp_endpoint": cfg.get(
+            "tracing", "otlp_endpoint", fallback="http://localhost:4318/v1/traces"
+        ),
+        "jaeger_ui_url": cfg.get("tracing", "jaeger_ui_url", fallback="http://localhost:16686"),
+    }
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "load_config",
@@ -901,6 +939,8 @@ __all__ = [
     "get_batch_enabled",
     "get_batch_size",
     "get_batch_wait_time_ms",
+    "get_tracing_enabled",
+    "get_tracing_config",
     "get_cassandra_pool_size",
     "get_cassandra_health_check_interval",
     "get_cassandra_reconnect_max_attempts",

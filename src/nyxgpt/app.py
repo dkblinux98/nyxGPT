@@ -37,6 +37,7 @@ from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
 from nyxgpt import deploy as deploy_module
 from nyxgpt import metrics as prom_metrics
+from nyxgpt import tracing as tracing_module
 from nyxgpt.api_models import (
     AttachDocumentRequest,
     ChatRequest,
@@ -94,6 +95,7 @@ from nyxgpt.config import (
     get_rate_limit_config,
     get_rate_limit_enabled,
     get_sessions_dir,
+    get_tracing_config,
     load_config,
 )
 from nyxgpt.logging import configure_logging, get_log_dir, request_id_var
@@ -208,6 +210,12 @@ async def lifespan(_app: FastAPI):
     except Exception as e:
         # Logging should not prevent API startup
         print(f"Logging initialization failed: {e}")
+
+    # Initialize distributed tracing (no-op unless [tracing] enabled = true)
+    try:
+        tracing_module.init_tracing(_app, get_tracing_config(cfg))
+    except Exception as e:
+        log.warning("Tracing initialization failed: %s", e, extra={"component": "startup"})
 
     # Ensure sessions directory exists
     sessions_dir = get_sessions_dir(cfg)
@@ -898,6 +906,23 @@ def resource_metrics() -> ResourceMetricsResponse:
 
     metrics = monitor.get_metrics()
     return ResourceMetricsResponse(**metrics.to_dict())
+
+
+@api.get("/tracing")
+def tracing_status(request: Request) -> dict[str, Any]:
+    """Get distributed tracing status and how to reach the local Jaeger UI.
+
+    Tracing is opt-in and local-only: enable it with `[tracing] enabled =
+    true` in config.ini and start the API alongside the `tracing` Compose
+    profile (local OTel collector + Jaeger all-in-one). No spans are ever
+    exported outside the machine.
+    """
+    cfg = _req_cfg(request)
+    tracing_config = get_tracing_config(cfg)
+    return {
+        **tracing_config,
+        "active": tracing_module.is_tracing_enabled(),
+    }
 
 
 # --- Config get/set endpoints ---

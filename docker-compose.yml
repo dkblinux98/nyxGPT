@@ -83,3 +83,33 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+  # Distributed tracing (opt-in): `docker compose --profile tracing up`.
+  # Traces stay on this machine -- the collector only forwards to the local
+  # Jaeger all-in-one container, never to an external/cloud endpoint. Set
+  # `[tracing] enabled = true` in config.ini (see docker/config.docker.ini)
+  # to have the API actually emit spans to the collector below.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    restart: unless-stopped
+    profiles:
+      - tracing
+    networks:
+      - nyxgpt
+    volumes:
+      - ./docker/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    depends_on:
+      jaeger:
+        condition: service_started
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    restart: unless-stopped
+    profiles:
+      - tracing
+    networks:
+      - nyxgpt
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"

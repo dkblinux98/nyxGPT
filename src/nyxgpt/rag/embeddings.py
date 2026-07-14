@@ -14,6 +14,7 @@ from itertools import islice
 
 from nyxgpt.cache import CacheBackend, DiskCache, MemoryCache, NoOpCache, hash_text
 from nyxgpt.config import get_default_model, get_ollama_base_url, load_config
+from nyxgpt.tracing import traced_span
 
 logger = logging.getLogger(__name__)
 
@@ -333,22 +334,23 @@ def _get_optimal_batch_size(num_texts: int, config: EmbeddingConfig) -> int:  # 
 
 
 def _post_json(url: str, payload: dict, timeout: int) -> dict:
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as e:
-        msg = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
-        raise EmbeddingError(f"HTTP error calling {url}: {e.code} {msg}") from e
-    except urllib.error.URLError as e:
-        raise EmbeddingError(f"Failed to reach Ollama at {url}: {e}") from e
+    with traced_span("ollama.embeddings", url=url):
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            msg = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
+            raise EmbeddingError(f"HTTP error calling {url}: {e.code} {msg}") from e
+        except urllib.error.URLError as e:
+            raise EmbeddingError(f"Failed to reach Ollama at {url}: {e}") from e
 
 
 def _batched(iterable, size):

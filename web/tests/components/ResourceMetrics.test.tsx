@@ -12,10 +12,27 @@ const mockMetricsData = {
   queue: { depth: 3, total_requests: 1250 },
 };
 
+const mockTracingDisabled = {
+  enabled: false,
+  active: false,
+  service_name: 'nyxgpt-api',
+  otlp_endpoint: 'http://localhost:4318/v1/traces',
+  jaeger_ui_url: 'http://localhost:16686',
+};
+
+const mockTracingActive = {
+  enabled: true,
+  active: true,
+  service_name: 'nyxgpt-api',
+  otlp_endpoint: 'http://otel-collector:4318/v1/traces',
+  jaeger_ui_url: 'http://localhost:16686',
+};
+
 describe('ResourceMetrics (admin dashboard)', () => {
   it('shows a Prometheus scrape endpoint card with a link to view current metrics', async () => {
     server.use(
-      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData))
+      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled))
     );
 
     render(<ResourceMetrics />);
@@ -27,5 +44,44 @@ describe('ResourceMetrics (admin dashboard)', () => {
     const link = screen.getByRole('link', { name: /View current metrics/i });
     expect(link).toHaveAttribute('href', '/api/prometheus-metrics');
     expect(screen.getByText('<nyxgpt-api-host>/metrics')).toBeInTheDocument();
+  });
+
+  it('shows a Distributed Tracing card', async () => {
+    server.use(
+      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled))
+    );
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Distributed Tracing')).toBeInTheDocument();
+    });
+  });
+
+  it('shows an active Distributed Tracing card with a link to the local Jaeger UI', async () => {
+    server.use(
+      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingActive))
+    );
+
+    render(<ResourceMetrics />);
+
+    const link = await screen.findByRole('link', { name: /Open Jaeger UI/i });
+    expect(link).toHaveAttribute('href', 'http://localhost:16686');
+    expect(screen.getByText('http://otel-collector:4318/v1/traces')).toBeInTheDocument();
+  });
+
+  it('shows an error on the Distributed Tracing card when the status fetch fails', async () => {
+    server.use(
+      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
+      http.get('/api/v1/tracing', () => new HttpResponse(null, { status: 500 }))
+    );
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/Failed to fetch tracing status: HTTP 500/i);
+    });
   });
 });

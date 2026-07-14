@@ -31,6 +31,7 @@ from nyxgpt.rag.vectorstore_cassandra import (
     MetadataFilter,
     VectorSearchDebugMetrics,
 )
+from nyxgpt.tracing import traced
 
 log = logging.getLogger(__name__)
 
@@ -1100,6 +1101,7 @@ def _execute_query_parallel(
     return results_map, all_scores, total_raw_results
 
 
+@traced("rag.retrieve")
 def retrieve_context(
     query: str,
     top_k: int | None = None,
