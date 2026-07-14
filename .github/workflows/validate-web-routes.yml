@@ -32,6 +32,9 @@ jobs:
       - name: TypeScript type check
         run: cd web && npm run type-check
 
+      - name: Run web test suite (vitest)
+        run: cd web && npx vitest run
+
       - name: Validate web proxy routes exist
         run: |
           chmod +x scripts/agents/validate-web-routes.sh

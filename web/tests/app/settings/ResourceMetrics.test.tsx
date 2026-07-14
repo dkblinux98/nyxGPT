@@ -3,9 +3,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import '@testing-library/jest-dom';
 import ResourceMetrics from '../../../src/app/settings/ResourceMetrics';
 
-// Mock fetch
-global.fetch = vi.fn() as any;
-
 const mockMetricsData = {
   memory: {
     rss_mb: 256.5,
@@ -31,8 +28,14 @@ const mockMetricsData = {
 
 describe('ResourceMetrics', () => {
   beforeEach(() => {
+    // Re-assign after tests/setup.ts's MSW server.listen() patches global.fetch,
+    // so this mock isn't clobbered by MSW's real fetch interceptor.
+    global.fetch = vi.fn() as any;
     vi.clearAllMocks();
-    vi.useFakeTimers();
+    // shouldAdvanceTime keeps real time passing (so testing-library's waitFor,
+    // which doesn't recognize vitest's fake timers, still resolves) while still
+    // letting tests fast-forward the 5s auto-refresh interval manually.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
   afterEach(() => {
@@ -44,7 +47,7 @@ describe('ResourceMetrics', () => {
 
     render(<ResourceMetrics />);
 
-    expect(screen.getByTestId('loading-spinner')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toBeInTheDocument();
   });
 
   it('fetches and displays metrics data', async () => {
@@ -59,10 +62,12 @@ describe('ResourceMetrics', () => {
       expect(screen.getByText('Memory Usage')).toBeInTheDocument();
     });
 
-    expect(screen.getByText(/256\.5 MB/)).toBeInTheDocument();
-    expect(screen.getByText(/15\.2%/)).toBeInTheDocument();
+    // Exact matches (not substring regexes) to avoid also matching the
+    // "Historical Trends" summary line, which embeds the same figures.
+    expect(screen.getByText('256.5 MB')).toBeInTheDocument();
+    expect(screen.getByText('15.2%')).toBeInTheDocument();
     expect(screen.getByText('CPU Utilization')).toBeInTheDocument();
-    expect(screen.getByText(/5\.3%/)).toBeInTheDocument();
+    expect(screen.getByText('5.3%')).toBeInTheDocument();
     expect(screen.getByText('Request Latency')).toBeInTheDocument();
     expect(screen.getByText(/45\.2 ms/)).toBeInTheDocument();
     expect(screen.getByText('Queue Status')).toBeInTheDocument();
@@ -95,7 +100,9 @@ describe('ResourceMetrics', () => {
     const dayButton = screen.getByRole('button', { name: /Last 24 Hours/i });
     fireEvent.click(dayButton);
 
-    expect(dayButton).toHaveStyle({ background: 'var(--button)' });
+    // toHaveStyle can't resolve CSS custom properties in happy-dom, so
+    // compare the inline style value directly.
+    expect(dayButton.style.background).toBe('var(--button)');
   });
 
   it('auto-refreshes when enabled', async () => {
@@ -134,9 +141,13 @@ describe('ResourceMetrics', () => {
     const checkbox = screen.getByRole('checkbox', { name: /Auto-refresh/i });
     fireEvent.click(checkbox);
 
+    // Toggling auto-refresh re-runs the fetch effect once more (an
+    // immediate manual refresh), but must not schedule a new interval.
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+
     vi.advanceTimersByTime(5000);
 
-    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
   });
 
   it('exports data as CSV', async () => {
@@ -201,7 +212,9 @@ describe('ResourceMetrics', () => {
       expect(screen.getByText('Memory Usage')).toBeInTheDocument();
     });
 
-    const memoryPercent = screen.getByText(/85\.0%/);
+    // Exact match (not a substring regex) to avoid also matching the
+    // "Historical Trends" summary line, which embeds the same percentage.
+    const memoryPercent = screen.getByText('85.0%');
     expect(memoryPercent).toHaveStyle({ color: '#f59e0b' });
   });
 
@@ -225,7 +238,9 @@ describe('ResourceMetrics', () => {
       expect(screen.getByText('CPU Utilization')).toBeInTheDocument();
     });
 
-    const cpuPercent = screen.getByText(/85\.0%/);
+    // Exact match (not a substring regex) to avoid also matching the
+    // "Historical Trends" summary line, which embeds the same percentage.
+    const cpuPercent = screen.getByText('85.0%');
     expect(cpuPercent).toHaveStyle({ color: '#ef4444' });
   });
 });

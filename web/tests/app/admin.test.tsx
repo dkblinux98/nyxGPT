@@ -262,6 +262,12 @@ describe('AdminPage Component', () => {
       fireEvent.click(nextButton);
     });
 
+    // Resource Usage (metrics) step, added after this test was written.
+    await waitFor(() => {
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
     await waitFor(() => {
       expect(screen.getByText('Summary')).toBeInTheDocument();
       expect(screen.getByText('Review and save your configuration')).toBeInTheDocument();
@@ -287,6 +293,12 @@ describe('AdminPage Component', () => {
 
     await waitFor(() => {
       let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    // Resource Usage (metrics) step, added after this test was written.
+    await waitFor(() => {
+      const nextButton = screen.getByRole('button', { name: /next/i });
       fireEvent.click(nextButton);
     });
 
@@ -320,6 +332,12 @@ describe('AdminPage Component', () => {
       fireEvent.click(nextButton);
     });
 
+    // Resource Usage (metrics) step, added after this test was written.
+    await waitFor(() => {
+      const nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
     await waitFor(() => {
       const saveButton = screen.getByRole('button', { name: /save configuration/i });
       expect(saveButton).toBeInTheDocument();
@@ -346,6 +364,12 @@ describe('AdminPage Component', () => {
 
     await waitFor(() => {
       let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    // Resource Usage (metrics) step, added after this test was written.
+    await waitFor(() => {
+      const nextButton = screen.getByRole('button', { name: /next/i });
       fireEvent.click(nextButton);
     });
 
@@ -413,6 +437,12 @@ describe('AdminPage Component', () => {
 
     await waitFor(() => {
       let nextButton = screen.getByRole('button', { name: /next/i });
+      fireEvent.click(nextButton);
+    });
+
+    // Resource Usage (metrics) step, added after this test was written.
+    await waitFor(() => {
+      const nextButton = screen.getByRole('button', { name: /next/i });
       fireEvent.click(nextButton);
     });
 
