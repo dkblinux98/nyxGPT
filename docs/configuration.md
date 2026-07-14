@@ -481,6 +481,46 @@ status endpoint.
 
 ---
 
+## `[error_tracking]` section
+
+Self-hosted error tracking via the Sentry SDK protocol. Opt-in and
+local-only: there is no default DSN, so error tracking stays fully inert
+until an operator sets both `enabled = true` and a `dsn` pointed at their
+own tracker (e.g. GlitchTip). Nothing here ever talks to Sentry's own SaaS.
+
+```ini
+[error_tracking]
+enabled = false
+dsn =
+environment = development
+release =
+traces_sample_rate = 0.0
+glitchtip_ui_url = http://localhost:8080
+```
+
+| Key | Description |
+|---|---|
+| `enabled` | Enable error tracking (default: `false`) |
+| `dsn` | DSN of your self-hosted GlitchTip project. Empty by default -- required, in addition to `enabled = true`, for anything to actually be reported |
+| `environment` | Environment tag attached to every event (e.g. `development`, `production`) |
+| `release` | Release tag attached to every event, for release tracking. Blank omits it |
+| `traces_sample_rate` | Fraction of requests also sampled for performance monitoring, `0.0`-`1.0` (`0.0` disables performance monitoring; only exceptions are captured) |
+| `glitchtip_ui_url` | URL of the local GlitchTip UI, used for the "Error Tracking" link in the SRE/admin dashboard |
+
+When enabled with a DSN, unhandled backend exceptions are reported
+automatically, and web UI client errors reported via
+`POST /api/v1/error-tracking/report` are forwarded too. Requires the
+`errors` Compose profile (self-hosted GlitchTip):
+
+```bash
+docker compose --profile errors up
+```
+
+See [`docs/api.md`](api.md#error-tracking) for the
+`GET /api/v1/error-tracking` status endpoint.
+
+---
+
 ## Hot-reloadable settings
 
 - `nyxgpt.default_model`

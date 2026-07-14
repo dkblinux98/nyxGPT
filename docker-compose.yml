@@ -6,6 +6,8 @@ volumes:
   ollama_data:
   cassandra_data:
   nyxgpt_data:
+  glitchtip_postgres_data:
+  glitchtip_uploads:
 
 services:
   ollama:
@@ -113,3 +115,107 @@ services:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
       - "${JAEGER_UI_PORT:-16686}:16686"
+
+  # Self-hosted error tracking (opt-in): `docker compose --profile errors up`.
+  # GlitchTip is a Sentry-protocol-compatible error tracker that runs
+  # entirely on this machine -- exception data never leaves the host, and
+  # nothing here ever talks to Sentry's own SaaS. After first boot, create a
+  # project in the GlitchTip UI (http://localhost:8080) to get a DSN, then
+  # set `[error_tracking] enabled = true` and `dsn = <that DSN>` in
+  # config.ini (see docker/config.docker.ini) to have the API report
+  # exceptions.
+  glitchtip-postgres:
+    image: postgres:16
+    restart: unless-stopped
+    profiles:
+      - errors
+    networks:
+      - nyxgpt
+    environment:
+      POSTGRES_USER: glitchtip
+      POSTGRES_PASSWORD: glitchtip
+      POSTGRES_DB: glitchtip
+    volumes:
+      - glitchtip_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U glitchtip"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  glitchtip-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    profiles:
+      - errors
+    networks:
+      - nyxgpt
+
+  glitchtip-migrate:
+    image: glitchtip/glitchtip:latest
+    profiles:
+      - errors
+    networks:
+      - nyxgpt
+    command: ./manage.py migrate
+    environment:
+      DATABASE_URL: postgres://glitchtip:glitchtip@glitchtip-postgres:5432/glitchtip
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-change-me}
+    depends_on:
+      glitchtip-postgres:
+        condition: service_healthy
+
+  glitchtip:
+    image: glitchtip/glitchtip:latest
+    restart: unless-stopped
+    profiles:
+      - errors
+    networks:
+      - nyxgpt
+    ports:
+      - "${GLITCHTIP_UI_PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgres://glitchtip:glitchtip@glitchtip-postgres:5432/glitchtip
+      REDIS_URL: redis://glitchtip-redis:6379/0
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-change-me}
+      PORT: 8080
+      EMAIL_URL: consolemail://
+      GLITCHTIP_DOMAIN: http://localhost:${GLITCHTIP_UI_PORT:-8080}
+      DEFAULT_FROM_EMAIL: errors@nyxgpt.local
+      CELERY_WORKER_AUTOSCALE: "1,3"
+      CELERY_WORKER_MAX_TASKS_PER_CHILD: "10000"
+    volumes:
+      - glitchtip_uploads:/code/uploads
+    depends_on:
+      glitchtip-postgres:
+        condition: service_healthy
+      glitchtip-redis:
+        condition: service_started
+      glitchtip-migrate:
+        condition: service_completed_successfully
+
+  glitchtip-worker:
+    image: glitchtip/glitchtip:latest
+    restart: unless-stopped
+    profiles:
+      - errors
+    networks:
+      - nyxgpt
+    command: ./bin/run-celery-with-beat.sh
+    environment:
+      DATABASE_URL: postgres://glitchtip:glitchtip@glitchtip-postgres:5432/glitchtip
+      REDIS_URL: redis://glitchtip-redis:6379/0
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-change-me}
+      EMAIL_URL: consolemail://
+      CELERY_WORKER_AUTOSCALE: "1,3"
+      CELERY_WORKER_MAX_TASKS_PER_CHILD: "10000"
+    volumes:
+      - glitchtip_uploads:/code/uploads
+    depends_on:
+      glitchtip-postgres:
+        condition: service_healthy
+      glitchtip-redis:
+        condition: service_started
+      glitchtip-migrate:
+        condition: service_completed_successfully
