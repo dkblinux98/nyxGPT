@@ -31,6 +31,16 @@ coverage/
 # Docker Compose (real secrets - copy from .env.example)
 /.env
 
+# Terraform (state, plugin cache, real vars - copy from terraform.tfvars.example)
+/terraform/.terraform/
+/terraform/.terraform.lock.hcl
+/terraform/terraform.tfstate
+/terraform/terraform.tfstate.*
+/terraform/*.tfvars
+!/terraform/terraform.tfvars.example
+/terraform/crash.log
+/terraform/crash.*.log
+
 # Codex/Github/Jupyter
 chat_history.md
 jupyter-notebooks/

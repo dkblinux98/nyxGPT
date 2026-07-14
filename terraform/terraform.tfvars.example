@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars and adjust as needed:
+#   cp terraform.tfvars.example terraform.tfvars
+
+repo_path    = "/absolute/path/to/nyxGPT"
+auth_api_key = "REPLACE_WITH_A_REAL_KEY"
+cors_origins = "http://localhost:3000,http://127.0.0.1:3000"
