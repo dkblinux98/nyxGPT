@@ -1033,6 +1033,36 @@ The workflow will:
 ./scripts/watch_agents.sh
 ```
 
+**Collect and analyze historical workflow logs:**
+
+`watch_agents.sh` only shows live/recent runs (subject to GitHub's log retention). To keep a
+durable, queryable history for post-mortem analysis and trend detection, collect completed
+workflow runs into a local SQLite store:
+
+```bash
+# Fetch recent completed runs and store them (safe to run repeatedly; re-run rows are upserted)
+./scripts/collect_workflow_logs.sh collect --repo dkblinux98/nyxGPT
+
+# Query stored runs
+./scripts/collect_workflow_logs.sh query --workflow "Developer Agent" --conclusion failure
+
+# Show aggregated analytics: success rate, avg duration, failure trends, top failing workflows
+./scripts/collect_workflow_logs.sh stats --days 30
+
+# Enforce the retention policy (default: 90 days)
+./scripts/collect_workflow_logs.sh purge --retention-days 90
+```
+
+All commands accept `--db PATH` to override the default store location
+(`~/.nyxGPT/logs/workflow_runs.sqlite3`) and `--json` (query/stats) for machine-readable output.
+To run collection automatically, add a scheduled GitHub Actions workflow that invokes
+`collect_workflow_logs.sh collect` (this requires editing `.github/workflows/`, which Claude Code
+is not permitted to do — a human maintainer needs to add it).
+
+Once history has been collected, it's also visible in the admin dashboard at
+**`/admin/workflow-analytics`** (linked from `/admin/dashboard`) — summary stats, a per-workflow
+breakdown, top failing workflows, and a recent-runs table, backed by `GET /api/v1/admin/workflow-analytics`.
+
 For details, see **docs/development.md** and **RUNBOOKS/**.
 
 ### Claude Code Local Automations
