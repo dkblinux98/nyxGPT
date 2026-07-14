@@ -10,7 +10,6 @@ import { useSessionCache } from '../../src/hooks/useSessionCache';
 
 // Mock fetch
 const mockFetch = vi.fn();
-global.fetch = mockFetch as typeof fetch;
 
 describe('useSessionCache', () => {
   const mockSessions = [
@@ -19,8 +18,14 @@ describe('useSessionCache', () => {
   ];
 
   beforeEach(() => {
+    // Re-assign after tests/setup.ts's MSW server.listen() patches global.fetch,
+    // so this mock isn't clobbered by MSW's real fetch interceptor.
+    global.fetch = mockFetch as typeof fetch;
     vi.clearAllMocks();
-    vi.useFakeTimers();
+    // shouldAdvanceTime keeps real time passing (so testing-library's waitFor,
+    // which doesn't recognize vitest's fake timers, still resolves) while still
+    // letting tests fast-forward cache-expiry timers manually.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
   afterEach(() => {
@@ -501,9 +506,12 @@ describe('useSessionCache', () => {
       }
     });
 
-    // Optimistic update should still be in place
+    // Optimistic update should still be in place. mutate().revalidate() runs
+    // as a background refresh, so a failure surfaces as isStaleError (not
+    // the foreground `error`, which is reserved for getSessions failures);
+    // callers see the rejection via the thrown error from revalidate().
     expect(result.current.sessions[0].title).toBe('Updated');
-    expect(result.current.error).toBeTruthy();
+    expect(result.current.isStaleError).toBe(true);
   });
 
   it('should handle cache expiry during getSessions', async () => {

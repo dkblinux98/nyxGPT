@@ -2,6 +2,16 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import Home from '@/app/page';
+import { ThemeProvider } from '@/contexts/ThemeContext';
+
+// Home uses useTheme(), which requires a ThemeProvider ancestor.
+function renderHome() {
+  return render(
+    <ThemeProvider>
+      <Home />
+    </ThemeProvider>
+  );
+}
 
 /**
  * Optimistic Updates Tests
@@ -9,9 +19,6 @@ import Home from '@/app/page';
  * Tests for optimistic UI update logic in session operations.
  * These tests verify that UI updates occur immediately and rollback on failure.
  */
-
-// Mock global fetch
-global.fetch = vi.fn();
 
 // Mock window.confirm and window.prompt
 global.confirm = vi.fn();
@@ -409,6 +416,9 @@ describe('Optimistic Updates Integration Tests', () => {
   };
 
   beforeEach(() => {
+    // Re-assign after tests/setup.ts's MSW server.listen() patches global.fetch,
+    // so this mock isn't clobbered by MSW's real fetch interceptor.
+    global.fetch = vi.fn();
     vi.clearAllMocks();
     (global.confirm as any).mockReturnValue(true);
     (global.prompt as any).mockReturnValue('New Title');
@@ -417,11 +427,11 @@ describe('Optimistic Updates Integration Tests', () => {
   describe('Pin Toggle Integration', () => {
     it('should show optimistic update immediately when pinning session', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/pin': { success: true },
       });
 
-      render(<Home />);
+      renderHome();
 
       // Wait for sessions to load
       await waitFor(() => {
@@ -449,11 +459,11 @@ describe('Optimistic Updates Integration Tests', () => {
 
     it('should rollback pin state when API fails', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/pin': { error: 'Failed to pin session', status: 500 },
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -489,7 +499,7 @@ describe('Optimistic Updates Integration Tests', () => {
         });
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -518,11 +528,11 @@ describe('Optimistic Updates Integration Tests', () => {
   describe('Delete Session Integration', () => {
     it('should show optimistic update immediately when deleting session', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/delete': { success: true },
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 3')).toBeInTheDocument();
@@ -544,11 +554,11 @@ describe('Optimistic Updates Integration Tests', () => {
 
     it('should rollback delete when API fails', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/delete': { error: 'Failed to delete session', status: 500 },
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 3')).toBeInTheDocument();
@@ -569,11 +579,11 @@ describe('Optimistic Updates Integration Tests', () => {
 
     it('should switch selection when deleting selected session', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/delete': { success: true },
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -602,13 +612,13 @@ describe('Optimistic Updates Integration Tests', () => {
   describe('Rename Session Integration', () => {
     it('should show optimistic update immediately when renaming session', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/rename': { success: true, new_name: 'session1' },
       });
 
       (global.prompt as any).mockReturnValue('Updated Title');
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -630,13 +640,13 @@ describe('Optimistic Updates Integration Tests', () => {
 
     it('should rollback rename when API fails', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/rename': { error: 'Failed to rename session', status: 500 },
       });
 
       (global.prompt as any).mockReturnValue('Failed Title');
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -660,11 +670,11 @@ describe('Optimistic Updates Integration Tests', () => {
       const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/rename': { success: true, new_name: 'session1' },
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -720,7 +730,7 @@ describe('Optimistic Updates Integration Tests', () => {
         });
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -763,7 +773,7 @@ describe('Optimistic Updates Integration Tests', () => {
         });
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -789,12 +799,12 @@ describe('Optimistic Updates Integration Tests', () => {
   describe('Multiple Concurrent Operations', () => {
     it('should handle operations on different sessions concurrently', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/pin': { success: true },
         '/delete': { success: true },
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -830,11 +840,11 @@ describe('Optimistic Updates Integration Tests', () => {
 
     it('should show success toast when session is created', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         'POST /api/v1/sessions': { name: 'new-session', messages: 0, pinned: false },
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -852,11 +862,11 @@ describe('Optimistic Updates Integration Tests', () => {
 
     it('should show success toast when session is deleted', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/delete': { success: true },
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -876,11 +886,11 @@ describe('Optimistic Updates Integration Tests', () => {
 
     it('should show error toast when session deletion fails', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/delete': { error: 'Delete failed', status: 500 },
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -900,13 +910,13 @@ describe('Optimistic Updates Integration Tests', () => {
 
     it('should show success toast when session is renamed', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/rename': { success: true, new_name: 'new-title' },
       });
 
       (global.prompt as any).mockReturnValue('New Title');
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -926,13 +936,13 @@ describe('Optimistic Updates Integration Tests', () => {
 
     it('should show error toast when session rename fails', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/rename': { error: 'Rename failed', status: 500 },
       });
 
       (global.prompt as any).mockReturnValue('New Title');
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -952,11 +962,11 @@ describe('Optimistic Updates Integration Tests', () => {
 
     it('should show success toast when session is pinned', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/pin': { success: true },
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -976,11 +986,11 @@ describe('Optimistic Updates Integration Tests', () => {
 
     it('should show success toast when session is unpinned', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/unpin': { success: true },
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 2')).toBeInTheDocument();
@@ -1000,11 +1010,11 @@ describe('Optimistic Updates Integration Tests', () => {
 
     it('should show error toast when pin toggle fails', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/pin': { error: 'Pin failed', status: 500 },
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -1028,11 +1038,11 @@ describe('Optimistic Updates Integration Tests', () => {
       global.URL.revokeObjectURL = vi.fn();
 
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/export': new Blob(['export data'], { type: 'application/json' }),
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -1052,11 +1062,11 @@ describe('Optimistic Updates Integration Tests', () => {
 
     it('should show error toast when session export fails', async () => {
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: mockSessions },
+        'GET /api/sessions': { sessions: mockSessions },
         '/export': { error: 'Export failed', status: 500 },
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
@@ -1077,10 +1087,10 @@ describe('Optimistic Updates Integration Tests', () => {
     it('should show warning toast when trying to delete the last session', async () => {
       const singleSessionList = [mockSessions[0]];
       mockFetchResponses({
-        '/api/v1/sessions': { sessions: singleSessionList },
+        'GET /api/sessions': { sessions: singleSessionList },
       });
 
-      render(<Home />);
+      renderHome();
 
       await waitFor(() => {
         expect(screen.getByText('Test Session 1')).toBeInTheDocument();
