@@ -39,6 +39,7 @@ Your data stays on your machine. No cloud dependency is required.
 - **Local canary deployment** with gradual weighted rollout, metrics-based promotion, and automatic rollback, operable from the SRE/admin dashboard (`nyxgpt canary` CLI or `/admin/canary`)
 - **Prometheus metrics** (`/metrics`) — request counts, latency histograms, error rates, and chat/RAG business metrics, surfaced in the SRE/admin dashboard (`/admin`)
 - **Distributed tracing** (OpenTelemetry) — opt-in, local-only request/RAG/Ollama/Cassandra spans exported to a local Jaeger instance (`docker compose --profile tracing up`), linked from the SRE/admin dashboard (`/admin`)
+- **Error tracking** (self-hosted GlitchTip) — opt-in, local-only backend exception and web UI client error reporting via the Sentry SDK protocol (`docker compose --profile errors up`), linked from the SRE/admin dashboard (`/admin`)
 - Optional **Docker Compose** stack for one-command bring-up of every component
 - Robust unit and integration test suite
 
@@ -426,6 +427,7 @@ The wizard includes a real-time resource monitoring dashboard accessible from th
 - **Queue Status** - Current batch processing queue depth and total requests
 - **Prometheus Endpoint** - Card showing the `/metrics` scrape path for external Prometheus servers, with a link to view current metrics (see [`docs/api.md`](docs/api.md#get-metrics))
 - **Distributed Tracing** - Card showing whether OpenTelemetry tracing is enabled, with a link to the local Jaeger UI when active (see [`docs/api.md`](docs/api.md#distributed-tracing))
+- **Error Tracking** - Card showing whether self-hosted error tracking is enabled, with a link to the local GlitchTip UI when active (see [`docs/api.md`](docs/api.md#error-tracking))
 
 **Dashboard Features:**
 - Real-time auto-refresh (5-second interval, toggle on/off)

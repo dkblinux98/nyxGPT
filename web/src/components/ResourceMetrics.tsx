@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import LoadingSpinner from './LoadingSpinner';
 import ErrorMessage from './ErrorMessage';
 import TracingPanel from './TracingPanel';
+import ErrorTrackingPanel from './ErrorTrackingPanel';
 
 type MetricsData = {
   memory: {
@@ -465,6 +466,9 @@ export default function ResourceMetrics() {
 
       {/* Distributed tracing (Jaeger) */}
       <TracingPanel />
+
+      {/* Error tracking (GlitchTip) */}
+      <ErrorTrackingPanel />
 
       {/* Threshold indicators */}
       <div
