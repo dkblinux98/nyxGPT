@@ -23,6 +23,7 @@ Quick reference of all 59 available endpoints:
 | `/api/v1/metrics` | GET | Resource usage monitoring (memory, CPU, latency, queue depth) |
 | `/api/v1/tracing` | GET | Distributed tracing status (enabled/active, service name, OTLP endpoint, Jaeger UI URL) |
 | `/api/v1/error-tracking` | GET | Error tracking status (enabled/active, DSN, environment, GlitchTip UI URL) |
+| `/api/v1/monitoring` | GET | Monitoring stack status (enabled/active, Grafana UI URL) |
 | `/api/v1/error-tracking/report` | POST | Forward a web UI client-side error to the local error tracker |
 | `/api/v1/config` | GET | Get current configuration |
 | `/api/v1/config` | POST | Update configuration (full replace) |
@@ -2899,6 +2900,63 @@ docker compose --profile errors up
 Sign up and create a project in the GlitchTip UI to get the DSN above.
 Browse events at `http://localhost:8080` (also linked from the SRE/admin
 dashboard's Resource Usage step).
+
+---
+
+## Monitoring Dashboards
+
+### `GET /api/v1/monitoring`
+
+Report monitoring stack status: whether it's enabled in config and where to
+find the local Grafana UI.
+
+**Request:**
+
+```bash
+curl http://127.0.0.1:8000/api/v1/monitoring
+```
+
+**Response:**
+
+```json
+{
+  "enabled": true,
+  "grafana_ui_url": "http://localhost:3001",
+  "active": true
+}
+```
+
+**Response Fields:**
+- `enabled` - Whether `[monitoring] enabled = true` in config.ini
+- `grafana_ui_url` - URL of the local Grafana UI for browsing dashboards
+- `active` - Mirrors `enabled` (the Grafana/Prometheus stack itself runs outside this process, as Docker Compose services)
+
+**How it works:**
+
+Monitoring is Prometheus/Grafana-based, opt-in, and strictly local — there
+is no external/cloud monitoring service. System overview, RAG performance,
+and API metrics dashboards are pre-provisioned in Grafana, backed by a
+Prometheus server that scrapes this API's [`/metrics`](#get-metrics)
+endpoint.
+
+**Enabling monitoring:**
+
+```ini
+[monitoring]
+enabled = true
+grafana_ui_url = http://localhost:3001
+```
+
+Then start the local Prometheus + Grafana instances (opt-in Compose
+profile):
+
+```bash
+docker compose --profile monitoring up
+```
+
+Browse dashboards at `http://localhost:3001` (also linked from the
+SRE/admin dashboard's Resource Usage step — see
+[`docs/docker-compose.md`](docker-compose.md#monitoring-dashboards)).
 
 ---
 

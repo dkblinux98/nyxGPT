@@ -955,6 +955,40 @@ def get_error_tracking_config(cfg: ConfigParser) -> dict:
     }
 
 
+def get_monitoring_enabled(cfg: ConfigParser) -> bool:
+    """Get whether the Grafana/Prometheus monitoring stack is enabled.
+
+    Disabled by default. This flag doesn't start anything by itself -- it
+    only controls whether the SRE/admin dashboard treats the `monitoring`
+    Compose profile as running and shows the Grafana link.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        True if monitoring is enabled, False otherwise
+    """
+    try:
+        return cfg.getboolean("monitoring", "enabled", fallback=False)
+    except Exception:
+        return False
+
+
+def get_monitoring_config(cfg: ConfigParser) -> dict:
+    """Get Grafana/Prometheus monitoring configuration.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Dictionary with keys: enabled, grafana_ui_url
+    """
+    return {
+        "enabled": get_monitoring_enabled(cfg),
+        "grafana_ui_url": cfg.get("monitoring", "grafana_ui_url", fallback="http://localhost:3001"),
+    }
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "load_config",
@@ -990,6 +1024,8 @@ __all__ = [
     "get_tracing_config",
     "get_error_tracking_enabled",
     "get_error_tracking_config",
+    "get_monitoring_enabled",
+    "get_monitoring_config",
     "get_cassandra_pool_size",
     "get_cassandra_health_check_interval",
     "get_cassandra_reconnect_max_attempts",

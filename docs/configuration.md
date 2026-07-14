@@ -521,6 +521,34 @@ See [`docs/api.md`](api.md#error-tracking) for the
 
 ---
 
+## `[monitoring]` section
+
+Grafana dashboards backed by Prometheus. Opt-in and local-only: no metrics
+are ever sent to an external/cloud service, only to a local Prometheus
+server that scrapes this API's `/metrics` endpoint.
+
+```ini
+[monitoring]
+enabled = false
+grafana_ui_url = http://localhost:3001
+```
+
+| Key | Description |
+|---|---|
+| `enabled` | Enable monitoring (default: `false`) |
+| `grafana_ui_url` | URL of the local Grafana UI, used for the "Monitoring Dashboards" link in the SRE/admin dashboard |
+
+Requires the `monitoring` Compose profile (local Prometheus + Grafana):
+
+```bash
+docker compose --profile monitoring up
+```
+
+See [`docs/api.md`](api.md#monitoring-dashboards) for the
+`GET /api/v1/monitoring` status endpoint.
+
+---
+
 ## Hot-reloadable settings
 
 - `nyxgpt.default_model`

@@ -126,6 +126,14 @@ first boot with a Prometheus datasource and three dashboards under
 Log in with username `admin` and the password in `GRAFANA_ADMIN_PASSWORD`
 (see `.env.example`; set this to a real value before running the profile).
 
+The API container still needs `[monitoring] enabled = true` set in
+`docker/config.docker.ini` (disabled by default) for the SRE/admin
+dashboard's "Monitoring Dashboards" card to show the Grafana link -- see
+[configuration.md](configuration.md#monitoring-section) and
+[api.md](api.md#monitoring-dashboards). If you changed `GRAFANA_UI_PORT` in
+`.env`, update `grafana_ui_url` in config to match, or the link will point
+at the wrong port.
+
 Alerting rules (`docker/prometheus-alerts.yml`) evaluate continuously and
 show their state (inactive/pending/firing) on Prometheus's own Alerts page at
 [http://localhost:9090/alerts](http://localhost:9090/alerts) if the API

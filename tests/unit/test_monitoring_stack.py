@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import json
 import re
+from configparser import ConfigParser
 from pathlib import Path
 
 import pytest
 import yaml
+from fastapi.testclient import TestClient
 
 from nyxgpt import metrics as prom_metrics
+from nyxgpt.app import app
+from nyxgpt.config import get_monitoring_config, get_monitoring_enabled
 
 pytestmark = pytest.mark.unit
 
@@ -136,3 +140,51 @@ def test_grafana_dashboards_are_provisioned() -> None:
     datasource = datasource_config["datasources"][0]
     assert datasource["type"] == "prometheus"
     assert datasource["url"] == "http://prometheus:9090"
+
+
+def _cfg(**monitoring_options: str) -> ConfigParser:
+    cfg = ConfigParser()
+    if monitoring_options:
+        cfg["monitoring"] = monitoring_options
+    return cfg
+
+
+def test_get_monitoring_enabled_defaults_to_false() -> None:
+    assert get_monitoring_enabled(_cfg()) is False
+
+
+def test_get_monitoring_enabled_reads_config() -> None:
+    assert get_monitoring_enabled(_cfg(enabled="true")) is True
+    assert get_monitoring_enabled(_cfg(enabled="false")) is False
+
+
+def test_get_monitoring_config_defaults() -> None:
+    result = get_monitoring_config(_cfg())
+
+    assert result == {
+        "enabled": False,
+        "grafana_ui_url": "http://localhost:3001",
+    }
+
+
+def test_get_monitoring_config_reads_overrides() -> None:
+    cfg = _cfg(enabled="true", grafana_ui_url="http://grafana:3000")
+
+    result = get_monitoring_config(cfg)
+
+    assert result["enabled"] is True
+    assert result["grafana_ui_url"] == "http://grafana:3000"
+
+
+def test_monitoring_status_endpoint_reports_disabled_by_default() -> None:
+    """The test config fixture has no [monitoring] section, so the endpoint
+    must report the safe default: disabled, not active."""
+    client = TestClient(app)
+
+    response = client.get("/api/v1/monitoring")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enabled"] is False
+    assert data["active"] is False
+    assert data["grafana_ui_url"] == "http://localhost:3001"
