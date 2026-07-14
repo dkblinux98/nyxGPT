@@ -231,6 +231,25 @@ export const handlers = [
     });
   }),
 
+  // GET /api/v1/admin/health
+  http.get('/api/v1/admin/health', () => {
+    return HttpResponse.json({
+      service: { status: 'ok', uptime_s: 3725 },
+      dependencies: [
+        { name: 'ollama', ok: true, detail: 'Reachable at http://127.0.0.1:11434', applicable: true },
+        { name: 'cassandra', ok: true, detail: 'RAG disabled; Cassandra is not required', applicable: false },
+      ],
+      resource_metrics: {
+        memory: { rss_mb: 128, vms_mb: 256, percent: 5, available_mb: 8000 },
+        cpu: { process_percent: 2.5, system_percent: 10 },
+        latency: { avg_ms: 10, p50_ms: 8, p95_ms: 20, p99_ms: 30 },
+        queue: { depth: 0, total_requests: 42 },
+        errors: { count: 0, rate_percent: 0 },
+      },
+      alerts: [],
+    });
+  }),
+
   // GET /api/v1/admin/activity
   http.get('/api/v1/admin/activity', () => {
     return HttpResponse.json({
