@@ -53,6 +53,8 @@ const SessionItem = memo(function SessionItem({
       onClick={onSelect}
       onContextMenu={onContextMenu}
       tabIndex={isActive ? 0 : -1}
+      data-session={session.name}
+      data-pinned={session.pinned ? 'true' : 'false'}
       style={{
         textAlign: 'left',
         padding: '10px 10px',
