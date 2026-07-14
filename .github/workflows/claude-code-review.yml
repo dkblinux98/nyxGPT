@@ -413,7 +413,7 @@ jobs:
           GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
           STRUCTURED_OUTPUT: ${{ steps.claude-review.outputs.structured_output }}
         run: |
-          PR="${{ github.event.pull_request.number }}"
+          PR="${{ steps.pr_number.outputs.pr }}"
           if [[ -z "$STRUCTURED_OUTPUT" || "$STRUCTURED_OUTPUT" == "null" ]]; then
             echo "No structured output to persist"
             exit 0
@@ -427,7 +427,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
         run: |
-          PR="${{ github.event.pull_request.number }}"
+          PR="${{ steps.pr_number.outputs.pr }}"
           # Find the most recent progress comment posted by track_progress
           PROGRESS_BODY=$(gh pr view "$PR" --json comments \
             --jq '[.comments[] | select(.body | test("- \\[[ x]\\]"))] | last | .body // ""')
@@ -444,3 +444,54 @@ jobs:
           else
             echo "No progress comment with checkboxes found on PR #$PR"
           fi
+
+      - name: Detect usage-limit signature (self-heal)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.REVIEW_AGENT_TOKEN }}
+          PR: ${{ steps.pr_number.outputs.pr }}
+        run: |
+          set +e
+          # Same mechanism as developer_auto_implement.yml Phase 0: a review
+          # run whose Claude step "completes" in seconds hit the Claude usage
+          # limit. Label the PR usage-limit-retry with a retry-after marker;
+          # the usage_limit_retry.yml cron re-requests the review agent once
+          # the ~5h window has reset.
+          [ -z "$PR" ] && exit 0
+
+          JOBS_JSON=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" 2>/dev/null)
+          [ -z "$JOBS_JSON" ] && exit 0
+
+          FAST_CLAUDE_STEPS=$(echo "$JOBS_JSON" | jq -r '
+            [.jobs[].steps[]?
+             | select(.name | test("claude"; "i"))
+             | select(.started_at != null and .completed_at != null)
+             | ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601))
+             | select(. >= 0 and . < 90)
+            ] | length' 2>/dev/null)
+          [ -z "$FAST_CLAUDE_STEPS" ] && FAST_CLAUDE_STEPS=0
+
+          if [ "$FAST_CLAUDE_STEPS" -lt 1 ]; then
+            echo "::notice::No usage-limit signature detected"
+            exit 0
+          fi
+          echo "::warning::Usage-limit signature: $FAST_CLAUDE_STEPS Claude step(s) finished in <90s"
+
+          ATTEMPTS=$(gh pr view "$PR" --json comments \
+            --jq '[.comments[].body | select(test("<!-- usage-limit-retry-after:"))] | length' 2>/dev/null || echo 0)
+          if [ "${ATTEMPTS:-0}" -ge 8 ]; then
+            gh pr comment "$PR" --body "🛑 **Review Agent**: Usage-limit auto-retry gave up after $ATTEMPTS attempts — manual investigation needed (check the CLAUDE_CODE_OAUTH_TOKEN account's limits). Re-request @${{ vars.REVIEW_AGENT }} as reviewer to retry."
+            gh pr edit "$PR" --remove-label "usage-limit-retry" 2>/dev/null || true
+            exit 0
+          fi
+
+          gh label create "usage-limit-retry" \
+            --description "Auto-retry pending: run hit Claude usage limits; cron retries after the window resets" \
+            --color "C5DEF5" 2>/dev/null || true
+
+          RETRY_AFTER=$(( $(date +%s) + 18000 ))
+          RETRY_AT_UTC=$(date -u -d "@$RETRY_AFTER" '+%H:%M UTC' 2>/dev/null || echo "in ~5h")
+          gh pr edit "$PR" --add-label "usage-limit-retry"
+          gh pr comment "$PR" --body "⏳ **Review Agent**: This review run hit the Claude usage limit. **Auto-retry $((ATTEMPTS + 1))/8 scheduled** for ~$RETRY_AT_UTC — the retry cron will re-request the review automatically.
+          <!-- usage-limit-retry-after: $RETRY_AFTER -->"
+          exit 0

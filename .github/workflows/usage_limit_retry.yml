@@ -26,6 +26,7 @@ jobs:
       GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
       REPO: ${{ github.repository }}
       DEV_AGENT: ${{ vars.DEV_AGENT }}
+      REVIEW_AGENT: ${{ vars.REVIEW_AGENT }}
     steps:
       - name: Retry usage-limited issues
         shell: bash
@@ -65,6 +66,48 @@ jobs:
             sleep 3
             gh api -X POST "repos/$REPO/issues/$ISSUE/assignees" \
               -f "assignees[]=$DEV_AGENT" >/dev/null
+
+            echo "::endgroup::"
+          done
+
+      - name: Retry usage-limited PR reviews
+        shell: bash
+        run: |
+          set -euo pipefail
+          NOW=$(date +%s)
+
+          PRS=$(gh pr list --repo "$REPO" --label "usage-limit-retry" \
+            --state open --json number --jq '.[].number' || true)
+
+          if [ -z "$PRS" ]; then
+            echo "No PRs pending usage-limit review retry."
+            exit 0
+          fi
+
+          for PR in $PRS; do
+            echo "::group::PR #$PR"
+
+            RETRY_AFTER=$(gh pr view "$PR" --repo "$REPO" --json comments \
+              --jq '[.comments[].body | capture("<!-- usage-limit-retry-after: (?<t>[0-9]+) -->").t] | last // empty' \
+              2>/dev/null || true)
+
+            if [ -n "$RETRY_AFTER" ] && [ "$NOW" -lt "$RETRY_AFTER" ]; then
+              echo "Not yet: retry scheduled for epoch $RETRY_AFTER (now $NOW)."
+              echo "::endgroup::"
+              continue
+            fi
+
+            echo "Retry window reached — re-requesting review."
+            gh pr edit "$PR" --repo "$REPO" --remove-label "usage-limit-retry"
+            gh pr comment "$PR" --repo "$REPO" --body "🔁 **Scrummaster Agent**: Usage-limit retry window reached — re-requesting review from @$REVIEW_AGENT."
+
+            # Un-request then re-request to emit the 'review_requested' event
+            # that triggers claude-code-review.yml.
+            gh api -X DELETE "repos/$REPO/pulls/$PR/requested_reviewers" \
+              -f "reviewers[]=$REVIEW_AGENT" >/dev/null 2>&1 || true
+            sleep 3
+            gh api -X POST "repos/$REPO/pulls/$PR/requested_reviewers" \
+              -f "reviewers[]=$REVIEW_AGENT" >/dev/null
 
             echo "::endgroup::"
           done
