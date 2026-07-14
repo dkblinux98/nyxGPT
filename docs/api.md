@@ -638,6 +638,52 @@ again by `GET /admin/access`, which only shows the masked value.
 
 ---
 
+## Usage Analytics
+
+These endpoints back the usage analytics dashboard at `/admin/analytics`.
+Every completed `/api/v1/chat` and `/api/v1/chat/stream` request records a
+usage event (session, model, prompt/completion token estimates, request
+duration) that feeds these endpoints.
+
+### `GET /api/v1/analytics/usage`
+
+Return aggregated usage analytics: total requests, total prompt/completion
+tokens, distinct session count, and per-model and per-day breakdowns.
+
+**Response:**
+
+```json
+{
+  "total_requests": 42,
+  "total_prompt_tokens": 5210,
+  "total_completion_tokens": 8390,
+  "total_tokens": 13600,
+  "session_count": 6,
+  "by_model": [
+    { "model": "llama3.1:8b", "requests": 42, "prompt_tokens": 5210, "completion_tokens": 8390 }
+  ],
+  "by_day": [
+    { "date": "2026-07-14", "requests": 42, "prompt_tokens": 5210, "completion_tokens": 8390 }
+  ]
+}
+```
+
+### `GET /api/v1/analytics/export`
+
+Export recorded usage events as a downloadable report. Accepts an
+optional `format` query parameter: `json` (default) or `csv`. Returns a
+`400` for any other format.
+
+- `format=json`: `{"summary": {...}, "events": [...]}` (same shape as
+  `GET /admin/analytics/usage` for `summary`, plus the raw event list).
+- `format=csv`: header row `ts,session,model,prompt_tokens,completion_tokens,duration_s`
+  followed by one row per recorded request.
+
+Both formats are returned with a `Content-Disposition: attachment`
+header so browsers download the file directly.
+
+---
+
 ## Deployment (Blue/Green)
 
 Local blue/green deployment for `nyxgpt-api` on a local Kubernetes cluster

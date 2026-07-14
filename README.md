@@ -386,6 +386,9 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
   dashboard
 - **RAG Collections management** at `/admin/collections` for multi-model embedding support
 - **RAG Playground** at `/admin/playground` for interactive query testing and A/B comparison
+- **Usage analytics dashboard** at `/admin/analytics` — total/per-model/per-day
+  request and token breakdowns from recorded chat usage, with JSON/CSV report
+  export (see [`docs/api.md`](docs/api.md#usage-analytics))
 - **Configuration wizard** at `/admin` for step-by-step setup
 - **Log viewer** at `/admin/logs` for debugging and monitoring
 - Model management (pull, delete, list) at `/models`

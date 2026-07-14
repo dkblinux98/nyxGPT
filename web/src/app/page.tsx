@@ -1314,6 +1314,26 @@ function Home() {
                 <span>View Logs</span>
               </a>
 
+              {/* Usage Analytics */}
+              <a
+                href="/admin/analytics"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '8px 16px',
+                  textDecoration: 'none',
+                  color: 'var(--foreground)',
+                  fontSize: 14,
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={() => setShowSettingsMenu(false)}
+              >
+                <span>📈</span>
+                <span>Usage Analytics</span>
+              </a>
+
               {/* Manage Models */}
               <a
                 href="/models"
