@@ -88,6 +88,12 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   # Monitoring dashboards (opt-in): `docker compose --profile monitoring up`.
   # Prometheus scrapes the API's `/metrics` endpoint (see docker/prometheus.yml)
@@ -109,6 +115,12 @@ services:
       - prometheus_data:/prometheus
     ports:
       - "${PROMETHEUS_UI_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   grafana:
     image: grafana/grafana:latest
@@ -127,7 +139,14 @@ services:
     ports:
       - "${GRAFANA_UI_PORT:-3001}:3000"
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   # Log aggregation (opt-in): `docker compose --profile logging up`. Promtail
   # tails the API's log files under ~/.nyxGPT/logs (the same nyxgpt_data
@@ -179,7 +198,12 @@ services:
       - ./docker/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
     depends_on:
       jaeger:
-        condition: service_started
+        condition: service_healthy
+    # No healthcheck here: opentelemetry-collector-contrib ships FROM scratch
+    # with no shell/wget/curl, so a CMD-SHELL probe isn't possible. Container
+    # crash-restart (restart: unless-stopped) is the only signal available;
+    # the self-heal watchdog falls back to Docker's own container State for
+    # this service rather than a health check.
 
   jaeger:
     image: jaegertracing/all-in-one:latest
@@ -192,6 +216,12 @@ services:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
       - "${JAEGER_UI_PORT:-16686}:16686"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:16686/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   # Self-hosted error tracking (opt-in): `docker compose --profile errors up`.
   # GlitchTip is a Sentry-protocol-compatible error tracker that runs
@@ -228,6 +258,12 @@ services:
       - errors
     networks:
       - nyxgpt
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   glitchtip-migrate:
     image: glitchtip/glitchtip:latest
@@ -268,9 +304,15 @@ services:
       glitchtip-postgres:
         condition: service_healthy
       glitchtip-redis:
-        condition: service_started
+        condition: service_healthy
       glitchtip-migrate:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8080), timeout=3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   glitchtip-worker:
     image: glitchtip/glitchtip:latest
@@ -293,6 +335,6 @@ services:
       glitchtip-postgres:
         condition: service_healthy
       glitchtip-redis:
-        condition: service_started
+        condition: service_healthy
       glitchtip-migrate:
         condition: service_completed_successfully
