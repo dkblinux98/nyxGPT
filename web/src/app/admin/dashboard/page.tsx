@@ -234,6 +234,7 @@ export default function AdminDashboardPage() {
                 <strong>{overview.info.rag_enabled ? 'enabled' : 'disabled'}</strong>
               </div>
               <div style={{ display: 'flex', gap: 12, fontSize: 13, marginTop: 4 }}>
+                <a href="/admin/health" style={{ color: '#0066cc' }}>System Health →</a>
                 <a href="/admin/deploy" style={{ color: '#0066cc' }}>Deployment →</a>
                 <a href="/admin/canary" style={{ color: '#0066cc' }}>Canary →</a>
                 <a href="/settings" style={{ color: '#0066cc' }}>Full metrics →</a>
