@@ -119,6 +119,7 @@ def test_grafana_dashboards_are_provisioned() -> None:
     dashboard_files = sorted(p.name for p in dashboards_dir.glob("*.json"))
     assert dashboard_files == [
         "api-metrics.json",
+        "logs-explorer.json",
         "rag-performance.json",
         "system-overview.json",
     ]

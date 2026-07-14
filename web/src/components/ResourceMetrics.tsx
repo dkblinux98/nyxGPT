@@ -6,6 +6,7 @@ import ErrorMessage from './ErrorMessage';
 import TracingPanel from './TracingPanel';
 import ErrorTrackingPanel from './ErrorTrackingPanel';
 import GrafanaPanel from './GrafanaPanel';
+import LogAggregationPanel from './LogAggregationPanel';
 
 type MetricsData = {
   memory: {
@@ -467,6 +468,9 @@ export default function ResourceMetrics() {
 
       {/* Monitoring dashboards (Grafana + Prometheus) */}
       <GrafanaPanel />
+
+      {/* Log aggregation (Loki + promtail) */}
+      <LogAggregationPanel />
 
       {/* Distributed tracing (Jaeger) */}
       <TracingPanel />

@@ -10,6 +10,7 @@ volumes:
   glitchtip_uploads:
   prometheus_data:
   grafana_data:
+  loki_data:
 
 services:
   ollama:
@@ -127,6 +128,40 @@ services:
       - "${GRAFANA_UI_PORT:-3001}:3000"
     depends_on:
       - prometheus
+
+  # Log aggregation (opt-in): `docker compose --profile logging up`. Promtail
+  # tails the API's log files under ~/.nyxGPT/logs (the same nyxgpt_data
+  # volume the api service writes to) and ships them to Loki; Grafana (see
+  # the `monitoring` profile above) is pre-provisioned with a Loki
+  # datasource and a Logs Explorer dashboard under docker/grafana/dashboards.
+  # Everything stays on this machine -- nothing is sent to an
+  # external/cloud log service. Set `[log_aggregation] enabled = true` in
+  # config.ini to have the SRE/admin dashboard reflect that it's running.
+  loki:
+    image: grafana/loki:latest
+    restart: unless-stopped
+    profiles:
+      - logging
+    networks:
+      - nyxgpt
+    volumes:
+      - ./docker/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+
+  promtail:
+    image: grafana/promtail:latest
+    restart: unless-stopped
+    profiles:
+      - logging
+    networks:
+      - nyxgpt
+    volumes:
+      - ./docker/promtail-config.yml:/etc/promtail/config.yml:ro
+      - nyxgpt_data:/var/log/nyxgpt:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
 
   # Distributed tracing (opt-in): `docker compose --profile tracing up`.
   # Traces stay on this machine -- the collector only forwards to the local

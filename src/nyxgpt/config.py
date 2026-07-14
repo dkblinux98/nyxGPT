@@ -989,6 +989,44 @@ def get_monitoring_config(cfg: ConfigParser) -> dict:
     }
 
 
+def get_log_aggregation_enabled(cfg: ConfigParser) -> bool:
+    """Get whether the Loki/promtail log aggregation stack is enabled.
+
+    Disabled by default. This flag doesn't start anything by itself -- it
+    only controls whether the SRE/admin dashboard treats the `logging`
+    Compose profile as running and shows the log search link.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        True if log aggregation is enabled, False otherwise
+    """
+    try:
+        return cfg.getboolean("log_aggregation", "enabled", fallback=False)
+    except Exception:
+        return False
+
+
+def get_log_aggregation_config(cfg: ConfigParser) -> dict:
+    """Get Loki/promtail log aggregation configuration.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Dictionary with keys: enabled, grafana_explore_url
+    """
+    return {
+        "enabled": get_log_aggregation_enabled(cfg),
+        "grafana_explore_url": cfg.get(
+            "log_aggregation",
+            "grafana_explore_url",
+            fallback="http://localhost:3001/explore",
+        ),
+    }
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "load_config",
@@ -1026,6 +1064,8 @@ __all__ = [
     "get_error_tracking_config",
     "get_monitoring_enabled",
     "get_monitoring_config",
+    "get_log_aggregation_enabled",
+    "get_log_aggregation_config",
     "get_cassandra_pool_size",
     "get_cassandra_health_check_interval",
     "get_cassandra_reconnect_max_attempts",
