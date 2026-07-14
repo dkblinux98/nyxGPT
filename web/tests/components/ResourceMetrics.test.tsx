@@ -12,10 +12,19 @@ const mockMetricsData = {
   queue: { depth: 3, total_requests: 1250 },
 };
 
+const mockTracingDisabled = {
+  enabled: false,
+  active: false,
+  service_name: 'nyxgpt-api',
+  otlp_endpoint: 'http://localhost:4318/v1/traces',
+  jaeger_ui_url: 'http://localhost:16686',
+};
+
 describe('ResourceMetrics (admin dashboard)', () => {
   it('shows a Prometheus scrape endpoint card with a link to view current metrics', async () => {
     server.use(
-      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData))
+      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled))
     );
 
     render(<ResourceMetrics />);
@@ -27,5 +36,18 @@ describe('ResourceMetrics (admin dashboard)', () => {
     const link = screen.getByRole('link', { name: /View current metrics/i });
     expect(link).toHaveAttribute('href', '/api/prometheus-metrics');
     expect(screen.getByText('<nyxgpt-api-host>/metrics')).toBeInTheDocument();
+  });
+
+  it('shows a Distributed Tracing card', async () => {
+    server.use(
+      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled))
+    );
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Distributed Tracing')).toBeInTheDocument();
+    });
   });
 });
