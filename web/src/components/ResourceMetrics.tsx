@@ -422,6 +422,46 @@ export default function ResourceMetrics() {
         </div>
       </div>
 
+      {/* Prometheus scrape endpoint */}
+      <div
+        style={{
+          marginTop: '1rem',
+          padding: '1rem',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          background: 'var(--background)',
+          fontSize: 13,
+        }}
+      >
+        <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>Prometheus Endpoint</div>
+        <p style={{ margin: '0 0 0.75rem 0', color: '#666' }}>
+          The nyxGPT API exposes a <code>/metrics</code> endpoint (same host/port as the rest of
+          the API, unauthenticated like <code>/health</code>) for Prometheus to scrape request
+          counts, latency histograms, error rates, and business metrics (chat/RAG usage). Point
+          your Prometheus server&apos;s scrape config at:
+        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <code
+            style={{
+              background: 'var(--code-bg)',
+              padding: '4px 8px',
+              borderRadius: 4,
+              fontSize: 12,
+            }}
+          >
+            &lt;nyxgpt-api-host&gt;/metrics
+          </code>
+          <a
+            href="/api/prometheus-metrics"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: '#0066cc', fontSize: 13 }}
+          >
+            View current metrics ↗
+          </a>
+        </div>
+      </div>
+
       {/* Threshold indicators */}
       <div
         style={{
