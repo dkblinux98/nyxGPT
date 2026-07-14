@@ -27,6 +27,13 @@ jobs:
         with:
           ref: ${{ vars.RELEASE_BRANCH }}
           fetch-depth: 0
+          # Push with the developer agent's PAT instead of the default
+          # GITHUB_TOKEN: the default token can never create/update files
+          # under .github/workflows/ (hard platform restriction, surfaced
+          # on PR #3172), and PAT pushes are attributed to
+          # myGPT-developer-agent per the identity policy. The PAT must
+          # have the "workflow" scope for workflow-file changes to push.
+          token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
 
       - name: Configure git identity
         run: |
