@@ -237,6 +237,7 @@ export default function AdminDashboardPage() {
                 <a href="/admin/health" style={{ color: '#0066cc' }}>System Health →</a>
                 <a href="/admin/deploy" style={{ color: '#0066cc' }}>Deployment →</a>
                 <a href="/admin/canary" style={{ color: '#0066cc' }}>Canary →</a>
+                <a href="/admin/analytics" style={{ color: '#0066cc' }}>Usage Analytics →</a>
                 <a href="/settings" style={{ color: '#0066cc' }}>Full metrics →</a>
               </div>
             </div>
