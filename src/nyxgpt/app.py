@@ -41,6 +41,7 @@ from nyxgpt import error_tracking as error_tracking_module
 from nyxgpt import health as health_module
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import tracing as tracing_module
+from nyxgpt import usage_analytics as usage_analytics_module
 from nyxgpt.api_models import (
     AttachDocumentRequest,
     ChatRequest,
@@ -113,6 +114,7 @@ from nyxgpt.rag.rag import (
 )
 from nyxgpt.rate_limiter import RateLimiter
 from nyxgpt.resource_monitor import ResourceMonitor, get_resource_monitor, init_resource_monitor
+from nyxgpt.token_counter import count_tokens as _count_usage_tokens
 
 log = logging.getLogger("nyxgpt.api")
 
@@ -1277,6 +1279,32 @@ def admin_access_update(
     return result
 
 
+@api.get("/analytics/usage")
+def analytics_usage(request: Request) -> dict[str, Any]:
+    """Return aggregated usage analytics for the admin dashboard.
+
+    Summarizes recorded chat requests: total requests/tokens, distinct
+    session count, and per-model and per-day breakdowns.
+    """
+    cfg = _req_cfg(request)
+    return usage_analytics_module.summary(cfg=cfg)
+
+
+@api.get("/analytics/export")
+def analytics_export(request: Request, format: str = "json") -> Response:
+    """Export recorded usage analytics as a downloadable JSON or CSV report."""
+    cfg = _req_cfg(request)
+    try:
+        content, content_type, filename = usage_analytics_module.export_report(format, cfg=cfg)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # --- Local blue/green deployment endpoints (SRE/admin dashboard) ---
 @api.get("/deploy/status")
 def deploy_status(request: Request) -> dict[str, Any]:
@@ -2169,6 +2197,7 @@ def sessions_export(name: str, format: str = "markdown", sessions_dir: str | Non
 @api.post("/chat", response_model=ChatResponse)
 def chat(request: Request, req: ChatRequest) -> ChatResponse:
     req_id = getattr(request.state, "request_id", None)
+    usage_start = time.monotonic()
 
     try:
         d = _chat_runtime_defaults(_req_cfg(request))
@@ -2284,6 +2313,18 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
         prom_metrics.CHAT_REQUESTS_TOTAL.labels(model=model_name, streaming="false").inc()
         if rag_used:
             prom_metrics.RAG_QUERIES_TOTAL.labels(source="chat").inc()
+
+        try:
+            usage_analytics_module.record(
+                session=session_name,
+                model=model_name,
+                prompt_tokens=_count_usage_tokens(req.prompt),
+                completion_tokens=_count_usage_tokens(reply_text),
+                duration_s=time.monotonic() - usage_start,
+                cfg=_req_cfg(request),
+            )
+        except Exception:
+            log.debug("Usage analytics recording failed", exc_info=True)
 
         # Convert RAG context to RagChunkInfo objects
         rag_chunks = []
@@ -2513,6 +2554,20 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
 
                         elapsed = time.time() - start_time
                         yield f"event: text\ndata: {json.dumps({'content': chunk, 'tokens': total_tokens, 'elapsed': elapsed})}\nid: {event_id}\n\n"
+
+                try:
+                    from nyxgpt.token_counter import count_tokens
+
+                    usage_analytics_module.record(
+                        session=req.session,
+                        model=chosen_model,
+                        prompt_tokens=count_tokens(req.prompt),
+                        completion_tokens=total_tokens,
+                        duration_s=time.time() - start_time,
+                        cfg=_req_cfg(request),
+                    )
+                except Exception:
+                    log.debug("Usage analytics recording failed", exc_info=True)
 
                 # Send done event with final stats (only for modern clients)
                 if capabilities.supports_sse and capabilities.supports_structured_events:
