@@ -553,6 +553,28 @@ service (like a local K8s cluster) is unavailable.
 }
 ```
 
+### `GET /api/v1/admin/health`
+
+Aggregate system health for the admin health dashboard (`/admin/health`):
+service uptime, dependency reachability checks (Ollama, and Cassandra when
+RAG is enabled), resource utilization, and threshold-based alert
+indicators (warning/critical on elevated memory, CPU, or error rate, and
+critical on any unreachable dependency).
+
+**Response:**
+
+```json
+{
+  "service": { "status": "ok", "uptime_s": 3725.4 },
+  "dependencies": [
+    { "name": "ollama", "ok": true, "detail": "Reachable at http://127.0.0.1:11434", "applicable": true },
+    { "name": "cassandra", "ok": true, "detail": "RAG disabled; Cassandra is not required", "applicable": false }
+  ],
+  "resource_metrics": { "memory": {}, "cpu": {}, "latency": {}, "queue": {}, "errors": {} },
+  "alerts": []
+}
+```
+
 ### `GET /api/v1/admin/activity`
 
 Return recent admin dashboard activity (config changes, deploy/canary

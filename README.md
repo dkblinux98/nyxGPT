@@ -37,6 +37,7 @@ Your data stays on your machine. No cloud dependency is required.
 - Optional **Kubernetes deployment** for local clusters (kind/minikube/k3s)
 - **Local blue/green deployment** with health-checked cutover and instant rollback, operable from the SRE/admin dashboard (`nyxgpt deploy` CLI or `/admin/deploy`)
 - **Local canary deployment** with gradual weighted rollout, metrics-based promotion, and automatic rollback, operable from the SRE/admin dashboard (`nyxgpt canary` CLI or `/admin/canary`)
+- **System health dashboard** — service uptime, dependency reachability checks (Ollama, Cassandra), resource utilization, and threshold-based alert indicators, surfaced in the SRE/admin dashboard (`/admin/health`)
 - **Prometheus metrics** (`/metrics`) — request counts, latency histograms, error rates, and chat/RAG business metrics, surfaced in the SRE/admin dashboard (`/admin`)
 - **Monitoring dashboards** (Grafana) — opt-in, local-only system overview, RAG performance, and API metrics dashboards backed by Prometheus, plus alerting rules (`docker compose --profile monitoring up`), linked from the SRE/admin dashboard (`/admin`)
 - **Log aggregation** (Loki + promtail) — opt-in, local-only centralized search over `~/.nyxGPT/logs` with a retention policy, surfaced via a Grafana Logs Explorer dashboard (`docker compose --profile logging up`), linked from the SRE/admin dashboard (`/admin`)
@@ -379,6 +380,10 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
   a configuration summary, access/API-key management (view masked key,
   enable/disable auth, rotate), and an activity log (audit trail of admin
   actions)
+- **System health dashboard** at `/admin/health` — service uptime, dependency
+  reachability checks (Ollama, and Cassandra when RAG is enabled), resource
+  utilization, and threshold-based alert indicators, linked from the admin
+  dashboard
 - **RAG Collections management** at `/admin/collections` for multi-model embedding support
 - **RAG Playground** at `/admin/playground` for interactive query testing and A/B comparison
 - **Configuration wizard** at `/admin` for step-by-step setup

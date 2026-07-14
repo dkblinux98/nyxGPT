@@ -38,6 +38,7 @@ from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
 from nyxgpt import deploy as deploy_module
 from nyxgpt import error_tracking as error_tracking_module
+from nyxgpt import health as health_module
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import tracing as tracing_module
 from nyxgpt.api_models import (
@@ -1169,6 +1170,34 @@ def admin_overview(request: Request) -> dict[str, Any]:
             "log_aggregation": get_log_aggregation_config(cfg)["enabled"],
         },
         "auth_enabled": _auth_cfg(cfg)["enabled"],
+    }
+
+
+@api.get("/admin/health")
+def admin_health(request: Request) -> dict[str, Any]:
+    """Aggregate system health for the admin health dashboard.
+
+    Combines service uptime, dependency reachability checks (Ollama, and
+    Cassandra when RAG is enabled), resource utilization, and
+    threshold-based alert indicators into a single response.
+    """
+    cfg = _req_cfg(request)
+    rag_enabled = cfg.getboolean("rag", "enabled", fallback=False)
+
+    monitor = get_resource_monitor()
+    resource_metrics_summary = monitor.get_metrics().to_dict() if monitor is not None else None
+
+    dependencies = [
+        health_module.check_ollama(get_ollama_base_url(cfg)),
+        health_module.check_cassandra(rag_enabled),
+    ]
+    alerts = health_module.compute_alerts(resource_metrics_summary, dependencies)
+
+    return {
+        "service": {"status": "ok", "uptime_s": round(health_module.uptime_seconds(), 1)},
+        "dependencies": [d.to_dict() for d in dependencies],
+        "resource_metrics": resource_metrics_summary,
+        "alerts": [a.to_dict() for a in alerts],
     }
 
 
