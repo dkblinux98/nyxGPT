@@ -36,6 +36,7 @@ Your data stays on your machine. No cloud dependency is required.
 - Homebrew‑managed background services
 - Optional **Kubernetes deployment** for local clusters (kind/minikube/k3s)
 - **Local blue/green deployment** with health-checked cutover and instant rollback, operable from the SRE/admin dashboard (`nyxgpt deploy` CLI or `/admin/deploy`)
+- **Local canary deployment** with gradual weighted rollout, metrics-based promotion, and automatic rollback, operable from the SRE/admin dashboard (`nyxgpt canary` CLI or `/admin/canary`)
 - Optional **Docker Compose** stack for one-command bring-up of every component
 - Robust unit and integration test suite
 
@@ -316,10 +317,13 @@ If the limit is exceeded, the API returns a `429 Too Many Requests` error:
 
 The API can also be deployed to a local Kubernetes cluster (kind, minikube,
 k3s) instead of running via `nyxgpt ops`. Manifests (blue/green Deployments,
-Service, ConfigMap, Secret, HorizontalPodAutoscalers) live in `k8s/`; see
+a stable/canary Deployment pair, Services, ConfigMap, Secret,
+HorizontalPodAutoscalers) live in `k8s/`; see
 [docs/kubernetes.md](docs/kubernetes.md) for the full walkthrough, including
-zero-downtime blue/green cutover via `nyxgpt deploy switch`/`rollback` or the
-SRE/admin dashboard at `/admin/deploy`.
+zero-downtime blue/green cutover via `nyxgpt deploy switch`/`rollback` (or
+`/admin/deploy`) and gradual canary rollout with metrics-based
+promotion/rollback via `nyxgpt canary start`/`evaluate`/`promote`/`rollback`
+(or `/admin/canary`).
 
 #### Docker Compose (full stack, optional)
 

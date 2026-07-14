@@ -33,6 +33,7 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 
 import nyxgpt.config
 from nyxgpt import api_models, models, sessions, tools_fs
+from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
 from nyxgpt import deploy as deploy_module
 from nyxgpt.api_models import (
@@ -77,6 +78,12 @@ from nyxgpt.batch_processor import BatchProcessor, RequestPriority
 from nyxgpt.chat import chat as run_chat
 from nyxgpt.chat import chat_stream
 from nyxgpt.config import (
+    get_canary_error_rate_threshold,
+    get_canary_latency_p95_threshold_ms,
+    get_canary_min_requests,
+    get_canary_namespace,
+    get_canary_step_percent,
+    get_canary_total_replicas,
     get_default_model,
     get_deploy_namespace,
     get_ollama_base_url,
@@ -514,7 +521,7 @@ async def request_latency_middleware(request: Request, call_next):
     # Record in resource monitor
     monitor = get_resource_monitor()
     if monitor is not None:
-        monitor.record_request_latency(latency_ms)
+        monitor.record_request_latency(latency_ms, is_error=response.status_code >= 500)
 
     return response
 
@@ -924,6 +931,68 @@ def deploy_switch(request: Request, payload: dict[str, Any] = Body(default={})) 
 def deploy_rollback(request: Request) -> dict[str, Any]:
     cfg = _req_cfg(request)
     result = deploy_module.rollback(get_deploy_namespace(cfg))
+    if not result.ok:
+        raise HTTPException(status_code=409, detail=result.message)
+    return {"ok": result.ok, "message": result.message}
+
+
+# --- Local canary deployment endpoints (SRE/admin dashboard) ---
+@api.get("/canary/status")
+def canary_status(request: Request) -> dict[str, Any]:
+    cfg = _req_cfg(request)
+    return canary_module.status(get_canary_namespace(cfg))
+
+
+@api.post("/canary/start")
+def canary_start(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    cfg = _req_cfg(request)
+    weight_percent = int(payload.get("weight_percent", 10))
+    result = canary_module.start(
+        namespace=get_canary_namespace(cfg),
+        weight_percent=weight_percent,
+        total_replicas=get_canary_total_replicas(cfg),
+    )
+    if not result.ok:
+        raise HTTPException(status_code=409, detail=result.message)
+    return {"ok": result.ok, "message": result.message}
+
+
+@api.post("/canary/evaluate")
+def canary_evaluate(request: Request) -> dict[str, Any]:
+    cfg = _req_cfg(request)
+    result = canary_module.evaluate(
+        get_canary_namespace(cfg),
+        error_rate_threshold_percent=get_canary_error_rate_threshold(cfg),
+        latency_p95_threshold_ms=get_canary_latency_p95_threshold_ms(cfg),
+        min_requests=get_canary_min_requests(cfg),
+    )
+    if not result.ok:
+        raise HTTPException(status_code=409, detail=result.message)
+    return {"ok": result.ok, "message": result.message}
+
+
+@api.post("/canary/promote")
+def canary_promote(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    cfg = _req_cfg(request)
+    step_percent = payload.get("step_percent")
+    result = canary_module.promote(
+        namespace=get_canary_namespace(cfg),
+        step_percent=(
+            int(step_percent) if step_percent is not None else get_canary_step_percent(cfg)
+        ),
+        total_replicas=get_canary_total_replicas(cfg),
+    )
+    if not result.ok:
+        raise HTTPException(status_code=409, detail=result.message)
+    return {"ok": result.ok, "message": result.message}
+
+
+@api.post("/canary/rollback")
+def canary_rollback(request: Request) -> dict[str, Any]:
+    cfg = _req_cfg(request)
+    result = canary_module.rollback(
+        namespace=get_canary_namespace(cfg), total_replicas=get_canary_total_replicas(cfg)
+    )
     if not result.ok:
         raise HTTPException(status_code=409, detail=result.message)
     return {"ok": result.ok, "message": result.message}

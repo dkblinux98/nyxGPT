@@ -18,7 +18,9 @@ component.
 `nyxgpt-api` is deployed as a **blue/green pair** (`nyxgpt-api-blue` and
 `nyxgpt-api-green`), fronted by a single Service. See
 [Blue/Green Deployment](#bluegreen-deployment) below for how to cut traffic
-over between them with zero downtime and roll back instantly.
+over between them with zero downtime and roll back instantly. A second,
+independent pair -- `nyxgpt-api-stable`/`nyxgpt-api-canary` -- supports
+gradual weighted rollout; see [Canary Deployment](#canary-deployment).
 
 ## Prerequisites
 
@@ -145,6 +147,87 @@ The same status/switch/rollback actions are available from the web UI at
 **Settings → Deployment** (`/admin/deploy`), backed by
 `GET/POST /api/v1/deploy/status`, `/api/v1/deploy/switch`, and
 `/api/v1/deploy/rollback` on the FastAPI backend.
+
+## Canary Deployment
+
+`k8s/deployment-stable.yaml` and `k8s/deployment-canary.yaml` are two
+independent Deployments for `nyxgpt-api`, both labeled
+`app: nyxgpt-api-canary-pool` and distinguished by `track: stable`/
+`track: canary`. `k8s/service-canary.yaml`'s selector only matches
+`app: nyxgpt-api-canary-pool`, so it targets **both** Deployments' Pods at
+once -- kube-proxy round-robins Service traffic evenly across every matching
+Pod endpoint, so `canary_replicas / total_replicas` approximates the
+canary's share of requests. There is no in-cluster proxy or ingress to
+configure, just `kubectl scale` (wrapped by `nyxgpt canary`). Unlike the
+blue/green pair, neither Deployment has an HPA attached -- autoscaling would
+fight the canary tool's replica-count-based traffic split.
+
+### Rolling out a new version
+
+1. Build and load the new image (see step 1 above).
+2. Update the canary Deployment to the new image (it starts at 0 replicas,
+   so this has no effect on traffic yet):
+   ```bash
+   kubectl -n nyxgpt set image deployment/nyxgpt-api-canary nyxgpt-api=nyxgpt-api:local
+   ```
+3. Start the rollout at a small initial traffic weight:
+   ```bash
+   nyxgpt canary start --weight 10
+   ```
+4. Watch live error-rate/p95-latency metrics (from `/api/v1/metrics`) and
+   check them against the configured thresholds -- this automatically rolls
+   the canary back if either is breached:
+   ```bash
+   nyxgpt canary status
+   nyxgpt canary evaluate
+   ```
+5. If `evaluate` reports the canary is safe, increase its traffic share:
+   ```bash
+   nyxgpt canary promote          # adds [canary] step_percent (default 25)
+   ```
+   Repeat steps 4-5 until `promote` reports the canary fully promoted to
+   100%. At that point, deploy the new image to `nyxgpt-api-stable` and
+   scale `nyxgpt-api-canary` back to 0 before starting the next rollout.
+6. If something is wrong at any point, cut all traffic back to stable
+   immediately:
+   ```bash
+   nyxgpt canary rollback
+   ```
+   `rollback` scales the canary Deployment to 0 first (removing it from the
+   Service's endpoints) before restoring stable, and is not blocked by a
+   flaky stable-scale-up -- it's the emergency escape hatch.
+
+### CLI reference
+
+```bash
+nyxgpt canary status                 # rollout progress, stable/canary health, live metrics
+nyxgpt canary start [--weight N]     # start a rollout at N% canary traffic (default: 10)
+nyxgpt canary evaluate               # check metrics vs thresholds; auto-rollback on regression
+nyxgpt canary promote [--step N]     # add N percentage points to canary's traffic share
+nyxgpt canary rollback               # cut all traffic back to nyxgpt-api-stable
+```
+
+All five commands accept `--namespace` to override the `[canary] namespace`
+config value (see `example.config.ini`); it defaults to `[deploy] namespace`,
+then `nyxgpt`. `total_replicas`, `step_percent`,
+`error_rate_threshold_percent`, `latency_p95_threshold_ms`, and
+`min_requests_for_evaluation` are also configured in `[canary]`.
+
+### SRE/admin dashboard
+
+The same status/start/evaluate/promote/rollback actions are available from
+the web UI at **Settings → Canary Rollout** (`/admin/canary`), backed by
+`GET/POST /api/v1/canary/status`, `/start`, `/evaluate`, `/promote`, and
+`/rollback` on the FastAPI backend.
+
+### Metrics source
+
+`evaluate` reads the same process-wide `ResourceMonitor` that backs
+`/api/v1/metrics` (error rate over the last 1000 requests, HTTP 5xx; p95
+latency) rather than a dedicated Prometheus scrape, since per-pod Prometheus
+metrics haven't landed yet. This means `evaluate`'s error rate/latency
+reflect whichever `nyxgpt-api` process the dashboard/CLI talks to, not a
+canary-Pod-specific view.
 
 ## Scaling behavior
 

@@ -525,3 +525,7 @@ class ResourceMetricsResponse(BaseModel):
         ...,
         description="Queue metrics (depth, total_requests)",
     )
+    errors: dict[str, float] = Field(
+        default_factory=lambda: {"count": 0, "rate_percent": 0.0},
+        description="Error rate metrics (count, rate_percent) over HTTP 5xx responses",
+    )

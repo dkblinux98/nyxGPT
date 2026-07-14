@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nyxgpt-api-canary
+  namespace: nyxgpt
+spec:
+  # Selects Pods from BOTH nyxgpt-api-stable and nyxgpt-api-canary (they
+  # share the app: nyxgpt-api-canary-pool label). kube-proxy round-robins
+  # across every matching Pod endpoint, so the canary's replica count
+  # relative to the total is its approximate traffic share -- there is no
+  # in-cluster proxy/ingress to configure, just `kubectl scale`
+  # (see `nyxgpt canary start/promote/rollback`).
+  selector:
+    app: nyxgpt-api-canary-pool
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+  type: ClusterIP

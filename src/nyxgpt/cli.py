@@ -6,12 +6,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-# Deploy (blue/green) and ops implementations live in separate modules for testability.
+# Deploy (blue/green), canary, and ops implementations live in separate modules for testability.
+from nyxgpt import canary as canary_mod
 from nyxgpt import deploy as deploy_mod
 from nyxgpt import models, sessions, tools_fs
 from nyxgpt import ops as ops_mod
 from nyxgpt.chat import chat, chat_stream
 from nyxgpt.config import (
+    get_canary_error_rate_threshold,
+    get_canary_latency_p95_threshold_ms,
+    get_canary_min_requests,
+    get_canary_namespace,
+    get_canary_step_percent,
+    get_canary_total_replicas,
     get_default_model,
     get_deploy_namespace,
     get_ollama_base_url,
@@ -1218,6 +1225,88 @@ def cmd_deploy_rollback(cfg_path: Path | None, namespace: str | None) -> int:
     return 0 if result.ok else 2
 
 
+def _canary_namespace(cfg_path: Path | None, override: str | None) -> str:
+    if override:
+        return override
+    return get_canary_namespace(load_config(cfg_path))
+
+
+def cmd_canary_status(cfg_path: Path | None, namespace: str | None) -> int:
+    ns = _canary_namespace(cfg_path, namespace)
+    data = canary_mod.status(ns)
+    state = "in progress" if data["active"] else "idle"
+    print(f"Canary rollout: {state} at {data['weight_percent']}% (namespace={data['namespace']})")
+    print(
+        f"  stable: {'healthy' if data['stable']['healthy'] else 'unhealthy'} - {data['stable']['message']}"
+    )
+    print(
+        f"  canary: {'healthy' if data['canary']['healthy'] else 'unhealthy'} - {data['canary']['message']}"
+    )
+    metrics = data["metrics"]
+    print(
+        f"  metrics: {metrics['total_requests']} requests, "
+        f"error_rate={metrics['error_rate_percent']:.2f}%, p95={metrics['p95_latency_ms']:.2f}ms"
+    )
+    if data["history"]:
+        print("\nRecent actions:")
+        for entry in data["history"]:
+            print(f"  {entry}")
+    return 0
+
+
+def cmd_canary_start(cfg_path: Path | None, namespace: str | None, weight_percent: int) -> int:
+    ns = _canary_namespace(cfg_path, namespace)
+    cfg = load_config(cfg_path)
+    result = canary_mod.start(
+        namespace=ns, weight_percent=weight_percent, total_replicas=get_canary_total_replicas(cfg)
+    )
+    print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
+    if result.details:
+        print(f"  {result.details}")
+    return 0 if result.ok else 2
+
+
+def cmd_canary_evaluate(cfg_path: Path | None, namespace: str | None) -> int:
+    ns = _canary_namespace(cfg_path, namespace)
+    cfg = load_config(cfg_path)
+    result = canary_mod.evaluate(
+        ns,
+        error_rate_threshold_percent=get_canary_error_rate_threshold(cfg),
+        latency_p95_threshold_ms=get_canary_latency_p95_threshold_ms(cfg),
+        min_requests=get_canary_min_requests(cfg),
+    )
+    print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
+    if result.details:
+        print(f"  {result.details}")
+    return 0 if result.ok else 2
+
+
+def cmd_canary_promote(
+    cfg_path: Path | None, namespace: str | None, step_percent: int | None
+) -> int:
+    ns = _canary_namespace(cfg_path, namespace)
+    cfg = load_config(cfg_path)
+    result = canary_mod.promote(
+        namespace=ns,
+        step_percent=step_percent if step_percent is not None else get_canary_step_percent(cfg),
+        total_replicas=get_canary_total_replicas(cfg),
+    )
+    print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
+    if result.details:
+        print(f"  {result.details}")
+    return 0 if result.ok else 2
+
+
+def cmd_canary_rollback(cfg_path: Path | None, namespace: str | None) -> int:
+    ns = _canary_namespace(cfg_path, namespace)
+    cfg = load_config(cfg_path)
+    result = canary_mod.rollback(namespace=ns, total_replicas=get_canary_total_replicas(cfg))
+    print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
+    if result.details:
+        print(f"  {result.details}")
+    return 0 if result.ok else 2
+
+
 def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="nyxgpt")
     parser.add_argument(
@@ -1552,6 +1641,52 @@ def cli(argv: list[str] | None = None) -> int:
         "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
     )
 
+    # Add canary command (local weighted-traffic canary rollout on a local k8s cluster)
+    canary_p = sub.add_parser("canary", help="Local canary deployment (kind/minikube/k3s cluster)")
+    canary_sub = canary_p.add_subparsers(dest="canary_cmd", required=True)
+
+    canary_status_p = canary_sub.add_parser(
+        "status", help="Show rollout progress, stable/canary health, and live metrics"
+    )
+    canary_status_p.add_argument(
+        "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
+    )
+
+    canary_start_p = canary_sub.add_parser(
+        "start", help="Start a canary rollout at an initial traffic weight"
+    )
+    canary_start_p.add_argument(
+        "--weight", type=int, default=10, help="Initial canary traffic percentage (default: 10)"
+    )
+    canary_start_p.add_argument(
+        "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
+    )
+
+    canary_evaluate_p = canary_sub.add_parser(
+        "evaluate",
+        help="Check live error-rate/latency metrics against thresholds; auto-rollback on regression",
+    )
+    canary_evaluate_p.add_argument(
+        "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
+    )
+
+    canary_promote_p = canary_sub.add_parser(
+        "promote", help="Increase the canary's traffic share by a step (default: from config)"
+    )
+    canary_promote_p.add_argument(
+        "--step", type=int, help="Percentage points to add to the canary's traffic share"
+    )
+    canary_promote_p.add_argument(
+        "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
+    )
+
+    canary_rollback_p = canary_sub.add_parser(
+        "rollback", help="Cut all traffic back to nyxgpt-api-stable"
+    )
+    canary_rollback_p.add_argument(
+        "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
+    )
+
     args = parser.parse_args(argv)
     cmd = args.command or "info"
 
@@ -1688,6 +1823,18 @@ def cli(argv: list[str] | None = None) -> int:
             return cmd_deploy_switch(args.config, args.namespace, args.to, args.force)
         if args.deploy_cmd == "rollback":
             return cmd_deploy_rollback(args.config, args.namespace)
+
+    if cmd == "canary":
+        if args.canary_cmd == "status":
+            return cmd_canary_status(args.config, args.namespace)
+        if args.canary_cmd == "start":
+            return cmd_canary_start(args.config, args.namespace, args.weight)
+        if args.canary_cmd == "evaluate":
+            return cmd_canary_evaluate(args.config, args.namespace)
+        if args.canary_cmd == "promote":
+            return cmd_canary_promote(args.config, args.namespace, args.step)
+        if args.canary_cmd == "rollback":
+            return cmd_canary_rollback(args.config, args.namespace)
 
     if cmd == "mcp":
         return cmd_mcp()

@@ -12,7 +12,7 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 49 available endpoints:
+Quick reference of all 55 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -26,6 +26,11 @@ Quick reference of all 49 available endpoints:
 | `/api/v1/deploy/status` | GET | Blue/green deployment status (active color, health, history) |
 | `/api/v1/deploy/switch` | POST | Cut traffic over to a color (health-checked) |
 | `/api/v1/deploy/rollback` | POST | Switch traffic back to the previously active color |
+| `/api/v1/canary/status` | GET | Canary rollout status (weight, stable/canary health, live metrics, history) |
+| `/api/v1/canary/start` | POST | Start a canary rollout at an initial traffic weight |
+| `/api/v1/canary/evaluate` | POST | Check live error-rate/latency metrics against thresholds; auto-rollback on regression |
+| `/api/v1/canary/promote` | POST | Increase the canary's traffic share by a step |
+| `/api/v1/canary/rollback` | POST | Cut all traffic back to nyxgpt-api-stable |
 | `/api/v1/models` | GET | List Ollama models |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
@@ -530,6 +535,102 @@ hatch. Returns `409` if there is no switch history to roll back to.
 
 ```json
 { "ok": true, "message": "Switched traffic from green to blue" }
+```
+
+---
+
+## Canary Deployment
+
+Local canary deployment for `nyxgpt-api` on a local Kubernetes cluster
+(kind/minikube/k3s) — see [kubernetes.md](kubernetes.md#canary-deployment)
+for the full workflow and the `nyxgpt canary` CLI. These endpoints back the
+SRE/admin dashboard at `/admin/canary`. Traffic is split by the
+`nyxgpt-api-stable`/`nyxgpt-api-canary` Deployments' replica-count ratio
+behind a shared Service (kube-proxy is the traffic layer — no in-cluster
+proxy or cloud LB involved).
+
+### `GET /api/v1/canary/status`
+
+Return rollout progress, stable/canary health, live error-rate/latency
+metrics, and recent action history.
+
+**Response:**
+
+```json
+{
+  "namespace": "nyxgpt",
+  "active": true,
+  "weight_percent": 25,
+  "stable": { "healthy": true, "message": "nyxgpt-api-stable healthy (3/3 ready)" },
+  "canary": { "healthy": true, "message": "nyxgpt-api-canary healthy (1/1 ready)" },
+  "metrics": { "total_requests": 120, "error_rate_percent": 0.83, "p95_latency_ms": 340.5 },
+  "history": [{ "action": "start", "weight_percent": 10, "ts": 1730000000.0 }]
+}
+```
+
+### `POST /api/v1/canary/start`
+
+Start a canary rollout at an initial traffic weight. Refuses (`409`) if a
+rollout is already in progress.
+
+**Request:**
+
+```json
+{ "weight_percent": 10 }
+```
+
+`weight_percent` is optional (default `10`), clamped to `1`-`99`.
+
+**Response:**
+
+```json
+{ "ok": true, "message": "Started canary rollout at 10% (1/4 replicas)" }
+```
+
+### `POST /api/v1/canary/evaluate`
+
+Compare live error-rate/p95-latency metrics (from `/api/v1/metrics`) against
+the configured `[canary]` thresholds. Automatically rolls back if either is
+breached, or reports "insufficient data" (still `200`) if too few requests
+have been observed. Returns `409` if there is no rollout in progress or a
+regression triggered an automatic rollback.
+
+**Response:**
+
+```json
+{ "ok": true, "message": "Metrics within thresholds (error_rate=0.83%, p95=340.50ms); safe to promote" }
+```
+
+### `POST /api/v1/canary/promote`
+
+Increase the canary's traffic share by a step, finalizing at 100%. Returns
+`409` if there is no rollout in progress.
+
+**Request:**
+
+```json
+{ "step_percent": 25 }
+```
+
+`step_percent` is optional (default: `[canary] step_percent`, `25`).
+
+**Response:**
+
+```json
+{ "ok": true, "message": "Promoted canary to 35% (1/4 replicas)" }
+```
+
+### `POST /api/v1/canary/rollback`
+
+Cut all traffic back to `nyxgpt-api-stable`. Scales the canary Deployment to
+0 first (removing it from the Service's endpoints) before restoring stable's
+replica count — the emergency escape hatch, not blocked by a flaky
+stable-scale-up. Returns `409` if there is no rollout in progress.
+
+**Response:**
+
+```json
+{ "ok": true, "message": "Rolled back canary rollout from 25% to 0%" }
 ```
 
 ---
@@ -2520,6 +2621,10 @@ curl http://127.0.0.1:8000/api/v1/metrics
   "queue": {
     "depth": 3,
     "total_requests": 1234
+  },
+  "errors": {
+    "count": 2,
+    "rate_percent": 0.16
   }
 }
 ```
@@ -2545,6 +2650,12 @@ curl http://127.0.0.1:8000/api/v1/metrics
 **Queue Metrics:**
 - `depth` - Current number of requests in batch processing queue (0 if batching disabled)
 - `total_requests` - Total number of requests tracked since server startup
+
+**Error Metrics:**
+- `count` - Number of HTTP 5xx responses in the sliding window (last 1000 requests)
+- `rate_percent` - Percentage of sampled requests that were HTTP 5xx errors; used by
+  `nyxgpt canary evaluate` (see [Canary Deployment](#canary-deployment)) for
+  metrics-based promotion/rollback decisions
 
 **Use Cases:**
 - Performance monitoring and alerting
