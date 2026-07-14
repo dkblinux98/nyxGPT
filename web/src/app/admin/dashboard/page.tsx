@@ -17,6 +17,10 @@ type OverviewData = {
   } | null;
   deploy: { active?: string; inactive?: string; error?: string } & Record<string, unknown>;
   canary: { active?: boolean; error?: string } & Record<string, unknown>;
+  self_heal: { enabled?: boolean; unhealthy_count?: number; error?: string } & Record<
+    string,
+    unknown
+  >;
   observability: {
     monitoring: boolean;
     tracing: boolean;
@@ -216,6 +220,14 @@ export default function AdminDashboardPage() {
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                 <StatusBadge ok={!overview.deploy.error} label={`Deploy: ${overview.deploy.active ?? 'unknown'}`} />
                 <StatusBadge ok={!!overview.canary.active} label={overview.canary.active ? 'Canary: active' : 'Canary: idle'} />
+                <StatusBadge
+                  ok={!!overview.self_heal.enabled && !overview.self_heal.unhealthy_count}
+                  label={
+                    overview.self_heal.enabled
+                      ? `Self-heal: on${overview.self_heal.unhealthy_count ? ` (${overview.self_heal.unhealthy_count} unhealthy)` : ''}`
+                      : 'Self-heal: off'
+                  }
+                />
                 <StatusBadge ok={overview.observability.monitoring} label="Monitoring" />
                 <StatusBadge ok={overview.observability.tracing} label="Tracing" />
                 <StatusBadge ok={overview.observability.error_tracking} label="Error tracking" />
@@ -237,6 +249,7 @@ export default function AdminDashboardPage() {
                 <a href="/admin/health" style={{ color: '#0066cc' }}>System Health →</a>
                 <a href="/admin/deploy" style={{ color: '#0066cc' }}>Deployment →</a>
                 <a href="/admin/canary" style={{ color: '#0066cc' }}>Canary →</a>
+                <a href="/admin/self-heal" style={{ color: '#0066cc' }}>Self-heal →</a>
                 <a href="/admin/analytics" style={{ color: '#0066cc' }}>Usage Analytics →</a>
                 <a href="/admin/workflow-analytics" style={{ color: '#0066cc' }}>CI Analytics →</a>
                 <a href="/settings" style={{ color: '#0066cc' }}>Full metrics →</a>
