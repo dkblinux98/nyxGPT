@@ -374,6 +374,11 @@ The web UI connects to FastAPI and supports streaming chat, session browsing, an
   downloaded. Both loading states disappear as soon as the chunks arrive, typically within
   milliseconds on a local network.
 - RAG document upload and toggle
+- **Admin dashboard** at `/admin/dashboard` — a unified hub with a system status
+  overview (deploy/canary state, resource metrics, opt-in observability stacks),
+  a configuration summary, access/API-key management (view masked key,
+  enable/disable auth, rotate), and an activity log (audit trail of admin
+  actions)
 - **RAG Collections management** at `/admin/collections` for multi-model embedding support
 - **RAG Playground** at `/admin/playground` for interactive query testing and A/B comparison
 - **Configuration wizard** at `/admin` for step-by-step setup

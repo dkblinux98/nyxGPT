@@ -168,6 +168,12 @@ header = X-API-Key
 
 **Note:** Authentication configuration is **hot-reloadable** and takes effect immediately without restart.
 
+Instead of editing `config.ini` by hand, you can view the enabled state and a
+masked key, toggle authentication, and rotate the key from the admin
+dashboard's Access Management panel (`/admin/dashboard`), backed by
+`GET`/`POST /api/v1/admin/access` — see
+[`docs/api.md`](api.md#admin-dashboard).
+
 For detailed usage, examples, and security recommendations, see [`docs/api.md`](api.md#authentication).
 
 ---

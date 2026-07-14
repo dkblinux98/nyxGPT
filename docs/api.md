@@ -515,6 +515,107 @@ Partial configuration update (same as POST, provided for semantic clarity).
 
 ---
 
+## Admin Dashboard
+
+These endpoints back the unified admin dashboard at `/admin/dashboard`: a
+system status overview, an activity log (audit trail of admin actions),
+and access/API-key management. nyxGPT is a single-operator local system
+(see [`docs/configuration.md`](configuration.md#auth-section)), so "access
+management" here means the shared API key rather than per-user accounts.
+
+### `GET /api/v1/admin/overview`
+
+Aggregate system status: app info, resource metrics, deploy/canary
+status, opt-in observability stack flags, and whether API-key auth is
+enabled. Individual sub-sections (e.g. `deploy`, `canary`) degrade to
+`{"error": "..."}` instead of failing the whole request when a backing
+service (like a local K8s cluster) is unavailable.
+
+**Response:**
+
+```json
+{
+  "info": {
+    "ollama_base_url": "http://127.0.0.1:11434",
+    "default_model": "llama3.1:8b",
+    "rag_enabled": false
+  },
+  "resource_metrics": { "memory": {}, "cpu": {}, "latency": {}, "queue": {} },
+  "deploy": { "namespace": "nyxgpt", "active": "blue", "inactive": "green" },
+  "canary": { "namespace": "nyxgpt", "active": false },
+  "observability": {
+    "monitoring": false,
+    "tracing": false,
+    "error_tracking": false,
+    "log_aggregation": false
+  },
+  "auth_enabled": false
+}
+```
+
+### `GET /api/v1/admin/activity`
+
+Return recent admin dashboard activity (config changes, deploy/canary
+actions, model pulls/deletes, access changes). Accepts an optional
+`limit` query parameter (default 50, max 500).
+
+**Response:**
+
+```json
+{
+  "events": [
+    { "ts": 1768300800.0, "action": "config.updated", "detail": "log_level=DEBUG" },
+    { "ts": 1768300900.0, "action": "deploy.switch", "detail": "Switched traffic from blue to green" }
+  ]
+}
+```
+
+### `GET /api/v1/admin/access`
+
+Return the current API-key access configuration. The key itself is never
+returned in full — only a masked value (e.g. `sk-a****-b12c`).
+
+**Response:**
+
+```json
+{
+  "enabled": false,
+  "header": "X-API-Key",
+  "api_key_set": true,
+  "api_key_masked": "sk-a****-b12c"
+}
+```
+
+### `POST /api/v1/admin/access`
+
+Update access configuration: enable/disable API-key auth, change the
+header name, or rotate the key. All fields are optional; at least one
+must be provided.
+
+**Request:**
+
+```json
+{ "enabled": true, "header": "X-API-Key", "rotate": true }
+```
+
+On rotation, the freshly generated key is returned once in the response
+body as `api_key` so the operator can copy it — it is never returned
+again by `GET /admin/access`, which only shows the masked value.
+
+**Response:**
+
+```json
+{
+  "enabled": true,
+  "header": "X-API-Key",
+  "api_key_set": true,
+  "api_key_masked": "8f3a****91c2",
+  "api_key": "8f3a1b2c...e5f691c2"
+}
+```
+
+---
+
 ## Deployment (Blue/Green)
 
 Local blue/green deployment for `nyxgpt-api` on a local Kubernetes cluster

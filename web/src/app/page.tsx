@@ -1234,6 +1234,26 @@ function Home() {
               }}
               onClick={(e) => e.stopPropagation()}
             >
+              {/* Admin Dashboard */}
+              <a
+                href="/admin/dashboard"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '8px 16px',
+                  textDecoration: 'none',
+                  color: 'var(--foreground)',
+                  fontSize: 14,
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={() => setShowSettingsMenu(false)}
+              >
+                <span>🛠️</span>
+                <span>Admin Dashboard</span>
+              </a>
+
               {/* Configuration Wizard */}
               <a
                 href="/admin"
