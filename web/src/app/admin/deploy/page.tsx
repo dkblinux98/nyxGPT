@@ -155,6 +155,24 @@ export default function DeployPage() {
         </button>
       </div>
 
+      <div
+        style={{
+          marginBottom: '1.5rem',
+          padding: '0.75rem 1rem',
+          borderRadius: '0.375rem',
+          background: 'var(--info-bg)',
+          border: '1px solid var(--border-color)',
+          fontSize: '0.875rem',
+        }}
+      >
+        Looking for the Compose-equivalent core stack (Ollama, Cassandra, API, web UI) provisioned
+        via <code>terraform apply</code> / <code>terraform destroy</code> instead of{' '}
+        <code>docker compose up</code>/<code>down</code>? See <code>docs/terraform.md</code> —
+        local-only infrastructure as code, no cloud provider modules or cloud networking. The
+        blue/green colors managed on this page are a separate, Kubernetes-specific deployment
+        model (see <code>docs/kubernetes.md</code>).
+      </div>
+
       {error && (
         <div style={{ marginBottom: '1rem' }}>
           <ErrorMessage message={error} onRetry={loadStatus} />
