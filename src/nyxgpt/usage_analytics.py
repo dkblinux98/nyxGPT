@@ -23,15 +23,57 @@ from typing import Any
 from nyxgpt.logging import get_log_dir
 
 _MAX_EVENTS = 2000
+# Once the on-disk log exceeds this size, it is truncated down to the last
+# _MAX_EVENTS lines so it never grows without bound over a long-running deployment.
+_MAX_LOG_BYTES = 2_000_000
+_TAIL_CHUNK_SIZE = 65536
 
 _lock = threading.Lock()
 _events: deque[dict[str, Any]] = deque(maxlen=_MAX_EVENTS)
 
 _EVENT_FIELDS = ["ts", "session", "model", "prompt_tokens", "completion_tokens", "duration_s"]
 
+# Leading characters that Excel/Sheets interpret as the start of a formula.
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
 
 def _usage_log_path(cfg: ConfigParser | None = None) -> Path:
     return get_log_dir(cfg) / "usage_analytics.jsonl"
+
+
+def _sanitize_csv_cell(value: Any) -> Any:
+    """Neutralize CSV/formula injection (CWE-1236) in attacker-controlled string fields."""
+    if isinstance(value, str) and value.startswith(_CSV_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
+def _tail_lines(path: Path, limit: int) -> list[str]:
+    """Return up to the last `limit` lines of `path` without loading the whole file into memory."""
+    chunks: list[bytes] = []
+    newline_count = 0
+    with path.open("rb") as f:
+        f.seek(0, 2)
+        remaining = f.tell()
+        while remaining > 0 and newline_count <= limit:
+            read_size = min(_TAIL_CHUNK_SIZE, remaining)
+            remaining -= read_size
+            f.seek(remaining)
+            data = f.read(read_size)
+            newline_count += data.count(b"\n")
+            chunks.append(data)
+    text = b"".join(reversed(chunks)).decode("utf-8", errors="replace")
+    return text.splitlines()[-limit:]
+
+
+def _truncate_log_if_large(path: Path) -> None:
+    """Rewrite the usage log to keep only the most recent _MAX_EVENTS lines, if it has grown large."""
+    if path.stat().st_size <= _MAX_LOG_BYTES:
+        return
+    lines = _tail_lines(path, _MAX_EVENTS)
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def record(
@@ -58,6 +100,7 @@ def record(
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(event) + "\n")
+            _truncate_log_if_large(path)
         except OSError:
             # Usage logging is best-effort; never fail the caller's request over it.
             pass
@@ -78,7 +121,7 @@ def _load_from_disk(limit: int, cfg: ConfigParser | None) -> list[dict[str, Any]
     if not path.exists():
         return []
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()[-limit:]
+        lines = _tail_lines(path, limit)
     except OSError:
         return []
     events: list[dict[str, Any]] = []
@@ -149,7 +192,9 @@ def export_report(fmt: str, cfg: ConfigParser | None = None) -> tuple[str, str, 
         writer = csv.DictWriter(buf, fieldnames=_EVENT_FIELDS)
         writer.writeheader()
         for e in events:
-            writer.writerow({field: e.get(field, "") for field in _EVENT_FIELDS})
+            writer.writerow(
+                {field: _sanitize_csv_cell(e.get(field, "")) for field in _EVENT_FIELDS}
+            )
         return buf.getvalue(), "text/csv", "usage_report.csv"
 
     if normalized_fmt == "json":

@@ -2556,12 +2556,10 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                         yield f"event: text\ndata: {json.dumps({'content': chunk, 'tokens': total_tokens, 'elapsed': elapsed})}\nid: {event_id}\n\n"
 
                 try:
-                    from nyxgpt.token_counter import count_tokens
-
                     usage_analytics_module.record(
                         session=req.session,
                         model=chosen_model,
-                        prompt_tokens=count_tokens(req.prompt),
+                        prompt_tokens=_count_usage_tokens(req.prompt),
                         completion_tokens=total_tokens,
                         duration_s=time.time() - start_time,
                         cfg=_req_cfg(request),

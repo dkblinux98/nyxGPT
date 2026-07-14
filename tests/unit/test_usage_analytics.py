@@ -5,6 +5,8 @@ Related: #2700
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from configparser import ConfigParser
 
@@ -171,3 +173,69 @@ def test_export_report_csv_includes_header_and_rows(cfg):
 def test_export_report_rejects_unsupported_format(cfg):
     with pytest.raises(ValueError):
         usage_analytics.export_report("xml", cfg=cfg)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "=cmd|' /C calc'!A1",
+        "+1+1",
+        "-1+1",
+        "@SUM(1,1)",
+        "\t=1+1",
+    ],
+)
+def test_export_report_csv_sanitizes_formula_injection(cfg, raw):
+    usage_analytics.record(
+        session=raw, model=raw, prompt_tokens=1, completion_tokens=2, duration_s=0.1, cfg=cfg
+    )
+
+    content, _, _ = usage_analytics.export_report("csv", cfg=cfg)
+
+    reader = csv.DictReader(io.StringIO(content))
+    row = next(reader)
+    assert row["session"] == "'" + raw
+    assert row["model"] == "'" + raw
+
+
+def test_export_report_csv_does_not_sanitize_benign_values(cfg):
+    usage_analytics.record(
+        session="default", model="m1", prompt_tokens=1, completion_tokens=2, duration_s=0.1, cfg=cfg
+    )
+
+    content, _, _ = usage_analytics.export_report("csv", cfg=cfg)
+
+    reader = csv.DictReader(io.StringIO(content))
+    row = next(reader)
+    assert row["session"] == "default"
+    assert row["model"] == "m1"
+
+
+def test_record_truncates_log_file_to_bound_growth(cfg, monkeypatch):
+    monkeypatch.setattr(usage_analytics, "_MAX_EVENTS", 5)
+    monkeypatch.setattr(usage_analytics, "_MAX_LOG_BYTES", 50)
+
+    for i in range(20):
+        usage_analytics.record(
+            session=f"s{i}",
+            model="m1",
+            prompt_tokens=1,
+            completion_tokens=1,
+            duration_s=0.0,
+            cfg=cfg,
+        )
+
+    log_file = usage_analytics._usage_log_path(cfg)
+    lines = log_file.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 5  # bounded to _MAX_EVENTS, not unbounded growth
+    assert json.loads(lines[-1])["session"] == "s19"
+    assert json.loads(lines[0])["session"] == "s15"
+
+
+def test_tail_lines_reads_last_n_lines_without_full_file(tmp_path):
+    path = tmp_path / "log.jsonl"
+    path.write_text("\n".join(f"line{i}" for i in range(1000)) + "\n", encoding="utf-8")
+
+    lines = usage_analytics._tail_lines(path, 5)
+
+    assert lines == [f"line{i}" for i in range(995, 1000)]
