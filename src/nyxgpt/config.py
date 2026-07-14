@@ -1027,6 +1027,46 @@ def get_log_aggregation_config(cfg: ConfigParser) -> dict:
     }
 
 
+def get_self_heal_default_enabled(cfg: ConfigParser) -> bool:
+    """Get the self-heal watchdog's initial enabled state.
+
+    Disabled by default. Only used to seed `~/.nyxGPT/self_heal_state.json`
+    on first run -- after that, the SRE/admin dashboard's toggle (persisted
+    in that state file) is the source of truth, not config.ini.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        True if the watchdog should start enabled on a fresh install
+    """
+    try:
+        return cfg.getboolean("self_heal", "enabled", fallback=False)
+    except Exception:
+        return False
+
+
+def get_self_heal_check_interval_seconds(cfg: ConfigParser) -> float:
+    try:
+        return max(1.0, cfg.getfloat("self_heal", "check_interval_seconds", fallback=15.0))
+    except (ValueError, TypeError):
+        return 15.0
+
+
+def get_self_heal_max_consecutive_restarts(cfg: ConfigParser) -> int:
+    try:
+        return max(1, cfg.getint("self_heal", "max_consecutive_restarts", fallback=5))
+    except (ValueError, TypeError):
+        return 5
+
+
+def get_self_heal_backoff_seconds(cfg: ConfigParser) -> float:
+    try:
+        return max(0.0, cfg.getfloat("self_heal", "backoff_seconds", fallback=30.0))
+    except (ValueError, TypeError):
+        return 30.0
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "load_config",
@@ -1066,6 +1106,10 @@ __all__ = [
     "get_monitoring_config",
     "get_log_aggregation_enabled",
     "get_log_aggregation_config",
+    "get_self_heal_default_enabled",
+    "get_self_heal_check_interval_seconds",
+    "get_self_heal_max_consecutive_restarts",
+    "get_self_heal_backoff_seconds",
     "get_cassandra_pool_size",
     "get_cassandra_health_check_interval",
     "get_cassandra_reconnect_max_attempts",

@@ -11,6 +11,7 @@ from nyxgpt import canary as canary_mod
 from nyxgpt import deploy as deploy_mod
 from nyxgpt import models, sessions, tools_fs
 from nyxgpt import ops as ops_mod
+from nyxgpt import self_heal as self_heal_mod
 from nyxgpt.chat import chat, chat_stream
 from nyxgpt.config import (
     get_canary_error_rate_threshold,
@@ -1307,6 +1308,46 @@ def cmd_canary_rollback(cfg_path: Path | None, namespace: str | None) -> int:
     return 0 if result.ok else 2
 
 
+def cmd_self_heal_status(_cfg_path: Path | None) -> int:
+    data = self_heal_mod.status()
+    print(f"Self-heal watchdog: {'enabled' if data['enabled'] else 'disabled'}")
+    if not data["components"]:
+        print("No Docker Compose containers found (is the stack up? `docker compose up -d`)")
+        return 0
+    for c in data["components"]:
+        marker = "OK" if c["healthy"] else "!!"
+        health = c["health"] or "n/a"
+        print(f" [{marker}] {c['service']}: state={c['state']} health={health}")
+    if data["events"]:
+        print("\nRecent heal events:")
+        for e in data["events"][-10:]:
+            print(
+                f"  {e['service']}: {e['action']} ({'ok' if e['ok'] else 'FAILED'}) - {e['reason']}"
+            )
+    return 0
+
+
+def cmd_self_heal_toggle(enabled: bool) -> int:
+    result = self_heal_mod.set_enabled(enabled)
+    print(f"Self-heal watchdog: {'enabled' if result else 'disabled'}")
+    return 0
+
+
+def cmd_self_heal_heal(service: str | None) -> int:
+    result = self_heal_mod.heal_now(service=service)
+    if result.get("error"):
+        print(f"[FAIL] {result['error']}")
+        return 2
+    if not result["healed"]:
+        print("Nothing to heal (all checked components are healthy)")
+        return 0
+    ok = True
+    for event in result["healed"]:
+        print(f"[{'OK' if event['ok'] else 'FAIL'}] {event['service']}: {event['message']}")
+        ok = ok and event["ok"]
+    return 0 if ok else 2
+
+
 def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="nyxgpt")
     parser.add_argument(
@@ -1687,6 +1728,24 @@ def cli(argv: list[str] | None = None) -> int:
         "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
     )
 
+    # Add self-heal command (Docker Compose stack watchdog)
+    self_heal_p = sub.add_parser(
+        "self-heal", help="Self-heal watchdog for the local Docker Compose stack"
+    )
+    self_heal_sub = self_heal_p.add_subparsers(dest="self_heal_cmd", required=True)
+
+    self_heal_sub.add_parser("status", help="Show per-component health and recent heal events")
+
+    self_heal_sub.add_parser("enable", help="Enable automatic self-healing")
+    self_heal_sub.add_parser("disable", help="Disable automatic self-healing")
+
+    self_heal_heal_p = self_heal_sub.add_parser(
+        "heal", help="Manually restart an unhealthy component now (or all of them)"
+    )
+    self_heal_heal_p.add_argument(
+        "--service", help="Compose service name to restart (default: heal every unhealthy one)"
+    )
+
     args = parser.parse_args(argv)
     cmd = args.command or "info"
 
@@ -1835,6 +1894,16 @@ def cli(argv: list[str] | None = None) -> int:
             return cmd_canary_promote(args.config, args.namespace, args.step)
         if args.canary_cmd == "rollback":
             return cmd_canary_rollback(args.config, args.namespace)
+
+    if cmd == "self-heal":
+        if args.self_heal_cmd == "status":
+            return cmd_self_heal_status(args.config)
+        if args.self_heal_cmd == "enable":
+            return cmd_self_heal_toggle(True)
+        if args.self_heal_cmd == "disable":
+            return cmd_self_heal_toggle(False)
+        if args.self_heal_cmd == "heal":
+            return cmd_self_heal_heal(args.service)
 
     if cmd == "mcp":
         return cmd_mcp()

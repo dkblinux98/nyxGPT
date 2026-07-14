@@ -1,0 +1,286 @@
+"""Unit tests for the self-heal watchdog (src/nyxgpt/self_heal.py).
+
+These exercise the module's Docker Compose interaction with subprocess.run
+mocked out, so no docker daemon or actual compose stack is needed.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from unittest.mock import MagicMock
+
+import pytest
+
+from nyxgpt import self_heal
+
+
+class CP:
+    def __init__(self, stdout="", stderr="", returncode=0):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+
+
+def _ps_line(service, *, state="running", health=""):
+    return json.dumps(
+        {"Service": service, "Name": f"nyxgpt-{service}-1", "State": state, "Health": health}
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(self_heal, "_state_path", lambda: tmp_path / "self_heal_state.json")
+    monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
+
+
+@pytest.mark.unit
+def test_list_component_status_parses_ps_json(monkeypatch):
+    stdout = "\n".join(
+        [
+            _ps_line("api", state="running", health="healthy"),
+            _ps_line("web", state="running", health=""),
+            _ps_line("cassandra", state="exited", health=""),
+            _ps_line("glitchtip-migrate", state="exited", health=""),
+        ]
+    )
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=stdout))
+
+    statuses = self_heal.list_component_status()
+
+    by_service = {s.service: s for s in statuses}
+    assert set(by_service) == {"api", "web", "cassandra"}
+    assert by_service["api"].healthy is True
+    assert by_service["web"].healthy is True  # no healthcheck -> running is enough
+    assert by_service["cassandra"].healthy is False
+
+
+@pytest.mark.unit
+def test_list_component_status_unhealthy_container(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(
+            stdout=_ps_line("prometheus", state="running", health="unhealthy")
+        ),
+    )
+    statuses = self_heal.list_component_status()
+    assert statuses[0].healthy is False
+    assert statuses[0].health == "unhealthy"
+
+
+@pytest.mark.unit
+def test_list_component_status_no_docker(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    assert self_heal.list_component_status() == []
+
+
+@pytest.mark.unit
+def test_list_component_status_compose_failure(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1, stderr="boom")
+    )
+    assert self_heal.list_component_status() == []
+
+
+@pytest.mark.unit
+def test_restart_component_success(monkeypatch):
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.restart_component("api")
+
+    assert result.ok
+    assert "Restarted api" in result.message
+    cmd = run_mock.call_args[0][0]
+    assert cmd[:3] == ["docker", "compose", "-f"]
+    assert cmd[-2:] == ["restart", "api"]
+
+
+@pytest.mark.unit
+def test_restart_component_failure(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1, stderr="boom")
+    )
+    result = self_heal.restart_component("api")
+    assert not result.ok
+    assert "boom" in result.details
+
+
+@pytest.mark.unit
+def test_restart_component_no_docker(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    result = self_heal.restart_component("api")
+    assert not result.ok
+    assert "docker not found" in result.message
+
+
+@pytest.mark.unit
+def test_is_enabled_defaults_false():
+    assert self_heal.is_enabled() is False
+
+
+@pytest.mark.unit
+def test_set_enabled_roundtrip():
+    assert self_heal.set_enabled(True) is True
+    assert self_heal.is_enabled() is True
+    assert self_heal.set_enabled(False) is False
+    assert self_heal.is_enabled() is False
+
+
+@pytest.mark.unit
+def test_seed_enabled_default_only_applies_once():
+    self_heal.seed_enabled_default(True)
+    assert self_heal.is_enabled() is True
+
+    # Seeding again with a different default must not override an existing state file.
+    self_heal.seed_enabled_default(False)
+    assert self_heal.is_enabled() is True
+
+
+@pytest.mark.unit
+def test_heal_now_skips_healthy_components(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("api", "nyxgpt-api-1", "running", "healthy", True)],
+    )
+    restart_mock = MagicMock()
+    monkeypatch.setattr(self_heal, "restart_component", restart_mock)
+
+    result = self_heal.heal_now()
+
+    assert result["healed"] == []
+    restart_mock.assert_not_called()
+
+
+@pytest.mark.unit
+def test_heal_now_restarts_unhealthy_component(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False)],
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "restart_component",
+        lambda service: self_heal.HealResult(True, f"Restarted {service}"),
+    )
+
+    result = self_heal.heal_now()
+
+    assert len(result["healed"]) == 1
+    event = result["healed"][0]
+    assert event["service"] == "web"
+    assert event["ok"] is True
+    assert event["restart_count"] == 1
+
+    events = self_heal.recent_events()
+    assert len(events) == 1
+    assert events[0]["service"] == "web"
+
+
+@pytest.mark.unit
+def test_heal_now_respects_backoff(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False)],
+    )
+    restart_mock = MagicMock(return_value=self_heal.HealResult(True, "Restarted web"))
+    monkeypatch.setattr(self_heal, "restart_component", restart_mock)
+
+    self_heal.heal_now(backoff_seconds=3600.0)
+    self_heal.heal_now(backoff_seconds=3600.0)
+
+    restart_mock.assert_called_once()
+
+
+@pytest.mark.unit
+def test_heal_now_gives_up_after_max_consecutive_restarts(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False)],
+    )
+    restart_mock = MagicMock(return_value=self_heal.HealResult(False, "Failed to restart web"))
+    monkeypatch.setattr(self_heal, "restart_component", restart_mock)
+
+    for _ in range(5):
+        self_heal.heal_now(max_consecutive_restarts=2, backoff_seconds=0.0)
+
+    assert restart_mock.call_count == 2
+
+
+@pytest.mark.unit
+def test_heal_now_manual_restarts_even_when_healthy(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("api", "nyxgpt-api-1", "running", "healthy", True)],
+    )
+    restart_mock = MagicMock(return_value=self_heal.HealResult(True, "Restarted api"))
+    monkeypatch.setattr(self_heal, "restart_component", restart_mock)
+
+    result = self_heal.heal_now(service="api")
+
+    restart_mock.assert_called_once_with("api")
+    assert result["healed"][0]["reason"] == "manual heal-now"
+
+
+@pytest.mark.unit
+def test_heal_now_unknown_service_returns_error(monkeypatch):
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: [])
+
+    result = self_heal.heal_now(service="does-not-exist")
+
+    assert result["healed"] == []
+    assert "Unknown or not-running component" in result["error"]
+
+
+@pytest.mark.unit
+def test_status_aggregates_enabled_components_and_events(monkeypatch):
+    self_heal.set_enabled(True)
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [
+            self_heal.ComponentStatus("api", "nyxgpt-api-1", "running", "healthy", True),
+            self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False),
+        ],
+    )
+
+    data = self_heal.status()
+
+    assert data["enabled"] is True
+    assert data["unhealthy_count"] == 1
+    assert len(data["components"]) == 2
+    assert data["events"] == []
+
+
+@pytest.mark.unit
+def test_watchdog_calls_heal_now_only_when_enabled(monkeypatch):
+    calls = []
+    monkeypatch.setattr(self_heal, "heal_now", lambda **kwargs: calls.append(1))
+    monkeypatch.setattr(self_heal, "is_enabled", lambda: True)
+
+    watchdog = self_heal.Watchdog(interval_seconds=0.01)
+    watchdog.start()
+    time.sleep(0.1)
+    watchdog.stop(timeout=1.0)
+
+    assert len(calls) >= 1
+
+
+@pytest.mark.unit
+def test_watchdog_skips_heal_now_when_disabled(monkeypatch):
+    calls = []
+    monkeypatch.setattr(self_heal, "heal_now", lambda **kwargs: calls.append(1))
+    monkeypatch.setattr(self_heal, "is_enabled", lambda: False)
+
+    watchdog = self_heal.Watchdog(interval_seconds=0.01)
+    watchdog.start()
+    time.sleep(0.1)
+    watchdog.stop(timeout=1.0)
+
+    assert calls == []

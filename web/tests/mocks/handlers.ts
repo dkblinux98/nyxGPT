@@ -221,6 +221,7 @@ export const handlers = [
       },
       deploy: { namespace: 'nyxgpt', active: 'blue', inactive: 'green' },
       canary: { namespace: 'nyxgpt', active: false },
+      self_heal: { enabled: false, components: [], unhealthy_count: 0, events: [] },
       observability: {
         monitoring: false,
         tracing: false,

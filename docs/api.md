@@ -12,7 +12,7 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 59 available endpoints:
+Quick reference of all 62 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -36,6 +36,9 @@ Quick reference of all 59 available endpoints:
 | `/api/v1/canary/evaluate` | POST | Check live error-rate/latency metrics against thresholds; auto-rollback on regression |
 | `/api/v1/canary/promote` | POST | Increase the canary's traffic share by a step |
 | `/api/v1/canary/rollback` | POST | Cut all traffic back to nyxgpt-api-stable |
+| `/api/v1/self-heal/status` | GET | Self-heal watchdog status (per-component health, recent events) |
+| `/api/v1/self-heal/toggle` | POST | Enable/disable automatic self-healing |
+| `/api/v1/self-heal/heal` | POST | Manually restart one or every unhealthy component |
 | `/api/v1/models` | GET | List Ollama models |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
@@ -525,11 +528,12 @@ management" here means the shared API key rather than per-user accounts.
 
 ### `GET /api/v1/admin/overview`
 
-Aggregate system status: app info, resource metrics, deploy/canary
+Aggregate system status: app info, resource metrics, deploy/canary/self-heal
 status, opt-in observability stack flags, and whether API-key auth is
-enabled. Individual sub-sections (e.g. `deploy`, `canary`) degrade to
-`{"error": "..."}` instead of failing the whole request when a backing
-service (like a local K8s cluster) is unavailable.
+enabled. Individual sub-sections (e.g. `deploy`, `canary`, `self_heal`)
+degrade to `{"error": "..."}` instead of failing the whole request when a
+backing service (like a local K8s cluster or the Docker daemon) is
+unavailable.
 
 **Response:**
 
@@ -543,6 +547,7 @@ service (like a local K8s cluster) is unavailable.
   "resource_metrics": { "memory": {}, "cpu": {}, "latency": {}, "queue": {} },
   "deploy": { "namespace": "nyxgpt", "active": "blue", "inactive": "green" },
   "canary": { "namespace": "nyxgpt", "active": false },
+  "self_heal": { "enabled": false, "components": [], "unhealthy_count": 0, "events": [] },
   "observability": {
     "monitoring": false,
     "tracing": false,
@@ -839,6 +844,80 @@ stable-scale-up. Returns `409` if there is no rollout in progress.
 
 ```json
 { "ok": true, "message": "Rolled back canary rollout from 25% to 0%" }
+```
+
+---
+
+## Self-Heal Watchdog
+
+Watches every component of the local Docker Compose stack (`docker
+compose ps` across the core services plus any of the
+`monitoring`/`logging`/`tracing`/`errors` profiles that are up) and
+automatically restarts anything unhealthy or stopped. See
+[self-healing.md](self-healing.md) for the full design, the
+`nyxgpt self-heal` CLI, and the known limitation around the `api`
+container. These endpoints back the SRE/admin dashboard at
+`/admin/self-heal`.
+
+### `GET /api/v1/self-heal/status`
+
+Return whether the watchdog is enabled, live per-component health, and
+recent heal events.
+
+**Response:**
+
+```json
+{
+  "enabled": true,
+  "components": [
+    { "service": "api", "container": "nyxgpt-api-1", "state": "running", "health": "healthy", "healthy": true },
+    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true }
+  ],
+  "unhealthy_count": 0,
+  "events": [
+    { "ts": 1730000000.0, "service": "web", "reason": "state=exited health=n/a", "action": "restart", "ok": true, "restart_count": 1, "message": "Restarted web" }
+  ]
+}
+```
+
+### `POST /api/v1/self-heal/toggle`
+
+Enable or disable the automatic heal loop.
+
+**Request:**
+
+```json
+{ "enabled": true }
+```
+
+**Response:**
+
+```json
+{ "enabled": true }
+```
+
+### `POST /api/v1/self-heal/heal`
+
+Manually trigger a heal pass. With no body (or `{}`), checks every
+monitored component and restarts anything unhealthy/stopped, same as the
+automatic loop but on demand. With `{"service": "<name>"}`, restarts that
+one component immediately regardless of its current health — the
+dashboard's per-component "Heal now" button. Returns `404` if `service`
+isn't a currently-known container.
+
+**Request:**
+
+```json
+{ "service": "web" }
+```
+
+**Response:**
+
+```json
+{
+  "checked": [{ "service": "web", "state": "running", "health": "healthy", "healthy": true }],
+  "healed": [{ "ts": 1730000000.0, "service": "web", "reason": "manual heal-now", "action": "restart", "ok": true, "restart_count": 2, "message": "Restarted web" }]
+}
 ```
 
 ---

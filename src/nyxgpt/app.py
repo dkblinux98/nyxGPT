@@ -40,6 +40,7 @@ from nyxgpt import deploy as deploy_module
 from nyxgpt import error_tracking as error_tracking_module
 from nyxgpt import health as health_module
 from nyxgpt import metrics as prom_metrics
+from nyxgpt import self_heal as self_heal_module
 from nyxgpt import tracing as tracing_module
 from nyxgpt import usage_analytics as usage_analytics_module
 from nyxgpt import workflow_analytics as workflow_analytics_module
@@ -102,6 +103,10 @@ from nyxgpt.config import (
     get_rag_min_score,
     get_rate_limit_config,
     get_rate_limit_enabled,
+    get_self_heal_backoff_seconds,
+    get_self_heal_check_interval_seconds,
+    get_self_heal_default_enabled,
+    get_self_heal_max_consecutive_restarts,
     get_sessions_dir,
     get_tracing_config,
     load_config,
@@ -347,12 +352,27 @@ async def lifespan(_app: FastAPI):
     global _resource_monitor
     _resource_monitor = init_resource_monitor(batch_processor=_batch_processor)
 
+    # Start the self-heal watchdog. It's always running so the SRE/admin
+    # dashboard's toggle takes effect immediately without an API restart --
+    # it only takes action when enabled (seeded from config.ini on a fresh
+    # install, then controlled entirely by the dashboard toggle).
+    self_heal_module.seed_enabled_default(get_self_heal_default_enabled(cfg))
+    watchdog = self_heal_module.get_watchdog()
+    watchdog.interval_seconds = get_self_heal_check_interval_seconds(cfg)
+    watchdog.max_consecutive_restarts = get_self_heal_max_consecutive_restarts(cfg)
+    watchdog.backoff_seconds = get_self_heal_backoff_seconds(cfg)
+    watchdog.start()
+    log.info("Self-heal watchdog initialized", extra={"component": "startup"})
+
     yield
 
     # Cleanup: stop batch processor
     if _batch_processor:
         _batch_processor.stop()
         log.info("Batch processor stopped", extra={"component": "shutdown"})
+
+    self_heal_module.get_watchdog().stop()
+    log.info("Self-heal watchdog stopped", extra={"component": "shutdown"})
 
 
 # Versioned API router
@@ -1166,6 +1186,7 @@ def admin_overview(request: Request) -> dict[str, Any]:
         "resource_metrics": resource_metrics_summary,
         "deploy": _safe(deploy_module.status, get_deploy_namespace(cfg)),
         "canary": _safe(canary_module.status, get_canary_namespace(cfg)),
+        "self_heal": _safe(self_heal_module.status),
         "observability": {
             "monitoring": get_monitoring_config(cfg)["enabled"],
             "tracing": get_tracing_config(cfg)["enabled"],
@@ -1414,6 +1435,38 @@ def canary_rollback(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail=result.message)
     admin_activity_module.record("canary.rollback", result.message)
     return {"ok": result.ok, "message": result.message}
+
+
+# --- Self-heal watchdog endpoints (SRE/admin dashboard) ---
+@api.get("/self-heal/status")
+def self_heal_status(_request: Request) -> dict[str, Any]:
+    """Per-component health of the Docker Compose stack, plus recent heal events."""
+    return self_heal_module.status()
+
+
+@api.post("/self-heal/toggle")
+def self_heal_toggle(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Enable/disable the self-heal watchdog from the SRE/admin dashboard."""
+    if "enabled" not in payload:
+        raise HTTPException(status_code=400, detail="Missing 'enabled' field")
+    enabled = self_heal_module.set_enabled(bool(payload["enabled"]))
+    admin_activity_module.record("self_heal.toggle", "enabled" if enabled else "disabled")
+    return {"enabled": enabled}
+
+
+@api.post("/self-heal/heal")
+def self_heal_heal(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Manually trigger a heal pass -- one component (payload.service) or all of them."""
+    service = payload.get("service")
+    result = self_heal_module.heal_now(service=service)
+    if result.get("error"):
+        raise HTTPException(status_code=404, detail=result["error"])
+    for event in result.get("healed", []):
+        admin_activity_module.record(
+            "self_heal.restart",
+            f"{event['service']}: {event['message']} ({event['reason']})",
+        )
+    return result
 
 
 # --- Model management endpoints ---

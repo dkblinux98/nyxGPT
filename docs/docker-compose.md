@@ -225,6 +225,17 @@ no default DSN) to have the API actually report exceptions — see
 [configuration.md](configuration.md#error_tracking-section) and
 [api.md](api.md#error-tracking).
 
+## Self-Healing
+
+Every core service (`ollama`, `cassandra`, `api`, `web`) and most opt-in
+profile services have Docker healthchecks and `restart: unless-stopped`.
+On top of that, a self-heal watchdog inside the `api` container watches
+`docker compose ps` and automatically restarts anything unhealthy or
+stopped — see [self-healing.md](self-healing.md) for the full design, how
+to turn it on (`/admin/self-heal`, `nyxgpt self-heal`, or the API), and
+`scripts/smoke-test.sh`, the documented end-to-end smoke test (deploy →
+verify chat/RAG → kill each component → observe auto-heal → teardown).
+
 ## Rebuilding after code changes
 
 ```bash
