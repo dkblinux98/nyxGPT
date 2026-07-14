@@ -90,6 +90,7 @@ from nyxgpt.config import (
     get_default_model,
     get_deploy_namespace,
     get_error_tracking_config,
+    get_log_aggregation_config,
     get_monitoring_config,
     get_ollama_base_url,
     get_rag_good_score_threshold,
@@ -993,6 +994,25 @@ def monitoring_status(request: Request) -> dict[str, Any]:
     return {
         **monitoring_config,
         "active": monitoring_config["enabled"],
+    }
+
+
+@api.get("/log-aggregation")
+def log_aggregation_status(request: Request) -> dict[str, Any]:
+    """Get log aggregation status and how to reach the local Loki search UI.
+
+    Log aggregation is opt-in and local-only: enable it with
+    `[log_aggregation] enabled = true` in config.ini and start the API
+    alongside the `logging` Compose profile (local Loki + promtail).
+    Promtail ships the API's log files under ~/.nyxGPT/logs into Loki, which
+    is searched via Grafana Explore (the `monitoring` profile). No logs are
+    ever exported outside the machine.
+    """
+    cfg = _req_cfg(request)
+    log_aggregation_config = get_log_aggregation_config(cfg)
+    return {
+        **log_aggregation_config,
+        "active": log_aggregation_config["enabled"],
     }
 
 
