@@ -56,6 +56,43 @@ jobs:
             echo "pr=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Checkout PR head (workflow_dispatch)
+        # workflow_dispatch has no pull_request context, so the initial checkout
+        # above just gets whatever branch/ref the run was manually dispatched
+        # against (e.g. v2.0.0). Without this, everything downstream - local
+        # lint/test runs, and the review action's own PR resolution - operates
+        # against the wrong ref, and post-steps that resolve the PR from the
+        # current branch fail with "no pull requests found for branch v2.0.0"
+        # (observed 2026-07-06, run 28809504157).
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR="${{ steps.pr_number.outputs.pr }}"
+          HEAD_REF="$(gh pr view "$PR" --json headRefName --jq .headRefName)"
+          git fetch origin "$HEAD_REF"
+          git checkout "$HEAD_REF"
+
+      - name: Detect changed languages
+        id: changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR="${{ steps.pr_number.outputs.pr }}"
+          CHANGED_FILES=$(gh pr view "$PR" --json files --jq '.files[].path')
+
+          if echo "$CHANGED_FILES" | grep -qE '^web/'; then
+            echo "web_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "web_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED_FILES" | grep -qE '^(src|tests)/.*\.py$'; then
+            echo "python_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "python_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -100,6 +137,26 @@ jobs:
             --cov=src/nyxgpt --cov-report=term-missing \
             || echo "pytest_failed=true" >> "$GITHUB_OUTPUT"
 
+      - name: Set up Node.js
+        if: steps.changed.outputs.web_changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install web dependencies
+        if: steps.changed.outputs.web_changed == 'true'
+        run: cd web && npm ci
+
+      - name: Run web checks
+        id: web_lint
+        if: steps.changed.outputs.web_changed == 'true'
+        run: |
+          echo "Running tsc --noEmit..."
+          (cd web && npx tsc --noEmit) || echo "tsc_failed=true" >> "$GITHUB_OUTPUT"
+
+          echo "Running vitest..."
+          (cd web && npx vitest run) || echo "vitest_failed=true" >> "$GITHUB_OUTPUT"
+
       - name: Check test coverage
         id: test_coverage
         env:
@@ -112,12 +169,18 @@ jobs:
           # Get list of changed files
           CHANGED_FILES=$(gh pr view "$PR" --json files --jq '.files[].path')
 
-          # Check if source code changed (src/, excluding test files)
-          SRC_CODE_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^src/.*\.py$' |
-                             grep -v -E '(test_|_test\.py|tests/)' || echo "")
+          # Check if source code changed (Python src/, or web/src TS/JS, excluding test files)
+          SRC_CODE_CHANGED=$(echo "$CHANGED_FILES" |
+                             grep -E '^(src/.*\.py|web/src/.*\.(ts|tsx|js|jsx))$' |
+                             grep -v -E '(test_|_test\.py|/tests/|\.test\.|\.spec\.)' || echo "")
 
-          # Check if test files changed
-          TESTS_CHANGED=$(echo "$CHANGED_FILES" | grep -E '(^tests/|test_.*\.py$|.*_test\.py$)' || echo "")
+          # Check if test files changed (Python tests/, or web/tests TS/JS specs)
+          TESTS_CHANGED=$(echo "$CHANGED_FILES" |
+                         grep -E '(^tests/|test_.*\.py$|.*_test\.py$|^web/tests/)' ||
+                         echo "")
+          WEB_SPEC_CHANGED=$(echo "$CHANGED_FILES" |
+                             grep -E '\.(test|spec)\.(ts|tsx|js|jsx)$' || echo "")
+          TESTS_CHANGED="${TESTS_CHANGED}${WEB_SPEC_CHANGED}"
 
           if [[ -n "$SRC_CODE_CHANGED" ]]; then
             echo "code_changed=true" >> "$GITHUB_OUTPUT"
@@ -146,15 +209,18 @@ jobs:
           # Get list of changed files
           CHANGED_FILES=$(gh pr view "$PR" --json files --jq '.files[].path')
 
-          # Check if code files changed (src/, excluding tests)
-          CODE_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^src/.*\.py$' | grep -v test_ || echo "")
+          # Check if code files changed (Python src/, or web/src TS/JS, excluding tests)
+          CODE_CHANGED=$(echo "$CHANGED_FILES" |
+                        grep -E '^(src/.*\.py|web/src/.*\.(ts|tsx|js|jsx))$' |
+                        grep -v -E '(test_|\.test\.|\.spec\.)' || echo "")
 
           # Check if docs changed
           DOCS_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^(docs/|README\.md|.*\.md$)' || echo "")
 
-          # Check if this is a user-facing change (API, CLI, config)
+          # Check if this is a user-facing change (API, CLI, config, or any web UI surface)
           USER_FACING=$(echo "$CHANGED_FILES" |
-                        grep -E '^(src/nyxgpt/(api|cli|app)\.py|example\.config\.ini)' ||
+                        grep -E '^(src/nyxgpt/(api|cli|app)\.py|example\.config\.ini|web/src/.*\.(ts|tsx|js|jsx))' |
+                        grep -v -E '(\.test\.|\.spec\.)' ||
                         echo "")
 
           if [[ -n "$CODE_CHANGED" ]]; then
@@ -242,6 +308,14 @@ jobs:
                  steps.test_coverage.outputs.tests_updated == 'false' &&
                  '❌ YES (BLOCKS APPROVE)' || '✅ NO' }}
 
+            **Web Status (PR touches `web/**`: ${{ steps.changed.outputs.web_changed }}):**
+            - TypeScript (tsc --noEmit): >-
+              ${{ steps.changed.outputs.web_changed != 'true' && 'N/A' ||
+                 steps.web_lint.outputs.tsc_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
+            - Vitest: >-
+              ${{ steps.changed.outputs.web_changed != 'true' && 'N/A' ||
+                 steps.web_lint.outputs.vitest_failed == 'true' && '❌ FAILED' || '✅ PASSED' }}
+
             **Documentation Status:**
             - Code changed: ${{ steps.docs.outputs.code_changed }}
             - Docs updated: ${{ steps.docs.outputs.docs_updated }}
@@ -250,7 +324,7 @@ jobs:
                  '❌ YES (BLOCKS APPROVE)' || '✅ NO' }}
 
             MANDATORY: You MUST REQUEST_CHANGES if:
-            - ANY linter or test failed
+            - ANY linter or test failed (including TypeScript/Vitest when web/** changed)
             - Source code changed WITHOUT test updates (tests_updated=false)
             - User-facing code changed WITHOUT documentation updates (user_facing_undocumented=true)
 
