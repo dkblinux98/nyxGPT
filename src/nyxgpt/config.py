@@ -908,6 +908,53 @@ def get_tracing_config(cfg: ConfigParser) -> dict:
     }
 
 
+def get_error_tracking_enabled(cfg: ConfigParser) -> bool:
+    """Get whether error tracking is enabled.
+
+    Disabled by default. When enabled (and a DSN is configured), exceptions
+    are reported via the Sentry SDK protocol to a self-hosted, local-only
+    tracker (e.g. the `errors` Compose profile's GlitchTip instance) --
+    error data never leaves the machine.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        True if error tracking is enabled, False otherwise
+    """
+    try:
+        return cfg.getboolean("error_tracking", "enabled", fallback=False)
+    except Exception:
+        return False
+
+
+def get_error_tracking_config(cfg: ConfigParser) -> dict:
+    """Get error tracking configuration.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        Dictionary with keys: enabled, dsn, environment, release,
+        traces_sample_rate, glitchtip_ui_url
+    """
+    try:
+        traces_sample_rate = cfg.getfloat("error_tracking", "traces_sample_rate", fallback=0.0)
+    except ValueError:
+        traces_sample_rate = 0.0
+
+    return {
+        "enabled": get_error_tracking_enabled(cfg),
+        "dsn": cfg.get("error_tracking", "dsn", fallback=""),
+        "environment": cfg.get("error_tracking", "environment", fallback="development"),
+        "release": cfg.get("error_tracking", "release", fallback=""),
+        "traces_sample_rate": traces_sample_rate,
+        "glitchtip_ui_url": cfg.get(
+            "error_tracking", "glitchtip_ui_url", fallback="http://localhost:8080"
+        ),
+    }
+
+
 __all__ = [
     "DEFAULT_CONFIG_PATH",
     "load_config",
@@ -941,6 +988,8 @@ __all__ = [
     "get_batch_wait_time_ms",
     "get_tracing_enabled",
     "get_tracing_config",
+    "get_error_tracking_enabled",
+    "get_error_tracking_config",
     "get_cassandra_pool_size",
     "get_cassandra_health_check_interval",
     "get_cassandra_reconnect_max_attempts",

@@ -17,9 +17,17 @@ command, e.g. for evaluation or a non-macOS host.
 | `web`       | built from `web/Dockerfile` | Next.js web UI (`nyxgpt-web`)   | `3000`               |
 | `otel-collector` <sup>†</sup> | `otel/opentelemetry-collector-contrib` | Receives OTLP spans from the API, forwards to Jaeger | — |
 | `jaeger` <sup>†</sup> | `jaegertracing/all-in-one` | Trace storage + UI              | `16686`              |
+| `glitchtip` <sup>‡</sup> | `glitchtip/glitchtip` | Self-hosted error tracker UI + ingest | `8080` |
+| `glitchtip-worker` <sup>‡</sup> | `glitchtip/glitchtip` | GlitchTip Celery worker/beat    | —                    |
+| `glitchtip-migrate` <sup>‡</sup> | `glitchtip/glitchtip` | One-shot GlitchTip DB migration | —                    |
+| `glitchtip-postgres` <sup>‡</sup> | `postgres:16` | GlitchTip's database             | —                    |
+| `glitchtip-redis` <sup>‡</sup> | `redis:7-alpine` | GlitchTip's queue/cache            | —                    |
 
 <sup>†</sup> Only started with the opt-in `tracing` profile — see
 [Distributed Tracing](#distributed-tracing) below.
+
+<sup>‡</sup> Only started with the opt-in `errors` profile — see
+[Error Tracking](#error-tracking) below.
 
 All services share a single bridge network (`nyxgpt`) and reach each other by
 service name (e.g. the API talks to Ollama at `http://ollama:11434` and to
@@ -104,6 +112,29 @@ The API container still needs `[tracing] enabled = true` set in
 `docker/config.docker.ini` (disabled by default) to actually emit spans —
 see [configuration.md](configuration.md#tracing-section) and
 [api.md](api.md#distributed-tracing).
+
+## Error Tracking
+
+Self-hosted error tracking (GlitchTip) is opt-in and local-only — no
+exception data is ever sent to Sentry's own SaaS. It ships as a separate
+`errors` Compose profile so it doesn't run unless you ask for it:
+
+```bash
+docker compose --profile errors up
+```
+
+This starts `glitchtip-postgres`, `glitchtip-redis`, a one-shot
+`glitchtip-migrate` job, the `glitchtip` web/API service (UI at
+[http://localhost:8080](http://localhost:8080), also linked from the
+SRE/admin dashboard's Resource Usage step), and `glitchtip-worker`.
+
+Set a real `GLITCHTIP_SECRET_KEY` in `.env` before running this profile
+(see `.env.example`). After first boot, sign up and create a project in
+the GlitchTip UI to get a DSN, then set `[error_tracking] enabled = true`
+and `dsn = <that DSN>` in `docker/config.docker.ini` (disabled by default,
+no default DSN) to have the API actually report exceptions — see
+[configuration.md](configuration.md#error_tracking-section) and
+[api.md](api.md#error-tracking).
 
 ## Rebuilding after code changes
 

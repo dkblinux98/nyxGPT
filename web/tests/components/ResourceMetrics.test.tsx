@@ -28,11 +28,28 @@ const mockTracingActive = {
   jaeger_ui_url: 'http://localhost:16686',
 };
 
+const mockErrorTrackingDisabled = {
+  enabled: false,
+  active: false,
+  dsn: '',
+  environment: 'development',
+  glitchtip_ui_url: 'http://localhost:8080',
+};
+
+const mockErrorTrackingActive = {
+  enabled: true,
+  active: true,
+  dsn: 'http://key@glitchtip:8080/1',
+  environment: 'production',
+  glitchtip_ui_url: 'http://localhost:8080',
+};
+
 describe('ResourceMetrics (admin dashboard)', () => {
   it('shows a Prometheus scrape endpoint card with a link to view current metrics', async () => {
     server.use(
       http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
-      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled))
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled)),
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled))
     );
 
     render(<ResourceMetrics />);
@@ -49,7 +66,8 @@ describe('ResourceMetrics (admin dashboard)', () => {
   it('shows a Distributed Tracing card', async () => {
     server.use(
       http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
-      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled))
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled)),
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled))
     );
 
     render(<ResourceMetrics />);
@@ -62,7 +80,8 @@ describe('ResourceMetrics (admin dashboard)', () => {
   it('shows an active Distributed Tracing card with a link to the local Jaeger UI', async () => {
     server.use(
       http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
-      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingActive))
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingActive)),
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled))
     );
 
     render(<ResourceMetrics />);
@@ -75,13 +94,58 @@ describe('ResourceMetrics (admin dashboard)', () => {
   it('shows an error on the Distributed Tracing card when the status fetch fails', async () => {
     server.use(
       http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
-      http.get('/api/v1/tracing', () => new HttpResponse(null, { status: 500 }))
+      http.get('/api/v1/tracing', () => new HttpResponse(null, { status: 500 })),
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled))
     );
 
     render(<ResourceMetrics />);
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent(/Failed to fetch tracing status: HTTP 500/i);
+    });
+  });
+
+  it('shows an Error Tracking card', async () => {
+    server.use(
+      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled)),
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled))
+    );
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Error Tracking')).toBeInTheDocument();
+    });
+  });
+
+  it('shows an active Error Tracking card with a link to the local GlitchTip UI', async () => {
+    server.use(
+      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled)),
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingActive))
+    );
+
+    render(<ResourceMetrics />);
+
+    const link = await screen.findByRole('link', { name: /Open GlitchTip UI/i });
+    expect(link).toHaveAttribute('href', 'http://localhost:8080');
+    expect(screen.getByText('production')).toBeInTheDocument();
+  });
+
+  it('shows an error on the Error Tracking card when the status fetch fails', async () => {
+    server.use(
+      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled)),
+      http.get('/api/v1/error-tracking', () => new HttpResponse(null, { status: 500 }))
+    );
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        /Failed to fetch error tracking status: HTTP 500/i
+      );
     });
   });
 });

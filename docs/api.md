@@ -12,7 +12,7 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 57 available endpoints:
+Quick reference of all 59 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -22,6 +22,8 @@ Quick reference of all 57 available endpoints:
 | `/api/v1/batch/metrics` | GET | Request batching metrics |
 | `/api/v1/metrics` | GET | Resource usage monitoring (memory, CPU, latency, queue depth) |
 | `/api/v1/tracing` | GET | Distributed tracing status (enabled/active, service name, OTLP endpoint, Jaeger UI URL) |
+| `/api/v1/error-tracking` | GET | Error tracking status (enabled/active, DSN, environment, GlitchTip UI URL) |
+| `/api/v1/error-tracking/report` | POST | Forward a web UI client-side error to the local error tracker |
 | `/api/v1/config` | GET | Get current configuration |
 | `/api/v1/config` | POST | Update configuration (full replace) |
 | `/api/v1/config` | PATCH | Partial configuration update |
@@ -2806,6 +2808,94 @@ docker compose --profile tracing up
 
 Browse traces at `http://localhost:16686` (also linked from the SRE/admin
 dashboard's Resource Usage step — see [`docs/configuration.md`](configuration.md)).
+
+---
+
+## Error Tracking
+
+### `GET /api/v1/error-tracking`
+
+Report error tracking status: whether it's enabled in config, whether it
+actually initialized for this process, and where to find the local
+GlitchTip UI.
+
+**Request:**
+
+```bash
+curl http://127.0.0.1:8000/api/v1/error-tracking
+```
+
+**Response:**
+
+```json
+{
+  "enabled": true,
+  "dsn": "http://key@localhost:8080/1",
+  "environment": "production",
+  "release": "",
+  "traces_sample_rate": 0.0,
+  "glitchtip_ui_url": "http://localhost:8080",
+  "active": true
+}
+```
+
+**Response Fields:**
+- `enabled` - Whether `[error_tracking] enabled = true` in config.ini
+- `dsn` - DSN of the configured self-hosted tracker project
+- `environment` - Environment tag attached to every event
+- `release` - Release tag attached to every event, if set
+- `traces_sample_rate` - Fraction of requests also sampled for performance monitoring
+- `glitchtip_ui_url` - URL of the local GlitchTip UI for browsing events
+- `active` - Whether error tracking actually initialized for this running process (requires both `enabled = true` and a non-empty `dsn`)
+
+### `POST /api/v1/error-tracking/report`
+
+Forward a web UI client-side error to the local error tracker. Always
+returns `202`, even when error tracking is disabled, so the web UI never
+needs to special-case it.
+
+**Request:**
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/error-tracking/report \
+  -H "Content-Type: application/json" \
+  -d '{"message": "TypeError: Cannot read properties of undefined", "stack": "at ChatPane (ChatPane.tsx:42:1)", "url": "/"}'
+```
+
+**Response:**
+
+```json
+{ "status": "accepted" }
+```
+
+**How it works:**
+
+Error tracking is Sentry-SDK-protocol-based, opt-in, and strictly local —
+there is no default DSN and nothing here talks to Sentry's own SaaS. When
+enabled with a DSN:
+- Unhandled backend exceptions are captured automatically, enriched with the request ID, path, and method
+- Web UI errors reported via `POST /api/v1/error-tracking/report` are forwarded as message-level events
+
+**Enabling error tracking:**
+
+```ini
+[error_tracking]
+enabled = true
+dsn = http://<public_key>@localhost:8080/<project_id>
+environment = production
+traces_sample_rate = 0.0
+glitchtip_ui_url = http://localhost:8080
+```
+
+Then start the local GlitchTip instance (opt-in Compose profile):
+
+```bash
+docker compose --profile errors up
+```
+
+Sign up and create a project in the GlitchTip UI to get the DSN above.
+Browse events at `http://localhost:8080` (also linked from the SRE/admin
+dashboard's Resource Usage step).
 
 ---
 

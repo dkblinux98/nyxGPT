@@ -36,6 +36,7 @@ from nyxgpt import api_models, models, sessions, tools_fs
 from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
 from nyxgpt import deploy as deploy_module
+from nyxgpt import error_tracking as error_tracking_module
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import tracing as tracing_module
 from nyxgpt.api_models import (
@@ -88,6 +89,7 @@ from nyxgpt.config import (
     get_canary_total_replicas,
     get_default_model,
     get_deploy_namespace,
+    get_error_tracking_config,
     get_ollama_base_url,
     get_rag_good_score_threshold,
     get_rag_medium_score_threshold,
@@ -216,6 +218,13 @@ async def lifespan(_app: FastAPI):
         tracing_module.init_tracing(_app, get_tracing_config(cfg))
     except Exception as e:
         log.warning("Tracing initialization failed: %s", e, extra={"component": "startup"})
+
+    # Initialize error tracking (no-op unless [error_tracking] enabled = true
+    # and a local DSN is configured)
+    try:
+        error_tracking_module.init_error_tracking(get_error_tracking_config(cfg))
+    except Exception as e:
+        log.warning("Error tracking initialization failed: %s", e, extra={"component": "startup"})
 
     # Ensure sessions directory exists
     sessions_dir = get_sessions_dir(cfg)
@@ -639,6 +648,12 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 async def unhandled_exception_handler(request: Request, _exc: Exception):
     req_id = getattr(request.state, "request_id", None)
     log.exception("Unhandled API error (request_id=%s)", req_id)
+    error_tracking_module.capture_exception(
+        _exc,
+        request_id=req_id or "N/A",
+        path=request.url.path,
+        method=request.method,
+    )
     return JSONResponse(
         status_code=500,
         content={
@@ -923,6 +938,44 @@ def tracing_status(request: Request) -> dict[str, Any]:
         **tracing_config,
         "active": tracing_module.is_tracing_enabled(),
     }
+
+
+@api.get("/error-tracking")
+def error_tracking_status(request: Request) -> dict[str, Any]:
+    """Get error tracking status and how to reach the local GlitchTip UI.
+
+    Error tracking is opt-in and local-only: enable it with
+    `[error_tracking] enabled = true` and a `dsn` pointed at a self-hosted
+    tracker in config.ini, then start the API alongside the `errors`
+    Compose profile (local GlitchTip instance). No exception data is ever
+    sent to Sentry's own SaaS.
+    """
+    cfg = _req_cfg(request)
+    error_tracking_config = get_error_tracking_config(cfg)
+    return {
+        **error_tracking_config,
+        "active": error_tracking_module.is_error_tracking_enabled(),
+    }
+
+
+@api.post("/error-tracking/report", status_code=202)
+def error_tracking_report(
+    request: Request, body: api_models.ClientErrorReportRequest
+) -> dict[str, str]:
+    """Forward a web UI client-side error to the local error tracker.
+
+    No-op (still returns 202) when error tracking is disabled, so the web
+    UI doesn't need to special-case it.
+    """
+    req_id = getattr(request.state, "request_id", None)
+    error_tracking_module.capture_message(
+        body.message,
+        request_id=req_id or "N/A",
+        source="web-client",
+        url=body.url or "N/A",
+        stack=body.stack or "N/A",
+    )
+    return {"status": "accepted"}
 
 
 # --- Config get/set endpoints ---

@@ -42,6 +42,19 @@ class TitleRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
 
 
+class ClientErrorReportRequest(BaseModel):
+    """Request model for reporting a web UI client-side error.
+
+    Forwarded to the local error tracker (if enabled) so browser errors
+    show up alongside backend exceptions. No-op when error tracking is
+    disabled.
+    """
+
+    message: str = Field(..., min_length=1, max_length=2000)
+    stack: str | None = Field(None, max_length=8000)
+    url: str | None = Field(None, max_length=2000)
+
+
 class RenameRequest(BaseModel):
     """Request model for renaming a session.
 
