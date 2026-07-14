@@ -90,6 +90,7 @@ from nyxgpt.config import (
     get_default_model,
     get_deploy_namespace,
     get_error_tracking_config,
+    get_monitoring_config,
     get_ollama_base_url,
     get_rag_good_score_threshold,
     get_rag_medium_score_threshold,
@@ -976,6 +977,23 @@ def error_tracking_report(
         stack=body.stack or "N/A",
     )
     return {"status": "accepted"}
+
+
+@api.get("/monitoring")
+def monitoring_status(request: Request) -> dict[str, Any]:
+    """Get monitoring stack status and how to reach the local Grafana UI.
+
+    The Grafana/Prometheus stack is opt-in and local-only: enable it with
+    `[monitoring] enabled = true` in config.ini and start the API alongside
+    the `monitoring` Compose profile (local Prometheus + Grafana). No
+    metrics are ever exported outside the machine.
+    """
+    cfg = _req_cfg(request)
+    monitoring_config = get_monitoring_config(cfg)
+    return {
+        **monitoring_config,
+        "active": monitoring_config["enabled"],
+    }
 
 
 # --- Config get/set endpoints ---

@@ -44,12 +44,25 @@ const mockErrorTrackingActive = {
   glitchtip_ui_url: 'http://localhost:8080',
 };
 
+const mockMonitoringDisabled = {
+  enabled: false,
+  active: false,
+  grafana_ui_url: 'http://localhost:3001',
+};
+
+const mockMonitoringActive = {
+  enabled: true,
+  active: true,
+  grafana_ui_url: 'http://localhost:3001',
+};
+
 describe('ResourceMetrics (admin dashboard)', () => {
   it('shows a Prometheus scrape endpoint card with a link to view current metrics', async () => {
     server.use(
       http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
       http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled)),
-      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled))
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled)),
+      http.get('/api/v1/monitoring', () => HttpResponse.json(mockMonitoringDisabled))
     );
 
     render(<ResourceMetrics />);
@@ -63,11 +76,60 @@ describe('ResourceMetrics (admin dashboard)', () => {
     expect(screen.getByText('<nyxgpt-api-host>/metrics')).toBeInTheDocument();
   });
 
+  it('shows a Monitoring Dashboards card', async () => {
+    server.use(
+      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled)),
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled)),
+      http.get('/api/v1/monitoring', () => HttpResponse.json(mockMonitoringDisabled))
+    );
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Monitoring Dashboards')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByRole('link', { name: /Open Grafana/i })).not.toBeInTheDocument();
+  });
+
+  it('shows an active Monitoring Dashboards card with a link to the local Grafana instance', async () => {
+    server.use(
+      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled)),
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled)),
+      http.get('/api/v1/monitoring', () => HttpResponse.json(mockMonitoringActive))
+    );
+
+    render(<ResourceMetrics />);
+
+    const link = await screen.findByRole('link', { name: /Open Grafana/i });
+    expect(link).toHaveAttribute('href', 'http://localhost:3001');
+  });
+
+  it('shows an error on the Monitoring Dashboards card when the status fetch fails', async () => {
+    server.use(
+      http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
+      http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled)),
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled)),
+      http.get('/api/v1/monitoring', () => new HttpResponse(null, { status: 500 }))
+    );
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        /Failed to fetch monitoring status: HTTP 500/i
+      );
+    });
+  });
+
   it('shows a Distributed Tracing card', async () => {
     server.use(
       http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
       http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled)),
-      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled))
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled)),
+      http.get('/api/v1/monitoring', () => HttpResponse.json(mockMonitoringDisabled))
     );
 
     render(<ResourceMetrics />);
@@ -81,7 +143,8 @@ describe('ResourceMetrics (admin dashboard)', () => {
     server.use(
       http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
       http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingActive)),
-      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled))
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled)),
+      http.get('/api/v1/monitoring', () => HttpResponse.json(mockMonitoringDisabled))
     );
 
     render(<ResourceMetrics />);
@@ -95,7 +158,8 @@ describe('ResourceMetrics (admin dashboard)', () => {
     server.use(
       http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
       http.get('/api/v1/tracing', () => new HttpResponse(null, { status: 500 })),
-      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled))
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled)),
+      http.get('/api/v1/monitoring', () => HttpResponse.json(mockMonitoringDisabled))
     );
 
     render(<ResourceMetrics />);
@@ -109,7 +173,8 @@ describe('ResourceMetrics (admin dashboard)', () => {
     server.use(
       http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
       http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled)),
-      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled))
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingDisabled)),
+      http.get('/api/v1/monitoring', () => HttpResponse.json(mockMonitoringDisabled))
     );
 
     render(<ResourceMetrics />);
@@ -123,7 +188,8 @@ describe('ResourceMetrics (admin dashboard)', () => {
     server.use(
       http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
       http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled)),
-      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingActive))
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(mockErrorTrackingActive)),
+      http.get('/api/v1/monitoring', () => HttpResponse.json(mockMonitoringDisabled))
     );
 
     render(<ResourceMetrics />);
@@ -137,7 +203,8 @@ describe('ResourceMetrics (admin dashboard)', () => {
     server.use(
       http.get('/api/v1/metrics', () => HttpResponse.json(mockMetricsData)),
       http.get('/api/v1/tracing', () => HttpResponse.json(mockTracingDisabled)),
-      http.get('/api/v1/error-tracking', () => new HttpResponse(null, { status: 500 }))
+      http.get('/api/v1/error-tracking', () => new HttpResponse(null, { status: 500 })),
+      http.get('/api/v1/monitoring', () => HttpResponse.json(mockMonitoringDisabled))
     );
 
     render(<ResourceMetrics />);

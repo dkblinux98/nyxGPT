@@ -8,6 +8,8 @@ volumes:
   nyxgpt_data:
   glitchtip_postgres_data:
   glitchtip_uploads:
+  prometheus_data:
+  grafana_data:
 
 services:
   ollama:
@@ -85,6 +87,46 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+  # Monitoring dashboards (opt-in): `docker compose --profile monitoring up`.
+  # Prometheus scrapes the API's `/metrics` endpoint (see docker/prometheus.yml)
+  # and evaluates the alerting rules in docker/prometheus-alerts.yml; Grafana
+  # is pre-provisioned with a Prometheus datasource and the dashboards under
+  # docker/grafana/dashboards (system overview, RAG performance, API
+  # metrics). Everything stays on this machine -- nothing is sent to an
+  # external/cloud monitoring service.
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    networks:
+      - nyxgpt
+    volumes:
+      - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./docker/prometheus-alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_UI_PORT:-9090}:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    profiles:
+      - monitoring
+    networks:
+      - nyxgpt
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards/json:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_UI_PORT:-3001}:3000"
+    depends_on:
+      - prometheus
 
   # Distributed tracing (opt-in): `docker compose --profile tracing up`.
   # Traces stay on this machine -- the collector only forwards to the local

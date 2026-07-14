@@ -15,6 +15,8 @@ command, e.g. for evaluation or a non-macOS host.
 | `cassandra` | `cassandra:5.0`   | Vector store for RAG                       | `9042`               |
 | `api`       | built from `Dockerfile`     | FastAPI backend (`nyxgpt-api`)  | `8000`               |
 | `web`       | built from `web/Dockerfile` | Next.js web UI (`nyxgpt-web`)   | `3000`               |
+| `prometheus` <sup>*</sup> | `prom/prometheus` | Scrapes the API's `/metrics` endpoint, evaluates alerting rules | `9090` |
+| `grafana` <sup>*</sup> | `grafana/grafana` | Pre-provisioned dashboards (system overview, RAG performance, API metrics) | `3001` |
 | `otel-collector` <sup>†</sup> | `otel/opentelemetry-collector-contrib` | Receives OTLP spans from the API, forwards to Jaeger | — |
 | `jaeger` <sup>†</sup> | `jaegertracing/all-in-one` | Trace storage + UI              | `16686`              |
 | `glitchtip` <sup>‡</sup> | `glitchtip/glitchtip` | Self-hosted error tracker UI + ingest | `8080` |
@@ -22,6 +24,9 @@ command, e.g. for evaluation or a non-macOS host.
 | `glitchtip-migrate` <sup>‡</sup> | `glitchtip/glitchtip` | One-shot GlitchTip DB migration | —                    |
 | `glitchtip-postgres` <sup>‡</sup> | `postgres:16` | GlitchTip's database             | —                    |
 | `glitchtip-redis` <sup>‡</sup> | `redis:7-alpine` | GlitchTip's queue/cache            | —                    |
+
+<sup>*</sup> Only started with the opt-in `monitoring` profile — see
+[Monitoring Dashboards](#monitoring-dashboards) below.
 
 <sup>†</sup> Only started with the opt-in `tracing` profile — see
 [Distributed Tracing](#distributed-tracing) below.
@@ -92,6 +97,50 @@ as part of this stack. To run without RAG, set `enable_chat_context = false`
 under `[rag]` in `docker/config.docker.ini`; you can also remove the
 `cassandra` service and its `depends_on` entry under `api` in
 `docker-compose.yml` if you don't want the container running at all.
+
+## Monitoring Dashboards
+
+Grafana dashboards are opt-in and local-only — metrics never leave this
+machine. It ships as a separate `monitoring` Compose profile so it doesn't
+run unless you ask for it:
+
+```bash
+docker compose --profile monitoring up
+```
+
+This starts `prometheus` (scrapes the API's [`/metrics`](api.md#get-metrics)
+endpoint every 15s using `docker/prometheus.yml`, and evaluates the alerting
+rules in `docker/prometheus-alerts.yml`) and `grafana` (UI at
+[http://localhost:3001](http://localhost:3001), also linked from the
+SRE/admin dashboard's Resource Usage step). Grafana is pre-provisioned on
+first boot with a Prometheus datasource and three dashboards under
+`docker/grafana/dashboards`:
+
+- **System Overview** — request rate, error rate, request latency
+  (p50/p95/p99), total requests, and API up/down status.
+- **RAG Performance** — RAG query rate/totals by source, chat request rate by
+  streaming mode, and chat requests by model.
+- **API Metrics** — top request paths by rate, requests by method, p95
+  latency by path, errors by path, and requests by status code.
+
+Log in with username `admin` and the password in `GRAFANA_ADMIN_PASSWORD`
+(see `.env.example`; set this to a real value before running the profile).
+
+The API container still needs `[monitoring] enabled = true` set in
+`docker/config.docker.ini` (disabled by default) for the SRE/admin
+dashboard's "Monitoring Dashboards" card to show the Grafana link -- see
+[configuration.md](configuration.md#monitoring-section) and
+[api.md](api.md#monitoring-dashboards). If you changed `GRAFANA_UI_PORT` in
+`.env`, update `grafana_ui_url` in config to match, or the link will point
+at the wrong port.
+
+Alerting rules (`docker/prometheus-alerts.yml`) evaluate continuously and
+show their state (inactive/pending/firing) on Prometheus's own Alerts page at
+[http://localhost:9090/alerts](http://localhost:9090/alerts) if the API
+becomes unreachable, its 5xx error rate exceeds 5%, or its p95 latency
+exceeds 2 seconds. This is local-only rule evaluation — no Alertmanager or
+external notification channel (email/Slack/PagerDuty) is deployed by
+default.
 
 ## Distributed Tracing
 
