@@ -12,7 +12,7 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 56 available endpoints:
+Quick reference of all 57 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -21,6 +21,7 @@ Quick reference of all 56 available endpoints:
 | `/api/v1/info` | GET | Runtime configuration |
 | `/api/v1/batch/metrics` | GET | Request batching metrics |
 | `/api/v1/metrics` | GET | Resource usage monitoring (memory, CPU, latency, queue depth) |
+| `/api/v1/tracing` | GET | Distributed tracing status (enabled/active, service name, OTLP endpoint, Jaeger UI URL) |
 | `/api/v1/config` | GET | Get current configuration |
 | `/api/v1/config` | POST | Update configuration (full replace) |
 | `/api/v1/config` | PATCH | Partial configuration update |
@@ -2741,6 +2742,70 @@ enabled = true
 batch_size = 10
 wait_time_ms = 500
 ```
+
+---
+
+## Distributed Tracing
+
+### `GET /api/v1/tracing`
+
+Report distributed tracing status: whether it's enabled in config, whether
+it actually initialized for this process, and where to find the local
+Jaeger UI.
+
+**Request:**
+
+```bash
+curl http://127.0.0.1:8000/api/v1/tracing
+```
+
+**Response:**
+
+```json
+{
+  "enabled": true,
+  "service_name": "nyxgpt-api",
+  "otlp_endpoint": "http://localhost:4318/v1/traces",
+  "jaeger_ui_url": "http://localhost:16686",
+  "active": true
+}
+```
+
+**Response Fields:**
+- `enabled` - Whether `[tracing] enabled = true` in config.ini
+- `service_name` - Service name attached to every span
+- `otlp_endpoint` - OTLP/HTTP endpoint spans are exported to
+- `jaeger_ui_url` - URL of the local Jaeger UI for browsing traces
+- `active` - Whether tracing actually initialized for this running process (mirrors `enabled` unless startup failed)
+
+**How it works:**
+
+Tracing is OpenTelemetry-based, opt-in, and strictly local — there is no
+external/cloud exporter. When enabled:
+- Every HTTP request (chat, RAG, etc.) gets its own span, auto-instrumented via `opentelemetry-instrumentation-fastapi`
+- Cassandra queries get their own child spans, auto-instrumented via `opentelemetry-instrumentation-cassandra`
+- Ollama HTTP calls (chat, streaming chat, embeddings) get manual spans
+- RAG retrieval (`retrieve_context`) gets a `rag.retrieve` span
+- Spans are batched and exported over OTLP/HTTP to a local collector
+
+**Enabling tracing:**
+
+```ini
+[tracing]
+enabled = true
+service_name = nyxgpt-api
+otlp_endpoint = http://localhost:4318/v1/traces
+jaeger_ui_url = http://localhost:16686
+```
+
+Then start the local collector + Jaeger all-in-one (opt-in Compose profile):
+
+```bash
+docker compose --profile tracing up
+```
+
+Browse traces at `http://localhost:16686` (also linked from the SRE/admin
+dashboard's Resource Usage step — see [`docs/configuration.md`](configuration.md)).
 
 ---
 
