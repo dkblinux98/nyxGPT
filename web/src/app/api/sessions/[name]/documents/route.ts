@@ -1,4 +1,4 @@
-const BASE = process.env.NYXGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
+import { apiFetch } from "@/lib/apiProxy";
 
 export async function GET(
   _request: Request,
@@ -7,8 +7,8 @@ export async function GET(
   const { name } = await params;
   const sessionName = decodeURIComponent(name);
 
-  const res = await fetch(
-    `${BASE}/api/v1/sessions/${encodeURIComponent(sessionName)}/documents`
+  const res = await apiFetch(
+    `/api/v1/sessions/${encodeURIComponent(sessionName)}/documents`
   );
 
   return new Response(res.body, {
@@ -25,8 +25,8 @@ export async function POST(
   const sessionName = decodeURIComponent(name);
   const body = await request.json();
 
-  const res = await fetch(
-    `${BASE}/api/v1/sessions/${encodeURIComponent(sessionName)}/documents`,
+  const res = await apiFetch(
+    `/api/v1/sessions/${encodeURIComponent(sessionName)}/documents`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

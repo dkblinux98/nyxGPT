@@ -410,8 +410,7 @@ function Home() {
   const exportSession = async (sessionName: string, format: 'markdown' | 'json' | 'html') => {
     setExportingSession(sessionName);
     try {
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
-      const url = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(sessionName)}/export?format=${format}`;
+      const url = `/api/v1/sessions/${encodeURIComponent(sessionName)}/export?format=${format}`;
 
       const res = await fetch(url);
       if (!res.ok) {

@@ -1,13 +1,14 @@
+import { apiFetch } from "@/lib/apiProxy";
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const base = process.env.NYXGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
   const { name } = await params;
 
   try {
-    const res = await fetch(
-      `${base}/api/v1/rag/collections/${encodeURIComponent(name)}/settings`,
+    const res = await apiFetch(
+      `/api/v1/rag/collections/${encodeURIComponent(name)}/settings`,
       {
         method: "GET",
         headers: { "Content-Type": "application/json" },
@@ -44,13 +45,12 @@ export async function PUT(
   request: Request,
   { params }: { params: Promise<{ name: string }> }
 ) {
-  const base = process.env.NYXGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
   const { name } = await params;
 
   try {
     const body = await request.json();
-    const res = await fetch(
-      `${base}/api/v1/rag/collections/${encodeURIComponent(name)}/settings`,
+    const res = await apiFetch(
+      `/api/v1/rag/collections/${encodeURIComponent(name)}/settings`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },

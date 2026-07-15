@@ -1,8 +1,8 @@
-export async function GET() {
-  const base = process.env.NYXGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
+import { apiFetch } from "@/lib/apiProxy";
 
+export async function GET() {
   try {
-    const res = await fetch(`${base}/api/v1/rag/documents`, {
+    const res = await apiFetch(`/api/v1/rag/documents`, {
       method: "GET",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",

@@ -1,18 +1,16 @@
 import { NextRequest } from 'next/server';
-
-const getBaseUrl = () =>
-  process.env.NYXGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
+import { apiFetch } from '@/lib/apiProxy';
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
 
   // Forward all query parameters
   const queryString = searchParams.toString();
-  const url = queryString
-    ? `${getBaseUrl()}/api/v1/sessions/search?${queryString}`
-    : `${getBaseUrl()}/api/v1/sessions/search`;
+  const path = queryString
+    ? `/api/v1/sessions/search?${queryString}`
+    : `/api/v1/sessions/search`;
 
-  const r = await fetch(url, {
+  const r = await apiFetch(path, {
     cache: "no-store",
   });
 

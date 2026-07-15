@@ -1,14 +1,15 @@
+import { apiFetch } from "@/lib/apiProxy";
+
 export async function GET(
   request: Request,
   { params }: { params: Promise<{ name: string; index: string }> }
 ) {
-  const base = process.env.NYXGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
   const { name, index } = await params;
   const sessionName = decodeURIComponent(name);
   const messageIndex = decodeURIComponent(index);
 
-  const res = await fetch(
-    `${base}/api/v1/sessions/${encodeURIComponent(sessionName)}/messages/${messageIndex}/rag`,
+  const res = await apiFetch(
+    `/api/v1/sessions/${encodeURIComponent(sessionName)}/messages/${messageIndex}/rag`,
     {
       cache: "no-store",
     }

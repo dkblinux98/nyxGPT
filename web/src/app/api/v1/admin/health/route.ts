@@ -1,8 +1,8 @@
-const BASE_URL = process.env.NYXGPT_API_BASE_URL ?? 'http://127.0.0.1:8000';
+import { apiFetch } from '@/lib/apiProxy';
 
 export async function GET() {
   try {
-    const r = await fetch(`${BASE_URL}/api/v1/admin/health`, {
+    const r = await apiFetch('/api/v1/admin/health', {
       cache: 'no-store',
     });
 

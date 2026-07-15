@@ -85,6 +85,15 @@ services:
       - nyxgpt
     ports:
       - "${NYXGPT_WEB_PORT:-3000}:3000"
+    environment:
+      # Server-side base URL the Next.js proxy routes use to reach the API
+      # over the compose network (see web/src/lib/apiProxy.ts). This is
+      # distinct from the NEXT_PUBLIC_API_BASE_URL build arg above, which is
+      # baked into the browser bundle instead.
+      NYXGPT_API_BASE_URL: http://api:8000
+      # Same shared secret as the api service, so the proxy routes can
+      # attach X-API-Key on every backend call (see docker/config.docker.ini).
+      NYXGPT_AUTH_API_KEY: ${NYXGPT_AUTH_API_KEY:-}
     depends_on:
       api:
         condition: service_healthy

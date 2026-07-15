@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import { apiFetch } from '@/lib/apiProxy';
 
 export async function GET(
   request: NextRequest,
@@ -6,18 +7,15 @@ export async function GET(
 ) {
   const { filename } = await params;
 
-  const base =
-    process.env.NYXGPT_API_BASE_URL ??
-    "http://127.0.0.1:8000";
   const searchParams = request.nextUrl.searchParams;
 
   // Forward query parameters (level, search)
   const queryString = searchParams.toString();
-  const url = queryString
-    ? `${base}/api/v1/logs/stream/${encodeURIComponent(filename)}?${queryString}`
-    : `${base}/api/v1/logs/stream/${encodeURIComponent(filename)}`;
+  const path = queryString
+    ? `/api/v1/logs/stream/${encodeURIComponent(filename)}?${queryString}`
+    : `/api/v1/logs/stream/${encodeURIComponent(filename)}`;
 
-  const r = await fetch(url, {
+  const r = await apiFetch(path, {
     cache: "no-store",
   });
 

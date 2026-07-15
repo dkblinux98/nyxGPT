@@ -46,12 +46,20 @@ nyxgpt ops restart api
 
 **File**: `web/src/app/api/v1/your-feature/action/route.ts`
 
-```typescript
-export async function GET() {
-  const base = process.env.NYXGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
+**Always** reach the backend through the shared `apiFetch()` helper
+(`web/src/lib/apiProxy.ts`) instead of calling `fetch()` directly with a
+hand-rolled base URL. The helper resolves the base URL from the one
+canonical env var (`NYXGPT_API_BASE_URL`) and attaches the `X-API-Key` auth
+header (from `NYXGPT_AUTH_API_KEY`) on every call — hand-rolling either of
+those per route is exactly how #3178 (web UI couldn't reach or authenticate
+to the API) happened.
 
+```typescript
+import { apiFetch } from "@/lib/apiProxy";
+
+export async function GET() {
   try {
-    const res = await fetch(`${base}/api/v1/your-feature/action`, {
+    const res = await apiFetch("/api/v1/your-feature/action", {
       method: "GET",
       headers: { "Content-Type": "application/json" },
       cache: "no-store",
@@ -82,12 +90,13 @@ export async function GET() {
 For POST endpoints, add:
 
 ```typescript
+import { apiFetch } from "@/lib/apiProxy";
+
 export async function POST(request: Request) {
-  const base = process.env.NYXGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
   const body = await request.json();
 
   try {
-    const res = await fetch(`${base}/api/v1/your-feature/action`, {
+    const res = await apiFetch("/api/v1/your-feature/action", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -100,6 +109,11 @@ export async function POST(request: Request) {
   }
 }
 ```
+
+`web/tests/app/api/proxy-routes-canonical-base-url.test.ts` fails the build
+if a route calls `fetch()` without going through `apiFetch()`, or references
+a non-canonical base-URL env var (`NEXT_PUBLIC_API_URL`, `NYXGPT_API_BASE`)
+or a hardcoded backend host — run it after adding a route.
 
 ### 4. Restart Web Service
 

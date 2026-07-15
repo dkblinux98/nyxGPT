@@ -1,4 +1,4 @@
-const BASE = process.env.NYXGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
+import { apiFetch } from "@/lib/apiProxy";
 
 export async function DELETE(
   _request: Request,
@@ -8,8 +8,8 @@ export async function DELETE(
   const sessionName = decodeURIComponent(name);
   const docId = decodeURIComponent(doc_id);
 
-  const res = await fetch(
-    `${BASE}/api/v1/sessions/${encodeURIComponent(sessionName)}/documents/${encodeURIComponent(docId)}`,
+  const res = await apiFetch(
+    `/api/v1/sessions/${encodeURIComponent(sessionName)}/documents/${encodeURIComponent(docId)}`,
     { method: "DELETE" }
   );
 
