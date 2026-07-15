@@ -711,9 +711,18 @@ Return which color is active, each color's health, and recent switch history.
     "blue": { "healthy": true, "message": "nyxgpt-api-blue healthy (1/1 ready)" },
     "green": { "healthy": true, "message": "nyxgpt-api-green healthy (1/1 ready)" }
   },
-  "history": [{ "from": "green", "to": "blue", "ts": 1730000000.0 }]
+  "history": [{ "from": "green", "to": "blue", "ts": 1730000000.0 }],
+  "available": true,
+  "unavailable_reason": null
 }
 ```
+
+`available` is `false` when blue/green deployment can't operate in the
+current deployment mode (e.g. under docker-compose, which has no cluster for
+`kubectl` to reach — see
+[docker-compose.md](docker-compose.md#bluegreen-and-canary-deployment)); in
+that case `unavailable_reason` explains why and every color's `message`
+carries the same explanation instead of a raw `kubectl not found` error.
 
 ### `POST /api/v1/deploy/switch`
 
@@ -777,9 +786,14 @@ metrics, and recent action history.
   "stable": { "healthy": true, "message": "nyxgpt-api-stable healthy (3/3 ready)" },
   "canary": { "healthy": true, "message": "nyxgpt-api-canary healthy (1/1 ready)" },
   "metrics": { "total_requests": 120, "error_rate_percent": 0.83, "p95_latency_ms": 340.5 },
-  "history": [{ "action": "start", "weight_percent": 10, "ts": 1730000000.0 }]
+  "history": [{ "action": "start", "weight_percent": 10, "ts": 1730000000.0 }],
+  "available": true,
+  "unavailable_reason": null
 }
 ```
+
+`available`/`unavailable_reason` behave the same as on `GET
+/api/v1/deploy/status` above.
 
 ### `POST /api/v1/canary/start`
 
