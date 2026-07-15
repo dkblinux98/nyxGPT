@@ -257,6 +257,15 @@ Search across all chat sessions with Ctrl+F (Cmd+F on Mac):
 
 The search interface appears as a modal overlay. Press Escape to close. Selecting a result switches to that session and scrolls to the matching message with a temporary highlight.
 
+#### Admin Dashboard
+
+Access the dashboard at `http://127.0.0.1:3000/admin/dashboard` for an at-a-glance view of system state:
+
+- **Status badges** — Deploy, canary, self-heal, observability, and auth status render as pill badges with a colored dot and label. The "on"/healthy state uses green; the "off"/idle state uses a gray dot and text (`var(--muted-foreground)`) that meets WCAG AA contrast against the pill background.
+- **Quick-nav links** — "System Health →", "Deployment →", "Canary →", "Self-heal →", "Usage Analytics →", "CI Analytics →", and "Full metrics →" render as bordered, pill-styled links (`navLinkStyle`) so they read as clickable buttons rather than plain text, and the trailing arrow stays on the same line as its label instead of wrapping onto its own.
+- **Access Management** — Masked API keys wrap within their pane instead of overflowing it; revealing a key shows the full value, also wrapped.
+- **Back to Chat / raw logs links** — "← Back to Chat" and "View raw application logs →" use an underlined inline-link style (`inlineLinkStyle`) for clear affordance.
+
 #### Configuration Wizard
 
 Access the wizard at `http://127.0.0.1:3000/admin` to configure:
