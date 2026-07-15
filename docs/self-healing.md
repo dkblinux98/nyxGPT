@@ -14,12 +14,15 @@ already hosts the [blue/green](api.md#deployment-bluegreen) and
 ## How it works
 
 1. Every `check_interval_seconds` (default 15s), the watchdog runs
-   `docker compose -f docker-compose.yml ps -a --format json` to list every
+   `docker compose -f <compose file> ps -a --format json` to list every
    container the Compose project has created — the core services
    (`ollama`, `cassandra`, `api`, `web`) plus any of the opt-in
    `monitoring`/`logging`/`tracing`/`errors` profiles that happen to be up.
    A profile that was never started simply doesn't appear; it isn't treated
-   as "down".
+   as "down". See [Docker access from inside the `api`
+   container](#docker-access-from-inside-the-api-container) for how it
+   reaches the Docker daemon and resolves that compose file at all — it
+   runs inside one of the containers it's inspecting.
 2. A component is **healthy** when its Compose `State` is `running` and its
    `Health` is either `healthy` or empty (no healthcheck configured — see
    [Container healthchecks](#container-healthchecks) below for which
@@ -55,6 +58,88 @@ action when **enabled** — controlled at runtime, not by editing
 *initial* state on a fresh install (`~/.nyxGPT/self_heal_state.json` doesn't
 exist yet); once that file exists, the dashboard/CLI/API toggle is the
 source of truth and config.ini is no longer consulted.
+
+## Docker access from inside the `api` container
+
+The watchdog shells out to `docker compose ps`/`restart`, but it runs
+*inside* the `api` container -- a plain `python:3.11-slim` image with no
+`docker` CLI, no `/var/run/docker.sock`, and no copy of `docker-compose.yml`
+on its filesystem. Left as-is, every one of those calls fails silently
+(`list_component_status()` treats "no docker" the same as "nothing to
+report"), which is why `/api/v1/self-heal/status` used to permanently show
+`"components": []` in the Compose deployment. Three things had to be added
+to fix that:
+
+1. **Docker CLI + Compose plugin in the image** (`Dockerfile`): installed
+   from Docker's static binaries (`download.docker.com`/GitHub releases)
+   rather than the full `docker-ce` apt repo, since only the client is
+   needed here, not a daemon.
+2. **The Docker socket, bind-mounted into the container**
+   (`docker-compose.yml`, `api` service: `/var/run/docker.sock:/var/run/docker.sock`).
+   This is what lets the `docker` CLI inside `api` talk to the *host's*
+   Docker daemon and see/restart sibling containers.
+3. **The compose file itself, bind-mounted in** (`./docker-compose.yml:/etc/nyxgpt/docker-compose.yml:ro`),
+   with its in-container path passed to the app via `NYXGPT_COMPOSE_FILE`.
+   `self_heal.py` can't locate a compose file relative to its own module
+   path the way `nyxgpt` does for other repo-relative lookups (see
+   `REPO_ROOT` in `src/nyxgpt/self_heal.py` and `src/nyxgpt/ops.py`) because
+   inside the container it isn't part of a checkout at all -- it's
+   installed under `site-packages`. The compose file also now pins a
+   top-level `name: nyxgpt`, so `docker compose -f <that file> ...` always
+   resolves to the running project regardless of what directory a given
+   host checked the repo out into (Compose otherwise derives the project
+   name from the checkout directory's basename, which the watchdog has no
+   way to know from inside a container).
+
+### Security tradeoffs of mounting the Docker socket
+
+Mounting `/var/run/docker.sock` into `api` is **effectively root on the
+host**: anything with a live connection to that socket can create a new
+container with an arbitrary bind mount (e.g. the host's `/`) and a shell,
+which is a trivial container-escape-to-root primitive. This is not
+mitigated by adding `:ro` to the bind mount -- that only stops the
+container from unlinking/replacing the socket *file*, it does not restrict
+which Docker API calls can be made once connected to it, which is a common
+misconception. Two things follow from that:
+
+- **The blast radius of any RCE in `api` just got materially bigger.** The
+  `api` container is the one thing in this stack that parses untrusted
+  input end-to-end (chat prompts, uploaded documents for RAG, etc.). Before
+  this change, a hypothetical container-escape bug in `api` was contained
+  to that container; after this change, it's a host-root escape.
+- **This was chosen anyway, deliberately, over the alternative** (moving
+  the watchdog to a separate sidecar/host process that owns the socket and
+  exposes a narrow internal API for "list status" / "restart X", so `api`
+  itself never touches the socket) because the sidecar approach is a
+  meaningfully bigger change -- a new always-on service, an internal
+  auth boundary between it and `api`, and its own deployment/health story --
+  for a capstone-scale local deployment where the threat model is "a
+  single operator's own machine or lab environment", not a multi-tenant
+  production system. The direct-mount approach is also literally one of
+  the two options this issue's acceptance criteria named as acceptable.
+
+If this stack is ever deployed somewhere the "untrusted input reaches a
+container with host-root-equivalent access" risk actually matters (e.g. a
+shared or internet-facing environment), the recommended hardening path is
+one of:
+
+- Put a [Docker socket
+  proxy](https://github.com/Tecnativa/docker-socket-proxy) between `api`
+  and the real socket, allow-listing only the `containers` resource
+  (`ps`/`restart`) and denying everything else (images, volumes, exec,
+  swarm, etc.) -- this still permits creating a privileged container via
+  `POST /containers/create`, so it narrows but does not close the escape
+  primitive above.
+- Or move the watchdog out of `api` entirely into a dedicated sidecar (or a
+  host-level process/cron job, outside Docker altogether) that is the only
+  thing with socket access, communicating with `api` over an internal,
+  authenticated channel instead of sharing a process. This closes the gap
+  completely at the cost of the added complexity above, and would be the
+  right call before running this in a multi-tenant or internet-facing
+  environment.
+
+Neither hardening path is implemented here; this section exists so the
+tradeoff is a documented, deliberate choice rather than an oversight.
 
 ## Container healthchecks
 
@@ -99,10 +184,14 @@ fine, but not an explicit kill).
 In practice this means: self-heal fully covers `ollama`, `cassandra`,
 `web`, and every opt-in-profile container being killed or crashing, but a
 killed `api` container currently needs `docker compose up -d api` run by
-an operator (or a future external supervisor with access to the Docker
-socket, which is out of scope for this pass — see the open follow-up items
-in the #3160 issue). The [smoke test](#smoke-test) below exercises and
-reports on this explicitly rather than silently glossing over it.
+an operator. `api` now having its own socket access (see [Docker access
+from inside the `api` container](#docker-access-from-inside-the-api-container)
+above) doesn't change this -- a killed `api` takes the watchdog thread down
+with it, socket or no socket. Closing this gap needs a supervisor that
+lives *outside* `api` (a separate sidecar or host process), which is out of
+scope for this pass — see the open follow-up items in the #3160 issue. The
+[smoke test](#smoke-test) below exercises and reports on this explicitly
+rather than silently glossing over it.
 
 ## Smoke test
 
