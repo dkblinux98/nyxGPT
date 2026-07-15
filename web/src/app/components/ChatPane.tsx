@@ -496,28 +496,43 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   const [firstItemIndex, setFirstItemIndex] = useState<number>(0);
   const PAGE_SIZE = 50;
 
-  // Fetch available models on mount
-  useEffect(() => {
-    async function fetchModels() {
-      try {
-        const res = await fetch('/api/models');
-        if (res.ok) {
-          const data = await res.json();
-          const models = data.models || [];
-          setAvailableModels(models);
-          // Set first model as default if none selected
-          if (models.length > 0 && !selectedModel) {
-            setSelectedModel(models[0]);
-          }
-        } else {
-          console.error('Failed to fetch models:', res.status, res.statusText);
-        }
-      } catch (err) {
-        console.error('Failed to fetch models:', err);
+  // Fetch available models on mount, whenever the model dropdown is opened, and
+  // whenever the tab regains focus, so a model pulled from the Manage Models
+  // page shows up here without requiring a manual reload.
+  const fetchModels = useCallback(async () => {
+    try {
+      const res = await fetch('/api/models');
+      if (res.ok) {
+        const data = await res.json();
+        const models = data.models || [];
+        setAvailableModels(models);
+        // Set first model as default if none selected
+        setSelectedModel((prev) => (prev ? prev : models[0] || ''));
+      } else {
+        console.error('Failed to fetch models:', res.status, res.statusText);
       }
+    } catch (err) {
+      console.error('Failed to fetch models:', err);
     }
-    fetchModels();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    void fetchModels();
+  }, [fetchModels]);
+
+  useEffect(() => {
+    if (showModelDropdown) {
+      void fetchModels();
+    }
+  }, [showModelDropdown, fetchModels]);
+
+  useEffect(() => {
+    function handleFocus() {
+      void fetchModels();
+    }
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [fetchModels]);
 
   useEffect(() => {
     // New session selected: clear local transcript UI and load historical messages
