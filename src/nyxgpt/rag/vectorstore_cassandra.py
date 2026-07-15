@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
+from cassandra import InvalidRequest
 from cassandra.cluster import Cluster, Session
 from cassandra.concurrent import execute_concurrent
 from cassandra.query import BatchStatement, BatchType, PreparedStatement, SimpleStatement
@@ -87,6 +88,22 @@ class VectorSearchDebugMetrics:
 
 class VectorStoreError(RuntimeError):
     pass
+
+
+def _is_missing_schema_error(exc: Exception) -> bool:
+    """True if exc indicates the RAG keyspace/table hasn't been created yet.
+
+    A fresh install has no schema until the first ``ensure_schema=True``
+    ingest, so reads against it are expected to hit "keyspace does not
+    exist" or "unconfigured table" -- that's not a real failure, it just
+    means there's nothing ingested yet.
+    """
+    if not isinstance(exc, InvalidRequest):
+        return False
+    msg = str(exc).lower()
+    return (
+        "does not exist" in msg or "unconfigured table" in msg or "unconfigured columnfamily" in msg
+    )
 
 
 # Stay well under Cassandra's default batch_size_fail_threshold_in_kb (50KB) -
@@ -658,6 +675,25 @@ class CassandraVectorStore:
         # Ensure settings table exists
         self.ensure_settings_table()
 
+    def schema_exists(self) -> bool:
+        """Check whether this collection's table already exists.
+
+        Queries ``system_schema`` directly by fully-qualified keyspace/table
+        name rather than going through :meth:`_ensure_keyspace_selected`, so
+        it works even before the target keyspace has been created (unlike
+        virtually every other method on this class, it can't raise on a
+        fresh install).
+
+        Returns:
+            True if the table exists, False otherwise.
+        """
+        rows = self.session.execute(
+            "SELECT table_name FROM system_schema.tables "
+            "WHERE keyspace_name = %s AND table_name = %s",
+            (self.cfg.keyspace, self.table_name),
+        )
+        return rows.one() is not None
+
     # ----------------------------
     # Upsert
     # ----------------------------
@@ -787,15 +823,21 @@ class CassandraVectorStore:
             List of result dicts with doc_id, chunk_id, text, metadata, score, embedding_model.
             If collect_metrics=True, returns tuple of (results, VectorSearchDebugMetrics).
         """
-        if not self._keyspace_ready:
-            self._ensure_keyspace_selected()
-
         start_time = time.perf_counter()
-        fetch_n = self._ann_fetch_n(k, metadata_filter)
-        bound = self._prepare_ann_stmt().bind((embedding, embedding, fetch_n))
-        bound.fetch_size = fetch_n
+        try:
+            if not self._keyspace_ready:
+                self._ensure_keyspace_selected()
 
-        rows = self.session.execute(bound)
+            fetch_n = self._ann_fetch_n(k, metadata_filter)
+            bound = self._prepare_ann_stmt().bind((embedding, embedding, fetch_n))
+            bound.fetch_size = fetch_n
+
+            rows = self.session.execute(bound)
+        except InvalidRequest as exc:
+            if not _is_missing_schema_error(exc):
+                raise
+            log.debug("Vector search skipped, RAG schema not created yet: %s", exc)
+            rows = []
         out, scores = _filter_and_score_rows(rows, k, embedding_model, metadata_filter)
 
         if collect_metrics:
@@ -843,13 +885,20 @@ class CassandraVectorStore:
             A search that fails (e.g. driver timeout) yields an empty list
             for that position rather than failing the whole batch.
         """
-        if not self._keyspace_ready:
-            self._ensure_keyspace_selected()
-
         if not embeddings:
             return []
 
-        stmt = self._prepare_ann_stmt()
+        try:
+            if not self._keyspace_ready:
+                self._ensure_keyspace_selected()
+
+            stmt = self._prepare_ann_stmt()
+        except InvalidRequest as exc:
+            if not _is_missing_schema_error(exc):
+                raise
+            log.debug("Batched vector search skipped, RAG schema not created yet: %s", exc)
+            return [[] for _ in embeddings]
+
         fetch_n = self._ann_fetch_n(k, metadata_filter)
         statements_and_params = []
         for emb in embeddings:
@@ -904,17 +953,29 @@ class CassandraVectorStore:
         return self._ann_query_stmt
 
     def list_docs(self) -> list[dict]:
-        """Return a list of documents currently stored: {doc_id, chunks, embedding_model}."""
-        if not self._keyspace_ready:
-            self._ensure_keyspace_selected()
+        """Return a list of documents currently stored: {doc_id, chunks, embedding_model}.
 
-        # Cassandra only supports GROUP BY on PRIMARY KEY columns.
-        # We fetch all doc_id, embedding_model pairs and aggregate in Python.
-        stmt = SimpleStatement(
-            f"SELECT doc_id, embedding_model FROM {self.table_name}",
-        )
+        Returns an empty list if the keyspace/table doesn't exist yet (a
+        fresh install before the first ingest) rather than raising -- no
+        schema means no documents.
+        """
+        try:
+            if not self._keyspace_ready:
+                self._ensure_keyspace_selected()
 
-        rows = self.session.execute(stmt)
+            # Cassandra only supports GROUP BY on PRIMARY KEY columns.
+            # We fetch all doc_id, embedding_model pairs and aggregate in Python.
+            stmt = SimpleStatement(
+                f"SELECT doc_id, embedding_model FROM {self.table_name}",
+            )
+
+            rows = self.session.execute(stmt)
+        except InvalidRequest as exc:
+            if not _is_missing_schema_error(exc):
+                raise
+            log.debug("list_docs skipped, RAG schema not created yet: %s", exc)
+            return []
+
         # Aggregate: count chunks per doc_id and capture embedding_model
         doc_info: dict[str, dict] = {}
         for r in rows:

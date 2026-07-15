@@ -851,6 +851,14 @@ def ingest_document(
 
     store = CassandraVectorStore(collection=collection)
     try:
+        if not ensure_schema and not store.schema_exists():
+            # First-time ingest into this collection: create the schema
+            # automatically instead of requiring callers to pass
+            # ensure_schema=True out-of-band. Without this, a fresh install's
+            # first ingest (ensure_schema defaults to False in the API/CLI)
+            # would fail with "keyspace does not exist" instead of bootstrapping.
+            ensure_schema = True
+
         if ensure_schema:
             # Need to chunk and embed first to infer dimension
             chunks = chunk_text(text)
