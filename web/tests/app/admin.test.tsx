@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import AdminPage from '../../src/app/admin/page';
 
 /**
@@ -450,6 +450,34 @@ describe('AdminPage Component', () => {
       expect(screen.getByText('Summary')).toBeInTheDocument();
       const nextButtonOnLastStep = screen.getByRole('button', { name: /next/i });
       expect(nextButtonOnLastStep).toBeDisabled();
+    });
+  });
+
+  it('re-fetches models when the window regains focus, so a newly pulled model appears', async () => {
+    const { server } = await import('../mocks/server');
+    const { http, HttpResponse } = await import('msw');
+
+    let modelsResponse = ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b'];
+    server.use(
+      http.get('/api/models', () => {
+        return HttpResponse.json({ models: modelsResponse });
+      })
+    );
+
+    render(<AdminPage />);
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: 'llama3.1:8b' })).toBeInTheDocument();
+    });
+
+    // Simulate a model pulled from the Manage Models page while this tab was
+    // in the background.
+    modelsResponse = ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b', 'phi3:mini'];
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: 'phi3:mini' })).toBeInTheDocument();
     });
   });
 

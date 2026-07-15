@@ -84,6 +84,24 @@ export default function AdminPage() {
     loadModels();
   }, []);
 
+  // Re-fetch the models list whenever the tab regains focus/visibility, so a
+  // model pulled from the Manage Models page appears here without requiring
+  // a manual reload.
+  useEffect(() => {
+    function handleFocus() {
+      loadModels();
+    }
+    function handleVisibility() {
+      if (document.visibilityState === 'visible') loadModels();
+    }
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, []);
+
   const steps: { id: WizardStep; label: string; description: string }[] = [
     { id: 'model', label: 'Model Selection', description: 'Choose your default LLM model' },
     { id: 'rag', label: 'RAG Configuration', description: 'Configure retrieval-augmented generation' },
