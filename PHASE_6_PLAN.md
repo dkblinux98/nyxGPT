@@ -163,6 +163,20 @@ constrains the fixes for the deploy-layer acceptance failures: self-heal (#3179)
 (#3180), and blue-green/canary (#3184) must heal/operate via wrappers, and the UI strings +
 the five docs that currently show raw `docker compose`/`kubectl` must be converted.
 
+## Cross-cutting principle — private-to-the-workstation access, even in the cloud (owner, 2026-07-15)
+
+**Every nyxGPT deployment — local *and* remote (AWS Linux/macOS) — is reachable only from the
+owner's own workstation, never publicly exposed.** A cloud deploy provisions private
+infrastructure the owner reaches through a locked path (e.g. SSH tunnel / WireGuard / Tailscale,
+or a security group scoped to the owner's current IP with services bound to loopback behind the
+tunnel) — not a public endpoint. This applies to the app *and* the local observability tools
+(Grafana/Prometheus/Jaeger/GlitchTip), which are reached over localhost (or the tunnel), never a
+public URL. This is a non-negotiable security posture consistent with VISION.md (local-first,
+privacy-respecting) and directly constrains the AWS security-group/networking work (#11), the
+`nyxgpt cloud deploy` command (#14), and the "returns the URL" behavior (the URL is a
+tunnel/loopback address, not a public one). The specific access mechanism is an architecture
+decision to make explicitly (like #10), not to assume.
+
 ## Sequencing rules
 
 - Sprint 6.0 blocks 6.2/6.3 (no public exposure before the API is sandboxed + auth-gated).
