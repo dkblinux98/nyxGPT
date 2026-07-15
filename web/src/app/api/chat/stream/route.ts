@@ -1,11 +1,6 @@
 import { NextRequest } from "next/server";
 import { Agent } from "undici";
-
-// Prefer explicit URL env var; keep backwards compatibility.
-const API_BASE =
-  process.env.NYXGPT_API_BASE_URL ??
-  process.env.NYXGPT_API_BASE ??
-  "http://127.0.0.1:8000";
+import { apiFetch } from "@/lib/apiProxy";
 
 // Undici defaults can abort long-lived streaming responses.
 // Configure a local agent with no body timeout.
@@ -52,7 +47,7 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const upstreamUrl = `${String(API_BASE).replace(/\/$/, "")}/api/v1/chat/stream`;
+  const upstreamPath = "/api/v1/chat/stream";
 
   // Log minimal metadata (don’t dump full prompts)
   const session = typeof body?.session === "string" ? body.session : undefined;
@@ -60,12 +55,12 @@ export async function POST(req: NextRequest) {
   console.log(
     `[${ts()}] [web] [chat/stream] [${reqId}] start session=${session ?? ""} prompt_len=${
       promptLen ?? ""
-    } upstream=${upstreamUrl}`
+    } upstream=${upstreamPath}`
   );
 
   let upstream: Response;
   try {
-    upstream = await fetch(upstreamUrl, {
+    upstream = await apiFetch(upstreamPath, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

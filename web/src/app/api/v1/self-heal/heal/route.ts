@@ -1,9 +1,9 @@
-export async function POST(request: Request) {
-  const base = process.env.NYXGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
+import { apiFetch } from "@/lib/apiProxy";
 
+export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const res = await fetch(`${base}/api/v1/self-heal/heal`, {
+    const res = await apiFetch(`/api/v1/self-heal/heal`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

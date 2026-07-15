@@ -1,8 +1,7 @@
-const getBaseUrl = () =>
-  process.env.NYXGPT_API_BASE_URL ?? "http://127.0.0.1:8000";
+import { apiFetch } from "@/lib/apiProxy";
 
 export async function GET() {
-  const r = await fetch(`${getBaseUrl()}/api/v1/models`, {
+  const r = await apiFetch(`/api/v1/models`, {
     cache: "no-store",
   });
 
@@ -17,7 +16,7 @@ export async function GET() {
 export async function POST(request: Request) {
   const body = await request.json();
 
-  const r = await fetch(`${getBaseUrl()}/api/v1/models/pull`, {
+  const r = await apiFetch(`/api/v1/models/pull`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -50,7 +49,7 @@ export async function DELETE(request: Request) {
     );
   }
 
-  const r = await fetch(`${getBaseUrl()}/api/v1/models/${encodeURIComponent(model)}`, {
+  const r = await apiFetch(`/api/v1/models/${encodeURIComponent(model)}`, {
     method: "DELETE",
     cache: "no-store",
   });

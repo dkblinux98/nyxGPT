@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
+import { apiFetch } from '@/lib/apiProxy';
 
 export async function GET() {
   try {
-    const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-    const res = await fetch(`${backendUrl}/api/v1/metrics`, {
+    const res = await apiFetch('/api/v1/metrics', {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',

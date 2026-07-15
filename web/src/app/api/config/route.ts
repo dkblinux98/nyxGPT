@@ -1,9 +1,7 @@
-import { NextRequest } from 'next/server';
-
-const BASE_URL = process.env.NYXGPT_API_BASE_URL ?? 'http://127.0.0.1:8000';
+import { apiFetch } from '@/lib/apiProxy';
 
 export async function GET() {
-  const r = await fetch(`${BASE_URL}/api/v1/config`, {
+  const r = await apiFetch('/api/v1/config', {
     cache: 'no-store',
   });
 
@@ -18,7 +16,7 @@ export async function GET() {
 export async function POST(request: Request) {
   const body = await request.json();
 
-  const r = await fetch(`${BASE_URL}/api/v1/config`, {
+  const r = await apiFetch('/api/v1/config', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

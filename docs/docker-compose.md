@@ -94,9 +94,19 @@ Open the web UI at [http://localhost:3000](http://localhost:3000).
 - **Environment**: all other tunables (ports, the API key, CORS origins, the
   web UI's API base URL, image tags) are set via `.env` — see
   `.env.example` for the full list.
-- **Web UI → API URL**: `NEXT_PUBLIC_API_BASE_URL` is inlined into the web
-  UI's client bundle at *build* time (Next.js `NEXT_PUBLIC_*` semantics), so
-  changing it requires rebuilding: `docker compose build web`.
+- **Web UI → API URL**: there are two distinct settings, and both are wired
+  up by `docker-compose.yml` — you shouldn't need to touch either for a
+  standard Compose deploy:
+  - `NEXT_PUBLIC_API_BASE_URL` is inlined into the web UI's *browser* bundle
+    at build time (Next.js `NEXT_PUBLIC_*` semantics), so changing it
+    requires rebuilding: `docker compose build web`.
+  - `NYXGPT_API_BASE_URL` is a runtime env var read *server-side* by the
+    `web` container's Next.js API proxy routes (see
+    `web/src/lib/apiProxy.ts`) — it's set to `http://api:8000` so those
+    routes reach the `api` service over the compose network. The same
+    proxy routes also forward `NYXGPT_AUTH_API_KEY` as the `X-API-Key`
+    header on every backend call, since `docker/config.docker.ini` enables
+    auth for exactly this reason (see the `[auth]` section).
 
 ## Disabling RAG / Cassandra
 
