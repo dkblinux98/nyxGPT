@@ -10,8 +10,45 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from nyxgpt import self_heal
+
 # Repo root: .../nyxGPT/src/nyxgpt/ops.py -> parents[2] is repo root
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Maps a logical component to its Homebrew service name for native mode.
+# Cassandra has no native brew service -- per PHASE_6_PLAN.md it stays the one
+# ops-managed Docker container even under native-first, so it's tracked via
+# `_docker_container_state` instead (see `detect_deployment_mode`).
+NATIVE_BREW_SERVICES: dict[str, str] = {
+    "api": "nyxgpt-api",
+    "web": "nyxgpt-web",
+    "ollama": "ollama",
+}
+
+# Host port each component binds to under Docker Compose (see docker-compose.yml).
+# Used only for collision messaging -- detection itself is state-based.
+COMPOSE_COMPONENT_PORTS: dict[str, int] = {
+    "api": 8000,
+    "web": 3000,
+    "ollama": 11434,
+    "cassandra": 9042,
+}
+
+NATIVE_CONFIG_HINT = "~/.nyxGPT/config.ini"
+COMPOSE_CONFIG_HINT = "docker/config.docker.ini (mounted into the Compose 'api' container)"
+
+
+@dataclass(frozen=True)
+class DeploymentMode:
+    """Snapshot of what's actually running, native vs. Docker Compose.
+
+    `native`/`compose` map component name -> a state string ("started"/"running"/
+    "none"/"absent"/...); `conflicts` lists components reported live in both.
+    """
+
+    native: dict[str, str]
+    compose: dict[str, str]
+    conflicts: list[str]
 
 
 @dataclass(frozen=True)
@@ -69,6 +106,72 @@ def _tap_repo(tap: str) -> Path:
     return Path((cp.stdout or "").strip())
 
 
+# --- Deployment mode detection ---
+
+
+def _brew_services_snapshot() -> dict[str, str]:
+    """Return {brew_service_name: state} parsed from `brew services list`."""
+    if _which("brew") is None:
+        return {}
+    cp = _run(["brew", "services", "list"], check=False)
+    snapshot: dict[str, str] = {}
+    for line in (cp.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            snapshot[parts[0]] = parts[1]
+    return snapshot
+
+
+def _docker_container_state(name: str) -> str:
+    """Return the docker state ('running', 'exited', ...) for a container, or 'absent'."""
+    if _which("docker") is None:
+        return "absent"
+    cp = _run(
+        ["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.State}}"],
+        check=False,
+    )
+    out = (cp.stdout or "").strip()
+    return out.splitlines()[0].strip() if out else "absent"
+
+
+def _compose_stack_snapshot() -> dict[str, str]:
+    """Return {service: state} for the docker-compose.yml stack, if any is running.
+
+    Reuses self_heal.list_component_status(), which already knows how to resolve
+    and query the project's docker-compose.yml via `docker compose ps -a`.
+    """
+    try:
+        statuses = self_heal.list_component_status()
+    except Exception:
+        return {}
+    return {s.service: s.state for s in statuses}
+
+
+def detect_deployment_mode() -> DeploymentMode:
+    """Detect which deployment(s) are actually running: native vs. Docker Compose.
+
+    `ops.py` otherwise assumes native-only (Homebrew services + one ops-managed
+    Cassandra container). This cross-checks the Compose stack so `status`/`restart`
+    can see -- and avoid colliding with -- a Compose deployment left running.
+    """
+    brew_snapshot = _brew_services_snapshot()
+    native = {
+        component: brew_snapshot.get(brew_name, "none")
+        for component, brew_name in NATIVE_BREW_SERVICES.items()
+    }
+    native["cassandra"] = _docker_container_state("nyxgpt-cassandra")
+
+    compose = _compose_stack_snapshot()
+
+    conflicts = [
+        component
+        for component in COMPOSE_COMPONENT_PORTS
+        if native.get(component) in ("started", "running") and compose.get(component) == "running"
+    ]
+
+    return DeploymentMode(native=native, compose=compose, conflicts=conflicts)
+
+
 # --- Restart helpers ---
 
 
@@ -96,14 +199,11 @@ def _restart_brew_service(name: str) -> list[OpsResult]:
 def _restart_docker_container(name: str) -> list[OpsResult]:
     if _which("docker") is None:
         return [OpsResult(False, f"docker not found; cannot restart {name}")]
+
+    was_running = _docker_container_state(name) == "running"
+
     try:
         cp = _run(["docker", "restart", name], check=False)
-        if cp.returncode == 0:
-            return [OpsResult(True, f"Restarted docker container: {name}")]
-        details = (cp.stdout or "").strip() + (
-            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
-        )
-        return [OpsResult(False, f"Failed to restart docker container: {name}", details.strip())]
     except Exception as e:
         return [
             OpsResult(
@@ -112,6 +212,37 @@ def _restart_docker_container(name: str) -> list[OpsResult]:
                 f"{type(e).__name__}: {e}",
             )
         ]
+
+    if cp.returncode == 0:
+        return [OpsResult(True, f"Restarted docker container: {name}")]
+
+    details = (cp.stdout or "").strip() + (
+        "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+    )
+
+    if was_running and _docker_container_state(name) != "running":
+        # `docker restart` stops then starts the container -- if the start half fails
+        # (e.g. a port collision) the container is left stopped even though it was
+        # healthy before. Try once to bring it back up rather than silently leaving a
+        # previously-running container down with only a generic failure message.
+        recovery = _run(["docker", "start", name], check=False)
+        if recovery.returncode == 0 and _docker_container_state(name) == "running":
+            return [
+                OpsResult(
+                    False,
+                    f"Restart of {name} failed but the previously running container was recovered",
+                    details.strip(),
+                )
+            ]
+        return [
+            OpsResult(
+                False,
+                f"DOWN: {name} failed to restart and is now STOPPED (recovery attempt also failed)",
+                details.strip(),
+            )
+        ]
+
+    return [OpsResult(False, f"Failed to restart docker container: {name}", details.strip())]
 
 
 def _restart_launchagent(label: str) -> list[OpsResult]:
@@ -543,6 +674,33 @@ def install(_args) -> int:
 def status(_args) -> int:
     print("nyxGPT ops status")
 
+    mode = detect_deployment_mode()
+
+    print("\nDeployment mode:")
+    for component in ("api", "web", "ollama", "cassandra"):
+        print(f"  native  {component}: {mode.native.get(component, 'none')}")
+    if mode.compose:
+        for component, state in sorted(mode.compose.items()):
+            print(f"  compose {component}: {state}")
+    else:
+        print("  compose: not detected (no Docker Compose stack running)")
+
+    if mode.conflicts:
+        print(
+            "\nWARNING: "
+            + ", ".join(sorted(mode.conflicts))
+            + " reported running in BOTH native and Docker Compose. Only one is actually "
+            "serving traffic on the shared port -- the other is a phantom backend. Config "
+            f"edits to {NATIVE_CONFIG_HINT} only reach the native process; if Compose is the "
+            f"one answering, edit {COMPOSE_CONFIG_HINT} instead. Stop one deployment before "
+            "continuing."
+        )
+    else:
+        config_hint = NATIVE_CONFIG_HINT
+        if mode.compose:
+            config_hint += f" (native components) / {COMPOSE_CONFIG_HINT} (Compose components)"
+        print(f"\nConfig in use: {config_hint}")
+
     if _which("brew"):
         cp = _run(["brew", "services", "list"], check=False)
         print("\nHomebrew services:\n" + (cp.stdout or "").strip())
@@ -558,8 +716,7 @@ def status(_args) -> int:
         print(f"\nLaunchAgent {label}: ERROR ({e})")
 
     if _which("docker"):
-        cp = _run(["docker", "ps", "--format", "{{.Names}}"], check=False)
-        running = "nyxgpt-cassandra" in (cp.stdout or "")
+        running = mode.native.get("cassandra") == "running"
         print(f"\nDocker container nyxgpt-cassandra: {'RUNNING' if running else 'NOT RUNNING'}")
     else:
         print("\nDocker: docker not found")
@@ -620,26 +777,62 @@ def doctor(_args) -> int:
 # --- Restart public API ---
 
 
+def _compose_conflict_result(component: str, compose: dict[str, str]) -> OpsResult | None:
+    """Return a refusal OpsResult if a Compose deployment of `component` is live."""
+    if compose.get(component) != "running":
+        return None
+    port = COMPOSE_COMPONENT_PORTS.get(component)
+    port_note = f" on port {port}" if port else ""
+    return OpsResult(
+        False,
+        f"Refusing to restart native {component}: a Docker Compose deployment of "
+        f"{component} is already running{port_note}",
+        "Both deployments would try to bind the same port. Stop the Compose deployment "
+        "of this component (or manage it there) before restarting the native service.",
+    )
+
+
 def restart(args) -> int:
     """Restart operational components.
 
     target: all|api|web|ollama|cassandra|cassandra-logs
+
+    Before touching a native component, checks whether a Docker Compose deployment
+    of that same component is already live and, if so, refuses rather than starting
+    a second process/container that would collide on the same port.
     """
     target = getattr(args, "target", "all") or "all"
 
     results: list[OpsResult] = []
+    compose = _compose_stack_snapshot()
 
     if target in ("all", "api"):
-        results += _restart_brew_service("nyxgpt-api")
+        conflict = _compose_conflict_result("api", compose)
+        if conflict:
+            results.append(conflict)
+        else:
+            results.extend(_restart_brew_service("nyxgpt-api"))
 
     if target in ("all", "web"):
-        results += _restart_brew_service("nyxgpt-web")
+        conflict = _compose_conflict_result("web", compose)
+        if conflict:
+            results.append(conflict)
+        else:
+            results.extend(_restart_brew_service("nyxgpt-web"))
 
     if target in ("all", "ollama"):
-        results += _restart_brew_service("ollama")
+        conflict = _compose_conflict_result("ollama", compose)
+        if conflict:
+            results.append(conflict)
+        else:
+            results.extend(_restart_brew_service("ollama"))
 
     if target in ("all", "cassandra"):
-        results += _restart_docker_container("nyxgpt-cassandra")
+        conflict = _compose_conflict_result("cassandra", compose)
+        if conflict:
+            results.append(conflict)
+        else:
+            results.extend(_restart_docker_container("nyxgpt-cassandra"))
 
     if target in ("all", "cassandra-logs"):
         results += _restart_launchagent("com.nyxgpt.cassandra-logs")
