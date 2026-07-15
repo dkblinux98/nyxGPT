@@ -257,6 +257,15 @@ Search across all chat sessions with Ctrl+F (Cmd+F on Mac):
 
 The search interface appears as a modal overlay. Press Escape to close. Selecting a result switches to that session and scrolls to the matching message with a temporary highlight.
 
+#### Settings
+
+Access settings at `http://127.0.0.1:3000/settings`, which has two tabs:
+
+- **Resource Usage** — see the existing resource/usage metrics tab.
+- **General** — day-to-day preferences and app info:
+  - **Appearance** — a Light/Dark theme toggle backed by the existing `ThemeContext` (persisted to `localStorage`), the same theme state used elsewhere in the app.
+  - **About** — read-only app info (version, default model, Ollama base URL, sessions directory) sourced from `/api/info`, plus a link to the [Configuration Wizard](#configuration-wizard) for changing model/RAG/logging configuration.
+
 #### Admin Dashboard
 
 Access the dashboard at `http://127.0.0.1:3000/admin/dashboard` for an at-a-glance view of system state:

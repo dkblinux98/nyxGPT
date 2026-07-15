@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
 import ResourceMetrics from './ResourceMetrics';
+import GeneralSettings from './GeneralSettings';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -92,18 +93,7 @@ export default function SettingsPage() {
         }}
       >
         {activeTab === 'resources' && <ResourceMetrics />}
-        {activeTab === 'general' && (
-          <div
-            style={{
-              padding: 24,
-              background: 'var(--card-bg)',
-              borderRadius: 8,
-              border: '1px solid var(--border)',
-            }}
-          >
-            <p style={{ color: 'var(--text-secondary)' }}>General settings coming soon...</p>
-          </div>
-        )}
+        {activeTab === 'general' && <GeneralSettings />}
       </div>
     </div>
   );
