@@ -98,6 +98,7 @@ from nyxgpt.config import (
     get_log_aggregation_config,
     get_monitoring_config,
     get_ollama_base_url,
+    get_rag_enabled,
     get_rag_good_score_threshold,
     get_rag_medium_score_threshold,
     get_rag_min_score,
@@ -734,7 +735,7 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
 
     Supported updates:
     - default_model (str) -> [ollama] default_model
-    - rag_enabled (bool)  -> [rag] enabled
+    - rag_enabled (bool)  -> [rag] enable_chat_context
     - log_level (str)     -> [logging] level
 
     After writing, reload config and re-configure logging so log level changes apply immediately.
@@ -764,7 +765,7 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     if "rag_enabled" in updates:
         ensure_section("rag")
         val = bool(updates["rag_enabled"])
-        parser.set("rag", "enabled", "true" if val else "false")
+        parser.set("rag", "enable_chat_context", "true" if val else "false")
         out["rag_enabled"] = val
 
     if "log_level" in updates and isinstance(updates.get("log_level"), str):
@@ -894,7 +895,7 @@ def _chat_runtime_defaults(cfg: ConfigParser | None = None) -> dict[str, Any]:
     """
 
     cfg = cfg or load_config(None)
-    rag_enabled = cfg.getboolean("rag", "enable_chat_context", fallback=False)
+    rag_enabled = get_rag_enabled(cfg)
     return {
         "cfg": cfg,
         "default_model": get_default_model(cfg),
@@ -1108,7 +1109,7 @@ def config_get(request: Request) -> dict[str, Any]:
     return {
         "ollama_base_url": get_ollama_base_url(cfg),
         "default_model": get_default_model(cfg),
-        "rag_enabled": cfg.getboolean("rag", "enabled", fallback=False),
+        "rag_enabled": get_rag_enabled(cfg),
         "log_level": cfg.get("logging", "level", fallback="INFO").strip().upper(),
     }
 
@@ -1138,7 +1139,7 @@ def config_update(request: Request, payload: dict[str, Any] = Body(...)) -> dict
         "effective": {
             "ollama_base_url": get_ollama_base_url(cfg),
             "default_model": get_default_model(cfg),
-            "rag_enabled": cfg.getboolean("rag", "enabled", fallback=False),
+            "rag_enabled": get_rag_enabled(cfg),
             "log_level": cfg.get("logging", "level", fallback="INFO").strip().upper(),
         },
     }
@@ -1181,7 +1182,7 @@ def admin_overview(request: Request) -> dict[str, Any]:
         "info": {
             "ollama_base_url": get_ollama_base_url(cfg),
             "default_model": get_default_model(cfg),
-            "rag_enabled": cfg.getboolean("rag", "enabled", fallback=False),
+            "rag_enabled": get_rag_enabled(cfg),
         },
         "resource_metrics": resource_metrics_summary,
         "deploy": _safe(deploy_module.status, get_deploy_namespace(cfg)),
@@ -1206,7 +1207,7 @@ def admin_health(request: Request) -> dict[str, Any]:
     threshold-based alert indicators into a single response.
     """
     cfg = _req_cfg(request)
-    rag_enabled = cfg.getboolean("rag", "enabled", fallback=False)
+    rag_enabled = get_rag_enabled(cfg)
 
     monitor = get_resource_monitor()
     resource_metrics_summary = monitor.get_metrics().to_dict() if monitor is not None else None

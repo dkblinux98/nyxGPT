@@ -150,7 +150,7 @@ def load_config(path: str | Path | None = None) -> ConfigParser:
 
     Hot-reloadable settings include:
     - [nyxgpt] default_model
-    - [rag] enabled
+    - [rag] enable_chat_context
     """
     global _CACHED_CFG, _CACHED_PATH, _CACHED_MTIME_NS
 
@@ -298,44 +298,46 @@ def get_canary_min_requests(cfg: ConfigParser) -> int:
 def get_rag_enabled(cfg: ConfigParser) -> bool:
     """Primary RAG on/off switch.
 
-    Single source of truth going forward:
-    - [rag] enabled
-
-    Backward compatibility:
+    Single source of truth, used by both the chat runtime (RAG context
+    injection) and the admin health/overview/config endpoints, so they
+    never disagree about whether RAG is active:
     - [rag] enable_chat_context
+
+    Legacy alias (deprecated, only consulted when `enable_chat_context`
+    is not explicitly set):
+    - [rag] enabled
     """
     import logging
 
     log = logging.getLogger(__name__)
 
-    # New setting.
     try:
-        if cfg.has_option("rag", "enabled"):
-            return cfg.getboolean("rag", "enabled")
+        if cfg.has_option("rag", "enable_chat_context"):
+            return cfg.getboolean("rag", "enable_chat_context")
     except (ValueError, TypeError) as e:
-        log.warning("Invalid rag.enabled in config, checking legacy setting: %s", e)
+        log.warning("Invalid rag.enable_chat_context in config, checking legacy setting: %s", e)
         # Fall through to legacy key.
         pass
 
-    # Legacy setting (kept for compatibility with earlier docs/tests).
-    return get_rag_enable_chat_context(cfg)
+    # Legacy alias (kept for compatibility with earlier docs/tests).
+    return _get_rag_enabled_legacy_alias(cfg)
 
 
-def get_rag_enable_chat_context(cfg: ConfigParser) -> bool:
+def _get_rag_enabled_legacy_alias(cfg: ConfigParser) -> bool:
     """Legacy compatibility key.
 
-    Older configs used:
-    - [rag] enable_chat_context
+    Some older configs/docs referred to this setting as:
+    - [rag] enabled
 
-    Prefer `get_rag_enabled()` / `[rag] enabled` going forward.
+    Prefer `get_rag_enabled()` / `[rag] enable_chat_context` going forward.
     """
     try:
-        return cfg.getboolean("rag", "enable_chat_context", fallback=False)
+        return cfg.getboolean("rag", "enabled", fallback=False)
     except (ValueError, TypeError) as e:
         import logging
 
         log = logging.getLogger(__name__)
-        log.warning("Invalid rag.enable_chat_context in config, using False: %s", e)
+        log.warning("Invalid rag.enabled in config, using False: %s", e)
         return False
 
 
@@ -1077,7 +1079,6 @@ __all__ = [
     "get_api_host",
     "get_api_port",
     "get_rag_enabled",
-    "get_rag_enable_chat_context",
     "get_rag_chat_top_k",
     "get_rag_min_score",
     "get_rag_max_chunks",
