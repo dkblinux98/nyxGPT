@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
 
@@ -34,7 +33,6 @@ const COLOR_DOT: Record<Color, string> = {
 };
 
 export default function DeployPage() {
-  const router = useRouter();
   const [status, setStatus] = useState<DeployStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -138,23 +136,13 @@ export default function DeployPage() {
           <h1 style={{ fontSize: '2rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>
             Blue/Green Deployment
           </h1>
-          <p style={{ color: 'var(--foreground-muted)' }}>
+          <p style={{ color: 'var(--foreground-muted)', marginBottom: 8 }}>
             Zero-downtime cutover between two local nyxgpt-api instances (kind/minikube/k3s).
           </p>
+          <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
+            ← Back to Admin Dashboard
+          </a>
         </div>
-        <button
-          onClick={() => router.push('/')}
-          style={{
-            padding: '0.5rem 1rem',
-            backgroundColor: 'var(--background-secondary)',
-            border: '1px solid var(--border-color)',
-            borderRadius: '0.375rem',
-            cursor: 'pointer',
-            fontSize: '0.875rem',
-          }}
-        >
-          Back to Chat
-        </button>
       </div>
 
       <div

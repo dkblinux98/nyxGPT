@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
 
@@ -13,7 +12,6 @@ type CollectionInfo = {
 };
 
 export default function CollectionsPage() {
-  const router = useRouter();
   const [collections, setCollections] = useState<CollectionInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -219,9 +217,12 @@ export default function CollectionsPage() {
           <h1 style={{ fontSize: '2rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>
             RAG Collections
           </h1>
-          <p style={{ color: 'var(--foreground-muted)' }}>
+          <p style={{ color: 'var(--foreground-muted)', marginBottom: 8 }}>
             Manage vector store collections and their settings
           </p>
+          <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
+            ← Back to Admin Dashboard
+          </a>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button
@@ -238,19 +239,6 @@ export default function CollectionsPage() {
             }}
           >
             Create Collection
-          </button>
-          <button
-            onClick={() => router.push('/')}
-            style={{
-              padding: '0.5rem 1rem',
-              backgroundColor: 'var(--background-secondary)',
-              border: '1px solid var(--border-color)',
-              borderRadius: '0.375rem',
-              cursor: 'pointer',
-              fontSize: '0.875rem',
-            }}
-          >
-            Back to Chat
           </button>
         </div>
       </div>
