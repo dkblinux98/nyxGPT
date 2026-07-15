@@ -64,3 +64,5 @@ scripts/create_github_agent_config_repo_variables.sh
 /AGENT_CHARTERS/myGPT-review-agent.jpeg
 /AGENT_CHARTERS/myGPT-scrummaster-agent.jpeg
 AGENT_CHARTERS/myGPT-qa-agent.jpeg
+/myGPT notes.txt
+/.claude/scheduled_tasks.lock
