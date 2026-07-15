@@ -929,7 +929,21 @@ def chat_stream(
 
             parts.append(chunk)
             yield chunk
-    except Exception:
+    except Exception as e:
+        # Log the upstream Ollama/model-runtime failure here too, so callers
+        # that don't go through the API's streaming endpoint (CLI, MCP tool,
+        # tests) still get actionable detail in nyxgpt.log instead of a bare
+        # re-raise.
+        logger.error(
+            "Ollama chat stream failed",
+            extra={
+                "session": session,
+                "model": context.chosen_model,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
+            exc_info=True,
+        )
         # If we have retry messages but the connection ultimately failed,
         # yield them before re-raising
         for retry_msg in retry_messages:

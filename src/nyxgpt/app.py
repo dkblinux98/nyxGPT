@@ -2645,6 +2645,22 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                     }
                     yield f"event: done\ndata: {json.dumps(done_data)}\nid: {event_id}\n\n"
             except Exception as e:
+                # This is the operator's only server-side record of a streaming chat
+                # failure: once the response has started, FastAPI/uvicorn have no
+                # request context left to log with, so if we don't log here the
+                # upstream Ollama/model-runtime detail (status, model, message) is
+                # never written to nyxgpt.log and is invisible in the log viewer.
+                log.error(
+                    "Chat stream failed",
+                    extra={
+                        "request_id": req_id,
+                        "session": req.session,
+                        "model": chosen_model,
+                        "error": str(e),
+                        "error_type": type(e).__name__,
+                    },
+                    exc_info=True,
+                )
                 # Send error event (only for SSE clients)
                 if capabilities.supports_sse and capabilities.supports_structured_events:
                     event_id += 1
