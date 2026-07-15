@@ -26,6 +26,8 @@ def test_canary_status_endpoint_returns_module_status():
         "canary": {"healthy": True, "message": "nyxgpt-api-canary healthy (1/1 ready)"},
         "metrics": {"total_requests": 100, "error_rate_percent": 1.0, "p95_latency_ms": 250.0},
         "history": [],
+        "available": True,
+        "unavailable_reason": None,
     }
 
     with patch("nyxgpt.app.canary_module.status", return_value=expected) as mock_status:

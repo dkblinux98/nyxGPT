@@ -66,11 +66,22 @@ cp k8s/secret.example.yaml k8s/secret.yaml
 kubectl apply -k k8s/
 ```
 
-This creates the `nyxgpt` namespace, the ConfigMap, Secret, the
+This creates the `nyxgpt` namespace, the ConfigMap, Secret, RBAC
+(`k8s/rbac.yaml` — a `nyxgpt-api` ServiceAccount and a Role/RoleBinding
+scoped to just the Deployment/Service operations below), the
 `nyxgpt-api-blue` and `nyxgpt-api-green` Deployments (each with its own
 HorizontalPodAutoscaler), and the `nyxgpt-api` Service. Both colors run at
 once (1 replica each by default) so the inactive color can be health-checked
 before it ever receives traffic; the Service starts pointed at `blue`.
+
+Every `nyxgpt-api` Pod (blue/green/stable/canary) runs as the `nyxgpt-api`
+ServiceAccount and ships its own `kubectl`, so `/admin/deploy` and
+`/admin/canary` (and the API endpoints behind them) work when hit through a
+Pod running in this cluster — they call `kubectl` in-cluster, authenticated
+via the mounted ServiceAccount token, scoped by `k8s/rbac.yaml`'s Role.
+This is what makes the Kubernetes deployment mode, not docker-compose, the
+one where those dashboards are operable (see
+[docker-compose.md](docker-compose.md#bluegreen-and-canary-deployment)).
 
 ## 4. Verify
 

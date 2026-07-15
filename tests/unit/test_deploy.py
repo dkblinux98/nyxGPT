@@ -27,6 +27,7 @@ def _isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(deploy, "_state_path", lambda: tmp_path / "deploy_state.json")
     monkeypatch.setattr(deploy, "_which", lambda _: "/usr/local/bin/kubectl")
     monkeypatch.setattr(deploy.time, "time", lambda: 1234.0)
+    monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
 
 
 @pytest.mark.unit
@@ -64,6 +65,25 @@ def test_deployment_health_kubectl_missing(monkeypatch):
     result = deploy.deployment_health("blue", "nyxgpt")
     assert not result.ok
     assert "kubectl not found" in result.message
+
+
+@pytest.mark.unit
+def test_deployment_health_kubectl_missing_under_compose(monkeypatch):
+    monkeypatch.setattr(deploy, "_which", lambda _: None)
+    monkeypatch.setenv("NYXGPT_COMPOSE_FILE", "/etc/nyxgpt/docker-compose.yml")
+    result = deploy.deployment_health("blue", "nyxgpt")
+    assert not result.ok
+    assert "kubectl not found" not in result.message
+    assert "Kubernetes deployment mode" in result.message
+
+
+@pytest.mark.unit
+def test_switch_kubectl_missing_under_compose(monkeypatch):
+    monkeypatch.setattr(deploy, "_which", lambda _: None)
+    monkeypatch.setenv("NYXGPT_COMPOSE_FILE", "/etc/nyxgpt/docker-compose.yml")
+    result = deploy.switch(namespace="nyxgpt")
+    assert not result.ok
+    assert "Kubernetes deployment mode" in result.message
 
 
 @pytest.mark.unit
@@ -180,6 +200,20 @@ def test_status_reports_active_inactive_and_history(monkeypatch):
     assert data["colors"]["blue"]["healthy"] is True
     assert data["colors"]["green"]["healthy"] is False
     assert data["history"] == [{"from": "green", "to": "blue", "ts": 1000.0}]
+    assert data["available"] is True
+    assert data["unavailable_reason"] is None
+
+
+@pytest.mark.unit
+def test_status_reports_unavailable_when_kubectl_missing_under_compose(monkeypatch):
+    monkeypatch.setattr(deploy, "get_active_color", lambda ns: "blue")
+    monkeypatch.setattr(deploy, "_which", lambda _: None)
+    monkeypatch.setenv("NYXGPT_COMPOSE_FILE", "/etc/nyxgpt/docker-compose.yml")
+
+    data = deploy.status("nyxgpt")
+
+    assert data["available"] is False
+    assert "Kubernetes deployment mode" in data["unavailable_reason"]
 
 
 @pytest.mark.unit

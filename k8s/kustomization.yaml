@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: nyxgpt
 resources:
   - namespace.yaml
+  - rbac.yaml
   - configmap.yaml
   - secret.yaml
   - deployment-blue.yaml

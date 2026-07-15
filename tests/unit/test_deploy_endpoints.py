@@ -27,6 +27,8 @@ def test_deploy_status_endpoint_returns_module_status():
             "green": {"healthy": True, "message": "green healthy (1/1 ready)"},
         },
         "history": [],
+        "available": True,
+        "unavailable_reason": None,
     }
 
     with patch("nyxgpt.app.deploy_module.status", return_value=expected) as mock_status:

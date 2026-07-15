@@ -256,6 +256,18 @@ to turn it on (`/admin/self-heal`, `nyxgpt self-heal`, or the API), and
 `scripts/smoke-test.sh`, the documented end-to-end smoke test (deploy →
 verify chat/RAG → kill each component → observe auto-heal → teardown).
 
+## Blue/Green and Canary Deployment
+
+`/admin/deploy` and `/admin/canary` (blue/green cutover and weighted canary
+rollout — see [kubernetes.md](kubernetes.md#bluegreen-deployment)) are not
+operable under docker-compose: there is no Kubernetes cluster here for
+`kubectl` to reach, and the compose stack runs a single `api` container
+rather than the multiple colored/tracked Deployments those features cut
+traffic between. The dashboards detect this deployment mode and show a
+banner explaining that instead of a per-color `kubectl not found` error.
+Use the [Kubernetes deployment](kubernetes.md) to operate these features —
+the same `api` image ships `kubectl` and the RBAC it needs there.
+
 ## Rebuilding after code changes
 
 ```bash

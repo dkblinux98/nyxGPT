@@ -21,6 +21,7 @@ spec:
         app: nyxgpt-api-canary-pool
         track: stable
     spec:
+      serviceAccountName: nyxgpt-api
       containers:
         - name: nyxgpt-api
           image: nyxgpt-api:local

@@ -18,6 +18,7 @@ Prometheus metrics (#2693) have not landed yet.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -34,9 +35,30 @@ DEFAULT_NAMESPACE = "nyxgpt"
 DEFAULT_TOTAL_REPLICAS = 4
 HISTORY_LIMIT = 20
 
+NOT_SUPPORTED_UNDER_COMPOSE = (
+    "Canary deployment requires the Kubernetes deployment mode; not "
+    "available under docker-compose. See docs/kubernetes.md."
+)
+
 
 def _which(prog: str) -> str | None:
     return shutil.which(prog)
+
+
+def _compose_mode() -> bool:
+    """True when this process is the docker-compose `api` container.
+
+    Detected via NYXGPT_COMPOSE_FILE (see docker-compose.yml and
+    self_heal.py), which has no k8s analog -- a Pod never has it set. There's
+    no cluster for kubectl to reach under docker-compose, so callers use this
+    to swap the generic "kubectl not found" message for one that names the
+    actual constraint (see docs/kubernetes.md for the supported mode).
+    """
+    return bool(os.environ.get("NYXGPT_COMPOSE_FILE", "").strip())
+
+
+def _kubectl_missing_message(fallback: str) -> str:
+    return NOT_SUPPORTED_UNDER_COMPOSE if _compose_mode() else fallback
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -76,7 +98,9 @@ def deployment_health(name: str, namespace: str = DEFAULT_NAMESPACE) -> CanaryRe
     readinessProbe configured on the stable/canary Deployments.
     """
     if _which("kubectl") is None:
-        return CanaryResult(False, "kubectl not found; cannot check deployment health")
+        return CanaryResult(
+            False, _kubectl_missing_message("kubectl not found; cannot check deployment health")
+        )
 
     cp = _run(["kubectl", "get", "deployment", name, "-n", namespace, "-o", "json"])
     if cp.returncode != 0:
@@ -99,7 +123,9 @@ def deployment_health(name: str, namespace: str = DEFAULT_NAMESPACE) -> CanaryRe
 
 def _scale(name: str, replicas: int, namespace: str = DEFAULT_NAMESPACE) -> CanaryResult:
     if _which("kubectl") is None:
-        return CanaryResult(False, "kubectl not found; cannot scale deployment")
+        return CanaryResult(
+            False, _kubectl_missing_message("kubectl not found; cannot scale deployment")
+        )
     cp = _run(["kubectl", "scale", "deployment", name, "-n", namespace, f"--replicas={replicas}"])
     if cp.returncode != 0:
         return CanaryResult(False, f"kubectl scale failed for {name}", (cp.stderr or "").strip())
@@ -138,6 +164,7 @@ def status(namespace: str = DEFAULT_NAMESPACE) -> dict[str, Any]:
     state = _load_state()
     stable_health = deployment_health(STABLE_DEPLOYMENT, namespace)
     canary_health = deployment_health(CANARY_DEPLOYMENT, namespace)
+    kubectl_present = _which("kubectl") is not None
     return {
         "namespace": namespace,
         "active": bool(state.get("active", False)),
@@ -146,6 +173,12 @@ def status(namespace: str = DEFAULT_NAMESPACE) -> dict[str, Any]:
         "canary": {"healthy": canary_health.ok, "message": canary_health.message},
         "metrics": metrics_snapshot(),
         "history": state.get("history", [])[-10:],
+        "available": kubectl_present,
+        "unavailable_reason": (
+            None
+            if kubectl_present
+            else _kubectl_missing_message("kubectl not found; cannot check deployment health")
+        ),
     }
 
 
@@ -161,7 +194,9 @@ def start(
             False, f"Canary rollout already in progress at {state.get('weight_percent', 0)}%"
         )
     if _which("kubectl") is None:
-        return CanaryResult(False, "kubectl not found; cannot start canary rollout")
+        return CanaryResult(
+            False, _kubectl_missing_message("kubectl not found; cannot start canary rollout")
+        )
 
     weight_percent = max(1, min(99, weight_percent))
     canary_replicas, stable_replicas = _split_replicas(total_replicas, weight_percent)
@@ -248,7 +283,9 @@ def promote(
     if not state.get("active"):
         return CanaryResult(False, "No canary rollout in progress")
     if _which("kubectl") is None:
-        return CanaryResult(False, "kubectl not found; cannot promote canary rollout")
+        return CanaryResult(
+            False, _kubectl_missing_message("kubectl not found; cannot promote canary rollout")
+        )
 
     total = state.get("total_replicas", total_replicas)
     new_weight = min(100, state.get("weight_percent", 0) + max(1, step_percent))
@@ -294,7 +331,10 @@ def rollback(
     if not state.get("active"):
         return CanaryResult(False, "No canary rollout in progress")
     if _which("kubectl") is None:
-        return CanaryResult(False, "kubectl not found; cannot roll back canary rollout")
+        return CanaryResult(
+            False,
+            _kubectl_missing_message("kubectl not found; cannot roll back canary rollout"),
+        )
 
     total = state.get("total_replicas", total_replicas)
     previous_weight = state.get("weight_percent", 0)

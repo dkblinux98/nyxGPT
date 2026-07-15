@@ -10,6 +10,7 @@ involved.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -24,9 +25,30 @@ COLORS = ("blue", "green")
 DEFAULT_NAMESPACE = "nyxgpt"
 HISTORY_LIMIT = 20
 
+NOT_SUPPORTED_UNDER_COMPOSE = (
+    "Blue/green deployment requires the Kubernetes deployment mode; not "
+    "available under docker-compose. See docs/kubernetes.md."
+)
+
 
 def _which(prog: str) -> str | None:
     return shutil.which(prog)
+
+
+def _compose_mode() -> bool:
+    """True when this process is the docker-compose `api` container.
+
+    Detected via NYXGPT_COMPOSE_FILE (see docker-compose.yml and
+    self_heal.py), which has no k8s analog -- a Pod never has it set. There's
+    no cluster for kubectl to reach under docker-compose, so callers use this
+    to swap the generic "kubectl not found" message for one that names the
+    actual constraint (see docs/kubernetes.md for the supported mode).
+    """
+    return bool(os.environ.get("NYXGPT_COMPOSE_FILE", "").strip())
+
+
+def _kubectl_missing_message(fallback: str) -> str:
+    return NOT_SUPPORTED_UNDER_COMPOSE if _compose_mode() else fallback
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -99,7 +121,9 @@ def deployment_health(color: str, namespace: str = DEFAULT_NAMESPACE) -> DeployR
         return DeployResult(False, f"Unknown color: {color}")
 
     if _which("kubectl") is None:
-        return DeployResult(False, "kubectl not found; cannot check deployment health")
+        return DeployResult(
+            False, _kubectl_missing_message("kubectl not found; cannot check deployment health")
+        )
 
     name = f"{DEPLOYMENT_PREFIX}-{color}"
     cp = _run(["kubectl", "get", "deployment", name, "-n", namespace, "-o", "json"])
@@ -131,12 +155,19 @@ def status(namespace: str = DEFAULT_NAMESPACE) -> dict[str, Any]:
         colors[color] = {"healthy": health.ok, "message": health.message}
 
     state = _load_state()
+    kubectl_present = _which("kubectl") is not None
     return {
         "namespace": namespace,
         "active": active,
         "inactive": _other_color(active),
         "colors": colors,
         "history": state.get("history", [])[-10:],
+        "available": kubectl_present,
+        "unavailable_reason": (
+            None
+            if kubectl_present
+            else _kubectl_missing_message("kubectl not found; cannot check deployment health")
+        ),
     }
 
 
@@ -152,7 +183,9 @@ def switch(
     `force=True` (used by rollback()).
     """
     if _which("kubectl") is None:
-        return DeployResult(False, "kubectl not found; cannot switch deployment")
+        return DeployResult(
+            False, _kubectl_missing_message("kubectl not found; cannot switch deployment")
+        )
 
     active = get_active_color(namespace)
     target = target or _other_color(active)

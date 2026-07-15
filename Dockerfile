@@ -31,6 +31,25 @@ RUN set -eux; \
     docker --version; \
     docker compose version
 
+# kubectl, pinned like the Docker CLI/Compose install above. Lets
+# deploy.py/canary.py (see docs/kubernetes.md) drive blue/green and canary
+# operations against the cluster this Pod belongs to when the image is
+# deployed via k8s/ -- k8s/rbac.yaml grants the Pod's ServiceAccount the RBAC
+# these operations need. Unused (and harmless) under the docker-compose
+# deployment mode, which has no cluster for it to reach; deploy.py/canary.py
+# detect that case via NYXGPT_COMPOSE_FILE and report it instead of shelling
+# out. See #3184.
+ARG KUBECTL_VERSION=1.36.2
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) kubectl_arch=amd64 ;; \
+        arm64) kubectl_arch=arm64 ;; \
+        *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/${kubectl_arch}/kubectl" -o /usr/local/bin/kubectl; \
+    chmod +x /usr/local/bin/kubectl; \
+    kubectl version --client
+
 WORKDIR /app
 
 COPY pyproject.toml ./

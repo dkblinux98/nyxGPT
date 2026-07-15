@@ -18,6 +18,7 @@ spec:
         app: nyxgpt-api
         color: green
     spec:
+      serviceAccountName: nyxgpt-api
       containers:
         - name: nyxgpt-api
           image: nyxgpt-api:local
