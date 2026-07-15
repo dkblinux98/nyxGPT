@@ -64,6 +64,28 @@ def test_compose_defines_opt_in_monitoring_profile() -> None:
     assert "grafana_data" in compose["volumes"]
 
 
+def test_grafana_volumes_do_not_nest_a_mount_inside_a_read_only_mount() -> None:
+    # Regression test: Docker Desktop refuses to create a mountpoint inside a
+    # `:ro` bind mount (e.g. mounting .../dashboards/json under a parent
+    # mounted `:ro` at .../provisioning), so the dashboards bind mount must
+    # target a path that isn't nested under another read-only mount.
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    volumes = compose["services"]["grafana"]["volumes"]
+
+    parsed = []
+    for entry in volumes:
+        source, target, *mode = entry.split(":")
+        parsed.append((target.rstrip("/"), mode == ["ro"]))
+
+    for target, _ in parsed:
+        for other_target, other_is_ro in parsed:
+            if other_target == target or not other_is_ro:
+                continue
+            assert not target.startswith(
+                other_target + "/"
+            ), f"{target} is nested inside read-only mount {other_target}"
+
+
 def test_prometheus_config_scrapes_the_api_metrics_endpoint() -> None:
     prometheus_config = yaml.safe_load((REPO_ROOT / "docker" / "prometheus.yml").read_text())
     scrape_configs = prometheus_config["scrape_configs"]
@@ -129,9 +151,7 @@ def test_grafana_dashboards_are_provisioned() -> None:
             REPO_ROOT / "docker" / "grafana" / "provisioning" / "dashboards" / "dashboards.yml"
         ).read_text()
     )
-    assert provider_config["providers"][0]["options"]["path"] == (
-        "/etc/grafana/provisioning/dashboards/json"
-    )
+    assert provider_config["providers"][0]["options"]["path"] == ("/var/lib/grafana/dashboards")
 
     datasource_config = yaml.safe_load(
         (
