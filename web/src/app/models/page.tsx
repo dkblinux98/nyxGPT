@@ -12,6 +12,23 @@ type Model = {
   modified_at?: string;
 };
 
+// Rough parameter-count -> RAM guidance, matching docs/performance.md's
+// Small/Medium/Large model tiers. Best-effort only: quantization, context
+// length, and host overhead all shift the real number.
+function estimateModelResourceHint(modelName: string): string | null {
+  const match = modelName.match(/(\d+(?:\.\d+)?)b(?:$|[^a-z0-9])/i);
+  if (!match) return null;
+
+  const params = parseFloat(match[1]);
+  if (params < 1) {
+    return 'Small model (~1-2 GB RAM)';
+  }
+  if (params <= 8) {
+    return 'Medium model (~4-8 GB RAM)';
+  }
+  return 'Large model (~8-16+ GB RAM) — make sure this host has enough free memory before pulling, or chat requests may fail once you select it';
+}
+
 export default function ModelsPage() {
   const toast = useToast();
   const [models, setModels] = useState<string[]>([]);
@@ -142,6 +159,11 @@ export default function ModelsPage() {
             {pulling ? 'Pulling...' : 'Pull'}
           </button>
         </form>
+        {pullModelName.trim() && estimateModelResourceHint(pullModelName.trim()) && (
+          <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+            {estimateModelResourceHint(pullModelName.trim())}
+          </div>
+        )}
         {pullError && (
           <div style={{ marginTop: 10 }}>
             <ErrorMessage
