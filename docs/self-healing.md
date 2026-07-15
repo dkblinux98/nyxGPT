@@ -206,12 +206,15 @@ recovery, then tears the stack down.
 ./scripts/smoke-test.sh --keep-up      # leave the stack running after the test for manual poking
 ```
 
-It requires an Ollama model to already be pulled (`docker compose exec
-ollama ollama pull <model>` — see [docker-compose.md](docker-compose.md))
-since the chat verification step performs a real inference call. For
-`ollama`, `cassandra`, and `web`, it asserts the watchdog restores the
-component to healthy automatically. For `api`, per the limitation above, it
-kills the container, confirms self-heal does *not* recover it (which is
-expected, not a bug), and then brings it back with `docker compose up -d
-api` itself before continuing — this is the one step in the whole test
-that isn't hands-off.
+It only requires `cp .env.example .env` with a real `NYXGPT_AUTH_API_KEY`
+beforehand (see [docker-compose.md](docker-compose.md)): the script reads
+that key and sends it as the `X-API-Key` header on every API call, pulls the
+`default_model` from `docker/config.docker.ini` via `/api/v1/models/pull` if
+Ollama doesn't already have it, and passes `ensure_schema: true` on the first
+RAG ingest so the Cassandra keyspace/table are bootstrapped on a fresh
+deploy. For `ollama`, `cassandra`, and `web`, it asserts the watchdog
+restores the component to healthy automatically. For `api`, per the
+limitation above, it kills the container, confirms self-heal does *not*
+recover it (which is expected, not a bug), and then brings it back with
+`docker compose up -d api` itself before continuing — this is the one step
+in the whole test that isn't hands-off.
