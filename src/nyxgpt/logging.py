@@ -116,11 +116,27 @@ def get_log_dir(cfg: ConfigParser | None = None) -> Path:
     return Path(log_dir_str).expanduser()
 
 
+def _set_request_id_filter(handler: logging.Handler, request_id_filter: RequestIdFilter) -> None:
+    """Ensure exactly one RequestIdFilter is attached to the handler.
+
+    Filters attached to a Logger only run for records logged directly at that
+    logger, not for records propagated from child loggers (e.g. uvicorn,
+    cassandra-driver). Handler-level filters run for every record the handler
+    emits regardless of origin, so the filter must live here, not on the
+    root Logger.
+    """
+    for f in handler.filters[:]:
+        if isinstance(f, RequestIdFilter):
+            handler.removeFilter(f)
+    handler.addFilter(request_id_filter)
+
+
 def _ensure_rotating_file_handler(
     logger: logging.Logger,
     log_file: Path,
     formatter: logging.Formatter,
     level: int,
+    request_id_filter: RequestIdFilter,
     *,
     max_bytes: int,
     backups: int,
@@ -129,6 +145,7 @@ def _ensure_rotating_file_handler(
         if isinstance(h, RotatingFileHandler) and Path(h.baseFilename) == log_file:
             h.setLevel(level)
             h.setFormatter(formatter)
+            _set_request_id_filter(h, request_id_filter)
             return h
 
     fh = RotatingFileHandler(
@@ -138,6 +155,7 @@ def _ensure_rotating_file_handler(
     )
     fh.setFormatter(formatter)
     fh.setLevel(level)
+    _set_request_id_filter(fh, request_id_filter)
     logger.addHandler(fh)
     return fh
 
@@ -146,17 +164,20 @@ def _ensure_console_handler(
     logger: logging.Logger,
     formatter: logging.Formatter,
     level: int,
+    request_id_filter: RequestIdFilter,
 ) -> logging.Handler:
     for h in logger.handlers:
         # NOTE: RotatingFileHandler is also a StreamHandler; exclude it.
         if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
             h.setLevel(level)
             h.setFormatter(formatter)
+            _set_request_id_filter(h, request_id_filter)
             return h
 
     ch = logging.StreamHandler()
     ch.setFormatter(formatter)
     ch.setLevel(level)
+    _set_request_id_filter(ch, request_id_filter)
     logger.addHandler(ch)
     return ch
 
@@ -188,7 +209,9 @@ def configure_logging(
     if use_json:
         formatter = StructuredFormatter(datefmt=DEFAULT_DATEFMT)
     else:
-        formatter = logging.Formatter(fmt=DEFAULT_FMT, datefmt=DEFAULT_DATEFMT)
+        formatter = logging.Formatter(
+            fmt=DEFAULT_FMT, datefmt=DEFAULT_DATEFMT, defaults={"request_id": "-"}
+        )
 
     # Use get_log_dir for consistent log directory resolution
     log_dir = get_log_dir(cfg)
@@ -199,14 +222,11 @@ def configure_logging(
     root = logging.getLogger()
     root.setLevel(level)
 
-    # Remove any existing RequestIdFilter to avoid duplicates (hot-reload safe)
-    for f in root.filters[:]:  # Iterate over copy to avoid modification during iteration
-        if isinstance(f, RequestIdFilter):
-            root.removeFilter(f)
-
-    # Create and add request ID filter to root logger
+    # The filter must be attached to handlers, not the root Logger: Logger-level
+    # filters only run for records logged directly at that logger, not for
+    # records propagated from child loggers (uvicorn, cassandra-driver, etc.),
+    # which is how they were bypassing request_id injection entirely.
     request_id_filter = RequestIdFilter()
-    root.addFilter(request_id_filter)
 
     # Ensure our handlers exist on root (so third-party loggers propagate into our files).
     _ensure_rotating_file_handler(
@@ -214,11 +234,12 @@ def configure_logging(
         log_file,
         formatter,
         level,
+        request_id_filter,
         max_bytes=max_bytes,
         backups=backups,
     )
     if console:
-        _ensure_console_handler(root, formatter, level)
+        _ensure_console_handler(root, formatter, level, request_id_filter)
 
     # Normalize existing root handlers to the effective level.
     for h in root.handlers:
