@@ -50,6 +50,30 @@ describe('AdminDashboardPage', () => {
     expect(screen.getByText('not set')).toBeInTheDocument();
   });
 
+  it('wraps a long masked key instead of overflowing its pane', async () => {
+    render(<AdminDashboardPage />);
+    await waitFor(() => {
+      expect(screen.getByText('not set')).toBeInTheDocument();
+    });
+    const maskedKey = screen.getByText('not set');
+    expect(maskedKey.tagName).toBe('CODE');
+    expect(maskedKey).toHaveStyle({ wordBreak: 'break-all', overflowWrap: 'anywhere' });
+  });
+
+  it('renders the quick-nav links with button-style affordance', async () => {
+    render(<AdminDashboardPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Deploy: blue/)).toBeInTheDocument();
+    });
+
+    const deploymentLink = screen.getByRole('link', { name: /Deployment →/ });
+    expect(deploymentLink).toHaveStyle({
+      border: '1px solid var(--border)',
+      whiteSpace: 'nowrap',
+    });
+    expect(deploymentLink).toHaveAttribute('href', '/admin/deploy');
+  });
+
   it('toggles auth enabled when the checkbox is clicked', async () => {
     render(<AdminDashboardPage />);
     await waitFor(() => {
