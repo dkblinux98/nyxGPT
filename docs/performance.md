@@ -98,9 +98,10 @@ figures the Manage Models page hints at when pulling a model):
 If you select a model that requires more memory than the host has free, the
 Ollama/llama-server process will crash when it tries to load it. nyxGPT
 surfaces this as a "Model failed to run — it may require more memory than
-is available" chat error rather than a bare 500; see
-[troubleshooting.md](troubleshooting.md#model-runtime-crashes-chat-request-500s)
-for how to confirm and recover from it.
+is available" chat error rather than a bare 500; see the "Model-runtime
+crashes" entry under
+[Error Signatures](troubleshooting.md#error-signatures) in the
+troubleshooting guide for how to confirm and recover from it.
 
 ### Model Selection Tips
 

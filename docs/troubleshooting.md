@@ -509,9 +509,11 @@ ERROR nyxgpt.chat: Chat timeout after 60 seconds
 ERROR nyxgpt.api: Chat request failed: model runtime error
 Traceback (most recent call last):
   ...
-nyxgpt.ollama_client.ModelRuntimeError: Model failed to run — it may require
-more memory than is available on this host (Ollama HTTP 500: {"error": "model
-requires more system memory (5.4 GiB) than is available (3.1 GiB)"})
+nyxgpt.ollama_client.ModelRuntimeError: Model failed to run — the model
+runtime returned an error. This can happen if the host doesn't have enough
+free memory to load the model, but may also be a transient failure (Ollama
+HTTP 500: {"error": "model requires more system memory (5.4 GiB) than is
+available (3.1 GiB)"})
 → Solution: The chat request itself now returns this same actionable message
   (502, instead of a bare 500) and the web UI shows it inline instead of just
   logging it. Pick a smaller model tag (see performance.md#approximate-memory-by-model-tag)
@@ -693,7 +695,7 @@ when the *model runtime itself* fails -- the response `detail` (or the SSE
 `error` event's `error` field) already contains the actionable message, e.g.:
 
 ```json
-{"detail": "Model failed to run — it may require more memory than is available on this host (Ollama HTTP 500: ...)"}
+{"detail": "Model failed to run — the model runtime returned an error. This can happen if the host doesn't have enough free memory to load the model, but may also be a transient failure (Ollama HTTP 500: ...)"}
 ```
 
 No log-diving is required for this case; see

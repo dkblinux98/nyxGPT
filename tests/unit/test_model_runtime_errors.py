@@ -45,7 +45,7 @@ def _http_error(code: int, body: bytes = b'{"error": "boom"}') -> urllib.error.H
 def test_post_json_5xx_raises_model_runtime_error() -> None:
     with (
         patch("urllib.request.urlopen", side_effect=_http_error(500)),
-        pytest.raises(ModelRuntimeError, match="may require more memory"),
+        pytest.raises(ModelRuntimeError, match="model runtime returned an error"),
     ):
         post_json("http://x/api/chat", {"model": "m"})
 
@@ -82,7 +82,7 @@ def test_post_json_connection_refused_stays_plain_runtime_error() -> None:
 def test_post_json_lines_5xx_raises_model_runtime_error() -> None:
     with (
         patch("urllib.request.urlopen", side_effect=_http_error(500)),
-        pytest.raises(ModelRuntimeError, match="may require more memory"),
+        pytest.raises(ModelRuntimeError, match="model runtime returned an error"),
     ):
         list(post_json_lines("http://x/api/chat", {"model": "m"}, max_retries=0))
 

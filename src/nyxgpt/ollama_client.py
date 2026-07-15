@@ -32,6 +32,17 @@ def _model_runtime_message(detail: str) -> str:
     )
 
 
+def _model_runtime_message_generic(detail: str) -> str:
+    # Used for generic upstream 5xx responses, where memory pressure is a
+    # common but not certain cause (unlike a timeout or a dropped connection
+    # mid-stream, which are strong OOM/crash signals).
+    return (
+        "Model failed to run — the model runtime returned an error. This can "
+        "happen if the host doesn't have enough free memory to load the "
+        f"model, but may also be a transient failure ({detail})"
+    )
+
+
 def _is_timeout_error(exc: urllib.error.URLError) -> bool:
     reason = exc.reason
     if isinstance(reason, TimeoutError):
@@ -131,7 +142,7 @@ def post_json(url: str, payload: dict[str, Any], timeout_s: float = 120.0) -> di
             body = e.read().decode("utf-8", errors="replace")
             if e.code >= 500:
                 raise ModelRuntimeError(
-                    _model_runtime_message(f"Ollama HTTP {e.code}: {body}")
+                    _model_runtime_message_generic(f"Ollama HTTP {e.code}: {body}")
                 ) from e
             raise RuntimeError(f"Ollama HTTP {e.code}: {body}") from e
         except urllib.error.URLError as e:
@@ -181,7 +192,7 @@ def post_json_lines(
                 body = e.read().decode("utf-8", errors="replace")
                 if e.code >= 500:
                     raise ModelRuntimeError(
-                        _model_runtime_message(f"Ollama HTTP {e.code}: {body}")
+                        _model_runtime_message_generic(f"Ollama HTTP {e.code}: {body}")
                     ) from e
                 raise RuntimeError(f"Ollama HTTP {e.code}: {body}") from e
             # Let URLError propagate for retry logic to catch

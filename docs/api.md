@@ -1466,7 +1466,7 @@ endpoint returns `502 Bad Gateway` with an actionable `detail` message
 instead of a bare `500`, e.g.:
 
 ```json
-{"detail": "Model failed to run — it may require more memory than is available on this host (Ollama HTTP 500: ...)"}
+{"detail": "Model failed to run — the model runtime returned an error. This can happen if the host doesn't have enough free memory to load the model, but may also be a transient failure (Ollama HTTP 500: ...)"}
 ```
 
 When request batching (`[batch] enabled`) is on, a batch-queue timeout
