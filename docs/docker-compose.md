@@ -68,11 +68,15 @@ docker compose up --build
 ```
 
 First boot takes a few minutes: Cassandra needs time to become healthy and
-Ollama needs a model. Once `ollama` is up, pull the default model (this only
-needs to be done once — it's stored in the `ollama_data` volume):
+Ollama needs models. Once `ollama` is up, pull the default chat model and
+the embedding model RAG uses for `/api/embed` (this only needs to be done
+once — both are stored in the `ollama_data` volume). The chat model does
+*not* serve embeddings, so both pulls are required for chat with RAG context
+to work:
 
 ```bash
 docker compose exec ollama ollama pull qwen2.5:0.5b
+docker compose exec ollama ollama pull nomic-embed-text
 ```
 
 Then verify:
@@ -115,6 +119,12 @@ as part of this stack. To run without RAG, set `enable_chat_context = false`
 under `[rag]` in `docker/config.docker.ini`; you can also remove the
 `cassandra` service and its `depends_on` entry under `api` in
 `docker-compose.yml` if you don't want the container running at all.
+
+Chat works immediately on a fresh install even though the Cassandra keyspace
+doesn't exist yet: RAG retrieval degrades to empty context instead of
+erroring, and the keyspace/table are created automatically the first time
+you ingest a document (`POST /rag/ingest` or uploading a file from the web
+UI) — no manual bootstrap step is required.
 
 ## Monitoring Dashboards
 
