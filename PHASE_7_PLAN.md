@@ -67,6 +67,12 @@ via adapters with a git-**worktree** strategy. Two adoption paths:
   OpenClaw handles daemon/Slack/memory/scheduler plumbing.
 - **Build `nyxagent` in its image** — purpose-built orchestrator, tighter to the pipeline.
 
+**Owner decision (2026-07-15): build `nyxagent` purpose-built (option 2)** rather than adopting
+OpenClaw wholesale — own the whole stack, consistent with the Phase 8 goal of replacing
+commercial coding systems with a system the owner fully controls. OpenClaw remains the reference
+architecture to borrow from (daemon, messaging frontends, heartbeat, memory, coding-agent
+adapters + worktrees), not a dependency to adopt.
+
 **Owner goal — make the agents "alive" and interactive:**
 - **Slack (first-class):** chat with the agents in Slack — give instructions, get status, drive
   the pipeline conversationally. Native to the OpenClaw-style daemon; not custom work.

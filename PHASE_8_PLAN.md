@@ -1,42 +1,63 @@
-# Phase 8 — Make nyxGPT actually useful (RESERVED)
+# Phase 8 — nyxGPT as a self-hosted agentic coding system
 
-**Created:** 2026-07-15
-**Owner decision (2026-07-15):** reserve a milestone for the work that makes the **core product**
-genuinely useful. Owner assessment: *"right now as a chatbot it's practically useless."* The
-project has built a great deal of surrounding machinery — sessions, RAG, admin/SRE dashboards,
-deployment, observability — but the actual chat/assistant experience a user gets is not yet
-valuable. Phase 8 is where that gap gets closed.
+**Created:** 2026-07-15 · **Concretized:** 2026-07-15 (owner)
+**Owner vision:** turn the **Mac mini** into a **self-hosted, LAN-accessible agentic coding
+system** that **replaces commercial systems like Codex and Claude Code**. This is what "make the
+app actually useful" means: not a nicer chatbot, but a coding agent you own end-to-end, running
+on a local coding-geared LLM, that improves itself over time.
 
-## Status: reserved — scope to be defined
+## Access posture evolution (localhost → LAN, never public)
 
-Scope is **intentionally not enumerated yet.** It will be defined from the **full
-stakeholder-spec review** the owner conducts after the v2.0.0 acceptance failures (#3177–#3196)
-are resolved and the release is acceptable. This file is a placeholder so the milestone exists
-and the intent is recorded; do not treat the candidate list below as committed scope.
+- **Now / Phase 6:** localhost-only (workstation-only). Perfect for the default single-user
+  install; codified in the private-to-workstation constraint (`PHASE_6_PLAN.md`).
+- **Phase 8:** relax to **LAN-accessible** — the Mac mini serves the agentic coding system to
+  the owner's own LAN (other machines the owner controls), **still never publicly exposed.**
+  This is a deliberate, owner-gated change to the earlier localhost-only rule; auth becomes
+  mandatory (ties to #3177/#3195), and binding moves from loopback to a LAN interface behind
+  required auth. Private-to-LAN, not public.
 
-## Framing
+## Components
 
-The distinction this milestone is about: everything to date has largely been *plumbing and
-operations* (can we run it, deploy it, monitor it, heal it). Phase 8 is *product* — is the thing
-worth using? The bar is not "the chat endpoint returns a response," it is "a user reaches for
-nyxGPT because it does something valuable for them."
+1. **Local coding LLM (via Ollama).** Replace the tiny `qwen2.5:0.5b` default with a
+   coding-geared model — e.g. Qwen3-Coder / Qwen2.5-Coder-32B, DeepSeek-Coder-V2, or Codestral —
+   sized to what the Mac mini can serve. Includes resource guidance (#3192) and easy switching.
+2. **Agentic coding harness.** Grow nyxGPT from chat + read-only tools (`tools_fs`: ls/cat/grep)
+   into a real coding agent with parity to Claude Code/Codex: file **editing**, command/test
+   **execution**, a multi-step **plan → act → verify** loop, repo/context awareness, and safe
+   sandboxing. This is the large product build of the phase.
+3. **LAN access + multi-client.** Reachable from the owner's other LAN machines, auth required,
+   never public. Hosted by the Phase 7 daemon.
+4. **Self-improvement loop (see below).**
 
-## Candidate directions (illustrative, NOT commitments — the spec review decides)
+## Self-improvement — grounded, bounded, coding-first
 
-- **Response quality:** default models, system prompts, and generation settings that produce
-  genuinely useful answers rather than a bare small-model echo.
-- **Model strategy:** sensible default model tiers with resource guidance (see #3192), easy
-  switching, and models actually suited to real tasks.
-- **RAG that helps:** retrieval quality, citation UX, document management that a user trusts and
-  benefits from — not just a pipeline that runs.
-- **Tools / agentic capability:** letting nyxGPT *do* things (the existing tools_fs and any new
-  capabilities) in a way that is safe and useful.
-- **Conversation UX:** the actual chat experience — editing, regeneration, context handling,
-  attachments, streaming feel — polished to the point of daily-driver quality.
-- **Opinionated defaults:** out-of-the-box configuration that is immediately useful to a solo
-  developer, rather than requiring deep tuning to get value.
+Truly *recursive* self-improvement is frontier research, and even demonstrated systems "gain on
+a single loop, then decay, because they can generate faster than they can verify." **But coding
+is the tractable exception: outcomes are verifiable (tests/CI pass or fail), and nyxGPT already
+owns a verifier (its pytest/vitest suites + CI).** That makes a *bounded* self-improvement loop
+realistic here in a way it isn't for soft-metric domains. Practical, current-technique paths:
+
+- **RL from execution feedback (RLEF):** the coding agent's solutions that pass tests/CI become
+  positive signal; failing ones negative. Verification is cheap and reliable in code.
+- **Self-play / task generation (Agent0-style, ICLR 2026):** one agent proposes progressively
+  harder coding tasks, another solves them; train on the verified successes. Demonstrated to
+  lift Qwen3-8B-class *base* models with no human-curated data — directly relevant to a local
+  Qwen-based coder.
+- **Continuous LoRA fine-tuning** on accepted diffs / passing solutions (learn the owner's
+  codebase and preferences).
+- **Skill/memory accumulation** (OpenClaw-style skills): a growing library of validated patterns
+  the agent reuses — improvement without weight updates.
+
+**Honest constraints:** the Mac mini can serve *inference* on a mid-size coding model, but the
+*training/fine-tune* step of any self-improvement loop is compute-heavy — expect periodic
+batch/burst training (a beefier local box or a cloud-GPU step for the fine-tune only, results
+pulled back local), not continuous on-device training. Near-term target is a *bounded*
+verification-gated loop (measurably better on the owner's own repos), not unbounded RSI.
 
 ## Sequencing
 
-After Phase 6 (deploy) and Phase 7 (agent extraction), and gated on the owner's stakeholder-spec
-review that turns "practically useless" into a concrete, prioritized backlog of product work.
+After Phase 6 (native deploy) and Phase 7 (the daemon that hosts the agents). The Phase 7 daemon
+is the natural runtime; the local coding model and harness build on top. Scope refined by the
+owner's stakeholder-spec review. This is the most ambitious phase — the coding harness is a big
+build and the self-improvement is a research bet with a tractable near-term and an aspirational
+long-term.
