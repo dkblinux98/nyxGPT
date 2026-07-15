@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import time
@@ -11,6 +12,31 @@ from typing import Any
 from nyxgpt.tracing import traced_span
 
 logger = logging.getLogger(__name__)
+
+
+class ModelRuntimeError(RuntimeError):
+    """The Ollama/llama-server model runtime failed to load or run a model.
+
+    Raised for upstream failures that are actionable by the user (the model
+    crashed, ran out of memory, or timed out) as opposed to generic
+    connectivity problems (Ollama itself unreachable). Callers surface
+    ``str(exc)`` directly to the chat UI, so the message must stay
+    user-facing and specific.
+    """
+
+
+def _model_runtime_message(detail: str) -> str:
+    return (
+        "Model failed to run — it may require more memory than is available "
+        f"on this host ({detail})"
+    )
+
+
+def _is_timeout_error(exc: urllib.error.URLError) -> bool:
+    reason = exc.reason
+    if isinstance(reason, TimeoutError):
+        return True
+    return "timed out" in str(reason).lower()
 
 
 def _is_connection_error(exc: Exception) -> bool:
@@ -103,8 +129,16 @@ def post_json(url: str, payload: dict[str, Any], timeout_s: float = 120.0) -> di
                 return json.loads(body) if body else {}
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")
+            if e.code >= 500:
+                raise ModelRuntimeError(
+                    _model_runtime_message(f"Ollama HTTP {e.code}: {body}")
+                ) from e
             raise RuntimeError(f"Ollama HTTP {e.code}: {body}") from e
         except urllib.error.URLError as e:
+            if _is_timeout_error(e):
+                raise ModelRuntimeError(
+                    _model_runtime_message(f"no response within {timeout_s:.0f}s")
+                ) from e
             raise RuntimeError(f"Failed to reach Ollama at {url}: {e}") from e
 
 
@@ -145,6 +179,10 @@ def post_json_lines(
             except urllib.error.HTTPError as e:
                 # HTTP errors should not be retried, convert to RuntimeError
                 body = e.read().decode("utf-8", errors="replace")
+                if e.code >= 500:
+                    raise ModelRuntimeError(
+                        _model_runtime_message(f"Ollama HTTP {e.code}: {body}")
+                    ) from e
                 raise RuntimeError(f"Ollama HTTP {e.code}: {body}") from e
             # Let URLError propagate for retry logic to catch
 
@@ -157,6 +195,10 @@ def post_json_lines(
             )
         except urllib.error.URLError as e:
             # Convert to RuntimeError after all retries exhausted
+            if _is_timeout_error(e):
+                raise ModelRuntimeError(
+                    _model_runtime_message(f"no response within {timeout_s:.0f}s")
+                ) from e
             raise RuntimeError(f"Failed to reach Ollama at {url}: {e}") from e
 
         try:
@@ -166,6 +208,13 @@ def post_json_lines(
                     if not line:
                         continue
                     yield json.loads(line)
+        except (OSError, http.client.IncompleteRead) as e:
+            # The model runtime accepted the connection but the process died
+            # mid-generation (e.g. OOM-killed) -- the socket drops instead of
+            # returning an HTTP error, so this needs its own actionable message.
+            raise ModelRuntimeError(
+                _model_runtime_message(f"connection dropped while streaming response: {e}")
+            ) from e
         finally:
             resp.close()
 
@@ -293,6 +342,7 @@ def delete_json(url: str, payload: dict[str, Any], timeout_s: float = 60.0) -> d
 
 
 __all__ = [
+    "ModelRuntimeError",
     "post_json",
     "post_json_lines",
     "delete_json",
