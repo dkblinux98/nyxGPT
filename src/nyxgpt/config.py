@@ -983,11 +983,14 @@ def get_monitoring_config(cfg: ConfigParser) -> dict:
         cfg: ConfigParser instance
 
     Returns:
-        Dictionary with keys: enabled, grafana_ui_url
+        Dictionary with keys: enabled, grafana_ui_url, prometheus_ui_url
     """
     return {
         "enabled": get_monitoring_enabled(cfg),
         "grafana_ui_url": cfg.get("monitoring", "grafana_ui_url", fallback="http://localhost:3001"),
+        "prometheus_ui_url": cfg.get(
+            "monitoring", "prometheus_ui_url", fallback="http://localhost:9090"
+        ),
     }
 
 

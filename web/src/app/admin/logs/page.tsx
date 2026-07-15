@@ -185,8 +185,8 @@ export default function LogsPage() {
     <main style={{ padding: '2rem', maxWidth: 1400, margin: '0 auto' }}>
       <div style={{ marginBottom: '1.5rem' }}>
         <h1 style={{ margin: 0, marginBottom: 8 }}>Log Viewer</h1>
-        <a href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
-          ← Back to Chat
+        <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
+          ← Back to Admin Dashboard
         </a>
       </div>
 

@@ -3173,7 +3173,7 @@ dashboard's Resource Usage step).
 ### `GET /api/v1/monitoring`
 
 Report monitoring stack status: whether it's enabled in config and where to
-find the local Grafana UI.
+find the local Grafana and Prometheus UIs.
 
 **Request:**
 
@@ -3187,6 +3187,7 @@ curl http://127.0.0.1:8000/api/v1/monitoring
 {
   "enabled": true,
   "grafana_ui_url": "http://localhost:3001",
+  "prometheus_ui_url": "http://localhost:9090",
   "active": true
 }
 ```
@@ -3194,6 +3195,7 @@ curl http://127.0.0.1:8000/api/v1/monitoring
 **Response Fields:**
 - `enabled` - Whether `[monitoring] enabled = true` in config.ini
 - `grafana_ui_url` - URL of the local Grafana UI for browsing dashboards
+- `prometheus_ui_url` - URL of the local Prometheus UI
 - `active` - Mirrors `enabled` (the Grafana/Prometheus stack itself runs outside this process, as Docker Compose services)
 
 **How it works:**
@@ -3202,7 +3204,8 @@ Monitoring is Prometheus/Grafana-based, opt-in, and strictly local — there
 is no external/cloud monitoring service. System overview, RAG performance,
 and API metrics dashboards are pre-provisioned in Grafana, backed by a
 Prometheus server that scrapes this API's [`/metrics`](#get-metrics)
-endpoint.
+endpoint. The web UI surfaces Grafana, Prometheus, Jaeger, and GlitchTip
+links under the chat page's Admin → Observability submenu.
 
 **Enabling monitoring:**
 
@@ -3210,6 +3213,7 @@ endpoint.
 [monitoring]
 enabled = true
 grafana_ui_url = http://localhost:3001
+prometheus_ui_url = http://localhost:9090
 ```
 
 Then start the local Prometheus + Grafana instances (opt-in Compose
