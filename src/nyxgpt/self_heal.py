@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -33,7 +34,26 @@ logger = logging.getLogger(__name__)
 
 # Repo root: .../nyxGPT/src/nyxgpt/self_heal.py -> parents[2] is repo root
 REPO_ROOT = Path(__file__).resolve().parents[2]
-COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
+
+
+def _resolve_compose_file() -> Path:
+    """Resolve the docker-compose.yml the watchdog targets.
+
+    On a bare checkout (dev machine, `nyxgpt` running on the host) the repo
+    root computed above is correct. Inside the `api` container, though,
+    `self_heal.py` lives under site-packages, not a checkout of the repo --
+    there is no docker-compose.yml on that path at all. There, the actual
+    compose file is bind-mounted in and its in-container path is passed via
+    NYXGPT_COMPOSE_FILE (see the `api` service in docker-compose.yml and
+    docs/self-healing.md).
+    """
+    override = os.environ.get("NYXGPT_COMPOSE_FILE", "").strip()
+    if override:
+        return Path(override)
+    return REPO_ROOT / "docker-compose.yml"
+
+
+COMPOSE_FILE = _resolve_compose_file()
 
 EVENT_LOG_LIMIT = 100
 DEFAULT_CHECK_INTERVAL_SECONDS = 15.0

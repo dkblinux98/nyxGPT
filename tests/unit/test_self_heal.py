@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -32,6 +33,18 @@ def _ps_line(service, *, state="running", health=""):
 def _isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(self_heal, "_state_path", lambda: tmp_path / "self_heal_state.json")
     monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
+
+
+@pytest.mark.unit
+def test_resolve_compose_file_uses_env_override(monkeypatch):
+    monkeypatch.setenv("NYXGPT_COMPOSE_FILE", "/etc/nyxgpt/docker-compose.yml")
+    assert self_heal._resolve_compose_file() == Path("/etc/nyxgpt/docker-compose.yml")
+
+
+@pytest.mark.unit
+def test_resolve_compose_file_defaults_to_repo_root(monkeypatch):
+    monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
+    assert self_heal._resolve_compose_file() == self_heal.REPO_ROOT / "docker-compose.yml"
 
 
 @pytest.mark.unit

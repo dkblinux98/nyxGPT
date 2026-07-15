@@ -1,3 +1,11 @@
+# Pinning the project name means `docker compose` commands run from inside
+# the `api` container (see the self-heal watchdog below) always resolve to
+# this project, regardless of what directory a user checked the repo out
+# into -- Compose otherwise derives the project name from the checkout
+# directory's basename, which the watchdog has no way to know from inside
+# the container.
+name: nyxgpt
+
 networks:
   nyxgpt:
     driver: bridge
@@ -58,9 +66,17 @@ services:
     environment:
       NYXGPT_AUTH_API_KEY: ${NYXGPT_AUTH_API_KEY:-}
       NYXGPT_CORS_ORIGINS: ${NYXGPT_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      # Tells the self-heal watchdog (src/nyxgpt/self_heal.py) which compose
+      # file to run `docker compose ps/restart` against -- see the volume
+      # mount below and docs/self-healing.md for why this can't just be
+      # resolved from the module's own path inside the container, plus the
+      # security tradeoffs of the docker.sock mount two lines down.
+      NYXGPT_COMPOSE_FILE: /etc/nyxgpt/docker-compose.yml
     volumes:
       - ./docker/config.docker.ini:/etc/nyxgpt/config/config.ini:ro
       - nyxgpt_data:/root/.nyxGPT
+      - ./docker-compose.yml:/etc/nyxgpt/docker-compose.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       ollama:
         condition: service_healthy
