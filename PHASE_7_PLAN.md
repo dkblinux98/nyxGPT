@@ -72,7 +72,8 @@ via adapters with a git-**worktree** strategy. Two adoption paths:
   the pipeline conversationally. Native to the OpenClaw-style daemon; not custom work.
 - **Zoom (harder, separate integration):** real-time voice/video. Needs a meeting-bot layer
   (join call → speech-to-text → agent → text-to-speech) via the Zoom Meeting SDK + an STT/TTS
-  pipeline — feasible but distinct from the text-messaging path; scope as its own issue.
+  pipeline — feasible but distinct from the text-messaging path. **Moved to its own Phase 9**
+  (see `PHASE_9_PLAN.md`); it rides on this phase's daemon as another frontend.
 - Running in the owner's own daemon under the agent PATs means the agents are genuinely the
   actors — the **identity/attribution requirement is fully satisfied** (unachievable on Actions
   or a proxied remote session).
