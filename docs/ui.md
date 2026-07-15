@@ -187,6 +187,15 @@ The web UI includes:
 - **Log viewer** (`/admin/logs`) for viewing and searching application logs
 - **Mobile-responsive layout** — the session sidebar collapses into a dismissible overlay below the `useIsMobile` breakpoint (768px), chat controls grow to touch-friendly tap targets, and inputs use a 16px minimum font size to prevent iOS Safari's auto-zoom-on-focus
 
+#### Model List Freshness
+
+The admin models list and the chat model selector don't poll continuously, but re-fetch `/api/models` automatically so a model pulled from `/models` shows up without a manual page reload:
+
+- **Admin page** (`/admin`) — re-fetches when the browser tab regains window focus or becomes visible again (`visibilitychange`).
+- **Chat model selector** (`web/src/app/components/ChatPane.tsx`) — re-fetches on mount, every time the model dropdown is opened, and on window focus.
+
+Because the trigger is focus/open rather than an immediate push, a model pulled in another tab won't appear in a *background* tab until that tab is focused or its dropdown is reopened.
+
 #### Mobile Responsiveness
 
 Below a 768px viewport width, the layout switches from a permanent two-column sidebar + chat view to a single-column view:
