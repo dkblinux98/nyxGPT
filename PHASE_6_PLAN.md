@@ -6,6 +6,29 @@ cloud-native AWS deployment plus the unified one-command, OS-aware deploy story.
 unrelated to local-first and does not constrain this work; cloud-native provisioning is now
 explicitly in scope for v3.
 
+## Deployment model decision — native-first, one container (owner, 2026-07-15)
+
+**The supported deployment is native-on-the-host for every component — API, web, Ollama,
+Prometheus, Grafana, Jaeger, GlitchTip, Loki — with Cassandra as the *only* Docker container.
+All components communicate over `localhost`.** This supersedes the containerize-everything
+model from Phase 5:
+
+- **Retire** the full Docker Compose stack (#2689) and Kubernetes (#2688) as supported
+  deployments. The container-networking acceptance failures that came from them (#3177, #3178,
+  #3179, #3182, #3184, #3185) are moot under native-first and should be closed/re-scoped, not
+  fixed as-is.
+- **Blue-green (#2691) and canary (#2692)** are k8s orchestration features with no native
+  substrate — they must be rehomed to a native mechanism or dropped (owner decision pending).
+- **`nyxgpt ops install` becomes the native deployment manager**: it installs and configures
+  *every* component as a native Homebrew service, using `homebrew/nyxgpt-api.rb` and
+  `homebrew/nyxgpt-web.rb` as the pattern (nyxgpt-tap formulae, or upstream formulae configured
+  for nyxGPT), and manages the single Cassandra Docker container. No user runs raw `brew`,
+  `docker`, `docker compose`, or `kubectl` (ops-wrapper principle).
+- This resolves the split-brain (#16) by making native the one model, and the private-to-the-
+  workstation posture is natural (native services bind `localhost`).
+- The AWS deploy (Sprint 6.2/6.3) applies the same model: native services on the AWS
+  Linux/macOS instance + Cassandra in Docker, reachable only from the owner's workstation.
+
 ## Theme
 
 One command, after a clean `git checkout`, brings up the **entire** nyxGPT stack —
