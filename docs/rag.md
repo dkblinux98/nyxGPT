@@ -649,7 +649,11 @@ store.close()
 ### Collection Best Practices
 
 1. **Naming:** Use descriptive names: `all-minilm`, `nomic768`, `mxbai1024`
-2. **Schema:** Call `ensure_schema=True` once per collection
+2. **Schema:** `ingest_document()` creates the keyspace/table for a collection
+   automatically the first time you ingest into it, inferring the dimension
+   from the embeddings it computes. Passing `ensure_schema=True` explicitly
+   is still supported (e.g. to be certain a specific dimension is used) but
+   is no longer required.
 3. **Consistency:** Always use the same model/dimension for a collection
 4. **Cleanup:** Delete unused collections to free disk space
 

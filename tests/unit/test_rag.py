@@ -474,6 +474,130 @@ def test_cassandra_vectorstore_list_docs(monkeypatch: pytest.MonkeyPatch) -> Non
     assert docs[1]["chunks"] == 5
 
 
+# =============================================================================
+# Fresh-install graceful degrade: missing keyspace/table (#3182)
+# =============================================================================
+
+
+def _store_with_cassandra_error(
+    monkeypatch: pytest.MonkeyPatch, message: str, *, on: str = "execute"
+):
+    """Build a CassandraVectorStore whose session raises InvalidRequest(message).
+
+    `on` selects whether `session.execute` or `session.prepare` raises, so
+    callers can simulate a missing keyspace (fails on the `USE` execute) or a
+    missing table (fails on preparing/executing the table-scoped query).
+    """
+    cfg = ConfigParser()
+    cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+
+    from cassandra import InvalidRequest
+
+    mock_session = Mock()
+    setattr(mock_session, on, Mock(side_effect=InvalidRequest(message)))
+
+    mock_cluster = Mock()
+    mock_cluster.connect.return_value = mock_session
+
+    monkeypatch.setattr(
+        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, **kwargs: mock_cluster
+    )
+
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+    return CassandraVectorStore()
+
+
+@pytest.mark.unit
+def test_query_by_embedding_missing_keyspace_returns_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """query_by_embedding should return [] (not raise) when the keyspace
+    doesn't exist yet -- the state of a fresh Docker Compose install before
+    any RAG document has been ingested."""
+    store = _store_with_cassandra_error(monkeypatch, "Keyspace 'test_ks' does not exist")
+
+    assert store.query_by_embedding([0.1, 0.2], k=2) == []
+
+
+@pytest.mark.unit
+def test_query_by_embedding_missing_table_returns_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """query_by_embedding should return [] when the keyspace exists but this
+    collection's table hasn't been created yet."""
+    store = _store_with_cassandra_error(monkeypatch, "unconfigured table test_tbl", on="prepare")
+    store._keyspace_ready = True  # keyspace exists; only the table is missing
+
+    assert store.query_by_embedding([0.1, 0.2], k=2) == []
+
+
+@pytest.mark.unit
+def test_query_by_embedding_reraises_unrelated_invalid_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine CQL error unrelated to missing schema must still raise."""
+    from cassandra import InvalidRequest
+
+    store = _store_with_cassandra_error(monkeypatch, "malformed query string")
+    store._keyspace_ready = True
+
+    with pytest.raises(InvalidRequest, match="malformed query string"):
+        store.query_by_embedding([0.1, 0.2], k=2)
+
+
+@pytest.mark.unit
+def test_list_docs_missing_keyspace_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """list_docs should return [] (not raise) on a fresh install."""
+    store = _store_with_cassandra_error(monkeypatch, "Keyspace 'test_ks' does not exist")
+
+    assert store.list_docs() == []
+
+
+@pytest.mark.unit
+def test_query_by_embeddings_batch_missing_keyspace_returns_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """query_by_embeddings_batch should return one empty list per query
+    instead of raising when the schema hasn't been created yet."""
+    store = _store_with_cassandra_error(monkeypatch, "Keyspace 'test_ks' does not exist")
+
+    results = store.query_by_embeddings_batch([[0.1, 0.2], [0.3, 0.4]], k=2)
+
+    assert results == [[], []]
+
+
+@pytest.mark.unit
+def test_schema_exists_false_before_table_created(monkeypatch: pytest.MonkeyPatch) -> None:
+    """schema_exists should report False without ever selecting the
+    keyspace, so it's safe to call before the keyspace exists."""
+    cfg = ConfigParser()
+    cfg["rag"] = {"cassandra_keyspace": "test_ks", "cassandra_table": "test_tbl"}
+    monkeypatch.setattr("nyxgpt.rag.vectorstore_cassandra.load_config", lambda *_a, **_k: cfg)
+
+    mock_result = Mock()
+    mock_result.one.return_value = None
+    mock_session = Mock()
+    mock_session.execute.return_value = mock_result
+
+    mock_cluster = Mock()
+    mock_cluster.connect.return_value = mock_session
+    monkeypatch.setattr(
+        "nyxgpt.rag.vectorstore_cassandra.Cluster", lambda hosts, **kwargs: mock_cluster
+    )
+
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+    store = CassandraVectorStore()
+
+    assert store.schema_exists() is False
+    assert store._keyspace_ready is False  # never issued `USE <keyspace>`
+
+    mock_result.one.return_value = Mock()
+    assert store.schema_exists() is True
+
+
 @pytest.mark.unit
 def test_cassandra_vectorstore_delete_doc(monkeypatch: pytest.MonkeyPatch) -> None:
     """delete_doc should execute DELETE statement."""
@@ -691,6 +815,74 @@ def test_ingest_document_with_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     call_args = mock_store.upsert_chunks.call_args
     metadatas = call_args[1]["metadatas"]
     assert all(m == metadata for m in metadatas)
+
+
+@pytest.mark.unit
+def test_ingest_document_auto_creates_schema_on_fresh_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ingest_document should create the schema automatically on a fresh
+    collection even when the caller didn't pass ensure_schema=True.
+
+    Without this, a fresh Docker Compose install's first RAG ingest (which
+    defaults ensure_schema=False from the API/CLI) would fail with
+    "keyspace does not exist" instead of bootstrapping the schema (#3182).
+    """
+    cfg = ConfigParser()
+    cfg["rag"] = {"chunk_size": "50", "chunk_overlap": "10"}
+
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr(
+        "nyxgpt.rag.rag.embed_texts", lambda texts, **kwargs: [[0.1, 0.2, 0.3] for _ in texts]
+    )
+
+    mock_store = Mock()
+    mock_store.schema_exists.return_value = False
+    mock_store.get_document_hash.return_value = None
+    mock_store.get_document_info.return_value = None
+
+    monkeypatch.setattr("nyxgpt.rag.rag.CassandraVectorStore", lambda **kwargs: mock_store)
+
+    from nyxgpt.rag.rag import ingest_document
+
+    ingest_document("doc1", "Some text to chunk", ensure_schema=False)
+
+    assert mock_store.ensure_schema.called
+    # The document_needs_update path assumes the table already exists --
+    # skipping it here confirms auto-creation took the ensure_schema branch.
+    assert not mock_store.document_needs_update.called
+    assert mock_store.upsert_chunks.called
+
+
+@pytest.mark.unit
+def test_ingest_document_skips_auto_schema_when_already_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ingest_document should not re-create the schema (or take the
+    dimension-inference path) once the collection's table already exists."""
+    cfg = ConfigParser()
+    cfg["rag"] = {"chunk_size": "50", "chunk_overlap": "10"}
+
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr(
+        "nyxgpt.rag.rag.embed_texts", lambda texts, **kwargs: [[0.1, 0.2, 0.3] for _ in texts]
+    )
+
+    mock_store = Mock()
+    mock_store.schema_exists.return_value = True
+    mock_store.document_needs_update.return_value = True
+    mock_store.get_document_hash.return_value = None
+    mock_store.get_document_info.return_value = None
+
+    monkeypatch.setattr("nyxgpt.rag.rag.CassandraVectorStore", lambda **kwargs: mock_store)
+
+    from nyxgpt.rag.rag import ingest_document
+
+    ingest_document("doc1", "Some text to chunk", ensure_schema=False)
+
+    assert not mock_store.ensure_schema.called
+    assert mock_store.document_needs_update.called
+    assert mock_store.upsert_chunks.called
 
 
 # =============================================================================

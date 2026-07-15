@@ -2130,7 +2130,10 @@ curl http://127.0.0.1:8000/api/v1/sessions \
 
 #### RAG Ingest Request
 
-Ingest documents with automatic update detection:
+Ingest documents with automatic update detection. The Cassandra keyspace and
+table for the target collection are created automatically on first ingest,
+so `ensure_schema` is optional -- pass it explicitly only if you want to be
+sure a specific collection gets created:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/rag/ingest \
