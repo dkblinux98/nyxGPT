@@ -82,6 +82,22 @@ OS-aware.
    `nyxgpt down` / re-run `nyxgpt up` cleanly. Dashboard teardown control.
    *Label: Feature · Module: CLI · Effort: M*
 
+9a. **feat: Guided credentials/secrets setup during deploy (CLI + `/admin` wizard)**
+   When `nyxgpt up` runs and a required secret is unset, collect it through a **guided,
+   self-documenting** flow that, for each key, (a) names it in plain language, (b) explains
+   what it's for, (c) says exactly where to obtain or create it (URL + steps), (d) prompts
+   with **masked input** (`getpass`), (e) validates format where possible, and (f) writes to
+   `~/.nyxGPT/config.ini` with **0600** perms (implements audit S3). Extends the existing
+   `run_wizard` (`src/nyxgpt/wizard.py`) and the `/admin` setup wizard
+   (`web/src/app/admin/page.tsx`) — the same guided step must exist on the **web** surface
+   per the Definition of Done, not CLI-only.
+   Secrets in scope: `[auth] api_key` (protect the instance — offer to generate one),
+   `[error_tracking] dsn` (GlitchTip project settings → DSN),
+   `[openai] api_key` (platform.openai.com/api-keys, only if OpenAI is enabled),
+   `[github] pat` (github.com/settings/tokens, only if agent ops are used).
+   Idempotent: never re-prompts for a secret already present; `--reconfigure` to force.
+   *Label: Feature · Module: CLI · Effort: L*
+
 ## Sprint 6.2 — AWS IaC foundation
 
 10. **feat: Architecture decision — AWS compute substrate (EC2 single-box vs EKS)**
@@ -108,6 +124,14 @@ OS-aware.
 
 15. **feat: Target OS detection/provisioning for Linux vs macOS AWS instances**
     Provision and configure correctly whether the target AMI is Linux or macOS (EC2 mac).
+    *Label: Feature · Module: CLI · Effort: L*
+
+15a. **feat: Guided cloud-credential collection for AWS deploy**
+    Extends the #9a guided-secrets flow to the cloud path: AWS access key / secret /
+    region / profile, and the target secret-store references (SSM/Secrets Manager per #13),
+    each with what-it-is + where-to-get-it help and masked entry. Never writes AWS secrets
+    to `config.ini` in plaintext — routes them to the OS keychain / AWS profile / secret
+    store. CLI + `/admin` cloud-deploy wizard.
     *Label: Feature · Module: CLI · Effort: L*
 
 16. **feat: Cloud deploy status / teardown / rollback from the SRE dashboard**
