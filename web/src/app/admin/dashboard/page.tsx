@@ -57,6 +57,27 @@ const sectionTitleStyle: React.CSSProperties = {
   fontSize: '1.1rem',
 };
 
+const navLinkStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  padding: '6px 10px',
+  borderRadius: 6,
+  border: '1px solid var(--border)',
+  background: 'var(--muted)',
+  color: 'var(--link)',
+  textDecoration: 'none',
+  fontSize: 13,
+  fontWeight: 600,
+  whiteSpace: 'nowrap',
+};
+
+const inlineLinkStyle: React.CSSProperties = {
+  color: 'var(--link)',
+  textDecoration: 'underline',
+  whiteSpace: 'nowrap',
+};
+
 function StatusBadge({ ok, label }: { ok: boolean; label: string }) {
   return (
     <span
@@ -77,7 +98,7 @@ function StatusBadge({ ok, label }: { ok: boolean; label: string }) {
           width: 8,
           height: 8,
           borderRadius: '50%',
-          background: ok ? '#22c55e' : '#999',
+          background: ok ? '#22c55e' : 'var(--muted-foreground)',
         }}
       />
       {label}
@@ -202,7 +223,7 @@ export default function AdminDashboardPage() {
     <main style={{ padding: '2rem', maxWidth: 1200, margin: '0 auto' }}>
       <div style={{ marginBottom: '2rem' }}>
         <h1 style={{ margin: 0, marginBottom: 8 }}>Admin Dashboard</h1>
-        <a href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
+        <a href="/" style={inlineLinkStyle}>
           ← Back to Chat
         </a>
       </div>
@@ -245,14 +266,14 @@ export default function AdminDashboardPage() {
                 Default model: <strong>{overview.info.default_model || 'Not set'}</strong> · RAG:{' '}
                 <strong>{overview.info.rag_enabled ? 'enabled' : 'disabled'}</strong>
               </div>
-              <div style={{ display: 'flex', gap: 12, fontSize: 13, marginTop: 4 }}>
-                <a href="/admin/health" style={{ color: '#0066cc' }}>System Health →</a>
-                <a href="/admin/deploy" style={{ color: '#0066cc' }}>Deployment →</a>
-                <a href="/admin/canary" style={{ color: '#0066cc' }}>Canary →</a>
-                <a href="/admin/self-heal" style={{ color: '#0066cc' }}>Self-heal →</a>
-                <a href="/admin/analytics" style={{ color: '#0066cc' }}>Usage Analytics →</a>
-                <a href="/admin/workflow-analytics" style={{ color: '#0066cc' }}>CI Analytics →</a>
-                <a href="/settings" style={{ color: '#0066cc' }}>Full metrics →</a>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 13, marginTop: 4 }}>
+                <a href="/admin/health" style={navLinkStyle}>System Health →</a>
+                <a href="/admin/deploy" style={navLinkStyle}>Deployment →</a>
+                <a href="/admin/canary" style={navLinkStyle}>Canary →</a>
+                <a href="/admin/self-heal" style={navLinkStyle}>Self-heal →</a>
+                <a href="/admin/analytics" style={navLinkStyle}>Usage Analytics →</a>
+                <a href="/admin/workflow-analytics" style={navLinkStyle}>CI Analytics →</a>
+                <a href="/settings" style={navLinkStyle}>Full metrics →</a>
               </div>
             </div>
           ) : null}
@@ -316,7 +337,15 @@ export default function AdminDashboardPage() {
 
               <div style={{ fontSize: 14 }}>
                 Current key:{' '}
-                <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
+                <code
+                  style={{
+                    background: 'var(--code-bg)',
+                    padding: '2px 6px',
+                    borderRadius: 4,
+                    wordBreak: 'break-all',
+                    overflowWrap: 'anywhere',
+                  }}
+                >
                   {access.api_key_set ? access.api_key_masked : 'not set'}
                 </code>
               </div>
@@ -422,7 +451,7 @@ export default function AdminDashboardPage() {
             </div>
           )}
           <div style={{ marginTop: '1rem', fontSize: 13 }}>
-            <a href="/admin/logs" style={{ color: '#0066cc' }}>View raw application logs →</a>
+            <a href="/admin/logs" style={inlineLinkStyle}>View raw application logs →</a>
           </div>
         </section>
       </div>
