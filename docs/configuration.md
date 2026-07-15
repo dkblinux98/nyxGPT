@@ -537,12 +537,14 @@ server that scrapes this API's `/metrics` endpoint.
 [monitoring]
 enabled = false
 grafana_ui_url = http://localhost:3001
+prometheus_ui_url = http://localhost:9090
 ```
 
 | Key | Description |
 |---|---|
 | `enabled` | Enable monitoring (default: `false`) |
-| `grafana_ui_url` | URL of the local Grafana UI, used for the "Monitoring Dashboards" link in the SRE/admin dashboard |
+| `grafana_ui_url` | URL of the local Grafana UI, used for the "Monitoring Dashboards" link in the SRE/admin dashboard's Observability submenu |
+| `prometheus_ui_url` | URL of the local Prometheus UI, used for the "Open Prometheus" link in the SRE/admin dashboard's Observability submenu |
 
 Requires the `monitoring` Compose profile (local Prometheus + Grafana):
 

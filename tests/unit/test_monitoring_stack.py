@@ -185,16 +185,22 @@ def test_get_monitoring_config_defaults() -> None:
     assert result == {
         "enabled": False,
         "grafana_ui_url": "http://localhost:3001",
+        "prometheus_ui_url": "http://localhost:9090",
     }
 
 
 def test_get_monitoring_config_reads_overrides() -> None:
-    cfg = _cfg(enabled="true", grafana_ui_url="http://grafana:3000")
+    cfg = _cfg(
+        enabled="true",
+        grafana_ui_url="http://grafana:3000",
+        prometheus_ui_url="http://prometheus:9090",
+    )
 
     result = get_monitoring_config(cfg)
 
     assert result["enabled"] is True
     assert result["grafana_ui_url"] == "http://grafana:3000"
+    assert result["prometheus_ui_url"] == "http://prometheus:9090"
 
 
 def test_monitoring_status_endpoint_reports_disabled_by_default() -> None:
@@ -209,3 +215,4 @@ def test_monitoring_status_endpoint_reports_disabled_by_default() -> None:
     assert data["enabled"] is False
     assert data["active"] is False
     assert data["grafana_ui_url"] == "http://localhost:3001"
+    assert data["prometheus_ui_url"] == "http://localhost:9090"
