@@ -506,15 +506,29 @@ ERROR nyxgpt.chat: Chat timeout after 60 seconds
 
 **Model-runtime crashes (chat request 500s):**
 ```
-ERROR nyxgpt.api: Chat stream failed
+ERROR nyxgpt.api: Chat request failed: model runtime error
 Traceback (most recent call last):
   ...
-RuntimeError: Ollama HTTP 500: {"error": "model runtime crashed"}
-→ Solution: The status/model/message detail on the last traceback line comes
-  straight from Ollama's own response. Run `nyxgpt ops status` to check
-  whether Ollama is still up, and check Ollama's own logs (via the
-  Grafana/Loki logs view if log aggregation is enabled -- see
-  docker-compose.md#log-aggregation) for why the model runtime crashed.
+nyxgpt.ollama_client.ModelRuntimeError: Model failed to run — it may require
+more memory than is available on this host (Ollama HTTP 500: {"error": "model
+requires more system memory (5.4 GiB) than is available (3.1 GiB)"})
+→ Solution: The chat request itself now returns this same actionable message
+  (502, instead of a bare 500) and the web UI shows it inline instead of just
+  logging it. Pick a smaller model tag (see performance.md#approximate-memory-by-model-tag)
+  or free up memory on the host. If the detail doesn't mention memory, run
+  `nyxgpt ops status` to check whether Ollama is still up, and check Ollama's
+  own logs (via the Grafana/Loki logs view if log aggregation is enabled --
+  see docker-compose.md#log-aggregation) for why the model runtime crashed.
+```
+
+**Model-runtime timeouts (slow cold load):**
+```
+ERROR nyxgpt.chat: Ollama chat stream failed
+nyxgpt.ollama_client.ModelRuntimeError: Model failed to run — it may require
+more memory than is available on this host (no response within 180s)
+→ Solution: A large model can take a while to load into memory on its first
+  request. If this happens consistently, increase [nyxgpt] chat_timeout_seconds
+  in config.ini, or switch to a smaller model tag.
 ```
 
 **Authentication errors:**
@@ -671,6 +685,21 @@ nyxGPT uses atomic writes to prevent corruption during concurrent access, but:
    ```bash
    grep "abc123" ~/.nyxGPT/logs/nyxgpt.log
    ```
+
+### 502 Bad Gateway (chat)
+
+`/api/v1/chat` and `/api/v1/chat/stream` return `502` instead of a bare `500`
+when the *model runtime itself* fails -- the response `detail` (or the SSE
+`error` event's `error` field) already contains the actionable message, e.g.:
+
+```json
+{"detail": "Model failed to run — it may require more memory than is available on this host (Ollama HTTP 500: ...)"}
+```
+
+No log-diving is required for this case; see
+[performance.md#approximate-memory-by-model-tag](performance.md#approximate-memory-by-model-tag)
+for RAM guidance per model tag, or
+[Model-runtime crashes](#log-analysis) above for the log signature.
 
 ### CORS Issues (Web UI)
 
