@@ -75,6 +75,12 @@ nyxgpt ops status
 
 Reports:
 
+- **Deployment mode** for each component (`api`, `web`, `ollama`, `cassandra`): whether it's
+  running natively (Homebrew / the ops-managed Cassandra container) and whether a Docker
+  Compose deployment of the same component is also running. If a component is reported
+  running in *both* modes, `status` prints a **WARNING** — only one is actually serving
+  traffic on the shared port, and config edits to `~/.nyxGPT/config.ini` (native) vs.
+  `docker/config.docker.ini` (Compose) reach different, non-interchangeable processes.
 - Homebrew service state (`started`, `stopped`, `error`)
 - Docker container state for Cassandra
 - LaunchAgent load state
@@ -115,6 +121,15 @@ nyxgpt ops restart cassandra-logs
 - Docker containers are **not recreated** unless missing
 - Persistent volumes are preserved
 - LaunchAgents are reloaded if installed
+- Before restarting a component, `restart` checks whether a Docker Compose deployment of
+  that same component is already running. If so, it **refuses** rather than starting a
+  second native process/container that would collide on the same port — you'll see a
+  `[FAIL] Refusing to restart native <component>` message naming the port in conflict.
+  Stop the Compose deployment (or manage that component through Compose) first.
+- Restarting the Cassandra container is **atomic-safe**: if the restart fails in a way that
+  leaves a previously-running container stopped, `restart` attempts one recovery start. If
+  that also fails, it reports a clear `DOWN: ... is now STOPPED` result instead of silently
+  leaving the container down.
 
 ### Exit codes
 
