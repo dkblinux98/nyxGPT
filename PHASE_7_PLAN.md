@@ -31,7 +31,30 @@ application repo.
   principle, deployment model, branch/PR rules) — the app-repo layer on top of the generic
   agent instructions pulled from nyxAGENT.
 
-## Hard constraint — GitHub Actions do NOT run from a submodule
+## Direction (owner, 2026-07-15): move the pipeline OFF GitHub Actions
+
+Rather than keep the pipeline on GitHub Actions and fight the submodule constraint below, the
+owner wants to **explore running the agents without GitHub Actions at all** — which also makes
+nyxAGENT genuinely portable. Options under consideration:
+
+1. **`nyxagent` orchestrator on the Claude Agent SDK, run via launchd (recommended).** A
+   standalone package that polls GitHub (via `gh`) and runs scrummaster/developer/review as
+   Claude Agent SDK invocations, committing/pushing/PR-ing via `gh`. Lives entirely in nyxAGENT
+   (portable — no Actions, no submodule-workflow problem), runs on the workstation via launchd
+   (matches native-first), driven by a `nyxagent` wrapped command (ops-wrapper principle).
+   Bonuses: agents run under their own PATs so attribution is *fully* correct (the identity
+   requirement), and tokens move from Actions secrets to local config/keychain (folds into the
+   config single-source-of-truth, #3194). Cost: runs where the owner runs it (launchd while the
+   Mac is on, or a small VPS for 24/7) instead of free GitHub-hosted runners.
+2. **Local daemon + webhooks** — event-driven, but needs a public endpoint (tunnel/host).
+3. **Scheduled poller** — launchd/cron (or Claude Code Routines); simplest, slight latency;
+   effectively option 1 with a poll trigger.
+
+**App CI stays on Actions** (`validate-web-routes.yml`); only the *agent orchestration* moves
+off. Recommended: option 1. This supersedes the reusable-workflows idea below, which only
+applies if the pipeline *stays* on Actions.
+
+## (Only if staying on Actions) Hard constraint — GitHub Actions do NOT run from a submodule
 
 **GitHub only triggers workflows that live in the *consuming repo's* own `.github/workflows/`.**
 Workflow YAML sitting inside a submodule directory is inert — GitHub will not fire it on
