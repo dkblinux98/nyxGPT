@@ -153,6 +153,16 @@ OS-aware.
 
 ---
 
+## Cross-cutting principle — everything through `nyxgpt` wrappers (owner, 2026-07-15)
+
+No operation may require a raw `docker`/`docker compose`/`kubectl`/`terraform` command from
+the user; all of it is exposed through `nyxgpt` commands (`nyxgpt up`/`down`/`ops …`) and the
+dashboard. This is now codified in CLAUDE.md ("Operational Command Wrapping"). It elevates the
+`nyxgpt up`/`down`/`ops` wrappers (#6, #9, #8) from convenience to hard requirement, and it
+constrains the fixes for the deploy-layer acceptance failures: self-heal (#3179), smoke test
+(#3180), and blue-green/canary (#3184) must heal/operate via wrappers, and the UI strings +
+the five docs that currently show raw `docker compose`/`kubectl` must be converted.
+
 ## Sequencing rules
 
 - Sprint 6.0 blocks 6.2/6.3 (no public exposure before the API is sandboxed + auth-gated).

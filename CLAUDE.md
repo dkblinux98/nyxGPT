@@ -76,6 +76,17 @@ Do not spend excessive time reading bootstrap/context files before addressing th
 
 ---
 
+## Operational Command Wrapping (Owner Requirement, 2026-07-15)
+
+**No nyxGPT operation may require the user to run a raw `docker`, `docker compose`, `docker-compose`, `kubectl`, or `terraform` command directly. Every operation is exposed through a `nyxgpt`-wrapped command (e.g. `nyxgpt up`, `nyxgpt down`, `nyxgpt ops …`).**
+
+- The web UI, docs, help text, and scripts must instruct the user in terms of `nyxgpt` commands — never raw container/orchestrator commands. Showing `docker compose up -d` or `kubectl …` as a user instruction is a **Medium (blocking) review finding**.
+- Internals that shell out to `docker`/`kubectl` (self-heal, deploy, canary) are fine as *implementation*, but must be reachable through a `nyxgpt` command and the dashboard — the user never types the raw command.
+- This makes the unified `nyxgpt up`/`down`/`ops` wrappers (Phase 6) a hard architectural requirement, not just a convenience.
+- Known current violations (2026-07-15): `web/src/app/admin/self-heal/page.tsx:288` and `web/src/app/admin/deploy/page.tsx:170` tell users to run `docker compose up -d`; `docs/{deployment-checklist,terraform,kubernetes,docker-compose,self-healing}.md` surface raw `docker compose`/`kubectl`; and no `nyxgpt` stack up/down command exists yet.
+
+---
+
 ## Operating Mode
 
 Claude must adopt exactly one role at a time:
