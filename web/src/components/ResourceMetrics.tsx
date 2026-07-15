@@ -3,10 +3,6 @@
 import { useEffect, useState } from 'react';
 import LoadingSpinner from './LoadingSpinner';
 import ErrorMessage from './ErrorMessage';
-import TracingPanel from './TracingPanel';
-import ErrorTrackingPanel from './ErrorTrackingPanel';
-import GrafanaPanel from './GrafanaPanel';
-import LogAggregationPanel from './LogAggregationPanel';
 
 type MetricsData = {
   memory: {
@@ -426,7 +422,7 @@ export default function ResourceMetrics() {
         </div>
       </div>
 
-      {/* Prometheus scrape endpoint */}
+      {/* Observability dashboards live under Admin -> Observability */}
       <div
         style={{
           marginTop: '1rem',
@@ -437,46 +433,16 @@ export default function ResourceMetrics() {
           fontSize: 13,
         }}
       >
-        <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>Prometheus Endpoint</div>
+        <div style={{ fontWeight: 600, marginBottom: '0.5rem' }}>Observability</div>
         <p style={{ margin: '0 0 0.75rem 0', color: '#666' }}>
-          The nyxGPT API exposes a <code>/metrics</code> endpoint (same host/port as the rest of
-          the API, unauthenticated like <code>/health</code>) for Prometheus to scrape request
-          counts, latency histograms, error rates, and business metrics (chat/RAG usage). Point
-          your Prometheus server&apos;s scrape config at:
+          Local-only Grafana, Prometheus, Jaeger, and GlitchTip dashboards -- including the
+          Prometheus scrape endpoint for this API&apos;s <code>/metrics</code> -- have moved to
+          their own page.
         </p>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <code
-            style={{
-              background: 'var(--code-bg)',
-              padding: '4px 8px',
-              borderRadius: 4,
-              fontSize: 12,
-            }}
-          >
-            &lt;nyxgpt-api-host&gt;/metrics
-          </code>
-          <a
-            href="/api/prometheus-metrics"
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ color: '#0066cc', fontSize: 13 }}
-          >
-            View current metrics ↗
-          </a>
-        </div>
+        <a href="/admin/observability" style={{ color: '#0066cc', fontSize: 13 }}>
+          Open Observability →
+        </a>
       </div>
-
-      {/* Monitoring dashboards (Grafana + Prometheus) */}
-      <GrafanaPanel />
-
-      {/* Log aggregation (Loki + promtail) */}
-      <LogAggregationPanel />
-
-      {/* Distributed tracing (Jaeger) */}
-      <TracingPanel />
-
-      {/* Error tracking (GlitchTip) */}
-      <ErrorTrackingPanel />
 
       {/* Threshold indicators */}
       <div

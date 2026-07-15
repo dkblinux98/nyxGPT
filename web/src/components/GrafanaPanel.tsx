@@ -6,6 +6,7 @@ type MonitoringStatus = {
   enabled: boolean;
   active: boolean;
   grafana_ui_url: string;
+  prometheus_ui_url: string;
 };
 
 export default function GrafanaPanel() {
@@ -87,16 +88,27 @@ export default function GrafanaPanel() {
       {status && status.active && (
         <>
           <p style={{ margin: '0 0 0.75rem 0', color: '#666' }}>
-            Monitoring is active. Browse the pre-provisioned dashboards in the local Grafana UI:
+            Monitoring is active. Browse the pre-provisioned dashboards in the local Grafana UI,
+            or query raw metrics directly in the local Prometheus UI:
           </p>
-          <a
-            href={status.grafana_ui_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ color: '#0066cc', fontSize: 13 }}
-          >
-            Open Grafana ↗
-          </a>
+          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+            <a
+              href={status.grafana_ui_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: '#0066cc', fontSize: 13 }}
+            >
+              Open Grafana ↗
+            </a>
+            <a
+              href={status.prometheus_ui_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: '#0066cc', fontSize: 13 }}
+            >
+              Open Prometheus ↗
+            </a>
+          </div>
         </>
       )}
     </div>
