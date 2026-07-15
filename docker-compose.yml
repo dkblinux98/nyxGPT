@@ -159,7 +159,7 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "false"
     volumes:
       - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./docker/grafana/dashboards:/etc/grafana/provisioning/dashboards/json:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     ports:
       - "${GRAFANA_UI_PORT:-3001}:3000"
