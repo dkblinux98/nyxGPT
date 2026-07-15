@@ -23,6 +23,7 @@ def _isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(canary, "_which", lambda _: "/usr/local/bin/kubectl")
     monkeypatch.setattr(canary.time, "time", lambda: 1234.0)
     monkeypatch.setattr(canary, "get_resource_monitor", lambda: None)
+    monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
 
 
 @pytest.mark.unit
@@ -57,6 +58,16 @@ def test_deployment_health_kubectl_missing(monkeypatch):
     result = canary.deployment_health("nyxgpt-api-stable", "nyxgpt")
     assert not result.ok
     assert "kubectl not found" in result.message
+
+
+@pytest.mark.unit
+def test_deployment_health_kubectl_missing_under_compose(monkeypatch):
+    monkeypatch.setattr(canary, "_which", lambda _: None)
+    monkeypatch.setenv("NYXGPT_COMPOSE_FILE", "/etc/nyxgpt/docker-compose.yml")
+    result = canary.deployment_health("nyxgpt-api-stable", "nyxgpt")
+    assert not result.ok
+    assert "kubectl not found" not in result.message
+    assert "Kubernetes deployment mode" in result.message
 
 
 @pytest.mark.unit
@@ -116,6 +127,15 @@ def test_start_kubectl_missing(monkeypatch):
 
 
 @pytest.mark.unit
+def test_start_kubectl_missing_under_compose(monkeypatch):
+    monkeypatch.setattr(canary, "_which", lambda _: None)
+    monkeypatch.setenv("NYXGPT_COMPOSE_FILE", "/etc/nyxgpt/docker-compose.yml")
+    result = canary.start(namespace="nyxgpt")
+    assert not result.ok
+    assert "Kubernetes deployment mode" in result.message
+
+
+@pytest.mark.unit
 def test_status_reports_active_state_and_health(monkeypatch):
     canary._save_state({"active": True, "weight_percent": 25, "history": []})
     monkeypatch.setattr(
@@ -136,6 +156,19 @@ def test_status_reports_active_state_and_health(monkeypatch):
         "error_rate_percent": 0.0,
         "p95_latency_ms": 0.0,
     }
+    assert data["available"] is True
+    assert data["unavailable_reason"] is None
+
+
+@pytest.mark.unit
+def test_status_reports_unavailable_when_kubectl_missing_under_compose(monkeypatch):
+    monkeypatch.setattr(canary, "_which", lambda _: None)
+    monkeypatch.setenv("NYXGPT_COMPOSE_FILE", "/etc/nyxgpt/docker-compose.yml")
+
+    data = canary.status("nyxgpt")
+
+    assert data["available"] is False
+    assert "Kubernetes deployment mode" in data["unavailable_reason"]
 
 
 @pytest.mark.unit

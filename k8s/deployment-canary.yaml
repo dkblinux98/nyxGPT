@@ -22,6 +22,7 @@ spec:
         app: nyxgpt-api-canary-pool
         track: canary
     spec:
+      serviceAccountName: nyxgpt-api
       containers:
         - name: nyxgpt-api
           image: nyxgpt-api:local
