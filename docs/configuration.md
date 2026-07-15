@@ -709,7 +709,7 @@ api_base_url = http://127.0.0.1:8000    # API the web app proxies to
 
 - `nyxgpt.default_model`
 - `logging.level`
-- `rag.enabled`
+- `rag.enable_chat_context`
 - `auth.enabled`, `auth.api_key`, `auth.header`
 
 All other settings require a service restart unless otherwise noted.

@@ -10,6 +10,7 @@ from nyxgpt.config import (
     get_prompt_mode_enabled,
     get_prompt_mode_long_threshold,
     get_prompt_mode_short_threshold,
+    get_rag_enabled,
     get_rag_good_score_threshold,
     get_rag_medium_score_threshold,
     load_config,
@@ -537,6 +538,94 @@ medium_score_threshold = 0.5
 
     cfg = load_config(str(ini))
     assert get_rag_medium_score_threshold(cfg) == 0.5
+
+
+def test_get_rag_enabled_default_is_false(tmp_path: Path) -> None:
+    """With neither key set, RAG defaults to disabled."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_rag_enabled(cfg) is False
+
+
+def test_get_rag_enabled_reads_canonical_key(tmp_path: Path) -> None:
+    """`[rag] enable_chat_context` is the canonical RAG on/off switch.
+
+    This is the key the chat/session runtime reads (nyxgpt/chat.py,
+    nyxgpt/sessions.py), so get_rag_enabled() must agree with it -- this is
+    what the admin health/overview/config endpoints call. See #3183.
+    """
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[rag]
+enable_chat_context = true
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_rag_enabled(cfg) is True
+
+
+def test_get_rag_enabled_falls_back_to_legacy_alias(tmp_path: Path) -> None:
+    """The deprecated `[rag] enabled` alias is honored when the canonical
+    `enable_chat_context` key is not explicitly set."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[rag]
+enabled = true
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_rag_enabled(cfg) is True
+
+
+def test_get_rag_enabled_canonical_key_takes_precedence(tmp_path: Path) -> None:
+    """When both keys are set, the canonical `enable_chat_context` wins."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[rag]
+enable_chat_context = false
+enabled = true
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_rag_enabled(cfg) is False
 
 
 def test_validate_config_detects_negative_context_window(tmp_path: Path) -> None:

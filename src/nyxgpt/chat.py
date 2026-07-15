@@ -17,6 +17,7 @@ from nyxgpt.config import (
     get_prompt_mode_long_threshold,
     get_prompt_mode_short_threshold,
     get_rag_context_format,
+    get_rag_enabled,
     get_rag_instruction_template,
     get_system_prompt_minimize,
     load_config,
@@ -559,10 +560,7 @@ def _prepare_chat_context(
         should_use_rag = rag_enabled
     else:
         session_rag = state.meta.get("rag_enabled")
-        if isinstance(session_rag, bool):
-            should_use_rag = session_rag
-        else:
-            should_use_rag = _get_bool(cfg, "rag", "enable_chat_context", False)
+        should_use_rag = session_rag if isinstance(session_rag, bool) else get_rag_enabled(cfg)
 
     rag_context = ""
     rag_chunks = 0

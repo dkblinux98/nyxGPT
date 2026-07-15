@@ -16,6 +16,7 @@ from typing import Any, NotRequired, TypedDict, cast
 from nyxgpt.config import (
     get_default_model,
     get_ollama_base_url,
+    get_rag_enabled,
     get_sessions_dir,
     load_config,
 )
@@ -407,7 +408,7 @@ def ensure_meta_defaults(meta: SessionMetaDict, *, model: str | None = None) -> 
     if "rag_enabled" not in meta or not isinstance(meta.get("rag_enabled"), bool):
         cfg = load_config(None)
         try:
-            meta["rag_enabled"] = cfg.getboolean("rag", "enable_chat_context", fallback=False)
+            meta["rag_enabled"] = get_rag_enabled(cfg)
         except Exception:
             meta["rag_enabled"] = False
 
