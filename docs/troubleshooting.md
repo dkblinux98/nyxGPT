@@ -504,6 +504,19 @@ ERROR nyxgpt.chat: Chat timeout after 60 seconds
 → Solution: Increase chat_timeout_seconds or use smaller model
 ```
 
+**Model-runtime crashes (chat request 500s):**
+```
+ERROR nyxgpt.api: Chat stream failed
+Traceback (most recent call last):
+  ...
+RuntimeError: Ollama HTTP 500: {"error": "model runtime crashed"}
+→ Solution: The status/model/message detail on the last traceback line comes
+  straight from Ollama's own response. Run `nyxgpt ops status` to check
+  whether Ollama is still up, and check Ollama's own logs (via the
+  Grafana/Loki logs view if log aggregation is enabled -- see
+  docker-compose.md#log-aggregation) for why the model runtime crashed.
+```
+
 **Authentication errors:**
 ```
 WARNING nyxgpt.app: Invalid API key from 192.168.1.100

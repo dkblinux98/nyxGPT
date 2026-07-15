@@ -311,6 +311,14 @@ Access the log viewer at `http://127.0.0.1:3000/admin/logs` to:
 
 The log viewer provides a dark-themed, monospaced display optimized for reading structured log files.
 
+This page only shows nyxGPT's own log files under `~/.nyxGPT/logs` (e.g. `nyxgpt.log`) — it does
+not include logs from Ollama or other components running as separate services. To diagnose a
+model-runtime failure (e.g. a chat request that 500'd because the upstream model crashed), the
+page also links to the aggregated Grafana/Loki logs view when log aggregation is enabled (see
+[Log Aggregation](docker-compose.md#log-aggregation)). The chat/streaming endpoints log upstream
+Ollama errors (status, model, message) to `nyxgpt.log` before they reach the client, so
+`nyxgpt.log` is still the first place to check.
+
 #### Virtual Scrolling (Performance Optimization)
 
 The web UI uses **react-virtuoso** for efficient rendering of large message lists in chat sessions and session lists. This optimization ensures smooth performance even with thousands of messages or sessions.

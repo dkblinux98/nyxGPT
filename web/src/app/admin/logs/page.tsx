@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
+import LogAggregationPanel from '../../../components/LogAggregationPanel';
 
 type LogFile = {
   name: string;
@@ -189,6 +190,14 @@ export default function LogsPage() {
           ← Back to Admin Dashboard
         </a>
       </div>
+
+      <p style={{ margin: '0 0 0.75rem 0', color: '#666', fontSize: 13 }}>
+        This viewer only shows nyxGPT API log files under <code>~/.nyxGPT/logs</code> (e.g.{' '}
+        <code>nyxgpt.log</code>). It does not include logs from Ollama or other components running
+        as separate services -- to diagnose a model-runtime failure (e.g. a chat request that
+        500&apos;d), also check the aggregated log view below.
+      </p>
+      <LogAggregationPanel />
 
       {/* Backend Info */}
       {backendInfo && (
