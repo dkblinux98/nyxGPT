@@ -808,31 +808,31 @@ def restart(args) -> int:
 
     if target in ("all", "api"):
         conflict = _compose_conflict_result("api", compose)
-        (
+        if conflict:
             results.append(conflict)
-            if conflict
-            else results.extend(_restart_brew_service("nyxgpt-api"))
-        )
+        else:
+            results.extend(_restart_brew_service("nyxgpt-api"))
 
     if target in ("all", "web"):
         conflict = _compose_conflict_result("web", compose)
-        (
+        if conflict:
             results.append(conflict)
-            if conflict
-            else results.extend(_restart_brew_service("nyxgpt-web"))
-        )
+        else:
+            results.extend(_restart_brew_service("nyxgpt-web"))
 
     if target in ("all", "ollama"):
         conflict = _compose_conflict_result("ollama", compose)
-        results.append(conflict) if conflict else results.extend(_restart_brew_service("ollama"))
+        if conflict:
+            results.append(conflict)
+        else:
+            results.extend(_restart_brew_service("ollama"))
 
     if target in ("all", "cassandra"):
         conflict = _compose_conflict_result("cassandra", compose)
-        (
+        if conflict:
             results.append(conflict)
-            if conflict
-            else results.extend(_restart_docker_container("nyxgpt-cassandra"))
-        )
+        else:
+            results.extend(_restart_docker_container("nyxgpt-cassandra"))
 
     if target in ("all", "cassandra-logs"):
         results += _restart_launchagent("com.nyxgpt.cassandra-logs")
