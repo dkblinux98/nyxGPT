@@ -92,21 +92,13 @@ have been **added** (this pass): `[api] base_url` (`tui.py:818`) and `[logging] 
 to be present as **commented examples** already — adequately documented. The example file
 is now complete with respect to code-read keys.
 
-### DC2 — MEDIUM: `docs/configuration.md` documents only 15 of 23 config sections
-Undocumented in the canonical config doc: `[batch] [cache] [canary] [deploy] [pdf]
-[rate_limit] [self_heal] [web]`. These are real, code-read sections (several are
-user-facing: cache, pdf, rate_limit).
-- **Fix:** add a subsection per missing section, mirroring the example file's comments.
+### DC2 — RESOLVED: `docs/configuration.md` now documents all 23 config sections
+The 8 previously-undocumented sections (`[batch] [cache] [canary] [deploy] [pdf]
+[rate_limit] [self_heal] [web]`) were **added** this pass.
 
-### DC3 — MEDIUM: No documentation index; 10 of 24 docs are orphaned
-There is no `docs/README.md` index and README only links docs ad-hoc from prose. Result:
-10 docs are unreachable from README, including user-relevant ones —
-`configuration.md`, `self-healing.md` (the capstone feature!), `ops.md`, `homebrew.md`,
-`github-tokens.md`, `KNOWN_LIMITATIONS.md`, `adding-api-endpoints.md`, `agent-smoke.md`,
-`file-lock-audit.md`, `service-worker-pwa.md`.
-- **Fix:** add a `docs/README.md` index (grouped: User / Ops / Developer / Agent-system)
-  and a "Documentation" section in README linking it. Self-healing especially should be
-  discoverable given it's the headline capstone capability.
+### DC3 — RESOLVED: documentation index added
+A grouped `docs/README.md` index (User / Ops / Developer / Agent-system) now covers all
+24 docs so none are orphaned, and the root README's Documentation section links to it.
 
 **Positive:** no stale `[cassandra]`-section references remain in docs (the earlier
 `performance.md` fix held); `docs/` is otherwise substantial (24 files, ~11.3k lines).

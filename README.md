@@ -982,21 +982,24 @@ No runtime data is stored in the git repository.
 
 ## Documentation
 
-Detailed documentation is organized under `docs/`:
+Full documentation lives under [`docs/`](docs/README.md) — see the
+**[documentation index](docs/README.md)** for the complete, grouped list
+(User guides · Operations & deployment · Developer · Agent system).
 
-- **API & Ops** – `docs/api.md`
-- **UI (TUI + Web)** – `docs/ui.md`
-- **RAG & Cassandra** – `docs/rag.md`
-- **Sessions & Memory** – `docs/sessions.md`
-- **Performance Tuning** – `docs/performance.md`
-- **Testing** – `docs/testing.md`
-- **Architecture** – `docs/architecture.md`
-- **Development** – `docs/development.md`
-- **Security Best Practices** – `docs/security.md`
-- **Deployment Checklist** – `docs/deployment-checklist.md`
-- **Troubleshooting** – `docs/troubleshooting.md`
+Common starting points:
 
-If you are new to the project, start with **architecture**, then **api**, then **ui**.
+- **Configuration** – [`docs/configuration.md`](docs/configuration.md)
+- **API** – [`docs/api.md`](docs/api.md)
+- **UI (TUI + Web)** – [`docs/ui.md`](docs/ui.md)
+- **RAG** – [`docs/rag.md`](docs/rag.md)
+- **Sessions & Memory** – [`docs/sessions.md`](docs/sessions.md)
+- **Docker Compose** – [`docs/docker-compose.md`](docs/docker-compose.md)
+- **Self-healing** – [`docs/self-healing.md`](docs/self-healing.md)
+- **Security** – [`docs/security.md`](docs/security.md)
+- **Architecture** – [`docs/architecture.md`](docs/architecture.md)
+- **Troubleshooting** – [`docs/troubleshooting.md`](docs/troubleshooting.md)
+
+If you are new to the project, start with **configuration**, then **architecture**, then **api**.
 
 ---
 

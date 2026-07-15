@@ -586,6 +586,125 @@ See [`docs/api.md`](api.md#log-aggregation) for the
 
 ---
 
+## `[pdf]` section
+
+Controls OCR extraction for image-based PDFs during RAG ingestion.
+
+```ini
+[pdf]
+ocr_enabled = true              # OCR PDFs with little/no extractable text
+ocr_min_text_threshold = 50     # chars below which OCR is attempted
+ocr_dpi = 300                   # render DPI (higher = better, slower)
+ocr_lang = eng                  # ISO 639-2 code(s), e.g. eng+spa
+ocr_psm = 3                     # Tesseract page segmentation mode
+# tesseract_cmd = /usr/bin/tesseract   # path if not on PATH
+```
+
+Requires Tesseract installed on the host. See `docs/rag.md` for ingestion details.
+
+---
+
+## `[cache]` section
+
+Optional caching layers to avoid recomputing embeddings, RAG queries, and responses.
+Each cache has an independent enable flag, backend (`memory` or `disk`), size cap, and TTL.
+
+```ini
+[cache]
+embedding_cache_enabled = false
+embedding_cache_backend = memory      # memory | disk
+embedding_cache_max_size = 1000
+embedding_cache_ttl_seconds = 86400
+# ...matching query_cache_* and response_cache_* keys
+```
+
+Memory caches use LRU eviction; disk caches persist across restarts. See
+`example.config.ini` for the full key list per cache.
+
+---
+
+## `[rate_limit]` section
+
+Token-bucket rate limiting on the API (disabled by default; localhost-only app).
+
+```ini
+[rate_limit]
+enabled = false
+requests_per_second = 10
+burst_size = 20                 # max tokens in the bucket
+```
+
+Enable this when exposing the API beyond localhost.
+
+---
+
+## `[batch]` section
+
+Request batching for embedding throughput.
+
+```ini
+[batch]
+enabled = false
+batch_size = 32
+wait_time_ms = 50               # max wait to fill a batch
+```
+
+---
+
+## `[deploy]` section
+
+Local blue-green deployment (see `docs/kubernetes.md`, `/admin/deploy`).
+
+```ini
+[deploy]
+namespace = nyxgpt             # k8s namespace for blue/green switching
+```
+
+---
+
+## `[canary]` section
+
+Local canary rollout controls (see `/admin/canary`).
+
+```ini
+[canary]
+namespace = nyxgpt
+total_replicas = 4
+step_percent = 25                       # traffic increment per step
+error_rate_threshold_percent = 5        # auto-rollback threshold
+min_requests_for_evaluation = 20
+```
+
+---
+
+## `[self_heal]` section
+
+Watchdog that restarts unhealthy Docker Compose components (see `docs/self-healing.md`,
+`/admin/self-heal`).
+
+```ini
+[self_heal]
+enabled = false
+check_interval_seconds = 30
+max_consecutive_restarts = 5            # stop after N failed restarts
+backoff_seconds = 60                    # min wait between restarts
+```
+
+---
+
+## `[web]` section
+
+Settings for the Next.js web client / proxy.
+
+```ini
+[web]
+host = 127.0.0.1
+port = 3000
+api_base_url = http://127.0.0.1:8000    # API the web app proxies to
+```
+
+---
+
 ## Hot-reloadable settings
 
 - `nyxgpt.default_model`
