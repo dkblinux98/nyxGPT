@@ -81,6 +81,28 @@ default_model = qwen2.5:14b
 - **Memory**: 8-16+ GB
 - **Quality**: Best reasoning and output quality
 
+### Approximate Memory by Model Tag
+
+These are common model tags and their rough RAM requirements (the same
+figures the Manage Models page hints at when pulling a model):
+
+| Model tag (example) | Parameters | Approx. RAM |
+|----------------------|-----------|-------------|
+| `qwen2.5:0.5b` | 0.5B | 1-2 GB |
+| `llama3.2:1b` | 1B | 2-4 GB |
+| `llama3.2:3b` | 3B | 4-6 GB |
+| `qwen2.5:7b` | 7B | 6-8 GB |
+| `llama3.1:8b` | 8B | 8-16 GB |
+| `qwen2.5:14b` | 14B | 14-20+ GB |
+
+If you select a model that requires more memory than the host has free, the
+Ollama/llama-server process will crash when it tries to load it. nyxGPT
+surfaces this as a "Model failed to run — it may require more memory than
+is available" chat error rather than a bare 500; see the "Model-runtime
+crashes" entry under
+[Error Signatures](troubleshooting.md#error-signatures) in the
+troubleshooting guide for how to confirm and recover from it.
+
 ### Model Selection Tips
 
 1. **Start small**: Begin with `qwen2.5:0.5b` and scale up as needed

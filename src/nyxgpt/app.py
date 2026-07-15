@@ -92,6 +92,7 @@ from nyxgpt.config import (
     get_canary_namespace,
     get_canary_step_percent,
     get_canary_total_replicas,
+    get_chat_timeout_seconds,
     get_default_model,
     get_deploy_namespace,
     get_error_tracking_config,
@@ -113,6 +114,7 @@ from nyxgpt.config import (
     load_config,
 )
 from nyxgpt.logging import configure_logging, get_log_dir, request_id_var
+from nyxgpt.ollama_client import ModelRuntimeError
 from nyxgpt.rag.rag import (
     clear_query_cache,
     get_query_cache_stats,
@@ -900,6 +902,7 @@ def _chat_runtime_defaults(cfg: ConfigParser | None = None) -> dict[str, Any]:
         "cfg": cfg,
         "default_model": get_default_model(cfg),
         "rag_enabled": rag_enabled,
+        "chat_timeout_seconds": get_chat_timeout_seconds(cfg),
     }
 
 
@@ -2308,8 +2311,30 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
             # Could be extended to check request headers or user preference
             priority = RequestPriority.INTERACTIVE
 
-            # Submit to batch processor
-            result_dict = _batch_processor.submit(batch_req_data, priority=priority, timeout=30.0)
+            # Submit to batch processor. The wait here must cover however long
+            # the underlying ollama_chat() call itself is allowed to take
+            # (chat_timeout_seconds) plus queueing/scheduling overhead --
+            # otherwise a slow cold model load times out the batch submit
+            # before the actual chat request has had a chance to finish.
+            batch_submit_timeout = d["chat_timeout_seconds"] + 10
+            try:
+                result_dict = _batch_processor.submit(
+                    batch_req_data, priority=priority, timeout=batch_submit_timeout
+                )
+            except TimeoutError as e:
+                log.error(
+                    "Batch processing timed out",
+                    extra={"request_id": req_id, "error": str(e)},
+                )
+                raise HTTPException(
+                    status_code=504,
+                    detail=(
+                        "Chat request timed out waiting for the batch processor "
+                        f"after {batch_submit_timeout:.0f}s. The model may require "
+                        "more memory than is available, or chat_timeout_seconds "
+                        "may need to be increased."
+                    ),
+                ) from e
 
             # Check for errors in result
             if "error" in result_dict:
@@ -2323,7 +2348,8 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
                         "error_type": error_type,
                     },
                 )
-                raise HTTPException(status_code=500, detail=error_msg)
+                status_code = 502 if error_type == "ModelRuntimeError" else 500
+                raise HTTPException(status_code=status_code, detail=error_msg)
 
             # Convert result dict to ChatResult-like structure
             session_name = result_dict["session"]
@@ -2418,6 +2444,25 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
         # Validation errors (e.g., invalid session name)
         log.warning("Chat validation error", extra={"request_id": req_id, "error": str(e)})
         raise HTTPException(status_code=422, detail=str(e)) from e
+    except ModelRuntimeError as e:
+        # Upstream Ollama/model-runtime failure (crash, OOM, timeout) -- give
+        # the operator/user the actionable detail instead of a bare 500.
+        log.error(
+            "Chat request failed: model runtime error",
+            extra={
+                "request_id": req_id,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
+            exc_info=True,
+        )
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    except HTTPException:
+        # Already a well-formed HTTP error (e.g. the batch-processing branch
+        # above) -- re-raise as-is instead of letting it fall into the
+        # catch-all below, which would otherwise flatten it into a generic
+        # 500 "Internal server error" and discard its real status/detail.
+        raise
     except Exception as e:
         log.error(
             "Chat request failed",

@@ -1460,6 +1460,20 @@ The model will produce JSON conforming to the schema (Ollama `format` parameter)
 - RAG context may be injected depending on configuration.
 - When RAG is enabled, the response includes `rag_chunks` array with retrieved context metadata.
 
+**Model runtime failures:** if the Ollama/llama-server model runtime itself
+fails to load or run the selected model (crash, out-of-memory, timeout), the
+endpoint returns `502 Bad Gateway` with an actionable `detail` message
+instead of a bare `500`, e.g.:
+
+```json
+{"detail": "Model failed to run — the model runtime returned an error. This can happen if the host doesn't have enough free memory to load the model, but may also be a transient failure (Ollama HTTP 500: ...)"}
+```
+
+When request batching (`[batch] enabled`) is on, a batch-queue timeout
+(distinct from a model failure) returns `504 Gateway Timeout` instead. See
+[troubleshooting.md#502-bad-gateway-chat](troubleshooting.md#502-bad-gateway-chat)
+and [performance.md#approximate-memory-by-model-tag](performance.md#approximate-memory-by-model-tag).
+
 ### RAG prompt & context optimization
 
 When RAG-assisted chat is enabled, retrieved context injected into the prompt is governed by configuration settings in `~/.nyxGPT/config.ini` under the `[rag]` section.
@@ -1619,6 +1633,12 @@ data: {"error": "Connection timeout", "elapsed": 30.0}
 id: 6
 
 ```
+
+If the model runtime itself fails (crash, out-of-memory, timeout loading a
+large model), `error` contains the same actionable message as the
+non-streaming endpoint's `502` response, e.g. `"Model failed to run — it may
+require more memory than is available on this host (...)"`, instead of a raw
+Ollama error string.
 
 **6. Done Event** (end of stream with final stats):
 ```

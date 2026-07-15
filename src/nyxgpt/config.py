@@ -221,6 +221,18 @@ def get_ollama_base_url(cfg: ConfigParser) -> str:
     return cfg.get("ollama", "base_url", fallback="http://127.0.0.1:11434")
 
 
+def get_chat_timeout_seconds(cfg: ConfigParser) -> int:
+    """Return the configured per-request chat timeout (``[nyxgpt] chat_timeout_seconds``)."""
+    try:
+        return cfg.getint("nyxgpt", "chat_timeout_seconds", fallback=180)
+    except (ValueError, TypeError) as e:
+        import logging
+
+        log = logging.getLogger(__name__)
+        log.warning("Invalid nyxgpt.chat_timeout_seconds in config, using 180: %s", e)
+        return 180
+
+
 def _expand_path(value: str) -> Path:
     return Path(value).expanduser()
 
