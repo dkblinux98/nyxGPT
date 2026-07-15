@@ -44,6 +44,15 @@ require docker
 require curl
 require python3
 
+NYXGPT_AUTH_API_KEY="${NYXGPT_AUTH_API_KEY:-}"
+if [[ -z "$NYXGPT_AUTH_API_KEY" && -f .env ]]; then
+  NYXGPT_AUTH_API_KEY="$(sed -n 's/^NYXGPT_AUTH_API_KEY=//p' .env | tail -n1)"
+fi
+if [[ -z "$NYXGPT_AUTH_API_KEY" || "$NYXGPT_AUTH_API_KEY" == "change-me" ]]; then
+  fail "NYXGPT_AUTH_API_KEY is not set to a real value -- export it or set it in .env (see .env.example); docker/config.docker.ini enables auth by default"
+fi
+auth_args=(-H "X-API-Key: ${NYXGPT_AUTH_API_KEY}")
+
 compose_field() {
   # compose_field <service> <field: State|Health>
   docker compose ps "$1" --format json 2>/dev/null | python3 -c "
@@ -72,7 +81,7 @@ wait_for_healthy() {
 self_heal_component_healthy() {
   # Returns "1" if the component is reported healthy by /api/v1/self-heal/status, else "0".
   local service="$1"
-  curl -sf "$API_URL/api/v1/self-heal/status" 2>/dev/null | python3 -c "
+  curl -sf "${auth_args[@]}" "$API_URL/api/v1/self-heal/status" 2>/dev/null | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -108,12 +117,35 @@ else
 fi
 
 log "Enabling the self-heal watchdog"
-curl -sf -X POST "$API_URL/api/v1/self-heal/toggle" \
+curl -sf -X POST "$API_URL/api/v1/self-heal/toggle" "${auth_args[@]}" \
   -H 'Content-Type: application/json' -d '{"enabled": true}' >/dev/null \
-  || fail "could not reach $API_URL to enable self-heal -- is the api container up?"
+  || fail "could not reach $API_URL to enable self-heal -- is the api container up, and is NYXGPT_AUTH_API_KEY correct?"
+
+log "Ensuring the configured Ollama model is pulled"
+default_model="$(sed -n 's/^default_model[[:space:]]*=[[:space:]]*//p' docker/config.docker.ini | head -n1)"
+[[ -n "$default_model" ]] || fail "could not determine default_model from docker/config.docker.ini"
+have_model=$(curl -sf "${auth_args[@]}" "$API_URL/api/v1/models" 2>/dev/null | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print('0')
+    sys.exit()
+print('1' if '$default_model' in d.get('models', []) else '0')
+" 2>/dev/null || echo "0")
+if [[ "$have_model" == "1" ]]; then
+  log "  '$default_model' already present"
+else
+  log "  Pulling '$default_model' (first run only -- can take a few minutes)..."
+  curl -sf --max-time 600 -X POST "$API_URL/api/v1/models/pull" "${auth_args[@]}" \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\": \"$default_model\"}" >/dev/null \
+    || fail "failed to pull model '$default_model'"
+  log "  Pulled '$default_model'"
+fi
 
 log "Verifying chat works end-to-end"
-chat_response=$(curl -sf -X POST "$API_URL/api/v1/chat" \
+chat_response=$(curl -sf -X POST "$API_URL/api/v1/chat" "${auth_args[@]}" \
   -H 'Content-Type: application/json' \
   -d '{"prompt": "Reply with exactly one word: OK", "session": "smoke-test", "new": true}') \
   || fail "chat request failed"
@@ -128,15 +160,15 @@ print('  chat reply:', reply[:80])
 log "Verifying RAG: ingest a document, then query it"
 doc_marker="XYZZY-NYXGPT-$$"
 ingest_ok=1
-curl -sf -X POST "$API_URL/api/v1/rag/ingest" -H 'Content-Type: application/json' \
-  -d "{\"doc_id\": \"smoke-test-doc\", \"text\": \"The secret smoke-test phrase is ${doc_marker}.\"}" \
+curl -sf -X POST "$API_URL/api/v1/rag/ingest" "${auth_args[@]}" -H 'Content-Type: application/json' \
+  -d "{\"doc_id\": \"smoke-test-doc\", \"text\": \"The secret smoke-test phrase is ${doc_marker}.\", \"ensure_schema\": true}" \
   >/dev/null || ingest_ok=0
 
 if [[ "$ingest_ok" -eq 0 ]]; then
   log "  WARNING: RAG ingest returned a non-2xx response -- is [rag] enabled in config.ini? Skipping RAG verification."
 else
   sleep 2
-  rag_response=$(curl -sf -X POST "$API_URL/api/v1/rag/query" -H 'Content-Type: application/json' \
+  rag_response=$(curl -sf -X POST "$API_URL/api/v1/rag/query" "${auth_args[@]}" -H 'Content-Type: application/json' \
     -d '{"query": "What is the secret smoke-test phrase?"}' || true)
   if echo "$rag_response" | grep -q "$doc_marker"; then
     log "  RAG query surfaced the ingested phrase"
