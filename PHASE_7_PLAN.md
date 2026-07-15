@@ -54,6 +54,29 @@ nyxAGENT genuinely portable. Options under consideration:
 off. Recommended: option 1. This supersedes the reusable-workflows idea below, which only
 applies if the pipeline *stays* on Actions.
 
+### Reference architecture: OpenClaw (and the "living agents" goal, owner 2026-07-15)
+
+OpenClaw (open-source persistent personal-AI-agent daemon) is the reference design for options
+1–3: a long-running daemon (local machine or VPS) that hosts the agent loop, connects to 12+
+**messaging platforms**, and adds a **heartbeat scheduler**, **cross-channel session
+management**, and **persistent memory** — and for coding it wraps Claude Code / Codex / OpenCode
+via adapters with a git-**worktree** strategy. Two adoption paths:
+
+- **Adopt OpenClaw as the runtime** and register the nyxGPT scrummaster/developer/review agents
+  as OpenClaw *skills* (it already has a skills system + coding-agent skill) — fastest path;
+  OpenClaw handles daemon/Slack/memory/scheduler plumbing.
+- **Build `nyxagent` in its image** — purpose-built orchestrator, tighter to the pipeline.
+
+**Owner goal — make the agents "alive" and interactive:**
+- **Slack (first-class):** chat with the agents in Slack — give instructions, get status, drive
+  the pipeline conversationally. Native to the OpenClaw-style daemon; not custom work.
+- **Zoom (harder, separate integration):** real-time voice/video. Needs a meeting-bot layer
+  (join call → speech-to-text → agent → text-to-speech) via the Zoom Meeting SDK + an STT/TTS
+  pipeline — feasible but distinct from the text-messaging path; scope as its own issue.
+- Running in the owner's own daemon under the agent PATs means the agents are genuinely the
+  actors — the **identity/attribution requirement is fully satisfied** (unachievable on Actions
+  or a proxied remote session).
+
 ## (Only if staying on Actions) Hard constraint — GitHub Actions do NOT run from a submodule
 
 **GitHub only triggers workflows that live in the *consuming repo's* own `.github/workflows/`.**
