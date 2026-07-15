@@ -24,13 +24,21 @@
   --info-bg: #eff6ff;
   --code-bg: #f3f4f6;
   --muted: #f4f4f5;
-  --muted-foreground: #71717a;
+  --muted-foreground: #52525b;
   --skeleton-base: #e5e5e5;
   --skeleton-shimmer: #f0f0f0;
   --toast-success-bg: #E45801;
   --toast-error-bg: #ef4444;
   --toast-warning-bg: #f59e0b;
   --toast-info-bg: #3b82f6;
+  --link: #0066cc;
+  /* Aliases: several admin pages (deploy/canary/self-heal/collections/playground)
+     reference these names; keep them in sync with the canonical tokens above so
+     button/text styling doesn't silently fall back to `initial` when the var is
+     undefined. */
+  --background-secondary: var(--muted);
+  --foreground-muted: var(--muted-foreground);
+  --border-color: var(--border);
 }
 
 :root[data-theme='dark'],
@@ -67,6 +75,7 @@
   --toast-error-bg: #dc2626;
   --toast-warning-bg: #d97706;
   --toast-info-bg: #2563eb;
+  --link: #60a5fa;
 }
 
 html,
