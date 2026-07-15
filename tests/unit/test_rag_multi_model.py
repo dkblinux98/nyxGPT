@@ -124,6 +124,9 @@ def test_ingest_document_with_collection(monkeypatch: pytest.MonkeyPatch) -> Non
             store_calls.append({"collection": collection})
             self.collection = collection
 
+        def schema_exists(self):
+            return False
+
         def ensure_schema(self, dim, collection="default"):
             pass
 
