@@ -31,6 +31,8 @@ type CanaryStatus = {
   canary: TrackHealth;
   metrics: Metrics;
   history: HistoryEntry[];
+  available: boolean;
+  unavailable_reason: string | null;
 };
 
 export default function CanaryPage() {
@@ -216,6 +218,44 @@ export default function CanaryPage() {
             </span>
           </div>
 
+          {!status.available && (
+            <div
+              style={{
+                marginBottom: '1.5rem',
+                padding: '1rem 1.5rem',
+                borderRadius: '0.5rem',
+                background: 'var(--background-secondary)',
+                border: '1px solid #f59e0b',
+                fontSize: '0.875rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '1rem',
+              }}
+            >
+              <span>
+                <strong>Not available in this deployment mode.</strong>{' '}
+                {status.unavailable_reason}
+              </span>
+              <button
+                onClick={loadStatus}
+                style={{
+                  padding: '0.4rem 0.75rem',
+                  backgroundColor: 'var(--background)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '0.375rem',
+                  cursor: 'pointer',
+                  fontSize: '0.8rem',
+                  flexShrink: 0,
+                }}
+              >
+                Refresh
+              </button>
+            </div>
+          )}
+
+          {status.available && (
+          <>
           <div
             style={{
               display: 'grid',
@@ -389,6 +429,8 @@ export default function CanaryPage() {
               Refresh
             </button>
           </div>
+          </>
+          )}
 
           <div>
             <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginBottom: '0.75rem' }}>
