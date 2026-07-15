@@ -26,6 +26,11 @@ single-user install gets by default.
   #3184, #3185) are **not moot** — they still need fixing for those optional paths — but they
   are **not blockers for the default native deployment**, so they re-prioritize below the
   native-deployment work rather than closing.
+- **One wrapped entry point, mode by flag.** `nyxgpt ops install` (no flag) = native default.
+  `nyxgpt ops install --k8s` = Kubernetes, resolving to a **local minikube** cluster for
+  testing or an **AWS/EKS-style** cluster for enterprise deployment. (A Compose flag can follow
+  the same pattern.) The user never runs raw `minikube`/`kubectl`/`eksctl`/`docker compose` —
+  every mode is selected through the `nyxgpt` wrapper.
 - **Blue-green (#2691) and canary (#2692)** stay on the retained k8s substrate; not dropped.
 - Native-first makes the *default* private-to-the-workstation posture natural (native services
   bind `localhost`), and reduces the split-brain (#16) by making native the primary model
