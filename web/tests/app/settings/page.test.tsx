@@ -17,6 +17,13 @@ vi.mock('../../../src/app/settings/ResourceMetrics', () => ({
   },
 }));
 
+// Mock GeneralSettings component
+vi.mock('../../../src/app/settings/GeneralSettings', () => ({
+  default: function MockGeneralSettings() {
+    return <div data-testid="general-settings">General Settings Component</div>;
+  },
+}));
+
 describe('SettingsPage', () => {
   it('renders settings page with tabs', () => {
     render(<SettingsPage />);
@@ -38,7 +45,7 @@ describe('SettingsPage', () => {
     const generalTab = screen.getByRole('button', { name: /General/i });
     fireEvent.click(generalTab);
 
-    expect(screen.getByText(/General settings coming soon/i)).toBeInTheDocument();
+    expect(screen.getByTestId('general-settings')).toBeInTheDocument();
   });
 
   it('switches back to resource usage tab', () => {
