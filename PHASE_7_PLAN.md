@@ -25,8 +25,10 @@ application repo.
 ## What stays in nyxGPT
 
 - All application code (`src/`, `web/`, `docs/`, `k8s/`, `docker/`, `terraform/`, `ops/`).
-- App CI that is nyxGPT-specific: `validate-web-routes.yml` (type-check + vitest + route
-  validation) stays in nyxGPT's own `.github/workflows/`.
+- The app's *test definitions* (pytest/vitest suites, route validation, the new visual-UI
+  checks) stay with the app — but they run on self-hosted local/AWS infra, not GitHub-hosted
+  runners (see "Testing infrastructure" below). `validate-web-routes.yml` as a GitHub workflow
+  is retired in favor of the daemon invoking those tests on self-hosted compute.
 - nyxGPT-specific operating instructions in `CLAUDE.md` (Definition of Done, ops-wrapper
   principle, deployment model, branch/PR rules) — the app-repo layer on top of the generic
   agent instructions pulled from nyxAGENT.
@@ -50,9 +52,36 @@ nyxAGENT genuinely portable. Options under consideration:
 3. **Scheduled poller** — launchd/cron (or Claude Code Routines); simplest, slight latency;
    effectively option 1 with a poll trigger.
 
-**App CI stays on Actions** (`validate-web-routes.yml`); only the *agent orchestration* moves
-off. Recommended: option 1. This supersedes the reusable-workflows idea below, which only
-applies if the pipeline *stays* on Actions.
+Recommended: option 1's shape (a daemon), built purpose-built per the owner decision below. This
+supersedes the reusable-workflows idea below, which only applies if the pipeline *stays* on
+Actions.
+
+### Testing infrastructure — ALL testing off GitHub, self-hosted / on-demand (owner 2026-07-15)
+
+**All testing/CI runs on infrastructure spun up locally or on-demand on the owner's AWS
+account — never GitHub-hosted runners.** This supersedes the earlier "app CI stays on Actions"
+note: `validate-web-routes.yml`'s work (type-check, vitest, route validation) and the pipeline's
+test/verify steps all move off GitHub too.
+
+- **Local by default** (a runner on the Mac mini / local box); **on-demand AWS** ephemeral
+  compute spun up as needed for heavier or parallel test loads, torn down after (ties to the
+  Phase 6 AWS IaC — same provisioning path, private-to-workstation/LAN).
+- **Visual web UI inspection is a required part of testing:** browser-driven (Playwright —
+  already available in the environment) screenshot / visual-regression checks of the web UI, so
+  the class of defects manual acceptance testing caught (a11y, contrast, layout, overflow —
+  #3186, #3188) is caught automatically, not just unit-tested logic.
+- Note: the *current* acceptance-fix loop still uses GitHub Actions until this self-hosted test
+  infra is built; this is a Phase 6/7 deliverable, not a mid-loop change.
+
+### New agent role — a proactive SRE agent (owner 2026-07-15)
+
+Self-healing becomes an **agent**, not just the reactive `self_heal.py` watchdog. Alongside
+scrummaster/developer/review, add a **fourth SRE agent** that **proactively** monitors app
+health (metrics, logs, health endpoints, traces) on the daemon's heartbeat and takes healing
+actions — restart/redeploy/roll back, and surface what it did in the SRE/admin dashboard (DoD).
+This supersedes/augments the watchdog-script approach and reshapes the self-healing capstone
+(#3160) and #3179: the *mechanism* of self-heal is an agent that watches and acts ahead of
+failures, operable from the dashboard, running under its own agent identity in the daemon.
 
 ### Reference architecture: OpenClaw (and the "living agents" goal, owner 2026-07-15)
 
