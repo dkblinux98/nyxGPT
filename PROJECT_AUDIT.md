@@ -84,15 +84,13 @@ Known recurring bug — it clobbered the #2759 tracker checkboxes three times du
 
 ## Documentation & Configuration
 
-### DC1 — MEDIUM: `example.config.ini` is missing 5 keys the code reads
-All 23 config *sections* are present, but these keys are read via `cfg.get(...)` (with
-fallbacks) yet absent from the example, so users can't discover them:
-- `[api] base_url` (`tui.py:818`, fallback `http://127.0.0.1:8000`)
-- `[logging] format` (`logging.py:184`, fallback `text` — values: `text`|`json`)
-- `[pdf] tesseract_cmd` (`app.py:3797`, fallback `None`)
-- `[rag] context_format` (fallback default format)
-- `[rag] instruction_template` (fallback default template)
-- **Fix:** add each with its default value + a comment.
+### DC1 — RESOLVED: `example.config.ini` completeness
+All 23 config *sections* are present. Two keys the code reads were genuinely absent and
+have been **added** (this pass): `[api] base_url` (`tui.py:818`) and `[logging] format`
+(`logging.py:184`, values `text`|`json`). Three others my initial scan flagged
+(`[pdf] tesseract_cmd`, `[rag] context_format`, `[rag] instruction_template`) turned out
+to be present as **commented examples** already — adequately documented. The example file
+is now complete with respect to code-read keys.
 
 ### DC2 — MEDIUM: `docs/configuration.md` documents only 15 of 23 config sections
 Undocumented in the canonical config doc: `[batch] [cache] [canary] [deploy] [pdf]
