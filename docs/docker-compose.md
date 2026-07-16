@@ -125,6 +125,24 @@ Open the web UI at [http://localhost:3000](http://localhost:3000).
     header on every backend call, since `docker/config.docker.ini` enables
     auth for exactly this reason (see the `[auth]` section).
 
+## Network binding
+
+Every port published above is bound to `NYXGPT_BIND_ADDR` (`.env`, defaults
+to `127.0.0.1`), so the stack is reachable from this machine only — matching
+the [local-first](../VISION.md) posture of a native install. Without this,
+Docker publishes on `0.0.0.0` and every service becomes reachable from
+anyone on the same LAN, regardless of the `[api] host` / `[web] host`
+settings in `config.ini` (those only control the bind *inside* the
+container).
+
+If you need the stack reachable from other machines, prefer an SSH tunnel or
+a TLS-terminating reverse proxy in front of the loopback-bound ports (see
+[security.md#network-security](security.md#network-security)) over widening
+`NYXGPT_BIND_ADDR`. If you do widen it (e.g. `NYXGPT_BIND_ADDR=0.0.0.0` in
+`.env`), first set `[auth] enabled = true` in `~/.nyxGPT/config.ini` and
+re-run `nyxgpt ops env-sync` — otherwise the full API, including the
+filesystem tools endpoints, is reachable with no credential.
+
 ## Disabling RAG / Cassandra
 
 RAG is enabled by default in `docker/config.docker.ini` since Cassandra ships

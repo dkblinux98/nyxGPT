@@ -23,6 +23,14 @@ data:
     base_url = http://host.docker.internal:11434
 
     [api]
+    # 0.0.0.0 here is the pod's network namespace, not the host's -- required
+    # so kube-proxy can route Service traffic to the container at all (see
+    # k8s/service.yaml, k8s/service-canary.yaml: both are `type: ClusterIP`
+    # with no NodePort/LoadBalancer/Ingress, so nothing routes this outside
+    # the cluster). This is not the same exposure as binding 0.0.0.0 in the
+    # native or Compose deployment (docs/security.md#network-security) --
+    # reviewed as part of #3195. Auth is enabled below regardless, since the
+    # API is still reachable cluster-wide rather than just localhost.
     host = 0.0.0.0
     port = 8000
 

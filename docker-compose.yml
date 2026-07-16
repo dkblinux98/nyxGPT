@@ -6,6 +6,14 @@
 # the container.
 name: nyxgpt
 
+# Every published port below is bound to NYXGPT_BIND_ADDR (default
+# 127.0.0.1), matching the native deployment's workstation-only posture
+# (docs/security.md) -- otherwise Docker publishes on 0.0.0.0 and the stack
+# becomes reachable from anyone on the same LAN. Only widen this (e.g.
+# `NYXGPT_BIND_ADDR=0.0.0.0` in .env) if you've also turned on
+# `[auth] enabled = true` and understand the exposure -- see
+# docs/security.md#network-security and docs/docker-compose.md.
+
 networks:
   nyxgpt:
     driver: bridge
@@ -27,7 +35,7 @@ services:
     networks:
       - nyxgpt
     ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+      - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
@@ -43,7 +51,7 @@ services:
     networks:
       - nyxgpt
     ports:
-      - "${CASSANDRA_PORT:-9042}:9042"
+      - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${CASSANDRA_PORT:-9042}:9042"
     volumes:
       - cassandra_data:/var/lib/cassandra
     healthcheck:
@@ -62,7 +70,7 @@ services:
     networks:
       - nyxgpt
     ports:
-      - "${NYXGPT_API_PORT:-8000}:8000"
+      - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${NYXGPT_API_PORT:-8000}:8000"
     environment:
       # NYXGPT_AUTH_API_KEY's single source of truth is ~/.nyxGPT/config.ini's
       # [auth] api_key -- run `nyxgpt ops env-sync` to derive .env's value
@@ -103,7 +111,7 @@ services:
     networks:
       - nyxgpt
     ports:
-      - "${NYXGPT_WEB_PORT:-3000}:3000"
+      - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${NYXGPT_WEB_PORT:-3000}:3000"
     environment:
       # Server-side base URL the Next.js proxy routes use to reach the API
       # over the compose network (see web/src/lib/apiProxy.ts). This is
@@ -142,7 +150,7 @@ services:
       - ./docker/prometheus-alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus_data:/prometheus
     ports:
-      - "${PROMETHEUS_UI_PORT:-9090}:9090"
+      - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${PROMETHEUS_UI_PORT:-9090}:9090"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:9090/-/healthy"]
       interval: 10s
@@ -168,7 +176,7 @@ services:
       - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     ports:
-      - "${GRAFANA_UI_PORT:-3001}:3000"
+      - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${GRAFANA_UI_PORT:-3001}:3000"
     depends_on:
       prometheus:
         condition: service_healthy
@@ -246,7 +254,7 @@ services:
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
-      - "${JAEGER_UI_PORT:-16686}:16686"
+      - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${JAEGER_UI_PORT:-16686}:16686"
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:16686/"]
       interval: 10s
@@ -318,7 +326,7 @@ services:
     networks:
       - nyxgpt
     ports:
-      - "${GLITCHTIP_UI_PORT:-8080}:8080"
+      - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${GLITCHTIP_UI_PORT:-8080}:8080"
     environment:
       DATABASE_URL: postgres://glitchtip:glitchtip@glitchtip-postgres:5432/glitchtip
       REDIS_URL: redis://glitchtip-redis:6379/0
