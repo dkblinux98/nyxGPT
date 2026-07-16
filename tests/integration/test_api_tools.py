@@ -17,10 +17,10 @@ import pytest
 
 
 @pytest.mark.integration
-def test_tools_ls_endpoint_lists_directory(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_ls_endpoint_lists_directory(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/ls lists directory contents."""
     # Create test directory with files
-    test_dir = tmp_path / "test_ls"
+    test_dir = tools_tmp_path / "test_ls"
     test_dir.mkdir()
     (test_dir / "file1.txt").write_text("content1")
     (test_dir / "file2.txt").write_text("content2")
@@ -44,9 +44,9 @@ def test_tools_ls_endpoint_lists_directory(api_base_url: str, tmp_path: Path) ->
 
 
 @pytest.mark.integration
-def test_tools_ls_endpoint_single_file(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_ls_endpoint_single_file(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/ls with single file path."""
-    test_file = tmp_path / "single.txt"
+    test_file = tools_tmp_path / "single.txt"
     test_file.write_text("content")
 
     payload = {"path": str(test_file)}
@@ -63,9 +63,9 @@ def test_tools_ls_endpoint_single_file(api_base_url: str, tmp_path: Path) -> Non
 
 
 @pytest.mark.integration
-def test_tools_ls_endpoint_nonexistent_path(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_ls_endpoint_nonexistent_path(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/ls returns 400 for nonexistent path."""
-    nonexistent = tmp_path / "nonexistent"
+    nonexistent = tools_tmp_path / "nonexistent"
 
     payload = {"path": str(nonexistent)}
     r = httpx.post(
@@ -82,9 +82,9 @@ def test_tools_ls_endpoint_nonexistent_path(api_base_url: str, tmp_path: Path) -
 
 
 @pytest.mark.integration
-def test_tools_ls_endpoint_response_format(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_ls_endpoint_response_format(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/ls returns correct response format."""
-    test_dir = tmp_path / "format_test"
+    test_dir = tools_tmp_path / "format_test"
     test_dir.mkdir()
 
     payload = {"path": str(test_dir)}
@@ -103,9 +103,9 @@ def test_tools_ls_endpoint_response_format(api_base_url: str, tmp_path: Path) ->
 
 
 @pytest.mark.integration
-def test_tools_cat_endpoint_reads_file(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_cat_endpoint_reads_file(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/cat reads file content."""
-    test_file = tmp_path / "test.txt"
+    test_file = tools_tmp_path / "test.txt"
     content = "Line 1\nLine 2\nLine 3"
     test_file.write_text(content)
 
@@ -123,9 +123,9 @@ def test_tools_cat_endpoint_reads_file(api_base_url: str, tmp_path: Path) -> Non
 
 
 @pytest.mark.integration
-def test_tools_cat_endpoint_with_head_limit(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_cat_endpoint_with_head_limit(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/cat with head parameter."""
-    test_file = tmp_path / "test.txt"
+    test_file = tools_tmp_path / "test.txt"
     test_file.write_text("Line 1\nLine 2\nLine 3\nLine 4\nLine 5")
 
     payload = {"path": str(test_file), "head": 3}
@@ -147,9 +147,9 @@ def test_tools_cat_endpoint_with_head_limit(api_base_url: str, tmp_path: Path) -
 
 
 @pytest.mark.integration
-def test_tools_cat_endpoint_with_tail_limit(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_cat_endpoint_with_tail_limit(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/cat with tail parameter."""
-    test_file = tmp_path / "test.txt"
+    test_file = tools_tmp_path / "test.txt"
     test_file.write_text("Line 1\nLine 2\nLine 3\nLine 4\nLine 5")
 
     payload = {"path": str(test_file), "tail": 2}
@@ -171,9 +171,9 @@ def test_tools_cat_endpoint_with_tail_limit(api_base_url: str, tmp_path: Path) -
 
 
 @pytest.mark.integration
-def test_tools_cat_endpoint_nonexistent_file(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_cat_endpoint_nonexistent_file(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/cat returns 400 for nonexistent file."""
-    nonexistent = tmp_path / "nonexistent.txt"
+    nonexistent = tools_tmp_path / "nonexistent.txt"
 
     payload = {"path": str(nonexistent)}
     r = httpx.post(
@@ -190,9 +190,9 @@ def test_tools_cat_endpoint_nonexistent_file(api_base_url: str, tmp_path: Path) 
 
 
 @pytest.mark.integration
-def test_tools_cat_endpoint_response_format(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_cat_endpoint_response_format(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/cat returns correct response format."""
-    test_file = tmp_path / "format.txt"
+    test_file = tools_tmp_path / "format.txt"
     test_file.write_text("content")
 
     payload = {"path": str(test_file)}
@@ -211,9 +211,9 @@ def test_tools_cat_endpoint_response_format(api_base_url: str, tmp_path: Path) -
 
 
 @pytest.mark.integration
-def test_tools_grep_endpoint_finds_pattern(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_grep_endpoint_finds_pattern(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/grep finds pattern in file."""
-    test_file = tmp_path / "test.txt"
+    test_file = tools_tmp_path / "test.txt"
     test_file.write_text("Line 1: hello\nLine 2: world\nLine 3: hello again")
 
     payload = {"pattern": "hello", "path": str(test_file)}
@@ -233,9 +233,9 @@ def test_tools_grep_endpoint_finds_pattern(api_base_url: str, tmp_path: Path) ->
 
 
 @pytest.mark.integration
-def test_tools_grep_endpoint_regex_pattern(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_grep_endpoint_regex_pattern(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/grep with regex pattern."""
-    test_file = tmp_path / "test.txt"
+    test_file = tools_tmp_path / "test.txt"
     test_file.write_text("test123\ntest456\nabc789")
 
     payload = {"pattern": r"test\d+", "path": str(test_file)}
@@ -255,9 +255,9 @@ def test_tools_grep_endpoint_regex_pattern(api_base_url: str, tmp_path: Path) ->
 
 
 @pytest.mark.integration
-def test_tools_grep_endpoint_directory_search(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_grep_endpoint_directory_search(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/grep searches in directory."""
-    test_dir = tmp_path / "search_dir"
+    test_dir = tools_tmp_path / "search_dir"
     test_dir.mkdir()
     (test_dir / "file1.txt").write_text("match in file1")
     (test_dir / "file2.txt").write_text("no pattern here")
@@ -278,9 +278,9 @@ def test_tools_grep_endpoint_directory_search(api_base_url: str, tmp_path: Path)
 
 
 @pytest.mark.integration
-def test_tools_grep_endpoint_max_matches(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_grep_endpoint_max_matches(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/grep respects max parameter."""
-    test_file = tmp_path / "test.txt"
+    test_file = tools_tmp_path / "test.txt"
     # Create many lines with matches
     content = "\n".join([f"match line {i}" for i in range(100)])
     test_file.write_text(content)
@@ -302,9 +302,9 @@ def test_tools_grep_endpoint_max_matches(api_base_url: str, tmp_path: Path) -> N
 
 
 @pytest.mark.integration
-def test_tools_grep_endpoint_no_matches(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_grep_endpoint_no_matches(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/grep returns 400 when no matches found."""
-    test_file = tmp_path / "test.txt"
+    test_file = tools_tmp_path / "test.txt"
     test_file.write_text("Line 1\nLine 2\nLine 3")
 
     payload = {"pattern": "nonexistent", "path": str(test_file)}
@@ -318,9 +318,9 @@ def test_tools_grep_endpoint_no_matches(api_base_url: str, tmp_path: Path) -> No
 
 
 @pytest.mark.integration
-def test_tools_grep_endpoint_invalid_regex(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_grep_endpoint_invalid_regex(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/grep returns 400 for invalid regex."""
-    test_file = tmp_path / "test.txt"
+    test_file = tools_tmp_path / "test.txt"
     test_file.write_text("content")
 
     payload = {"pattern": "[invalid(", "path": str(test_file)}
@@ -338,9 +338,9 @@ def test_tools_grep_endpoint_invalid_regex(api_base_url: str, tmp_path: Path) ->
 
 
 @pytest.mark.integration
-def test_tools_grep_endpoint_response_format(api_base_url: str, tmp_path: Path) -> None:
+def test_tools_grep_endpoint_response_format(api_base_url: str, tools_tmp_path: Path) -> None:
     """Test POST /api/v1/tools/grep returns correct response format."""
-    test_file = tmp_path / "format.txt"
+    test_file = tools_tmp_path / "format.txt"
     test_file.write_text("match this line")
 
     payload = {"pattern": "match", "path": str(test_file)}
@@ -356,3 +356,59 @@ def test_tools_grep_endpoint_response_format(api_base_url: str, tmp_path: Path) 
     assert isinstance(data, dict)
     assert "output" in data
     assert isinstance(data["output"], str)
+
+
+# ----------------------------------------------------------------
+# Root confinement (#3195): tools/* must reject paths outside the
+# configured [api] tools_root (defaults to the server's home directory),
+# even though the API is loopback-only by default -- defense in depth
+# against arbitrary file reads if it's ever reached over the network.
+# ----------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_tools_ls_endpoint_rejects_path_outside_root(api_base_url: str) -> None:
+    """Test POST /api/v1/tools/ls returns 403 for a path outside tools_root."""
+    payload = {"path": "/etc"}
+    r = httpx.post(
+        f"{api_base_url}/api/v1/tools/ls",
+        json=payload,
+        timeout=5.0,
+    )
+
+    assert r.status_code == 403
+    data = r.json()
+    assert "error" in data
+    assert "escapes allowed root" in data["error"]["message"]
+
+
+@pytest.mark.integration
+def test_tools_cat_endpoint_rejects_path_outside_root(api_base_url: str) -> None:
+    """Test POST /api/v1/tools/cat returns 403 for a path outside tools_root."""
+    payload = {"path": "/etc/passwd"}
+    r = httpx.post(
+        f"{api_base_url}/api/v1/tools/cat",
+        json=payload,
+        timeout=5.0,
+    )
+
+    assert r.status_code == 403
+    data = r.json()
+    assert "error" in data
+    assert "escapes allowed root" in data["error"]["message"]
+
+
+@pytest.mark.integration
+def test_tools_grep_endpoint_rejects_path_outside_root(api_base_url: str) -> None:
+    """Test POST /api/v1/tools/grep returns 403 for a path outside tools_root."""
+    payload = {"pattern": "root", "path": "/etc/passwd"}
+    r = httpx.post(
+        f"{api_base_url}/api/v1/tools/grep",
+        json=payload,
+        timeout=5.0,
+    )
+
+    assert r.status_code == 403
+    data = r.json()
+    assert "error" in data
+    assert "escapes allowed root" in data["error"]["message"]

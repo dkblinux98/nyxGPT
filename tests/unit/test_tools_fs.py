@@ -346,3 +346,96 @@ def test_grep_multiple_matches_per_line_counts_once(tmp_path: Path) -> None:
     # Should only show one line even though pattern appears 3 times
     lines = [line for line in out.split("\n") if line.strip()]
     assert len(lines) == 1
+
+
+# ----------------------------
+# root confinement tests (#3195 defense in depth)
+# ----------------------------
+
+
+def test_ls_within_root_succeeds(tmp_path: Path) -> None:
+    """Test ls succeeds for a path inside the given root."""
+    (tmp_path / "file.txt").write_text("content")
+
+    rc, out, err = _capture_output(ls, tmp_path, root=tmp_path)
+
+    assert rc == 0
+    assert err == ""
+    assert "file.txt" in out
+
+
+def test_ls_outside_root_rejected(tmp_path: Path) -> None:
+    """Test ls rejects a path outside the given root."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    rc, out, err = _capture_output(ls, outside, root=root)
+
+    assert rc == 1
+    assert "escapes allowed root" in err
+
+
+def test_cat_within_root_succeeds(tmp_path: Path) -> None:
+    """Test cat succeeds for a file inside the given root."""
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("content")
+
+    rc, out, err = _capture_output(cat, test_file, root=tmp_path)
+
+    assert rc == 0
+    assert out.strip() == "content"
+
+
+def test_cat_outside_root_rejected(tmp_path: Path) -> None:
+    """Test cat rejects a file outside the given root."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside_file = tmp_path / "secret.txt"
+    outside_file.write_text("top secret")
+
+    rc, out, err = _capture_output(cat, outside_file, root=root)
+
+    assert rc == 1
+    assert "escapes allowed root" in err
+    assert "top secret" not in out
+
+
+def test_cat_traversal_outside_root_rejected(tmp_path: Path) -> None:
+    """Test cat rejects a `..`-traversal path that escapes the root."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside_file = tmp_path / "secret.txt"
+    outside_file.write_text("top secret")
+
+    rc, out, err = _capture_output(cat, root / ".." / "secret.txt", root=root)
+
+    assert rc == 1
+    assert "escapes allowed root" in err
+    assert "top secret" not in out
+
+
+def test_grep_outside_root_rejected(tmp_path: Path) -> None:
+    """Test grep rejects a path outside the given root."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "file.txt").write_text("match")
+
+    rc, out, err = _capture_output(grep, "match", outside, root=root)
+
+    assert rc == 1
+    assert "escapes allowed root" in err
+
+
+def test_cat_root_itself_succeeds(tmp_path: Path) -> None:
+    """Test cat succeeds when the requested path is the root itself, not just a descendant."""
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("content")
+
+    rc, out, err = _capture_output(cat, test_file, root=test_file)
+
+    assert rc == 0
+    assert out.strip() == "content"

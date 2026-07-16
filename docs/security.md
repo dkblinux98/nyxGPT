@@ -111,6 +111,23 @@ export NYXGPT_CORS_ORIGINS="https://nyxgpt.example.com"
 private network segment — it has no authentication of its own in the default
 Docker Desktop setup used by `nyxgpt ops install`.
 
+**Docker Compose** publishes every service port bound to `NYXGPT_BIND_ADDR`
+(default `127.0.0.1` in `.env.example`), matching this same workstation-only
+posture — otherwise Docker publishes on `0.0.0.0` and the stack is reachable
+from any host on the LAN, regardless of the `[api] host` / `[web] host`
+settings above (those only control the bind *inside* the container). Only
+set `NYXGPT_BIND_ADDR=0.0.0.0` (or a specific LAN address) alongside
+`[auth] enabled = true` — see
+[`docs/docker-compose.md`](docker-compose.md#network-binding).
+
+**Kubernetes** is the one place `host = 0.0.0.0` in `config.ini` is expected
+and correct (`k8s/configmap.yaml`): it's the pod's own network namespace, not
+the host's, and is required for `kube-proxy` to route Service traffic to the
+container at all. `k8s/service.yaml` and `k8s/service-canary.yaml` are both
+`type: ClusterIP` with no `NodePort`/`LoadBalancer`/`Ingress`, so nothing
+routes this outside the cluster by default — see
+[`docs/kubernetes.md`](kubernetes.md).
+
 ---
 
 ## Authentication configuration
@@ -174,6 +191,26 @@ directory. They are not encrypted at rest.
 - Logs under `~/.nyxGPT/logs/` may include request metadata (IPs, request
   IDs, auth failures); avoid setting `[logging] level = DEBUG` in a shared
   deployment, since debug logs can be more verbose about request contents.
+
+---
+
+## Filesystem tools (`/api/v1/tools/*`)
+
+`ls`, `cat`, and `grep` (see [`docs/api.md`](api.md)) read files from the
+server's filesystem on request, so they're confined to a root directory —
+defense in depth in case the API is ever reached over the network, since
+these endpoints are otherwise unauthenticated by default like the rest of
+`/api/v1/*`:
+
+```ini
+[api]
+# Defaults to the server process's home directory if unset.
+tools_root = /home/youruser
+```
+
+A request for a path outside `tools_root` (including `..` traversal) gets
+`403 Forbidden`. Narrow this further (e.g. to a single project directory) if
+you don't need the tools to reach your whole home directory.
 
 ---
 
