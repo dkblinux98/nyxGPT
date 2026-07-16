@@ -1649,6 +1649,15 @@ def cli(argv: list[str] | None = None) -> int:
         help="Service to restart",
     )
 
+    ops_env_sync = ops_sub.add_parser(
+        "env-sync",
+        help="Derive Docker Compose's .env secrets from config.ini (single source of truth)",
+    )
+    ops_env_sync.add_argument("--config", help="Path to config.ini (default: ~/.nyxGPT/config.ini)")
+    ops_env_sync.add_argument(
+        "--env-file", help="Path to the .env file to update (default: <repo>/.env)"
+    )
+
     # Add deploy command (local blue/green switching on a local k8s cluster)
     deploy_p = sub.add_parser(
         "deploy", help="Local blue/green deployment (kind/minikube/k3s cluster)"
@@ -1874,6 +1883,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.doctor(args)
         if args.ops_cmd == "restart":
             return ops_mod.restart(args)
+        if args.ops_cmd == "env-sync":
+            return ops_mod.env_sync(args)
 
     if cmd == "deploy":
         if args.deploy_cmd == "status":

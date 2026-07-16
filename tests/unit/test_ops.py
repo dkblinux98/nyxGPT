@@ -339,3 +339,136 @@ def test_ops_doctor_fail_when_missing_config(monkeypatch, capsys, tmp_path):
     out = capsys.readouterr().out
     assert "doctor: FAIL" in out
     assert "Missing config" in out
+
+
+def _write_config(path, *, api_key="", grafana_password=""):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"""
+[auth]
+enabled = false
+api_key = {api_key}
+
+[monitoring]
+enabled = false
+grafana_admin_password = {grafana_password}
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.unit
+def test_sync_env_from_config_missing_config_fails(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    env_path = tmp_path / ".env"
+
+    results = ops.sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "Missing config" in results[0].message
+    assert not env_path.exists()
+
+
+@pytest.mark.unit
+def test_sync_env_from_config_no_secrets_set_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    cfg_path = tmp_path / "config.ini"
+    _write_config(cfg_path)
+    env_path = tmp_path / ".env"
+
+    results = ops.sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "No secrets found" in results[0].message
+
+
+@pytest.mark.unit
+def test_sync_env_from_config_creates_env_from_example(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.ini"
+    _write_config(cfg_path, api_key="real-api-key", grafana_password="real-grafana-pw")
+
+    example_path = tmp_path / ".env.example"
+    example_path.write_text(
+        "NYXGPT_API_PORT=8000\n"
+        "NYXGPT_AUTH_API_KEY=change-me\n"
+        "GRAFANA_ADMIN_PASSWORD=change-me\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+
+    env_path = tmp_path / ".env"
+    results = ops.sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
+
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert env_path.exists()
+
+    content = env_path.read_text(encoding="utf-8")
+    assert "NYXGPT_AUTH_API_KEY=real-api-key" in content
+    assert "GRAFANA_ADMIN_PASSWORD=real-grafana-pw" in content
+    # Non-secret lines are preserved untouched.
+    assert "NYXGPT_API_PORT=8000" in content
+
+    # Secrets now live in .env -- restrict permissions like config.ini.
+    mode = env_path.stat().st_mode & 0o777
+    assert mode == 0o600
+
+
+@pytest.mark.unit
+def test_sync_env_from_config_updates_existing_env_in_place(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_config(cfg_path, api_key="new-api-key", grafana_password="new-grafana-pw")
+
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "NYXGPT_WEB_PORT=3000\n"
+        "NYXGPT_AUTH_API_KEY=stale-value\n"
+        "GRAFANA_ADMIN_PASSWORD=stale-value\n",
+        encoding="utf-8",
+    )
+
+    results = ops.sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
+
+    assert results[0].ok is True
+    content = env_path.read_text(encoding="utf-8")
+    assert "NYXGPT_AUTH_API_KEY=new-api-key" in content
+    assert "GRAFANA_ADMIN_PASSWORD=new-grafana-pw" in content
+    assert "stale-value" not in content
+    assert "NYXGPT_WEB_PORT=3000" in content
+    # Only one line per secret key -- not duplicated/appended.
+    assert content.count("NYXGPT_AUTH_API_KEY=") == 1
+
+
+@pytest.mark.unit
+def test_sync_env_from_config_syncs_only_the_secret_that_is_set(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    cfg_path = tmp_path / "config.ini"
+    _write_config(cfg_path, api_key="only-api-key-set")
+
+    env_path = tmp_path / ".env"
+    results = ops.sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
+
+    assert results[0].ok is True
+    content = env_path.read_text(encoding="utf-8")
+    assert "NYXGPT_AUTH_API_KEY=only-api-key-set" in content
+    assert "GRAFANA_ADMIN_PASSWORD" not in content
+
+
+@pytest.mark.unit
+def test_env_sync_cli_wrapper_prints_result(tmp_path, capsys):
+    cfg_path = tmp_path / "config.ini"
+    _write_config(cfg_path, api_key="cli-api-key", grafana_password="cli-grafana-pw")
+    env_path = tmp_path / ".env"
+
+    args = MagicMock()
+    args.config = str(cfg_path)
+    args.env_file = str(env_path)
+
+    rc = ops.env_sync(args)
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "[OK]" in out
+    assert env_path.exists()
