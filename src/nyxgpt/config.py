@@ -1006,6 +1006,24 @@ def get_monitoring_config(cfg: ConfigParser) -> dict:
     }
 
 
+def get_monitoring_grafana_admin_password(cfg: ConfigParser) -> str:
+    """Get the Grafana admin password, config.ini's single source of truth for it.
+
+    Deliberately kept out of `get_monitoring_config` -- that dict is returned
+    verbatim by `GET /api/v1/monitoring`, and this value must never be
+    exposed over the API. It exists only so local tooling (`nyxgpt ops
+    env-sync`) can derive the Compose `.env`'s `GRAFANA_ADMIN_PASSWORD` from
+    config.ini instead of the user maintaining both separately.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        The configured password, or "" if unset
+    """
+    return cfg.get("monitoring", "grafana_admin_password", fallback="")
+
+
 def get_log_aggregation_enabled(cfg: ConfigParser) -> bool:
     """Get whether the Loki/promtail log aggregation stack is enabled.
 
@@ -1120,6 +1138,7 @@ __all__ = [
     "get_error_tracking_config",
     "get_monitoring_enabled",
     "get_monitoring_config",
+    "get_monitoring_grafana_admin_password",
     "get_log_aggregation_enabled",
     "get_log_aggregation_config",
     "get_self_heal_default_enabled",

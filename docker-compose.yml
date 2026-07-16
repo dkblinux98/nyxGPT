@@ -64,6 +64,9 @@ services:
     ports:
       - "${NYXGPT_API_PORT:-8000}:8000"
     environment:
+      # NYXGPT_AUTH_API_KEY's single source of truth is ~/.nyxGPT/config.ini's
+      # [auth] api_key -- run `nyxgpt ops env-sync` to derive .env's value
+      # from it instead of editing .env by hand.
       NYXGPT_AUTH_API_KEY: ${NYXGPT_AUTH_API_KEY:-}
       NYXGPT_CORS_ORIGINS: ${NYXGPT_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       # Tells the self-heal watchdog (src/nyxgpt/self_heal.py) which compose
@@ -155,6 +158,9 @@ services:
     networks:
       - nyxgpt
     environment:
+      # GRAFANA_ADMIN_PASSWORD's single source of truth is ~/.nyxGPT/config.ini's
+      # [monitoring] grafana_admin_password -- run `nyxgpt ops env-sync` to
+      # derive .env's value from it instead of editing .env by hand.
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
     volumes:

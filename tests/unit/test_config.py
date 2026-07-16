@@ -7,6 +7,8 @@ import pytest
 
 from nyxgpt.config import (
     get_api_port,
+    get_monitoring_config,
+    get_monitoring_grafana_admin_password,
     get_prompt_mode_enabled,
     get_prompt_mode_long_threshold,
     get_prompt_mode_short_threshold,
@@ -1030,3 +1032,67 @@ context_window_mistral = 8192
 
     # Should have no errors related to context settings
     assert not any("context." in err for err in errors)
+
+
+def test_get_monitoring_grafana_admin_password_reads_value(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[monitoring]
+enabled = true
+grafana_admin_password = super-secret-value
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_monitoring_grafana_admin_password(cfg) == "super-secret-value"
+
+
+def test_get_monitoring_grafana_admin_password_defaults_to_empty(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_monitoring_grafana_admin_password(cfg) == ""
+
+
+def test_get_monitoring_config_never_exposes_grafana_admin_password(tmp_path: Path) -> None:
+    """get_monitoring_config() is returned verbatim by GET /api/v1/monitoring --
+    the Grafana admin password must never appear in it (see #3194)."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[monitoring]
+enabled = true
+grafana_admin_password = super-secret-value
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    monitoring_config = get_monitoring_config(cfg)
+
+    assert "grafana_admin_password" not in monitoring_config
+    assert "super-secret-value" not in monitoring_config.values()

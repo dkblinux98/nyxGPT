@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from configparser import ConfigParser
 from pathlib import Path
 from unittest.mock import patch
 
@@ -158,6 +159,65 @@ def test_generate_config_ini_basic(tmp_path: Path):
     assert "base_url = http://127.0.0.1:11434" in content
     assert "[rag]" in content
     assert "enable_chat_context = false" in content
+
+
+def test_generate_config_ini_generates_secrets(tmp_path: Path):
+    """config.ini's auth.api_key and monitoring.grafana_admin_password are
+    generated automatically, so config.ini is a ready-to-use single source
+    of truth for these secrets (see #3194)."""
+    output_path = tmp_path / "config.ini"
+    rag_config = {"enable_chat_context": False}
+
+    _generate_config_ini(
+        output_path=output_path,
+        model="qwen2.5:0.5b",
+        ollama_base_url="http://127.0.0.1:11434",
+        rag_config=rag_config,
+    )
+
+    parser = ConfigParser()
+    parser.read(output_path)
+
+    api_key = parser.get("auth", "api_key")
+    grafana_password = parser.get("monitoring", "grafana_admin_password")
+
+    assert api_key
+    assert len(api_key) >= 32
+    assert grafana_password
+    assert len(grafana_password) >= 24
+    # The two secrets must be independently generated, not copies of each other.
+    assert api_key != grafana_password
+
+
+def test_generate_config_ini_secrets_are_unique_per_run(tmp_path: Path):
+    """Each call generates fresh random secrets rather than a fixed value."""
+    rag_config = {"enable_chat_context": False}
+
+    first_path = tmp_path / "first.ini"
+    second_path = tmp_path / "second.ini"
+
+    _generate_config_ini(
+        output_path=first_path,
+        model="qwen2.5:0.5b",
+        ollama_base_url="http://127.0.0.1:11434",
+        rag_config=rag_config,
+    )
+    _generate_config_ini(
+        output_path=second_path,
+        model="qwen2.5:0.5b",
+        ollama_base_url="http://127.0.0.1:11434",
+        rag_config=rag_config,
+    )
+
+    first = ConfigParser()
+    first.read(first_path)
+    second = ConfigParser()
+    second.read(second_path)
+
+    assert first.get("auth", "api_key") != second.get("auth", "api_key")
+    assert first.get("monitoring", "grafana_admin_password") != second.get(
+        "monitoring", "grafana_admin_password"
+    )
 
 
 def test_generate_config_ini_with_rag(tmp_path: Path):
