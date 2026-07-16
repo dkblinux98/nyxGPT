@@ -1658,6 +1658,15 @@ def cli(argv: list[str] | None = None) -> int:
         "--env-file", help="Path to the .env file to update (default: <repo>/.env)"
     )
 
+    ops_logs = ops_sub.add_parser(
+        "logs",
+        help="Show recent logs for a Docker Compose service (e.g. glitchtip)",
+    )
+    ops_logs.add_argument("service", help="Compose service name, e.g. glitchtip, api, ollama")
+    ops_logs.add_argument(
+        "--tail", type=int, default=200, help="Number of trailing log lines to show (default: 200)"
+    )
+
     # Add deploy command (local blue/green switching on a local k8s cluster)
     deploy_p = sub.add_parser(
         "deploy", help="Local blue/green deployment (kind/minikube/k3s cluster)"
@@ -1885,6 +1894,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.restart(args)
         if args.ops_cmd == "env-sync":
             return ops_mod.env_sync(args)
+        if args.ops_cmd == "logs":
+            return ops_mod.logs(args)
 
     if cmd == "deploy":
         if args.deploy_cmd == "status":

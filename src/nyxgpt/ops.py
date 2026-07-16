@@ -847,6 +847,31 @@ def restart(args) -> int:
     return 0 if ok else 2
 
 
+def logs(args) -> int:
+    """Print recent logs for a single Docker Compose service.
+
+    Wraps `docker compose logs` so operators never need to run a raw
+    `docker`/`docker compose` command themselves -- e.g. to read the
+    `errors` profile's GlitchTip container output for the first-account
+    registration confirmation link its console email backend prints there.
+    """
+    service = args.service
+    tail = getattr(args, "tail", None)
+    if tail is None:
+        tail = 200
+
+    result = self_heal.component_logs(service, tail=tail)
+    if not result.ok:
+        print(f"[FAIL] {result.message}")
+        if result.details:
+            print(f"  {result.details}")
+        return 2
+
+    print(f"--- {result.message} ---")
+    print(result.details or "(no output)")
+    return 0
+
+
 # --- Env sync public API ---
 
 # Maps a Docker Compose `.env` variable to the config.ini `[section] key` it's

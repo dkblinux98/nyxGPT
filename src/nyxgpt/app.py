@@ -1048,15 +1048,27 @@ def error_tracking_status(request: Request) -> dict[str, Any]:
     }
 
 
-@api.post("/error-tracking/report", status_code=202)
-def error_tracking_report(
-    request: Request, body: api_models.ClientErrorReportRequest
-) -> dict[str, str]:
+@api.post("/error-tracking/report")
+def error_tracking_report(request: Request, body: api_models.ClientErrorReportRequest) -> Response:
     """Forward a web UI client-side error to the local error tracker.
 
-    No-op (still returns 202) when error tracking is disabled, so the web
-    UI doesn't need to special-case it.
+    Returns `503 {"status": "inactive"}` when error tracking isn't actually
+    initialized (disabled, or enabled with no valid DSN), rather than a
+    blanket `202` -- a misconfigured DSN or a tracker nobody enabled must not
+    look like a successfully delivered test event. The web UI's fire-and-forget
+    client error reporter (`ClientErrorReporter.tsx`) ignores the response
+    either way, so this stays safe to call whether or not tracking is active.
     """
+    if not error_tracking_module.is_error_tracking_enabled():
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "inactive",
+                "detail": "Error tracking is disabled or has no valid DSN configured; "
+                "this event was not sent.",
+            },
+        )
+
     req_id = getattr(request.state, "request_id", None)
     error_tracking_module.capture_message(
         body.message,
@@ -1065,7 +1077,7 @@ def error_tracking_report(
         url=body.url or "N/A",
         stack=body.stack or "N/A",
     )
-    return {"status": "accepted"}
+    return JSONResponse(status_code=202, content={"status": "accepted"})
 
 
 @api.get("/monitoring")
@@ -1472,6 +1484,21 @@ def self_heal_heal(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]
             f"{event['service']}: {event['message']} ({event['reason']})",
         )
     return result
+
+
+@api.get("/self-heal/logs")
+def self_heal_logs(service: str, tail: int = Query(default=200, ge=1, le=2000)) -> dict[str, Any]:
+    """Recent Docker Compose logs for one component, from the SRE/admin dashboard.
+
+    Lets an operator read a container's console output (e.g. the GlitchTip
+    container's first-account registration confirmation link, printed there by
+    its console email backend) without running a raw `docker`/`docker compose`
+    command themselves.
+    """
+    result = self_heal_module.component_logs(service, tail=tail)
+    if not result.ok:
+        raise HTTPException(status_code=502, detail=result.message)
+    return {"service": service, "tail": tail, "logs": result.details}
 
 
 # --- Model management endpoints ---

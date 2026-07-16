@@ -129,6 +129,41 @@ def test_restart_component_no_docker(monkeypatch):
 
 
 @pytest.mark.unit
+def test_component_logs_success(monkeypatch):
+    run_mock = MagicMock(
+        return_value=CP(stdout="glitchtip_1  | Confirm your account: http://...\n")
+    )
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.component_logs("glitchtip", tail=50)
+
+    assert result.ok
+    assert "glitchtip" in result.message
+    assert "Confirm your account" in result.details
+    cmd = run_mock.call_args[0][0]
+    assert cmd[:3] == ["docker", "compose", "-f"]
+    assert cmd[-5:] == ["logs", "--no-color", "--tail", "50", "glitchtip"]
+
+
+@pytest.mark.unit
+def test_component_logs_failure(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1, stderr="no such service")
+    )
+    result = self_heal.component_logs("glitchtip")
+    assert not result.ok
+    assert "no such service" in result.details
+
+
+@pytest.mark.unit
+def test_component_logs_no_docker(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    result = self_heal.component_logs("glitchtip")
+    assert not result.ok
+    assert "docker not found" in result.message
+
+
+@pytest.mark.unit
 def test_is_enabled_defaults_false():
     assert self_heal.is_enabled() is False
 

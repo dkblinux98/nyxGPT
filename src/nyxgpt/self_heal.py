@@ -251,6 +251,43 @@ def restart_component(service: str) -> HealResult:
     return HealResult(True, f"Restarted {service}")
 
 
+def component_logs(service: str, *, tail: int = 200) -> HealResult:
+    """Fetch recent logs for a single Compose service: `docker compose logs <service>`.
+
+    Backs `nyxgpt ops logs` -- the wrapped way to read a container's output
+    (e.g. the GlitchTip registration confirmation link the `errors` profile
+    prints to stdout via its console email backend) without the user needing
+    to run a raw `docker`/`docker compose` command themselves.
+    """
+    if _which("docker") is None:
+        return HealResult(False, "docker not found; cannot fetch logs")
+    try:
+        cp = _run(
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(COMPOSE_FILE),
+                "logs",
+                "--no-color",
+                "--tail",
+                str(tail),
+                service,
+            ],
+            timeout=30.0,
+        )
+    except Exception as e:
+        return HealResult(False, f"Failed to fetch logs for {service}", f"{type(e).__name__}: {e}")
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return HealResult(False, f"Failed to fetch logs for {service}", details.strip())
+    return HealResult(
+        True, f"Fetched last {tail} log line(s) for {service}", (cp.stdout or "").strip()
+    )
+
+
 def heal_now(
     service: str | None = None,
     *,
@@ -419,6 +456,7 @@ __all__ = [
     "recent_events",
     "list_component_status",
     "restart_component",
+    "component_logs",
     "heal_now",
     "get_watchdog",
     "status",

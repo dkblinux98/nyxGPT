@@ -13,7 +13,9 @@ module is a no-op so the rest of the app pays no cost.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -24,6 +26,58 @@ _LogLevel = Literal["fatal", "critical", "error", "warning", "info", "debug"]
 logger = logging.getLogger(__name__)
 
 _enabled = False
+
+# GlitchTip always issues DSNs using [error_tracking]'s GLITCHTIP_DOMAIN host
+# (localhost), since that's what a browser needs to reach its UI. Pasted
+# verbatim into a *containerized* API's config.ini, that DSN is unreachable:
+# "localhost" inside the api container means the api container itself, not
+# the glitchtip container next to it on the Compose network. This is the
+# Compose service name it needs to resolve to instead (see docker-compose.yml).
+_GLITCHTIP_COMPOSE_SERVICE = "glitchtip"
+_LOCALHOST_HOSTS = {"localhost", "127.0.0.1"}
+
+
+def _running_in_compose_container() -> bool:
+    """Whether this process is the Compose `api` container.
+
+    NYXGPT_COMPOSE_FILE is only set for the containerized `api` service (see
+    its `environment:` block in docker-compose.yml) -- a native deployment
+    never sets it.
+    """
+    return bool(os.environ.get("NYXGPT_COMPOSE_FILE", "").strip())
+
+
+def _normalize_dsn_host(dsn: str) -> str:
+    """Rewrite a GlitchTip-issued DSN's host for the current deployment.
+
+    A no-op for native deployments (where "localhost" is already correct)
+    and for DSNs that don't point at localhost. In a Compose deployment, an
+    unchanged localhost DSN silently fails every send -- the SDK can't reach
+    the tracker -- so this is what keeps a DSN copied straight from the
+    GlitchTip UI working in both deployment modes without manual editing.
+    """
+    if not _running_in_compose_container():
+        return dsn
+
+    parts = urlsplit(dsn)
+    if parts.hostname not in _LOCALHOST_HOSTS:
+        return dsn
+
+    userinfo = parts.username or ""
+    if parts.password:
+        userinfo += f":{parts.password}"
+    port = f":{parts.port}" if parts.port else ""
+    netloc = f"{userinfo}@" if userinfo else ""
+    netloc += f"{_GLITCHTIP_COMPOSE_SERVICE}{port}"
+
+    rewritten = urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    logger.info(
+        "Rewrote error tracking DSN host %r -> %r for the Compose deployment",
+        parts.hostname,
+        _GLITCHTIP_COMPOSE_SERVICE,
+        extra={"component": "error_tracking"},
+    )
+    return rewritten
 
 
 def init_error_tracking(error_tracking_config: dict[str, Any]) -> None:
@@ -46,6 +100,8 @@ def init_error_tracking(error_tracking_config: dict[str, Any]) -> None:
         )
         _enabled = False
         return
+
+    dsn = _normalize_dsn_host(dsn)
 
     sentry_sdk.init(
         dsn=dsn,
