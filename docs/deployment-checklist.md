@@ -17,15 +17,20 @@ reachable by more than just you.
 See [`docs/security.md`](security.md) for full details on each item.
 
 - [ ] `[auth] enabled = true` in `~/.nyxGPT/config.ini`, with a freshly
-      generated `api_key` (`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`)
+      generated `api_key` (`python3 -c "import secrets; print(secrets.token_urlsafe(32))"`,
+      or re-run `nyxgpt wizard`)
 - [ ] `[rate_limit] enabled = true` with limits appropriate to expected traffic
 - [ ] `chmod 600 ~/.nyxGPT/config.ini` and `chmod 700 ~/.nyxGPT`
 - [ ] API/web bound to `127.0.0.1` behind an SSH tunnel, VPN, or
       TLS-terminating reverse proxy — not directly exposed on `0.0.0.0`
 - [ ] `NYXGPT_CORS_ORIGINS` set to the exact origin(s) serving the web UI (no
       wildcards, since `allow_credentials=True`)
-- [ ] Secrets (`auth.api_key`, `openai.api_key`, `github.*token*`) rotated if
-      any may have been exposed
+- [ ] Secrets (`auth.api_key`, `monitoring.grafana_admin_password`,
+      `openai.api_key`, `github.*token*`) rotated if any may have been exposed
+      — `~/.nyxGPT/config.ini` is the single source of truth for the first
+      two; if running Docker Compose, re-run `nyxgpt ops env-sync` afterward
+      so `.env` picks up the rotated values (see
+      [security.md](security.md#api-key-management))
 - [ ] `[logging] level` kept at `INFO` (not `DEBUG`) in shared environments
 
 ## 2. Performance configuration

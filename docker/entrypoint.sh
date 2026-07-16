@@ -10,7 +10,9 @@ fi
 
 # Merge the secret-provided API key (Kubernetes Secret / docker `-e`) into the
 # config file, since nyxgpt reads auth.api_key from config.ini rather than
-# the environment.
+# the environment. NYXGPT_AUTH_API_KEY itself should be derived from the
+# host's ~/.nyxGPT/config.ini (the single source of truth for this secret)
+# via `nyxgpt ops env-sync`, not set independently here.
 if [ -n "${NYXGPT_AUTH_API_KEY:-}" ] && [ -f "$CONFIG_DIR/config.ini" ]; then
     sed -i "s|^api_key[[:space:]]*=.*|api_key = ${NYXGPT_AUTH_API_KEY}|" "$CONFIG_DIR/config.ini"
 fi
