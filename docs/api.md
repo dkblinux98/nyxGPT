@@ -39,6 +39,7 @@ Quick reference of all 62 available endpoints:
 | `/api/v1/self-heal/status` | GET | Self-heal watchdog status (per-component health, recent events) |
 | `/api/v1/self-heal/toggle` | POST | Enable/disable automatic self-healing |
 | `/api/v1/self-heal/heal` | POST | Manually restart one or every unhealthy component |
+| `/api/v1/self-heal/logs` | GET | Recent Compose logs for one component (e.g. GlitchTip's registration link) |
 | `/api/v1/models` | GET | List Ollama models |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
@@ -933,6 +934,25 @@ isn't a currently-known container.
   "healed": [{ "ts": 1730000000.0, "service": "web", "reason": "manual heal-now", "action": "restart", "ok": true, "restart_count": 2, "message": "Restarted web" }]
 }
 ```
+
+### `GET /api/v1/self-heal/logs`
+
+Recent Docker Compose logs for one component. Backs the "View GlitchTip logs"
+button in the Error Tracking panel (`/admin/observability`) as well as
+`nyxgpt ops logs` -- both let an operator read a container's console output
+(e.g. GlitchTip's first-account confirmation link, printed there by its
+console email backend) without a raw `docker`/`docker compose` command.
+
+**Query parameters:** `service` (required, Compose service name, e.g.
+`glitchtip`, `api`), `tail` (optional, number of trailing lines, default 200).
+
+**Response:**
+
+```json
+{ "service": "glitchtip", "tail": 100, "logs": "glitchtip-1  | confirm your account: http://localhost:8080/accounts/confirm/..." }
+```
+
+Returns `502` if the service is unknown or the logs can't be fetched.
 
 ---
 
@@ -3189,9 +3209,11 @@ with a DSN:
 
 2. Register the first account at `http://localhost:8080`. Its confirmation
    email is printed to the `glitchtip` container's console (`EMAIL_URL=
-   consolemail://`), not sent anywhere — read it with
-   `nyxgpt ops logs glitchtip` (see [`docs/ops.md`](ops.md#nyxgpt-ops-logs))
-   instead of a raw `docker` command, and open the link it prints.
+   consolemail://`), not sent anywhere — read it with the "View GlitchTip
+   logs" button on the Error Tracking panel (`/admin/observability`, backed
+   by `GET /api/v1/self-heal/logs` above) or `nyxgpt ops logs glitchtip`
+   (see [`docs/ops.md`](ops.md#nyxgpt-ops-logs)) — either way, no raw
+   `docker` command needed — and open the link it prints.
 
 3. Create a project in the GlitchTip UI and copy its DSN, e.g.
    `http://<public_key>@localhost:8080/<project_id>`.

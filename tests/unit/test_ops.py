@@ -495,6 +495,22 @@ def test_ops_logs_prints_output_on_success(capsys):
 
 
 @pytest.mark.unit
+def test_ops_logs_honors_explicit_tail_zero(capsys):
+    with patch.object(
+        ops.self_heal,
+        "component_logs",
+        return_value=ops.self_heal.HealResult(True, "Fetched last 0 log line(s) for glitchtip", ""),
+    ) as cl:
+        args = MagicMock()
+        args.service = "glitchtip"
+        args.tail = 0
+        rc = ops.logs(args)
+
+        assert rc == 0
+        cl.assert_called_once_with("glitchtip", tail=0)
+
+
+@pytest.mark.unit
 def test_ops_logs_returns_nonzero_on_failure(capsys):
     with patch.object(
         ops.self_heal,

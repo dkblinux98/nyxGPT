@@ -216,6 +216,12 @@ the `errors` Compose profile's `EMAIL_URL=consolemail://` prints outgoing
 email, confirmation link included, to the `glitchtip` container's stdout
 instead of sending it anywhere.
 
+The same logs are reachable without a terminal at all via the "View
+GlitchTip logs" button on the Error Tracking panel
+(`/admin/observability`), backed by `GET /api/v1/self-heal/logs` (see
+[api.md](api.md#get-apiv1self-heallogs)) -- the CLI command above is the
+scriptable equivalent of that dashboard button.
+
 ---
 
 ## Logs

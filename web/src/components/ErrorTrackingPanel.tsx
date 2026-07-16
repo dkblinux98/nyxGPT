@@ -26,6 +26,9 @@ export default function ErrorTrackingPanel() {
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<TestEventResult | null>(null);
   const [sending, setSending] = useState(false);
+  const [glitchtipLogs, setGlitchtipLogs] = useState<string | null>(null);
+  const [logsError, setLogsError] = useState<string | null>(null);
+  const [loadingLogs, setLoadingLogs] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,6 +54,25 @@ export default function ErrorTrackingPanel() {
       cancelled = true;
     };
   }, []);
+
+  async function loadGlitchtipLogs() {
+    setLoadingLogs(true);
+    setLogsError(null);
+    try {
+      const res = await fetch('/api/v1/self-heal/logs?service=glitchtip&tail=100', {
+        cache: 'no-store',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error?.message || data.detail || `HTTP ${res.status}`);
+      }
+      setGlitchtipLogs(data.logs || '(no output)');
+    } catch (e: unknown) {
+      setLogsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingLogs(false);
+    }
+  }
 
   async function sendTestEvent() {
     setSending(true);
@@ -125,10 +147,48 @@ export default function ErrorTrackingPanel() {
             <li style={{ marginBottom: 4 }}>
               Register the first account at{' '}
               <code style={codeStyle}>http://localhost:8080</code>. Its confirmation email goes to
-              the container&apos;s console log, not a real inbox -- read it with{' '}
-              <code style={codeStyle}>nyxgpt ops logs glitchtip</code> (no raw{' '}
-              <code style={codeStyle}>docker</code> command needed) and open the confirmation link
-              it prints.
+              the container&apos;s console log, not a real inbox -- read it below (or run{' '}
+              <code style={codeStyle}>nyxgpt ops logs glitchtip</code> from a terminal) and open
+              the confirmation link it prints.
+              <div style={{ marginTop: 6 }}>
+                <button
+                  type="button"
+                  onClick={loadGlitchtipLogs}
+                  disabled={loadingLogs}
+                  style={{
+                    fontSize: 12,
+                    padding: '4px 10px',
+                    borderRadius: 4,
+                    border: '1px solid var(--border)',
+                    background: 'var(--code-bg)',
+                    cursor: loadingLogs ? 'default' : 'pointer',
+                  }}
+                >
+                  {loadingLogs ? 'Loading…' : 'View GlitchTip logs'}
+                </button>
+                {logsError && (
+                  <p role="alert" style={{ margin: '0.5rem 0 0 0', color: 'var(--error-text)' }}>
+                    {logsError}
+                  </p>
+                )}
+                {glitchtipLogs !== null && !logsError && (
+                  <pre
+                    style={{
+                      margin: '0.5rem 0 0 0',
+                      padding: '0.5rem',
+                      maxHeight: 240,
+                      overflow: 'auto',
+                      background: 'var(--code-bg)',
+                      borderRadius: 4,
+                      fontSize: 11,
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-all',
+                    }}
+                  >
+                    {glitchtipLogs}
+                  </pre>
+                )}
+              </div>
             </li>
             <li style={{ marginBottom: 4 }}>
               Create a project in the GlitchTip UI and copy its DSN -- it&apos;ll look like{' '}

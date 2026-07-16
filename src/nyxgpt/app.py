@@ -1486,6 +1486,21 @@ def self_heal_heal(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]
     return result
 
 
+@api.get("/self-heal/logs")
+def self_heal_logs(service: str, tail: int = Query(default=200, ge=1, le=2000)) -> dict[str, Any]:
+    """Recent Docker Compose logs for one component, from the SRE/admin dashboard.
+
+    Lets an operator read a container's console output (e.g. the GlitchTip
+    container's first-account registration confirmation link, printed there by
+    its console email backend) without running a raw `docker`/`docker compose`
+    command themselves.
+    """
+    result = self_heal_module.component_logs(service, tail=tail)
+    if not result.ok:
+        raise HTTPException(status_code=502, detail=result.message)
+    return {"service": service, "tail": tail, "logs": result.details}
+
+
 # --- Model management endpoints ---
 @api.get("/models")
 def models_list(request: Request) -> dict[str, Any]:

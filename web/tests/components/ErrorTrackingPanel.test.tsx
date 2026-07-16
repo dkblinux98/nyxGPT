@@ -76,4 +76,38 @@ describe('ErrorTrackingPanel', () => {
 
     expect(await screen.findByRole('status')).toHaveTextContent(/not sent/i);
   });
+
+  it('shows the GlitchTip container logs inline so the confirmation link is reachable from the dashboard', async () => {
+    server.use(
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(disabledStatus)),
+      http.get('/api/v1/self-heal/logs', () =>
+        HttpResponse.json({
+          service: 'glitchtip',
+          tail: 100,
+          logs: 'confirm your account: http://localhost:8080/accounts/confirm/abc123',
+        })
+      )
+    );
+
+    render(<ErrorTrackingPanel />);
+    const button = await screen.findByRole('button', { name: /view glitchtip logs/i });
+    await userEvent.click(button);
+
+    expect(await screen.findByText(/confirm your account/i)).toBeInTheDocument();
+  });
+
+  it('surfaces an error when the logs endpoint fails', async () => {
+    server.use(
+      http.get('/api/v1/error-tracking', () => HttpResponse.json(disabledStatus)),
+      http.get('/api/v1/self-heal/logs', () =>
+        HttpResponse.json({ error: { message: 'Failed to fetch logs for glitchtip' } }, { status: 502 })
+      )
+    );
+
+    render(<ErrorTrackingPanel />);
+    const button = await screen.findByRole('button', { name: /view glitchtip logs/i });
+    await userEvent.click(button);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/failed to fetch logs for glitchtip/i);
+  });
 });

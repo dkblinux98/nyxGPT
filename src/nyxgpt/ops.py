@@ -856,7 +856,9 @@ def logs(args) -> int:
     registration confirmation link its console email backend prints there.
     """
     service = args.service
-    tail = getattr(args, "tail", 200) or 200
+    tail = getattr(args, "tail", None)
+    if tail is None:
+        tail = 200
 
     result = self_heal.component_logs(service, tail=tail)
     if not result.ok:

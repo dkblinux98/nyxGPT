@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from nyxgpt import self_heal
 from nyxgpt.app import app
 
 pytestmark = pytest.mark.unit
@@ -99,6 +100,41 @@ def test_self_heal_heal_endpoint_returns_404_for_unknown_service():
 
     assert response.status_code == 404
     assert "Unknown or not-running component" in response.json()["error"]["message"]
+
+
+def test_self_heal_logs_endpoint_returns_service_logs():
+    result = self_heal.HealResult(
+        True, "Fetched last 100 log line(s) for glitchtip", "confirm: http://..."
+    )
+    with patch("nyxgpt.app.self_heal_module.component_logs", return_value=result) as mock_logs:
+        client = TestClient(app)
+        response = client.get(
+            "/api/v1/self-heal/logs", params={"service": "glitchtip", "tail": 100}
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"service": "glitchtip", "tail": 100, "logs": "confirm: http://..."}
+    mock_logs.assert_called_once_with("glitchtip", tail=100)
+
+
+def test_self_heal_logs_endpoint_defaults_tail_to_200():
+    result = self_heal.HealResult(True, "Fetched last 200 log line(s) for api", "log output")
+    with patch("nyxgpt.app.self_heal_module.component_logs", return_value=result) as mock_logs:
+        client = TestClient(app)
+        response = client.get("/api/v1/self-heal/logs", params={"service": "api"})
+
+    assert response.status_code == 200
+    mock_logs.assert_called_once_with("api", tail=200)
+
+
+def test_self_heal_logs_endpoint_returns_502_on_failure():
+    result = self_heal.HealResult(False, "Failed to fetch logs for nope", "no such service")
+    with patch("nyxgpt.app.self_heal_module.component_logs", return_value=result):
+        client = TestClient(app)
+        response = client.get("/api/v1/self-heal/logs", params={"service": "nope"})
+
+    assert response.status_code == 502
+    assert "Failed to fetch logs for nope" in response.json()["error"]["message"]
 
 
 def test_admin_overview_includes_self_heal_status():
