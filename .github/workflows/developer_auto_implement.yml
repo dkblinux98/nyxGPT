@@ -1137,9 +1137,55 @@ jobs:
           # "No commits between" and triggering the failure-diagnosis chain.
           git fetch origin "${{ vars.RELEASE_BRANCH }}" --quiet
           if [ -z "$(git rev-list "origin/${{ vars.RELEASE_BRANCH }}..HEAD" 2>/dev/null)" ]; then
-            echo "::warning::No commits beyond ${{ vars.RELEASE_BRANCH }} — implementation produced no changes (likely blocked/no-op). Skipping PR submission."
-            gh issue comment "$ISSUE" --body "⏸️ **Developer Agent**: Implementation produced no changes (see the blockage report above). No PR submitted; awaiting human decision." || true
+            echo "::warning::No commits beyond ${{ vars.RELEASE_BRANCH }} — implementation produced no changes."
             echo "pr_number=" >> "$GITHUB_OUTPUT"
+
+            # A zero-commit run is either (a) an EARLY CUTOFF — the Claude step
+            # ended in seconds having done almost nothing (a turn/budget/usage
+            # cutoff, e.g. #3194/#3196 stopped ~66s into a 9-task issue with no
+            # commits), or (b) a DELIBERATE block — the agent read + reasoned +
+            # wrote a real blockage report, which takes real time (the #3160
+            # capstone block ran ~118s). This success path bypasses the
+            # failure-only usage-limit detector, so an early cutoff would
+            # otherwise stall silently on "awaiting human decision". Detect the
+            # early-cutoff signature here (a sub-90s Claude step) and auto-retry;
+            # only genuine blocks (or an exhausted retry budget) await a human.
+            JOBS_JSON=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" 2>/dev/null || echo '')
+            FAST_CLAUDE_STEPS=0
+            if [ -n "$JOBS_JSON" ]; then
+              FAST_CLAUDE_STEPS=$(echo "$JOBS_JSON" | jq -r '
+                [.jobs[].steps[]?
+                 | select(.name | test("Run Claude Code|Claude Fix Issues|Claude review fix"; "i"))
+                 | select(.started_at != null and .completed_at != null)
+                 | ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601))
+                 | select(. >= 0 and . < 90)
+                ] | length' 2>/dev/null || echo 0)
+              [ -z "$FAST_CLAUDE_STEPS" ] && FAST_CLAUDE_STEPS=0
+            fi
+
+            EC_ATTEMPTS=$(gh issue view "$ISSUE" --json comments \
+              --jq '[.comments[].body | select(test("<!-- early-cutoff-retry:"))] | length' 2>/dev/null || echo 0)
+            EC_ATTEMPTS=${EC_ATTEMPTS:-0}
+
+            if [ "$FAST_CLAUDE_STEPS" -ge 1 ] && [ "$EC_ATTEMPTS" -lt 3 ]; then
+              echo "::warning::Early-cutoff no-op detected (Claude step <90s, 0 commits) — auto-retrying (attempt $((EC_ATTEMPTS + 1))/3)."
+              gh issue comment "$ISSUE" --body "🔁 **Developer Agent**: The implementation step ended early with no changes (a turn/budget cutoff, not a real block). **Auto-retry $((EC_ATTEMPTS + 1))/3** — re-assigning @${{ vars.DEV_AGENT }} to resume.
+          <!-- early-cutoff-retry: $((EC_ATTEMPTS + 1)) -->" || true
+              # Re-fire: unassign then re-assign to emit the 'assigned' event
+              # that re-triggers this workflow (the issue stays In Progress).
+              gh api -X DELETE "repos/${{ github.repository }}/issues/$ISSUE/assignees" \
+                -f "assignees[]=${{ vars.DEV_AGENT }}" >/dev/null 2>&1 || true
+              sleep 3
+              gh api -X POST "repos/${{ github.repository }}/issues/$ISSUE/assignees" \
+                -f "assignees[]=${{ vars.DEV_AGENT }}" >/dev/null || true
+              exit 0
+            fi
+
+            if [ "$EC_ATTEMPTS" -ge 3 ]; then
+              gh issue comment "$ISSUE" --body "🛑 **Developer Agent**: Still no changes after 3 early-cutoff auto-retries. This is a persistent cutoff or a genuine blocker — awaiting human decision." || true
+            else
+              gh issue comment "$ISSUE" --body "⏸️ **Developer Agent**: Implementation produced no changes (see the blockage report above). No PR submitted; awaiting human decision." || true
+            fi
             exit 0
           fi
 
