@@ -131,9 +131,7 @@ def test_models_pull_non_streaming_defaults_to_non_stream():
 
 
 def test_models_pull_non_streaming_failure():
-    with patch(
-        "nyxgpt.app._ollama_post_json", side_effect=RuntimeError("connection reset")
-    ):
+    with patch("nyxgpt.app._ollama_post_json", side_effect=RuntimeError("connection reset")):
         client = TestClient(app)
         response = client.post(
             "/api/v1/models/pull", json={"model": "llama3.1:8b", "stream": False}
@@ -160,9 +158,7 @@ def test_models_pull_streaming_success():
         patch("nyxgpt.app.admin_activity_module.record") as mock_record,
     ):
         client = TestClient(app)
-        response = client.post(
-            "/api/v1/models/pull", json={"model": "llama3.1:8b", "stream": True}
-        )
+        response = client.post("/api/v1/models/pull", json={"model": "llama3.1:8b", "stream": True})
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
@@ -182,9 +178,7 @@ def test_models_pull_streaming_zero_total_percent():
         patch("nyxgpt.app.admin_activity_module.record"),
     ):
         client = TestClient(app)
-        response = client.post(
-            "/api/v1/models/pull", json={"model": "llama3.1:8b", "stream": True}
-        )
+        response = client.post("/api/v1/models/pull", json={"model": "llama3.1:8b", "stream": True})
 
     assert response.status_code == 200
     assert '"percent": 0.0' in response.text
@@ -202,9 +196,7 @@ def test_models_pull_streaming_error_event():
         patch("nyxgpt.ollama_client.post_json_lines", side_effect=_raise),
     ):
         client = TestClient(app)
-        response = client.post(
-            "/api/v1/models/pull", json={"model": "llama3.1:8b", "stream": True}
-        )
+        response = client.post("/api/v1/models/pull", json={"model": "llama3.1:8b", "stream": True})
 
     assert response.status_code == 200
     assert '"error": "ollama down"' in response.text
@@ -239,9 +231,7 @@ def test_models_delete_invalid_name():
 
 
 def test_models_delete_upstream_failure():
-    with patch(
-        "nyxgpt.app.models.delete_model", side_effect=RuntimeError("not found upstream")
-    ):
+    with patch("nyxgpt.app.models.delete_model", side_effect=RuntimeError("not found upstream")):
         client = TestClient(app)
         response = client.delete("/api/v1/models/missing-model")
 
@@ -285,9 +275,7 @@ def test_models_info_invalid_name_via_handler():
 
 
 def test_models_info_upstream_failure():
-    with patch(
-        "nyxgpt.app.models.show_model", side_effect=RuntimeError("model not found")
-    ):
+    with patch("nyxgpt.app.models.show_model", side_effect=RuntimeError("model not found")):
         client = TestClient(app)
         response = client.get("/api/v1/models/missing-model/info")
 
