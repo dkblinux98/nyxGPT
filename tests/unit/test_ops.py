@@ -472,3 +472,43 @@ def test_env_sync_cli_wrapper_prints_result(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "[OK]" in out
     assert env_path.exists()
+
+
+@pytest.mark.unit
+def test_ops_logs_prints_output_on_success(capsys):
+    with patch.object(
+        ops.self_heal,
+        "component_logs",
+        return_value=ops.self_heal.HealResult(
+            True, "Fetched last 50 log line(s) for glitchtip", "confirm: http://..."
+        ),
+    ) as cl:
+        args = MagicMock()
+        args.service = "glitchtip"
+        args.tail = 50
+        rc = ops.logs(args)
+
+        assert rc == 0
+        cl.assert_called_once_with("glitchtip", tail=50)
+        out = capsys.readouterr().out
+        assert "confirm: http://..." in out
+
+
+@pytest.mark.unit
+def test_ops_logs_returns_nonzero_on_failure(capsys):
+    with patch.object(
+        ops.self_heal,
+        "component_logs",
+        return_value=ops.self_heal.HealResult(
+            False, "Failed to fetch logs for glitchtip", "no such service"
+        ),
+    ):
+        args = MagicMock()
+        args.service = "glitchtip"
+        args.tail = 200
+        rc = ops.logs(args)
+
+        assert rc == 2
+        out = capsys.readouterr().out
+        assert "[FAIL]" in out
+        assert "no such service" in out

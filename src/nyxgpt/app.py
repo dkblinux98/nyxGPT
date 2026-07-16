@@ -1048,15 +1048,27 @@ def error_tracking_status(request: Request) -> dict[str, Any]:
     }
 
 
-@api.post("/error-tracking/report", status_code=202)
-def error_tracking_report(
-    request: Request, body: api_models.ClientErrorReportRequest
-) -> dict[str, str]:
+@api.post("/error-tracking/report")
+def error_tracking_report(request: Request, body: api_models.ClientErrorReportRequest) -> Response:
     """Forward a web UI client-side error to the local error tracker.
 
-    No-op (still returns 202) when error tracking is disabled, so the web
-    UI doesn't need to special-case it.
+    Returns `503 {"status": "inactive"}` when error tracking isn't actually
+    initialized (disabled, or enabled with no valid DSN), rather than a
+    blanket `202` -- a misconfigured DSN or a tracker nobody enabled must not
+    look like a successfully delivered test event. The web UI's fire-and-forget
+    client error reporter (`ClientErrorReporter.tsx`) ignores the response
+    either way, so this stays safe to call whether or not tracking is active.
     """
+    if not error_tracking_module.is_error_tracking_enabled():
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "inactive",
+                "detail": "Error tracking is disabled or has no valid DSN configured; "
+                "this event was not sent.",
+            },
+        )
+
     req_id = getattr(request.state, "request_id", None)
     error_tracking_module.capture_message(
         body.message,
@@ -1065,7 +1077,7 @@ def error_tracking_report(
         url=body.url or "N/A",
         stack=body.stack or "N/A",
     )
-    return {"status": "accepted"}
+    return JSONResponse(status_code=202, content={"status": "accepted"})
 
 
 @api.get("/monitoring")

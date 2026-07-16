@@ -132,6 +132,61 @@ def test_init_error_tracking_enables_with_dsn(monkeypatch: pytest.MonkeyPatch) -
     assert init_calls[0]["traces_sample_rate"] == 0.5
 
 
+def test_normalize_dsn_host_is_noop_natively(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Outside a Compose container, "localhost" is already correct -- leave it alone."""
+    monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
+
+    assert (
+        error_tracking._normalize_dsn_host("http://key@localhost:8080/1")
+        == "http://key@localhost:8080/1"
+    )
+
+
+def test_normalize_dsn_host_rewrites_localhost_in_compose_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inside the Compose api container, "localhost" means the api container
+    itself, not the glitchtip container next to it -- rewrite to the Compose
+    service name so a DSN copied verbatim from the GlitchTip UI still works."""
+    monkeypatch.setenv("NYXGPT_COMPOSE_FILE", "/etc/nyxgpt/docker-compose.yml")
+
+    assert (
+        error_tracking._normalize_dsn_host("http://key@localhost:8080/1")
+        == "http://key@glitchtip:8080/1"
+    )
+    assert (
+        error_tracking._normalize_dsn_host("http://key@127.0.0.1:8080/1")
+        == "http://key@glitchtip:8080/1"
+    )
+
+
+def test_normalize_dsn_host_leaves_non_localhost_dsn_alone_in_compose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DSN that's already pointed at the Compose service (or anywhere else
+    non-local) must be left untouched -- the rewrite is idempotent."""
+    monkeypatch.setenv("NYXGPT_COMPOSE_FILE", "/etc/nyxgpt/docker-compose.yml")
+
+    assert (
+        error_tracking._normalize_dsn_host("http://key@glitchtip:8080/1")
+        == "http://key@glitchtip:8080/1"
+    )
+
+
+def test_init_error_tracking_normalizes_dsn_in_compose_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(error_tracking, "_enabled", False)
+    monkeypatch.setenv("NYXGPT_COMPOSE_FILE", "/etc/nyxgpt/docker-compose.yml")
+    init_calls = []
+    monkeypatch.setattr(error_tracking.sentry_sdk, "init", lambda **kw: init_calls.append(kw))
+
+    error_tracking.init_error_tracking({"enabled": True, "dsn": "http://key@localhost:8080/1"})
+
+    assert error_tracking.is_error_tracking_enabled() is True
+    assert init_calls[0]["dsn"] == "http://key@glitchtip:8080/1"
+
+
 def test_capture_exception_is_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(error_tracking, "_enabled", False)
     captured = []
@@ -204,11 +259,12 @@ def test_error_tracking_status_endpoint_reports_active_when_initialized(
     assert response.json()["active"] is True
 
 
-def test_error_tracking_report_endpoint_accepts_client_errors(
+def test_error_tracking_report_endpoint_signals_inactive_when_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The report endpoint must always return 202, even when error tracking
-    is disabled -- the web UI should never need to special-case it."""
+    """A misconfigured/disabled tracker must not look like a delivered event --
+    the endpoint has to signal inactivity distinctly rather than a blanket 202."""
+    monkeypatch.setattr(error_tracking, "_enabled", False)
     client = TestClient(app)
 
     response = client.post(
@@ -216,8 +272,8 @@ def test_error_tracking_report_endpoint_accepts_client_errors(
         json={"message": "TypeError: boom", "stack": "at foo (bar.js:1:1)", "url": "/chat"},
     )
 
-    assert response.status_code == 202
-    assert response.json() == {"status": "accepted"}
+    assert response.status_code == 503
+    assert response.json()["status"] == "inactive"
 
 
 def test_error_tracking_report_endpoint_forwards_to_tracker_when_enabled(
