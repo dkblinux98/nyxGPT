@@ -38,6 +38,7 @@ nyxgpt ops status
 nyxgpt ops restart
 nyxgpt ops doctor
 nyxgpt ops env-sync
+nyxgpt ops logs
 ```
 
 ---
@@ -188,6 +189,32 @@ resulting `.env` is chmod'd `600`, same as `config.ini`.
 
 Run this after `nyxgpt wizard` and again any time you rotate a secret in
 config.ini, before `docker compose up`.
+
+---
+
+## `nyxgpt ops logs`
+
+Prints recent logs for a single Docker Compose service — a wrapped
+`docker compose logs`, so reading a container's output never requires a raw
+`docker`/`docker compose` command.
+
+Usage:
+
+```bash
+nyxgpt ops logs <service> [--tail N]
+```
+
+```bash
+nyxgpt ops logs glitchtip
+nyxgpt ops logs glitchtip --tail 50
+nyxgpt ops logs api
+```
+
+`--tail` defaults to 200 lines. This is how to find the GlitchTip
+first-account registration confirmation link (see [Error Tracking](api.md#error-tracking)):
+the `errors` Compose profile's `EMAIL_URL=consolemail://` prints outgoing
+email, confirmation link included, to the `glitchtip` container's stdout
+instead of sending it anywhere.
 
 ---
 

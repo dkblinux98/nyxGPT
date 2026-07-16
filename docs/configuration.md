@@ -514,7 +514,7 @@ glitchtip_ui_url = http://localhost:8080
 | Key | Description |
 |---|---|
 | `enabled` | Enable error tracking (default: `false`) |
-| `dsn` | DSN of your self-hosted GlitchTip project. Empty by default -- required, in addition to `enabled = true`, for anything to actually be reported |
+| `dsn` | DSN of your self-hosted GlitchTip project. Empty by default -- required, in addition to `enabled = true`, for anything to actually be reported. Paste it exactly as GlitchTip's UI shows it (`localhost` host) -- a containerized API automatically rewrites that host to the `glitchtip` Compose service name at startup, so there's nothing to edit by hand for either deployment mode |
 | `environment` | Environment tag attached to every event (e.g. `development`, `production`) |
 | `release` | Release tag attached to every event, for release tracking. Blank omits it |
 | `traces_sample_rate` | Fraction of requests also sampled for performance monitoring, `0.0`-`1.0` (`0.0` disables performance monitoring; only exceptions are captured) |
@@ -529,8 +529,15 @@ automatically, and web UI client errors reported via
 docker compose --profile errors up
 ```
 
-See [`docs/api.md`](api.md#error-tracking) for the
-`GET /api/v1/error-tracking` status endpoint.
+nyxGPT reports via the **Python** `sentry_sdk` (`src/nyxgpt/error_tracking.py`)
+-- if GlitchTip's own onboarding screen shows Node.js/`@sentry/node` setup
+instructions when you create a project, ignore them. To find the
+first-account registration confirmation link (printed to the container's
+console instead of a real inbox), run `nyxgpt ops logs glitchtip` rather
+than a raw `docker` command -- see [`docs/ops.md`](ops.md#nyxgpt-ops-logs).
+
+See [`docs/api.md`](api.md#error-tracking) for the full guided setup steps
+and the `GET /api/v1/error-tracking` status endpoint.
 
 ---
 

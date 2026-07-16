@@ -3139,9 +3139,7 @@ curl http://127.0.0.1:8000/api/v1/error-tracking
 
 ### `POST /api/v1/error-tracking/report`
 
-Forward a web UI client-side error to the local error tracker. Always
-returns `202`, even when error tracking is disabled, so the web UI never
-needs to special-case it.
+Forward a web UI client-side error to the local error tracker.
 
 **Request:**
 
@@ -3151,38 +3149,73 @@ curl -X POST http://127.0.0.1:8000/api/v1/error-tracking/report \
   -d '{"message": "TypeError: Cannot read properties of undefined", "stack": "at ChatPane (ChatPane.tsx:42:1)", "url": "/"}'
 ```
 
-**Response:**
+**Response, tracking active (`202`):**
 
 ```json
 { "status": "accepted" }
 ```
 
+**Response, tracking inactive (`503`):**
+
+```json
+{ "status": "inactive", "detail": "Error tracking is disabled or has no valid DSN configured; this event was not sent." }
+```
+
+The endpoint distinguishes these two cases on purpose: a misconfigured DSN
+or a tracker nobody enabled must not look like a successfully delivered
+event. The web UI's fire-and-forget client error reporter
+(`ClientErrorReporter.tsx`) ignores the response either way, so it's safe
+to call whether or not tracking is active; the Error Tracking panel's "Send
+test event" button surfaces the real result to an operator.
+
 **How it works:**
 
-Error tracking is Sentry-SDK-protocol-based, opt-in, and strictly local —
-there is no default DSN and nothing here talks to Sentry's own SaaS. When
-enabled with a DSN:
+Error tracking is **Python** Sentry-SDK-protocol-based (`sentry_sdk`, see
+`src/nyxgpt/error_tracking.py`), opt-in, and strictly local — there is no
+default DSN and nothing here talks to Sentry's own SaaS. If GlitchTip's own
+onboarding screen shows Node.js/`@sentry/node` setup instructions when you
+create a project, ignore them — that's not this integration. When enabled
+with a DSN:
 - Unhandled backend exceptions are captured automatically, enriched with the request ID, path, and method
 - Web UI errors reported via `POST /api/v1/error-tracking/report` are forwarded as message-level events
 
 **Enabling error tracking:**
 
-```ini
-[error_tracking]
-enabled = true
-dsn = http://<public_key>@localhost:8080/<project_id>
-environment = production
-traces_sample_rate = 0.0
-glitchtip_ui_url = http://localhost:8080
-```
+1. Start the local tracker (opt-in Compose profile):
 
-Then start the local GlitchTip instance (opt-in Compose profile):
+   ```bash
+   docker compose --profile errors up
+   ```
 
-```bash
-docker compose --profile errors up
-```
+2. Register the first account at `http://localhost:8080`. Its confirmation
+   email is printed to the `glitchtip` container's console (`EMAIL_URL=
+   consolemail://`), not sent anywhere — read it with
+   `nyxgpt ops logs glitchtip` (see [`docs/ops.md`](ops.md#nyxgpt-ops-logs))
+   instead of a raw `docker` command, and open the link it prints.
 
-Sign up and create a project in the GlitchTip UI to get the DSN above.
+3. Create a project in the GlitchTip UI and copy its DSN, e.g.
+   `http://<public_key>@localhost:8080/<project_id>`.
+
+4. Paste it as-is into config.ini:
+
+   ```ini
+   [error_tracking]
+   enabled = true
+   dsn = http://<public_key>@localhost:8080/<project_id>
+   environment = production
+   traces_sample_rate = 0.0
+   glitchtip_ui_url = http://localhost:8080
+   ```
+
+   The `localhost` host is correct for a native deployment. For a
+   containerized API, GlitchTip still hands out a `localhost`-hosted DSN
+   (browsers need to reach its UI), but `init_error_tracking` automatically
+   rewrites that host to the `glitchtip` Compose service name at startup —
+   there is no host to edit by hand, and the DSN copied from the UI works
+   unmodified either way.
+
+5. Restart the API — this setting isn't hot-reloaded.
+
 Browse events at `http://localhost:8080` (also linked from the SRE/admin
 dashboard's Resource Usage step).
 

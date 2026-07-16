@@ -272,12 +272,21 @@ This starts `glitchtip-postgres`, `glitchtip-redis`, a one-shot
 SRE/admin dashboard's Resource Usage step), and `glitchtip-worker`.
 
 Set a real `GLITCHTIP_SECRET_KEY` in `.env` before running this profile
-(see `.env.example`). After first boot, sign up and create a project in
-the GlitchTip UI to get a DSN, then set `[error_tracking] enabled = true`
-and `dsn = <that DSN>` in `docker/config.docker.ini` (disabled by default,
-no default DSN) to have the API actually report exceptions — see
+(see `.env.example`). After first boot, register the first account at
+`http://localhost:8080` — its confirmation email is printed to the
+`glitchtip` container's console rather than sent anywhere, so read it with
+`nyxgpt ops logs glitchtip` (see [ops.md](ops.md#nyxgpt-ops-logs)) instead
+of a raw `docker` command. Create a project in the GlitchTip UI to get a
+DSN, then set `[error_tracking] enabled = true` and `dsn = <that DSN>` in
+`docker/config.docker.ini` (disabled by default, no default DSN) to have
+the API actually report exceptions. Paste the DSN exactly as GlitchTip
+shows it (`localhost` host) — the API automatically rewrites that host to
+the `glitchtip` service name at startup, since "localhost" inside the `api`
+container would otherwise mean the `api` container itself. nyxGPT reports
+via the **Python** `sentry_sdk`, not the Node.js instructions GlitchTip's
+own onboarding screen shows — see
 [configuration.md](configuration.md#error_tracking-section) and
-[api.md](api.md#error-tracking).
+[api.md](api.md#error-tracking) for the full guided flow.
 
 ## Self-Healing
 
