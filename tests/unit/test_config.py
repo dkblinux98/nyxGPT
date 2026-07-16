@@ -15,6 +15,7 @@ from nyxgpt.config import (
     get_rag_enabled,
     get_rag_good_score_threshold,
     get_rag_medium_score_threshold,
+    get_tools_root,
     load_config,
     validate_config,
 )
@@ -1096,3 +1097,44 @@ grafana_admin_password = super-secret-value
 
     assert "grafana_admin_password" not in monitoring_config
     assert "super-secret-value" not in monitoring_config.values()
+
+
+def test_get_tools_root_defaults_to_home() -> None:
+    """get_tools_root should default to the user's home directory."""
+    cfg = load_config(None)
+
+    assert get_tools_root(cfg) == Path.home()
+
+
+def test_get_tools_root_honors_config_override(tmp_path: Path) -> None:
+    """get_tools_root should use `[api] tools_root` when set."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        f"""
+[api]
+tools_root = {workspace}
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+
+    assert get_tools_root(cfg) == workspace
+
+
+def test_get_tools_root_blank_falls_back_to_home(tmp_path: Path) -> None:
+    """get_tools_root should fall back to home if `tools_root` is set but blank."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[api]
+tools_root =
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+
+    assert get_tools_root(cfg) == Path.home()

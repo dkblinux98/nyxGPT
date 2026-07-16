@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import subprocess
+import tempfile
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -114,6 +117,24 @@ def require_cassandra(cfg: Any) -> None:
 
     if not _can_connect(host, port, timeout=2.0):
         pytest.skip(f"Cassandra not reachable at {host}:{port}")
+
+
+@pytest.fixture
+def tools_tmp_path() -> Any:
+    """Like pytest's `tmp_path`, but rooted under the home directory.
+
+    /api/v1/tools/{ls,cat,grep} are confined to `[api] tools_root` (default:
+    the server process's home directory -- see nyxgpt.config.get_tools_root)
+    as a defense-in-depth guard against arbitrary file reads (#3195). The
+    default `tmp_path` (under the system temp dir) falls outside that root,
+    so tests exercising these endpoints need a directory the server will
+    actually allow.
+    """
+    base = Path.home() / ".nyxgpt-test-tmp"
+    base.mkdir(parents=True, exist_ok=True)
+    d = Path(tempfile.mkdtemp(dir=base))
+    yield d
+    shutil.rmtree(d, ignore_errors=True)
 
 
 @pytest.fixture

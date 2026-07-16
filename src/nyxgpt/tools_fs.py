@@ -6,11 +6,30 @@ import sys
 from pathlib import Path
 
 
-def ls(path: Path) -> int:
+def _resolve_within_root(path: Path, root: Path | None) -> tuple[Path, str | None]:
+    """Resolve `path`, optionally confining it to `root`.
+
+    Returns (resolved_path, error). `error` is set if `root` is given and the
+    resolved path is not `root` itself or a descendant of it.
+    """
     try:
         p = path.expanduser().resolve()
     except Exception:
         p = path.expanduser()
+
+    if root is not None:
+        root_resolved = root.expanduser().resolve()
+        if p != root_resolved and root_resolved not in p.parents:
+            return p, f"Path escapes allowed root {root_resolved}: {p}"
+
+    return p, None
+
+
+def ls(path: Path, *, root: Path | None = None) -> int:
+    p, err = _resolve_within_root(path, root)
+    if err:
+        print(err, file=sys.stderr)
+        return 1
 
     if not p.exists():
         print(f"No such path: {p}", file=sys.stderr)
@@ -33,11 +52,13 @@ def ls(path: Path) -> int:
     return 0
 
 
-def cat(path: Path, *, head: int | None = None, tail: int | None = None) -> int:
-    try:
-        p = path.expanduser().resolve()
-    except Exception:
-        p = path.expanduser()
+def cat(
+    path: Path, *, head: int | None = None, tail: int | None = None, root: Path | None = None
+) -> int:
+    p, err = _resolve_within_root(path, root)
+    if err:
+        print(err, file=sys.stderr)
+        return 1
 
     if not p.exists() or not p.is_file():
         print(f"No such file: {p}", file=sys.stderr)
@@ -66,11 +87,11 @@ def cat(path: Path, *, head: int | None = None, tail: int | None = None) -> int:
     return 0
 
 
-def grep(pattern: str, path: Path, *, max_matches: int = 50) -> int:
-    try:
-        p = path.expanduser().resolve()
-    except Exception:
-        p = path.expanduser()
+def grep(pattern: str, path: Path, *, max_matches: int = 50, root: Path | None = None) -> int:
+    p, err = _resolve_within_root(path, root)
+    if err:
+        print(err, file=sys.stderr)
+        return 1
 
     if not p.exists():
         print(f"No such path: {p}", file=sys.stderr)
@@ -87,12 +108,12 @@ def grep(pattern: str, path: Path, *, max_matches: int = 50) -> int:
         files = [p]
     else:
         # Walk directory, avoid hidden directories/files
-        for root, dirs, filenames in os.walk(p):
+        for walk_root, dirs, filenames in os.walk(p):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             for fn in filenames:
                 if fn.startswith("."):
                     continue
-                files.append(Path(root) / fn)
+                files.append(Path(walk_root) / fn)
 
     matches = 0
     for f in files:

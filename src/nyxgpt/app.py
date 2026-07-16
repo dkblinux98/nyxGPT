@@ -110,6 +110,7 @@ from nyxgpt.config import (
     get_self_heal_default_enabled,
     get_self_heal_max_consecutive_restarts,
     get_sessions_dir,
+    get_tools_root,
     get_tracing_config,
     load_config,
 )
@@ -2767,27 +2768,43 @@ def chat_stream_api_legacy(request: Request, req: ChatRequest):
     return _create_streaming_response(request, req)
 
 
+def _tools_error_status(message: str) -> int:
+    """403 for the root-confinement guard, 400 for everything else (bad path,
+    invalid regex, no matches, ...)."""
+    return 403 if "escapes allowed root" in message else 400
+
+
 @api.post("/tools/ls", response_model=ToolTextResponse)
-def tool_ls(req: ToolLsRequest) -> ToolTextResponse:
-    rc, out, err = _capture_stdout(tools_fs.ls, Path(req.path))
+def tool_ls(request: Request, req: ToolLsRequest) -> ToolTextResponse:
+    tools_root = get_tools_root(_req_cfg(request))
+    rc, out, err = _capture_stdout(tools_fs.ls, Path(req.path), root=tools_root)
     if rc != 0:
-        raise HTTPException(status_code=400, detail=(err.strip() or out.strip() or "ls failed"))
+        message = err.strip() or out.strip() or "ls failed"
+        raise HTTPException(status_code=_tools_error_status(message), detail=message)
     return ToolTextResponse(output=out)
 
 
 @api.post("/tools/cat", response_model=ToolTextResponse)
-def tool_cat(req: ToolCatRequest) -> ToolTextResponse:
-    rc, out, err = _capture_stdout(tools_fs.cat, Path(req.path), head=req.head, tail=req.tail)
+def tool_cat(request: Request, req: ToolCatRequest) -> ToolTextResponse:
+    tools_root = get_tools_root(_req_cfg(request))
+    rc, out, err = _capture_stdout(
+        tools_fs.cat, Path(req.path), head=req.head, tail=req.tail, root=tools_root
+    )
     if rc != 0:
-        raise HTTPException(status_code=400, detail=(err.strip() or out.strip() or "cat failed"))
+        message = err.strip() or out.strip() or "cat failed"
+        raise HTTPException(status_code=_tools_error_status(message), detail=message)
     return ToolTextResponse(output=out)
 
 
 @api.post("/tools/grep", response_model=ToolTextResponse)
-def tool_grep(req: ToolGrepRequest) -> ToolTextResponse:
-    rc, out, err = _capture_stdout(tools_fs.grep, req.pattern, Path(req.path), max_matches=req.max)
+def tool_grep(request: Request, req: ToolGrepRequest) -> ToolTextResponse:
+    tools_root = get_tools_root(_req_cfg(request))
+    rc, out, err = _capture_stdout(
+        tools_fs.grep, req.pattern, Path(req.path), max_matches=req.max, root=tools_root
+    )
     if rc != 0:
-        raise HTTPException(status_code=400, detail=(err.strip() or out.strip() or "grep failed"))
+        message = err.strip() or out.strip() or "grep failed"
+        raise HTTPException(status_code=_tools_error_status(message), detail=message)
     return ToolTextResponse(output=out)
 
 
