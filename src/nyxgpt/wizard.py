@@ -7,6 +7,7 @@ and config.ini generation.
 
 from __future__ import annotations
 
+import secrets
 import sys
 from configparser import ConfigParser
 from pathlib import Path
@@ -199,10 +200,24 @@ def _generate_config_ini(
     config.set("web", "api_base_url", "")
 
     # [auth] section
+    # A strong key is generated up front (even though auth is disabled by
+    # default) so config.ini is a single, ready-to-use source of truth for
+    # this secret the moment the user flips `enabled = true` or runs the
+    # Docker Compose stack -- see `nyxgpt ops env-sync`.
     config.add_section("auth")
     config.set("auth", "enabled", "false")
-    config.set("auth", "api_key", "")
+    config.set("auth", "api_key", secrets.token_urlsafe(32))
     config.set("auth", "header", "X-API-Key")
+
+    # [monitoring] section
+    # Grafana's admin password is generated here too, for the same reason --
+    # config.ini stays the one place to look for this secret, whether
+    # Grafana ends up running (Docker Compose's opt-in `monitoring` profile).
+    config.add_section("monitoring")
+    config.set("monitoring", "enabled", "false")
+    config.set("monitoring", "grafana_ui_url", "http://localhost:3001")
+    config.set("monitoring", "prometheus_ui_url", "http://localhost:9090")
+    config.set("monitoring", "grafana_admin_password", secrets.token_urlsafe(24))
 
     # [rate_limit] section
     config.add_section("rate_limit")
@@ -362,6 +377,12 @@ def run_wizard(output_path: Path | None = None) -> int:
             print("  1. Start Cassandra: nyxgpt ops restart cassandra")
             print("  2. Ingest documents: nyxgpt rag ingest <doc_id> <file>")
             print("  3. Enable RAG in chat: Ctrl+R (TUI) or use WebUI toggle")
+
+        print(
+            "\nUsing Docker Compose instead? config.ini is still the source of "
+            "truth for its secrets -- run `nyxgpt ops env-sync` to derive .env "
+            "from it instead of editing .env by hand."
+        )
 
         return 0
 
