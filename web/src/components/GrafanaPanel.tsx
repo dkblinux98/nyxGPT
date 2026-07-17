@@ -68,19 +68,18 @@ export default function GrafanaPanel() {
             external/cloud monitoring service.
           </p>
           <p style={{ margin: 0, color: '#666' }}>
-            To enable: start the local stack with{' '}
             <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
-              docker compose --profile monitoring up
+              nyxgpt ops install
             </code>{' '}
-            and set{' '}
+            starts this automatically. If you skipped it (
             <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
-              [monitoring] enabled = true
-            </code>{' '}
-            in{' '}
-            <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
-              ~/.nyxGPT/config.ini
+              --skip-observability
             </code>
-            .
+            ) or need to re-run it, use{' '}
+            <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
+              nyxgpt ops observability
+            </code>{' '}
+            -- no raw <code>docker</code> command needed.
           </p>
         </>
       )}

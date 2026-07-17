@@ -161,3 +161,21 @@ def test_log_aggregation_status_endpoint_reports_disabled_by_default() -> None:
     assert data["enabled"] is False
     assert data["active"] is False
     assert data["grafana_explore_url"] == "http://localhost:3001/explore"
+
+
+def test_log_aggregation_status_endpoint_includes_curated_loki_queries() -> None:
+    """The SRE overview links out to curated LogQL saved queries mirroring
+    the per-component panels in the Operational Logs dashboard -- each must
+    include the raw query text and a hint of what it filters."""
+    client = TestClient(app)
+
+    response = client.get("/api/v1/log-aggregation")
+
+    assert response.status_code == 200
+    curated_queries = response.json()["curated_queries"]
+    assert len(curated_queries) >= 4
+    labels = {q["label"] for q in curated_queries}
+    assert {"Self-heal events", "Deploy events", "Canary events", "Chat errors"} <= labels
+    for q in curated_queries:
+        assert q["query"].startswith('{job="nyxgpt"')
+        assert q["hint"]

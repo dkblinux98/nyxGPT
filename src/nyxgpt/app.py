@@ -1254,6 +1254,48 @@ def monitoring_status(request: Request) -> dict[str, Any]:
     }
 
 
+def _loki_curated_queries() -> list[dict[str, str]]:
+    """Curated LogQL saved queries for the nyxGPT job's log stream.
+
+    Mirrors the per-component panels already provisioned in the "Operational
+    Logs" Grafana dashboard (docker/grafana/dashboards/operational-logs.json)
+    so the same queries are also copy-pasteable into Grafana Explore for ad
+    hoc search, not just fixed dashboard panels. Query text only, not a
+    Grafana Explore deep-link URL -- like `_jaeger_curated_views` above,
+    guessing a URL-encoded state param that's changed shape across Grafana
+    major versions risks silently opening Explore without the query loaded;
+    the dashboard panels are the reliable path, this is a documented
+    fallback for ad hoc search.
+    """
+    return [
+        {
+            "label": "Self-heal events",
+            "hint": "Restart / recovery / backoff activity",
+            "query": '{job="nyxgpt", logger="nyxgpt.self_heal"}',
+        },
+        {
+            "label": "Deploy events",
+            "hint": "Blue/green switch and rollback activity",
+            "query": '{job="nyxgpt", logger="nyxgpt.deploy"}',
+        },
+        {
+            "label": "Canary events",
+            "hint": "Canary rollout, evaluation, and promotion activity",
+            "query": '{job="nyxgpt", logger="nyxgpt.canary"}',
+        },
+        {
+            "label": "Chat errors",
+            "hint": "ERROR/CRITICAL log lines from the chat pipeline",
+            "query": '{job="nyxgpt", logger="nyxgpt.chat", level=~"ERROR|CRITICAL"}',
+        },
+        {
+            "label": "RAG pipeline",
+            "hint": "Retrieval and ingest activity",
+            "query": '{job="nyxgpt", logger="nyxgpt.rag.rag"}',
+        },
+    ]
+
+
 @api.get("/log-aggregation")
 def log_aggregation_status(request: Request) -> dict[str, Any]:
     """Get log aggregation status and how to reach the local Loki search UI.
@@ -1270,6 +1312,7 @@ def log_aggregation_status(request: Request) -> dict[str, Any]:
     return {
         **log_aggregation_config,
         "active": log_aggregation_config["enabled"],
+        "curated_queries": _loki_curated_queries(),
     }
 
 

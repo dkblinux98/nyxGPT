@@ -27,17 +27,26 @@ command, e.g. for evaluation or a non-macOS host.
 | `glitchtip-postgres` <sup>‡</sup> | `postgres:16` | GlitchTip's database             | —                    |
 | `glitchtip-redis` <sup>‡</sup> | `redis:7-alpine` | GlitchTip's queue/cache            | —                    |
 
-<sup>*</sup> Only started with the opt-in `monitoring` profile — see
-[Monitoring Dashboards](#monitoring-dashboards) below.
+<sup>*</sup> Started via the `monitoring` Compose profile, automatically by
+`nyxgpt ops install` — see [Monitoring Dashboards](#monitoring-dashboards)
+below.
 
-<sup>†</sup> Only started with the opt-in `tracing` profile — see
-[Distributed Tracing](#distributed-tracing) below.
+<sup>†</sup> Started via the `tracing` Compose profile, automatically by
+`nyxgpt ops install` — see [Distributed Tracing](#distributed-tracing)
+below.
 
-<sup>‡</sup> Only started with the opt-in `errors` profile — see
-[Error Tracking](#error-tracking) below.
+<sup>‡</sup> Started via the `errors` Compose profile, automatically by
+`nyxgpt ops install` — see [Error Tracking](#error-tracking) below. (The
+GlitchTip project/DSN that makes error reporting actually active still
+needs a human, though.)
 
-<sup>§</sup> Only started with the opt-in `logging` profile — see
-[Log Aggregation](#log-aggregation) below.
+<sup>§</sup> Started via the `logging` Compose profile, automatically by
+`nyxgpt ops install` — see [Log Aggregation](#log-aggregation) below.
+
+All four profiles above are part of the observability stack started by
+`nyxgpt ops install`/`nyxgpt ops observability` (see
+[ops.md](ops.md#nyxgpt-ops-observability)) — pass `nyxgpt ops install
+--skip-observability` if you'd rather they stayed off.
 
 All services share a single bridge network (`nyxgpt`) and reach each other by
 service name (e.g. the API talks to Ollama at `http://ollama:11434` and to
@@ -51,9 +60,9 @@ Named volumes persist state across `docker compose down` / `up`:
 - `cassandra_data` — Cassandra's data directory (`/var/lib/cassandra`)
 - `nyxgpt_data` — chat sessions, vector store, and logs (`/root/.nyxGPT` in
   the `api` container)
-- `prometheus_data` / `grafana_data` — the opt-in `monitoring` profile's
-  metrics and dashboard state
-- `loki_data` — the opt-in `logging` profile's indexed/stored log chunks
+- `prometheus_data` / `grafana_data` — the `monitoring` profile's metrics
+  and dashboard state
+- `loki_data` — the `logging` profile's indexed/stored log chunks
 
 Run `docker compose down -v` to discard all persisted state, including
 Cassandra data and pulled models.
@@ -159,13 +168,20 @@ UI) — no manual bootstrap step is required.
 
 ## Monitoring Dashboards
 
-Grafana dashboards are opt-in and local-only — metrics never leave this
-machine. It ships as a separate `monitoring` Compose profile so it doesn't
-run unless you ask for it:
+Grafana dashboards are local-only — metrics never leave this machine. It
+ships as a separate `monitoring` Compose profile, started automatically by
+`nyxgpt ops install` (part of the observability stack, see
+[ops.md](ops.md#nyxgpt-ops-observability)). To start it on its own or
+re-run it later, use:
 
 ```bash
-docker compose --profile monitoring up
+nyxgpt ops observability
 ```
+
+Never run `docker compose --profile monitoring up` directly — the wrapper
+above is the supported way to start this profile (see
+[ops.md](ops.md#nyxgpt-ops-observability)); pass `nyxgpt ops install
+--skip-observability` if you'd rather it stayed off.
 
 This starts `prometheus` (scrapes the API's [`/metrics`](api.md#get-metrics)
 endpoint every 15s using `docker/prometheus.yml`, and evaluates the alerting
@@ -212,9 +228,9 @@ Run `nyxgpt ops env-sync` before starting this profile so `.env`'s
 `GRAFANA_ADMIN_PASSWORD` picks up that value — see
 [security.md](security.md#api-key-management).
 
-The API container still needs `[monitoring] enabled = true` set in
-`docker/config.docker.ini` (disabled by default) for the SRE/admin
-dashboard's "Monitoring Dashboards" card to show the Grafana link -- see
+`[monitoring] enabled = true` is already set in `docker/config.docker.ini`
+so the SRE/admin dashboard's "Monitoring Dashboards" card shows the Grafana
+link as soon as the profile is up -- see
 [configuration.md](configuration.md#monitoring-section) and
 [api.md](api.md#monitoring-dashboards). If you changed `GRAFANA_UI_PORT` in
 `.env`, update `grafana_ui_url` in config to match, or the link will point
@@ -230,14 +246,15 @@ default.
 
 ## Log Aggregation
 
-Centralized log search (Loki + promtail) is opt-in and local-only — logs
-never leave this machine. It's a reduced-footprint alternative to a full
-ELK stack, sized for a single-workstation, local-first system. It ships as
-a separate `logging` Compose profile so it doesn't run unless you ask for
-it:
+Centralized log search (Loki + promtail) is local-only — logs never leave
+this machine. It's a reduced-footprint alternative to a full ELK stack,
+sized for a single-workstation, local-first system. It ships as a separate
+`logging` Compose profile, started automatically by `nyxgpt ops install`
+alongside `monitoring` (part of the observability stack, see
+[ops.md](ops.md#nyxgpt-ops-observability)):
 
 ```bash
-docker compose --profile logging up
+nyxgpt ops observability
 ```
 
 This starts `promtail` (tails the API's log files under `~/.nyxGPT/logs` —
@@ -255,26 +272,31 @@ two dashboards under `docker/grafana/dashboards`:
 - **Operational Logs** — curated saved queries for the key operational
   streams: self-heal events, deploy events, canary events, chat errors
   (`ERROR`/`CRITICAL`), and a per-component filter covering every traced
-  module.
+  module. The same query text is also returned by `GET
+  /api/v1/log-aggregation` (see
+  [api.md](api.md#log-aggregation)) and shown on the SRE/admin dashboard,
+  so it's copy-pasteable into Grafana Explore without opening the
+  dashboard.
 
-```bash
-docker compose --profile monitoring --profile logging up
-```
+`nyxgpt ops observability` starts both the `monitoring` and `logging`
+profiles together (Grafana needs the `logging` profile's Loki instance for
+its datasource) — see [ops.md](ops.md#nyxgpt-ops-observability).
 
-The API container still needs `[log_aggregation] enabled = true` set in
-`docker/config.docker.ini` (disabled by default) for the SRE/admin
-dashboard's "Log Aggregation" card to show the Grafana Explore link -- see
+`[log_aggregation] enabled = true` is already set in
+`docker/config.docker.ini` so the SRE/admin dashboard's "Log Aggregation"
+card shows the Grafana Explore link as soon as the profile is up -- see
 [configuration.md](configuration.md#log_aggregation-section) and
 [api.md](api.md#log-aggregation).
 
 ## Distributed Tracing
 
-Distributed tracing (OpenTelemetry) is opt-in and local-only — no spans are
-ever sent to an external/cloud endpoint. It ships as a separate `tracing`
-Compose profile so it doesn't run unless you ask for it:
+Distributed tracing (OpenTelemetry) is local-only — no spans are ever sent
+to an external/cloud endpoint. It ships as a separate `tracing` Compose
+profile, started automatically by `nyxgpt ops install` (part of the
+observability stack, see [ops.md](ops.md#nyxgpt-ops-observability)):
 
 ```bash
-docker compose --profile tracing up
+nyxgpt ops observability
 ```
 
 This starts `otel-collector` (receives spans from the API over OTLP/HTTP)
@@ -282,19 +304,26 @@ and `jaeger` (stores traces and serves the UI at
 [http://localhost:16686](http://localhost:16686), also linked from the
 SRE/admin dashboard's Resource Usage step).
 
-The API container still needs `[tracing] enabled = true` set in
-`docker/config.docker.ini` (disabled by default) to actually emit spans —
-see [configuration.md](configuration.md#tracing-section) and
+`[tracing] enabled = true` is already set in `docker/config.docker.ini` so
+the API actually emits spans as soon as the profile is up — see
+[configuration.md](configuration.md#tracing-section) and
 [api.md](api.md#distributed-tracing).
 
 ## Error Tracking
 
-Self-hosted error tracking (GlitchTip) is opt-in and local-only — no
-exception data is ever sent to Sentry's own SaaS. It ships as a separate
-`errors` Compose profile so it doesn't run unless you ask for it:
+Self-hosted error tracking (GlitchTip) is local-only — no exception data is
+ever sent to Sentry's own SaaS. It ships as a separate `errors` Compose
+profile, started automatically by `nyxgpt ops install` alongside the rest
+of the observability stack (see
+[ops.md](ops.md#nyxgpt-ops-observability)). Unlike monitoring/log
+aggregation/tracing above, `[error_tracking] enabled` stays `false` by
+default even once the container is running: this is the one part of the
+SRE suite that still needs a human, since nothing can safely create your
+GlitchTip account or project DSN for you. If you need to (re-)start just
+this profile:
 
 ```bash
-docker compose --profile errors up
+nyxgpt ops observability
 ```
 
 This starts `glitchtip-postgres`, `glitchtip-redis`, a one-shot
