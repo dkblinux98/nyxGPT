@@ -585,7 +585,9 @@ def chunk_text(text: str) -> list[str]:
                 sections.append((current_heading, content_text))
 
         # If no headings found, treat whole text as one section
-        if not sections:
+        if (
+            not sections
+        ):  # pragma: no cover - defensive: the loop above always appends at least one section when `raw` is non-empty
             sections = [(None, raw)]
     else:
         sections = [(None, raw)]
@@ -681,7 +683,7 @@ def chunk_text(text: str) -> list[str]:
         if current_chunk:
             chunks.append("\n\n".join(current_chunk))
 
-    if not chunks:
+    if not chunks:  # pragma: no cover - defensive: unreachable since `raw` is always non-empty here
         return []
 
     # Phase 3: Apply overlap strategy
@@ -1791,7 +1793,9 @@ def compose_context(results: Iterable[dict]) -> str:
 
         if max_chars > 0:
             remaining = max_chars - used
-            if remaining <= 0:
+            if (
+                remaining <= 0
+            ):  # pragma: no cover - defensive: the loop always breaks below once `used` reaches `max_chars`, so `remaining` can't go negative on a later iteration
                 break
             if len(block) > remaining:
                 block = block[:remaining].rstrip()
