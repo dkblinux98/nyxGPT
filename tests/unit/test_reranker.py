@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json as json_module
+import urllib.error
 from configparser import ConfigParser
 from unittest.mock import Mock, patch
 
@@ -248,3 +250,218 @@ def test_score_relevance_clamps_to_range(monkeypatch: pytest.MonkeyPatch) -> Non
         with patch("urllib.request.urlopen", return_value=mock_response):
             score = _score_relevance("test query", "test document", config)
             assert score == expected_score
+
+
+@pytest.mark.unit
+def test_rerank_results_disabled_with_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    """rerank_results should return metrics even when reranking is disabled."""
+    cfg = ConfigParser()
+    cfg["ollama"] = {"base_url": "http://localhost:11434"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["rag"] = {"enable_reranking": "false"}
+
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.reranker import rerank_results
+
+    results = [{"text": "Result 1", "score": 0.8}]
+
+    output, metrics = rerank_results("test query", results, collect_metrics=True)
+
+    assert output == results
+    assert metrics.num_candidates == 1
+    assert metrics.num_reranked == 1
+    assert metrics.reranking_time_ms == 0.0
+    assert metrics.score_min is None
+    assert metrics.score_max is None
+    assert metrics.score_mean is None
+
+
+@pytest.mark.unit
+def test_rerank_results_empty_list_with_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
+    """rerank_results should return metrics for an empty candidate list."""
+    cfg = ConfigParser()
+    cfg["ollama"] = {"base_url": "http://localhost:11434"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["rag"] = {"enable_reranking": "true"}
+
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.reranker import rerank_results
+
+    output, metrics = rerank_results("test query", [], collect_metrics=True)
+
+    assert output == []
+    assert metrics.num_candidates == 0
+    assert metrics.num_reranked == 0
+    assert metrics.score_min is None
+    assert metrics.score_max is None
+    assert metrics.score_mean is None
+
+
+@pytest.mark.unit
+def test_rerank_results_skips_empty_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """rerank_results should skip results whose text is empty/whitespace."""
+    cfg = ConfigParser()
+    cfg["ollama"] = {"base_url": "http://localhost:11434"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+    cfg["rag"] = {"enable_reranking": "true", "rerank_top_n": "3"}
+
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+
+    def mock_score_relevance(query: str, document: str, config):
+        return 0.5
+
+    monkeypatch.setattr("nyxgpt.rag.reranker._score_relevance", mock_score_relevance)
+
+    from nyxgpt.rag.reranker import rerank_results
+
+    results = [
+        {"text": "", "score": 0.8},
+        {"text": "   ", "score": 0.7},
+        {"text": "Real result", "score": 0.6},
+    ]
+
+    output = rerank_results("test query", results)
+
+    assert len(output) == 1
+    assert output[0]["text"] == "Real result"
+
+
+@pytest.mark.unit
+def test_score_relevance_unexpected_response_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_score_relevance should raise RerankError when the response lacks message.content."""
+    cfg = ConfigParser()
+    cfg["ollama"] = {"base_url": "http://localhost:11434"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
+
+    config = RerankerConfig(
+        base_url="http://localhost:11434", model="qwen2.5:0.5b", timeout=30, top_n=3, enabled=True
+    )
+
+    mock_response = Mock()
+    mock_response.read.return_value = json_module.dumps({"unexpected": "shape"}).encode("utf-8")
+    mock_response.__enter__ = Mock(return_value=mock_response)
+    mock_response.__exit__ = Mock(return_value=False)
+
+    with (
+        patch("urllib.request.urlopen", return_value=mock_response),
+        pytest.raises(RerankError, match="Unexpected Ollama response format"),
+    ):
+        _score_relevance("test query", "test document", config)
+
+
+@pytest.mark.unit
+def test_score_relevance_invalid_score_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_score_relevance should raise RerankError when the parsed content has no 'score' key."""
+    cfg = ConfigParser()
+    cfg["ollama"] = {"base_url": "http://localhost:11434"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
+
+    config = RerankerConfig(
+        base_url="http://localhost:11434", model="qwen2.5:0.5b", timeout=30, top_n=3, enabled=True
+    )
+
+    response_data = {"message": {"content": '{"not_score": 0.5}'}}
+    mock_response = Mock()
+    mock_response.read.return_value = json_module.dumps(response_data).encode("utf-8")
+    mock_response.__enter__ = Mock(return_value=mock_response)
+    mock_response.__exit__ = Mock(return_value=False)
+
+    with (
+        patch("urllib.request.urlopen", return_value=mock_response),
+        pytest.raises(RerankError, match="Invalid score format"),
+    ):
+        _score_relevance("test query", "test document", config)
+
+
+@pytest.mark.unit
+def test_score_relevance_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_score_relevance should raise RerankError on HTTPError."""
+    cfg = ConfigParser()
+    cfg["ollama"] = {"base_url": "http://localhost:11434"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
+
+    config = RerankerConfig(
+        base_url="http://localhost:11434", model="qwen2.5:0.5b", timeout=30, top_n=3, enabled=True
+    )
+
+    import io
+
+    error = urllib.error.HTTPError(
+        url="http://localhost:11434/api/chat",
+        code=500,
+        msg="Internal Error",
+        hdrs=None,
+        fp=io.BytesIO(b"server error"),
+    )
+
+    with (
+        patch("urllib.request.urlopen", side_effect=error),
+        pytest.raises(RerankError, match="HTTP error"),
+    ):
+        _score_relevance("test query", "test document", config)
+
+
+@pytest.mark.unit
+def test_score_relevance_url_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_score_relevance should raise RerankError on URLError."""
+    cfg = ConfigParser()
+    cfg["ollama"] = {"base_url": "http://localhost:11434"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
+
+    config = RerankerConfig(
+        base_url="http://localhost:11434", model="qwen2.5:0.5b", timeout=30, top_n=3, enabled=True
+    )
+
+    error = urllib.error.URLError("connection refused")
+
+    with (
+        patch("urllib.request.urlopen", side_effect=error),
+        pytest.raises(RerankError, match="Failed to reach Ollama"),
+    ):
+        _score_relevance("test query", "test document", config)
+
+
+@pytest.mark.unit
+def test_score_relevance_json_decode_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_score_relevance should raise RerankError when the score content isn't valid JSON."""
+    cfg = ConfigParser()
+    cfg["ollama"] = {"base_url": "http://localhost:11434"}
+    cfg["nyxgpt"] = {"default_model": "qwen2.5:0.5b"}
+
+    monkeypatch.setattr("nyxgpt.rag.reranker.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.reranker import RerankerConfig, RerankError, _score_relevance
+
+    config = RerankerConfig(
+        base_url="http://localhost:11434", model="qwen2.5:0.5b", timeout=30, top_n=3, enabled=True
+    )
+
+    response_data = {"message": {"content": "not valid json at all"}}
+    mock_response = Mock()
+    mock_response.read.return_value = json_module.dumps(response_data).encode("utf-8")
+    mock_response.__enter__ = Mock(return_value=mock_response)
+    mock_response.__exit__ = Mock(return_value=False)
+
+    with (
+        patch("urllib.request.urlopen", return_value=mock_response),
+        pytest.raises(RerankError, match="Failed to parse reranking score"),
+    ):
+        _score_relevance("test query", "test document", config)

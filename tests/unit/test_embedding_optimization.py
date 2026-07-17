@@ -3,16 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import json
+import tempfile
+import time
 import unittest
+import urllib.error
 from unittest.mock import Mock, patch
 
+from nyxgpt.cache import DiskCache, NoOpCache
+from nyxgpt.rag import embeddings as embeddings_module
 from nyxgpt.rag.embeddings import (
+    EmbeddingConfig,
+    EmbeddingError,
     GPUInfo,
     _detect_gpu,
     _embed_batch_async,
     _embed_batch_sync,
     _estimate_memory_usage,
+    _get_embedding_cache,
     _get_optimal_batch_size,
+    _post_json,
+    embed_text,
     embed_texts,
 )
 
@@ -391,6 +403,275 @@ class TestEmbedTextsOptimization(unittest.TestCase):
         # Should use optimal batch size
         self.assertEqual(len(result), 4)
         self.assertEqual(metrics.batch_size, 4)
+
+
+class TestEmbeddingCacheBackendSelection(unittest.TestCase):
+    """Test _get_embedding_cache backend selection branches."""
+
+    def setUp(self):
+        embeddings_module._embedding_cache = None
+
+    def tearDown(self):
+        embeddings_module._embedding_cache = None
+
+    @patch("nyxgpt.rag.embeddings.load_config")
+    def test_disk_backend_selected(self, mock_config):
+        from configparser import ConfigParser
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = ConfigParser()
+            cfg["cache"] = {
+                "embedding_cache_enabled": "true",
+                "embedding_cache_backend": "disk",
+                "embedding_cache_dir": tmpdir,
+            }
+            mock_config.return_value = cfg
+
+            cache = _get_embedding_cache()
+            self.assertIsInstance(cache, DiskCache)
+
+    @patch("nyxgpt.rag.embeddings.load_config")
+    def test_unknown_backend_falls_back_to_noop(self, mock_config):
+        from configparser import ConfigParser
+
+        cfg = ConfigParser()
+        cfg["cache"] = {
+            "embedding_cache_enabled": "true",
+            "embedding_cache_backend": "redis",
+        }
+        mock_config.return_value = cfg
+
+        cache = _get_embedding_cache()
+        self.assertIsInstance(cache, NoOpCache)
+
+
+class TestGPUCachedInfo(unittest.TestCase):
+    """Test that _detect_gpu returns cached info within the TTL window."""
+
+    def setUp(self):
+        embeddings_module._gpu_info = None
+        embeddings_module._gpu_info_updated = 0.0
+
+    def tearDown(self):
+        embeddings_module._gpu_info = None
+        embeddings_module._gpu_info_updated = 0.0
+
+    def test_returns_cached_gpu_info_within_ttl(self):
+        cached = GPUInfo(
+            available=True, device_count=1, memory_total=100, memory_used=10, utilization=5.0
+        )
+        embeddings_module._gpu_info = cached
+        embeddings_module._gpu_info_updated = time.time()
+
+        result = _detect_gpu()
+        self.assertIs(result, cached)
+
+
+class TestOptimalBatchSizePsutilMissing(unittest.TestCase):
+    """Test the ImportError fallback when psutil is unavailable."""
+
+    @patch("nyxgpt.rag.embeddings.load_config")
+    def test_returns_default_batch_size_when_psutil_missing(self, mock_config):
+        config = EmbeddingConfig(
+            base_url="http://localhost:11434",
+            model="test-model",
+            dimension=768,
+            timeout=120,
+            batch_size=16,
+            adaptive_batching=True,
+        )
+
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "psutil":
+                raise ImportError("no psutil")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=fake_import):
+            batch_size = _get_optimal_batch_size(100, config)
+
+        self.assertEqual(batch_size, 16)
+
+
+class TestOptimalBatchSizeGPUMediumMemory(unittest.TestCase):
+    """Test the 2-4GB free GPU memory scaling branch."""
+
+    @patch("nyxgpt.rag.embeddings._detect_gpu")
+    @patch("psutil.virtual_memory")
+    @patch("nyxgpt.rag.embeddings.load_config")
+    def test_medium_gpu_memory_scales_by_1_5x(self, mock_config, mock_memory, mock_gpu):
+        mock_memory.return_value = Mock(available=1024 * 1024 * 1024)
+        # 4000 - 1500 = 2500 MB free -> between 2048 and 4096
+        mock_gpu.return_value = GPUInfo(
+            available=True, device_count=1, memory_total=4000, memory_used=1500, utilization=10.0
+        )
+
+        config = EmbeddingConfig(
+            base_url="http://localhost:11434",
+            model="test-model",
+            dimension=768,
+            timeout=120,
+            batch_size=32,
+            adaptive_batching=True,
+            enable_gpu=True,
+        )
+
+        batch_size = _get_optimal_batch_size(100, config)
+        self.assertEqual(batch_size, 48)  # min(32 * 1.5, 64)
+
+
+class TestPostJson(unittest.TestCase):
+    """Test _post_json success and HTTP error handling."""
+
+    @patch("urllib.request.urlopen")
+    def test_post_json_success(self, mock_urlopen):
+        response_mock = Mock()
+        response_mock.read.return_value = json.dumps({"embeddings": [[0.1, 0.2]]}).encode("utf-8")
+        response_mock.__enter__ = Mock(return_value=response_mock)
+        response_mock.__exit__ = Mock(return_value=False)
+        mock_urlopen.return_value = response_mock
+
+        result = _post_json(
+            "http://localhost:11434/api/embed", {"model": "m", "input": ["a"]}, timeout=5
+        )
+        self.assertEqual(result, {"embeddings": [[0.1, 0.2]]})
+
+    @patch("urllib.request.urlopen")
+    def test_post_json_http_error(self, mock_urlopen):
+        error = urllib.error.HTTPError(
+            url="http://localhost:11434/api/embed",
+            code=500,
+            msg="Internal Error",
+            hdrs=None,
+            fp=io.BytesIO(b"server error"),
+        )
+        mock_urlopen.side_effect = error
+
+        with self.assertRaises(EmbeddingError) as ctx:
+            _post_json(
+                "http://localhost:11434/api/embed", {"model": "m", "input": ["a"]}, timeout=5
+            )
+        self.assertIn("HTTP error", str(ctx.exception))
+
+
+class TestEmbedBatchAsyncFallbackLoop(unittest.TestCase):
+    """Test _embed_batch_async creates a new loop when none is running."""
+
+    def test_creates_new_loop_when_none_running(self):
+        expected = [[0.1, 0.2, 0.3]]
+
+        async def _dummy_run_in_executor():
+            return expected
+
+        fake_loop = Mock()
+        fake_loop.run_in_executor = lambda *_a, **_k: _dummy_run_in_executor()
+
+        with (
+            patch(
+                "nyxgpt.rag.embeddings.asyncio.get_running_loop",
+                side_effect=RuntimeError("no running loop"),
+            ),
+            patch("nyxgpt.rag.embeddings.asyncio.new_event_loop", return_value=fake_loop),
+            patch("nyxgpt.rag.embeddings.asyncio.set_event_loop") as mock_set_loop,
+        ):
+            coro = _embed_batch_async(["hi"], "http://x", "model", 5, 3, Mock())
+            result = None
+            try:
+                coro.send(None)
+            except StopIteration as e:
+                result = e.value
+
+        self.assertEqual(result, expected)
+        mock_set_loop.assert_called_once_with(fake_loop)
+
+
+class TestEmbedTextsAsyncPath(unittest.TestCase):
+    """Test embed_texts async multi-batch processing."""
+
+    def setUp(self):
+        embeddings_module._embedding_cache = None
+        embeddings_module._thread_pool = None
+
+    def tearDown(self):
+        embeddings_module._cleanup_thread_pool()
+        embeddings_module._embedding_cache = None
+
+    @patch("nyxgpt.rag.embeddings._get_embedding_cache")
+    @patch("nyxgpt.rag.embeddings._embedding_cfg")
+    @patch("nyxgpt.rag.embeddings._post_json")
+    def test_embed_texts_async_multiple_batches(self, mock_post, mock_cfg, mock_cache):
+        mock_cfg.return_value = EmbeddingConfig(
+            base_url="http://localhost:11434",
+            model="test-model",
+            dimension=3,
+            timeout=5,
+            batch_size=1,
+            enable_async=True,
+            max_workers=2,
+        )
+        mock_cache_obj = Mock()
+        mock_cache_obj.get.return_value = None
+        mock_cache.return_value = mock_cache_obj
+        mock_post.return_value = {"embeddings": [[0.1, 0.2, 0.3]]}
+
+        texts = ["text1", "text2", "text3"]
+        result = embed_texts(texts)
+
+        self.assertEqual(len(result), 3)
+        for vec in result:
+            self.assertEqual(vec, [0.1, 0.2, 0.3])
+
+
+class TestEmbedTextsAsyncFallback(unittest.IsolatedAsyncioTestCase):
+    """Test embed_texts falls back to sync processing when a loop is already running."""
+
+    async def asyncSetUp(self):
+        embeddings_module._embedding_cache = None
+        embeddings_module._thread_pool = None
+
+    async def asyncTearDown(self):
+        embeddings_module._cleanup_thread_pool()
+        embeddings_module._embedding_cache = None
+
+    async def test_falls_back_to_sync_when_loop_already_running(self):
+        with (
+            patch("nyxgpt.rag.embeddings._get_embedding_cache") as mock_cache,
+            patch("nyxgpt.rag.embeddings._embedding_cfg") as mock_cfg,
+            patch("nyxgpt.rag.embeddings._post_json") as mock_post,
+        ):
+            mock_cfg.return_value = EmbeddingConfig(
+                base_url="http://localhost:11434",
+                model="test-model",
+                dimension=3,
+                timeout=5,
+                batch_size=1,
+                enable_async=True,
+                max_workers=2,
+            )
+            mock_cache_obj = Mock()
+            mock_cache_obj.get.return_value = None
+            mock_cache.return_value = mock_cache_obj
+            mock_post.return_value = {"embeddings": [[0.1, 0.2, 0.3]]}
+
+            texts = ["text1", "text2"]
+            result = embed_texts(texts)
+
+            self.assertEqual(len(result), 2)
+
+
+class TestEmbedTextTupleHandling(unittest.TestCase):
+    """Test embed_text correctly unpacks a tuple result from embed_texts."""
+
+    @patch("nyxgpt.rag.embeddings.embed_texts")
+    def test_handles_tuple_result_from_embed_texts(self, mock_embed_texts):
+        mock_embed_texts.return_value = ([[1.0, 2.0, 3.0]], Mock())
+
+        result = embed_text("hello")
+
+        self.assertEqual(result, [1.0, 2.0, 3.0])
 
 
 if __name__ == "__main__":

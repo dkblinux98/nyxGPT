@@ -351,6 +351,15 @@ def test_bm25_search_case_insensitive():
 
 
 @pytest.mark.unit
+def test_bm25_score_doc_unknown_doc_idx():
+    """_score_doc should return 0.0 for a doc_idx not present in the index."""
+    index = BM25Index()
+    index.build_index(["Python programming"])
+
+    assert index._score_doc(999, ["python"]) == 0.0
+
+
+@pytest.mark.unit
 def test_bm25_index_rebuild():
     """BM25Index should support rebuilding with new corpus."""
     index = BM25Index()
