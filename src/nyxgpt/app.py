@@ -2355,8 +2355,17 @@ def get_message_rag_chunks(
     }
 
 
-def _escape_markdown(text: str) -> str:
-    """Escape markdown special characters in text."""
+def _escape_markdown(text: Any) -> str:
+    """Escape markdown special characters in text.
+
+    Citation fields come from stored session data and may be missing
+    (`None`, if a chunk was persisted without a `doc_id`/`text`) or, for
+    malformed data, a non-string shape (e.g. a nested dict). Coerce to
+    string instead of crashing with AttributeError on `.replace()`.
+    """
+    if text is None:
+        return ""
+    result: str = text if isinstance(text, str) else str(text)
     # Escape common markdown special characters that could break formatting
     replacements = {
         "\\": "\\\\",  # Backslash must be first
@@ -2377,8 +2386,8 @@ def _escape_markdown(text: str) -> str:
         "|": "\\|",
     }
     for char, escaped in replacements.items():
-        text = text.replace(char, escaped)
-    return text
+        result = result.replace(char, escaped)
+    return result
 
 
 @api.get("/sessions/{name}/citations/export", response_model=None)
