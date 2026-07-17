@@ -241,6 +241,30 @@ Typical files include:
 - `cassandra-logfollower.out.log`
 - `cassandra-logfollower.err.log`
 
+### Structured `nyxgpt ops` activity logging
+
+Every `nyxgpt ops` command (`install`, `status`, `restart`, `logs`,
+`env-sync`, `doctor`) logs its steps and outcomes from
+`src/nyxgpt/ops.py` with structured fields (via the logging module's
+`extra={}`, rendered as JSON when `[logging] format = json` -- see
+[configuration.md](configuration.md#logging-section)), in addition to the
+`[OK]`/`[FAIL]` lines printed to the console:
+
+- **Command start** (`ops: <action> starting ...`) -- `INFO`.
+- **Per-step outcome** (`ops: <action> ok/failed: <message>`, with any
+  subprocess failure output in `extra["details"]`) -- `INFO` on success,
+  `WARNING` on failure (e.g. a missing `brew`/`docker` binary, a port
+  conflict, a failed `npm ci`).
+- **Unexpected exception during install** (`ops: install step <step>
+  raised ...`) -- `ERROR`, with a full traceback.
+- **Deployment-mode conflict** (`ops: native/Compose deployment conflict on
+  <components> ...`), logged from `detect_deployment_mode` -- `WARNING`.
+- **Command summary** (`ops: <action> succeeded/failed ...`) -- `INFO`.
+
+`nyxgpt ops logs` logs the fetch outcome (service, tail, ok/fail) but not
+the tailed log body itself, to avoid duplicating the target service's own
+logs into `~/.nyxGPT/logs/nyxgpt.log`.
+
 ---
 
 ## Startup Behavior
