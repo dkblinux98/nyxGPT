@@ -1,0 +1,215 @@
+"""Coverage completeness tests for ollama_client.py.
+
+Targets the branches not already exercised by test_model_runtime_errors.py
+(error classification) and test_ollama_reconnect.py (retry/backoff): the
+success paths of post_json/post_json_lines/ollama_chat/ollama_chat_stream,
+delete_json, blank-line skipping in the streaming reader, non-5xx HTTP
+errors while streaming, and the retry-loop's final fallback branch.
+"""
+
+from __future__ import annotations
+
+import json
+import urllib.error
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from nyxgpt.ollama_client import (
+    _retry_with_backoff,
+    delete_json,
+    ollama_chat,
+    ollama_chat_stream,
+    ollama_chat_stream_tokens,
+    post_json,
+    post_json_lines,
+)
+
+pytestmark = pytest.mark.unit
+
+
+def _mock_response(body: bytes) -> MagicMock:
+    resp = MagicMock()
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=None)
+    resp.read.return_value = body
+    return resp
+
+
+def _http_error(code: int, body: bytes = b'{"error": "boom"}') -> urllib.error.HTTPError:
+    fp = MagicMock()
+    fp.read.return_value = body
+    return urllib.error.HTTPError(url="http://x/api/chat", code=code, msg="err", hdrs={}, fp=fp)
+
+
+def _streaming_response(lines: list[bytes]) -> MagicMock:
+    resp = MagicMock()
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=None)
+    resp.close = MagicMock()
+    resp.__iter__ = MagicMock(return_value=iter(lines))
+    return resp
+
+
+# ============================================================================
+# post_json: success path
+# ============================================================================
+
+
+def test_post_json_success_returns_parsed_body() -> None:
+    with patch("urllib.request.urlopen", return_value=_mock_response(b'{"message": "ok"}')):
+        result = post_json("http://x/api/chat", {"model": "m"})
+    assert result == {"message": "ok"}
+
+
+def test_post_json_success_empty_body_returns_empty_dict() -> None:
+    with patch("urllib.request.urlopen", return_value=_mock_response(b"")):
+        result = post_json("http://x/api/chat", {"model": "m"})
+    assert result == {}
+
+
+# ============================================================================
+# post_json_lines: non-5xx HTTP error and non-timeout URLError after retries
+# ============================================================================
+
+
+def test_post_json_lines_4xx_raises_plain_runtime_error() -> None:
+    with (
+        patch("urllib.request.urlopen", side_effect=_http_error(400, b'{"error": "bad"}')),
+        pytest.raises(RuntimeError) as excinfo,
+    ):
+        list(post_json_lines("http://x/api/chat", {"model": "m"}, max_retries=0))
+    assert "Ollama HTTP 400" in str(excinfo.value)
+
+
+def test_post_json_lines_connection_refused_after_retries_raises_plain_runtime_error() -> None:
+    conn_err = urllib.error.URLError(ConnectionRefusedError("refused"))
+    with (
+        patch("urllib.request.urlopen", side_effect=conn_err),
+        patch("time.sleep"),
+        pytest.raises(RuntimeError) as excinfo,
+    ):
+        list(post_json_lines("http://x/api/chat", {"model": "m"}, max_retries=1))
+    assert "Failed to reach Ollama" in str(excinfo.value)
+
+
+def test_post_json_lines_skips_blank_lines_in_stream() -> None:
+    resp = _streaming_response(
+        [b"\n", b"   \n", b'{"message": {"content": "hi"}, "done": false}\n']
+    )
+    with patch("urllib.request.urlopen", return_value=resp):
+        results = list(post_json_lines("http://x/api/chat", {"model": "m"}, max_retries=0))
+    assert results == [{"message": {"content": "hi"}, "done": False}]
+
+
+# ============================================================================
+# ollama_chat / ollama_chat_stream: success paths and unexpected response
+# ============================================================================
+
+
+def test_ollama_chat_returns_content() -> None:
+    resp = _mock_response(b'{"message": {"content": "hello there"}}')
+    with patch("urllib.request.urlopen", return_value=resp):
+        reply = ollama_chat("http://x", "m", [{"role": "user", "content": "hi"}])
+    assert reply == "hello there"
+
+
+def test_ollama_chat_includes_output_format_in_payload() -> None:
+    resp = _mock_response(b'{"message": {"content": "ok"}}')
+    schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+
+    with patch("urllib.request.urlopen", return_value=resp) as mock_urlopen:
+        ollama_chat("http://x", "m", [{"role": "user", "content": "hi"}], output_format=schema)
+
+    sent_request = mock_urlopen.call_args[0][0]
+    sent_payload = json.loads(sent_request.data.decode("utf-8"))
+    assert sent_payload["format"] == schema
+
+
+def test_ollama_chat_unexpected_response_raises() -> None:
+    resp = _mock_response(b'{"message": {"content": 123}}')
+    with (
+        patch("urllib.request.urlopen", return_value=resp),
+        pytest.raises(RuntimeError, match="Unexpected Ollama response"),
+    ):
+        ollama_chat("http://x", "m", [{"role": "user", "content": "hi"}])
+
+
+def test_ollama_chat_stream_joins_token_chunks() -> None:
+    resp = _streaming_response(
+        [
+            b'{"message": {"content": "hel"}, "done": false}\n',
+            b'{"message": {"content": "lo"}, "done": true}\n',
+        ]
+    )
+    with patch("urllib.request.urlopen", return_value=resp):
+        reply = ollama_chat_stream("http://x", "m", [{"role": "user", "content": "hi"}])
+    assert reply == "hello"
+
+
+# ============================================================================
+# delete_json
+# ============================================================================
+
+
+def test_ollama_chat_stream_tokens_includes_output_format_in_payload() -> None:
+    schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
+    resp = _streaming_response([b'{"message": {"content": "hi"}, "done": true}\n'])
+
+    with patch("urllib.request.urlopen", return_value=resp) as mock_urlopen:
+        list(
+            ollama_chat_stream_tokens(
+                "http://x", "m", [{"role": "user", "content": "hi"}], output_format=schema
+            )
+        )
+
+    sent_request = mock_urlopen.call_args[0][0]
+    sent_payload = json.loads(sent_request.data.decode("utf-8"))
+    assert sent_payload["format"] == schema
+
+
+def test_delete_json_success_returns_parsed_body() -> None:
+    with patch("urllib.request.urlopen", return_value=_mock_response(b'{"deleted": true}')):
+        result = delete_json("http://x/api/delete", {"model": "m"})
+    assert result == {"deleted": True}
+
+
+def test_delete_json_success_empty_body_returns_empty_dict() -> None:
+    with patch("urllib.request.urlopen", return_value=_mock_response(b"")):
+        result = delete_json("http://x/api/delete", {"model": "m"})
+    assert result == {}
+
+
+def test_delete_json_http_error_raises_runtime_error() -> None:
+    with (
+        patch("urllib.request.urlopen", side_effect=_http_error(404, b'{"error": "missing"}')),
+        pytest.raises(RuntimeError) as excinfo,
+    ):
+        delete_json("http://x/api/delete", {"model": "m"})
+    assert "Ollama HTTP 404" in str(excinfo.value)
+
+
+def test_delete_json_connection_error_raises_runtime_error() -> None:
+    conn_err = urllib.error.URLError(ConnectionRefusedError("refused"))
+    with (
+        patch("urllib.request.urlopen", side_effect=conn_err),
+        pytest.raises(RuntimeError) as excinfo,
+    ):
+        delete_json("http://x/api/delete", {"model": "m"})
+    assert "Failed to reach Ollama" in str(excinfo.value)
+
+
+# ============================================================================
+# _retry_with_backoff: unreachable-loop fallback (negative max_retries)
+# ============================================================================
+
+
+def test_retry_with_backoff_negative_max_retries_raises_fallback_error() -> None:
+    """max_retries < 0 means range(max_retries + 1) never executes, so the
+    loop falls through to the final defensive RuntimeError."""
+    mock_func = MagicMock(return_value="unused")
+
+    with pytest.raises(RuntimeError, match="Retry loop ended unexpectedly"):
+        _retry_with_backoff(mock_func, max_retries=-1)
+
+    mock_func.assert_not_called()
