@@ -25,6 +25,7 @@ describe('/api/sessions/[name]/rag/[action] POST route', () => {
   });
 
   it('returns 400 for an invalid action without calling the backend', async () => {
+    global.fetch = vi.fn();
     const { POST } = await import(
       '../../../../../src/app/api/sessions/[name]/rag/[action]/route'
     );

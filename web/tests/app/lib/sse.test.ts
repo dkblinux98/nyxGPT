@@ -69,6 +69,36 @@ describe('extractSseEvents', () => {
     const { events } = extractSseEvents('data: {"content":"x"}\n\n');
     expect(events).toEqual([{ event: 'message', data: '{"content":"x"}' }]);
   });
+
+  it('skips a whitespace-only frame between two real events', () => {
+    const { events } = extractSseEvents(
+      'data: {"content":"a"}\n\n   \n\ndata: {"content":"b"}\n\n'
+    );
+    expect(events).toHaveLength(2);
+    expect(events.map((e) => e.data)).toEqual([
+      '{"content":"a"}',
+      '{"content":"b"}',
+    ]);
+  });
+
+  it('ignores id: and retry: fields, which are not yet supported', () => {
+    const { events } = extractSseEvents('id: 5\nretry: 1000\ndata: hi\n\n');
+    expect(events).toEqual([{ event: 'message', data: 'hi' }]);
+  });
+
+  it('strips a stray trailing CR that is not part of the frame-ending CRLFCRLF', () => {
+    // "data: hi" + a bare CR, then a genuine CRLFCRLF frame terminator. The
+    // frame-delimiter split only consumes the CR immediately adjacent to
+    // the terminating LFs, so this one lands mid-line and must still be
+    // stripped by the per-line CR handling.
+    const { events } = extractSseEvents('data: hi\r\r\n\r\n');
+    expect(events).toEqual([{ event: 'message', data: 'hi' }]);
+  });
+
+  it('does not strip a non-space character following the data: field name', () => {
+    const { events } = extractSseEvents('data:{"content":"nospace"}\n\n');
+    expect(events).toEqual([{ event: 'message', data: '{"content":"nospace"}' }]);
+  });
 });
 
 describe('safeJsonParse', () => {

@@ -71,4 +71,12 @@ describe('isQueuedForBackgroundSync', () => {
     expect(isQueuedForBackgroundSync('some string')).toBe(false);
     expect(isQueuedForBackgroundSync(undefined)).toBe(false);
   });
+
+  it('returns false when navigator is unavailable (non-browser evaluation context)', () => {
+    vi.stubGlobal('navigator', undefined);
+
+    expect(isQueuedForBackgroundSync(new TypeError('Failed to fetch'))).toBe(false);
+
+    vi.unstubAllGlobals();
+  });
 });

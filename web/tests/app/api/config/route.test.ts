@@ -89,7 +89,8 @@ describe('/api/config POST route', () => {
     const [calledUrl, calledOptions] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(calledUrl).toContain('/api/v1/config');
     expect(calledOptions.method).toBe('POST');
-    expect(calledOptions.headers['Content-Type']).toBe('application/json');
+    const headers = calledOptions.headers as Headers;
+    expect(headers.get('Content-Type')).toBe('application/json');
     expect(JSON.parse(calledOptions.body)).toEqual({ theme: 'dark' });
   });
 

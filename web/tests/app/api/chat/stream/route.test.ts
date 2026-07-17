@@ -89,6 +89,7 @@ describe('/api/chat/stream POST route', () => {
   });
 
   it('returns 400 with "Invalid JSON" when the request body cannot be parsed', async () => {
+    global.fetch = vi.fn();
     const { POST } = await import(ROUTE_PATH);
     const req = makeRequest('{not valid json');
 
@@ -98,6 +99,17 @@ describe('/api/chat/stream POST route', () => {
     expect(await response.json()).toEqual({ error: 'Invalid JSON' });
     // Must fail before ever attempting to reach the backend.
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('handles a request body with no prompt field (logs prompt_len as empty)', async () => {
+    global.fetch = vi.fn().mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    const { POST } = await import(ROUTE_PATH);
+    const req = makeRequest(JSON.stringify({ session: 's1' }));
+
+    const response = (await POST(req as never)) as Response;
+
+    expect(response.status).toBe(502);
   });
 
   it('returns 502 "Upstream unreachable" when apiFetch throws', async () => {
@@ -261,6 +273,13 @@ describe('/api/chat/stream POST route', () => {
     const response = (await POST(req as never)) as Response;
     const reader = response.body!.getReader();
 
+    // pull() best-effort-enqueues a "[stream error]" marker chunk before
+    // erroring the controller, so the first read() surfaces that marker...
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+    expect(new TextDecoder().decode(first.value)).toBe('\n[stream error]\n');
+
+    // ...and only the next read() observes the controller error.
     await expect(reader.read()).rejects.toThrow('upstream read boom');
   });
 
@@ -327,6 +346,32 @@ describe('/api/chat/stream POST route', () => {
     expect(headers.get('X-Client-Supports-Streaming')).toBe('true');
     expect(headers.get('X-Client-Version')).toBe('web-ui/1.0.0');
     expect(headers.get('X-Client-Max-Event-Size')).toBe('0');
+  });
+
+  it('falls back to Date.now() when performance.now is unavailable', async () => {
+    const mockReader = makeReaderFromChunks([]);
+    global.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      body: { getReader: () => mockReader },
+      text: vi.fn(),
+      headers: new Headers(),
+    });
+    const originalNow = performance.now;
+    // Shadow the prototype's now() with a non-function own property to
+    // simulate a runtime where performance exists but lacks now().
+    Object.defineProperty(performance, 'now', { value: undefined, configurable: true });
+
+    try {
+      const { POST } = await import(ROUTE_PATH);
+      const req = makeRequest(JSON.stringify({ prompt: 'hi' }));
+      const response = (await POST(req as never)) as Response;
+
+      expect(response.status).toBe(200);
+      await drainStream(response);
+    } finally {
+      Object.defineProperty(performance, 'now', { value: originalNow, configurable: true });
+    }
   });
 
   it('uses NYXGPT_API_BASE_URL when set to build the upstream URL', async () => {

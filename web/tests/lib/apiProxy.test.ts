@@ -1,5 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+describe('apiUrl', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    delete process.env.NYXGPT_API_BASE_URL;
+  });
+
+  it('prepends a leading slash to a path that is missing one', async () => {
+    const { apiUrl } = await import('../../src/lib/apiProxy');
+    expect(apiUrl('api/v1/models')).toBe('http://127.0.0.1:8000/api/v1/models');
+  });
+});
+
 describe('apiFetch', () => {
   const originalBase = process.env.NYXGPT_API_BASE_URL;
   const originalKey = process.env.NYXGPT_AUTH_API_KEY;
