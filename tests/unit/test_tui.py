@@ -5,8 +5,10 @@ import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
+import httpx
 import pytest
-from textual.widgets import Input
+from textual.app import App
+from textual.widgets import Button, Checkbox, Input, ListView
 
 from nyxgpt.tui import (  # type: ignore[import-untyped]
     ChatOutput,
@@ -14,6 +16,7 @@ from nyxgpt.tui import (  # type: ignore[import-untyped]
     DeleteConfirmationScreen,
     HelpOverlayScreen,
     ManageDocumentsScreen,
+    ModelsManagerScreen,
     NyxGPTTUI,
     SearchResultsScreen,
     SessionMetadataPreview,
@@ -159,6 +162,23 @@ def test_session_status_bar_update_info_rag_disabled() -> None:
     # Verify RAG status shows OFF
     call_arg = mock_update.call_args[0][0]
     assert "RAG:OFF" in call_arg
+
+
+def test_session_status_bar_update_info_with_attached_docs() -> None:
+    """Test that update_info() shows the FI: doc count indicator when docs are attached."""
+    widget = SessionStatusBar()
+
+    with patch.object(widget, "update") as mock_update:
+        widget.update_info(
+            session_name="test-session",
+            message_count=1,
+            model="llama3.1:8b",
+            rag_enabled=True,
+            attached_doc_count=3,
+        )
+
+    call_arg = mock_update.call_args[0][0]
+    assert "FI:3" in call_arg
 
 
 def test_session_status_bar_refresh_display() -> None:
@@ -2203,8 +2223,10 @@ async def test_handle_command_clear(tmp_path: Path) -> None:
     with patch("nyxgpt.tui.load_config", return_value=cfg):
         app = NyxGPTTUI(session="test-session")
 
-    # Mock action_clear_output
-    with patch.object(app, "action_clear_output", new=AsyncMock()) as mock_clear:
+    # Mock action_clear_output (it's a sync method, called without await in
+    # _handle_command, so it must be mocked with MagicMock, not AsyncMock, to
+    # avoid a "coroutine was never awaited" RuntimeWarning).
+    with patch.object(app, "action_clear_output", new=MagicMock()) as mock_clear:
         await app._handle_command("clear")
 
     # Verify clear action was called
@@ -2907,3 +2929,2089 @@ async def test_action_manage_documents_opens_screen(tmp_path: Path) -> None:
         call_args = app.push_screen_wait.call_args[0][0]
         assert isinstance(call_args, ManageDocumentsScreen)
         assert call_args.session == "test-session"
+
+
+# ============================================================================
+# SessionPickerScreen compose() / on_mount() / update_session_list() Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_session_picker_compose_and_on_mount(tmp_path: Path) -> None:
+    """Test that compose() builds the picker UI and on_mount() loads sessions."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["nyxgpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    mock_sessions = [
+        {
+            "name": "session1",
+            "messages": 2,
+            "modified": "2024-01-01",
+            "meta": {"title": "Session One", "pinned": True},
+        },
+    ]
+
+    with (
+        patch("nyxgpt.tui.load_config", return_value=cfg),
+        patch("nyxgpt.tui.list_sessions", return_value=mock_sessions),
+    ):
+        screen = SessionPickerScreen(str(config_file))
+
+        app = App()
+        async with app.run_test() as pilot:
+            await app.push_screen(screen)
+            await pilot.pause()
+
+            # on_mount() -> load_sessions() -> update_session_list() populated the list
+            assert screen.all_sessions == mock_sessions
+            assert screen.filtered_sessions == mock_sessions
+
+            list_view = screen.query_one("#session-list", ListView)
+            assert len(list_view.children) == 1
+            assert list_view.children[0].name == "session1"
+
+            # Preview should have been updated for the first session (lines 191-193)
+            preview = screen.query_one("#session-preview", SessionMetadataPreview)
+            assert preview is not None
+
+
+@pytest.mark.asyncio
+async def test_session_picker_update_session_list_multiple(tmp_path: Path) -> None:
+    """Test update_session_list() renders multiple sessions, pinned and unpinned."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["nyxgpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with (
+        patch("nyxgpt.tui.load_config", return_value=cfg),
+        patch("nyxgpt.tui.list_sessions", return_value=[]),
+    ):
+        screen = SessionPickerScreen(str(config_file))
+
+        app = App()
+        async with app.run_test() as pilot:
+            await app.push_screen(screen)
+            await pilot.pause()
+
+            # Set sessions after on_mount's initial (empty) load, then re-populate
+            screen.filtered_sessions = [
+                {"name": "a", "messages": 1, "meta": {"title": "A", "pinned": False}},
+                {"name": "b", "messages": 4, "meta": {"title": "B", "pinned": True}},
+            ]
+            await screen.update_session_list()
+            await pilot.pause()
+
+            list_view = screen.query_one("#session-list", ListView)
+            assert len(list_view.children) == 2
+            names = [child.name for child in list_view.children]
+            assert names == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_session_picker_on_input_changed_wrong_id(tmp_path: Path) -> None:
+    """Test on_input_changed() ignores events from inputs other than #search."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        screen = SessionPickerScreen(str(config_file))
+
+    original_filtered = screen.filtered_sessions
+
+    with patch.object(screen, "update_session_list", new=AsyncMock()) as mock_update:
+        mock_input = MagicMock(spec=Input)
+        mock_input.id = "not-search"
+        event = MagicMock()
+        event.input = mock_input
+        event.value = "python"
+
+        await screen.on_input_changed(event)
+
+    # Should return early without filtering or updating the list
+    mock_update.assert_not_called()
+    assert screen.filtered_sessions is original_filtered
+
+
+@pytest.mark.asyncio
+async def test_session_picker_on_list_view_highlighted_item_none(tmp_path: Path) -> None:
+    """Test on_list_view_highlighted() returns early when event.item is None."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        screen = SessionPickerScreen(str(config_file))
+
+    with patch.object(screen, "query_one") as mock_query_one:
+        event = MagicMock()
+        event.item = None
+
+        await screen.on_list_view_highlighted(event)
+
+    mock_query_one.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_session_picker_on_list_view_highlighted_item_found(tmp_path: Path) -> None:
+    """Test on_list_view_highlighted() updates the preview for a matching session."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        screen = SessionPickerScreen(str(config_file))
+
+    screen.filtered_sessions = [
+        {"name": "session1", "messages": 1, "meta": {"title": "Session One"}},
+    ]
+
+    mock_preview = MagicMock(spec=SessionMetadataPreview)
+    with patch.object(screen, "query_one", return_value=mock_preview):
+        event = MagicMock()
+        event.item = MagicMock()
+        event.item.name = "session1"
+
+        await screen.on_list_view_highlighted(event)
+
+    mock_preview.update_session.assert_called_once_with(screen.filtered_sessions[0])
+
+
+# ============================================================================
+# ModelsManagerScreen compose() / on_mount() / refresh_models() Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_models_manager_compose_and_on_mount() -> None:
+    """Test that compose() builds the UI and on_mount() triggers refresh_models()."""
+    screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
+
+    mock_list_response = MagicMock()
+    mock_list_response.raise_for_status = MagicMock()
+    mock_list_response.json.return_value = {"models": ["llama3"]}
+
+    mock_info_response = MagicMock()
+    mock_info_response.raise_for_status = MagicMock()
+    mock_info_response.json.return_value = {"info": {"size": 500, "modified_at": "2024-01-01"}}
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(side_effect=[mock_list_response, mock_info_response])
+
+    app = App()
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        async with app.run_test() as pilot:
+            await app.push_screen(screen)
+            await pilot.pause()
+
+            assert screen.models == [{"name": "llama3", "size": 500, "modified_at": "2024-01-01"}]
+
+            list_view = screen.query_one("#models-list", ListView)
+            assert len(list_view.children) == 1
+
+            status_label = screen.query_one("#status-message")
+            assert "Loaded 1 models" in str(status_label.content)
+
+
+@pytest.mark.asyncio
+async def test_models_manager_refresh_models_info_fetch_falls_back() -> None:
+    """Test refresh_models() falls back to name-only entry when per-model info fetch fails."""
+    screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
+    screen.query_one = MagicMock(return_value=MagicMock())
+
+    with (
+        patch.object(screen, "update_status", new=AsyncMock()),
+        patch.object(screen, "update_models_list", new=AsyncMock()),
+    ):
+        mock_list_response = MagicMock()
+        mock_list_response.raise_for_status = MagicMock()
+        mock_list_response.json.return_value = {"models": ["broken-model"]}
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.get = AsyncMock(
+            side_effect=[mock_list_response, RuntimeError("info endpoint down")]
+        )
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            await screen.refresh_models()
+
+    assert screen.models == [{"name": "broken-model", "size": 0, "modified_at": ""}]
+
+
+@pytest.mark.asyncio
+async def test_models_manager_update_models_list_empty() -> None:
+    """Test update_models_list() shows a placeholder when there are no models."""
+    screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
+    screen.models = []
+
+    app = App()
+    async with app.run_test() as pilot:
+        await app.push_screen(screen)
+        await pilot.pause()
+
+        await screen.update_models_list()
+        await pilot.pause()
+
+        list_view = screen.query_one("#models-list", ListView)
+        assert len(list_view.children) == 1
+        label = list_view.children[0].query_one("Label")
+        assert "No models found" in str(label.content)
+
+
+@pytest.mark.asyncio
+async def test_models_manager_update_models_list_size_formatting() -> None:
+    """Test update_models_list() formats known sizes as GB and unknown sizes as 'Unknown'."""
+    screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
+    screen.models = [
+        {"name": "big-model", "size": 2 * 1024**3, "modified_at": ""},
+        {"name": "zero-size-model", "size": 0, "modified_at": ""},
+    ]
+
+    app = App()
+    async with app.run_test() as pilot:
+        await app.push_screen(screen)
+        await pilot.pause()
+
+        await screen.update_models_list()
+        await pilot.pause()
+
+        list_view = screen.query_one("#models-list", ListView)
+        assert len(list_view.children) == 2
+        labels = [str(item.query_one("Label").content) for item in list_view.children]
+        assert "2.0 GB" in labels[0]
+        assert "Unknown" in labels[1]
+
+
+@pytest.mark.asyncio
+async def test_models_manager_update_status_success() -> None:
+    """Test update_status() updates the status label when the widget is available."""
+    screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
+
+    app = App()
+    async with app.run_test() as pilot:
+        await app.push_screen(screen)
+        await pilot.pause()
+
+        await screen.update_status("Custom status")
+        await pilot.pause()
+
+        status_label = screen.query_one("#status-message")
+        assert "Custom status" in str(status_label.content)
+
+
+@pytest.mark.asyncio
+async def test_models_manager_update_status_swallows_query_exception() -> None:
+    """Test update_status() swallows exceptions when the status widget can't be found."""
+    screen = ModelsManagerScreen(api_base_url="http://127.0.0.1:8000")
+    screen.query_one = MagicMock(side_effect=RuntimeError("not mounted"))
+
+    # Should not raise
+    await screen.update_status("irrelevant")
+
+
+# ============================================================================
+# SearchResultsScreen compose() / button / input / highlight Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_compose_and_on_mount() -> None:
+    """Test compose() builds the search dialog and on_mount() focuses the input."""
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+
+    app = App()
+    async with app.run_test() as pilot:
+        await app.push_screen(screen)
+        await pilot.pause()
+
+        assert screen.query_one("#search-input", Input) is screen.search_input
+        assert screen.query_one("#results-list", ListView) is screen.results_list
+        assert screen.search_input.has_focus
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_on_button_pressed_search_btn_with_query() -> None:
+    """Test on_button_pressed() triggers perform_search() when the query is non-empty."""
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen.search_input = MagicMock(spec=Input)
+    screen.search_input.value = "hello"
+    screen.case_checkbox = MagicMock(spec=Checkbox)
+    screen.case_checkbox.value = True
+
+    with patch.object(screen, "perform_search", new=AsyncMock()) as mock_search:
+        event = MagicMock()
+        event.button.id = "search-btn"
+        await screen.on_button_pressed(event)
+
+    mock_search.assert_called_once_with("hello")
+    assert screen.case_sensitive is True
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_on_button_pressed_search_btn_empty_query() -> None:
+    """Test on_button_pressed() does not search when the query is empty."""
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen.search_input = MagicMock(spec=Input)
+    screen.search_input.value = "   "
+    screen.case_checkbox = MagicMock(spec=Checkbox)
+
+    with patch.object(screen, "perform_search", new=AsyncMock()) as mock_search:
+        event = MagicMock()
+        event.button.id = "search-btn"
+        await screen.on_button_pressed(event)
+
+    mock_search.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_on_button_pressed_other_button() -> None:
+    """Test on_button_pressed() ignores button presses that aren't search-btn."""
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+
+    with patch.object(screen, "perform_search", new=AsyncMock()) as mock_search:
+        event = MagicMock()
+        event.button.id = "other-btn"
+        await screen.on_button_pressed(event)
+
+    mock_search.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_on_input_submitted_enter_key() -> None:
+    """Test on_input_submitted() triggers perform_search() on Enter with a query."""
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen.case_checkbox = MagicMock(spec=Checkbox)
+    screen.case_checkbox.value = False
+
+    with patch.object(screen, "perform_search", new=AsyncMock()) as mock_search:
+        mock_input = MagicMock(spec=Input)
+        mock_input.id = "search-input"
+        event = MagicMock()
+        event.input = mock_input
+        event.value = "  query text  "
+        await screen.on_input_submitted(event)
+
+    mock_search.assert_called_once_with("query text")
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_on_input_submitted_wrong_id() -> None:
+    """Test on_input_submitted() ignores submissions from other inputs."""
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+
+    with patch.object(screen, "perform_search", new=AsyncMock()) as mock_search:
+        mock_input = MagicMock(spec=Input)
+        mock_input.id = "other-input"
+        event = MagicMock()
+        event.input = mock_input
+        event.value = "query"
+        await screen.on_input_submitted(event)
+
+    mock_search.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_on_input_submitted_empty_query() -> None:
+    """Test on_input_submitted() does not search when the submitted value is blank."""
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+
+    with patch.object(screen, "perform_search", new=AsyncMock()) as mock_search:
+        mock_input = MagicMock(spec=Input)
+        mock_input.id = "search-input"
+        event = MagicMock()
+        event.input = mock_input
+        event.value = "   "
+        await screen.on_input_submitted(event)
+
+    mock_search.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_on_list_view_highlighted_item_none() -> None:
+    """Test on_list_view_highlighted() returns early when there's no highlighted item."""
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen.results = [{"content_preview": "preview"}]
+    screen.preview = MagicMock()
+
+    event = MagicMock()
+    event.item = None
+    await screen.on_list_view_highlighted(event)
+
+    screen.preview.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_on_list_view_highlighted_no_results() -> None:
+    """Test on_list_view_highlighted() returns early when there are no results."""
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen.results = []
+    screen.preview = MagicMock()
+
+    event = MagicMock()
+    event.item = MagicMock()
+    await screen.on_list_view_highlighted(event)
+
+    screen.preview.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_on_list_view_highlighted_updates_preview() -> None:
+    """Test on_list_view_highlighted() updates the preview for the highlighted index."""
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen.results = [{"content_preview": "first"}, {"content_preview": "second"}]
+    screen.preview = MagicMock()
+    screen.results_list = MagicMock()
+    screen.results_list.index = 1
+
+    event = MagicMock()
+    event.item = MagicMock()
+    await screen.on_list_view_highlighted(event)
+
+    screen.preview.update.assert_called_once_with("second")
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_on_list_view_highlighted_index_error() -> None:
+    """Test on_list_view_highlighted() swallows IndexError/AttributeError from a stale index."""
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen.results = [{"content_preview": "only"}]
+    screen.preview = MagicMock()
+    screen.results_list = MagicMock()
+    screen.results_list.index = 99  # Out of range -> IndexError
+
+    event = MagicMock()
+    event.item = MagicMock()
+    # Should not raise
+    await screen.on_list_view_highlighted(event)
+
+    screen.preview.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_action_select_result_valid() -> None:
+    """Test action_select_result() dismisses with the selected result."""
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen.results = [{"session_name": "s1", "message_index": 0}]
+    screen.results_list = MagicMock()
+    screen.results_list.index = 0
+
+    with patch.object(screen, "dismiss") as mock_dismiss:
+        await screen.action_select_result()
+
+    mock_dismiss.assert_called_once_with(screen.results[0])
+
+
+@pytest.mark.asyncio
+async def test_search_results_screen_action_select_result_none_selected() -> None:
+    """Test action_select_result() notifies when nothing is selected."""
+    screen = SearchResultsScreen(api_base_url="http://127.0.0.1:8000", current_session="test")
+    screen.results = [{"session_name": "s1", "message_index": 0}]
+    screen.results_list = MagicMock()
+    screen.results_list.index = None
+
+    with (
+        patch.object(screen, "dismiss") as mock_dismiss,
+        patch.object(screen, "notify") as mock_notify,
+    ):
+        await screen.action_select_result()
+
+    mock_dismiss.assert_not_called()
+    mock_notify.assert_called_once()
+    assert mock_notify.call_args[1]["severity"] == "warning"
+
+
+# ============================================================================
+# HelpOverlayScreen compose() Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_help_overlay_screen_compose() -> None:
+    """Test that HelpOverlayScreen.compose() renders the shortcut list."""
+    screen = HelpOverlayScreen()
+
+    app = App()
+    async with app.run_test() as pilot:
+        await app.push_screen(screen)
+        await pilot.pause()
+
+        dialog = screen.query_one("#help-dialog")
+        assert dialog is not None
+        # Spot-check a couple of the shortcut labels were rendered
+        labels = [str(lbl.content) for lbl in screen.query("Label")]
+        assert any("Command palette" in label for label in labels)
+        assert any("Session picker" in label for label in labels)
+
+
+# ============================================================================
+# DeleteConfirmationScreen compose() / on_button_pressed() Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_delete_confirmation_screen_compose() -> None:
+    """Test that DeleteConfirmationScreen.compose() renders the confirmation dialog."""
+    screen = DeleteConfirmationScreen("my-session")
+
+    app = App()
+    async with app.run_test() as pilot:
+        await app.push_screen(screen)
+        await pilot.pause()
+
+        dialog = screen.query_one("#delete-confirm-dialog")
+        assert dialog is not None
+        confirm_btn = screen.query_one("#confirm-btn", Button)
+        cancel_btn = screen.query_one("#cancel-btn", Button)
+        assert confirm_btn is not None
+        assert cancel_btn is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_confirmation_screen_on_button_pressed_confirm() -> None:
+    """Test on_button_pressed() dismisses with True when confirm-btn is pressed."""
+    screen = DeleteConfirmationScreen("my-session")
+
+    with patch.object(screen, "dismiss") as mock_dismiss:
+        event = MagicMock()
+        event.button.id = "confirm-btn"
+        await screen.on_button_pressed(event)
+
+    mock_dismiss.assert_called_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_delete_confirmation_screen_on_button_pressed_cancel() -> None:
+    """Test on_button_pressed() dismisses with False when cancel-btn is pressed."""
+    screen = DeleteConfirmationScreen("my-session")
+
+    with patch.object(screen, "dismiss") as mock_dismiss:
+        event = MagicMock()
+        event.button.id = "cancel-btn"
+        await screen.on_button_pressed(event)
+
+    mock_dismiss.assert_called_once_with(False)
+
+
+# ============================================================================
+# ManageDocumentsScreen compose() / on_mount() / _populate_list() /
+# on_button_pressed() Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_manage_documents_screen_compose_and_on_mount() -> None:
+    """Test compose() builds the UI and on_mount() focuses input & loads the list."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="s1")
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = {"attached_doc_ids": ["doc-1"]}
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(return_value=mock_response)
+
+    app = App()
+    with patch("nyxgpt.tui.httpx.AsyncClient", return_value=mock_client):
+        async with app.run_test() as pilot:
+            await app.push_screen(screen)
+            await pilot.pause()
+
+            assert screen.attach_input.has_focus
+            assert screen._attached == ["doc-1"]
+            docs_list = screen.query_one("#docs-listview", ListView)
+            assert len(docs_list.children) == 1
+
+
+@pytest.mark.asyncio
+async def test_manage_documents_screen_populate_list_empty() -> None:
+    """Test _populate_list() shows a placeholder when no documents are attached."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="s1")
+    screen._attached = []
+
+    app = App()
+    with patch(
+        "nyxgpt.tui.httpx.AsyncClient",
+        side_effect=RuntimeError("no network in this test"),
+    ):
+        async with app.run_test() as pilot:
+            await app.push_screen(screen)
+            await pilot.pause()
+
+            await screen._populate_list()
+            await pilot.pause()
+
+            docs_list = screen.query_one("#docs-listview", ListView)
+            assert len(docs_list.children) == 1
+            label = docs_list.children[0].query_one("Label")
+            assert "no documents attached" in str(label.content)
+
+
+@pytest.mark.asyncio
+async def test_manage_documents_screen_populate_list_non_empty() -> None:
+    """Test _populate_list() renders one ListItem per attached document id."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="s1")
+
+    app = App()
+    with patch(
+        "nyxgpt.tui.httpx.AsyncClient",
+        side_effect=RuntimeError("no network in this test"),
+    ):
+        async with app.run_test() as pilot:
+            await app.push_screen(screen)
+            await pilot.pause()
+
+            # on_mount()'s _refresh_list() failed and left self._attached == [];
+            # set it now (after mount) to exercise the non-empty rendering path.
+            screen._attached = ["doc-a", "doc-b"]
+            await screen._populate_list()
+            await pilot.pause()
+
+            docs_list = screen.query_one("#docs-listview", ListView)
+            assert len(docs_list.children) == 2
+
+
+@pytest.mark.asyncio
+async def test_manage_documents_screen_attach_empty_doc_id_returns_early() -> None:
+    """Test on_button_pressed() for attach-btn returns early when doc_id is blank."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="s1")
+    screen.attach_input = MagicMock(spec=Input)
+    screen.attach_input.value = "   "
+
+    with patch("nyxgpt.tui.httpx.AsyncClient") as mock_async_client:
+        event = MagicMock()
+        event.button.id = "attach-btn"
+        await screen.on_button_pressed(event)
+
+    mock_async_client.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_manage_documents_screen_attach_success() -> None:
+    """Test on_button_pressed() for attach-btn attaches the doc and refreshes the list."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="s1")
+    screen.attach_input = MagicMock(spec=Input)
+    screen.attach_input.value = "new-doc"
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    with (
+        patch("nyxgpt.tui.httpx.AsyncClient", return_value=mock_client),
+        patch.object(screen, "_refresh_list", new=AsyncMock()) as mock_refresh,
+    ):
+        event = MagicMock()
+        event.button.id = "attach-btn"
+        await screen.on_button_pressed(event)
+
+    mock_client.post.assert_called_once()
+    assert screen.attach_input.value == ""
+    mock_refresh.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_manage_documents_screen_attach_exception_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test on_button_pressed() for attach-btn logs and swallows API errors."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="s1")
+    screen.attach_input = MagicMock(spec=Input)
+    screen.attach_input.value = "new-doc"
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.post = AsyncMock(side_effect=RuntimeError("attach failed"))
+
+    with (
+        patch("nyxgpt.tui.httpx.AsyncClient", return_value=mock_client),
+        patch.object(screen, "_refresh_list", new=AsyncMock()) as mock_refresh,
+        caplog.at_level(logging.ERROR, logger="nyxgpt.tui"),
+    ):
+        event = MagicMock()
+        event.button.id = "attach-btn"
+        await screen.on_button_pressed(event)
+
+    assert "Failed to attach document" in caplog.text
+    mock_refresh.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_manage_documents_screen_detach_no_highlighted_returns_early() -> None:
+    """Test on_button_pressed() for detach-btn returns early with no highlighted item."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="s1")
+    screen._attached = ["doc-a"]
+    screen.docs_list = MagicMock()
+    screen.docs_list.highlighted_child = None
+
+    with patch("nyxgpt.tui.httpx.AsyncClient") as mock_async_client:
+        event = MagicMock()
+        event.button.id = "detach-btn"
+        await screen.on_button_pressed(event)
+
+    mock_async_client.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_manage_documents_screen_detach_idx_out_of_range_returns_early() -> None:
+    """Test on_button_pressed() for detach-btn returns early when index is out of range."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="s1")
+    screen._attached = ["doc-a"]
+    screen.docs_list = MagicMock()
+    screen.docs_list.highlighted_child = MagicMock()
+    screen.docs_list.index = 5  # out of range for a single-item list
+
+    with patch("nyxgpt.tui.httpx.AsyncClient") as mock_async_client:
+        event = MagicMock()
+        event.button.id = "detach-btn"
+        await screen.on_button_pressed(event)
+
+    mock_async_client.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_manage_documents_screen_detach_idx_none_returns_early() -> None:
+    """Test on_button_pressed() for detach-btn returns early when index is None."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="s1")
+    screen._attached = ["doc-a"]
+    screen.docs_list = MagicMock()
+    screen.docs_list.highlighted_child = MagicMock()
+    screen.docs_list.index = None
+
+    with patch("nyxgpt.tui.httpx.AsyncClient") as mock_async_client:
+        event = MagicMock()
+        event.button.id = "detach-btn"
+        await screen.on_button_pressed(event)
+
+    mock_async_client.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_manage_documents_screen_detach_success() -> None:
+    """Test on_button_pressed() for detach-btn deletes the doc and refreshes the list."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="s1")
+    screen._attached = ["doc-a", "doc-b"]
+    screen.docs_list = MagicMock()
+    screen.docs_list.highlighted_child = MagicMock()
+    screen.docs_list.index = 1
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.delete = AsyncMock(return_value=mock_response)
+
+    with (
+        patch("nyxgpt.tui.httpx.AsyncClient", return_value=mock_client),
+        patch.object(screen, "_refresh_list", new=AsyncMock()) as mock_refresh,
+    ):
+        event = MagicMock()
+        event.button.id = "detach-btn"
+        await screen.on_button_pressed(event)
+
+    mock_client.delete.assert_called_once()
+    assert "doc-b" in mock_client.delete.call_args[0][0]
+    mock_refresh.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_manage_documents_screen_detach_exception_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test on_button_pressed() for detach-btn logs and swallows API errors."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="s1")
+    screen._attached = ["doc-a"]
+    screen.docs_list = MagicMock()
+    screen.docs_list.highlighted_child = MagicMock()
+    screen.docs_list.index = 0
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.delete = AsyncMock(side_effect=RuntimeError("detach failed"))
+
+    with (
+        patch("nyxgpt.tui.httpx.AsyncClient", return_value=mock_client),
+        patch.object(screen, "_refresh_list", new=AsyncMock()) as mock_refresh,
+        caplog.at_level(logging.ERROR, logger="nyxgpt.tui"),
+    ):
+        event = MagicMock()
+        event.button.id = "detach-btn"
+        await screen.on_button_pressed(event)
+
+    assert "Failed to detach document" in caplog.text
+    mock_refresh.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_manage_documents_screen_close_btn() -> None:
+    """Test on_button_pressed() for close-btn dismisses the screen."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="s1")
+
+    with patch.object(screen, "dismiss") as mock_dismiss:
+        event = MagicMock()
+        event.button.id = "close-btn"
+        await screen.on_button_pressed(event)
+
+    mock_dismiss.assert_called_once_with(None)
+
+
+def test_manage_documents_screen_action_close() -> None:
+    """Test action_close() dismisses the screen with None."""
+    screen = ManageDocumentsScreen(api_base_url="http://127.0.0.1:8000", session="s1")
+
+    with patch.object(screen, "dismiss") as mock_dismiss:
+        screen.action_close()
+
+    mock_dismiss.assert_called_once_with(None)
+
+
+# ============================================================================
+# CommandPaletteScreen compose() / on_mount() / on_input_changed() /
+# update_command_list() / on_list_view_highlighted() Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_command_palette_screen_compose_and_on_mount() -> None:
+    """Test compose() builds the palette UI and on_mount() focuses input & lists commands."""
+    screen = CommandPaletteScreen()
+
+    app = App()
+    async with app.run_test() as pilot:
+        await app.push_screen(screen)
+        await pilot.pause()
+
+        search_input = screen.query_one("#command-search", Input)
+        assert search_input.has_focus
+
+        list_view = screen.query_one("#command-list", ListView)
+        assert len(list_view.children) == len(screen.all_commands)
+
+        desc_label = screen.query_one("#command-description")
+        assert str(desc_label.content) == screen.all_commands[0]["description"]
+
+
+@pytest.mark.asyncio
+async def test_command_palette_screen_on_input_changed_wrong_id() -> None:
+    """Test on_input_changed() ignores events from inputs other than #command-search."""
+    screen = CommandPaletteScreen()
+    original_filtered = screen.filtered_commands
+
+    with patch.object(screen, "update_command_list", new=AsyncMock()) as mock_update:
+        mock_input = MagicMock(spec=Input)
+        mock_input.id = "not-command-search"
+        event = MagicMock()
+        event.input = mock_input
+        event.value = "search"
+
+        await screen.on_input_changed(event)
+
+    mock_update.assert_not_called()
+    assert screen.filtered_commands is original_filtered
+
+
+@pytest.mark.asyncio
+async def test_command_palette_screen_update_command_list_updates_description() -> None:
+    """Test update_command_list() populates the list and sets the first description."""
+    screen = CommandPaletteScreen()
+    screen.filtered_commands = [
+        {"key": "show_help", "label": "Show Help", "description": "Display keyboard shortcuts"},
+    ]
+
+    app = App()
+    async with app.run_test() as pilot:
+        await app.push_screen(screen)
+        await pilot.pause()
+
+        await screen.update_command_list()
+        await pilot.pause()
+
+        list_view = screen.query_one("#command-list", ListView)
+        assert len(list_view.children) == 1
+        assert list_view.children[0].name == "show_help"
+
+        desc_label = screen.query_one("#command-description")
+        assert "Display keyboard shortcuts" in str(desc_label.content)
+
+
+@pytest.mark.asyncio
+async def test_command_palette_screen_on_list_view_highlighted_item_none() -> None:
+    """Test on_list_view_highlighted() returns early when event.item is None."""
+    screen = CommandPaletteScreen()
+
+    with patch.object(screen, "query_one") as mock_query_one:
+        event = MagicMock()
+        event.item = None
+        await screen.on_list_view_highlighted(event)
+
+    mock_query_one.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_command_palette_screen_on_list_view_highlighted_item_found() -> None:
+    """Test on_list_view_highlighted() updates the description for a matching command."""
+    screen = CommandPaletteScreen()
+
+    mock_desc_label = MagicMock()
+    with patch.object(screen, "query_one", return_value=mock_desc_label):
+        event = MagicMock()
+        event.item = MagicMock()
+        event.item.name = "show_help"
+        await screen.on_list_view_highlighted(event)
+
+    mock_desc_label.update.assert_called_once_with("Display keyboard shortcuts")
+
+
+# ============================================================================
+# NyxGPTTUI.compose() Real Mount Test
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_nyx_gpt_tui_compose_assigns_widgets(tmp_path: Path) -> None:
+    """Test that compose() assigns self.output/status_bar/prompt when actually mounted."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with (
+        patch("nyxgpt.tui.load_config", return_value=cfg),
+        patch("httpx.AsyncClient", side_effect=RuntimeError("no network in this test")),
+    ):
+        app = NyxGPTTUI(session="test-session")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert isinstance(app.output, ChatOutput)
+            assert isinstance(app.status_bar, SessionStatusBar)
+            assert isinstance(app.prompt, Input)
+            assert app.query_one(ChatOutput) is app.output
+            assert app.query_one(SessionStatusBar) is app.status_bar
+            assert app.query_one(Input) is app.prompt
+
+
+# ============================================================================
+# NyxGPTTUI Sync action_* Wrapper Methods (run_worker dispatch) Tests
+# ============================================================================
+
+
+def test_action_pick_session_runs_worker(tmp_path: Path) -> None:
+    """Test action_pick_session() dispatches _pick_session_worker() via run_worker."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session")
+
+    with patch.object(app, "run_worker") as mock_run_worker:
+        app.action_pick_session()
+
+    mock_run_worker.assert_called_once()
+    coro = mock_run_worker.call_args[0][0]
+    assert coro.__name__ == "_pick_session_worker"
+    coro.close()
+
+
+def test_action_models_manager_runs_worker(tmp_path: Path) -> None:
+    """Test action_models_manager() dispatches _models_manager_worker() via run_worker."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session")
+
+    with patch.object(app, "run_worker") as mock_run_worker:
+        app.action_models_manager()
+
+    mock_run_worker.assert_called_once()
+    coro = mock_run_worker.call_args[0][0]
+    assert coro.__name__ == "_models_manager_worker"
+    coro.close()
+
+
+def test_action_search_messages_runs_worker(tmp_path: Path) -> None:
+    """Test action_search_messages() dispatches _search_messages_worker() via run_worker."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session")
+
+    with patch.object(app, "run_worker") as mock_run_worker:
+        app.action_search_messages()
+
+    mock_run_worker.assert_called_once()
+    coro = mock_run_worker.call_args[0][0]
+    assert coro.__name__ == "_search_messages_worker"
+    coro.close()
+
+
+def test_action_rename_session_runs_worker(tmp_path: Path) -> None:
+    """Test action_rename_session() dispatches _rename_session_worker() via run_worker."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session")
+
+    with patch.object(app, "run_worker") as mock_run_worker:
+        app.action_rename_session()
+
+    mock_run_worker.assert_called_once()
+    coro = mock_run_worker.call_args[0][0]
+    assert coro.__name__ == "_rename_session_worker"
+    coro.close()
+
+
+def test_action_manage_documents_runs_worker(tmp_path: Path) -> None:
+    """Test action_manage_documents() dispatches _manage_documents_worker() via run_worker."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session")
+
+    with patch.object(app, "run_worker") as mock_run_worker:
+        app.action_manage_documents()
+
+    mock_run_worker.assert_called_once()
+    coro = mock_run_worker.call_args[0][0]
+    assert coro.__name__ == "_manage_documents_worker"
+    coro.close()
+
+
+def test_action_index_repository_runs_worker(tmp_path: Path) -> None:
+    """Test action_index_repository() dispatches _index_repository_worker() via run_worker."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session")
+
+    with patch.object(app, "run_worker") as mock_run_worker:
+        app.action_index_repository()
+
+    mock_run_worker.assert_called_once()
+    coro = mock_run_worker.call_args[0][0]
+    assert coro.__name__ == "_index_repository_worker"
+    coro.close()
+
+
+def test_action_delete_session_runs_worker(tmp_path: Path) -> None:
+    """Test action_delete_session() dispatches _delete_session_worker() via run_worker."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session")
+
+    with patch.object(app, "run_worker") as mock_run_worker:
+        app.action_delete_session()
+
+    mock_run_worker.assert_called_once()
+    coro = mock_run_worker.call_args[0][0]
+    assert coro.__name__ == "_delete_session_worker"
+    coro.close()
+
+
+def test_action_show_help_runs_worker(tmp_path: Path) -> None:
+    """Test action_show_help() dispatches _show_help_worker() via run_worker."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session")
+
+    with patch.object(app, "run_worker") as mock_run_worker:
+        app.action_show_help()
+
+    mock_run_worker.assert_called_once()
+    coro = mock_run_worker.call_args[0][0]
+    assert coro.__name__ == "_show_help_worker"
+    coro.close()
+
+
+def test_action_command_palette_runs_worker(tmp_path: Path) -> None:
+    """Test action_command_palette() dispatches _command_palette_worker() via run_worker."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session")
+
+    with patch.object(app, "run_worker") as mock_run_worker:
+        app.action_command_palette()
+
+    mock_run_worker.assert_called_once()
+    coro = mock_run_worker.call_args[0][0]
+    assert coro.__name__ == "_command_palette_worker"
+    coro.close()
+
+
+# ============================================================================
+# _search_messages_worker query_one Exception Branch Test
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_search_messages_worker_query_one_raises_is_swallowed(tmp_path: Path) -> None:
+    """Test _search_messages_worker() swallows query_one() failures when clearing output.
+
+    Covers the try/except around `self.query_one("#output", ChatOutput)` at
+    tui.py:1006-1010, exercised when the session changes but the #output widget
+    can't be found (e.g. app shutting down).
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="original-session", config_path=str(config_file))
+
+    search_result = {"session_name": "target-session", "message_index": 2}
+
+    with (
+        patch.object(app, "push_screen_wait", new=AsyncMock(return_value=search_result)),
+        patch.object(app, "query_one", side_effect=RuntimeError("widget not found")),
+        patch.object(app, "notify") as mock_notify,
+    ):
+        # Should not raise despite query_one failing
+        await app._search_messages_worker()
+
+    assert app.session == "target-session"
+    mock_notify.assert_called_once()
+
+
+# ============================================================================
+# _rename_session_worker() Full Flow Tests (incl. inline RenameScreen)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_rename_session_worker_full_flow_renamed(tmp_path: Path) -> None:
+    """Test the full rename flow when the session filename changes.
+
+    Covers: successful title fetch (status 200), the inline RenameScreen's
+    compose()/on_mount() (focus + prefilled title) and on_button_pressed()
+    for rename-btn with a value, and the rename API success path where
+    new_session_name != old_name.
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="orig-session", config_path=str(config_file))
+
+    mock_title_response = MagicMock()
+    mock_title_response.status_code = 200
+    mock_title_response.json.return_value = {"title": "Original Title"}
+    mock_title_client = AsyncMock()
+    mock_title_client.__aenter__ = AsyncMock(return_value=mock_title_client)
+    mock_title_client.__aexit__ = AsyncMock(return_value=None)
+    mock_title_client.get = AsyncMock(return_value=mock_title_response)
+
+    mock_rename_response = MagicMock()
+    mock_rename_response.raise_for_status = MagicMock()
+    mock_rename_response.json.return_value = {"new_name": "renamed-session"}
+    mock_rename_client = AsyncMock()
+    mock_rename_client.__aenter__ = AsyncMock(return_value=mock_rename_client)
+    mock_rename_client.__aexit__ = AsyncMock(return_value=None)
+    mock_rename_client.post = AsyncMock(return_value=mock_rename_response)
+
+    with (
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+        patch("httpx.AsyncClient", side_effect=[mock_title_client, mock_rename_client]),
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            worker = app.run_worker(app._rename_session_worker())
+            await pilot.pause()
+
+            rename_input = app.screen.query_one("#rename-input", Input)
+            assert rename_input.has_focus
+            assert rename_input.value == "Original Title"
+            rename_input.value = "New Session Title"
+
+            rename_btn = app.screen.query_one("#rename-btn", Button)
+            await pilot.click(rename_btn)
+            await pilot.pause()
+            await worker.wait()
+
+            assert app.session == "renamed-session"
+            assert "renamed-session" in app.output._buffer
+            assert "orig-session" in app.output._buffer
+
+
+@pytest.mark.asyncio
+async def test_rename_session_worker_title_fetch_non_200_then_cancel(tmp_path: Path) -> None:
+    """Test that a non-200 title fetch response results in an empty prefilled title.
+
+    Also covers the cancel-btn branch of RenameScreen.on_button_pressed() and the
+    `if not new_name: return` early-exit in the worker.
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="orig-session", config_path=str(config_file))
+
+    mock_title_response = MagicMock()
+    mock_title_response.status_code = 404
+    mock_title_client = AsyncMock()
+    mock_title_client.__aenter__ = AsyncMock(return_value=mock_title_client)
+    mock_title_client.__aexit__ = AsyncMock(return_value=None)
+    mock_title_client.get = AsyncMock(return_value=mock_title_response)
+
+    with (
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+        patch("httpx.AsyncClient", return_value=mock_title_client),
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            worker = app.run_worker(app._rename_session_worker())
+            await pilot.pause()
+
+            rename_input = app.screen.query_one("#rename-input", Input)
+            assert rename_input.value == ""
+
+            cancel_btn = app.screen.query_one("#cancel-btn", Button)
+            await pilot.click(cancel_btn)
+            await pilot.pause()
+            await worker.wait()
+
+            assert app.session == "orig-session"
+
+
+@pytest.mark.asyncio
+async def test_rename_session_worker_title_fetch_exception(tmp_path: Path) -> None:
+    """Test that an exception during the title fetch is swallowed (current_title stays '')."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="orig-session", config_path=str(config_file))
+
+    with (
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+        patch("httpx.AsyncClient", side_effect=RuntimeError("network down")),
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            worker = app.run_worker(app._rename_session_worker())
+            await pilot.pause()
+
+            rename_input = app.screen.query_one("#rename-input", Input)
+            assert rename_input.value == ""
+
+            cancel_btn = app.screen.query_one("#cancel-btn", Button)
+            await pilot.click(cancel_btn)
+            await pilot.pause()
+            await worker.wait()
+
+            assert app.session == "orig-session"
+
+
+@pytest.mark.asyncio
+async def test_rename_session_worker_rename_btn_blank_dismisses_none(tmp_path: Path) -> None:
+    """Test RenameScreen's rename-btn dismisses with None when the input is blank."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="orig-session", config_path=str(config_file))
+
+    mock_title_response = MagicMock()
+    mock_title_response.status_code = 200
+    mock_title_response.json.return_value = {"title": ""}
+    mock_title_client = AsyncMock()
+    mock_title_client.__aenter__ = AsyncMock(return_value=mock_title_client)
+    mock_title_client.__aexit__ = AsyncMock(return_value=None)
+    mock_title_client.get = AsyncMock(return_value=mock_title_response)
+
+    with (
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+        patch("httpx.AsyncClient", return_value=mock_title_client),
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            worker = app.run_worker(app._rename_session_worker())
+            await pilot.pause()
+
+            rename_input = app.screen.query_one("#rename-input", Input)
+            rename_input.value = "   "  # whitespace-only -> strip() == ""
+
+            rename_btn = app.screen.query_one("#rename-btn", Button)
+            await pilot.click(rename_btn)
+            await pilot.pause()
+            await worker.wait()
+
+            assert app.session == "orig-session"
+
+
+@pytest.mark.asyncio
+async def test_rename_session_worker_title_only_update(tmp_path: Path) -> None:
+    """Test the rename API success branch where new_session_name == old_name (title-only)."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="orig-session", config_path=str(config_file))
+
+    mock_title_response = MagicMock()
+    mock_title_response.status_code = 200
+    mock_title_response.json.return_value = {"title": "Old Title"}
+    mock_title_client = AsyncMock()
+    mock_title_client.__aenter__ = AsyncMock(return_value=mock_title_client)
+    mock_title_client.__aexit__ = AsyncMock(return_value=None)
+    mock_title_client.get = AsyncMock(return_value=mock_title_response)
+
+    mock_rename_response = MagicMock()
+    mock_rename_response.raise_for_status = MagicMock()
+    # Backend keeps the filename the same, only the title changed
+    mock_rename_response.json.return_value = {"new_name": "orig-session"}
+    mock_rename_client = AsyncMock()
+    mock_rename_client.__aenter__ = AsyncMock(return_value=mock_rename_client)
+    mock_rename_client.__aexit__ = AsyncMock(return_value=None)
+    mock_rename_client.post = AsyncMock(return_value=mock_rename_response)
+
+    with (
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+        patch("httpx.AsyncClient", side_effect=[mock_title_client, mock_rename_client]),
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            worker = app.run_worker(app._rename_session_worker())
+            await pilot.pause()
+
+            rename_input = app.screen.query_one("#rename-input", Input)
+            rename_input.value = "New Title Text"
+
+            rename_btn = app.screen.query_one("#rename-btn", Button)
+            await pilot.click(rename_btn)
+            await pilot.pause()
+            await worker.wait()
+
+            # Session name unchanged, only the title update message was appended
+            assert app.session == "orig-session"
+            assert "Session title updated to: New Title Text" in app.output._buffer
+
+
+@pytest.mark.asyncio
+async def test_rename_session_worker_rename_api_exception(tmp_path: Path) -> None:
+    """Test that a rename API exception is logged and shown as an output error."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="orig-session", config_path=str(config_file))
+
+    mock_title_response = MagicMock()
+    mock_title_response.status_code = 200
+    mock_title_response.json.return_value = {"title": "Old Title"}
+    mock_title_client = AsyncMock()
+    mock_title_client.__aenter__ = AsyncMock(return_value=mock_title_client)
+    mock_title_client.__aexit__ = AsyncMock(return_value=None)
+    mock_title_client.get = AsyncMock(return_value=mock_title_response)
+
+    mock_rename_client = AsyncMock()
+    mock_rename_client.__aenter__ = AsyncMock(return_value=mock_rename_client)
+    mock_rename_client.__aexit__ = AsyncMock(return_value=None)
+    mock_rename_client.post = AsyncMock(side_effect=RuntimeError("rename API down"))
+
+    with (
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+        patch("httpx.AsyncClient", side_effect=[mock_title_client, mock_rename_client]),
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            worker = app.run_worker(app._rename_session_worker())
+            await pilot.pause()
+
+            rename_input = app.screen.query_one("#rename-input", Input)
+            rename_input.value = "New Title Text"
+
+            rename_btn = app.screen.query_one("#rename-btn", Button)
+            await pilot.click(rename_btn)
+            await pilot.pause()
+            await worker.wait()
+
+            assert app.session == "orig-session"
+            assert "[error] Failed to rename session" in app.output._buffer
+
+
+# ============================================================================
+# _index_repository_worker() Full Flow Tests (incl. inline IndexRepoScreen)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_index_repository_worker_cancel_returns_early(tmp_path: Path) -> None:
+    """Test that cancel-btn dismisses with None and the worker returns without indexing."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session", config_path=str(config_file))
+
+    with (
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+        patch("httpx.AsyncClient") as mock_async_client_cls,
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            worker = app.run_worker(app._index_repository_worker())
+            await pilot.pause()
+
+            repo_path_input = app.screen.query_one("#repo-path-input", Input)
+            assert repo_path_input.has_focus
+
+            cancel_btn = app.screen.query_one("#cancel-btn", Button)
+            await pilot.click(cancel_btn)
+            await pilot.pause()
+            await worker.wait()
+
+    mock_async_client_cls.assert_not_called()
+    assert "Indexing repository" not in app.output._buffer
+
+
+@pytest.mark.asyncio
+async def test_index_repository_worker_blank_repo_path_dismisses_none(tmp_path: Path) -> None:
+    """Test that index-btn with a blank repo path dismisses with None (no indexing)."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session", config_path=str(config_file))
+
+    with (
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+        patch("httpx.AsyncClient") as mock_async_client_cls,
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            worker = app.run_worker(app._index_repository_worker())
+            await pilot.pause()
+
+            repo_path_input = app.screen.query_one("#repo-path-input", Input)
+            repo_path_input.value = "   "
+
+            index_btn = app.screen.query_one("#index-btn", Button)
+            await pilot.click(index_btn)
+            await pilot.pause()
+            await worker.wait()
+
+    mock_async_client_cls.assert_not_called()
+    assert "Indexing repository" not in app.output._buffer
+
+
+@pytest.mark.asyncio
+async def test_index_repository_worker_success_with_extensions(tmp_path: Path) -> None:
+    """Test the full success flow: repo path + extensions parsing + API success.
+
+    Covers IndexRepoScreen.compose()/on_mount()/on_button_pressed() (index-btn with
+    a repo path and a comma-separated extensions list), and the index-repo API
+    success branch of the worker.
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session", config_path=str(config_file))
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json.return_value = {"total_files": 10, "total_chunks": 42}
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.post = AsyncMock(return_value=mock_response)
+
+    with (
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+        patch("httpx.AsyncClient", return_value=mock_client),
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            worker = app.run_worker(app._index_repository_worker())
+            await pilot.pause()
+
+            repo_path_input = app.screen.query_one("#repo-path-input", Input)
+            repo_path_input.value = "/repo/path"
+            extensions_input = app.screen.query_one("#extensions-input", Input)
+            extensions_input.value = ".py, .js"
+            docs_only_checkbox = app.screen.query_one("#docs-only-checkbox", Checkbox)
+            docs_only_checkbox.value = True
+
+            index_btn = app.screen.query_one("#index-btn", Button)
+            await pilot.click(index_btn)
+            await pilot.pause()
+            await worker.wait()
+
+    mock_client.post.assert_called_once()
+    call_kwargs = mock_client.post.call_args
+    assert call_kwargs[1]["json"]["repo_path"] == "/repo/path"
+    assert call_kwargs[1]["json"]["extensions"] == [".py", ".js"]
+    assert call_kwargs[1]["json"]["extract_docs_only"] is True
+
+    assert "Indexing repository: /repo/path" in app.output._buffer
+    assert "Repository indexed successfully" in app.output._buffer
+    assert "Files indexed: 10" in app.output._buffer
+    assert "Total chunks: 42" in app.output._buffer
+
+
+@pytest.mark.asyncio
+async def test_index_repository_worker_timeout(tmp_path: Path) -> None:
+    """Test that httpx.TimeoutException during indexing shows a timeout error message."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session", config_path=str(config_file))
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
+
+    with (
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+        patch("httpx.AsyncClient", return_value=mock_client),
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            worker = app.run_worker(app._index_repository_worker())
+            await pilot.pause()
+
+            repo_path_input = app.screen.query_one("#repo-path-input", Input)
+            repo_path_input.value = "/repo/path"
+
+            index_btn = app.screen.query_one("#index-btn", Button)
+            await pilot.click(index_btn)
+            await pilot.pause()
+            await worker.wait()
+
+    assert "Repository indexing timed out" in app.output._buffer
+
+
+@pytest.mark.asyncio
+async def test_index_repository_worker_generic_exception(tmp_path: Path) -> None:
+    """Test that a generic exception during indexing is logged and shown as an error."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test-session", config_path=str(config_file))
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.post = AsyncMock(side_effect=RuntimeError("index API down"))
+
+    with (
+        patch.object(app, "_update_session_status", new=AsyncMock()),
+        patch("httpx.AsyncClient", return_value=mock_client),
+    ):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            worker = app.run_worker(app._index_repository_worker())
+            await pilot.pause()
+
+            repo_path_input = app.screen.query_one("#repo-path-input", Input)
+            repo_path_input.value = "/repo/path"
+
+            index_btn = app.screen.query_one("#index-btn", Button)
+            await pilot.click(index_btn)
+            await pilot.pause()
+            await worker.wait()
+
+    assert "[error] Failed to index repository" in app.output._buffer
+
+
+# ============================================================================
+# _delete_session_worker() "Should Not Happen" Branch Test
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_delete_session_worker_no_sessions_remaining_defensive_branch(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test the defensive branch where updated_sessions is empty after a successful delete.
+
+    This "should not happen" because we already verified there were >= 2 sessions
+    before deleting, but the worker still handles the case where list_sessions()
+    returns an empty list on the post-delete refresh.
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["nyxgpt"] = {"sessions_dir": str(tmp_path / "sessions")}
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    (sessions_dir / "session1.json").write_text("[]")
+    (sessions_dir / "session2.json").write_text("[]")
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="session1", config_path=str(config_file))
+
+    app.output = MagicMock(spec=ChatOutput)
+
+    mock_sessions = [
+        {"name": "session1", "messages": 0},
+        {"name": "session2", "messages": 0},
+    ]
+
+    with (
+        patch.object(app, "push_screen_wait", new=AsyncMock(return_value=True)),
+        patch(
+            "nyxgpt.tui.list_sessions",
+            side_effect=[mock_sessions, []],
+        ),
+        patch("nyxgpt.tui.delete_session", return_value=True),
+        caplog.at_level(logging.ERROR, logger="nyxgpt.tui"),
+    ):
+        await app._delete_session_worker()
+
+    # Session was not switched since there was nothing to switch to
+    assert app.session == "session1"
+
+    # The defensive error branch appended a message and logged an error
+    assert "no sessions remaining" in app.output.append.call_args[0][0].lower()
+    assert "No sessions remaining after delete" in caplog.text
+
+
+# ============================================================================
+# _stream_chat() Empty Chunk / RAG Citation Rendering / Buffer-Flush Tests
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_empty_chunk_is_skipped(tmp_path: Path) -> None:
+    """Test that an empty-string chunk from the stream is skipped via `continue`."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        yield ""  # empty chunk: should be skipped without affecting the buffer
+        yield "Hello"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    append_calls = [str(c) for c in app.output.append.call_args_list]
+    assert any("Hello" in c for c in append_calls)
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_rag_chunks_rendered_with_score_styles(tmp_path: Path) -> None:
+    """Test the RAG citation rendering loop covers green/yellow/red score styles,
+    chunk_id present vs missing, and the similarity_score -> score fallback."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        import json
+
+        rag_data = {
+            "type": "rag_metadata",
+            "chunks": [
+                {"doc_id": "doc-high", "similarity_score": 0.9, "chunk_id": 5},
+                {"doc_id": "doc-mid", "score": 0.6},  # no similarity_score -> fallback to score
+                {"doc_id": "doc-low", "similarity_score": 0.1},
+            ],
+        }
+        # No trailing text: buffer is empty after marker removal (skips flush dispatch)
+        yield f"__RAG_START__{json.dumps(rag_data)}__RAG_END__"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    append_calls = [str(c) for c in app.output.append.call_args_list]
+
+    assert any("3 sources retrieved" in c for c in append_calls)
+    assert any(
+        "doc-high" in c and "chunk 5" in c and "green" in c and "0.900" in c for c in append_calls
+    )
+    assert any(
+        "doc-mid" in c and "source" in c and "yellow" in c and "0.600" in c for c in append_calls
+    )
+    assert any("doc-low" in c and "red" in c and "0.100" in c for c in append_calls)
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_rag_marker_malformed_json(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that malformed JSON inside a RAG marker triggers the JSONDecodeError branch."""
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        # Invalid JSON (truncated) between valid RAG markers
+        yield '__RAG_START__{"type": "rag_metadata", "chunks": [__RAG_END__'
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        patch("httpx.AsyncClient", return_value=mock_client),
+        caplog.at_level(logging.WARNING, logger="nyxgpt.tui"),
+    ):
+        # Should not raise despite malformed JSON
+        await app._stream_chat("Test prompt")
+
+    assert "Failed to parse RAG metadata" in caplog.text
+    append_calls = [str(c) for c in app.output.append.call_args_list]
+    assert not any("__RAG_START__" in c for c in append_calls)
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_rag_nested_flush_pass_branch_second_marker_start(
+    tmp_path: Path,
+) -> None:
+    """Test the nested RAG-triggered flush dispatch's `pass` branch (tui.py ~1470-1472).
+
+    Triggered when, after removing one complete RAG marker, the leftover buffer
+    still contains the start of another marker (here, a second unterminated
+    "__RAG_START__").
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        import json
+
+        rag_data = {"type": "rag_metadata", "chunks": []}
+        first_marker = f"__RAG_START__{json.dumps(rag_data)}__RAG_END__"
+        # Trailing content is the start of a second (incomplete) RAG marker
+        yield first_marker + "__RAG_START__"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        # Should not raise; the nested flush dispatch hits its `pass` branch
+        # because the leftover buffer still contains "__RAG_START__", and the
+        # (unrelated) final end-of-stream flush later appends the raw buffer.
+        await app._stream_chat("Test prompt")
+
+    app.output.append.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_rag_nested_flush_partial_marker_branch(tmp_path: Path) -> None:
+    """Test the nested RAG-triggered flush dispatch's partial-marker branch.
+
+    Covers tui.py ~1473-1479: trailing text after a RAG marker ends with a
+    partial marker prefix (e.g. "__RETRY_"), so the safe portion is flushed
+    and the partial prefix is retained in the buffer.
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        import json
+
+        rag_data = {"type": "rag_metadata", "chunks": []}
+        marker = f"__RAG_START__{json.dumps(rag_data)}__RAG_END__"
+        yield marker + "some safe text __RETRY_"
+        yield "START__ignored__RETRY_END__more"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    append_calls = [str(c) for c in app.output.append.call_args_list]
+    assert any("some safe text" in c for c in append_calls)
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_rag_nested_flush_full_flush_branch(tmp_path: Path) -> None:
+    """Test the nested RAG-triggered flush dispatch's full-flush branch.
+
+    Covers tui.py ~1480-1486: trailing text after a RAG marker has no marker
+    prefix at all, so it's flushed in full immediately.
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        import json
+
+        rag_data = {"type": "rag_metadata", "chunks": []}
+        marker = f"__RAG_START__{json.dumps(rag_data)}__RAG_END__"
+        yield marker + "plain trailing response text with no markers"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        await app._stream_chat("Test prompt")
+
+    append_calls = [str(c) for c in app.output.append.call_args_list]
+    assert any("plain trailing response text with no markers" in c for c in append_calls)
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_final_flush_pass_branch_unterminated_retry_marker(
+    tmp_path: Path,
+) -> None:
+    """Test the final duplicate flush block's `pass` branch (tui.py ~1517).
+
+    Triggered when the stream ends with a complete "__RETRY_START__" substring
+    in the buffer but no matching "__RETRY_END__" was ever sent, so the marker
+    is left untouched rather than flushed as text.
+    """
+    config_file = tmp_path / "config.ini"
+    cfg = configparser.ConfigParser()
+    cfg["api"] = {"base_url": "http://127.0.0.1:8000"}
+    with open(config_file, "w") as f:
+        cfg.write(f)
+
+    with patch("nyxgpt.tui.load_config", return_value=cfg):
+        app = NyxGPTTUI(session="test")
+
+    app.output = MagicMock(spec=ChatOutput)
+    app.prompt = MagicMock(spec=Input)
+
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = MagicMock()
+
+    async def mock_aiter_text():
+        # Stream ends with an unterminated retry marker (no __RETRY_END__ ever sent)
+        yield "__RETRY_START__{incomplete and never closed"
+
+    mock_response.aiter_text = mock_aiter_text
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.stream = MagicMock(return_value=mock_response)
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        # Should not raise
+        await app._stream_chat("Test prompt")
+
+    # The raw buffer (including the unterminated marker) is appended once via the
+    # unconditional flush at the top of the final-flush block; the dispatch logic
+    # then hits the `pass` branch and does not append it a second time as "clean" text.
+    append_calls = [str(c) for c in app.output.append.call_args_list]
+    assert any("__RETRY_START__" in c for c in append_calls)
