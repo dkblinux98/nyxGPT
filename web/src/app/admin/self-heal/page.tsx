@@ -30,6 +30,18 @@ type SelfHealStatus = {
   events: HealEvent[];
 };
 
+type MonitoringStatus = {
+  active: boolean;
+  grafana_ui_url: string;
+};
+
+type LogAggregationStatus = {
+  active: boolean;
+  grafana_explore_url: string;
+};
+
+const SELF_HEAL_LOKI_QUERY = '{job="nyxgpt"} |= `self-heal:` |~ `restart|heal pass|giving up|recovered`';
+
 export default function SelfHealPage() {
   const router = useRouter();
   const [status, setStatus] = useState<SelfHealStatus | null>(null);
@@ -39,6 +51,8 @@ export default function SelfHealPage() {
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [toggling, setToggling] = useState(false);
   const [healingService, setHealingService] = useState<string | null>(null);
+  const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
+  const [logAggregation, setLogAggregation] = useState<LogAggregationStatus | null>(null);
 
   const loadStatus = useCallback(async () => {
     setError(null);
@@ -61,6 +75,26 @@ export default function SelfHealPage() {
     const interval = setInterval(loadStatus, 10000);
     return () => clearInterval(interval);
   }, [loadStatus]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadObservabilityLinks() {
+      try {
+        const [monitoringRes, logAggRes] = await Promise.all([
+          fetch('/api/v1/monitoring', { cache: 'no-store' }),
+          fetch('/api/v1/log-aggregation', { cache: 'no-store' }),
+        ]);
+        if (!cancelled && monitoringRes.ok) setMonitoring(await monitoringRes.json());
+        if (!cancelled && logAggRes.ok) setLogAggregation(await logAggRes.json());
+      } catch {
+        // Observability links are a bonus, not critical -- swallow errors silently.
+      }
+    }
+    void loadObservabilityLinks();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleToggle() {
     if (!status) return;
@@ -187,6 +221,51 @@ export default function SelfHealPage() {
           }}
         >
           {actionMessage}
+        </div>
+      )}
+
+      {(monitoring?.active || logAggregation?.active) && (
+        <div
+          style={{
+            marginBottom: '1.5rem',
+            padding: '0.75rem 1rem',
+            borderRadius: '0.375rem',
+            background: 'var(--background-secondary)',
+            border: '1px solid var(--border-color)',
+            fontSize: '0.8rem',
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: '0.4rem' }}>Observability</div>
+          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.4rem' }}>
+            {monitoring?.active && (
+              <a
+                href={`${monitoring.grafana_ui_url}/d/nyxgpt-self-healing`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: '#0066cc' }}
+              >
+                Self-Healing dashboard (Grafana) ↗
+              </a>
+            )}
+            {logAggregation?.active && (
+              <a
+                href={logAggregation.grafana_explore_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: '#0066cc' }}
+              >
+                Self-heal events (Grafana Explore / Loki) ↗
+              </a>
+            )}
+          </div>
+          {logAggregation?.active && (
+            <div style={{ color: 'var(--foreground-muted)' }}>
+              Saved query for self-heal events, paste into Explore:{' '}
+              <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
+                {SELF_HEAL_LOKI_QUERY}
+              </code>
+            </div>
+          )}
         </div>
       )}
 
