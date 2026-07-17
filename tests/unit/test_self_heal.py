@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from nyxgpt import metrics as prom_metrics
 from nyxgpt import self_heal
 
 
@@ -424,6 +425,164 @@ def test_watchdog_start_is_a_noop_when_already_running(monkeypatch, caplog):
         assert watchdog._thread is first_thread
     finally:
         watchdog.stop(timeout=1.0)
+
+
+def _metric_value(name, **labels):
+    return prom_metrics.REGISTRY.get_sample_value(name, labels or None)
+
+
+@pytest.mark.unit
+def test_heal_now_logs_health_check_per_component(monkeypatch, caplog):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [
+            self_heal.ComponentStatus("api", "nyxgpt-api-1", "running", "healthy", True),
+            self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False),
+        ],
+    )
+
+    with caplog.at_level("DEBUG"):
+        self_heal.heal_now()
+
+    assert "self-heal: health check api healthy=True" in caplog.text
+    assert "self-heal: health check web healthy=False" in caplog.text
+    assert _metric_value("nyxgpt_selfheal_unhealthy_components") == 1
+
+
+@pytest.mark.unit
+def test_heal_now_logs_restart_attempt_and_success(monkeypatch, caplog):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False)],
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "restart_component",
+        lambda service: self_heal.HealResult(True, f"Restarted {service}"),
+    )
+
+    with caplog.at_level("INFO"):
+        self_heal.heal_now()
+
+    assert "self-heal: attempting restart of web" in caplog.text
+    assert "self-heal: restart of web succeeded (restart_count=1)" in caplog.text
+    assert "self-heal: heal pass complete (checked=1, unhealthy=1, healed=1" in caplog.text
+
+    assert _metric_value("nyxgpt_selfheal_restarts_total", service="web", result="ok") >= 1
+    assert _metric_value("nyxgpt_selfheal_restart_count", service="web") == 1
+    assert _metric_value("nyxgpt_selfheal_last_recovery_timestamp", service="web") is not None
+
+
+@pytest.mark.unit
+def test_heal_now_logs_restart_failure_as_error(monkeypatch, caplog):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False)],
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "restart_component",
+        lambda service: self_heal.HealResult(False, f"Failed to restart {service}"),
+    )
+
+    with caplog.at_level("ERROR"):
+        self_heal.heal_now()
+
+    assert "self-heal: restart of web failed (restart_count=1)" in caplog.text
+    assert _metric_value("nyxgpt_selfheal_restarts_total", service="web", result="failed") >= 1
+
+
+@pytest.mark.unit
+def test_heal_now_logs_backoff_skip(monkeypatch, caplog):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False)],
+    )
+    restart_mock = MagicMock(return_value=self_heal.HealResult(True, "Restarted web"))
+    monkeypatch.setattr(self_heal, "restart_component", restart_mock)
+
+    self_heal.heal_now(backoff_seconds=3600.0)
+    with caplog.at_level("DEBUG"):
+        self_heal.heal_now(backoff_seconds=3600.0)
+
+    assert "self-heal: skipping restart of web, backoff active" in caplog.text
+    restart_mock.assert_called_once()
+
+
+@pytest.mark.unit
+def test_heal_now_logs_give_up_after_max_consecutive_restarts(monkeypatch, caplog):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False)],
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "restart_component",
+        lambda service: self_heal.HealResult(False, f"Failed to restart {service}"),
+    )
+
+    for _ in range(2):
+        self_heal.heal_now(max_consecutive_restarts=2, backoff_seconds=0.0)
+
+    with caplog.at_level("WARNING"):
+        self_heal.heal_now(max_consecutive_restarts=2, backoff_seconds=0.0)
+
+    assert "self-heal: giving up on web, 2 consecutive restart(s) already failed" in caplog.text
+
+
+@pytest.mark.unit
+def test_heal_now_resets_restart_count_metric_on_recovery(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False)],
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "restart_component",
+        lambda service: self_heal.HealResult(True, f"Restarted {service}"),
+    )
+    self_heal.heal_now(backoff_seconds=0.0)
+    assert _metric_value("nyxgpt_selfheal_restart_count", service="web") == 1
+
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("web", "nyxgpt-web-1", "running", "healthy", True)],
+    )
+    self_heal.heal_now()
+
+    assert _metric_value("nyxgpt_selfheal_restart_count", service="web") == 0
+
+
+@pytest.mark.unit
+def test_status_updates_unhealthy_components_gauge(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [
+            self_heal.ComponentStatus("api", "nyxgpt-api-1", "running", "healthy", True),
+            self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False),
+        ],
+    )
+
+    self_heal.status()
+
+    assert _metric_value("nyxgpt_selfheal_unhealthy_components") == 1
+
+
+@pytest.mark.unit
+def test_watchdog_stop_logs(caplog):
+    watchdog = self_heal.Watchdog(interval_seconds=0.01)
+    watchdog.start()
+    with caplog.at_level("INFO"):
+        watchdog.stop(timeout=1.0)
+    assert "Self-heal watchdog stopped" in caplog.text
 
 
 @pytest.mark.unit

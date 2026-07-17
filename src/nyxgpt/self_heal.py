@@ -30,6 +30,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from nyxgpt import metrics as prom_metrics
+
 logger = logging.getLogger(__name__)
 
 # Repo root: .../nyxGPT/src/nyxgpt/self_heal.py -> parents[2] is repo root
@@ -255,6 +257,37 @@ def list_component_status() -> list[ComponentStatus]:
     return statuses
 
 
+def _record_health_check(statuses: list[ComponentStatus]) -> int:
+    """Log each component's health-check result and update the unhealthy-count gauge.
+
+    Logged at DEBUG (routine, high-frequency per-component data -- set
+    `[logging] level = DEBUG` in config.ini to see it) rather than INFO, so a
+    healthy stack doesn't spam the log file every `check_interval_seconds`.
+    Returns the number of unhealthy components, for callers that also need
+    the count (e.g. `heal_now`'s pass summary).
+    """
+    unhealthy = 0
+    for s in statuses:
+        if not s.healthy:
+            unhealthy += 1
+        logger.debug(
+            "self-heal: health check %s healthy=%s state=%s health=%s",
+            s.service,
+            s.healthy,
+            s.state,
+            s.health or "n/a",
+            extra={
+                "component": "self_heal",
+                "service": s.service,
+                "healthy": s.healthy,
+                "state": s.state,
+                "health": s.health,
+            },
+        )
+    prom_metrics.SELFHEAL_UNHEALTHY_COMPONENTS.set(unhealthy)
+    return unhealthy
+
+
 def restart_component(service: str) -> HealResult:
     """Restart a single Compose service: `docker compose restart <service>`."""
     if _which("docker") is None:
@@ -332,11 +365,17 @@ def heal_now(
     """
     statuses = list_component_status()
     now = time.time()
+    unhealthy_count = _record_health_check(statuses)
 
     targets = statuses
     if service is not None:
         targets = [s for s in statuses if s.service == service]
         if not targets:
+            logger.warning(
+                "self-heal: heal-now requested for unknown/not-running component %s",
+                service,
+                extra={"component": "self_heal", "service": service},
+            )
             return {
                 "checked": [],
                 "healed": [],
@@ -355,7 +394,14 @@ def heal_now(
 
         for status in targets:
             if status.healthy and not manual:
+                if restart_counts.get(status.service, 0) != 0:
+                    logger.info(
+                        "self-heal: %s recovered, resetting consecutive-restart count",
+                        status.service,
+                        extra={"component": "self_heal", "service": status.service},
+                    )
                 restart_counts[status.service] = 0
+                prom_metrics.SELFHEAL_RESTART_COUNT.labels(service=status.service).set(0)
                 continue
 
             count = restart_counts.get(status.service, 0)
@@ -363,8 +409,32 @@ def heal_now(
 
             if not manual:
                 if count >= max_consecutive_restarts:
+                    logger.warning(
+                        "self-heal: giving up on %s, %d consecutive restart(s) already failed"
+                        " (max=%d)",
+                        status.service,
+                        count,
+                        max_consecutive_restarts,
+                        extra={
+                            "component": "self_heal",
+                            "service": status.service,
+                            "restart_count": count,
+                            "max_consecutive_restarts": max_consecutive_restarts,
+                        },
+                    )
                     continue
-                if now - last_ts < backoff_seconds:
+                remaining = backoff_seconds - (now - last_ts)
+                if remaining > 0:
+                    logger.debug(
+                        "self-heal: skipping restart of %s, backoff active (%.1fs remaining)",
+                        status.service,
+                        remaining,
+                        extra={
+                            "component": "self_heal",
+                            "service": status.service,
+                            "backoff_remaining_seconds": remaining,
+                        },
+                    )
                     continue
 
             reason = (
@@ -372,11 +442,49 @@ def heal_now(
                 if manual
                 else f"state={status.state} health={status.health or 'n/a'}"
             )
+            logger.info(
+                "self-heal: attempting restart of %s (reason=%s, attempt=%d)",
+                status.service,
+                reason,
+                count + 1,
+                extra={
+                    "component": "self_heal",
+                    "service": status.service,
+                    "reason": reason,
+                    "attempt": count + 1,
+                    "manual": manual,
+                },
+            )
             result = restart_component(status.service)
 
             new_count = count + 1
             restart_counts[status.service] = new_count
             last_restart_ts[status.service] = now
+
+            prom_metrics.SELFHEAL_RESTARTS_TOTAL.labels(
+                service=status.service, result="ok" if result.ok else "failed"
+            ).inc()
+            prom_metrics.SELFHEAL_RESTART_COUNT.labels(service=status.service).set(new_count)
+            if result.ok:
+                prom_metrics.SELFHEAL_LAST_RECOVERY_TIMESTAMP.labels(service=status.service).set(
+                    now
+                )
+
+            log = logger.info if result.ok else logger.error
+            log(
+                "self-heal: restart of %s %s (restart_count=%d): %s",
+                status.service,
+                "succeeded" if result.ok else "failed",
+                new_count,
+                result.message,
+                extra={
+                    "component": "self_heal",
+                    "service": status.service,
+                    "ok": result.ok,
+                    "restart_count": new_count,
+                    "reason": reason,
+                },
+            )
 
             event = HealEvent(
                 ts=now,
@@ -392,6 +500,21 @@ def heal_now(
 
         state["events"] = events[-EVENT_LOG_LIMIT:]
         _save_state(state)
+
+    logger.info(
+        "self-heal: heal pass complete (checked=%d, unhealthy=%d, healed=%d, manual=%s)",
+        len(checked),
+        unhealthy_count,
+        len(healed),
+        manual,
+        extra={
+            "component": "self_heal",
+            "checked": len(checked),
+            "unhealthy": unhealthy_count,
+            "healed": len(healed),
+            "manual": manual,
+        },
+    )
 
     return {"checked": checked, "healed": healed}
 
@@ -438,6 +561,7 @@ class Watchdog:
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=timeout)
         self._thread = None
+        logger.info("Self-heal watchdog stopped", extra={"component": "self_heal"})
 
     def _loop(self) -> None:
         """Background loop: call `heal_now()` on each interval while enabled.
@@ -471,10 +595,11 @@ def get_watchdog() -> Watchdog:
 def status() -> dict[str, Any]:
     """Aggregate status for `GET /api/v1/self-heal/status`."""
     components = list_component_status()
+    unhealthy_count = _record_health_check(components)
     return {
         "enabled": is_enabled(),
         "components": [c.to_dict() for c in components],
-        "unhealthy_count": sum(1 for c in components if not c.healthy),
+        "unhealthy_count": unhealthy_count,
         "events": recent_events(20),
     }
 
