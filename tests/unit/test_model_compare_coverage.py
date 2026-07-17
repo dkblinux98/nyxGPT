@@ -1,5 +1,6 @@
 """Coverage for src/nyxgpt/rag/model_compare.py (issue #3238, scoped split of #3222):
 
+- benchmark_embedding_speed happy path (averages elapsed time over num_runs)
 - benchmark_embedding_speed error path (EmbeddingError -> ValueError)
 - benchmark_query_speed happy path (embed + query + close, averaged over runs)
 - compare_models embedding-failure and query-failure branches
@@ -19,6 +20,27 @@ from nyxgpt.rag.model_compare import (
     compare_models,
     print_comparison_table,
 )
+
+
+@pytest.mark.unit
+def test_benchmark_embedding_speed_averages_elapsed_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The happy path calls embed_texts once per run and averages the elapsed times."""
+    call_count = 0
+
+    def fake_embed_texts(texts, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        assert texts == ["hello", "world"]
+        assert kwargs.get("model") == "test-model"
+        assert kwargs.get("dimension") == 768
+        return [[0.1, 0.2, 0.3] for _ in texts]
+
+    monkeypatch.setattr("nyxgpt.rag.model_compare.embed_texts", fake_embed_texts)
+
+    avg_time = benchmark_embedding_speed("test-model", 768, ["hello", "world"], num_runs=3)
+
+    assert call_count == 3
+    assert avg_time >= 0.0
 
 
 @pytest.mark.unit
