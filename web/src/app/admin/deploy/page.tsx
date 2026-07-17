@@ -27,10 +27,22 @@ type DeployStatus = {
   unavailable_reason: string | null;
 };
 
+type MonitoringStatus = {
+  active: boolean;
+  grafana_ui_url: string;
+};
+
+type LogAggregationStatus = {
+  active: boolean;
+  grafana_explore_url: string;
+};
+
 const COLOR_DOT: Record<Color, string> = {
   blue: '#3b82f6',
   green: '#22c55e',
 };
+
+const DEPLOY_LOKI_QUERY = '{job="nyxgpt"} |= `deploy:` |~ `switched|switching|rollback|refusing`';
 
 export default function DeployPage() {
   const [status, setStatus] = useState<DeployStatus | null>(null);
@@ -40,6 +52,8 @@ export default function DeployPage() {
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
   const [rollingBack, setRollingBack] = useState(false);
+  const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
+  const [logAggregation, setLogAggregation] = useState<LogAggregationStatus | null>(null);
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
@@ -62,6 +76,26 @@ export default function DeployPage() {
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadObservabilityLinks() {
+      try {
+        const [monitoringRes, logAggRes] = await Promise.all([
+          fetch('/api/v1/monitoring', { cache: 'no-store' }),
+          fetch('/api/v1/log-aggregation', { cache: 'no-store' }),
+        ]);
+        if (!cancelled && monitoringRes.ok) setMonitoring(await monitoringRes.json());
+        if (!cancelled && logAggRes.ok) setLogAggregation(await logAggRes.json());
+      } catch {
+        // Observability links are a bonus, not critical -- swallow errors silently.
+      }
+    }
+    void loadObservabilityLinks();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleSwitch() {
     if (!status) return;
@@ -187,6 +221,51 @@ export default function DeployPage() {
           }}
         >
           {actionMessage}
+        </div>
+      )}
+
+      {(monitoring?.active || logAggregation?.active) && (
+        <div
+          style={{
+            marginBottom: '1.5rem',
+            padding: '0.75rem 1rem',
+            borderRadius: '0.375rem',
+            background: 'var(--background-secondary)',
+            border: '1px solid var(--border-color)',
+            fontSize: '0.8rem',
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: '0.4rem' }}>Observability</div>
+          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.4rem' }}>
+            {monitoring?.active && (
+              <a
+                href={`${monitoring.grafana_ui_url}/d/nyxgpt-deployment`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: '#0066cc' }}
+              >
+                Blue/Green Deployment dashboard (Grafana) ↗
+              </a>
+            )}
+            {logAggregation?.active && (
+              <a
+                href={logAggregation.grafana_explore_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: '#0066cc' }}
+              >
+                Deploy events (Grafana Explore / Loki) ↗
+              </a>
+            )}
+          </div>
+          {logAggregation?.active && (
+            <div style={{ color: 'var(--foreground-muted)' }}>
+              Saved query for deploy events, paste into Explore:{' '}
+              <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
+                {DEPLOY_LOKI_QUERY}
+              </code>
+            </div>
+          )}
         </div>
       )}
 

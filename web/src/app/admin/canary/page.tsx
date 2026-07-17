@@ -34,6 +34,19 @@ type CanaryStatus = {
   unavailable_reason: string | null;
 };
 
+type MonitoringStatus = {
+  active: boolean;
+  grafana_ui_url: string;
+};
+
+type LogAggregationStatus = {
+  active: boolean;
+  grafana_explore_url: string;
+};
+
+const CANARY_LOKI_QUERY =
+  '{job="nyxgpt"} |= `canary:` |~ `starting|started|promoting|promoted|rolling back|rolled back|regression`';
+
 export default function CanaryPage() {
   const [status, setStatus] = useState<CanaryStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -45,6 +58,8 @@ export default function CanaryPage() {
   const [evaluating, setEvaluating] = useState(false);
   const [promoting, setPromoting] = useState(false);
   const [rollingBack, setRollingBack] = useState(false);
+  const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
+  const [logAggregation, setLogAggregation] = useState<LogAggregationStatus | null>(null);
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
@@ -67,6 +82,26 @@ export default function CanaryPage() {
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadObservabilityLinks() {
+      try {
+        const [monitoringRes, logAggRes] = await Promise.all([
+          fetch('/api/v1/monitoring', { cache: 'no-store' }),
+          fetch('/api/v1/log-aggregation', { cache: 'no-store' }),
+        ]);
+        if (!cancelled && monitoringRes.ok) setMonitoring(await monitoringRes.json());
+        if (!cancelled && logAggRes.ok) setLogAggregation(await logAggRes.json());
+      } catch {
+        // Observability links are a bonus, not critical -- swallow errors silently.
+      }
+    }
+    void loadObservabilityLinks();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function runAction(
     path: string,
@@ -175,6 +210,51 @@ export default function CanaryPage() {
           }}
         >
           {actionMessage}
+        </div>
+      )}
+
+      {(monitoring?.active || logAggregation?.active) && (
+        <div
+          style={{
+            marginBottom: '1.5rem',
+            padding: '0.75rem 1rem',
+            borderRadius: '0.375rem',
+            background: 'var(--background-secondary)',
+            border: '1px solid var(--border-color)',
+            fontSize: '0.8rem',
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: '0.4rem' }}>Observability</div>
+          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.4rem' }}>
+            {monitoring?.active && (
+              <a
+                href={`${monitoring.grafana_ui_url}/d/nyxgpt-canary`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: '#0066cc' }}
+              >
+                Canary Rollout dashboard (Grafana) ↗
+              </a>
+            )}
+            {logAggregation?.active && (
+              <a
+                href={logAggregation.grafana_explore_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: '#0066cc' }}
+              >
+                Canary events (Grafana Explore / Loki) ↗
+              </a>
+            )}
+          </div>
+          {logAggregation?.active && (
+            <div style={{ color: 'var(--foreground-muted)' }}>
+              Saved query for canary events, paste into Explore:{' '}
+              <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
+                {CANARY_LOKI_QUERY}
+              </code>
+            </div>
+          )}
         </div>
       )}
 
