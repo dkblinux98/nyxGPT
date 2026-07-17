@@ -1135,6 +1135,15 @@ def logs(args) -> int:
 # (api/web/cassandra/ollama) is deployed native or Compose.
 OBSERVABILITY_PROFILES: list[str] = ["monitoring", "logging", "tracing", "errors"]
 
+# Core app services in docker-compose.yml that have no `profiles:` key, which
+# makes Compose treat them as "default" services started on *every* `up`
+# regardless of which `--profile` flags are passed -- `--profile` only adds
+# services, it never filters the always-on ones. `_start_observability_stack`
+# must explicitly exclude these from the service list it starts, or `nyxgpt
+# ops install` would silently bring up a full Dockerized copy of the app
+# (building api/web images) alongside a native install.
+CORE_APP_SERVICES: frozenset[str] = frozenset({"nyxgpt", "ollama", "cassandra", "api", "web"})
+
 # config.ini sections flipped to `enabled = true` once their matching
 # Compose profile is confirmed up, so the SRE/admin dashboard (and, for
 # tracing, the API's own span-export init) reflect that the stack is
@@ -1190,11 +1199,20 @@ def _start_observability_stack() -> list[OpsResult]:
     """Start the Grafana/Loki/Jaeger/GlitchTip Compose profiles (idempotent).
 
     Wraps `docker compose --profile monitoring --profile logging --profile
-    tracing --profile errors up -d` so operators never type that raw command
-    themselves (the ops-wrapper principle) -- dashboards are already
-    pre-provisioned as code via docker/grafana/provisioning, so bringing the
-    stack up is the only step needed to get a populated SRE view. Re-running
-    is safe: `docker compose up -d` only (re)creates what's missing/changed.
+    tracing --profile errors up -d <services>` so operators never type that
+    raw command themselves (the ops-wrapper principle) -- dashboards are
+    already pre-provisioned as code via docker/grafana/provisioning, so
+    bringing the stack up is the only step needed to get a populated SRE
+    view. Re-running is safe: `docker compose up -d` only (re)creates what's
+    missing/changed.
+
+    The service list passed to `up -d` is resolved dynamically via `docker
+    compose config --services` and explicitly excludes `CORE_APP_SERVICES`.
+    This matters because `ollama`/`cassandra`/`api`/`web` have no `profiles:`
+    key in docker-compose.yml, so Compose treats them as always-on default
+    services -- `--profile` flags alone would NOT stop `up -d` from also
+    building and starting the entire core app stack, which would collide
+    with a native install's own processes on the same ports.
 
     Skips (without failing `ops install`) on hosts without Docker: these
     tools have no native/Homebrew path, so a native-only host simply won't
@@ -1211,10 +1229,35 @@ def _start_observability_stack() -> list[OpsResult]:
             )
         ]
 
-    cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE)]
+    base_cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE)]
     for profile in OBSERVABILITY_PROFILES:
-        cmd += ["--profile", profile]
-    cmd += ["up", "-d"]
+        base_cmd += ["--profile", profile]
+
+    services_cp = _run(base_cmd + ["config", "--services"], check=False)
+    if services_cp.returncode != 0:
+        return [
+            OpsResult(
+                False,
+                "Failed to resolve observability services",
+                (services_cp.stderr or services_cp.stdout or "").strip(),
+            )
+        ]
+
+    observability_services = sorted(
+        {s.strip() for s in services_cp.stdout.splitlines() if s.strip()} - CORE_APP_SERVICES
+    )
+    if not observability_services:
+        return [
+            OpsResult(
+                False,
+                "No observability services resolved",
+                "`docker compose config --services` returned no services outside the "
+                "core app stack for the monitoring/logging/tracing/errors profiles -- "
+                "check docker-compose.yml.",
+            )
+        ]
+
+    cmd = base_cmd + ["up", "-d"] + observability_services
 
     cp = _run(cmd, check=False)
     if cp.returncode != 0:

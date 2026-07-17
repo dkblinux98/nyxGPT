@@ -2007,33 +2007,80 @@ def test_start_observability_stack_skips_without_docker(monkeypatch):
     assert "Skipped observability stack" in results[0].message
 
 
+_ALL_COMPOSE_SERVICES = (
+    "grafana\nprometheus\nloki\npromtail\notel-collector\njaeger\n"
+    "glitchtip\nglitchtip-worker\nglitchtip-postgres\nglitchtip-redis\nglitchtip-migrate\n"
+    "nyxgpt\nollama\ncassandra\napi\nweb\n"
+)
+
+
+def _fake_run_resolving_services(calls, *, up_rc=0):
+    def fake_run(cmd, check=True):
+        calls.append(cmd)
+        if cmd[-2:] == ["config", "--services"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=_ALL_COMPOSE_SERVICES)
+        return subprocess.CompletedProcess(cmd, up_rc, stderr="up failed" if up_rc else "")
+
+    return fake_run
+
+
 @pytest.mark.unit
 def test_start_observability_stack_runs_compose_up_with_all_profiles(monkeypatch):
     calls = []
 
-    def fake_run(cmd, check=True):
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0)
-
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
-    monkeypatch.setattr(ops, "_run", fake_run)
+    monkeypatch.setattr(ops, "_run", _fake_run_resolving_services(calls))
     monkeypatch.setattr(ops, "_enable_observability_config", lambda: None)
 
     results = ops._start_observability_stack()
 
     assert len(results) == 1
     assert results[0].ok is True
-    assert len(calls) == 1
-    cmd = calls[0]
-    assert cmd[:2] == ["docker", "compose"]
+    assert len(calls) == 2
+
+    services_cmd = calls[0]
+    assert services_cmd[:2] == ["docker", "compose"]
     for profile in ops.OBSERVABILITY_PROFILES:
-        assert "--profile" in cmd
-        assert profile in cmd
-    assert cmd[-2:] == ["up", "-d"]
+        assert "--profile" in services_cmd
+        assert profile in services_cmd
+    assert services_cmd[-2:] == ["config", "--services"]
+
+    up_cmd = calls[1]
+    assert up_cmd[:2] == ["docker", "compose"]
+    for profile in ops.OBSERVABILITY_PROFILES:
+        assert "--profile" in up_cmd
+        assert profile in up_cmd
+    up_idx = up_cmd.index("up")
+    assert up_cmd[up_idx : up_idx + 2] == ["up", "-d"]
+    started_services = up_cmd[up_idx + 2 :]
+    assert started_services
+    assert "grafana" in started_services
+    assert "glitchtip" in started_services
+    # Regression guard: `--profile` alone does not stop Compose from also
+    # starting unprofiled "default" services, so the core app stack
+    # (ollama/cassandra/api/web) must never appear in the resolved `up -d`
+    # service list -- otherwise `nyxgpt ops install` on a native host would
+    # silently launch a full Dockerized copy of the app alongside it.
+    assert not (ops.CORE_APP_SERVICES & set(started_services))
 
 
 @pytest.mark.unit
-def test_start_observability_stack_reports_failure(monkeypatch):
+def test_start_observability_stack_excludes_core_app_services_even_if_listed(monkeypatch):
+    """Even if `config --services` reports core services, they must be filtered out."""
+    calls = []
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_run", _fake_run_resolving_services(calls))
+    monkeypatch.setattr(ops, "_enable_observability_config", lambda: None)
+
+    ops._start_observability_stack()
+
+    up_cmd = calls[1]
+    for core_service in ops.CORE_APP_SERVICES:
+        assert core_service not in up_cmd
+
+
+@pytest.mark.unit
+def test_start_observability_stack_reports_config_resolution_failure(monkeypatch):
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
     monkeypatch.setattr(
         ops,
@@ -2049,6 +2096,43 @@ def test_start_observability_stack_reports_failure(monkeypatch):
     assert results[0].ok is False
     assert "profile error" in results[0].details
     # Config flags must not be flipped to enabled when the stack failed to start.
+    assert enable_calls == []
+
+
+@pytest.mark.unit
+def test_start_observability_stack_reports_up_failure(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_run", _fake_run_resolving_services(calls, up_rc=1))
+    enable_calls = []
+    monkeypatch.setattr(ops, "_enable_observability_config", lambda: enable_calls.append(True))
+
+    results = ops._start_observability_stack()
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "up failed" in results[0].details
+    assert enable_calls == []
+
+
+@pytest.mark.unit
+def test_start_observability_stack_no_services_resolved(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(
+            cmd, 0, stdout="nyxgpt\nollama\ncassandra\napi\nweb\n"
+        ),
+    )
+    enable_calls = []
+    monkeypatch.setattr(ops, "_enable_observability_config", lambda: enable_calls.append(True))
+
+    results = ops._start_observability_stack()
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "No observability services resolved" in results[0].message
     assert enable_calls == []
 
 
