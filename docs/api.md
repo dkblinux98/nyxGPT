@@ -168,6 +168,10 @@ Prometheus text exposition format metrics for scraping. Unauthenticated
 | `nyxgpt_http_errors_total` | Counter | `method`, `path` | Requests that resulted in a 5xx error |
 | `nyxgpt_chat_requests_total` | Counter | `model`, `streaming` | Chat requests processed |
 | `nyxgpt_rag_queries_total` | Counter | `source` | RAG retrieval queries executed (`chat` or `rag_query`) |
+| `nyxgpt_selfheal_unhealthy_components` | Gauge | — | Self-heal-monitored components currently unhealthy or stopped |
+| `nyxgpt_selfheal_restarts_total` | Counter | `service`, `result` | Self-heal restart attempts, by service and outcome (`ok`/`failed`) |
+| `nyxgpt_selfheal_restart_count` | Gauge | `service` | Current consecutive-restart count per service (resets to 0 once healthy) |
+| `nyxgpt_selfheal_last_recovery_timestamp` | Gauge | `service` | Unix timestamp of the last successful self-heal restart, by service |
 
 `path` labels use the route's path template (e.g. `/api/v1/sessions/{name}`),
 not the raw request path, to keep cardinality bounded.
@@ -910,6 +914,14 @@ automatically restarts anything unhealthy or stopped. See
 `nyxgpt self-heal` CLI, and the known limitation around the `api`
 container. These endpoints back the SRE/admin dashboard at
 `/admin/self-heal`.
+
+Every decision the watchdog makes (health checks, restart attempts and
+outcomes, backoff skips, restart-count resets, giving up after too many
+consecutive failures) is logged with structured fields and exported as the
+`nyxgpt_selfheal_*` metrics above -- see
+[self-healing.md#observability](self-healing.md#observability-logs-metrics-and-the-self-healing-dashboard)
+for the pre-provisioned Grafana **Self-Healing** dashboard and the Loki
+saved query, both linked directly from `/admin/self-heal`.
 
 ### `GET /api/v1/self-heal/status`
 
