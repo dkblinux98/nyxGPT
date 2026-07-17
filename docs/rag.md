@@ -267,6 +267,23 @@ nyxgpt rag delete <doc_id> [--collection default]
 nyxgpt rag wipe --yes-really [--collection default]
 ```
 
+### Index a code repository
+
+Bulk-ingest a source code repository, chunked per-language (also exposed
+as `POST /api/v1/rag/index-repo`):
+
+```bash
+nyxgpt rag index-repo <repo_path> [--prefix code] [--extensions .py,.js] \
+    [--docs-only] [--ensure-schema] [--collection default] \
+    [--model MODEL] [--dimension N]
+```
+
+- `--prefix` - Document ID prefix for indexed files (default: `code`)
+- `--extensions` - Comma-separated file extensions to include; if omitted, all supported languages are indexed
+- `--docs-only` - Extract only comments/docstrings, excluding code bodies
+- `--ensure-schema` - Create the collection's schema if it doesn't exist yet
+- `--model` / `--dimension` - Override the embedding model/dimension (defaults come from config)
+
 ---
 
 ## API Endpoints
@@ -645,6 +662,75 @@ collections = store.list_collections()
 print(f"Available collections: {collections}")
 store.close()
 ```
+
+### Collection Management API
+
+These endpoints back the collection management UI in the RAG dashboard
+and complement `GET /api/v1/rag/collections` / `DELETE
+/api/v1/rag/collections/{name}` (documented in
+[`docs/api.md`](api.md#rag-endpoints)).
+
+#### `POST /api/v1/rag/collections`
+
+Create a new, empty collection with the given embedding dimension.
+Collection names must be alphanumeric with underscores only (no hyphens),
+and the `default` collection cannot be created manually (it's managed
+automatically).
+
+**Request:**
+
+```json
+{ "name": "all-minilm", "embedding_dim": 384, "embedding_model": "all-minilm:latest" }
+```
+
+**Response (`201 Created`):**
+
+```json
+{ "collection": "all-minilm", "status": "Collection 'all-minilm' created successfully", "embedding_dim": 384 }
+```
+
+**Error Responses:** `400` invalid name/dimension or `default` requested, `409` collection already exists.
+
+#### `GET /api/v1/rag/collections/{name}/settings`
+
+Get a collection's stored settings (preferred embedding model, default
+chunk size/overlap), falling back to global RAG config or values
+inferred from ingested documents when nothing has been stored yet.
+
+**Response:**
+
+```json
+{ "collection": "all-minilm", "settings": { "embedding_model": "all-minilm:latest", "chunk_size": 1000, "chunk_overlap": 200 } }
+```
+
+#### `PUT /api/v1/rag/collections/{name}/settings`
+
+Update a collection's stored settings. These are used as defaults when
+ingesting new documents into the collection.
+
+**Request:** same shape as the `settings` object above.
+
+**Error Responses:** `404` if the collection doesn't exist.
+
+#### `POST /api/v1/rag/collections/{name}/reindex`
+
+Re-generate embeddings for every chunk in a collection using a different
+embedding model. Long-running for large collections; the `default`
+collection cannot be re-indexed (create a new collection instead).
+
+**Request:**
+
+```json
+{ "target_embedding_model": "mxbai-embed-large:latest", "embedding_dim": 1024 }
+```
+
+**Response:**
+
+```json
+{ "collection": "all-minilm", "status": "Successfully re-indexed collection", "chunks_processed": 156, "chunks_total": 156 }
+```
+
+**Error Responses:** `400` invalid dimension or `default` collection requested, `404` collection not found.
 
 ### Collection Best Practices
 
