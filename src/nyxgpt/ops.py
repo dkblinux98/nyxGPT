@@ -11,6 +11,7 @@ can warn about -- and refuse to create -- port collisions between the two.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import shutil
 import subprocess
@@ -21,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from nyxgpt import self_heal
+
+logger = logging.getLogger(__name__)
 
 # Repo root: .../nyxGPT/src/nyxgpt/ops.py -> parents[2] is repo root
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -68,6 +71,37 @@ class OpsResult:
     ok: bool
     message: str
     details: str = ""
+
+
+def _emit_results(action: str, results: list[OpsResult]) -> bool:
+    """Print and structured-log each OpsResult from an ops step, returning overall success.
+
+    Preserves the `[OK]`/`[FAIL]` stdout lines every CLI entrypoint already
+    printed, and additionally logs one INFO/WARNING record per result
+    (service/action/result plus any subprocess failure detail in `details`)
+    so `nyxgpt ops` activity lands in the log files instead of only stdout.
+    """
+    ok = True
+    for r in results:
+        print(f"[{'OK' if r.ok else 'FAIL'}] {r.message}")
+        if r.details:
+            print(f"  {r.details}")
+        log = logger.info if r.ok else logger.warning
+        log(
+            "ops: %s %s: %s",
+            action,
+            "ok" if r.ok else "failed",
+            r.message,
+            extra={
+                "component": "ops",
+                "action": action,
+                "ok": r.ok,
+                "result_message": r.message,
+                "details": r.details,
+            },
+        )
+        ok = ok and r.ok
+    return ok
 
 
 def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -197,6 +231,27 @@ def detect_deployment_mode() -> DeploymentMode:
         for component in COMPOSE_COMPONENT_PORTS
         if native.get(component) in ("started", "running") and compose.get(component) == "running"
     ]
+
+    logger.debug(
+        "ops: detected deployment mode (native=%s, compose=%s, conflicts=%s)",
+        native,
+        compose,
+        conflicts,
+        extra={
+            "component": "ops",
+            "action": "detect_deployment_mode",
+            "native": native,
+            "compose": compose,
+            "conflicts": conflicts,
+        },
+    )
+    if conflicts:
+        logger.warning(
+            "ops: native/Compose deployment conflict on %s -- both report running on the "
+            "shared port",
+            ", ".join(sorted(conflicts)),
+            extra={"component": "ops", "action": "detect_deployment_mode", "conflicts": conflicts},
+        )
 
     return DeploymentMode(native=native, compose=compose, conflicts=conflicts)
 
@@ -739,6 +794,8 @@ def install(_args) -> int:
 
     Returns 0 if every step succeeded, else 2.
     """
+    logger.info("ops: install starting", extra={"component": "ops", "action": "install"})
+
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
         ("scripts", _install_scripts),
@@ -753,6 +810,14 @@ def install(_args) -> int:
         try:
             results += fn()
         except Exception as e:
+            logger.error(
+                "ops: install step %s raised %s: %s",
+                step_name,
+                type(e).__name__,
+                e,
+                extra={"component": "ops", "action": "install", "step": step_name},
+                exc_info=True,
+            )
             results.append(
                 OpsResult(
                     False,
@@ -761,12 +826,14 @@ def install(_args) -> int:
                 )
             )
 
-    ok = True
-    for r in results:
-        print(f"[{'OK' if r.ok else 'FAIL'}] {r.message}")
-        if r.details:
-            print(f"  {r.details}")
-        ok = ok and r.ok
+    ok = _emit_results("install", results)
+    logger.info(
+        "ops: install %s (%d/%d steps ok)",
+        "succeeded" if ok else "failed",
+        sum(1 for r in results if r.ok),
+        len(results),
+        extra={"component": "ops", "action": "install", "ok": ok, "steps": len(results)},
+    )
 
     return 0 if ok else 2
 
@@ -781,6 +848,7 @@ def status(_args) -> int:
 
     Always returns 0.
     """
+    logger.info("ops: status starting", extra={"component": "ops", "action": "status"})
     print("nyxGPT ops status")
 
     mode = detect_deployment_mode()
@@ -830,6 +898,20 @@ def status(_args) -> int:
     else:
         print("\nDocker: docker not found")
 
+    logger.info(
+        "ops: status complete (native=%s, compose=%s, conflicts=%s)",
+        mode.native,
+        mode.compose,
+        mode.conflicts,
+        extra={
+            "component": "ops",
+            "action": "status",
+            "native": mode.native,
+            "compose": mode.compose,
+            "conflicts": mode.conflicts,
+        },
+    )
+
     return 0
 
 
@@ -843,6 +925,7 @@ def doctor(_args) -> int:
 
     Returns 0 if no issues were found, else 2.
     """
+    logger.info("ops: doctor starting", extra={"component": "ops", "action": "doctor"})
     issues: list[str] = []
 
     cfg = Path.home() / ".nyxGPT" / "config.ini"
@@ -886,9 +969,19 @@ def doctor(_args) -> int:
         print("nyxGPT ops doctor: FAIL")
         for i in issues:
             print(f"- {i}")
+        logger.warning(
+            "ops: doctor found %d issue(s): %s",
+            len(issues),
+            "; ".join(issues),
+            extra={"component": "ops", "action": "doctor", "ok": False, "issues": issues},
+        )
         return 2
 
     print("nyxGPT ops doctor: OK")
+    logger.info(
+        "ops: doctor found no issues",
+        extra={"component": "ops", "action": "doctor", "ok": True, "issues": []},
+    )
     return 0
 
 
@@ -920,6 +1013,11 @@ def restart(args) -> int:
     a second process/container that would collide on the same port.
     """
     target = getattr(args, "target", "all") or "all"
+    logger.info(
+        "ops: restart starting (target=%s)",
+        target,
+        extra={"component": "ops", "action": "restart", "target": target},
+    )
 
     results: list[OpsResult] = []
     compose = _compose_stack_snapshot()
@@ -955,12 +1053,15 @@ def restart(args) -> int:
     if target in ("all", "cassandra-logs"):
         results += _restart_launchagent("com.nyxgpt.cassandra-logs")
 
-    ok = True
-    for r in results:
-        print(f"[{'OK' if r.ok else 'FAIL'}] {r.message}")
-        if r.details:
-            print(f"  {r.details}")
-        ok = ok and r.ok
+    ok = _emit_results("restart", results)
+    logger.info(
+        "ops: restart %s (target=%s, %d/%d ok)",
+        "succeeded" if ok else "failed",
+        target,
+        sum(1 for r in results if r.ok),
+        len(results),
+        extra={"component": "ops", "action": "restart", "target": target, "ok": ok},
+    )
 
     return 0 if ok else 2
 
@@ -978,15 +1079,42 @@ def logs(args) -> int:
     if tail is None:
         tail = 200
 
+    logger.info(
+        "ops: logs requested for %s (tail=%d)",
+        service,
+        tail,
+        extra={"component": "ops", "action": "logs", "service": service, "tail": tail},
+    )
+
     result = self_heal.component_logs(service, tail=tail)
     if not result.ok:
         print(f"[FAIL] {result.message}")
         if result.details:
             print(f"  {result.details}")
+        logger.warning(
+            "ops: logs failed for %s: %s",
+            service,
+            result.message,
+            extra={
+                "component": "ops",
+                "action": "logs",
+                "service": service,
+                "ok": False,
+                "result_message": result.message,
+                "details": result.details,
+            },
+        )
         return 2
 
     print(f"--- {result.message} ---")
     print(result.details or "(no output)")
+    # Log the outcome, not the log body itself -- the tailed output can be
+    # large and would otherwise duplicate the target service's own logs.
+    logger.info(
+        "ops: logs %s",
+        result.message,
+        extra={"component": "ops", "action": "logs", "service": service, "ok": True},
+    )
     return 0
 
 
@@ -1083,13 +1211,20 @@ def env_sync(args) -> int:
     cfg_path = Path(args.config).expanduser() if getattr(args, "config", None) else None
     env_path = Path(args.env_file).expanduser() if getattr(args, "env_file", None) else None
 
+    logger.info(
+        "ops: env-sync starting (config=%s, env_file=%s)",
+        cfg_path,
+        env_path,
+        extra={"component": "ops", "action": "env-sync"},
+    )
+
     results = sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
 
-    ok = True
-    for r in results:
-        print(f"[{'OK' if r.ok else 'FAIL'}] {r.message}")
-        if r.details:
-            print(f"  {r.details}")
-        ok = ok and r.ok
+    ok = _emit_results("env-sync", results)
+    logger.info(
+        "ops: env-sync %s",
+        "succeeded" if ok else "failed",
+        extra={"component": "ops", "action": "env-sync", "ok": ok},
+    )
 
     return 0 if ok else 2
