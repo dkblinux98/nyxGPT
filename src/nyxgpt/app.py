@@ -1151,7 +1151,7 @@ def _jaeger_curated_views(jaeger_ui_url: str, service_name: str) -> list[dict[st
         },
         {
             "label": "RAG query",
-            "hint": "Filter by operation: POST /api/v1/rag/query",
+            "hint": "Filter by operation: rag.retrieve (the retrieval pipeline span)",
             "url": search_url,
         },
         {
