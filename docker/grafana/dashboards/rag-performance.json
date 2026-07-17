@@ -71,6 +71,38 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 5,
+      "title": "RAG ingest rate by source and outcome",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(nyxgpt_rag_ingests_total[5m])) by (source, result)",
+          "legendFormat": "{{source}} ({{result}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Total RAG ingests by source",
+      "type": "piechart",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(nyxgpt_rag_ingests_total) by (source)",
+          "legendFormat": "{{source}}",
+          "refId": "A"
+        }
+      ]
     }
   ]
 }

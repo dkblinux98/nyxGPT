@@ -565,6 +565,7 @@ async def rate_limit_middleware(request: Request, call_next):
             request.url.path,
             req_id,
         )
+        prom_metrics.RATE_LIMIT_REJECTIONS_TOTAL.labels(path=request.url.path).inc()
 
         # Return 429 error with rate limit headers
         return JSONResponse(
@@ -1053,10 +1054,19 @@ def prometheus_metrics_endpoint() -> Response:
     """Expose metrics in Prometheus text exposition format for scraping.
 
     Includes HTTP request counts, latency histograms, and error rates
-    (all endpoints) plus business metrics (chat requests, RAG queries).
+    (all endpoints) plus business metrics (chat requests, RAG queries) and
+    a live snapshot of process resource usage (memory, CPU, queue depth).
     Left unauthenticated like /health since Prometheus scrapers typically
     don't send an API key.
     """
+    monitor = get_resource_monitor()
+    if monitor is not None:
+        snapshot = monitor.get_metrics()
+        prom_metrics.update_resource_gauges(
+            rss_mb=snapshot.memory_rss_mb,
+            cpu_percent=snapshot.cpu_percent_process,
+            queue_depth=snapshot.queue_depth,
+        )
     body, content_type = prom_metrics.render_metrics()
     return Response(content=body, media_type=content_type)
 
@@ -1122,6 +1132,41 @@ def resource_metrics() -> ResourceMetricsResponse:
     return ResourceMetricsResponse(**metrics.to_dict())
 
 
+def _jaeger_curated_views(jaeger_ui_url: str, service_name: str) -> list[dict[str, str]]:
+    """Build curated Jaeger search links for the main request flows.
+
+    Each entry deep-links to the service's trace search (a query Jaeger
+    always supports) and names the operation(s) to pick from the dropdown
+    for that flow, rather than guessing an exact `operation` URL param --
+    the auto-instrumented span name for a given FastAPI route can vary by
+    library version, so a wrong guess there would silently show "no
+    results" instead of failing loudly.
+    """
+    search_url = f"{jaeger_ui_url}/search?service={service_name}&lookback=1h"
+    return [
+        {
+            "label": "Chat requests",
+            "hint": "Filter by operation: POST /api/v1/chat or POST /api/v1/chat/stream",
+            "url": search_url,
+        },
+        {
+            "label": "RAG query",
+            "hint": "Filter by operation: rag.retrieve (the retrieval pipeline span)",
+            "url": search_url,
+        },
+        {
+            "label": "RAG ingest",
+            "hint": "Filter by operation: POST /api/v1/rag/ingest, /rag/upload, or /rag/index-repo",
+            "url": search_url,
+        },
+        {
+            "label": "Ollama backend calls",
+            "hint": "Filter by operation: ollama.request, ollama.request.stream, or ollama.embeddings",
+            "url": search_url,
+        },
+    ]
+
+
 @api.get("/tracing")
 def tracing_status(request: Request) -> dict[str, Any]:
     """Get distributed tracing status and how to reach the local Jaeger UI.
@@ -1136,6 +1181,9 @@ def tracing_status(request: Request) -> dict[str, Any]:
     return {
         **tracing_config,
         "active": tracing_module.is_tracing_enabled(),
+        "curated_views": _jaeger_curated_views(
+            tracing_config["jaeger_ui_url"], tracing_config["service_name"]
+        ),
     }
 
 
@@ -3087,6 +3135,7 @@ def rag_ingest(_request: Request, req: RagIngestRequest) -> RagIngestResponse:
             ensure_schema=req.ensure_schema,
             collection=req.collection,
         )
+        prom_metrics.RAG_INGESTS_TOTAL.labels(source="document", result="success").inc()
         return RagIngestResponse(
             doc_id=req.doc_id,
             chunks_ingested=result["chunks_ingested"],
@@ -3095,6 +3144,7 @@ def rag_ingest(_request: Request, req: RagIngestRequest) -> RagIngestResponse:
             previous_hash=result["previous_hash"],
         )
     except Exception as e:
+        prom_metrics.RAG_INGESTS_TOTAL.labels(source="document", result="failure").inc()
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
@@ -4755,6 +4805,7 @@ async def rag_upload_file(
     # Ingest
     try:
         result = ingest_document(doc_id=final_doc_id, text=text)
+        prom_metrics.RAG_INGESTS_TOTAL.labels(source="upload", result="success").inc()
         return RagIngestResponse(
             doc_id=final_doc_id,
             chunks_ingested=result["chunks_ingested"],
@@ -4763,6 +4814,7 @@ async def rag_upload_file(
             previous_hash=result["previous_hash"],
         )
     except Exception as e:
+        prom_metrics.RAG_INGESTS_TOTAL.labels(source="upload", result="failure").inc()
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}") from None
 
 
@@ -4782,6 +4834,7 @@ def rag_index_repo(_request: Request, req: RagIndexRepoRequest) -> RagIndexRepoR
             ensure_schema=req.ensure_schema,
             collection=req.collection,
         )
+        prom_metrics.RAG_INGESTS_TOTAL.labels(source="repo", result="success").inc()
 
         return RagIndexRepoResponse(
             total_files=result["total_files"],
@@ -4790,8 +4843,10 @@ def rag_index_repo(_request: Request, req: RagIndexRepoRequest) -> RagIndexRepoR
             doc_ids=result["doc_ids"],
         )
     except ValueError as e:
+        prom_metrics.RAG_INGESTS_TOTAL.labels(source="repo", result="failure").inc()
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
+        prom_metrics.RAG_INGESTS_TOTAL.labels(source="repo", result="failure").inc()
         raise HTTPException(status_code=500, detail=f"Repository indexing failed: {e}") from e
 
 

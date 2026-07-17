@@ -271,6 +271,7 @@ export default function AdminDashboardPage() {
                 <a href="/admin/deploy" style={navLinkStyle}>Deployment →</a>
                 <a href="/admin/canary" style={navLinkStyle}>Canary →</a>
                 <a href="/admin/self-heal" style={navLinkStyle}>Self-heal →</a>
+                <a href="/admin/observability" style={navLinkStyle}>SRE Overview →</a>
                 <a href="/admin/analytics" style={navLinkStyle}>Usage Analytics →</a>
                 <a href="/admin/workflow-analytics" style={navLinkStyle}>CI Analytics →</a>
                 <a href="/settings" style={navLinkStyle}>Full metrics →</a>

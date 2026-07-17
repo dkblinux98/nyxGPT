@@ -57,6 +57,40 @@ def test_promtail_scrapes_nyxgpt_log_files_and_ships_to_loki() -> None:
     assert labels["__path__"].endswith("logs/*.log*")
 
 
+def test_promtail_extracts_logger_as_a_label() -> None:
+    """The per-component curated Loki queries (operational-logs.json) filter
+    on a `logger` label, so promtail's pipeline must extract it from the
+    default log format -- not just `level`, which is all it did before."""
+    promtail_config = yaml.safe_load((REPO_ROOT / "docker" / "promtail-config.yml").read_text())
+    pipeline_stages = promtail_config["scrape_configs"][0]["pipeline_stages"]
+
+    regex_stage = next(stage["regex"] for stage in pipeline_stages if "regex" in stage)
+    assert "?P<logger>" in regex_stage["expression"]
+
+    labels_stage = next(stage["labels"] for stage in pipeline_stages if "labels" in stage)
+    assert "logger" in labels_stage
+    assert "level" in labels_stage
+
+
+def test_operational_logs_dashboard_is_provisioned() -> None:
+    dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
+    dashboard = json.loads((dashboards_dir / "operational-logs.json").read_text())
+
+    assert dashboard["uid"] == "nyxgpt-operational-logs"
+    panel_types = {panel["type"] for panel in dashboard["panels"]}
+    assert panel_types == {"logs"}
+
+    for panel in dashboard["panels"]:
+        for target in panel["targets"]:
+            assert target["datasource"]["type"] == "loki"
+
+    exprs = [target["expr"] for panel in dashboard["panels"] for target in panel["targets"]]
+    assert any('logger="nyxgpt.self_heal"' in expr for expr in exprs)
+    assert any('logger="nyxgpt.deploy"' in expr for expr in exprs)
+    assert any('logger="nyxgpt.canary"' in expr for expr in exprs)
+    assert any('logger="nyxgpt.chat"' in expr and "ERROR" in expr for expr in exprs)
+
+
 def test_grafana_has_loki_datasource() -> None:
     datasource_config = yaml.safe_load(
         (

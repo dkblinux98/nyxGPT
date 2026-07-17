@@ -19,11 +19,15 @@ scrape_configs:
     pipeline_stages:
       # nyxgpt's default text log format (see nyxgpt.logging.DEFAULT_FMT):
       # "<timestamp> <LEVEL> [<request_id>] <logger>: <message>". Extract
-      # the level as a label so it's filterable in Grafana Explore.
+      # the level and logger (module, e.g. "nyxgpt.self_heal") as labels so
+      # both are filterable in Grafana Explore and the curated per-component
+      # dashboard queries -- the logger name is a bounded set of module
+      # names, not per-request-unique, so it's safe label cardinality.
       - regex:
           expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (?P<level>\w+) \[(?P<request_id>[^\]]*)\] (?P<logger>\S+): (?P<message>.*)$'
       - labels:
           level:
+          logger:
       - timestamp:
           source: timestamp
           format: "2006-01-02 15:04:05"

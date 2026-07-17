@@ -342,6 +342,28 @@ class TestRateLimiting:
         assert resp.status_code == 429
         assert resp.json()["error"]["code"] == "rate_limit_exceeded"
 
+    def test_rejected_request_increments_rate_limit_metric(self, client):
+        from prometheus_client.parser import text_string_to_metric_families
+
+        from nyxgpt import metrics as prom_metrics
+
+        app_module._rate_limiter = RateLimiter(requests_per_second=1, burst_size=2)
+
+        client.get("/health", headers={"X-Forwarded-For": "10.0.0.3"})
+        client.get("/health", headers={"X-Forwarded-For": "10.0.0.3"})
+        resp = client.get("/health", headers={"X-Forwarded-For": "10.0.0.3"})
+        assert resp.status_code == 429
+
+        body, _ = prom_metrics.render_metrics()
+        samples = [
+            sample
+            for family in text_string_to_metric_families(body.decode("utf-8"))
+            for sample in family.samples
+            if sample.name == "nyxgpt_rate_limit_rejections_total"
+            and sample.labels.get("path") == "/health"
+        ]
+        assert samples and samples[0].value >= 1
+
     def test_rate_limit_headers_present_on_success(self, client):
         app_module._rate_limiter = RateLimiter(requests_per_second=1, burst_size=5)
 

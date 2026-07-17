@@ -128,6 +128,56 @@ CANARY_EVENTS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+RAG_INGESTS_TOTAL = Counter(
+    "nyxgpt_rag_ingests_total",
+    "Total RAG document ingestion attempts, by source and outcome",
+    ["source", "result"],
+    registry=REGISTRY,
+)
+
+CACHE_REQUESTS_TOTAL = Counter(
+    "nyxgpt_cache_requests_total",
+    "Total cache lookups, by cache name and outcome (hit/miss)",
+    ["cache", "result"],
+    registry=REGISTRY,
+)
+
+RATE_LIMIT_REJECTIONS_TOTAL = Counter(
+    "nyxgpt_rate_limit_rejections_total",
+    "Total requests rejected by the per-client rate limiter, by path",
+    ["path"],
+    registry=REGISTRY,
+)
+
+RESOURCE_MEMORY_RSS_MB = Gauge(
+    "nyxgpt_resource_memory_rss_mb",
+    "Resident set size of the API process, in MB",
+    registry=REGISTRY,
+)
+
+RESOURCE_CPU_PERCENT = Gauge(
+    "nyxgpt_resource_cpu_percent",
+    "CPU usage percentage of the API process",
+    registry=REGISTRY,
+)
+
+RESOURCE_QUEUE_DEPTH = Gauge(
+    "nyxgpt_resource_queue_depth",
+    "Current number of requests in the batch processing queue",
+    registry=REGISTRY,
+)
+
+
+def update_resource_gauges(*, rss_mb: float, cpu_percent: float, queue_depth: int) -> None:
+    """Refresh the resource-usage gauges from a live `ResourceMonitor` snapshot.
+
+    Called just before `/metrics` is rendered rather than on every request,
+    since Prometheus only needs the value at scrape time.
+    """
+    RESOURCE_MEMORY_RSS_MB.set(rss_mb)
+    RESOURCE_CPU_PERCENT.set(cpu_percent)
+    RESOURCE_QUEUE_DEPTH.set(queue_depth)
+
 
 def render_metrics() -> tuple[bytes, str]:
     """Render all registered metrics in Prometheus text exposition format.

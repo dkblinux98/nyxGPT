@@ -39,10 +39,11 @@ Your data stays on your machine. No cloud dependency is required.
 - **Local canary deployment** with gradual weighted rollout, metrics-based promotion, and automatic rollback, operable from the SRE/admin dashboard (`nyxgpt canary` CLI or `/admin/canary`)
 - **System health dashboard** — service uptime, dependency reachability checks (Ollama, Cassandra), resource utilization, and threshold-based alert indicators, surfaced in the SRE/admin dashboard (`/admin/health`)
 - **Prometheus metrics** (`/metrics`) — request counts, latency histograms, error rates, and chat/RAG business metrics, surfaced in the SRE/admin dashboard (`/admin`)
-- **Monitoring dashboards** (Grafana) — opt-in, local-only system overview, RAG performance, API metrics, and self-healing dashboards backed by Prometheus, plus alerting rules (`docker compose --profile monitoring up`), linked from the SRE/admin dashboard (`/admin`)
-- **Log aggregation** (Loki + promtail) — opt-in, local-only centralized search over `~/.nyxGPT/logs` with a retention policy, surfaced via a Grafana Logs Explorer dashboard (`docker compose --profile logging up`), linked from the SRE/admin dashboard (`/admin`)
-- **Distributed tracing** (OpenTelemetry) — opt-in, local-only request/RAG/Ollama/Cassandra spans exported to a local Jaeger instance (`docker compose --profile tracing up`), linked from the SRE/admin dashboard (`/admin`)
+- **Monitoring dashboards** (Grafana) — opt-in, local-only system overview, RAG performance (including ingest activity), API metrics, resource usage (CPU/mem/queue/cache/rate-limit), and self-healing dashboards backed by Prometheus, plus alerting rules (`docker compose --profile monitoring up`), linked from the SRE/admin dashboard (`/admin`)
+- **Log aggregation** (Loki + promtail) — opt-in, local-only centralized search over `~/.nyxGPT/logs` with a retention policy, surfaced via a Grafana Logs Explorer dashboard and a curated Operational Logs dashboard (self-heal, deploy/canary, chat errors, per-component) (`docker compose --profile logging up`), linked from the SRE/admin dashboard (`/admin`)
+- **Distributed tracing** (OpenTelemetry) — opt-in, local-only request/RAG/Ollama/Cassandra spans exported to a local Jaeger instance, with curated trace views for the main request flows (`docker compose --profile tracing up`), linked from the SRE/admin dashboard (`/admin`)
 - **Error tracking** (self-hosted GlitchTip) — opt-in, local-only backend exception and web UI client error reporting via the Sentry SDK protocol (`docker compose --profile errors up`), linked from the SRE/admin dashboard (`/admin`)
+- **SRE Overview** — a single entry point (`/admin/observability`, reachable from `/admin/dashboard`) that reaches every Grafana dashboard, Loki query, Jaeger trace view, and GlitchTip error tracker above, all provisioned as code
 - Optional **Docker Compose** stack for one-command bring-up of every component
 - Robust unit and integration test suite
 
@@ -462,9 +463,9 @@ The wizard includes a real-time resource monitoring dashboard accessible from th
 - **Request Latency** - Average, P50, P95, and P99 latency percentiles
 - **Queue Status** - Current batch processing queue depth and total requests
 - **Prometheus Endpoint** - Card showing the `/metrics` scrape path for external Prometheus servers, with a link to view current metrics (see [`docs/api.md`](docs/api.md#get-metrics))
-- **Monitoring Dashboards** - Card describing the opt-in, local-only Grafana dashboards (system overview, RAG performance, API metrics, self-healing) backed by Prometheus, with a link to the local Grafana UI (see [`docs/docker-compose.md`](docs/docker-compose.md#monitoring-dashboards))
+- **Monitoring Dashboards** - Card describing the opt-in, local-only Grafana dashboards (system overview, RAG performance, API metrics, resource usage, self-healing) backed by Prometheus, with a link to the local Grafana UI plus a Dashboard Catalog linking directly into each one (see [`docs/docker-compose.md`](docs/docker-compose.md#monitoring-dashboards))
 - **Log Aggregation** - Card describing the opt-in, local-only Loki/promtail log search stack, with a link to the Grafana Logs Explorer dashboard when active (see [`docs/api.md`](docs/api.md#log-aggregation))
-- **Distributed Tracing** - Card showing whether OpenTelemetry tracing is enabled, with a link to the local Jaeger UI when active (see [`docs/api.md`](docs/api.md#distributed-tracing))
+- **Distributed Tracing** - Card showing whether OpenTelemetry tracing is enabled, with a link to the local Jaeger UI and curated trace views for the main request flows when active (see [`docs/api.md`](docs/api.md#distributed-tracing))
 - **Error Tracking** - Card showing whether self-hosted error tracking is enabled, with a link to the local GlitchTip UI when active (see [`docs/api.md`](docs/api.md#error-tracking))
 
 **Dashboard Features:**

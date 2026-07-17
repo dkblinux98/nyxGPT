@@ -179,6 +179,12 @@ Prometheus text exposition format metrics for scraping. Unauthenticated
 | `nyxgpt_canary_weight_percent` | Gauge | — | Current canary traffic weight percentage (0-100) |
 | `nyxgpt_canary_evaluations_total` | Counter | `result` | Canary metric evaluations, by result (`pass`/`insufficient_data`/`regression`) |
 | `nyxgpt_canary_events_total` | Counter | `action`, `result` | Canary lifecycle events (`start`/`promote`/`rollback`), by outcome |
+| `nyxgpt_rag_ingests_total` | Counter | `source`, `result` | RAG document ingestion attempts, by source (`document`/`upload`/`repo`) and outcome (`success`/`failure`) |
+| `nyxgpt_cache_requests_total` | Counter | `cache`, `result` | Cache lookups, by cache (`chat_response`/`embedding`/`rag_query_result`) and outcome (`hit`/`miss`) |
+| `nyxgpt_rate_limit_rejections_total` | Counter | `path` | Requests rejected by the per-client rate limiter |
+| `nyxgpt_resource_memory_rss_mb` | Gauge | — | API process resident set size, in MB (refreshed on each `/metrics` scrape) |
+| `nyxgpt_resource_cpu_percent` | Gauge | — | API process CPU usage percentage (refreshed on each `/metrics` scrape) |
+| `nyxgpt_resource_queue_depth` | Gauge | — | Current number of requests in the batch processing queue |
 
 `path` labels use the route's path template (e.g. `/api/v1/sessions/{name}`),
 not the raw request path, to keep cardinality bounded.
@@ -195,9 +201,12 @@ scrape_configs:
 The admin dashboard's Resource Usage panel (`/admin`) surfaces this
 endpoint under a "Prometheus Endpoint" card, with a link to view current
 metrics. Pre-built Grafana dashboards over these metrics (system overview,
-RAG performance, API metrics) are available via the opt-in, local-only
-`monitoring` Compose profile — see
-[Monitoring Dashboards](docker-compose.md#monitoring-dashboards).
+RAG performance, API metrics, resource usage) are available via the
+opt-in, local-only `monitoring` Compose profile — see
+[Monitoring Dashboards](docker-compose.md#monitoring-dashboards). The
+`/admin/observability` page ("SRE Overview") is the single entry point
+into all of them, plus curated Loki log queries, Jaeger trace views, and
+GlitchTip error tracking.
 
 ---
 
@@ -3182,7 +3191,29 @@ curl http://127.0.0.1:8000/api/v1/tracing
   "service_name": "nyxgpt-api",
   "otlp_endpoint": "http://localhost:4318/v1/traces",
   "jaeger_ui_url": "http://localhost:16686",
-  "active": true
+  "active": true,
+  "curated_views": [
+    {
+      "label": "Chat requests",
+      "hint": "Filter by operation: POST /api/v1/chat or POST /api/v1/chat/stream",
+      "url": "http://localhost:16686/search?service=nyxgpt-api&lookback=1h"
+    },
+    {
+      "label": "RAG query",
+      "hint": "Filter by operation: rag.retrieve (the retrieval pipeline span)",
+      "url": "http://localhost:16686/search?service=nyxgpt-api&lookback=1h"
+    },
+    {
+      "label": "RAG ingest",
+      "hint": "Filter by operation: POST /api/v1/rag/ingest, /rag/upload, or /rag/index-repo",
+      "url": "http://localhost:16686/search?service=nyxgpt-api&lookback=1h"
+    },
+    {
+      "label": "Ollama backend calls",
+      "hint": "Filter by operation: ollama.request, ollama.request.stream, or ollama.embeddings",
+      "url": "http://localhost:16686/search?service=nyxgpt-api&lookback=1h"
+    }
+  ]
 }
 ```
 
@@ -3192,6 +3223,7 @@ curl http://127.0.0.1:8000/api/v1/tracing
 - `otlp_endpoint` - OTLP/HTTP endpoint spans are exported to
 - `jaeger_ui_url` - URL of the local Jaeger UI for browsing traces
 - `active` - Whether tracing actually initialized for this running process (mirrors `enabled` unless startup failed)
+- `curated_views` - Curated deep links into Jaeger's trace search for the main request flows (chat, RAG query/ingest, Ollama backend calls), each with a `hint` naming the operation(s) to pick from the dropdown. Surfaced by the `/admin/observability` ("SRE Overview") page.
 
 **How it works:**
 
@@ -3345,6 +3377,18 @@ with a DSN:
 Browse events at `http://localhost:8080` (also linked from the SRE/admin
 dashboard's Resource Usage step).
 
+**Recommended alerting for the default project:** GlitchTip has no
+file-based provisioning for projects or alert rules (unlike Grafana's
+`docker/grafana/dashboards`) — every project it manages is created
+through its own interactive UI/API after the operator's own account
+registration, so there is no meaningful "default project" to ship as
+code beyond what step 3 above already creates. Once that project
+exists, open **Project Settings → Alerts** in the GlitchTip UI and add a
+rule that notifies (via the project's configured notification channel)
+on **"A new issue is created"** with **quantity ≥ 1** — this surfaces
+newly-seen exception types as soon as nyxGPT first reports them, which
+is the alerting behavior appropriate for a single-operator error tracker.
+
 ---
 
 ## Monitoring Dashboards
@@ -3381,10 +3425,12 @@ curl http://127.0.0.1:8000/api/v1/monitoring
 
 Monitoring is Prometheus/Grafana-based, opt-in, and strictly local — there
 is no external/cloud monitoring service. System overview, RAG performance,
-and API metrics dashboards are pre-provisioned in Grafana, backed by a
-Prometheus server that scrapes this API's [`/metrics`](#get-metrics)
-endpoint. The web UI surfaces Grafana, Prometheus, Jaeger, and GlitchTip
-links under the chat page's Admin → Observability submenu.
+API metrics, and resource usage dashboards are pre-provisioned in Grafana,
+backed by a Prometheus server that scrapes this API's
+[`/metrics`](#get-metrics) endpoint. The `/admin/observability` **SRE
+Overview** page (reachable from `/admin/dashboard`) is the single entry
+point into all of it — every Grafana dashboard, curated Loki queries,
+Jaeger trace views, and GlitchTip error tracking.
 
 **Enabling monitoring:**
 

@@ -42,6 +42,12 @@ KNOWN_METRIC_NAMES = {
     "nyxgpt_canary_weight_percent",
     "nyxgpt_canary_evaluations_total",
     "nyxgpt_canary_events_total",
+    "nyxgpt_rag_ingests_total",
+    "nyxgpt_cache_requests_total",
+    "nyxgpt_rate_limit_rejections_total",
+    "nyxgpt_resource_memory_rss_mb",
+    "nyxgpt_resource_cpu_percent",
+    "nyxgpt_resource_queue_depth",
     "up",
 }
 
@@ -69,6 +75,12 @@ def test_known_metric_names_match_registry() -> None:
         "nyxgpt_canary_weight_percent",
         "nyxgpt_canary_evaluations_total",
         "nyxgpt_canary_events_total",
+        "nyxgpt_rag_ingests_total",
+        "nyxgpt_cache_requests_total",
+        "nyxgpt_rate_limit_rejections_total",
+        "nyxgpt_resource_memory_rss_mb",
+        "nyxgpt_resource_cpu_percent",
+        "nyxgpt_resource_queue_depth",
     }
 
 
@@ -143,6 +155,7 @@ def _referenced_metric_names(expr: str) -> set[str]:
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "self-healing.json",
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "deployment.json",
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "canary.json",
+        REPO_ROOT / "docker" / "grafana" / "dashboards" / "resource-usage.json",
     ],
 )
 def test_promql_expressions_only_reference_known_metrics(config_path: Path) -> None:
@@ -169,7 +182,9 @@ def test_grafana_dashboards_are_provisioned() -> None:
         "canary.json",
         "deployment.json",
         "logs-explorer.json",
+        "operational-logs.json",
         "rag-performance.json",
+        "resource-usage.json",
         "self-healing.json",
         "system-overview.json",
     ]
