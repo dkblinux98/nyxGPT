@@ -2,12 +2,19 @@
 
 import { useEffect, useState } from 'react';
 
+type CuratedView = {
+  label: string;
+  hint: string;
+  url: string;
+};
+
 type TracingStatus = {
   enabled: boolean;
   active: boolean;
   service_name: string;
   otlp_endpoint: string;
   jaeger_ui_url: string;
+  curated_views: CuratedView[];
 };
 
 export default function TracingPanel() {
@@ -96,6 +103,27 @@ export default function TracingPanel() {
           >
             Open Jaeger UI ↗
           </a>
+
+          {status.curated_views && status.curated_views.length > 0 && (
+            <div style={{ marginTop: '0.75rem' }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Curated trace views</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {status.curated_views.map((view) => (
+                  <div key={view.label}>
+                    <a
+                      href={view.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: '#0066cc', fontSize: 13 }}
+                    >
+                      {view.label} ↗
+                    </a>
+                    <div style={{ color: '#666', fontSize: 12 }}>{view.hint}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>

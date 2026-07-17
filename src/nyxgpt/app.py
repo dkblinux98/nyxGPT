@@ -1132,6 +1132,41 @@ def resource_metrics() -> ResourceMetricsResponse:
     return ResourceMetricsResponse(**metrics.to_dict())
 
 
+def _jaeger_curated_views(jaeger_ui_url: str, service_name: str) -> list[dict[str, str]]:
+    """Build curated Jaeger search links for the main request flows.
+
+    Each entry deep-links to the service's trace search (a query Jaeger
+    always supports) and names the operation(s) to pick from the dropdown
+    for that flow, rather than guessing an exact `operation` URL param --
+    the auto-instrumented span name for a given FastAPI route can vary by
+    library version, so a wrong guess there would silently show "no
+    results" instead of failing loudly.
+    """
+    search_url = f"{jaeger_ui_url}/search?service={service_name}&lookback=1h"
+    return [
+        {
+            "label": "Chat requests",
+            "hint": "Filter by operation: POST /api/v1/chat or POST /api/v1/chat/stream",
+            "url": search_url,
+        },
+        {
+            "label": "RAG query",
+            "hint": "Filter by operation: POST /api/v1/rag/query",
+            "url": search_url,
+        },
+        {
+            "label": "RAG ingest",
+            "hint": "Filter by operation: POST /api/v1/rag/ingest, /rag/upload, or /rag/index-repo",
+            "url": search_url,
+        },
+        {
+            "label": "Ollama backend calls",
+            "hint": "Filter by operation: ollama.request, ollama.request.stream, or ollama.embeddings",
+            "url": search_url,
+        },
+    ]
+
+
 @api.get("/tracing")
 def tracing_status(request: Request) -> dict[str, Any]:
     """Get distributed tracing status and how to reach the local Jaeger UI.
@@ -1146,6 +1181,9 @@ def tracing_status(request: Request) -> dict[str, Any]:
     return {
         **tracing_config,
         "active": tracing_module.is_tracing_enabled(),
+        "curated_views": _jaeger_curated_views(
+            tracing_config["jaeger_ui_url"], tracing_config["service_name"]
+        ),
     }
 
 

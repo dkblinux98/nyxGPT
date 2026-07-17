@@ -133,6 +133,25 @@ def test_tracing_status_endpoint_reports_disabled_by_default() -> None:
     assert data["jaeger_ui_url"] == "http://localhost:16686"
 
 
+def test_tracing_status_endpoint_includes_curated_jaeger_views() -> None:
+    """The SRE overview links out to curated Jaeger trace views for the main
+    request flows (chat, RAG query/ingest, Ollama backend calls) -- each
+    must deep-link into the configured Jaeger UI for the configured
+    service, with a hint for which operation to pick."""
+    client = TestClient(app)
+
+    response = client.get("/api/v1/tracing")
+
+    assert response.status_code == 200
+    curated_views = response.json()["curated_views"]
+    assert len(curated_views) >= 4
+    labels = {view["label"] for view in curated_views}
+    assert {"Chat requests", "RAG query", "RAG ingest", "Ollama backend calls"} <= labels
+    for view in curated_views:
+        assert view["url"].startswith("http://localhost:16686/search?service=nyxgpt-api")
+        assert view["hint"]
+
+
 def test_init_tracing_enables_and_instruments_when_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
