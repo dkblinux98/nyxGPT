@@ -144,3 +144,70 @@ def test_show_model_empty_name():
 
     with pytest.raises(ValueError, match="Model name cannot be empty"):
         models.show_model("   ", base_url="http://localhost:11434")
+
+
+@pytest.mark.unit
+def test_format_model_size_petabytes():
+    """Test format_model_size falls through to the PB branch for huge sizes."""
+    assert models.format_model_size(2 * 1024**5) == "2.0 PB"
+
+
+@pytest.mark.unit
+@patch("nyxgpt.models.post_json")
+@patch("nyxgpt.models.get_ollama_base_url")
+@patch("nyxgpt.models.load_config")
+def test_pull_model_loads_base_url_from_config_when_none(
+    mock_load_config, mock_get_url, mock_post_json
+):
+    """When base_url isn't given, pull_model must derive it from load_config()."""
+    mock_load_config.return_value = "cfg-object"
+    mock_get_url.return_value = "http://cfg-host:11434"
+    mock_post_json.return_value = {"status": "success"}
+
+    result = models.pull_model("llama3.1:8b", base_url=None, progress_callback=None)
+
+    assert result["status"] == "success"
+    mock_load_config.assert_called_once_with(None)
+    mock_get_url.assert_called_once_with("cfg-object")
+    args, kwargs = mock_post_json.call_args
+    assert args[0] == "http://cfg-host:11434/api/pull"
+
+
+@pytest.mark.unit
+@patch("nyxgpt.models.delete_json")
+@patch("nyxgpt.models.get_ollama_base_url")
+@patch("nyxgpt.models.load_config")
+def test_delete_model_loads_base_url_from_config_when_none(
+    mock_load_config, mock_get_url, mock_delete_json
+):
+    """When base_url isn't given, delete_model must derive it from load_config()."""
+    mock_load_config.return_value = "cfg-object"
+    mock_get_url.return_value = "http://cfg-host:11434"
+
+    models.delete_model("llama3.1:8b", base_url=None)
+
+    mock_load_config.assert_called_once_with(None)
+    mock_get_url.assert_called_once_with("cfg-object")
+    args, kwargs = mock_delete_json.call_args
+    assert args[0] == "http://cfg-host:11434/api/delete"
+
+
+@pytest.mark.unit
+@patch("nyxgpt.models.post_json")
+@patch("nyxgpt.models.get_ollama_base_url")
+@patch("nyxgpt.models.load_config")
+def test_show_model_loads_base_url_from_config_when_none(
+    mock_load_config, mock_get_url, mock_post_json
+):
+    """When base_url isn't given, show_model must derive it from load_config()."""
+    mock_load_config.return_value = "cfg-object"
+    mock_get_url.return_value = "http://cfg-host:11434"
+    mock_post_json.return_value = {"modelfile": "FROM llama3.1:8b"}
+
+    result = models.show_model("llama3.1:8b", base_url=None)
+
+    assert result["modelfile"] == "FROM llama3.1:8b"
+    mock_load_config.assert_called_once_with(None)
+    mock_get_url.assert_called_once_with("cfg-object")
+    args, kwargs = mock_post_json.call_args
+    assert args[0] == "http://cfg-host:11434/api/show"

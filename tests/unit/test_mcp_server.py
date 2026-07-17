@@ -137,6 +137,20 @@ def test_dispatch_tools_call_chat(mock_tool_chat):
     mock_tool_chat.assert_called_once_with(5, {"prompt": "hello"})
 
 
+@patch("nyxgpt.mcp_server._tool_list_sessions")
+def test_dispatch_tools_call_list_sessions(mock_tool_list_sessions):
+    mock_tool_list_sessions.return_value = {"jsonrpc": "2.0", "id": 6, "result": {"content": []}}
+    request = {
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "tools/call",
+        "params": {"name": "list_sessions", "arguments": {}},
+    }
+    result = _dispatch(request)
+    mock_tool_list_sessions.assert_called_once_with(6)
+    assert result == mock_tool_list_sessions.return_value
+
+
 @patch("nyxgpt.chat.chat")
 def test_tool_chat_success(mock_chat):
     mock_result = MagicMock()
@@ -283,3 +297,26 @@ def test_serve_parse_error_sends_error_response():
 def test_serve_initialized_notification_no_response():
     responses = _run_serve([{"jsonrpc": "2.0", "method": "initialized"}])
     assert responses == []
+
+
+@patch("nyxgpt.mcp_server._dispatch")
+def test_serve_unhandled_dispatch_error_sends_internal_error(mock_dispatch, caplog):
+    mock_dispatch.side_effect = RuntimeError("dispatch blew up")
+    stdin = io.StringIO(
+        json.dumps({"jsonrpc": "2.0", "id": 42, "method": "initialize", "params": {}}) + "\n"
+    )
+    stdout = io.StringIO()
+
+    with caplog.at_level("ERROR"):
+        serve(stdin=stdin, stdout=stdout)
+
+    stdout.seek(0)
+    lines = [ln.strip() for ln in stdout if ln.strip()]
+    assert len(lines) == 1
+    response = json.loads(lines[0])
+    # The request's id is preserved and surfaced as a JSON-RPC internal error,
+    # rather than the exception propagating and killing the server loop.
+    assert response["id"] == 42
+    assert response["error"]["code"] == -32603
+    assert "dispatch blew up" in response["error"]["message"]
+    assert "Unhandled error dispatching" in caplog.text

@@ -7,16 +7,23 @@ cassandra-driver, or during startup before any request context exists).
 
 from __future__ import annotations
 
+import json
 import logging
 from configparser import ConfigParser
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import pytest
 
 from nyxgpt.logging import (
+    DEFAULT_DATEFMT,
     DEFAULT_FMT,
+    DEFAULT_LOGGER_NAME,
     RequestIdFilter,
+    StructuredFormatter,
     configure_logging,
+    get_logger,
+    refresh_logging,
     request_id_var,
 )
 
@@ -54,6 +61,37 @@ def test_formatter_handles_record_with_request_id() -> None:
     formatted = formatter.format(record)
 
     assert "[abc-123]" in formatted
+
+
+def test_structured_formatter_includes_session_and_model_when_present() -> None:
+    """StructuredFormatter should surface `session`/`model` extras when set.
+
+    These are optional LogRecord attributes attached via `logger.info(...,
+    extra={"session": ..., "model": ...})`; the formatter only emits them
+    when present (hasattr checks), so a record without them must not include
+    the keys.
+    """
+    formatter = StructuredFormatter(datefmt=DEFAULT_DATEFMT)
+    record = _record()
+    record.session = "session-123"
+    record.model = "llama3"
+
+    formatted = formatter.format(record)
+    data = json.loads(formatted)
+
+    assert data["session"] == "session-123"
+    assert data["model"] == "llama3"
+
+
+def test_structured_formatter_omits_session_and_model_when_absent() -> None:
+    formatter = StructuredFormatter(datefmt=DEFAULT_DATEFMT)
+    record = _record()
+
+    formatted = formatter.format(record)
+    data = json.loads(formatted)
+
+    assert "session" not in data
+    assert "model" not in data
 
 
 def test_request_id_filter_injects_default_when_unset() -> None:
@@ -153,3 +191,76 @@ def test_configure_logging_json_format_handles_missing_request_id(
     log_file = tmp_path / "nyxgpt.log"
     contents = log_file.read_text()
     assert "driver message with no request context" in contents
+
+
+def test_configure_logging_creates_console_handler_when_none_exists(
+    tmp_path: Path,
+) -> None:
+    """When root has no plain StreamHandler yet, configure_logging must add one.
+
+    _ensure_console_handler() only reuses an existing handler if it finds one;
+    this exercises the "create it fresh" branch by first stripping any plain
+    StreamHandlers (RotatingFileHandler is a StreamHandler subclass too, but
+    is excluded) off the root logger.
+    """
+    root = logging.getLogger()
+    removed_handlers = [
+        h
+        for h in root.handlers
+        if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler)
+    ]
+    for h in removed_handlers:
+        root.removeHandler(h)
+
+    try:
+        configure_logging(_make_cfg(tmp_path), logger_name="nyxgpt-test-console-new", console=True)
+
+        stream_handlers = [
+            h
+            for h in root.handlers
+            if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler)
+        ]
+        assert len(stream_handlers) == 1
+    finally:
+        # Restore anything we stripped so we don't affect other tests/runners.
+        for h in removed_handlers:
+            root.addHandler(h)
+
+
+def test_refresh_logging_reapplies_configuration(tmp_path: Path) -> None:
+    """refresh_logging() must actually re-run configure_logging's setup.
+
+    Verified via a real side effect (the file handler's level changing to
+    match the new config), not just that some function "was called".
+    """
+    cfg = _make_cfg(tmp_path)
+    configure_logging(cfg, logger_name="nyxgpt-test-refresh")
+
+    log_file = tmp_path / "nyxgpt.log"
+    root = logging.getLogger()
+
+    def _our_handler() -> RotatingFileHandler:
+        matches = [
+            h
+            for h in root.handlers
+            if isinstance(h, RotatingFileHandler) and Path(h.baseFilename) == log_file
+        ]
+        assert len(matches) == 1
+        return matches[0]
+
+    assert _our_handler().level == logging.INFO
+
+    cfg.set("logging", "level", "DEBUG")
+    refresh_logging(cfg)
+
+    assert _our_handler().level == logging.DEBUG
+
+
+def test_get_logger_defaults_to_app_logger_name() -> None:
+    logger = get_logger()
+    assert logger.name == DEFAULT_LOGGER_NAME
+
+
+def test_get_logger_returns_named_logger() -> None:
+    logger = get_logger("nyxgpt.custom")
+    assert logger.name == "nyxgpt.custom"

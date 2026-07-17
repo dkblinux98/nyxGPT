@@ -160,6 +160,21 @@ def test_normalize_dsn_host_rewrites_localhost_in_compose_container(
     )
 
 
+def test_normalize_dsn_host_preserves_password_in_compose_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DSN with both a username and a password (GlitchTip issues these for
+    some project configurations) must keep the password intact when the host
+    is rewritten -- dropping it would silently break authentication against
+    the tracker."""
+    monkeypatch.setenv("NYXGPT_COMPOSE_FILE", "/etc/nyxgpt/docker-compose.yml")
+
+    assert (
+        error_tracking._normalize_dsn_host("http://key:secret@localhost:8080/1")
+        == "http://key:secret@glitchtip:8080/1"
+    )
+
+
 def test_normalize_dsn_host_leaves_non_localhost_dsn_alone_in_compose(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
