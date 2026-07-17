@@ -1749,3 +1749,203 @@ def test_env_sync_cli_wrapper_prints_details_on_failure(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "[FAIL]" in out
     assert "nyxgpt wizard" in out
+
+
+# --- Structured logging ---
+
+
+@pytest.mark.unit
+def test_emit_results_logs_ok_at_info_and_failure_at_warning(caplog):
+    results = [
+        ops.OpsResult(True, "step one ok"),
+        ops.OpsResult(False, "step two failed", "subprocess stderr detail"),
+    ]
+
+    with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+        ok = ops._emit_results("install", results)
+
+    assert ok is False
+    info_records = [r for r in caplog.records if r.levelname == "INFO"]
+    warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
+
+    assert any("step one ok" in r.getMessage() for r in info_records)
+    assert any(getattr(r, "action", None) == "install" for r in info_records)
+
+    assert len(warning_records) == 1
+    warn = warning_records[0]
+    assert "step two failed" in warn.getMessage()
+    assert warn.details == "subprocess stderr detail"
+    assert warn.ok is False
+    assert warn.component == "ops"
+
+
+@pytest.mark.unit
+def test_ops_install_logs_start_and_summary(caplog):
+    ok_results = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_install_scripts", return_value=ok_results),
+        patch.object(ops, "_ensure_web_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
+        patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_homebrew_api", return_value=ok_results),
+        patch.object(ops, "_install_homebrew_web", return_value=ok_results),
+        patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        caplog.at_level("INFO", logger="nyxgpt.ops"),
+    ):
+        rc = ops.install(MagicMock())
+
+    assert rc == 0
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("install starting" in m for m in messages)
+    assert any("install succeeded" in m for m in messages)
+
+
+@pytest.mark.unit
+def test_ops_install_logs_error_when_step_raises(caplog):
+    with (
+        patch.object(ops, "_install_scripts", side_effect=RuntimeError("boom")),
+        patch.object(ops, "_ensure_web_deps", return_value=[]),
+        patch.object(ops, "_ensure_mcp_deps", return_value=[]),
+        patch.object(ops, "_install_cassandra_launchagent", return_value=[]),
+        patch.object(ops, "_install_homebrew_api", return_value=[]),
+        patch.object(ops, "_install_homebrew_web", return_value=[]),
+        patch.object(ops, "_ensure_log_symlinks", return_value=[]),
+        caplog.at_level("INFO", logger="nyxgpt.ops"),
+    ):
+        rc = ops.install(MagicMock())
+
+    assert rc == 2
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(error_records) == 1
+    assert "scripts" in error_records[0].getMessage()
+    assert error_records[0].exc_info is not None
+
+
+@pytest.mark.unit
+def test_ops_restart_logs_target_and_summary(caplog):
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_compose_stack_snapshot", return_value={}),
+        patch.object(ops, "_restart_brew_service", return_value=ok),
+        patch.object(ops, "_restart_docker_container", return_value=ok),
+        patch.object(ops, "_restart_launchagent", return_value=ok),
+    ):
+        args = MagicMock()
+        args.target = "api"
+        with caplog.at_level("INFO", logger="nyxgpt.ops"):
+            rc = ops.restart(args)
+
+    assert rc == 0
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("restart starting (target=api)" in m for m in messages)
+    assert any("restart succeeded" in m for m in messages)
+
+
+@pytest.mark.unit
+def test_ops_doctor_logs_issues_at_warning(caplog, monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: None)
+
+    with caplog.at_level("INFO", logger="nyxgpt.ops"):
+        rc = ops.doctor(MagicMock())
+
+    assert rc == 2
+    warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warning_records) == 1
+    assert warning_records[0].issues
+    assert any("Missing config" in i for i in warning_records[0].issues)
+
+
+@pytest.mark.unit
+def test_ops_doctor_logs_ok_at_info(caplog, monkeypatch, tmp_path):
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.ini").write_text("[project]\nname=nyxGPT\n", encoding="utf-8")
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+
+    with caplog.at_level("INFO", logger="nyxgpt.ops"):
+        rc = ops.doctor(MagicMock())
+
+    assert rc == 0
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("no issues" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_ops_logs_failure_logged_at_warning_with_details(caplog):
+    with patch.object(
+        ops.self_heal,
+        "component_logs",
+        return_value=ops.self_heal.HealResult(False, "Failed to fetch logs", "no such service"),
+    ):
+        args = MagicMock()
+        args.service = "glitchtip"
+        args.tail = 50
+        with caplog.at_level("INFO", logger="nyxgpt.ops"):
+            rc = ops.logs(args)
+
+    assert rc == 2
+    warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warning_records) == 1
+    assert warning_records[0].details == "no such service"
+    assert warning_records[0].service == "glitchtip"
+
+
+@pytest.mark.unit
+def test_ops_logs_success_does_not_log_full_output(caplog):
+    with patch.object(
+        ops.self_heal,
+        "component_logs",
+        return_value=ops.self_heal.HealResult(
+            True, "Fetched last 50 log line(s)", "SECRET LOG BODY"
+        ),
+    ):
+        args = MagicMock()
+        args.service = "glitchtip"
+        args.tail = 50
+        with caplog.at_level("INFO", logger="nyxgpt.ops"):
+            rc = ops.logs(args)
+
+    assert rc == 0
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any("SECRET LOG BODY" in m for m in messages)
+    assert any("Fetched last 50 log line(s)" in m for m in messages)
+
+
+@pytest.mark.unit
+def test_detect_deployment_mode_logs_conflict_at_warning(caplog, monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_brew_services_snapshot",
+        lambda: {"nyxgpt-api": "started", "nyxgpt-web": "stopped", "ollama": "stopped"},
+    )
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"api": "running", "web": "exited"})
+
+    with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+        ops.detect_deployment_mode()
+
+    warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warning_records) == 1
+    assert warning_records[0].conflicts == ["api"]
+
+
+@pytest.mark.unit
+def test_env_sync_logs_summary(caplog, tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_config(cfg_path, api_key="cli-api-key")
+    env_path = tmp_path / ".env"
+
+    args = MagicMock()
+    args.config = str(cfg_path)
+    args.env_file = str(env_path)
+
+    with caplog.at_level("INFO", logger="nyxgpt.ops"):
+        rc = ops.env_sync(args)
+
+    assert rc == 0
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("env-sync starting" in m for m in messages)
+    assert any("env-sync succeeded" in m for m in messages)
