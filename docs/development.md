@@ -136,6 +136,9 @@ pytest --cov=src/nyxgpt --cov-report=term-missing
 ruff check src/
 mypy src/
 
+# Docstring coverage (config in pyproject.toml, must stay at 100%)
+interrogate src/nyxgpt
+
 # TypeScript linting (web UI)
 cd web && npm run lint
 ```
