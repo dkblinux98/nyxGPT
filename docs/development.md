@@ -138,6 +138,9 @@ mypy src/
 
 # Docstring coverage (config in pyproject.toml, must stay at 100%)
 interrogate src/nyxgpt
+# Also enforced automatically by `pytest tests/unit/test_docstring_coverage.py`,
+# which calls interrogate's Python API against the same [tool.interrogate]
+# config, so a regression fails CI via the existing pytest gate.
 
 # TypeScript linting (web UI)
 cd web && npm run lint

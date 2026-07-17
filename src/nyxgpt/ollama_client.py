@@ -50,10 +50,11 @@ def _model_runtime_message(detail: str) -> str:
 
 
 def _model_runtime_message_generic(detail: str) -> str:
-    # Used for generic upstream 5xx responses, where memory pressure is a
-    # common but not certain cause (unlike a timeout or a dropped connection
-    # mid-stream, which are strong OOM/crash signals).
     """Build a user-facing message for a generic upstream 5xx error.
+
+    Used for generic upstream 5xx responses, where memory pressure is a
+    common but not certain cause (unlike a timeout or a dropped connection
+    mid-stream, which are strong OOM/crash signals).
 
     Args:
         detail: Short technical detail appended in parentheses, e.g. the
