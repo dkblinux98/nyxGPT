@@ -1,3 +1,13 @@
+"""Retrieval-Augmented Generation pipeline: chunking, ingestion, and retrieval.
+
+This module ties together the RAG subsystem: splitting documents into
+overlapping chunks, embedding and upserting them into the Cassandra vector
+store, and retrieving relevant context for a query via hybrid (vector + BM25)
+search, reciprocal-rank/weighted fusion, optional query expansion, and
+optional cross-encoder reranking. It also exposes evaluation-metric helpers
+and a query-result cache to avoid repeating identical retrievals.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -38,6 +48,19 @@ log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ChunkingConfig:
+    """Resolved settings controlling how documents are split into chunks.
+
+    Attributes:
+        chunk_size: Target maximum size (in characters) of each chunk.
+        overlap: Number of characters of overlap between consecutive chunks.
+        overlap_strategy: How overlap is computed: "trailing", "sentence", or
+            "semantic".
+        preserve_headings: Whether markdown-style headings are kept attached
+            to the chunk(s) that follow them.
+        sentence_aware: Whether chunk boundaries are adjusted to fall on
+            sentence boundaries instead of raw character offsets.
+    """
+
     chunk_size: int
     overlap: int
     overlap_strategy: str  # "trailing", "sentence", "semantic"
@@ -160,7 +183,7 @@ class RAGEvaluationMetrics:
 
 
 class RAGError(RuntimeError):
-    pass
+    """Raised for invalid RAG configuration or failures during ingestion/retrieval."""
 
 
 # ----------------------------
@@ -290,6 +313,14 @@ def _query_cache_key(
 
 
 def _chunking_cfg() -> ChunkingConfig:
+    """Load chunking settings from the `[rag]` config section.
+
+    Returns:
+        ChunkingConfig built from config.ini values (with defaults).
+
+    Raises:
+        RAGError: If `chunk_overlap` is not smaller than `chunk_size`.
+    """
     cfg = load_config(None)
     size = cfg.getint("rag", "chunk_size", fallback=800)
     overlap = cfg.getint("rag", "chunk_overlap", fallback=100)

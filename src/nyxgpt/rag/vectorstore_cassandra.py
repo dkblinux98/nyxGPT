@@ -1,3 +1,23 @@
+"""Cassandra-backed vector store for RAG chunk storage and ANN retrieval.
+
+This module manages document chunk persistence and similarity search against
+Apache Cassandra (via a Storage-Attached Index, SAI, ANN vector index). Each
+row stores a chunk's text, metadata, and embedding vector alongside the
+document id, chunk id, embedding model/dimension, and content hash used for
+change detection. Similarity search uses the CQL `similarity_*` function that
+matches the configured `similarity_function` (cosine, dot_product, or
+euclidean) -- this must match the SAI index's build option or scores are
+meaningless.
+
+Key pieces:
+
+- `CassandraConnectionPool`: a shared, reconnecting `Cluster`/`Session` pool
+  reused across `CassandraVectorStore` instances.
+- `CassandraVectorStore`: per-collection CRUD and ANN query operations
+  against a keyspace/table pair (one table per collection, all chunks for a
+  document sharing `doc_id`, partitioned/clustered by `chunk_id`).
+"""
+
 from __future__ import annotations
 
 import contextlib
@@ -41,6 +61,26 @@ _SIMILARITY_SAI_OPTION = {
 
 @dataclass(frozen=True)
 class CassandraConfig:
+    """Resolved connection and behavior settings for the Cassandra vector store.
+
+    Attributes:
+        hosts: Contact-point hostnames/IPs for the Cassandra cluster.
+        port: Native protocol port (typically 9042).
+        keyspace: Keyspace containing the RAG chunk table(s).
+        table: Base table name; per-collection tables suffix this name.
+        pool_size: Number of pooled connections per host.
+        health_check_interval: Minimum seconds between connection health checks.
+        reconnect_max_attempts: Max reconnect attempts before giving up.
+        batch_size: Max rows grouped into a single Cassandra batch on upsert.
+        similarity_function: Vector similarity metric used for ANN search and
+            SAI index build: "cosine", "dot_product", or "euclidean".
+        ann_oversample_factor: Multiplier applied to `k` when fetching ANN
+            candidates, to compensate for post-filtering (metadata filters)
+            reducing the result set below `k`.
+        batch_query_concurrency: Max concurrent statements when executing
+            batched queries via `execute_concurrent`.
+    """
+
     hosts: list[str]
     port: int
     keyspace: str
@@ -87,7 +127,7 @@ class VectorSearchDebugMetrics:
 
 
 class VectorStoreError(RuntimeError):
-    pass
+    """Raised for vector store failures other than missing-schema conditions."""
 
 
 def _is_missing_schema_error(exc: Exception) -> bool:
@@ -217,6 +257,12 @@ def _filter_and_score_rows(
 
 
 def _cassandra_cfg() -> CassandraConfig:
+    """Load Cassandra connection and vector-search settings from the `[rag]` config section.
+
+    Returns:
+        CassandraConfig built from config.ini values, falling back to
+        single-node localhost defaults and cosine similarity.
+    """
     cfg = load_config(None)
 
     hosts_raw = cfg.get("rag", "cassandra_hosts", fallback="127.0.0.1")
@@ -259,6 +305,14 @@ class CassandraConnectionPool:
     """
 
     def __init__(self, cfg: CassandraConfig) -> None:
+        """Initialize the pool with the given config, without connecting yet.
+
+        The actual `Cluster`/`Session` are created lazily on first
+        `get_session()` call.
+
+        Args:
+            cfg: Cassandra connection settings (hosts, port, pool size, etc.).
+        """
         self.cfg = cfg
         self._lock = threading.Lock()
         self._cluster: Cluster | None = None
@@ -485,6 +539,16 @@ def reset_connection_pool() -> None:
 
 
 class CassandraVectorStore:
+    """Per-collection vector store for RAG chunks backed by Cassandra + SAI.
+
+    Each collection maps to its own table (named `{base_table}` for the
+    "default" collection, or `{base_table}_{collection}` otherwise) within a
+    single shared keyspace. Provides schema management, chunk upsert/delete,
+    ANN similarity search (single and batched), and document/collection
+    metadata queries. Connections are obtained from the shared
+    `CassandraConnectionPool` rather than opened per instance.
+    """
+
     def __init__(self, *, collection: str = "default") -> None:
         """Initialize Cassandra vector store.
 
@@ -523,6 +587,16 @@ class CassandraVectorStore:
         return f"{self.cfg.table}_{sanitized_collection}"
 
     def _ensure_keyspace_selected(self) -> None:
+        """Issue `USE <keyspace>` on this instance's session, once.
+
+        Idempotent: subsequent calls are no-ops once the keyspace has been
+        selected. Also triggers the one-time schema migration check.
+
+        Raises:
+            Exception: If the keyspace does not exist (propagated from the
+                underlying `USE` statement); callers should create it first
+                via `ensure_schema`.
+        """
         if self._keyspace_ready:
             return
         # Selecting a non-existent keyspace will error; callers should either
@@ -756,6 +830,7 @@ class CassandraVectorStore:
         batch_size = max(1, self.cfg.batch_size)
 
         def _row_params(idx: int, text: str, emb: list[float], meta_json: str) -> tuple:
+            """Build the bound-parameter tuple for one chunk's INSERT statement."""
             return (
                 doc_id,
                 idx,
@@ -772,6 +847,7 @@ class CassandraVectorStore:
         pending: list[tuple] = []
 
         def _flush() -> None:
+            """Execute and clear the pending row batch (single INSERT or UNLOGGED BatchStatement)."""
             if not pending:
                 return
             if len(pending) == 1:
