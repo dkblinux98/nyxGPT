@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
 
 import pytest
 
 from nyxgpt.batch_processor import BatchMetrics, BatchProcessor, RequestPriority
+
+pytestmark = pytest.mark.unit
 
 
 def test_batch_processor_basic():
@@ -268,3 +272,161 @@ def test_batch_processor_stop():
     # Should not be running
     with pytest.raises(RuntimeError, match="not running"):
         processor.submit("data", priority=RequestPriority.BATCH)
+
+
+def test_batch_processor_start_when_already_running(caplog):
+    """Calling start() a second time should be a no-op that logs a warning."""
+
+    def process_batch(requests):
+        return [req.data for req in requests]
+
+    processor = BatchProcessor(batch_size=4, wait_time_ms=100, process_fn=process_batch)
+    processor.start()
+
+    try:
+        first_thread = processor._thread
+        with caplog.at_level(logging.WARNING):
+            processor.start()
+
+        assert "already running" in caplog.text
+        # Should still be the same thread, not restarted
+        assert processor._thread is first_thread
+    finally:
+        processor.stop()
+
+
+def test_batch_processor_stop_when_not_running():
+    """Calling stop() before start() should return without error."""
+
+    def process_batch(requests):
+        return [req.data for req in requests]
+
+    processor = BatchProcessor(batch_size=4, wait_time_ms=100, process_fn=process_batch)
+
+    # Should simply return, no exception
+    processor.stop()
+    assert processor._running is False
+
+
+def test_batch_processor_stop_logs_when_thread_does_not_stop_cleanly(caplog):
+    """If the worker thread is blocked in process_fn, stop() should log a warning
+    instead of raising when the join times out."""
+
+    def slow_process(requests):
+        time.sleep(1.0)
+        return [req.data for req in requests]
+
+    processor = BatchProcessor(batch_size=1, wait_time_ms=10, process_fn=slow_process)
+    processor.start()
+
+    submit_thread = threading.Thread(
+        target=processor.submit, args=("x",), kwargs={"priority": RequestPriority.BATCH}
+    )
+    submit_thread.start()
+    time.sleep(0.1)  # Let the worker thread start processing (and sleeping)
+
+    try:
+        with caplog.at_level(logging.WARNING):
+            processor.stop(timeout=0.05)
+
+        assert "did not stop cleanly" in caplog.text
+    finally:
+        # Let the slow processing finish for real so nothing leaks into other tests
+        submit_thread.join(timeout=5)
+        if processor._thread is not None:
+            processor._thread.join(timeout=5)
+
+
+def test_batch_processor_submit_times_out_before_batch_processed():
+    """submit() should raise TimeoutError if the result isn't ready in time."""
+
+    def process_batch(requests):
+        return [req.data for req in requests]
+
+    # Large wait_time_ms means the batch won't be flushed before our tiny submit timeout.
+    processor = BatchProcessor(batch_size=100, wait_time_ms=200, process_fn=process_batch)
+    processor.start()
+
+    try:
+        with pytest.raises(TimeoutError, match="timed out after"):
+            processor.submit("x", priority=RequestPriority.BATCH, timeout=0.02)
+    finally:
+        processor.stop()
+
+
+def test_batch_processor_loop_recovers_from_unexpected_exception(caplog):
+    """An exception raised outside of _process_batch's own handling (e.g. from
+    _collect_batch) should be logged and the loop should keep running."""
+
+    def process_batch(requests):
+        return [req.data for req in requests]
+
+    processor = BatchProcessor(batch_size=2, wait_time_ms=50, process_fn=process_batch)
+    original_collect_batch = processor._collect_batch
+    call_count = {"n": 0}
+
+    def flaky_collect_batch():
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("boom")
+        return original_collect_batch()
+
+    processor._collect_batch = flaky_collect_batch
+
+    with caplog.at_level(logging.ERROR):
+        processor.start()
+        try:
+            result = processor.submit("ok", priority=RequestPriority.BATCH, timeout=5)
+        finally:
+            processor.stop()
+
+    assert result == "ok"
+    assert "Error in batch processing loop" in caplog.text
+
+
+def test_collect_batch_breaks_when_deadline_passes_mid_iteration(monkeypatch):
+    """_collect_batch should stop collecting once the deadline has passed, even
+    if it's discovered partway through the wait loop."""
+
+    def process_batch(requests):
+        return [req.data for req in requests]
+
+    processor = BatchProcessor(batch_size=5, wait_time_ms=50, process_fn=process_batch)
+
+    times = iter([1000.0, 1000.01, 1000.2])
+    monkeypatch.setattr("nyxgpt.batch_processor.time.time", lambda: next(times, 1000.2))
+
+    batch = processor._collect_batch()
+    assert batch == []
+
+
+def test_process_batch_returns_immediately_for_empty_batch():
+    """_process_batch should be a no-op when given an empty batch."""
+
+    calls = []
+
+    def process_batch(requests):
+        calls.append(requests)
+        return [req.data for req in requests]
+
+    processor = BatchProcessor(batch_size=2, wait_time_ms=50, process_fn=process_batch)
+    processor._process_batch([])
+
+    assert calls == []
+
+
+def test_process_batch_result_count_mismatch_raises_value_error():
+    """If process_fn returns a different number of results than requests, every
+    request in the batch should receive a ValueError."""
+
+    def bad_process(requests):
+        return []  # Always wrong: caller always submits at least one request
+
+    processor = BatchProcessor(batch_size=1, wait_time_ms=50, process_fn=bad_process)
+    processor.start()
+
+    try:
+        with pytest.raises(ValueError, match="expected 1"):
+            processor.submit("x", priority=RequestPriority.BATCH, timeout=5)
+    finally:
+        processor.stop()
