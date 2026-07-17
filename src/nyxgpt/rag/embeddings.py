@@ -192,13 +192,13 @@ def _get_embedding_cache() -> CacheBackend[list[list[float]]]:
     if cache_backend == "memory":
         max_size = cfg.getint("cache", "embedding_cache_max_size", fallback=1000)
         ttl = cfg.getint("cache", "embedding_cache_ttl_seconds", fallback=3600)
-        _embedding_cache = MemoryCache(max_size=max_size, default_ttl=ttl)
+        _embedding_cache = MemoryCache(max_size=max_size, default_ttl=ttl, name="embedding")
         logger.debug(f"Embedding cache initialized: memory (max_size={max_size}, ttl={ttl}s)")
 
     elif cache_backend == "disk":
         cache_dir = cfg.get("cache", "embedding_cache_dir", fallback="~/.nyxGPT/cache/embeddings")
         ttl = cfg.getint("cache", "embedding_cache_ttl_seconds", fallback=86400)
-        _embedding_cache = DiskCache(cache_dir=cache_dir, default_ttl=ttl)
+        _embedding_cache = DiskCache(cache_dir=cache_dir, default_ttl=ttl, name="embedding")
         logger.debug(f"Embedding cache initialized: disk (dir={cache_dir}, ttl={ttl}s)")
 
     else:

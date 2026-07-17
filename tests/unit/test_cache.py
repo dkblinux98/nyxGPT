@@ -4,6 +4,9 @@ import tempfile
 import time
 from unittest.mock import patch
 
+from prometheus_client.parser import text_string_to_metric_families
+
+from nyxgpt import metrics as prom_metrics
 from nyxgpt.cache import (
     CacheBackend,
     DiskCache,
@@ -13,6 +16,19 @@ from nyxgpt.cache import (
     hash_list,
     hash_text,
 )
+
+
+def _cache_metric_value(cache_name: str, result: str) -> float:
+    body, _ = prom_metrics.render_metrics()
+    for family in text_string_to_metric_families(body.decode("utf-8")):
+        for sample in family.samples:
+            if (
+                sample.name == "nyxgpt_cache_requests_total"
+                and sample.labels.get("cache") == cache_name
+                and sample.labels.get("result") == result
+            ):
+                return sample.value
+    return 0.0
 
 
 class TestCacheBackend:
@@ -412,3 +428,38 @@ class TestHashFunctions:
         hash2 = hash_dict({"b": 2, "a": 1})
 
         assert hash1 == hash2
+
+
+class TestCacheMetrics:
+    """Test that cache hit/miss lookups are recorded as Prometheus metrics."""
+
+    def test_memory_cache_records_hits_and_misses_by_name(self):
+        cache: MemoryCache[str] = MemoryCache(max_size=10, name="metrics-unit-test-memory")
+
+        before_hits = _cache_metric_value("metrics-unit-test-memory", "hit")
+        before_misses = _cache_metric_value("metrics-unit-test-memory", "miss")
+
+        cache.get("missing-key")
+        cache.set("key1", "value1")
+        cache.get("key1")
+
+        assert _cache_metric_value("metrics-unit-test-memory", "hit") == before_hits + 1
+        assert _cache_metric_value("metrics-unit-test-memory", "miss") == before_misses + 1
+
+    def test_disk_cache_records_hits_and_misses_by_name(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache: DiskCache[str] = DiskCache(cache_dir=tmpdir, name="metrics-unit-test-disk")
+
+            before_hits = _cache_metric_value("metrics-unit-test-disk", "hit")
+            before_misses = _cache_metric_value("metrics-unit-test-disk", "miss")
+
+            cache.get("missing-key")
+            cache.set("key1", "value1")
+            cache.get("key1")
+
+            assert _cache_metric_value("metrics-unit-test-disk", "hit") == before_hits + 1
+            assert _cache_metric_value("metrics-unit-test-disk", "miss") == before_misses + 1
+
+    def test_caches_default_to_the_default_name(self):
+        cache: MemoryCache[str] = MemoryCache(max_size=10)
+        assert cache._name == "default"

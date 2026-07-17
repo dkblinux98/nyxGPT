@@ -142,13 +142,13 @@ def _get_response_cache() -> CacheBackend[str]:
     if cache_backend == "memory":
         max_size = _get_int(cfg, "cache", "response_cache_max_size", 100)
         ttl = _get_int(cfg, "cache", "response_cache_ttl_seconds", 1800)
-        _response_cache = MemoryCache(max_size=max_size, default_ttl=ttl)
+        _response_cache = MemoryCache(max_size=max_size, default_ttl=ttl, name="chat_response")
         logger.debug(f"Response cache initialized: memory (max_size={max_size}, ttl={ttl}s)")
 
     elif cache_backend == "disk":
         cache_dir = _get_str(cfg, "cache", "response_cache_dir", "~/.nyxGPT/cache/responses")
         ttl = _get_int(cfg, "cache", "response_cache_ttl_seconds", 3600)
-        _response_cache = DiskCache(cache_dir=cache_dir, default_ttl=ttl)
+        _response_cache = DiskCache(cache_dir=cache_dir, default_ttl=ttl, name="chat_response")
         logger.debug(f"Response cache initialized: disk (dir={cache_dir}, ttl={ttl}s)")
 
     else:

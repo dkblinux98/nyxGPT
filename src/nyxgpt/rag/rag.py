@@ -223,12 +223,16 @@ def _get_query_result_cache() -> CacheBackend[list[dict]]:
     if cache_backend == "memory":
         max_size = cfg.getint("cache", "query_cache_max_size", fallback=500)
         ttl = cfg.getint("cache", "query_cache_ttl_seconds", fallback=300)
-        _query_result_cache = MemoryCache(max_size=max_size, default_ttl=ttl)
+        _query_result_cache = MemoryCache(
+            max_size=max_size, default_ttl=ttl, name="rag_query_result"
+        )
         log.debug(f"Query result cache initialized: memory (max_size={max_size}, ttl={ttl}s)")
     elif cache_backend == "disk":
         cache_dir = cfg.get("cache", "query_cache_dir", fallback="~/.nyxGPT/cache/queries")
         ttl = cfg.getint("cache", "query_cache_ttl_seconds", fallback=600)
-        _query_result_cache = DiskCache(cache_dir=cache_dir, default_ttl=ttl)
+        _query_result_cache = DiskCache(
+            cache_dir=cache_dir, default_ttl=ttl, name="rag_query_result"
+        )
         log.debug(f"Query result cache initialized: disk (dir={cache_dir}, ttl={ttl}s)")
     else:
         log.warning(f"Unknown cache backend '{cache_backend}', disabling query result cache")

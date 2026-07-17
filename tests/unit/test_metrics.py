@@ -192,6 +192,68 @@ def test_chat_stream_endpoint_increments_business_metrics() -> None:
 
 
 @pytest.mark.unit
+def test_resource_ingest_cache_and_rate_limit_metrics_are_registered() -> None:
+    prom_metrics.RAG_INGESTS_TOTAL.labels(source="unit-test", result="success").inc()
+    prom_metrics.CACHE_REQUESTS_TOTAL.labels(cache="unit-test", result="hit").inc()
+    prom_metrics.RATE_LIMIT_REJECTIONS_TOTAL.labels(path="/unit-test").inc()
+    prom_metrics.update_resource_gauges(rss_mb=123.4, cpu_percent=5.6, queue_depth=2)
+
+    body, _ = prom_metrics.render_metrics()
+    names = _sample_names(body.decode("utf-8"))
+
+    assert "nyxgpt_rag_ingests_total" in names
+    assert "nyxgpt_cache_requests_total" in names
+    assert "nyxgpt_rate_limit_rejections_total" in names
+    assert "nyxgpt_resource_memory_rss_mb" in names
+    assert "nyxgpt_resource_cpu_percent" in names
+    assert "nyxgpt_resource_queue_depth" in names
+
+
+@pytest.mark.unit
+def test_metrics_endpoint_reflects_live_resource_usage() -> None:
+    """A real GET /metrics must refresh the resource gauges from the actual
+    ResourceMonitor snapshot (initialized unconditionally at app startup),
+    not just expose whatever value a previous test happened to `.set()`."""
+    client = TestClient(app)
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    samples = _samples(response.text, "nyxgpt_resource_memory_rss_mb")
+    assert samples, "expected a nyxgpt_resource_memory_rss_mb sample"
+    assert samples[0].value > 0
+
+
+@pytest.mark.unit
+def test_rag_ingest_endpoint_increments_business_metrics() -> None:
+    """A real POST to /api/v1/rag/ingest must bump
+    nyxgpt_rag_ingests_total{source="document", result="success"}.
+    """
+    client = TestClient(app)
+    fake_result = {
+        "chunks_ingested": 1,
+        "status": "created",
+        "doc_hash": "abc123",
+        "previous_hash": None,
+    }
+
+    with patch("nyxgpt.app.ingest_document", return_value=fake_result):
+        response = client.post(
+            "/api/v1/rag/ingest",
+            json={"doc_id": "metrics-unit-test-doc", "text": "hello world"},
+        )
+
+    assert response.status_code == 200
+
+    metrics_text = client.get("/metrics").text
+    ingest_samples = _samples(metrics_text, "nyxgpt_rag_ingests_total")
+    assert any(
+        s.labels.get("source") == "document" and s.labels.get("result") == "success"
+        for s in ingest_samples
+    ), "expected an ingest counter sample for the real /api/v1/rag/ingest request"
+
+
+@pytest.mark.unit
 def test_rag_query_endpoint_increments_business_metrics() -> None:
     """A real POST to /api/v1/rag/query must bump
     nyxgpt_rag_queries_total{source="rag_query"}.

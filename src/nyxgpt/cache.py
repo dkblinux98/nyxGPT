@@ -16,6 +16,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
+from nyxgpt import metrics as prom_metrics
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -65,16 +67,18 @@ class MemoryCache(CacheBackend[T]):
     Stores (value, expiry_time) tuples to support TTL.
     """
 
-    def __init__(self, max_size: int = 1000, default_ttl: int | None = None):
+    def __init__(self, max_size: int = 1000, default_ttl: int | None = None, name: str = "default"):
         """Initialize memory cache.
 
         Args:
             max_size: Maximum number of items to store (LRU eviction)
             default_ttl: Default TTL in seconds (None = no expiration)
+            name: Cache identifier used to label the `nyxgpt_cache_requests_total` metric
         """
         self._cache: OrderedDict[str, tuple[T, float | None]] = OrderedDict()
         self._max_size = max_size
         self._default_ttl = default_ttl
+        self._name = name
         self._hits = 0
         self._misses = 0
 
@@ -89,6 +93,7 @@ class MemoryCache(CacheBackend[T]):
         """
         if key not in self._cache:
             self._misses += 1
+            prom_metrics.CACHE_REQUESTS_TOTAL.labels(cache=self._name, result="miss").inc()
             return None
 
         value, expiry = self._cache[key]
@@ -98,12 +103,14 @@ class MemoryCache(CacheBackend[T]):
             # Expired - remove and return None
             del self._cache[key]
             self._misses += 1
+            prom_metrics.CACHE_REQUESTS_TOTAL.labels(cache=self._name, result="miss").inc()
             logger.debug(f"Cache miss (expired): {key[:16]}...")
             return None
 
         # Move to end (mark as recently used)
         self._cache.move_to_end(key)
         self._hits += 1
+        prom_metrics.CACHE_REQUESTS_TOTAL.labels(cache=self._name, result="hit").inc()
         logger.debug(f"Cache hit: {key[:16]}...")
         return value
 
@@ -170,16 +177,23 @@ class DiskCache(CacheBackend[T]):
     Each entry includes metadata (expiry time).
     """
 
-    def __init__(self, cache_dir: str | Path, default_ttl: int | None = None):
+    def __init__(
+        self,
+        cache_dir: str | Path,
+        default_ttl: int | None = None,
+        name: str = "default",
+    ):
         """Initialize disk cache.
 
         Args:
             cache_dir: Directory to store cache files
             default_ttl: Default TTL in seconds (None = no expiration)
+            name: Cache identifier used to label the `nyxgpt_cache_requests_total` metric
         """
         self._cache_dir = Path(cache_dir).expanduser()
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._default_ttl = default_ttl
+        self._name = name
         self._hits = 0
         self._misses = 0
 
@@ -200,6 +214,7 @@ class DiskCache(CacheBackend[T]):
 
         if not cache_file.exists():
             self._misses += 1
+            prom_metrics.CACHE_REQUESTS_TOTAL.labels(cache=self._name, result="miss").inc()
             return None
 
         try:
@@ -214,10 +229,12 @@ class DiskCache(CacheBackend[T]):
                 # Expired - remove file and return None
                 cache_file.unlink(missing_ok=True)
                 self._misses += 1
+                prom_metrics.CACHE_REQUESTS_TOTAL.labels(cache=self._name, result="miss").inc()
                 logger.debug(f"Cache miss (expired): {key[:16]}...")
                 return None
 
             self._hits += 1
+            prom_metrics.CACHE_REQUESTS_TOTAL.labels(cache=self._name, result="hit").inc()
             logger.debug(f"Cache hit: {key[:16]}...")
             return value
 
@@ -225,6 +242,7 @@ class DiskCache(CacheBackend[T]):
             logger.warning(f"Failed to read cache file {cache_file}: {e}")
             cache_file.unlink(missing_ok=True)
             self._misses += 1
+            prom_metrics.CACHE_REQUESTS_TOTAL.labels(cache=self._name, result="miss").inc()
             return None
 
     def set(self, key: str, value: T, ttl: int | None = None) -> None:
