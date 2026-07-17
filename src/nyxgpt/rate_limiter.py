@@ -1,3 +1,10 @@
+"""Per-client API rate limiting using an in-memory token bucket.
+
+Provides `RateLimiter`, a thread-safe token-bucket limiter keyed by client
+IP (see `RateLimiter.get_client_ip`), used to throttle bursts of requests
+to the nyxGPT API without any external dependency (Redis, etc.).
+"""
+
 from __future__ import annotations
 
 import threading

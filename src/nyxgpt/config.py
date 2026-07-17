@@ -1,3 +1,12 @@
+"""Typed accessors for nyxGPT's ``config.ini`` settings.
+
+Wraps a stdlib ``ConfigParser`` with cached, hot-reloadable loading
+(`load_config`) plus one small getter per setting so callers never read
+raw section/option strings directly. Every getter documents which
+``[section] option`` it reads and its fallback default, and swallows
+parse errors by falling back to that default rather than raising.
+"""
+
 from __future__ import annotations
 
 import os
@@ -218,6 +227,10 @@ def get_default_model(cfg: ConfigParser) -> str:
 
 
 def get_ollama_base_url(cfg: ConfigParser) -> str:
+    """Return the Ollama server base URL (``[ollama] base_url``).
+
+    Falls back to ``http://127.0.0.1:11434`` when unset.
+    """
     return cfg.get("ollama", "base_url", fallback="http://127.0.0.1:11434")
 
 
@@ -234,15 +247,24 @@ def get_chat_timeout_seconds(cfg: ConfigParser) -> int:
 
 
 def _expand_path(value: str) -> Path:
+    """Expand ``~`` in a config path string and return it as a ``Path``."""
     return Path(value).expanduser()
 
 
 def get_sessions_dir(cfg: ConfigParser) -> Path:
+    """Return the sessions storage directory (``[nyxgpt] sessions_dir``).
+
+    Falls back to ``~/.nyxGPT/sessions``. ``~`` is expanded in either case.
+    """
     val = cfg.get("nyxgpt", "sessions_dir", fallback=str(Path.home() / ".nyxGPT" / "sessions"))
     return _expand_path(val)
 
 
 def get_vectorstore_dir(cfg: ConfigParser) -> Path:
+    """Return the vectorstore storage directory (``[nyxgpt] vectorstore_dir``).
+
+    Falls back to ``~/.nyxGPT/vectorstore``. ``~`` is expanded in either case.
+    """
     val = cfg.get(
         "nyxgpt", "vectorstore_dir", fallback=str(Path.home() / ".nyxGPT" / "vectorstore")
     )
@@ -250,10 +272,16 @@ def get_vectorstore_dir(cfg: ConfigParser) -> Path:
 
 
 def get_api_host(cfg: ConfigParser) -> str:
+    """Return the API bind host (``[api] host``), falling back to ``127.0.0.1``."""
     return cfg.get("api", "host", fallback="127.0.0.1")
 
 
 def get_api_port(cfg: ConfigParser) -> int:
+    """Return the API bind port (``[api] port``).
+
+    Falls back to ``8000`` and logs a warning if the configured value
+    isn't a valid integer.
+    """
     try:
         return cfg.getint("api", "port", fallback=8000)
     except (ValueError, TypeError) as e:
@@ -279,14 +307,28 @@ def get_tools_root(cfg: ConfigParser) -> Path:
 
 
 def get_deploy_namespace(cfg: ConfigParser) -> str:
+    """Return the Kubernetes namespace used for deploys (``[deploy] namespace``).
+
+    Falls back to ``"nyxgpt"``.
+    """
     return cfg.get("deploy", "namespace", fallback="nyxgpt")
 
 
 def get_canary_namespace(cfg: ConfigParser) -> str:
+    """Return the Kubernetes namespace used for canary rollouts (``[canary] namespace``).
+
+    Falls back to whatever `get_deploy_namespace` resolves to, so canary
+    and deploy stay in the same namespace unless explicitly split.
+    """
     return cfg.get("canary", "namespace", fallback=get_deploy_namespace(cfg))
 
 
 def get_canary_total_replicas(cfg: ConfigParser) -> int:
+    """Return the total replica count for canary rollouts.
+
+    Reads ``[canary] total_replicas``, clamped to a minimum of 1. Falls
+    back to 4 (also used on parse errors).
+    """
     try:
         return max(1, cfg.getint("canary", "total_replicas", fallback=4))
     except (ValueError, TypeError):
@@ -294,6 +336,11 @@ def get_canary_total_replicas(cfg: ConfigParser) -> int:
 
 
 def get_canary_step_percent(cfg: ConfigParser) -> int:
+    """Return the percentage of traffic shifted per canary step.
+
+    Reads ``[canary] step_percent``, clamped to 1-100. Falls back to 25
+    (also used on parse errors).
+    """
     try:
         return min(100, max(1, cfg.getint("canary", "step_percent", fallback=25)))
     except (ValueError, TypeError):
@@ -301,6 +348,11 @@ def get_canary_step_percent(cfg: ConfigParser) -> int:
 
 
 def get_canary_error_rate_threshold(cfg: ConfigParser) -> float:
+    """Return the error-rate percentage above which a canary is rolled back.
+
+    Reads ``[canary] error_rate_threshold_percent``. Falls back to 5.0
+    (also used on parse errors).
+    """
     try:
         return cfg.getfloat("canary", "error_rate_threshold_percent", fallback=5.0)
     except (ValueError, TypeError):
@@ -308,6 +360,11 @@ def get_canary_error_rate_threshold(cfg: ConfigParser) -> float:
 
 
 def get_canary_latency_p95_threshold_ms(cfg: ConfigParser) -> float:
+    """Return the p95 latency (ms) above which a canary is rolled back.
+
+    Reads ``[canary] latency_p95_threshold_ms``. Falls back to 2000.0
+    (also used on parse errors).
+    """
     try:
         return cfg.getfloat("canary", "latency_p95_threshold_ms", fallback=2000.0)
     except (ValueError, TypeError):
@@ -315,6 +372,11 @@ def get_canary_latency_p95_threshold_ms(cfg: ConfigParser) -> float:
 
 
 def get_canary_min_requests(cfg: ConfigParser) -> int:
+    """Return the minimum request count before evaluating canary health.
+
+    Reads ``[canary] min_requests_for_evaluation``, clamped to a minimum
+    of 1. Falls back to 20 (also used on parse errors).
+    """
     try:
         return max(1, cfg.getint("canary", "min_requests_for_evaluation", fallback=20))
     except (ValueError, TypeError):
@@ -368,6 +430,10 @@ def _get_rag_enabled_legacy_alias(cfg: ConfigParser) -> bool:
 
 
 def get_rag_chat_top_k(cfg: ConfigParser) -> int:
+    """Return the number of top-scoring chunks to retrieve per RAG query.
+
+    Reads ``[rag] chat_top_k``. Falls back to 3 (also used on parse errors).
+    """
     try:
         return cfg.getint("rag", "chat_top_k", fallback=3)
     except Exception:
@@ -375,6 +441,10 @@ def get_rag_chat_top_k(cfg: ConfigParser) -> int:
 
 
 def get_rag_min_score(cfg: ConfigParser) -> float:
+    """Return the minimum similarity score for a RAG chunk to be kept.
+
+    Reads ``[rag] min_score``. Falls back to 0.0 (also used on parse errors).
+    """
     try:
         return cfg.getfloat("rag", "min_score", fallback=0.0)
     except Exception:
@@ -382,6 +452,10 @@ def get_rag_min_score(cfg: ConfigParser) -> float:
 
 
 def get_rag_max_chunks(cfg: ConfigParser) -> int:
+    """Return the maximum number of RAG chunks injected into chat context.
+
+    Reads ``[rag] max_chunks``. Falls back to 6 (also used on parse errors).
+    """
     try:
         return cfg.getint("rag", "max_chunks", fallback=6)
     except Exception:
@@ -389,6 +463,11 @@ def get_rag_max_chunks(cfg: ConfigParser) -> int:
 
 
 def get_rag_chat_context_max_chars(cfg: ConfigParser) -> int:
+    """Return the max character budget for RAG context injected into chat.
+
+    Reads ``[rag] chat_context_max_chars``. Falls back to 2400 (also used
+    on parse errors).
+    """
     try:
         return cfg.getint("rag", "chat_context_max_chars", fallback=2400)
     except Exception:
@@ -396,6 +475,10 @@ def get_rag_chat_context_max_chars(cfg: ConfigParser) -> int:
 
 
 def get_rag_dedupe(cfg: ConfigParser) -> bool:
+    """Return whether duplicate/near-duplicate RAG chunks are removed.
+
+    Reads ``[rag] dedupe``. Falls back to True (also used on parse errors).
+    """
     try:
         return cfg.getboolean("rag", "dedupe", fallback=True)
     except Exception:
@@ -403,6 +486,11 @@ def get_rag_dedupe(cfg: ConfigParser) -> bool:
 
 
 def get_rag_include_scores(cfg: ConfigParser) -> bool:
+    """Return whether similarity scores are included in RAG chat context.
+
+    Reads ``[rag] include_scores``. Falls back to False (also used on
+    parse errors).
+    """
     try:
         return cfg.getboolean("rag", "include_scores", fallback=False)
     except Exception:
@@ -410,6 +498,11 @@ def get_rag_include_scores(cfg: ConfigParser) -> bool:
 
 
 def get_rag_include_headers(cfg: ConfigParser) -> bool:
+    """Return whether source headers are included in RAG chat context.
+
+    Reads ``[rag] include_headers``. Falls back to True (also used on
+    parse errors).
+    """
     try:
         return cfg.getboolean("rag", "include_headers", fallback=True)
     except Exception:
@@ -1096,6 +1189,11 @@ def get_self_heal_default_enabled(cfg: ConfigParser) -> bool:
 
 
 def get_self_heal_check_interval_seconds(cfg: ConfigParser) -> float:
+    """Return how often the self-heal watchdog polls service health (seconds).
+
+    Reads ``[self_heal] check_interval_seconds``, clamped to a minimum of
+    1.0. Falls back to 15.0 (also used on parse errors).
+    """
     try:
         return max(1.0, cfg.getfloat("self_heal", "check_interval_seconds", fallback=15.0))
     except (ValueError, TypeError):
@@ -1103,6 +1201,11 @@ def get_self_heal_check_interval_seconds(cfg: ConfigParser) -> float:
 
 
 def get_self_heal_max_consecutive_restarts(cfg: ConfigParser) -> int:
+    """Return the max consecutive restarts before the watchdog gives up.
+
+    Reads ``[self_heal] max_consecutive_restarts``, clamped to a minimum
+    of 1. Falls back to 5 (also used on parse errors).
+    """
     try:
         return max(1, cfg.getint("self_heal", "max_consecutive_restarts", fallback=5))
     except (ValueError, TypeError):
@@ -1110,6 +1213,11 @@ def get_self_heal_max_consecutive_restarts(cfg: ConfigParser) -> int:
 
 
 def get_self_heal_backoff_seconds(cfg: ConfigParser) -> float:
+    """Return the backoff delay between self-heal restart attempts (seconds).
+
+    Reads ``[self_heal] backoff_seconds``, clamped to a minimum of 0.0.
+    Falls back to 30.0 (also used on parse errors).
+    """
     try:
         return max(0.0, cfg.getfloat("self_heal", "backoff_seconds", fallback=30.0))
     except (ValueError, TypeError):
