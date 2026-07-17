@@ -155,6 +155,7 @@ def _referenced_metric_names(expr: str) -> set[str]:
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "self-healing.json",
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "deployment.json",
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "canary.json",
+        REPO_ROOT / "docker" / "grafana" / "dashboards" / "resource-usage.json",
     ],
 )
 def test_promql_expressions_only_reference_known_metrics(config_path: Path) -> None:
@@ -181,7 +182,9 @@ def test_grafana_dashboards_are_provisioned() -> None:
         "canary.json",
         "deployment.json",
         "logs-explorer.json",
+        "operational-logs.json",
         "rag-performance.json",
+        "resource-usage.json",
         "self-healing.json",
         "system-overview.json",
     ]
