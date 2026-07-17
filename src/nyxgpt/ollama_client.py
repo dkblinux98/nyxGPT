@@ -82,15 +82,12 @@ def _retry_with_backoff(
     Raises:
         Last exception if all retries fail
     """
-    last_error = None
     delay = initial_delay
 
     for attempt in range(max_retries + 1):
         try:
             return func()
         except Exception as e:
-            last_error = e
-
             # Don't retry on HTTP errors (4xx, 5xx) - these are not connection issues
             if isinstance(e, urllib.error.HTTPError):
                 raise
@@ -118,9 +115,9 @@ def _retry_with_backoff(
             time.sleep(current_delay)
             delay *= backoff_factor
 
-    # This should never be reached, but satisfy type checker
-    if last_error:
-        raise last_error
+    # Unreachable when max_retries >= 0 (the last loop iteration always
+    # returns or raises); only a negative max_retries skips the loop body
+    # entirely and falls through here.
     raise RuntimeError("Retry loop ended unexpectedly")
 
 
