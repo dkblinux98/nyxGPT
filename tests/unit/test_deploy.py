@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from nyxgpt import deploy
+from nyxgpt import metrics as prom_metrics
 
 
 class CP:
@@ -276,3 +277,111 @@ def test_history_is_capped(monkeypatch):
 
     saved = deploy._load_state()
     assert len(saved["history"]) == deploy.HISTORY_LIMIT
+
+
+def _metric_value(name, **labels):
+    return prom_metrics.REGISTRY.get_sample_value(name, labels or None)
+
+
+@pytest.mark.unit
+def test_switch_logs_and_records_metric_on_success(monkeypatch, caplog):
+    monkeypatch.setattr(deploy, "get_active_color", lambda ns: "blue")
+    monkeypatch.setattr(
+        deploy, "deployment_health", lambda color, ns: deploy.DeployResult(True, "healthy")
+    )
+    monkeypatch.setattr(deploy, "_run", lambda cmd: CP(returncode=0))
+
+    with caplog.at_level("INFO"):
+        result = deploy.switch(namespace="nyxgpt")
+
+    assert result.ok
+    assert "deploy: switching traffic from blue to green" in caplog.text
+    assert "deploy: switched traffic from blue to green" in caplog.text
+    assert (
+        _metric_value(
+            "nyxgpt_deploy_switches_total", from_color="blue", to_color="green", result="ok"
+        )
+        >= 1
+    )
+    assert _metric_value("nyxgpt_deploy_active_color", color="green") == 1
+    assert _metric_value("nyxgpt_deploy_active_color", color="blue") == 0
+
+
+@pytest.mark.unit
+def test_switch_logs_and_records_metric_on_kubectl_patch_failure(monkeypatch, caplog):
+    monkeypatch.setattr(deploy, "get_active_color", lambda ns: "blue")
+    monkeypatch.setattr(
+        deploy, "deployment_health", lambda color, ns: deploy.DeployResult(True, "healthy")
+    )
+    monkeypatch.setattr(deploy, "_run", lambda cmd: CP(returncode=1, stderr="boom"))
+
+    with caplog.at_level("ERROR"):
+        result = deploy.switch(namespace="nyxgpt")
+
+    assert not result.ok
+    assert "deploy: kubectl patch failed switching blue -> green" in caplog.text
+    assert (
+        _metric_value(
+            "nyxgpt_deploy_switches_total", from_color="blue", to_color="green", result="failed"
+        )
+        >= 1
+    )
+
+
+@pytest.mark.unit
+def test_switch_logs_refusal_when_target_unhealthy(monkeypatch, caplog):
+    monkeypatch.setattr(deploy, "get_active_color", lambda ns: "blue")
+    monkeypatch.setattr(
+        deploy,
+        "deployment_health",
+        lambda color, ns: deploy.DeployResult(False, f"{color} not ready"),
+    )
+
+    with caplog.at_level("WARNING"):
+        result = deploy.switch(namespace="nyxgpt")
+
+    assert not result.ok
+    assert "deploy: refusing switch from blue to green" in caplog.text
+
+
+@pytest.mark.unit
+def test_rollback_logs_and_records_metric_on_success(monkeypatch, caplog):
+    deploy._save_state(
+        {"active": "green", "history": [{"from": "blue", "to": "green", "ts": 1000.0}]}
+    )
+    monkeypatch.setattr(deploy, "get_active_color", lambda ns: "green")
+    monkeypatch.setattr(
+        deploy, "deployment_health", lambda color, ns: deploy.DeployResult(False, "unhealthy")
+    )
+    monkeypatch.setattr(deploy, "_run", lambda cmd: CP(returncode=0))
+
+    with caplog.at_level("INFO"):
+        result = deploy.rollback("nyxgpt")
+
+    assert result.ok
+    assert "deploy: rollback requested" in caplog.text
+    assert "deploy: rollback to blue succeeded" in caplog.text
+    assert _metric_value("nyxgpt_deploy_rollbacks_total", result="ok") >= 1
+
+
+@pytest.mark.unit
+def test_rollback_logs_and_records_metric_on_no_history(caplog):
+    with caplog.at_level("WARNING"):
+        result = deploy.rollback("nyxgpt")
+
+    assert not result.ok
+    assert "deploy: rollback failed, no deployment history" in caplog.text
+    assert _metric_value("nyxgpt_deploy_rollbacks_total", result="failed") >= 1
+
+
+@pytest.mark.unit
+def test_status_updates_active_color_gauge(monkeypatch):
+    monkeypatch.setattr(deploy, "get_active_color", lambda ns: "blue")
+    monkeypatch.setattr(
+        deploy, "deployment_health", lambda color, ns: deploy.DeployResult(True, "ok")
+    )
+
+    deploy.status("nyxgpt")
+
+    assert _metric_value("nyxgpt_deploy_active_color", color="blue") == 1
+    assert _metric_value("nyxgpt_deploy_active_color", color="green") == 0
