@@ -239,3 +239,49 @@ def test_tail_lines_reads_last_n_lines_without_full_file(tmp_path):
     lines = usage_analytics._tail_lines(path, 5)
 
     assert lines == [f"line{i}" for i in range(995, 1000)]
+
+
+def test_record_swallows_oserror_when_disk_write_fails(cfg, monkeypatch):
+    """Usage logging is best-effort; an OSError writing to disk must not raise."""
+
+    def _boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(usage_analytics.Path, "mkdir", _boom)
+
+    event = usage_analytics.record(
+        session="s1", model="m1", prompt_tokens=1, completion_tokens=2, duration_s=0.1, cfg=cfg
+    )
+
+    assert event["session"] == "s1"
+    # In-memory event is still recorded even though the disk write failed.
+    assert list(usage_analytics._events)[-1]["session"] == "s1"
+
+
+def test_load_from_disk_returns_empty_list_on_oserror(cfg, monkeypatch):
+    usage_analytics.record(
+        session="s1", model="m1", prompt_tokens=1, completion_tokens=2, duration_s=0.1, cfg=cfg
+    )
+    usage_analytics._events.clear()
+
+    def _boom(*args, **kwargs):
+        raise OSError("read failed")
+
+    monkeypatch.setattr(usage_analytics, "_tail_lines", _boom)
+
+    assert usage_analytics.recent(limit=10, cfg=cfg) == []
+
+
+def test_load_from_disk_skips_malformed_json_lines(cfg):
+    usage_analytics.record(
+        session="s1", model="m1", prompt_tokens=1, completion_tokens=2, duration_s=0.1, cfg=cfg
+    )
+    log_file = usage_analytics._usage_log_path(cfg)
+    with log_file.open("a", encoding="utf-8") as f:
+        f.write("not valid json\n")
+    usage_analytics._events.clear()
+
+    events = usage_analytics.recent(limit=10, cfg=cfg)
+
+    assert len(events) == 1
+    assert events[0]["session"] == "s1"
