@@ -1901,6 +1901,11 @@ def cli(argv: list[str] | None = None) -> int:
     ops_install = ops_sub.add_parser("install", help="Install operational helpers")
     ops_install.add_argument("--repo-dir", help="Path to nyxGPT repo root")
     ops_install.add_argument("--force", action="store_true", help="Overwrite existing files")
+    ops_install.add_argument(
+        "--skip-observability",
+        action="store_true",
+        help="Don't start the Grafana/Loki/Jaeger/GlitchTip Compose profiles",
+    )
 
     ops_status = ops_sub.add_parser(
         "status", help="Show status of local services (docker/cassandra/agent/api)"
@@ -1945,6 +1950,14 @@ def cli(argv: list[str] | None = None) -> int:
     ops_logs.add_argument("service", help="Compose service name, e.g. glitchtip, api, ollama")
     ops_logs.add_argument(
         "--tail", type=int, default=200, help="Number of trailing log lines to show (default: 200)"
+    )
+
+    ops_sub.add_parser(
+        "observability",
+        help=(
+            "Start the Grafana/Loki/Jaeger/GlitchTip Compose profiles "
+            "(monitoring/logging/tracing/errors) without a raw docker compose command"
+        ),
     )
 
     # Add deploy command (local blue/green switching on a local k8s cluster)
@@ -2176,6 +2189,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.env_sync(args)
         if args.ops_cmd == "logs":
             return ops_mod.logs(args)
+        if args.ops_cmd == "observability":
+            return ops_mod.observability(args)
 
     if cmd == "deploy":
         if args.deploy_cmd == "status":

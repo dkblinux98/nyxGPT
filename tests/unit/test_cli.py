@@ -1575,3 +1575,50 @@ def test_deploy_rollback(
 
     assert exit_code == 0
     assert "[OK] Switched traffic from green to blue" in capsys.readouterr().out
+
+
+def test_ops_observability_dispatches_to_ops_module(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test `nyxgpt ops observability` parses and dispatches without a raw docker command."""
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.ops import OpsResult
+
+    monkeypatch.setattr(
+        cli_mod.ops_mod,
+        "_start_observability_stack",
+        lambda: [OpsResult(True, "Observability stack up")],
+    )
+
+    exit_code = cli(["ops", "observability"])
+
+    assert exit_code == 0
+    assert "[OK] Observability stack up" in capsys.readouterr().out
+
+
+def test_ops_install_skip_observability_flag_parses(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test `nyxgpt ops install --skip-observability` skips the observability step."""
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.ops import OpsResult
+
+    ok = [OpsResult(True, "ok")]
+    for step in (
+        "_install_scripts",
+        "_ensure_web_deps",
+        "_ensure_mcp_deps",
+        "_install_cassandra_launchagent",
+        "_install_homebrew_api",
+        "_install_homebrew_web",
+        "_ensure_log_symlinks",
+    ):
+        monkeypatch.setattr(cli_mod.ops_mod, step, lambda: ok)
+
+    called = []
+    monkeypatch.setattr(cli_mod.ops_mod, "_start_observability_stack", lambda: called.append(True))
+
+    exit_code = cli(["ops", "install", "--skip-observability"])
+
+    assert exit_code == 0
+    assert called == []
