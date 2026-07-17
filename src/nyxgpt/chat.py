@@ -1,3 +1,10 @@
+"""Core chat orchestration: building context, calling the model, and persisting turns.
+
+Ties together session state, RAG retrieval, prompt-mode selection, message
+budget truncation, and the response cache to produce a single chat reply
+(`chat`) or a streamed one (`chat_stream`).
+"""
+
 from __future__ import annotations
 
 import json
@@ -36,6 +43,8 @@ _response_cache: CacheBackend[str] | None = None
 
 @dataclass
 class ChatResult:
+    """Result of a completed (non-streaming) chat exchange."""
+
     session: str
     model: str
     reply: str
@@ -66,10 +75,12 @@ class ChatContext:
 
 
 def _cfg(config_path: str | None) -> Any:
+    """Load the config from `config_path`, or the default config if None."""
     return load_config(config_path)
 
 
 def _get_bool(cfg: Any, section: str, key: str, default: bool) -> bool:
+    """Read a boolean config value, tolerating missing/non-standard representations."""
     try:
         result: bool = cfg.getboolean(section, key, fallback=default)
         return result
@@ -83,6 +94,7 @@ def _get_bool(cfg: Any, section: str, key: str, default: bool) -> bool:
 
 
 def _get_int(cfg: Any, section: str, key: str, default: int) -> int:
+    """Read an integer config value, falling back to `default` if missing/invalid."""
     try:
         result: int = cfg.getint(section, key, fallback=default)
         return result
@@ -94,6 +106,7 @@ def _get_int(cfg: Any, section: str, key: str, default: int) -> int:
 
 
 def _get_str(cfg: Any, section: str, key: str, default: str) -> str:
+    """Read a string config value, falling back to `default` if missing."""
     try:
         result: str = cfg.get(section, key, fallback=default)
         return result

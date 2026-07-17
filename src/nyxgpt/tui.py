@@ -44,14 +44,17 @@ class ChatOutput(Static):
     """Widget to display assistant output incrementally."""
 
     def __init__(self, *args, **kwargs):
+        """Initialize the widget with an empty output buffer."""
         super().__init__(*args, **kwargs)
         self._buffer: str = ""
 
     def clear(self) -> None:
+        """Reset the output buffer and clear the displayed text."""
         self._buffer = ""
         self.update("")
 
     def append(self, text: str) -> None:
+        """Append `text` to the buffer and refresh the displayed content."""
         # Keep our own buffer to avoid Textual version differences
         self._buffer += text
         self.update(self._buffer)
@@ -67,6 +70,7 @@ class SessionStatusBar(Static):
     """Widget to display current session information in the status bar."""
 
     def __init__(self, *args, **kwargs):
+        """Initialize the status bar with empty/default session info."""
         super().__init__(*args, **kwargs)
         self.session_name: str = ""
         self.message_count: int = 0
@@ -141,6 +145,7 @@ class SessionPickerScreen(Screen):
     ]
 
     def __init__(self, config_path: str | None = None) -> None:
+        """Initialize the picker, loading config and clearing the session lists."""
         super().__init__()
         self.config = load_config(config_path)
         self.all_sessions: list[dict] = []
@@ -242,6 +247,7 @@ class ModelsManagerScreen(Screen):
     ]
 
     def __init__(self, api_base_url: str) -> None:
+        """Initialize the models manager with the API base URL and an empty model list."""
         super().__init__()
         self.api_base_url = api_base_url
         self.models: list[dict] = []
@@ -347,6 +353,7 @@ class SearchResultsScreen(ModalScreen[dict | None]):
     ]
 
     def __init__(self, api_base_url: str, current_session: str):
+        """Initialize the search screen with an empty result set."""
         super().__init__()
         self.api_base_url = api_base_url
         self.current_session = current_session
@@ -354,6 +361,7 @@ class SearchResultsScreen(ModalScreen[dict | None]):
         self.case_sensitive = False
 
     def compose(self) -> ComposeResult:
+        """Create the search dialog UI (input, filters, results, and preview)."""
         yield Header()
         with Container(id="search-dialog"):
             yield Label("Search Messages")
@@ -478,6 +486,7 @@ class HelpOverlayScreen(ModalScreen[None]):
     ]
 
     def compose(self) -> ComposeResult:
+        """Create the help overlay UI listing keyboard shortcuts."""
         yield Header()
         with Container(id="help-dialog"):
             yield Label("Keyboard Shortcuts")
@@ -532,10 +541,12 @@ class DeleteConfirmationScreen(ModalScreen[bool]):
     ]
 
     def __init__(self, session_name: str) -> None:
+        """Initialize the confirmation dialog for deleting `session_name`."""
         super().__init__()
         self.session_name = session_name
 
     def compose(self) -> ComposeResult:
+        """Create the delete confirmation dialog UI."""
         yield Header()
         with Container(id="delete-confirm-dialog"):
             yield Label(f"Delete session '{self.session_name}'?")
@@ -570,12 +581,14 @@ class ManageDocumentsScreen(ModalScreen[None]):
     ]
 
     def __init__(self, api_base_url: str, session: str) -> None:
+        """Initialize the manager for `session`'s attached documents."""
         super().__init__()
         self.api_base_url = api_base_url
         self.session = session
         self._attached: list[str] = []
 
     def compose(self) -> ComposeResult:
+        """Create the attached-documents UI (list, attach input, and buttons)."""
         with Container(id="docs-dialog"):
             yield Label(f"Attached documents: {self.session}")
             self.docs_list = ListView(id="docs-listview")
@@ -589,10 +602,12 @@ class ManageDocumentsScreen(ModalScreen[None]):
         yield Footer()
 
     async def on_mount(self) -> None:
+        """Focus the attach input and load the current attached document list."""
         self.attach_input.focus()
         await self._refresh_list()
 
     async def _refresh_list(self) -> None:
+        """Fetch the session's attached document IDs and repopulate the list."""
         try:
             async with httpx.AsyncClient() as client:
                 res = await client.get(
@@ -607,6 +622,7 @@ class ManageDocumentsScreen(ModalScreen[None]):
         await self._populate_list()
 
     async def _populate_list(self) -> None:
+        """Render `self._attached` into the document list widget."""
         await self.docs_list.clear()
         if not self._attached:
             await self.docs_list.append(ListItem(Label("(no documents attached)")))
@@ -615,6 +631,7 @@ class ManageDocumentsScreen(ModalScreen[None]):
                 await self.docs_list.append(ListItem(Label(doc_id)))
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle attach/detach/close button presses."""
         if event.button.id == "attach-btn":
             doc_id = self.attach_input.value.strip()
             if not doc_id:
@@ -651,6 +668,7 @@ class ManageDocumentsScreen(ModalScreen[None]):
             self.dismiss(None)
 
     def action_close(self) -> None:
+        """Close the documents manager."""
         self.dismiss(None)
 
 
@@ -664,6 +682,7 @@ class CommandPaletteScreen(ModalScreen[str | None]):
     ]
 
     def __init__(self) -> None:
+        """Initialize the command palette with its static list of available commands."""
         super().__init__()
         self.all_commands = [
             {
@@ -711,6 +730,7 @@ class CommandPaletteScreen(ModalScreen[str | None]):
         self.filtered_commands = self.all_commands.copy()
 
     def compose(self) -> ComposeResult:
+        """Create the command palette UI (search input, command list, description)."""
         yield Header()
         with Container(id="command-palette-dialog"):
             yield Label("Command Palette")
@@ -783,6 +803,8 @@ class CommandPaletteScreen(ModalScreen[str | None]):
 
 
 class NyxGPTTUI(App):
+    """The main Textual application: chat view, session state, and key bindings."""
+
     CSS_PATH = None
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
@@ -808,6 +830,7 @@ class NyxGPTTUI(App):
         api_base_url: str | None = None,
         config_path: str | None = None,
     ) -> None:
+        """Initialize the app for `session`, resolving the API base URL from config."""
         super().__init__()
         cfg = load_config(config_path)
         self.session = session
@@ -842,6 +865,7 @@ class NyxGPTTUI(App):
             log.warning(f"Failed to unlock prompt: {type(e).__name__}: {e}")
 
     def compose(self) -> ComposeResult:
+        """Create the main app layout: header, chat output, status bar, and prompt."""
         yield Header(show_clock=True)
         with Vertical():
             self.output = ChatOutput()
@@ -1005,11 +1029,13 @@ class NyxGPTTUI(App):
             """Modal screen for renaming a session."""
 
             def __init__(self, current_session: str, current_title: str = "") -> None:
+                """Store the session name and current title to prefill the dialog."""
                 super().__init__()
                 self.current_session = current_session
                 self.current_title = current_title
 
             def compose(self) -> ComposeResult:
+                """Yield the rename dialog's input field and action buttons."""
                 with Container(id="rename-dialog"):
                     yield Label(f"Rename session: {self.current_session}")
                     self.rename_input = Input(
@@ -1023,9 +1049,11 @@ class NyxGPTTUI(App):
                         yield Button("Cancel", id="cancel-btn")
 
             async def on_mount(self) -> None:
+                """Focus the rename input as soon as the dialog is shown."""
                 self.rename_input.focus()
 
             async def on_button_pressed(self, event: Button.Pressed) -> None:
+                """Dismiss with the new name on confirm, or `None` on cancel."""
                 if event.button.id == "rename-btn":
                     new_name = self.rename_input.value.strip()
                     if new_name:
@@ -1104,6 +1132,7 @@ class NyxGPTTUI(App):
             """Modal screen for indexing a code repository."""
 
             def compose(self) -> ComposeResult:
+                """Yield the repo-indexing dialog's inputs and action buttons."""
                 with Container(id="index-repo-dialog"):
                     yield Label("Index Code Repository for RAG")
                     self.repo_path_input = Input(
@@ -1126,9 +1155,11 @@ class NyxGPTTUI(App):
                         yield Button("Cancel", id="cancel-btn")
 
             async def on_mount(self) -> None:
+                """Focus the repository path input as soon as the dialog is shown."""
                 self.repo_path_input.focus()
 
             async def on_button_pressed(self, event: Button.Pressed) -> None:
+                """Dismiss with the collected indexing options, or `None` on cancel."""
                 if event.button.id == "index-btn":
                     repo_path = self.repo_path_input.value.strip()
                     if repo_path:
@@ -1285,6 +1316,7 @@ class NyxGPTTUI(App):
             log.warning(f"Unknown command: /{command}")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle prompt submission: dispatch slash commands or start a chat stream."""
         text = event.value.strip()
         if not text:
             return
@@ -1307,6 +1339,7 @@ class NyxGPTTUI(App):
         asyncio.create_task(self._stream_chat(text))
 
     async def _stream_chat(self, prompt: str) -> None:
+        """Stream a chat response from the backend and render it incrementally."""
         import json
 
         url = f"{self.api_base_url}/api/v1/chat/stream"
