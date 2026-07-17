@@ -182,9 +182,27 @@ def test_extract_document_text_plain() -> None:
     assert "Second line." in text
 
 
+def _install_fake_pdfplumber(monkeypatch: pytest.MonkeyPatch, mock_pdf: Any) -> None:
+    """Install a fake ``pdfplumber`` module in ``sys.modules``.
+
+    ``_extract_document_text`` does ``import pdfplumber`` lazily, so patching
+    ``pdfplumber.open`` requires the real (optional, native-dependency-heavy)
+    package to be importable. Stubbing the module directly keeps the test
+    deterministic regardless of whether pdfplumber is installed in the
+    running environment.
+    """
+    import sys
+    import types
+    from unittest.mock import MagicMock
+
+    fake_module = types.ModuleType("pdfplumber")
+    fake_module.open = MagicMock(return_value=mock_pdf)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pdfplumber", fake_module)
+
+
 def test_build_user_message_with_pdf_document(monkeypatch: pytest.MonkeyPatch) -> None:
     """PDF attachments should extract text via pdfplumber, not raw UTF-8 decode."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
 
     fake_pdf_bytes = b"%PDF-1.4 fake pdf binary content"
     pdf_b64 = base64.b64encode(fake_pdf_bytes).decode()
@@ -197,16 +215,17 @@ def test_build_user_message_with_pdf_document(monkeypatch: pytest.MonkeyPatch) -
     mock_pdf.__exit__ = MagicMock(return_value=False)
     mock_pdf.pages = [mock_page]
 
-    with patch("pdfplumber.open", return_value=mock_pdf):
-        attachments = [
-            {
-                "type": "document",
-                "media_type": "application/pdf",
-                "data": pdf_b64,
-                "filename": "report.pdf",
-            }
-        ]
-        msg = _build_user_message("interpret this", attachments)
+    _install_fake_pdfplumber(monkeypatch, mock_pdf)
+
+    attachments = [
+        {
+            "type": "document",
+            "media_type": "application/pdf",
+            "data": pdf_b64,
+            "filename": "report.pdf",
+        }
+    ]
+    msg = _build_user_message("interpret this", attachments)
 
     assert "CHROMOSOME KARYOTYPE REPORT" in msg["content"]
     assert "46,XX" in msg["content"]
@@ -217,7 +236,7 @@ def test_build_user_message_with_pdf_document(monkeypatch: pytest.MonkeyPatch) -
 
 def test_build_user_message_pdf_no_extractable_text(monkeypatch: pytest.MonkeyPatch) -> None:
     """PDFs with no extractable text get a clear fallback message."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
 
     pdf_b64 = base64.b64encode(b"%PDF-1.4 scanned only").decode()
 
@@ -228,16 +247,17 @@ def test_build_user_message_pdf_no_extractable_text(monkeypatch: pytest.MonkeyPa
     mock_pdf.__exit__ = MagicMock(return_value=False)
     mock_pdf.pages = [mock_page]
 
-    with patch("pdfplumber.open", return_value=mock_pdf):
-        attachments = [
-            {
-                "type": "document",
-                "media_type": "application/pdf",
-                "data": pdf_b64,
-                "filename": "scan.pdf",
-            }
-        ]
-        msg = _build_user_message("what is this?", attachments)
+    _install_fake_pdfplumber(monkeypatch, mock_pdf)
+
+    attachments = [
+        {
+            "type": "document",
+            "media_type": "application/pdf",
+            "data": pdf_b64,
+            "filename": "scan.pdf",
+        }
+    ]
+    msg = _build_user_message("what is this?", attachments)
 
     assert "no extractable text found" in msg["content"]
     assert "scan.pdf" in msg["content"]
