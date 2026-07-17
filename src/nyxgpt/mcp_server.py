@@ -75,10 +75,12 @@ _TOOLS: list[dict[str, Any]] = [
 
 
 def _response(req_id: Any, result: Any) -> dict[str, Any]:
+    """Build a JSON-RPC 2.0 success response wrapping `result`."""
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
 def _error(req_id: Any, code: int, message: str) -> dict[str, Any]:
+    """Build a JSON-RPC 2.0 error response with the given `code` and `message`."""
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
 
@@ -88,6 +90,7 @@ def _error(req_id: Any, code: int, message: str) -> dict[str, Any]:
 
 
 def _handle_initialize(req_id: Any, params: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001
+    """Handle the MCP `initialize` request, responding with protocol/server info."""
     return _response(
         req_id,
         {
@@ -99,10 +102,15 @@ def _handle_initialize(req_id: Any, params: dict[str, Any]) -> dict[str, Any]:  
 
 
 def _handle_tools_list(req_id: Any) -> dict[str, Any]:
+    """Handle the MCP `tools/list` request, responding with the tool catalog."""
     return _response(req_id, {"tools": _TOOLS})
 
 
 def _handle_tools_call(req_id: Any, params: dict[str, Any]) -> dict[str, Any]:
+    """Handle the MCP `tools/call` request by dispatching to the named tool.
+
+    Returns an error response if `params["name"]` doesn't match a known tool.
+    """
     tool_name = params.get("name", "")
     arguments: dict[str, Any] = params.get("arguments", {})
 
@@ -115,6 +123,17 @@ def _handle_tools_call(req_id: Any, params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_chat(req_id: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Implement the `chat` MCP tool: send `arguments["prompt"]` to nyxGPT and return the reply.
+
+    Args:
+        req_id: JSON-RPC request id to echo back in the response.
+        arguments: Tool arguments; must include `prompt`, may include
+            `session` and `model`.
+
+    Returns:
+        A JSON-RPC response with the chat reply as text content, or an
+        error response if `prompt` is missing/invalid or the chat call fails.
+    """
     prompt = arguments.get("prompt")
     if not prompt or not isinstance(prompt, str):
         return _error(req_id, -32602, "'prompt' is required and must be a non-empty string")
@@ -133,6 +152,12 @@ def _tool_chat(req_id: Any, arguments: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_list_sessions(req_id: Any) -> dict[str, Any]:
+    """Implement the `list_sessions` MCP tool: return the names of available chat sessions.
+
+    Returns:
+        A JSON-RPC response with a newline-separated list of session names
+        (or a placeholder if there are none), or an error response on failure.
+    """
     try:
         from nyxgpt.config import load_config
         from nyxgpt.sessions import list_sessions
