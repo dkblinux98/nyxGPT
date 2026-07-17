@@ -238,6 +238,27 @@ def test_percentile_edge_cases():
 
 
 @pytest.mark.unit
+def test_percentile_empty_samples_returns_zero():
+    """Direct call to the static helper with no samples must not raise."""
+    assert ResourceMonitor._percentile([], 50) == 0.0
+
+
+@pytest.mark.unit
+def test_batch_processor_queue_access_failure_falls_back_to_zero():
+    """A batch processor whose queue access blows up must not break metrics."""
+
+    class _BrokenQueueProcessor:
+        @property
+        def _queue(self):
+            raise RuntimeError("queue gone")
+
+    monitor = ResourceMonitor(max_samples=100, batch_processor=_BrokenQueueProcessor())
+    metrics = monitor.get_metrics()
+
+    assert metrics.queue_depth == 0
+
+
+@pytest.mark.unit
 def test_batch_processor_queue_depth():
     """Test queue depth tracking with mock batch processor."""
     import queue

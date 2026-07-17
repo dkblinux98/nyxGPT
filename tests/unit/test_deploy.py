@@ -217,6 +217,51 @@ def test_status_reports_unavailable_when_kubectl_missing_under_compose(monkeypat
 
 
 @pytest.mark.unit
+def test_load_state_handles_corrupted_json(tmp_path):
+    """A corrupted state file must not raise; _load_state() should fall back
+    to the default state instead of propagating the JSON parse error."""
+    (tmp_path / "deploy_state.json").write_text("not valid json{", encoding="utf-8")
+
+    state = deploy._load_state()
+
+    assert state == {"active": "blue", "history": []}
+
+
+@pytest.mark.unit
+def test_deployment_health_unparseable_status(monkeypatch):
+    monkeypatch.setattr(deploy, "_run", lambda cmd: CP(stdout="not json"))
+    result = deploy.deployment_health("blue", "nyxgpt")
+    assert not result.ok
+    assert "Could not parse status" in result.message
+
+
+@pytest.mark.unit
+def test_deployment_health_zero_replicas(monkeypatch):
+    monkeypatch.setattr(
+        deploy, "_run", lambda cmd: CP(stdout=_deployment_json(replicas=0, ready=0, updated=0))
+    )
+    result = deploy.deployment_health("blue", "nyxgpt")
+    assert not result.ok
+    assert "0 desired replicas" in result.message
+
+
+@pytest.mark.unit
+def test_switch_unknown_target_color(monkeypatch):
+    monkeypatch.setattr(deploy, "get_active_color", lambda ns: "blue")
+    result = deploy.switch(target="red", namespace="nyxgpt")
+    assert not result.ok
+    assert "Unknown color: red" in result.message
+
+
+@pytest.mark.unit
+def test_rollback_invalid_previous_color():
+    deploy._save_state({"active": "blue", "history": [{"from": "red", "to": "blue", "ts": 1000.0}]})
+    result = deploy.rollback("nyxgpt")
+    assert not result.ok
+    assert "No valid previous color recorded" in result.message
+
+
+@pytest.mark.unit
 def test_history_is_capped(monkeypatch):
     monkeypatch.setattr(deploy, "get_active_color", lambda ns: "blue")
     monkeypatch.setattr(

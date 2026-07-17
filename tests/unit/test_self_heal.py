@@ -7,6 +7,7 @@ mocked out, so no docker daemon or actual compose stack is needed.
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -48,6 +49,18 @@ def test_resolve_compose_file_defaults_to_repo_root(monkeypatch):
 
 
 @pytest.mark.unit
+def test_load_state_recovers_from_corrupt_json(monkeypatch, tmp_path):
+    state_path = tmp_path / "self_heal_state.json"
+    state_path.write_text("{not valid json", encoding="utf-8")
+    monkeypatch.setattr(self_heal, "_state_path", lambda: state_path)
+
+    # A corrupt state file must not blow up callers -- it falls back to the
+    # default (disabled, no history) rather than propagating the JSON error.
+    assert self_heal.is_enabled() is False
+    assert self_heal.recent_events() == []
+
+
+@pytest.mark.unit
 def test_list_component_status_parses_ps_json(monkeypatch):
     stdout = "\n".join(
         [
@@ -80,6 +93,39 @@ def test_list_component_status_unhealthy_container(monkeypatch):
     statuses = self_heal.list_component_status()
     assert statuses[0].healthy is False
     assert statuses[0].health == "unhealthy"
+
+
+@pytest.mark.unit
+def test_list_component_status_run_raises(monkeypatch, caplog):
+    def _boom(cmd, timeout=30.0):
+        raise OSError("docker daemon not reachable")
+
+    monkeypatch.setattr(self_heal, "_run", _boom)
+
+    with caplog.at_level("WARNING"):
+        statuses = self_heal.list_component_status()
+
+    assert statuses == []
+    assert "failed to query docker compose ps" in caplog.text
+    assert "docker daemon not reachable" in caplog.text
+
+
+@pytest.mark.unit
+def test_list_component_status_skips_blank_and_invalid_lines(monkeypatch):
+    stdout = "\n".join(
+        [
+            "",
+            "not json at all",
+            _ps_line("api", state="running", health="healthy"),
+        ]
+    )
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=stdout))
+
+    statuses = self_heal.list_component_status()
+
+    # The blank line and the malformed JSON line are both skipped silently;
+    # only the well-formed entry survives.
+    assert [s.service for s in statuses] == ["api"]
 
 
 @pytest.mark.unit
@@ -121,6 +167,20 @@ def test_restart_component_failure(monkeypatch):
 
 
 @pytest.mark.unit
+def test_restart_component_run_raises(monkeypatch):
+    def _boom(cmd, timeout=30.0):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+    monkeypatch.setattr(self_heal, "_run", _boom)
+
+    result = self_heal.restart_component("api")
+
+    assert not result.ok
+    assert "Failed to restart api" in result.message
+    assert "TimeoutExpired" in result.details
+
+
+@pytest.mark.unit
 def test_restart_component_no_docker(monkeypatch):
     monkeypatch.setattr(self_heal, "_which", lambda _: None)
     result = self_heal.restart_component("api")
@@ -153,6 +213,20 @@ def test_component_logs_failure(monkeypatch):
     result = self_heal.component_logs("glitchtip")
     assert not result.ok
     assert "no such service" in result.details
+
+
+@pytest.mark.unit
+def test_component_logs_run_raises(monkeypatch):
+    def _boom(cmd, timeout=30.0):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+    monkeypatch.setattr(self_heal, "_run", _boom)
+
+    result = self_heal.component_logs("glitchtip")
+
+    assert not result.ok
+    assert "Failed to fetch logs for glitchtip" in result.message
+    assert "TimeoutExpired" in result.details
 
 
 @pytest.mark.unit
@@ -332,3 +406,40 @@ def test_watchdog_skips_heal_now_when_disabled(monkeypatch):
     watchdog.stop(timeout=1.0)
 
     assert calls == []
+
+
+@pytest.mark.unit
+def test_watchdog_start_is_a_noop_when_already_running(monkeypatch, caplog):
+    monkeypatch.setattr(self_heal, "heal_now", lambda **kwargs: None)
+    monkeypatch.setattr(self_heal, "is_enabled", lambda: False)
+
+    watchdog = self_heal.Watchdog(interval_seconds=0.01)
+    watchdog.start()
+    first_thread = watchdog._thread
+    try:
+        with caplog.at_level("WARNING"):
+            watchdog.start()  # second call while the loop thread is alive
+        assert "already running" in caplog.text
+        # The original thread is left in place, not replaced.
+        assert watchdog._thread is first_thread
+    finally:
+        watchdog.stop(timeout=1.0)
+
+
+@pytest.mark.unit
+def test_watchdog_loop_survives_heal_now_exception(monkeypatch, caplog):
+    def _boom(**kwargs):
+        raise RuntimeError("heal pass exploded")
+
+    monkeypatch.setattr(self_heal, "heal_now", _boom)
+    monkeypatch.setattr(self_heal, "is_enabled", lambda: True)
+
+    watchdog = self_heal.Watchdog(interval_seconds=0.01)
+    with caplog.at_level("ERROR"):
+        watchdog.start()
+        time.sleep(0.1)
+        watchdog.stop(timeout=1.0)
+
+    # The exception is caught and logged, not left to kill the daemon thread.
+    assert "error during automatic heal pass" in caplog.text
+    assert not watchdog._thread

@@ -2,8 +2,10 @@
 
 import tempfile
 import time
+from unittest.mock import patch
 
 from nyxgpt.cache import (
+    CacheBackend,
     DiskCache,
     MemoryCache,
     NoOpCache,
@@ -11,6 +13,40 @@ from nyxgpt.cache import (
     hash_list,
     hash_text,
 )
+
+
+class TestCacheBackend:
+    """Test the abstract CacheBackend base class stub implementations."""
+
+    def test_abstract_methods_are_inert_stubs(self):
+        """Directly invoke the base class's abstract method bodies.
+
+        Concrete subclasses (MemoryCache, DiskCache, NoOpCache) fully override
+        every abstract method, so the base implementations are otherwise
+        unreachable. Calling them explicitly via the class confirms they are
+        harmless no-ops (just `pass`), which is what abstract stub bodies
+        should be.
+        """
+
+        class DummyCache(CacheBackend[str]):
+            def get(self, key: str) -> str | None:
+                return None
+
+            def set(self, key: str, value: str, ttl: int | None = None) -> None:
+                pass
+
+            def clear(self) -> None:
+                pass
+
+            def size(self) -> int:
+                return 0
+
+        dummy = DummyCache()
+
+        assert CacheBackend.get(dummy, "key1") is None
+        assert CacheBackend.set(dummy, "key1", "value1") is None
+        assert CacheBackend.clear(dummy) is None
+        assert CacheBackend.size(dummy) is None
 
 
 class TestMemoryCache:
@@ -242,6 +278,58 @@ class TestDiskCache:
 
             result = cache.get("key1")
             assert result == data
+
+    def test_get_corrupted_cache_file_is_treated_as_miss_and_removed(self):
+        """A cache file that fails to unpickle should be swallowed as a miss.
+
+        This exercises the except branch in DiskCache.get(): the corrupt file
+        must not raise, must count as a miss, and must be removed so future
+        reads don't keep tripping over it.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache: DiskCache[str] = DiskCache(cache_dir=tmpdir)
+            cache_file = cache._get_cache_path("key1")
+            cache_file.write_bytes(b"not a valid pickle stream")
+
+            result = cache.get("key1")
+
+            assert result is None
+            assert not cache_file.exists()
+            assert cache.stats()["misses"] == 1
+
+    def test_set_write_failure_is_logged_and_swallowed(self):
+        """A failure while writing the cache file must not raise.
+
+        Exercises the except branch in DiskCache.set().
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache: DiskCache[str] = DiskCache(cache_dir=tmpdir)
+
+            with patch("nyxgpt.cache.pickle.dump", side_effect=OSError("disk full")):
+                # Should not raise despite the write failure.
+                cache.set("key1", "value1")
+
+            # Nothing was actually persisted.
+            assert cache.get("key1") is None
+
+    def test_stats(self):
+        """Test disk cache statistics tracking."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache: DiskCache[str] = DiskCache(cache_dir=tmpdir)
+
+            cache.set("key1", "value1")
+
+            # Hit
+            _ = cache.get("key1")
+
+            # Miss
+            _ = cache.get("key2")
+
+            stats = cache.stats()
+            assert stats["hits"] == 1
+            assert stats["misses"] == 1
+            assert stats["hit_rate"] == 0.5
+            assert stats["size"] == 1
 
 
 class TestNoOpCache:

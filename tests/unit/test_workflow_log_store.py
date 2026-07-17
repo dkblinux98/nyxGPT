@@ -5,7 +5,9 @@ Related: #2844, #3189
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import subprocess
 import time
 
 import pytest
@@ -137,6 +139,47 @@ class TestIngestAndQuery:
         assert len(rows) == 1
         assert rows[0]["run_id"] == 2
 
+    def test_query_filters_by_status(self, conn):
+        workflow_log_store.ingest_runs(
+            conn,
+            [
+                workflow_log_store.to_record(_raw_run(1, status="completed")),
+                workflow_log_store.to_record(_raw_run(2, status="in_progress")),
+            ],
+        )
+
+        rows = workflow_log_store.query_runs(conn, status="in_progress")
+        assert len(rows) == 1
+        assert rows[0]["run_id"] == 2
+
+    def test_query_filters_by_branch(self, conn):
+        workflow_log_store.ingest_runs(
+            conn,
+            [
+                workflow_log_store.to_record(_raw_run(1, branch="feat/2844-a")),
+                workflow_log_store.to_record(_raw_run(2, branch="feat/9999-b")),
+            ],
+        )
+
+        rows = workflow_log_store.query_runs(conn, branch="feat/9999-b")
+        assert len(rows) == 1
+        assert rows[0]["run_id"] == 2
+
+    def test_query_filters_by_since_days(self, conn):
+        old_run = _raw_run(1, created_at="2020-01-01T00:00:00Z", updated_at="2020-01-01T00:05:00Z")
+        recent_run = _raw_run(2)
+        workflow_log_store.ingest_runs(
+            conn,
+            [
+                workflow_log_store.to_record(old_run),
+                workflow_log_store.to_record(recent_run),
+            ],
+        )
+
+        rows = workflow_log_store.query_runs(conn, since_days=30)
+        assert len(rows) == 1
+        assert rows[0]["run_id"] == 2
+
     def test_query_respects_limit(self, conn):
         workflow_log_store.ingest_runs(
             conn, [workflow_log_store.to_record(_raw_run(i)) for i in range(1, 6)]
@@ -217,6 +260,83 @@ class TestPurgeOld:
         rows = workflow_log_store.query_runs(conn)
         assert len(rows) == 1
         assert rows[0]["run_id"] == 2
+
+
+class TestRunGhCommand:
+    def test_returns_stdout_on_success(self, monkeypatch):
+        class FakeCompletedProcess:
+            stdout = '[{"databaseId": 1}]'
+
+        captured_calls = []
+
+        def fake_run(cmd, capture_output, text, check):
+            captured_calls.append(cmd)
+            assert capture_output is True
+            assert text is True
+            assert check is True
+            return FakeCompletedProcess()
+
+        monkeypatch.setattr(workflow_log_store.subprocess, "run", fake_run)
+
+        result = workflow_log_store.run_gh_command(["run", "list"])
+
+        assert result == '[{"databaseId": 1}]'
+        assert captured_calls == [["gh", "run", "list"]]
+
+    def test_returns_empty_string_on_called_process_error(self, monkeypatch, capsys):
+        def fake_run(*args, **kwargs):
+            raise subprocess.CalledProcessError(1, ["gh", "run", "list"])
+
+        monkeypatch.setattr(workflow_log_store.subprocess, "run", fake_run)
+
+        result = workflow_log_store.run_gh_command(["run", "list"])
+
+        assert result == ""
+        assert "Error running gh command" in capsys.readouterr().err
+
+    def test_returns_empty_string_when_gh_not_installed(self, monkeypatch, capsys):
+        def fake_run(*args, **kwargs):
+            raise FileNotFoundError("gh: command not found")
+
+        monkeypatch.setattr(workflow_log_store.subprocess, "run", fake_run)
+
+        result = workflow_log_store.run_gh_command(["run", "list"])
+
+        assert result == ""
+        assert "Error running gh command" in capsys.readouterr().err
+
+
+class TestFetchWorkflowRuns:
+    def test_parses_json_result_and_builds_gh_args(self, monkeypatch):
+        raw_runs = [_raw_run(1), _raw_run(2)]
+        captured_args = []
+
+        def fake_run_gh_command(args):
+            captured_args.append(args)
+            return json.dumps(raw_runs)
+
+        monkeypatch.setattr(workflow_log_store, "run_gh_command", fake_run_gh_command)
+
+        runs = workflow_log_store.fetch_workflow_runs("dkblinux98/nyxGPT", limit=50)
+
+        assert runs == raw_runs
+        assert captured_args == [
+            [
+                "run",
+                "list",
+                "--repo",
+                "dkblinux98/nyxGPT",
+                "--limit",
+                "50",
+                "--json",
+                "databaseId,workflowName,status,conclusion,createdAt,updatedAt,url,headBranch,displayTitle",
+            ]
+        ]
+
+    def test_returns_empty_list_when_gh_command_fails(self, monkeypatch):
+        monkeypatch.setattr(workflow_log_store, "run_gh_command", lambda args: "")
+
+        assert workflow_log_store.fetch_workflow_runs("dkblinux98/nyxGPT") == []
 
 
 class TestCollect:

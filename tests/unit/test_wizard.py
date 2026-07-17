@@ -54,6 +54,17 @@ def test_validate_ollama_connection_failure():
         assert models == []
 
 
+def test_validate_ollama_connection_other_error():
+    """A non-connection-refused exception is surfaced with its own message,
+    not misreported as 'Ollama is not running'."""
+    with patch("nyxgpt.wizard.list_models", side_effect=ValueError("unexpected 500 from Ollama")):
+        success, message, models = _validate_ollama_connection("http://127.0.0.1:11434")
+
+        assert success is False
+        assert message == "Ollama connection error: unexpected 500 from Ollama"
+        assert models == []
+
+
 def test_select_model_with_models():
     """Test model selection from available models."""
     models = [
@@ -83,6 +94,45 @@ def test_select_model_default_selection():
     with patch("builtins.input", return_value=""):
         selected = _select_model(models, default="qwen2.5:0.5b")
         assert selected == "llama3.1:8b"  # First model is selected by default
+
+
+def test_select_model_blank_prompt_response_defaults_to_first():
+    """If the low-level _prompt helper ever returns a falsy value despite a
+    default being supplied (defensive branch), _select_model still falls
+    back to choice '1' rather than crashing on int('')."""
+    models = [
+        {"name": "llama3.1:8b", "size": 5000000000},
+        {"name": "qwen2.5:0.5b", "size": 500000000},
+    ]
+
+    with patch("nyxgpt.wizard._prompt", return_value=""):
+        selected = _select_model(models, default="qwen2.5:0.5b")
+        assert selected == "llama3.1:8b"
+
+
+def test_select_model_reprompts_on_invalid_then_non_numeric_input():
+    """Non-numeric input is rejected (caught ValueError) and reprompted;
+    the user then enters a valid selection on the second attempt."""
+    models = [
+        {"name": "llama3.1:8b", "size": 5000000000},
+        {"name": "qwen2.5:0.5b", "size": 500000000},
+    ]
+
+    with patch("builtins.input", side_effect=["not-a-number", "2"]):
+        selected = _select_model(models, default="qwen2.5:0.5b")
+        assert selected == "qwen2.5:0.5b"
+
+
+def test_select_model_reprompts_on_out_of_range_selection():
+    """A numeric but out-of-range selection is rejected and reprompted."""
+    models = [
+        {"name": "llama3.1:8b", "size": 5000000000},
+        {"name": "qwen2.5:0.5b", "size": 500000000},
+    ]
+
+    with patch("builtins.input", side_effect=["99", "1"]):
+        selected = _select_model(models, default="qwen2.5:0.5b")
+        assert selected == "llama3.1:8b"
 
 
 def test_configure_rag_disabled():
@@ -360,6 +410,97 @@ def test_run_wizard_success_with_rag(tmp_path: Path, capsys: pytest.CaptureFixtu
         assert output_path.exists()
         content = output_path.read_text()
         assert "enable_chat_context = true" in content
+
+
+def test_run_wizard_uses_default_config_path_when_none_given(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """When output_path is omitted, the wizard falls back to
+    nyxgpt.wizard.DEFAULT_CONFIG_PATH rather than requiring a caller-supplied
+    path."""
+    default_path = tmp_path / "default-config.ini"
+
+    mock_models = [{"name": "qwen2.5:0.5b", "size": 500000000}]
+    inputs = [
+        "http://127.0.0.1:11434",  # Ollama URL
+        "1",  # Select first model
+        "",  # System prompt (empty)
+        "n",  # Disable RAG
+    ]
+
+    with (
+        patch("nyxgpt.wizard.DEFAULT_CONFIG_PATH", default_path),
+        patch("builtins.input", side_effect=inputs),
+        patch("nyxgpt.wizard.list_models", return_value=mock_models),
+    ):
+        exit_code = run_wizard()
+
+        assert exit_code == 0
+        assert default_path.exists()
+
+        captured = capsys.readouterr()
+        assert str(default_path) in captured.out
+
+
+def test_run_wizard_reports_non_empty_system_prompt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """A non-empty system prompt is echoed back (truncated) to confirm it
+    was captured, rather than silently falling through the 'no prompt'
+    branch."""
+    output_path = tmp_path / "config.ini"
+
+    mock_models = [{"name": "qwen2.5:0.5b", "size": 500000000}]
+    inputs = [
+        "http://127.0.0.1:11434",  # Ollama URL
+        "1",  # Select first model
+        "You are a helpful assistant.",  # System prompt
+        "n",  # Disable RAG
+    ]
+
+    with (
+        patch("builtins.input", side_effect=inputs),
+        patch("nyxgpt.wizard.list_models", return_value=mock_models),
+    ):
+        exit_code = run_wizard(output_path=output_path)
+
+        assert exit_code == 0
+
+        captured = capsys.readouterr()
+        assert "System prompt set: You are a helpful assistant." in captured.out
+
+
+def test_run_wizard_reports_error_when_config_generation_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """If writing config.ini fails (e.g. permission error), the wizard
+    catches it, reports the failure, and exits with code 1 instead of
+    propagating the exception."""
+    output_path = tmp_path / "config.ini"
+
+    mock_models = [{"name": "qwen2.5:0.5b", "size": 500000000}]
+    inputs = [
+        "http://127.0.0.1:11434",  # Ollama URL
+        "1",  # Select first model
+        "",  # System prompt (empty)
+        "n",  # Disable RAG
+    ]
+
+    with (
+        patch("builtins.input", side_effect=inputs),
+        patch("nyxgpt.wizard.list_models", return_value=mock_models),
+        patch(
+            "nyxgpt.wizard._generate_config_ini",
+            side_effect=OSError("disk full"),
+        ),
+    ):
+        exit_code = run_wizard(output_path=output_path)
+
+        assert exit_code == 1
+
+        captured = capsys.readouterr()
+        assert "Failed to write configuration" in captured.out
+        assert "disk full" in captured.out
 
 
 def test_run_wizard_keyboard_interrupt(tmp_path: Path, capsys: pytest.CaptureFixture[str]):

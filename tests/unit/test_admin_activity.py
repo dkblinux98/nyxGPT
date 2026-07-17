@@ -6,6 +6,7 @@ Related: #2698
 from __future__ import annotations
 
 from configparser import ConfigParser
+from pathlib import Path
 
 import pytest
 
@@ -77,3 +78,50 @@ def test_recent_falls_back_to_disk_when_memory_empty(cfg):
 
 def test_recent_returns_empty_list_when_nothing_recorded(cfg):
     assert admin_activity.recent(limit=10, cfg=cfg) == []
+
+
+def test_record_swallows_oserror_when_disk_write_fails(tmp_path):
+    """If the log dir can't be created (e.g. a path component is a file), record()
+    must not raise -- activity logging is best-effort."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    parser = ConfigParser()
+    parser.add_section("logging")
+    parser.set("logging", "dir", str(blocker / "logs"))
+
+    event = admin_activity.record("config.updated", "detail", cfg=parser)
+
+    # The in-memory event was still recorded despite the disk failure.
+    assert event["action"] == "config.updated"
+    assert list(admin_activity._events)[-1] == event
+    # No log directory could have been created since `blocker` is a file.
+    assert not (blocker / "logs").exists()
+
+
+def test_load_from_disk_swallows_oserror_on_read(cfg, monkeypatch):
+    """If the on-disk log file exists but can't be read, _load_from_disk must
+    return an empty list rather than propagating the error."""
+    admin_activity.record("canary.start", "10%", cfg=cfg)
+    admin_activity._events.clear()
+
+    def _raise(self, *args, **kwargs):
+        raise OSError("simulated read failure")
+
+    monkeypatch.setattr(Path, "read_text", _raise)
+
+    events = admin_activity.recent(limit=10, cfg=cfg)
+
+    assert events == []
+
+
+def test_recent_from_disk_skips_lines_with_invalid_json(cfg):
+    """Malformed JSONL lines (e.g. a partial write) must be skipped, not raise,
+    and well-formed lines around them must still be returned."""
+    log_file = admin_activity._activity_log_path(cfg)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.write_text("not valid json\n" '{"ts": 1.0, "action": "ok", "detail": "d"}\n')
+
+    events = admin_activity.recent(limit=10, cfg=cfg)
+
+    assert len(events) == 1
+    assert events[0]["action"] == "ok"

@@ -237,9 +237,16 @@ def test_sessions_export_default_format_is_markdown(
 
 
 def test_sessions_export_file_write_error(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Test export fails gracefully when file write fails."""
+    """Test export fails gracefully when file write fails.
+
+    Uses a monkeypatched ``Path.write_text`` rather than chmod-ing a
+    directory read-only: root/container test runners bypass POSIX
+    permission bits, which made this test flaky depending on the CI user.
+    """
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
@@ -252,12 +259,12 @@ def test_sessions_export_file_write_error(
     sessions.save_session_messages(session_file, messages)
     sessions.save_session_meta(meta_file, metadata)
 
-    # Try to write to a read-only directory
-    readonly_dir = tmp_path / "readonly"
-    readonly_dir.mkdir()
-    readonly_dir.chmod(0o444)  # Read-only
+    output_file = tmp_path / "export.md"
 
-    output_file = readonly_dir / "export.md"
+    def _raise_oserror(self: Path, *args: object, **kwargs: object) -> None:
+        raise OSError("Read-only file system")
+
+    monkeypatch.setattr(Path, "write_text", _raise_oserror)
 
     exit_code = cli(
         [
@@ -277,9 +284,6 @@ def test_sessions_export_file_write_error(
     captured = capsys.readouterr()
     assert "ERROR: Failed to write to" in captured.err
     assert str(output_file) in captured.err
-
-    # Cleanup
-    readonly_dir.chmod(0o755)
 
 
 def test_sessions_stats_displays_message_counts(

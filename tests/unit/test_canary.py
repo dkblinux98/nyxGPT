@@ -53,6 +53,33 @@ def test_deployment_health_zero_replicas(monkeypatch):
 
 
 @pytest.mark.unit
+def test_deployment_health_unparseable_status(monkeypatch):
+    monkeypatch.setattr(canary, "_run", lambda cmd: CP(stdout="not json"))
+    result = canary.deployment_health("nyxgpt-api-stable", "nyxgpt")
+    assert not result.ok
+    assert "Could not parse status" in result.message
+
+
+@pytest.mark.unit
+def test_load_state_handles_corrupted_json(tmp_path):
+    """A corrupted state file must not raise; _load_state() should fall back
+    to the default state instead of propagating the JSON parse error."""
+    (tmp_path / "canary_state.json").write_text("not valid json{", encoding="utf-8")
+
+    state = canary._load_state()
+
+    assert state == {"active": False, "weight_percent": 0, "history": []}
+
+
+@pytest.mark.unit
+def test_scale_kubectl_missing(monkeypatch):
+    monkeypatch.setattr(canary, "_which", lambda _: None)
+    result = canary._scale("nyxgpt-api-canary", 2, "nyxgpt")
+    assert not result.ok
+    assert "kubectl not found" in result.message
+
+
+@pytest.mark.unit
 def test_deployment_health_kubectl_missing(monkeypatch):
     monkeypatch.setattr(canary, "_which", lambda _: None)
     result = canary.deployment_health("nyxgpt-api-stable", "nyxgpt")
@@ -133,6 +160,41 @@ def test_start_kubectl_missing_under_compose(monkeypatch):
     result = canary.start(namespace="nyxgpt")
     assert not result.ok
     assert "Kubernetes deployment mode" in result.message
+
+
+@pytest.mark.unit
+def test_start_returns_error_when_canary_scale_fails(monkeypatch):
+    def fake_run(cmd):
+        if "nyxgpt-api-canary" in cmd:
+            return CP(returncode=1, stderr="canary scale boom")
+        return CP(returncode=0)
+
+    monkeypatch.setattr(canary, "_run", fake_run)
+
+    result = canary.start(namespace="nyxgpt", weight_percent=10, total_replicas=4)
+
+    assert not result.ok
+    assert "kubectl scale failed for nyxgpt-api-canary" in result.message
+    # Rollout must not be recorded as started since the scale failed.
+    state = canary._load_state()
+    assert state.get("active") is not True
+
+
+@pytest.mark.unit
+def test_start_returns_error_when_stable_scale_fails(monkeypatch):
+    def fake_run(cmd):
+        if "nyxgpt-api-stable" in cmd:
+            return CP(returncode=1, stderr="stable scale boom")
+        return CP(returncode=0)
+
+    monkeypatch.setattr(canary, "_run", fake_run)
+
+    result = canary.start(namespace="nyxgpt", weight_percent=10, total_replicas=4)
+
+    assert not result.ok
+    assert "kubectl scale failed for nyxgpt-api-stable" in result.message
+    state = canary._load_state()
+    assert state.get("active") is not True
 
 
 @pytest.mark.unit
@@ -286,6 +348,56 @@ def test_promote_no_active_rollout():
 
 
 @pytest.mark.unit
+def test_promote_kubectl_missing(monkeypatch):
+    canary._save_state({"active": True, "weight_percent": 10, "total_replicas": 4, "history": []})
+    monkeypatch.setattr(canary, "_which", lambda _: None)
+
+    result = canary.promote(namespace="nyxgpt")
+
+    assert not result.ok
+    assert "kubectl not found" in result.message
+
+
+@pytest.mark.unit
+def test_promote_returns_error_when_canary_scale_fails(monkeypatch):
+    canary._save_state({"active": True, "weight_percent": 10, "total_replicas": 4, "history": []})
+
+    def fake_run(cmd):
+        if "nyxgpt-api-canary" in cmd:
+            return CP(returncode=1, stderr="boom")
+        return CP(returncode=0)
+
+    monkeypatch.setattr(canary, "_run", fake_run)
+
+    result = canary.promote(namespace="nyxgpt", step_percent=25)
+
+    assert not result.ok
+    assert "kubectl scale failed for nyxgpt-api-canary" in result.message
+    # Weight must be unchanged since the scale failed before state was saved.
+    state = canary._load_state()
+    assert state["weight_percent"] == 10
+
+
+@pytest.mark.unit
+def test_promote_returns_error_when_stable_scale_fails(monkeypatch):
+    canary._save_state({"active": True, "weight_percent": 10, "total_replicas": 4, "history": []})
+
+    def fake_run(cmd):
+        if "nyxgpt-api-stable" in cmd:
+            return CP(returncode=1, stderr="boom")
+        return CP(returncode=0)
+
+    monkeypatch.setattr(canary, "_run", fake_run)
+
+    result = canary.promote(namespace="nyxgpt", step_percent=25)
+
+    assert not result.ok
+    assert "kubectl scale failed for nyxgpt-api-stable" in result.message
+    state = canary._load_state()
+    assert state["weight_percent"] == 10
+
+
+@pytest.mark.unit
 def test_rollback_scales_canary_to_zero_and_restores_stable(monkeypatch):
     canary._save_state({"active": True, "weight_percent": 50, "total_replicas": 4, "history": []})
     scale_mock = MagicMock(return_value=CP(returncode=0))
@@ -311,6 +423,35 @@ def test_rollback_no_active_rollout():
     result = canary.rollback(namespace="nyxgpt")
     assert not result.ok
     assert "No canary rollout" in result.message
+
+
+@pytest.mark.unit
+def test_rollback_kubectl_missing(monkeypatch):
+    canary._save_state({"active": True, "weight_percent": 50, "total_replicas": 4, "history": []})
+    monkeypatch.setattr(canary, "_which", lambda _: None)
+
+    result = canary.rollback(namespace="nyxgpt")
+
+    assert not result.ok
+    assert "kubectl not found" in result.message
+    # Must not have been marked as rolled back since we bailed before scaling.
+    state = canary._load_state()
+    assert state["active"] is True
+
+
+@pytest.mark.unit
+def test_rollback_returns_error_when_canary_scale_fails(monkeypatch):
+    canary._save_state({"active": True, "weight_percent": 50, "total_replicas": 4, "history": []})
+    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=1, stderr="boom"))
+
+    result = canary.rollback(namespace="nyxgpt")
+
+    assert not result.ok
+    assert "kubectl scale failed for nyxgpt-api-canary" in result.message
+    # State must be unchanged since we returned before saving.
+    state = canary._load_state()
+    assert state["active"] is True
+    assert state["weight_percent"] == 50
 
 
 @pytest.mark.unit

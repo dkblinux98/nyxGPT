@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from nyxgpt.tools_fs import cat, grep, ls
+from nyxgpt.tools_fs import _resolve_within_root, cat, grep, ls
 
 pytestmark = pytest.mark.unit
 
@@ -439,3 +439,122 @@ def test_cat_root_itself_succeeds(tmp_path: Path) -> None:
 
     assert rc == 0
     assert out.strip() == "content"
+
+
+# ----------------------------
+# _resolve_within_root error-fallback tests
+# ----------------------------
+
+
+def test_resolve_within_root_falls_back_when_resolve_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If Path.resolve() raises (e.g. a filesystem loop), fall back to the
+    unresolved (but expanded) path instead of propagating the error."""
+
+    def _raise(self: Path, *args: object, **kwargs: object) -> Path:
+        raise OSError("simulated resolve failure")
+
+    monkeypatch.setattr(Path, "resolve", _raise)
+
+    p, err = _resolve_within_root(tmp_path, None)
+
+    assert err is None
+    assert p == tmp_path.expanduser()
+
+
+# ----------------------------
+# ls error-handling tests
+# ----------------------------
+
+
+def test_ls_iterdir_error_reports_cannot_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If iterating the directory raises, ls must report the error and return 1
+    rather than propagating the exception."""
+
+    def _raise(self: Path) -> None:
+        raise PermissionError("simulated permission error")
+
+    monkeypatch.setattr(Path, "iterdir", _raise)
+
+    rc, out, err = _capture_output(ls, tmp_path)
+
+    assert rc == 1
+    assert "ERROR: cannot list" in err
+    assert out == ""
+
+
+# ----------------------------
+# cat error-handling tests
+# ----------------------------
+
+
+def test_cat_read_text_error_reports_cannot_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If reading the file raises after the existence check passes, cat must
+    report the error and return 1 rather than propagating the exception."""
+    test_file = tmp_path / "test.txt"
+    test_file.write_text("content")
+
+    def _raise(self: Path, *args: object, **kwargs: object) -> str:
+        raise OSError("simulated read failure")
+
+    monkeypatch.setattr(Path, "read_text", _raise)
+
+    rc, out, err = _capture_output(cat, test_file)
+
+    assert rc == 1
+    assert "ERROR: cannot read" in err
+    assert out == ""
+
+
+# ----------------------------
+# grep additional error/edge-case tests
+# ----------------------------
+
+
+def test_grep_stops_scanning_further_files_once_quota_reached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once max_matches is hit while scanning one file, grep must not even open
+    subsequent files in the walk -- it should short-circuit on the next iteration.
+
+    os.walk's per-directory file ordering isn't guaranteed, so the walk is
+    pinned to a deterministic order (file1 before file2) to make this
+    reproducible.
+    """
+    # file1 alone produces 2 matches, exceeding a quota of 1.
+    (tmp_path / "file1.txt").write_text("match one\nmatch two\n")
+    # file2 would also match, but should never be reached/read.
+    (tmp_path / "file2.txt").write_text("match three\n")
+
+    def _fake_walk(top: object) -> object:
+        yield (str(tmp_path), [], ["file1.txt", "file2.txt"])
+
+    monkeypatch.setattr("nyxgpt.tools_fs.os.walk", _fake_walk)
+
+    rc, out, err = _capture_output(grep, "match", tmp_path, max_matches=1)
+
+    assert rc == 0
+    assert "file2.txt" not in out
+    lines = [line for line in out.split("\n") if line.strip()]
+    assert len(lines) == 1
+
+
+def test_grep_skips_unreadable_file_and_continues(tmp_path: Path) -> None:
+    """A file that raises on read (e.g. a dangling symlink) must be skipped
+    rather than aborting the whole grep."""
+    good_file = tmp_path / "good.txt"
+    good_file.write_text("match here\n")
+
+    dangling = tmp_path / "dangling.txt"
+    dangling.symlink_to(tmp_path / "does_not_exist.txt")
+
+    rc, out, err = _capture_output(grep, "match", tmp_path)
+
+    assert rc == 0
+    assert "good.txt" in out
+    assert "dangling.txt" not in out
