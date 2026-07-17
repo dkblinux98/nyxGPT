@@ -1,3 +1,11 @@
+"""Session persistence and management for chat conversations.
+
+Handles reading/writing session message and metadata files on disk (with
+cross-platform file locking for safe concurrent access), plus higher-level
+operations used by the CLI/API: creating, renaming, pinning, tagging,
+searching, merging, exporting, and batch-updating sessions.
+"""
+
 from __future__ import annotations
 
 import json
@@ -228,25 +236,30 @@ def validate_session_name(name: str) -> str:
 
 
 def default_sessions_dir() -> Path:
+    """Return the configured sessions directory, loading global config if needed."""
     cfg = load_config(None)
     return get_sessions_dir(cfg)
 
 
 def session_file_for(name: str, sessions_dir: Path) -> Path:
+    """Return the session JSON file path for a validated session `name`."""
     name = validate_session_name(name)
     # name is already validated and safe to use directly
     return sessions_dir / f"{name}.json"
 
 
 def meta_file_for(session_file: Path) -> Path:
+    """Return the `.meta.json` metadata file path paired with a session file."""
     return session_file.with_suffix(".meta.json")
 
 
 def iso_now() -> str:
+    """Return the current local time as an ISO 8601 string (second precision)."""
     return datetime.now().isoformat(timespec="seconds")
 
 
 def token_estimate_from_messages(messages: list[dict[str, str]]) -> int:
+    """Estimate token count for a list of messages (~4 chars per token)."""
     # Rough estimate: ~4 chars per token (very approximate). Keeps us dependency-free.
     chars = 0
     for m in messages:
@@ -257,6 +270,15 @@ def token_estimate_from_messages(messages: list[dict[str, str]]) -> int:
 
 
 def load_session_messages(session_file: Path) -> list[dict[str, str]]:
+    """Load and validate all messages from a session JSON file.
+
+    Args:
+        session_file: Path to the session JSON file
+
+    Returns:
+        List of valid message dicts (each with string "role" and "content").
+        Returns an empty list if the file is missing, unreadable, or invalid.
+    """
     if not session_file.exists():
         return []
 
@@ -336,6 +358,11 @@ def load_session_messages_paginated(
 
 
 def save_session_messages(session_file: Path, messages: list[dict[str, str]]) -> None:
+    """Atomically write session messages to `session_file` as JSON.
+
+    Writes to a unique temp file first, then renames it into place, to
+    avoid corrupting the file if multiple writers race or a write fails.
+    """
     session_file.parent.mkdir(parents=True, exist_ok=True)
     # Use unique temp file name to avoid race conditions in concurrent writes
     tmp = session_file.parent / f".{session_file.name}.{uuid.uuid4().hex[:8]}.tmp"
@@ -344,6 +371,7 @@ def save_session_messages(session_file: Path, messages: list[dict[str, str]]) ->
 
 
 def load_session_meta(meta_file: Path) -> SessionMetaDict:
+    """Load session metadata from `meta_file`, returning `{}` if absent/invalid."""
     if not meta_file.exists():
         return {}
 
@@ -359,6 +387,11 @@ def load_session_meta(meta_file: Path) -> SessionMetaDict:
 
 
 def save_session_meta(meta_file: Path, meta: SessionMetaDict) -> None:
+    """Atomically write session metadata to `meta_file` as JSON.
+
+    Writes to a unique temp file first, then renames it into place, to
+    avoid corrupting the file if multiple writers race or a write fails.
+    """
     meta_file.parent.mkdir(parents=True, exist_ok=True)
     # Use unique temp file name to avoid race conditions in concurrent writes
     tmp = meta_file.parent / f".{meta_file.name}.{uuid.uuid4().hex[:8]}.tmp"
@@ -367,6 +400,7 @@ def save_session_meta(meta_file: Path, meta: SessionMetaDict) -> None:
 
 
 def normalize_tags(tags: list[str]) -> list[str]:
+    """Trim, deduplicate (case-insensitively), and alphabetically sort tags."""
     norm: list[str] = []
     seen: set[str] = set()
     for t in tags:
@@ -416,6 +450,12 @@ def ensure_meta_defaults(meta: SessionMetaDict, *, model: str | None = None) -> 
 
 
 def apply_system_prompt(messages: list[dict[str, str]], system: str | None) -> list[dict[str, str]]:
+    """Insert or replace the leading system message with `system`.
+
+    If `system` is falsy, `messages` is returned unchanged. Otherwise the
+    first message is replaced if it is already a system message, or a new
+    system message is inserted at the start.
+    """
     if not system:
         return messages
     if messages and messages[0].get("role") == "system":
@@ -433,6 +473,21 @@ def init_session(
     model: str,
     system: str | None = None,
 ) -> tuple[Path, Path, list[dict[str, str]], dict[str, Any]]:
+    """Load or create a session's files, applying defaults and system prompt.
+
+    If `new_session` is True, any existing session/meta files are deleted
+    first so the session starts fresh.
+
+    Args:
+        session_name: Name of the session
+        sessions_dir: Sessions directory (or None for the default)
+        new_session: If True, reset any existing session with this name
+        model: Model name to store in metadata
+        system: Optional system prompt to apply to the message history
+
+    Returns:
+        Tuple of (session_file, meta_file, messages, meta)
+    """
     sessions_dir = sessions_dir or default_sessions_dir()
     session_file = session_file_for(session_name, sessions_dir)
     meta_file = meta_file_for(session_file)
@@ -526,6 +581,8 @@ def persist_after_exchange(
 
 @dataclass
 class SessionState:
+    """In-memory handle to a loaded session's files, messages, and metadata."""
+
     name: str
     session_file: Path
     meta_file: Path
@@ -596,6 +653,16 @@ def save_session(
 
 
 def list_sessions(cfg: Any | None) -> list[dict[str, Any]]:
+    """List all sessions in the sessions directory, pinned sessions first.
+
+    Args:
+        cfg: A config object, a Path to the sessions directory, or None
+            to use the default sessions directory
+
+    Returns:
+        List of dicts with keys "name", "file", "messages" (count),
+        "modified" (timestamp string), and "meta" (session metadata)
+    """
     # Accept either a config object or a Path
     if isinstance(cfg, Path):
         sessions_dir = cfg
@@ -636,6 +703,11 @@ def list_sessions(cfg: Any | None) -> list[dict[str, Any]]:
 
 
 def delete_session(name: str, sessions_dir: Path | None) -> bool:
+    """Delete a session's message and metadata files.
+
+    Returns:
+        True if the session existed and was deleted, False if not found.
+    """
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
     mf = meta_file_for(sf)
@@ -648,6 +720,11 @@ def delete_session(name: str, sessions_dir: Path | None) -> bool:
 
 
 def rename_session(old: str, new: str, sessions_dir: Path | None) -> tuple[bool, str]:
+    """Rename a session's message and metadata files from `old` to `new`.
+
+    Returns:
+        Tuple of (success, message)
+    """
     sessions_dir = sessions_dir or default_sessions_dir()
     old_file = session_file_for(old, sessions_dir)
     new_file = session_file_for(new, sessions_dir)
@@ -669,6 +746,11 @@ def rename_session(old: str, new: str, sessions_dir: Path | None) -> tuple[bool,
 
 
 def set_pinned(name: str, pinned: bool, sessions_dir: Path | None) -> tuple[bool, str]:
+    """Set the pinned flag on a session's metadata.
+
+    Returns:
+        Tuple of (success, message)
+    """
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
     mf = meta_file_for(sf)
@@ -682,6 +764,11 @@ def set_pinned(name: str, pinned: bool, sessions_dir: Path | None) -> tuple[bool
 
 
 def add_tags(name: str, tags: list[str], sessions_dir: Path | None) -> tuple[bool, str]:
+    """Add tags to a session's metadata, merging with and deduplicating existing tags.
+
+    Returns:
+        Tuple of (success, message)
+    """
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
     mf = meta_file_for(sf)
@@ -699,6 +786,11 @@ def add_tags(name: str, tags: list[str], sessions_dir: Path | None) -> tuple[boo
 
 
 def remove_tags(name: str, tags: list[str], sessions_dir: Path | None) -> tuple[bool, str]:
+    """Remove tags (case-insensitively) from a session's metadata.
+
+    Returns:
+        Tuple of (success, message)
+    """
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
     mf = meta_file_for(sf)
@@ -717,6 +809,11 @@ def remove_tags(name: str, tags: list[str], sessions_dir: Path | None) -> tuple[
 
 
 def set_title(name: str, title: str, sessions_dir: Path | None) -> tuple[bool, str]:
+    """Set the title stored in a session's metadata.
+
+    Returns:
+        Tuple of (success, message)
+    """
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
     mf = meta_file_for(sf)
@@ -730,6 +827,15 @@ def set_title(name: str, title: str, sessions_dir: Path | None) -> tuple[bool, s
 
 
 def summarize_session(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
+    """Generate and store a title, summary, and tags for a session via the LLM.
+
+    Sends the session's messages to the configured Ollama model, asking it
+    to return JSON metadata, then merges the result into the session's
+    metadata file.
+
+    Returns:
+        Tuple of (success, message)
+    """
     sessions_dir = sessions_dir or default_sessions_dir()
     sf = session_file_for(name, sessions_dir)
     mf = meta_file_for(sf)

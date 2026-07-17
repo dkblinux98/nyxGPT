@@ -1,3 +1,19 @@
+"""Text embedding generation via Ollama, with caching, batching, and GPU-aware sizing.
+
+This module turns text into fixed-dimension embedding vectors by calling an
+Ollama embeddings endpoint. It provides:
+
+- A disk/memory cache keyed on model + text so repeated ingestion/queries
+  avoid redundant embedding calls.
+- Synchronous and async batch embedding, with automatic batching of large
+  text lists into model-sized chunks.
+- Optional GPU detection to adapt batch size to available accelerator memory.
+
+The resulting vectors are consumed by `nyxgpt.rag.vectorstore_cassandra` for
+upsert/query against the vector store, so the `dimension` configured here
+must match the vector column dimension used by that store.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -21,6 +37,23 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
+    """Resolved configuration for talking to the embedding backend.
+
+    Attributes:
+        base_url: Base URL of the Ollama server exposing the embeddings API.
+        model: Name of the embedding model to invoke.
+        dimension: Expected length of each embedding vector; must match the
+            vector store's configured dimension.
+        timeout: Per-request timeout in seconds.
+        batch_size: Default number of texts sent per embedding request.
+        enable_async: Whether async (concurrent) embedding is allowed.
+        max_workers: Maximum thread/task concurrency for parallel embedding.
+        enable_gpu: Whether to detect and account for GPU memory when sizing
+            batches.
+        adaptive_batching: Whether to dynamically adjust batch size based on
+            detected GPU memory instead of using a fixed `batch_size`.
+    """
+
     base_url: str
     model: str
     dimension: int
@@ -60,7 +93,7 @@ class GPUInfo:
 
 
 class EmbeddingError(RuntimeError):
-    pass
+    """Raised when embedding generation fails (transport, HTTP, or response-shape errors)."""
 
 
 # Global embedding cache instance (initialized lazily)
@@ -334,6 +367,19 @@ def _get_optimal_batch_size(num_texts: int, config: EmbeddingConfig) -> int:  # 
 
 
 def _post_json(url: str, payload: dict, timeout: int) -> dict:
+    """POST a JSON payload to the Ollama embeddings endpoint and parse the response.
+
+    Args:
+        url: Full URL of the Ollama embeddings endpoint.
+        payload: JSON-serializable request body (e.g. model name and input texts).
+        timeout: Request timeout in seconds.
+
+    Returns:
+        The decoded JSON response body, or an empty dict if the response was empty.
+
+    Raises:
+        EmbeddingError: If the HTTP request fails or the server is unreachable.
+    """
     with traced_span("ollama.embeddings", url=url):
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -354,6 +400,15 @@ def _post_json(url: str, payload: dict, timeout: int) -> dict:
 
 
 def _batched(iterable, size):
+    """Yield successive lists of up to `size` items from `iterable`.
+
+    Args:
+        iterable: Source iterable to split into batches.
+        size: Maximum number of items per yielded batch.
+
+    Yields:
+        Lists of items, each of length `size` except possibly the last.
+    """
     it = iter(iterable)
     while True:
         batch = list(islice(it, size))

@@ -42,6 +42,7 @@ NOT_SUPPORTED_UNDER_COMPOSE = (
 
 
 def _which(prog: str) -> str | None:
+    """Return the absolute path to `prog` on PATH, or None if it isn't found."""
     return shutil.which(prog)
 
 
@@ -58,18 +59,25 @@ def _compose_mode() -> bool:
 
 
 def _kubectl_missing_message(fallback: str) -> str:
+    """Return `fallback`, or the docker-compose-unsupported message if running under Compose."""
     return NOT_SUPPORTED_UNDER_COMPOSE if _compose_mode() else fallback
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run `cmd`, capturing stdout/stderr as text without raising on non-zero exit."""
     return subprocess.run(cmd, check=False, text=True, capture_output=True)
 
 
 def _state_path() -> Path:
+    """Return the path to the local canary rollout state file."""
     return Path.home() / ".nyxGPT" / "canary_state.json"
 
 
 def _load_state() -> dict[str, Any]:
+    """Load canary rollout state from disk, defaulting to inactive/0% with no history.
+
+    Tolerates a missing or corrupt state file by falling back to defaults.
+    """
     path = _state_path()
     if not path.exists():
         return {"active": False, "weight_percent": 0, "history": []}
@@ -86,6 +94,7 @@ def _load_state() -> dict[str, Any]:
 
 
 def _save_state(state: dict[str, Any]) -> None:
+    """Persist canary rollout state to disk as JSON, creating parent dirs as needed."""
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -122,6 +131,11 @@ def deployment_health(name: str, namespace: str = DEFAULT_NAMESPACE) -> CanaryRe
 
 
 def _scale(name: str, replicas: int, namespace: str = DEFAULT_NAMESPACE) -> CanaryResult:
+    """Set Deployment `name`'s replica count via `kubectl scale`.
+
+    Returns ok=True with a confirmation message on success, or ok=False with
+    the kubectl error (or a "not found"/"kubectl missing" message) on failure.
+    """
     if _which("kubectl") is None:
         return CanaryResult(
             False, _kubectl_missing_message("kubectl not found; cannot scale deployment")
@@ -161,6 +175,13 @@ def metrics_snapshot() -> dict[str, Any]:
 
 
 def status(namespace: str = DEFAULT_NAMESPACE) -> dict[str, Any]:
+    """Return a snapshot of canary rollout state for `namespace`.
+
+    Includes whether a rollout is active, its current traffic weight,
+    stable/canary health, a live error-rate/latency metrics snapshot, the
+    last 10 history entries, and whether kubectl is available (with a
+    reason string when it isn't).
+    """
     state = _load_state()
     stable_health = deployment_health(STABLE_DEPLOYMENT, namespace)
     canary_health = deployment_health(CANARY_DEPLOYMENT, namespace)

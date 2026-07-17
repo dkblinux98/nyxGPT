@@ -1,3 +1,15 @@
+"""FastAPI application for the nyxGPT API server.
+
+Wires together the versioned `/api/v1` router (chat, sessions, RAG,
+models, admin/SRE dashboard endpoints), unversioned `/health` and
+`/metrics` endpoints, and the middleware stack (CORS, security headers,
+request-scoped config loading, request ID propagation, rate limiting,
+API key auth, and Prometheus instrumentation). Startup/shutdown behavior
+(logging, tracing, error tracking, rate limiter, batch processor,
+resource monitor, self-heal watchdog) is handled by the `lifespan`
+context manager below.
+"""
+
 from __future__ import annotations
 
 import inspect
@@ -218,6 +230,18 @@ def log_with_context(level, message, request_id=None, **extra):
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    """Run startup and shutdown initialization for the FastAPI app.
+
+    On startup: configures centralized logging, initializes tracing and
+    error tracking (both no-ops unless enabled in config.ini), ensures the
+    sessions directory exists, does a warn-only Ollama reachability check,
+    initializes the rate limiter and batch processor if enabled, starts the
+    resource monitor, and starts the self-heal watchdog (always running so
+    the dashboard toggle takes effect without a restart). Initialization
+    failures are logged but never prevent the API from starting.
+
+    On shutdown: stops the batch processor and self-heal watchdog.
+    """
     global _rate_limiter, _batch_processor
 
     # Initialize centralized logging once for the API process
@@ -475,6 +499,16 @@ async def load_cfg_and_refresh_logging(request: Request, call_next):
 
 @app.middleware("http")
 async def add_request_id_and_limits(request: Request, call_next):
+    """Reject oversized request bodies and stamp every request with an ID.
+
+    Returns a `413 payload_too_large` JSON error when the `Content-Length`
+    header exceeds `MAX_BODY_BYTES` (malformed/missing `Content-Length` is
+    ignored rather than rejected). Otherwise reuses the client-supplied
+    `X-Request-Id` header or generates a new UUID4, stores it on
+    `request.state.request_id` and the `request_id_var` context variable
+    for structured logging, and echoes it back as `X-Request-Id` on the
+    response.
+    """
     # Request size guard based on Content-Length when available
     cl = request.headers.get("content-length")
     if cl:
@@ -577,6 +611,16 @@ async def request_latency_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def api_key_auth(request: Request, call_next):
+    """Enforce API key authentication on versioned `/api/v1` routes.
+
+    `/health`, `/docs`, `/openapi`, and `/redoc` are always exempt, and
+    anything outside `/api/v1` is passed through unauthenticated. When
+    `[auth] enabled = true` in config.ini, the configured header (default
+    `X-API-Key`) must match the configured `api_key` using a constant-time
+    comparison (to avoid timing attacks); a missing/incorrect key returns a
+    `401 unauthorized` JSON error. When auth is disabled, requests pass
+    through unchecked.
+    """
     path = request.url.path
 
     # Allow unauthenticated access to health and docs
@@ -660,6 +704,14 @@ async def prometheus_metrics_middleware(request: Request, call_next):
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    """Render raised `HTTPException`s in the API's standard error envelope.
+
+    Preserves the exception's status code and puts a string `detail` in
+    `error.message`; a non-string `detail` (e.g. a dict/list) is instead
+    placed in `error.details` with a generic `error.message`. Includes the
+    request's `request_id` (from `add_request_id_and_limits`) for
+    correlation with server logs.
+    """
     req_id = getattr(request.state, "request_id", None)
     detail = exc.detail
     return JSONResponse(
@@ -677,6 +729,13 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, _exc: Exception):
+    """Catch-all handler for exceptions not raised as an `HTTPException`.
+
+    Logs the full traceback, forwards the exception to the error tracker
+    (GlitchTip, when enabled), and always returns a generic
+    `500 internal_error` JSON response so unexpected failures never leak
+    internal exception details to the client.
+    """
     req_id = getattr(request.state, "request_id", None)
     log.exception("Unhandled API error (request_id=%s)", req_id)
     error_tracking_module.capture_exception(
@@ -704,6 +763,13 @@ async def unhandled_exception_handler(request: Request, _exc: Exception):
 
 # Request-scoped config helper
 def _req_cfg(request: Request) -> ConfigParser:
+    """Return the config loaded for this request, loading it if missing.
+
+    Normally `request.state.cfg` is already populated by the
+    `load_cfg_and_refresh_logging` middleware; this falls back to loading
+    config.ini directly (and caching it on `request.state`) for code paths
+    that run outside that middleware, e.g. exception handlers.
+    """
     cfg = getattr(request.state, "cfg", None)
     if cfg is None:
         cfg = load_config(None)
@@ -714,6 +780,15 @@ def _req_cfg(request: Request) -> ConfigParser:
 # Auth config is read on each request so ~/.nyxGPT/config.ini edits
 # take effect without restarting the API.
 def _auth_cfg(cfg: ConfigParser | None = None) -> dict[str, Any]:
+    """Read the `[auth]` section into a plain dict.
+
+    Args:
+        cfg: Config to read from; loads config.ini fresh if omitted.
+
+    Returns:
+        Dict with `enabled` (bool), `api_key` (str, empty if unset), and
+        `header` (str, defaults to `X-API-Key`).
+    """
     cfg = cfg or load_config(None)
     enabled = cfg.getboolean("auth", "enabled", fallback=False)
     api_key = cfg.get("auth", "api_key", fallback="").strip()
@@ -729,7 +804,7 @@ def _auth_cfg(cfg: ConfigParser | None = None) -> dict[str, Any]:
 
 
 def _config_file_path() -> Path:
-    # Canonical per-user config location
+    """Return the canonical per-user config.ini path (`~/.nyxGPT/config.ini`)."""
     return Path.home() / ".nyxGPT" / "config.ini"
 
 
@@ -755,6 +830,7 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
         parser.read(cfg_path)
 
     def ensure_section(name: str) -> None:
+        """Add section `name` to `parser` if it doesn't already exist."""
         if not parser.has_section(name):
             parser.add_section(name)
 
@@ -858,6 +934,7 @@ def _mask_api_key(api_key: str) -> str:
 
 # Ollama model management helpers
 def _ollama_url(cfg: ConfigParser, path: str) -> str:
+    """Join the configured Ollama base URL with `path` into a full URL."""
     base = get_ollama_base_url(cfg).rstrip("/")
     if not path.startswith("/"):
         path = "/" + path
@@ -865,6 +942,12 @@ def _ollama_url(cfg: ConfigParser, path: str) -> str:
 
 
 def _ollama_get_json(url: str, timeout_s: float = 10.0) -> Any:
+    """GET `url` and parse the response body as JSON.
+
+    Raises:
+        urllib.error.URLError / HTTPError: On connection failure or a
+            non-2xx status (callers wrap this and translate to a 502).
+    """
     req = urllib.request.Request(url, method="GET")
     with urllib.request.urlopen(req, timeout=timeout_s) as resp:
         data = resp.read()
@@ -874,6 +957,12 @@ def _ollama_get_json(url: str, timeout_s: float = 10.0) -> Any:
 
 
 def _ollama_post_json(url: str, payload: dict[str, Any], timeout_s: float = 60.0) -> Any:
+    """POST `payload` as JSON to `url` and parse the response body as JSON.
+
+    Raises:
+        urllib.error.URLError / HTTPError: On connection failure or a
+            non-2xx status (callers wrap this and translate to a 502).
+    """
     import json
 
     body = json.dumps(payload).encode("utf-8")
@@ -885,6 +974,7 @@ def _ollama_post_json(url: str, payload: dict[str, Any], timeout_s: float = 60.0
 
 
 def _cfg(cfg_path: Path | None = None):
+    """Load config.ini from `cfg_path`, or the default location if omitted."""
     return load_config(cfg_path)
 
 
@@ -917,12 +1007,25 @@ def _maybe_kw(fn, name: str) -> bool:
 
 
 def _sessions_dir_from_str(s: str | None) -> Path | None:
+    """Convert an optional query-param string into an expanded `Path`.
+
+    Returns None for a falsy input (so callers can fall back to the
+    config-derived sessions directory) instead of a bogus `Path("")`.
+    """
     if not s:
         return None
     return Path(s).expanduser()
 
 
 def _capture_stdout(fn, *args, **kwargs) -> tuple[int, str, str]:
+    """Call `fn(*args, **kwargs)`, capturing its stdout/stderr writes.
+
+    Used to adapt the CLI-style `tools_fs` functions (which print output
+    and return an int exit code) into API responses without changing them.
+
+    Returns:
+        Tuple of `(return_code, captured_stdout, captured_stderr)`.
+    """
     out = io.StringIO()
     err = io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
@@ -937,6 +1040,11 @@ def _capture_stdout(fn, *args, **kwargs) -> tuple[int, str, str]:
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    """Liveness check. Always returns `{"status": "ok"}` if the process is up.
+
+    Unauthenticated and unversioned so load balancers/orchestrators can
+    probe it without an API key.
+    """
     return {"status": "ok"}
 
 
@@ -955,6 +1063,7 @@ def prometheus_metrics_endpoint() -> Response:
 
 @api.get("/info", response_model=InfoResponse)
 def info(request: Request) -> InfoResponse:
+    """Return basic server info: Ollama URL, default model, sessions dir, and release version."""
     cfg = _req_cfg(request)
     release_version = cfg.get("github", "RELEASE_BRANCH", fallback=None)
     return InfoResponse(
@@ -1121,6 +1230,7 @@ def log_aggregation_status(request: Request) -> dict[str, Any]:
 
 @api.get("/config")
 def config_get(request: Request) -> dict[str, Any]:
+    """Return the current hot-configurable settings: Ollama URL, default model, RAG enabled, log level."""
     cfg = _req_cfg(request)
     return {
         "ollama_base_url": get_ollama_base_url(cfg),
@@ -1132,6 +1242,13 @@ def config_get(request: Request) -> dict[str, Any]:
 
 @api.post("/config")
 def config_update(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Update `default_model`, `rag_enabled`, and/or `log_level` in config.ini.
+
+    Unknown keys in `payload` are silently ignored. Applied changes take
+    effect immediately (no restart) and are recorded to the admin activity
+    log. Returns the set of fields that were changed plus the resulting
+    effective config values.
+    """
     # Only apply known keys; ignore the rest.
     updates: dict[str, Any] = {}
     if "default_model" in payload:
@@ -1164,6 +1281,7 @@ def config_update(request: Request, payload: dict[str, Any] = Body(...)) -> dict
 # PATCH endpoint for config updates
 @api.patch("/config")
 def config_patch(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """PATCH alias for `POST /config` (see `config_update`)."""
     result: dict[str, Any] = config_update(request, payload)
     return result
 
@@ -1185,6 +1303,7 @@ def admin_overview(request: Request) -> dict[str, Any]:
     cfg = _req_cfg(request)
 
     def _safe(fn, *args, **kwargs) -> dict[str, Any]:
+        """Call `fn`, returning `{"error": str(e)}` instead of raising on failure."""
         try:
             result: dict[str, Any] = fn(*args, **kwargs)
             return result
@@ -1359,12 +1478,21 @@ def admin_workflow_analytics(days: int = 30, limit: int = 50) -> dict[str, Any]:
 # --- Local blue/green deployment endpoints (SRE/admin dashboard) ---
 @api.get("/deploy/status")
 def deploy_status(request: Request) -> dict[str, Any]:
+    """Return blue/green deployment status: active/inactive colors, per-color health, and switch history."""
     cfg = _req_cfg(request)
     return deploy_module.status(get_deploy_namespace(cfg))
 
 
 @api.post("/deploy/switch")
 def deploy_switch(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Cut traffic over to the given color (or the inactive color if `to` is omitted).
+
+    Body: `{"to": "blue"|"green", "force": bool}`. Returns `400` for an
+    unrecognized color. Refuses to switch to a color whose Deployment isn't
+    ready unless `force=true` is set, returning `409` in that case (and for
+    any other switch failure). On success, records a `deploy.switch` admin
+    activity event.
+    """
     cfg = _req_cfg(request)
     target = payload.get("to")
     if target is not None and target not in deploy_module.COLORS:
@@ -1380,6 +1508,12 @@ def deploy_switch(request: Request, payload: dict[str, Any] = Body(default={})) 
 
 @api.post("/deploy/rollback")
 def deploy_rollback(request: Request) -> dict[str, Any]:
+    """Switch traffic back to the previously active color, per the switch history.
+
+    Returns `409` if there is no prior switch to roll back to, or the
+    rollback target isn't ready. Records a `deploy.rollback` admin activity
+    event on success.
+    """
     cfg = _req_cfg(request)
     result = deploy_module.rollback(get_deploy_namespace(cfg))
     if not result.ok:
@@ -1391,12 +1525,19 @@ def deploy_rollback(request: Request) -> dict[str, Any]:
 # --- Local canary deployment endpoints (SRE/admin dashboard) ---
 @api.get("/canary/status")
 def canary_status(request: Request) -> dict[str, Any]:
+    """Return canary rollout status: active flag, traffic weight, stable/canary health, and metrics snapshot."""
     cfg = _req_cfg(request)
     return canary_module.status(get_canary_namespace(cfg))
 
 
 @api.post("/canary/start")
 def canary_start(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Start a canary rollout: scale up `nyxgpt-api-canary` to `weight_percent` of traffic.
+
+    Body: `{"weight_percent": int}` (default 10). Returns `409` if a
+    rollout is already in progress or the scale operation fails. Records a
+    `canary.start` admin activity event on success.
+    """
     cfg = _req_cfg(request)
     weight_percent = int(payload.get("weight_percent", 10))
     result = canary_module.start(
@@ -1412,6 +1553,14 @@ def canary_start(request: Request, payload: dict[str, Any] = Body(default={})) -
 
 @api.post("/canary/evaluate")
 def canary_evaluate(request: Request) -> dict[str, Any]:
+    """Compare live error-rate/latency metrics against configured thresholds.
+
+    Automatically rolls back the canary if either threshold is breached.
+    Returns `409` if no rollout is active. Returns ok=True with an
+    "insufficient data" note (rather than failing) when too few requests
+    have been observed yet to judge the canary. Records a `canary.evaluate`
+    admin activity event.
+    """
     cfg = _req_cfg(request)
     result = canary_module.evaluate(
         get_canary_namespace(cfg),
@@ -1427,6 +1576,13 @@ def canary_evaluate(request: Request) -> dict[str, Any]:
 
 @api.post("/canary/promote")
 def canary_promote(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Increase the canary's traffic share by `step_percent`, finalizing at 100%.
+
+    Body: `{"step_percent": int}` (defaults to the configured
+    `canary_step_percent` when omitted). Returns `409` if no rollout is
+    active or the scale operation fails. Records a `canary.promote` admin
+    activity event on success.
+    """
     cfg = _req_cfg(request)
     step_percent = payload.get("step_percent")
     result = canary_module.promote(
@@ -1444,6 +1600,14 @@ def canary_promote(request: Request, payload: dict[str, Any] = Body(default={}))
 
 @api.post("/canary/rollback")
 def canary_rollback(request: Request) -> dict[str, Any]:
+    """Cut all traffic back to `nyxgpt-api-stable`, the emergency escape hatch for a bad canary.
+
+    Scales the canary Deployment to 0 first (removing it from the
+    Service's endpoints) before restoring the stable Deployment's full
+    replica count. Returns `409` if no rollout is active or the scale
+    operation fails. Records a `canary.rollback` admin activity event on
+    success.
+    """
     cfg = _req_cfg(request)
     result = canary_module.rollback(
         namespace=get_canary_namespace(cfg), total_replicas=get_canary_total_replicas(cfg)
@@ -1504,6 +1668,11 @@ def self_heal_logs(service: str, tail: int = Query(default=200, ge=1, le=2000)) 
 # --- Model management endpoints ---
 @api.get("/models")
 def models_list(request: Request) -> dict[str, Any]:
+    """List model names currently available in Ollama.
+
+    Returns `{"models": [name, ...]}`. Raises a `502` if the Ollama
+    `/api/tags` call fails (e.g. Ollama unreachable).
+    """
     cfg = _req_cfg(request)
     try:
         data = _ollama_get_json(_ollama_url(cfg, "/api/tags"), timeout_s=10.0)
@@ -1618,6 +1787,7 @@ def models_info(request: Request, model_name: str) -> dict[str, Any]:
 
 @api.get("/sessions", response_model=SessionsListResponse)
 def sessions_list(sessions_dir: str | None = None) -> SessionsListResponse:
+    """List all chat sessions with summary metadata (message count, pinned, tags, title, model, etc.)."""
     cfg = _cfg(None)
     effective_dir = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(cfg)
     rows = sessions.list_sessions(effective_dir)
@@ -1725,6 +1895,12 @@ def sessions_show(
     offset: int | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
+    """Return a session's messages and metadata, optionally paginated.
+
+    When `offset`/`limit` are provided, messages are loaded page-by-page
+    rather than reading the whole session file into memory. Raises `404`
+    if the session doesn't exist, or `400` for a negative `offset`/`limit`.
+    """
     sd = _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     sf = sessions.session_file_for(name, sd or sessions.default_sessions_dir())
     mf = sessions.meta_file_for(sf)
@@ -1763,6 +1939,15 @@ def sessions_show(
 
 @api.post("/sessions/init")
 def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Create a session file (and its metadata) without invoking the model.
+
+    Idempotent: if a session with `name` already exists, returns
+    `{"ok": True, "existed": True}` without modifying it. `system`/`model`
+    fall back to config defaults when omitted. Raises `422` for an invalid
+    session `name`, `400` for a missing `name` or if session initialization
+    otherwise fails, and `500` on an unexpected internal error resolving the
+    session path.
+    """
     name = req.get("name")
     if not name or not isinstance(name, str):
         raise HTTPException(status_code=400, detail="Session name is required")
@@ -1814,6 +1999,7 @@ def sessions_init(req: dict[str, Any] = Body(...)) -> dict[str, Any]:
 
 @api.delete("/sessions/{name}")
 def sessions_delete(name: str, sessions_dir: str | None = None) -> dict[str, Any]:
+    """Delete a session's file and its metadata. Raises `404` if the session doesn't exist."""
     ok = sessions.delete_session(
         name, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     )
@@ -1824,6 +2010,7 @@ def sessions_delete(name: str, sessions_dir: str | None = None) -> dict[str, Any
 
 @api.post("/sessions/{name}/summarize")
 def sessions_summarize(name: str, sessions_dir: str | None = None) -> dict[str, Any]:
+    """Generate and store a summary in the session's metadata. Raises `400` on failure (e.g. no such session)."""
     ok, msg = sessions.summarize_session(
         name, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     )
@@ -1834,6 +2021,7 @@ def sessions_summarize(name: str, sessions_dir: str | None = None) -> dict[str, 
 
 @api.post("/sessions/{name}/pin")
 def sessions_pin(name: str, sessions_dir: str | None = None) -> dict[str, Any]:
+    """Mark a session as pinned. Raises `400` on failure (e.g. no such session)."""
     ok, msg = sessions.set_pinned(
         name, True, _sessions_dir_from_str(sessions_dir) or get_sessions_dir(_cfg(None))
     )
@@ -1844,6 +2032,7 @@ def sessions_pin(name: str, sessions_dir: str | None = None) -> dict[str, Any]:
 
 @api.post("/sessions/{name}/unpin")
 def sessions_unpin(name: str, sessions_dir: str | None = None) -> dict[str, Any]:
+    """Remove a session's pinned flag. Raises `400` on failure (e.g. no such session)."""
     ok, msg = sessions.set_pinned(
         name,
         False,
@@ -1856,6 +2045,10 @@ def sessions_unpin(name: str, sessions_dir: str | None = None) -> dict[str, Any]
 
 @api.post("/sessions/{name}/title")
 def sessions_title(name: str, req: TitleRequest, sessions_dir: str | None = None) -> dict[str, Any]:
+    """Set a session's display title (stored in metadata; does not rename the underlying file).
+
+    Raises `400` on failure (e.g. no such session).
+    """
     ok, msg = sessions.set_title(
         name,
         req.title,
@@ -1870,6 +2063,11 @@ def sessions_title(name: str, req: TitleRequest, sessions_dir: str | None = None
 def sessions_tags_add(
     name: str, req: TagsRequest, sessions_dir: str | None = None
 ) -> dict[str, Any]:
+    """Add one or more tags to a session's metadata.
+
+    Raises `400` if `req.tags` is empty or the underlying update fails
+    (e.g. no such session).
+    """
     if not req.tags:
         raise HTTPException(status_code=400, detail="At least one tag is required")
     ok, msg = sessions.add_tags(
@@ -1886,6 +2084,11 @@ def sessions_tags_add(
 def sessions_tags_remove(
     name: str, req: TagsRequest, sessions_dir: str | None = None
 ) -> dict[str, Any]:
+    """Remove one or more tags from a session's metadata.
+
+    Raises `400` if `req.tags` is empty or the underlying update fails
+    (e.g. no such session).
+    """
     if not req.tags:
         raise HTTPException(status_code=400, detail="At least one tag is required")
     ok, msg = sessions.remove_tags(
@@ -2294,6 +2497,22 @@ def sessions_export(name: str, format: str = "markdown", sessions_dir: str | Non
 
 @api.post("/chat", response_model=ChatResponse)
 def chat(request: Request, req: ChatRequest) -> ChatResponse:
+    """Send a prompt to the model and return the full (non-streaming) reply.
+
+    Creates or appends to the named session, resolves the model and RAG
+    settings from the request (falling back to config defaults), and
+    routes through the batch processor when request batching is enabled.
+    Records usage analytics and Prometheus chat/RAG metrics as a side
+    effect. Returns the session name, model used, reply text, and any RAG
+    chunks that were retrieved.
+
+    Raises:
+        HTTPException 422: Invalid request (e.g. bad session name).
+        HTTPException 502: Underlying model runtime failure (Ollama crash/
+            OOM/timeout).
+        HTTPException 504: Timed out waiting for the batch processor.
+        HTTPException 500: Any other unexpected failure.
+    """
     req_id = getattr(request.state, "request_id", None)
     usage_start = time.monotonic()
 
@@ -2803,6 +3022,11 @@ def _tools_error_status(message: str) -> int:
 
 @api.post("/tools/ls", response_model=ToolTextResponse)
 def tool_ls(request: Request, req: ToolLsRequest) -> ToolTextResponse:
+    """List a directory's contents, confined to the configured tools root.
+
+    Raises `403` if `req.path` would escape the configured tools root, or
+    `400` for any other failure (e.g. path not found).
+    """
     tools_root = get_tools_root(_req_cfg(request))
     rc, out, err = _capture_stdout(tools_fs.ls, Path(req.path), root=tools_root)
     if rc != 0:
@@ -2813,6 +3037,11 @@ def tool_ls(request: Request, req: ToolLsRequest) -> ToolTextResponse:
 
 @api.post("/tools/cat", response_model=ToolTextResponse)
 def tool_cat(request: Request, req: ToolCatRequest) -> ToolTextResponse:
+    """Read a file's contents (optionally limited to `head`/`tail` lines), confined to the tools root.
+
+    Raises `403` if `req.path` would escape the configured tools root, or
+    `400` for any other failure (e.g. file not found).
+    """
     tools_root = get_tools_root(_req_cfg(request))
     rc, out, err = _capture_stdout(
         tools_fs.cat, Path(req.path), head=req.head, tail=req.tail, root=tools_root
@@ -2825,6 +3054,12 @@ def tool_cat(request: Request, req: ToolCatRequest) -> ToolTextResponse:
 
 @api.post("/tools/grep", response_model=ToolTextResponse)
 def tool_grep(request: Request, req: ToolGrepRequest) -> ToolTextResponse:
+    """Search for a regex pattern within a file or directory, confined to the tools root.
+
+    Raises `403` if `req.path` would escape the configured tools root, or
+    `400` for any other failure (e.g. invalid regex, no matches, path not
+    found).
+    """
     tools_root = get_tools_root(_req_cfg(request))
     rc, out, err = _capture_stdout(
         tools_fs.grep, req.pattern, Path(req.path), max_matches=req.max, root=tools_root
@@ -2837,6 +3072,13 @@ def tool_grep(request: Request, req: ToolGrepRequest) -> ToolTextResponse:
 
 @api.post("/rag/ingest", response_model=RagIngestResponse)
 def rag_ingest(_request: Request, req: RagIngestRequest) -> RagIngestResponse:
+    """Chunk, embed, and store a document's text in the RAG vector store.
+
+    Re-ingesting the same `doc_id` with changed content replaces the
+    previous version (the response's `previous_hash` reflects any prior
+    version). Raises `400` if ingestion fails (e.g. embedding or vector
+    store errors).
+    """
     try:
         result = ingest_document(
             doc_id=req.doc_id,
@@ -3434,6 +3676,14 @@ def rag_documents_list(
 
 @api.post("/rag/query", response_model=RagQueryResponse)
 def rag_query(_request: Request, req: RagQueryRequest) -> RagQueryResponse:
+    """Run a RAG similarity search and return the matching chunks.
+
+    Supports optional metadata filtering (`doc_ids`, `filename`, `tags`,
+    `date_from`/`date_to`). When `req.debug_mode` is set, the response also
+    includes a `debug_info` breakdown of per-stage timings and score
+    distribution. Raises `400` on any retrieval failure (e.g. malformed
+    date filters, vector store errors).
+    """
     try:
         from datetime import datetime
 

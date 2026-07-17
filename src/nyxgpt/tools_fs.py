@@ -1,3 +1,11 @@
+"""Filesystem tools (`ls`, `cat`, `grep`) shared by the CLI and agent tool layer.
+
+Each function operates on a path optionally confined to a `root` directory
+(via `_resolve_within_root`) so that agent-invoked filesystem access can be
+sandboxed, and returns a process-style exit code (0 success, non-zero
+failure) while writing its output to stdout/stderr.
+"""
+
 from __future__ import annotations
 
 import os
@@ -26,6 +34,15 @@ def _resolve_within_root(path: Path, root: Path | None) -> tuple[Path, str | Non
 
 
 def ls(path: Path, *, root: Path | None = None) -> int:
+    """List `path`: prints its contents if a directory, or its own name if a file.
+
+    Args:
+        path: File or directory to list.
+        root: If given, `path` must resolve to `root` or a descendant of it.
+
+    Returns:
+        0 on success, 1 if `path` escapes `root`, doesn't exist, or can't be listed.
+    """
     p, err = _resolve_within_root(path, root)
     if err:
         print(err, file=sys.stderr)
@@ -55,6 +72,18 @@ def ls(path: Path, *, root: Path | None = None) -> int:
 def cat(
     path: Path, *, head: int | None = None, tail: int | None = None, root: Path | None = None
 ) -> int:
+    """Print the contents of a text file, optionally limited to its first/last lines.
+
+    Args:
+        path: File to read.
+        head: If given, print only the first `head` lines.
+        tail: If given, print only the last `tail` lines. Mutually exclusive with `head`.
+        root: If given, `path` must resolve to `root` or a descendant of it.
+
+    Returns:
+        0 on success; 1 if the path escapes `root`, isn't a file, or can't be
+        read; 2 if both `head` and `tail` are given.
+    """
     p, err = _resolve_within_root(path, root)
     if err:
         print(err, file=sys.stderr)
@@ -88,6 +117,21 @@ def cat(
 
 
 def grep(pattern: str, path: Path, *, max_matches: int = 50, root: Path | None = None) -> int:
+    """Search `path` for lines matching a regex, printing `file:line: text` for each hit.
+
+    If `path` is a directory, it is walked recursively, skipping hidden
+    files/directories (names starting with `.`).
+
+    Args:
+        pattern: Regular expression to search for.
+        path: File or directory to search.
+        max_matches: Maximum number of matches to print before stopping.
+        root: If given, `path` must resolve to `root` or a descendant of it.
+
+    Returns:
+        0 if at least one match was found; 1 if none were found, the path
+        escapes `root`, or the path doesn't exist; 2 if `pattern` is invalid.
+    """
     p, err = _resolve_within_root(path, root)
     if err:
         print(err, file=sys.stderr)

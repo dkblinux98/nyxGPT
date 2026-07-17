@@ -32,6 +32,7 @@ NOT_SUPPORTED_UNDER_COMPOSE = (
 
 
 def _which(prog: str) -> str | None:
+    """Return the absolute path to `prog` on PATH, or None if it isn't found."""
     return shutil.which(prog)
 
 
@@ -48,22 +49,30 @@ def _compose_mode() -> bool:
 
 
 def _kubectl_missing_message(fallback: str) -> str:
+    """Return `fallback`, or the docker-compose-unsupported message if running under Compose."""
     return NOT_SUPPORTED_UNDER_COMPOSE if _compose_mode() else fallback
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run `cmd`, capturing stdout/stderr as text without raising on non-zero exit."""
     return subprocess.run(cmd, check=False, text=True, capture_output=True)
 
 
 def _other_color(color: str) -> str:
+    """Return the color not currently passed in ("blue" <-> "green")."""
     return "green" if color == "blue" else "blue"
 
 
 def _state_path() -> Path:
+    """Return the path to the local blue/green deployment state file."""
     return Path.home() / ".nyxGPT" / "deploy_state.json"
 
 
 def _load_state() -> dict[str, Any]:
+    """Load blue/green deployment state from disk, defaulting to blue-active with no history.
+
+    Tolerates a missing or corrupt state file by falling back to defaults.
+    """
     path = _state_path()
     if not path.exists():
         return {"active": "blue", "history": []}
@@ -79,6 +88,7 @@ def _load_state() -> dict[str, Any]:
 
 
 def _save_state(state: dict[str, Any]) -> None:
+    """Persist blue/green deployment state to disk as JSON, creating parent dirs as needed."""
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -148,6 +158,12 @@ def deployment_health(color: str, namespace: str = DEFAULT_NAMESPACE) -> DeployR
 
 
 def status(namespace: str = DEFAULT_NAMESPACE) -> dict[str, Any]:
+    """Return a snapshot of blue/green deployment state for `namespace`.
+
+    Includes the active/inactive colors, per-color health, the last 10
+    switch history entries, and whether kubectl is available (with a
+    reason string when it isn't -- e.g. unsupported under docker-compose).
+    """
     active = get_active_color(namespace)
     colors: dict[str, Any] = {}
     for color in COLORS:

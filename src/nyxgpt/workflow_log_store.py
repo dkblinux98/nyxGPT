@@ -91,6 +91,7 @@ def parse_issue_number(branch: str | None) -> int | None:
 
 
 def _parse_iso8601(value: str) -> float:
+    """Parse an ISO 8601 timestamp (with trailing "Z") into a Unix epoch float."""
     return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
 
 

@@ -1,3 +1,13 @@
+"""Operational commands for `nyxgpt ops`: install, status, doctor, restart, logs, env-sync.
+
+Wraps the native (Homebrew services + LaunchAgents) and Docker-managed
+(Cassandra container, Docker Compose stack) pieces of a local nyxGPT
+deployment behind a single CLI surface, so operators never need to run raw
+`brew`/`docker`/`launchctl` commands themselves. Also cross-checks for a
+Compose deployment running alongside the native one so `status`/`restart`
+can warn about -- and refuse to create -- port collisions between the two.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -53,20 +63,28 @@ class DeploymentMode:
 
 @dataclass(frozen=True)
 class OpsResult:
+    """Outcome of a single ops step: whether it succeeded, plus human-readable detail."""
+
     ok: bool
     message: str
     details: str = ""
 
 
 def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    """Run `cmd`, capturing stdout/stderr as text.
+
+    Raises `subprocess.CalledProcessError` on non-zero exit unless `check=False`.
+    """
     return subprocess.run(cmd, check=check, text=True, capture_output=True)
 
 
 def _which(prog: str) -> str | None:
+    """Return the absolute path to `prog` on PATH, or None if it isn't found."""
     return shutil.which(prog)
 
 
 def _read_project_version() -> str:
+    """Return the project version from pyproject.toml, or a fallback if unreadable."""
     pyproject = REPO_ROOT / "pyproject.toml"
     if not pyproject.exists():
         return "1.0.0.md"
@@ -75,10 +93,18 @@ def _read_project_version() -> str:
 
 
 def _ensure_dir(p: Path) -> None:
+    """Create directory `p` (and any missing parents) if it doesn't already exist."""
     p.mkdir(parents=True, exist_ok=True)
 
 
 def _copy_file(src: Path, dst: Path, *, mode: int | None = None) -> None:
+    """Copy `src` to `dst`, creating `dst`'s parent directory and optionally chmod'ing it.
+
+    Args:
+        src: Source file path.
+        dst: Destination file path.
+        mode: If given, permission bits applied to `dst` after copying (e.g. 0o755).
+    """
     _ensure_dir(dst.parent)
     shutil.copy2(src, dst)
     if mode is not None:
@@ -86,6 +112,7 @@ def _copy_file(src: Path, dst: Path, *, mode: int | None = None) -> None:
 
 
 def _sha256_file(path: Path) -> str:
+    """Return the hex-encoded SHA-256 digest of the file at `path`."""
     h = hashlib.sha256()
     with path.open("rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
@@ -94,6 +121,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _brew_prefix() -> Path:
+    """Return Homebrew's install prefix (`brew --prefix`), or `/opt/homebrew` if unavailable."""
     try:
         cp = _run(["brew", "--prefix"])
         return Path((cp.stdout or "").strip())
@@ -102,6 +130,7 @@ def _brew_prefix() -> Path:
 
 
 def _tap_repo(tap: str) -> Path:
+    """Return the local checkout path of Homebrew tap `tap` (`brew --repo <tap>`)."""
     cp = _run(["brew", "--repo", tap])
     return Path((cp.stdout or "").strip())
 
@@ -176,6 +205,11 @@ def detect_deployment_mode() -> DeploymentMode:
 
 
 def _restart_brew_service(name: str) -> list[OpsResult]:
+    """Restart Homebrew service `name` via `brew services restart`.
+
+    Returns a single-element list: an OpsResult reporting brew missing, the
+    restart command's success, or its failure with captured stdout/stderr.
+    """
     if _which("brew") is None:
         return [OpsResult(False, f"brew not found; cannot restart {name}")]
     try:
@@ -197,6 +231,16 @@ def _restart_brew_service(name: str) -> list[OpsResult]:
 
 
 def _restart_docker_container(name: str) -> list[OpsResult]:
+    """Restart Docker container `name` via `docker restart`, with a start-back-up recovery attempt.
+
+    If the container was running before the restart and `docker restart`
+    leaves it stopped (e.g. a port collision on the start half), this makes
+    one `docker start` attempt to bring it back up rather than silently
+    leaving a previously healthy container down.
+
+    Returns a single-element list of OpsResult describing success, a
+    recovered restart failure, or an unrecovered "DOWN" failure.
+    """
     if _which("docker") is None:
         return [OpsResult(False, f"docker not found; cannot restart {name}")]
 
@@ -246,6 +290,11 @@ def _restart_docker_container(name: str) -> list[OpsResult]:
 
 
 def _restart_launchagent(label: str) -> list[OpsResult]:
+    """Restart the LaunchAgent `label` via `launchctl kickstart -k` in the current GUI domain.
+
+    Returns a single-element list of OpsResult reporting success or failure
+    (including any exception raised while invoking launchctl).
+    """
     # Prefer a kickstart (restart) in the current GUI domain.
     domain = f"gui/{os.getuid()}/{label}"
     try:
@@ -288,6 +337,12 @@ def _find_launchagent_template() -> tuple[Path | None, list[Path]]:
 
 
 def _install_scripts() -> list[OpsResult]:
+    """Copy the run-web/follow-cassandra-logs helper scripts into ~/.nyxGPT/scripts, executable.
+
+    Scripts not present in the repo's `scripts/` dir are skipped (reported
+    as ok, since not every deployment needs them). Returns one OpsResult per
+    script considered.
+    """
     results: list[OpsResult] = []
     src_dir = REPO_ROOT / "scripts"
     dst_dir = Path.home() / ".nyxGPT" / "scripts"
@@ -307,6 +362,14 @@ def _install_scripts() -> list[OpsResult]:
 
 
 def _install_cassandra_launchagent() -> list[OpsResult]:
+    """Install and (re)load the Cassandra log-follower LaunchAgent.
+
+    Locates the plist template in the repo, copies it into
+    ~/Library/LaunchAgents, then boots it out and back in via `launchctl
+    bootout`/`bootstrap`/`kickstart` so a stale prior load doesn't linger.
+    Returns a single-element list of OpsResult; fails if the template can't
+    be found among the candidate paths.
+    """
     results: list[OpsResult] = []
     tpl, checked = _find_launchagent_template()
     if tpl is None:
@@ -330,6 +393,11 @@ def _install_cassandra_launchagent() -> list[OpsResult]:
 
 
 def _ensure_log_symlinks() -> list[OpsResult]:
+    """Symlink each Homebrew-managed service log into ~/.nyxGPT/logs for convenient access.
+
+    Replaces any existing file/symlink at the destination. Returns one
+    OpsResult per (component, extension) log symlink attempted.
+    """
     results: list[OpsResult] = []
     home_logs = Path.home() / ".nyxGPT" / "logs"
     _ensure_dir(home_logs)
@@ -350,6 +418,14 @@ def _ensure_log_symlinks() -> list[OpsResult]:
 
 
 def _create_dist_tarball(tap_dir: Path, name: str, version: str) -> Path:
+    """Build a `<name>-<version>.tar.gz` placeholder distribution under `tap_dir/dist`.
+
+    Writes a minimal README into a temp directory and tars it up, replacing
+    any existing tarball of the same name/version. Used to give the
+    generated Homebrew formula something to point its `url`/`sha256` at.
+
+    Returns the path to the created tarball.
+    """
     dist_dir = tap_dir / "dist"
     _ensure_dir(dist_dir)
     tar_path = dist_dir / f"{name}-{version}.tar.gz"
@@ -374,6 +450,14 @@ def _create_dist_tarball(tap_dir: Path, name: str, version: str) -> Path:
 
 
 def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResult]:
+    """Build and install the `nyxgpt-api` Homebrew formula into `tap`, then start the service.
+
+    Generates a dist tarball, patches the formula template's `sha256` to
+    match it, writes the formula into the tap's Formula/ dir, and runs
+    `brew install --overwrite` + `brew services start`. Returns a list of
+    OpsResult; fails early if brew isn't installed or the formula template
+    is missing.
+    """
     results: list[OpsResult] = []
     if _which("brew") is None:
         return [OpsResult(False, "Homebrew not found", "")]
@@ -408,6 +492,14 @@ def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
 
 
 def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResult]:
+    """Build and install the `nyxgpt-web` Homebrew formula into `tap`, then start the service.
+
+    Generates a dist tarball, substitutes its `file://` URL and sha256 into
+    the formula template, writes the formula into the tap's Formula/ dir,
+    and runs `brew install --overwrite` + `brew services start`. Returns a
+    list of OpsResult; fails early if brew isn't installed or the formula
+    template is missing.
+    """
     results: list[OpsResult] = []
     if _which("brew") is None:
         return [OpsResult(False, "Homebrew not found", "")]
@@ -639,6 +731,14 @@ def _ensure_mcp_deps() -> list[OpsResult]:
 
 
 def install(_args) -> int:
+    """CLI entrypoint for `nyxgpt ops install`.
+
+    Runs every install step (scripts, web deps, MCP deps, Cassandra
+    LaunchAgent, Homebrew formulas, log symlinks), printing an OK/FAIL line
+    per result. A failure in one step doesn't stop the rest from running.
+
+    Returns 0 if every step succeeded, else 2.
+    """
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
         ("scripts", _install_scripts),
@@ -672,6 +772,15 @@ def install(_args) -> int:
 
 
 def status(_args) -> int:
+    """CLI entrypoint for `nyxgpt ops status`.
+
+    Prints the detected deployment mode (native vs. Compose per component),
+    a native/Compose port-conflict warning if both are live, Homebrew
+    service states, the Cassandra log-follower LaunchAgent's load state, and
+    whether the ops-managed Cassandra Docker container is running.
+
+    Always returns 0.
+    """
     print("nyxGPT ops status")
 
     mode = detect_deployment_mode()
@@ -725,6 +834,15 @@ def status(_args) -> int:
 
 
 def doctor(_args) -> int:
+    """CLI entrypoint for `nyxgpt ops doctor`.
+
+    Checks for common misconfigurations: missing ~/.nyxGPT/config.ini,
+    non-executable helper scripts, missing brew/docker/node/npm tools on
+    PATH, and missing/incomplete web dependencies (node_modules, undici).
+    Prints each issue found.
+
+    Returns 0 if no issues were found, else 2.
+    """
     issues: list[str] = []
 
     cfg = Path.home() / ".nyxGPT" / "config.ini"
@@ -954,6 +1072,14 @@ def sync_env_from_config(
 
 
 def env_sync(args) -> int:
+    """CLI entrypoint for `nyxgpt ops env-sync`.
+
+    Reads `--config`/`--env-file` overrides (if given) from `args`, then
+    derives Docker Compose's `.env` secrets from config.ini via
+    `sync_env_from_config`, printing an OK/FAIL line per result.
+
+    Returns 0 on success, else 2.
+    """
     cfg_path = Path(args.config).expanduser() if getattr(args, "config", None) else None
     env_path = Path(args.env_file).expanduser() if getattr(args, "env_file", None) else None
 

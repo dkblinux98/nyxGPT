@@ -37,6 +37,7 @@ class DependencyCheck:
     applicable: bool = True
 
     def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable dict representation of this check."""
         return {
             "name": self.name,
             "ok": self.ok,
@@ -53,6 +54,7 @@ class Alert:
     message: str
 
     def to_dict(self) -> dict[str, str]:
+        """Return a JSON-serializable dict representation of this alert."""
         return {"severity": self.severity, "message": self.message}
 
 
@@ -133,6 +135,10 @@ def compute_alerts(
 
 
 def _threshold_alert(label: str, value: float, warn: float, critical: float) -> list[Alert]:
+    """Return a critical/warning Alert for `label` if `value` crosses a threshold.
+
+    Returns an empty list if `value` is below `warn`.
+    """
     if value >= critical:
         return [Alert("critical", f"{label} at {value:.1f}% (critical threshold {critical:.0f}%)")]
     if value >= warn:

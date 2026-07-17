@@ -1,3 +1,11 @@
+"""HTTP client for talking to a local Ollama (or llama-server-compatible) instance.
+
+Wraps the raw `/api/chat` and delete endpoints with retry-with-backoff on
+connection errors and translation of upstream failures (timeouts, dropped
+connections, 5xx responses) into `ModelRuntimeError` with a user-facing
+message, versus generic `RuntimeError` for non-actionable failures.
+"""
+
 from __future__ import annotations
 
 import http.client
@@ -26,6 +34,15 @@ class ModelRuntimeError(RuntimeError):
 
 
 def _model_runtime_message(detail: str) -> str:
+    """Build a user-facing message for a strong OOM/crash signal (timeout or dropped connection).
+
+    Args:
+        detail: Short technical detail appended in parentheses, e.g. the
+            underlying exception text.
+
+    Returns:
+        Formatted message suitable for raising as `ModelRuntimeError`.
+    """
     return (
         "Model failed to run — it may require more memory than is available "
         f"on this host ({detail})"
@@ -33,9 +50,19 @@ def _model_runtime_message(detail: str) -> str:
 
 
 def _model_runtime_message_generic(detail: str) -> str:
-    # Used for generic upstream 5xx responses, where memory pressure is a
-    # common but not certain cause (unlike a timeout or a dropped connection
-    # mid-stream, which are strong OOM/crash signals).
+    """Build a user-facing message for a generic upstream 5xx error.
+
+    Used for generic upstream 5xx responses, where memory pressure is a
+    common but not certain cause (unlike a timeout or a dropped connection
+    mid-stream, which are strong OOM/crash signals).
+
+    Args:
+        detail: Short technical detail appended in parentheses, e.g. the
+            HTTP status code and response body.
+
+    Returns:
+        Formatted message suitable for raising as `ModelRuntimeError`.
+    """
     return (
         "Model failed to run — the model runtime returned an error. This can "
         "happen if the host doesn't have enough free memory to load the "
@@ -44,6 +71,7 @@ def _model_runtime_message_generic(detail: str) -> str:
 
 
 def _is_timeout_error(exc: urllib.error.URLError) -> bool:
+    """Return True if `exc` represents a request timeout rather than another connection failure."""
     reason = exc.reason
     if isinstance(reason, TimeoutError):
         return True
@@ -122,6 +150,24 @@ def _retry_with_backoff(
 
 
 def post_json(url: str, payload: dict[str, Any], timeout_s: float = 120.0) -> dict[str, Any]:
+    """Send a single JSON POST request and return the parsed JSON response.
+
+    Unlike `post_json_lines`, this does not retry on connection errors -- it
+    is used for non-streaming requests where the caller expects a single
+    response body.
+
+    Args:
+        url: Target URL for the POST request
+        payload: JSON payload to send
+        timeout_s: Request timeout in seconds
+
+    Returns:
+        Parsed JSON response as a dictionary (empty dict if body is empty)
+
+    Raises:
+        ModelRuntimeError: If the request times out or the server returns a 5xx
+        RuntimeError: If the request otherwise fails or returns a non-5xx HTTP error
+    """
     with traced_span("ollama.request", url=url):
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -182,6 +228,7 @@ def post_json_lines(
         )
 
         def _attempt_request():
+            """Open the streaming request once; HTTP errors are converted immediately, connection errors propagate for `_retry_with_backoff`."""
             try:
                 return urllib.request.urlopen(req, timeout=timeout_s)
             except urllib.error.HTTPError as e:

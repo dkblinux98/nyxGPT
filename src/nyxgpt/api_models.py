@@ -1,3 +1,10 @@
+"""Pydantic request/response models for the nyxGPT HTTP API.
+
+Defines the request and response bodies used across the chat, tools, RAG,
+collection management, and search endpoints, plus a few plain TypedDicts
+for internal type-checking of session data.
+"""
+
 from __future__ import annotations
 
 from enum import StrEnum
@@ -39,6 +46,8 @@ class SessionsListResponse(BaseModel):
 
 
 class TitleRequest(BaseModel):
+    """Request model for setting a session's display title."""
+
     title: str = Field(..., min_length=1, max_length=200)
 
 
@@ -94,6 +103,8 @@ class RegenerateRequest(BaseModel):
 
 
 class TagsRequest(BaseModel):
+    """Request model for replacing the full tag list on a session."""
+
     tags: list[str] = Field(default_factory=list)
 
 
@@ -124,6 +135,12 @@ class AttachmentBlock(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    """Request model for sending a chat message and getting a model reply.
+
+    Combines the user prompt with optional session, model, RAG, and
+    attachment overrides for a single turn.
+    """
+
     prompt: str = Field(..., min_length=1)
     session: str = "default"
     new: bool = False
@@ -153,6 +170,12 @@ class RagChunkInfo(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    """Response model for a completed chat turn.
+
+    Includes the assistant reply along with which RAG chunks (if any)
+    were used to compose it.
+    """
+
     session: str
     model: str
     reply: str
@@ -166,20 +189,35 @@ class ChatResponse(BaseModel):
 
 
 class ToolTextResponse(BaseModel):
+    """Generic response model wrapping the plain-text output of a tool call."""
+
     output: str
 
 
 class ToolLsRequest(BaseModel):
+    """Request model for listing the contents of a directory."""
+
     path: str
 
 
 class ToolCatRequest(BaseModel):
+    """Request model for reading a file's contents.
+
+    `head`/`tail` optionally limit the response to the first/last N lines
+    instead of returning the whole file.
+    """
+
     path: str
     head: int | None = None
     tail: int | None = None
 
 
 class ToolGrepRequest(BaseModel):
+    """Request model for searching a file or directory for a text pattern.
+
+    `max` caps the number of matching lines returned.
+    """
+
     pattern: str
     path: str
     max: int = 20
@@ -191,6 +229,12 @@ class ToolGrepRequest(BaseModel):
 
 
 class RagIngestRequest(BaseModel):
+    """Request model for ingesting a document into the RAG store.
+
+    Splits `text` into chunks and embeds them under `doc_id`; re-ingesting
+    the same `doc_id` updates it in place.
+    """
+
     doc_id: str = Field(..., description="Document identifier")
     text: str = Field(..., description="Raw document text")
     metadata: dict[str, Any] | None = None
@@ -199,6 +243,8 @@ class RagIngestRequest(BaseModel):
 
 
 class RagIngestResponse(BaseModel):
+    """Response model confirming the result of a RAG document ingestion."""
+
     doc_id: str
     chunks_ingested: int
     status: str = Field(description="Ingestion status: 'ingested', 'updated', or 'skipped'")
@@ -207,6 +253,8 @@ class RagIngestResponse(BaseModel):
 
 
 class RagDocumentInfo(BaseModel):
+    """Summary metadata for a single document stored in the RAG index."""
+
     doc_id: str
     doc_hash: str | None = Field(None, description="SHA-256 hash of document content")
     ingested_at: str | None = Field(None, description="Timestamp when document was first ingested")
@@ -231,6 +279,8 @@ class QueryCacheClearResponse(BaseModel):
 
 
 class RagIndexRepoRequest(BaseModel):
+    """Request model for bulk-ingesting a source code repository into RAG."""
+
     repo_path: str = Field(..., description="Path to repository root")
     doc_id_prefix: str = Field("code", description="Prefix for document IDs")
     extensions: list[str] | None = Field(
@@ -244,6 +294,8 @@ class RagIndexRepoRequest(BaseModel):
 
 
 class RagIndexRepoResponse(BaseModel):
+    """Response model summarizing a repository indexing run."""
+
     total_files: int = Field(description="Number of files indexed")
     total_chunks: int = Field(description="Total chunks ingested")
     files: list[str] = Field(description="List of indexed file paths")
@@ -251,6 +303,12 @@ class RagIndexRepoResponse(BaseModel):
 
 
 class RagQueryRequest(BaseModel):
+    """Request model for querying the RAG index directly (outside of chat).
+
+    Supports the same metadata filters as `RagFilters` plus a `debug_mode`
+    flag to return detailed retrieval metrics.
+    """
+
     query: str = Field(..., description="Search query")
     top_k: int = Field(5, ge=1, le=50)
     debug_mode: bool = Field(False, description="Enable debug mode to return detailed metrics")
@@ -265,6 +323,8 @@ class RagQueryRequest(BaseModel):
 
 
 class RagQueryResult(BaseModel):
+    """A single retrieved chunk returned from a RAG query."""
+
     doc_id: str
     chunk_id: int
     text: str
@@ -312,6 +372,8 @@ class RagDebugInfo(BaseModel):
 
 
 class RagQueryResponse(BaseModel):
+    """Response model for a direct RAG query, with optional debug metrics."""
+
     results: list[RagQueryResult]
     debug_info: RagDebugInfo | None = None
 

@@ -52,6 +52,7 @@ dev = [
   "ruff>=0.1",
   "black>=24.0",
   "yamllint>=1.35",
+  "interrogate>=1.7",
 
   # Pre-commit hooks
   "pre-commit>=3.6",
@@ -154,6 +155,16 @@ ignore = [
 
 [tool.ruff.isort]
 known-first-party = ["nyxgpt"]
+
+[tool.interrogate]
+# Docstring-coverage gate (issue #3225). Nested/closure functions and classes
+# (e.g. inner Textual Screen classes, retry-callback closures) are exempt as
+# trivial implementation details of an already-documented enclosing function.
+ignore-nested-functions = true
+ignore-nested-classes = true
+fail-under = 100
+verbose = 1
+exclude = ["tests"]
 
 [tool.black]
 line-length = 100

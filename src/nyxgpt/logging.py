@@ -1,3 +1,12 @@
+"""Centralized logging setup for nyxGPT.
+
+Configures a single set of root-logger handlers (rotating file + optional
+console, plain-text or JSON) shared by nyxgpt and third-party subsystems
+(uvicorn, fastapi, httpx), with per-request request-id tagging via a
+context variable. Settings (level, format, log directory) are read from
+``config.ini`` and can be hot-reloaded via `refresh_logging`.
+"""
+
 from __future__ import annotations
 
 import contextvars
@@ -24,6 +33,16 @@ class StructuredFormatter(logging.Formatter):
     """
 
     def format(self, record: logging.LogRecord) -> str:
+        """Render a log record as a single-line JSON string.
+
+        Args:
+            record: The log record to format.
+
+        Returns:
+            A JSON-encoded string with timestamp, level, logger, message,
+            request_id/session/model (when present), and any other extra
+            attributes attached to the record.
+        """
         log_data = {
             "timestamp": self.formatTime(record, self.datefmt),
             "level": record.levelname,
@@ -100,6 +119,12 @@ def _coerce_cfg(cfg: ConfigParser | None) -> ConfigParser:
 
 
 def get_effective_log_level(cfg: ConfigParser | None) -> int:
+    """Return the effective numeric log level.
+
+    Reads ``[logging] level`` (case-insensitive name, e.g. ``"DEBUG"``),
+    falling back to ``INFO`` when unset or unrecognized. If `cfg` is
+    None, config.ini is reloaded via `_coerce_cfg`.
+    """
     cfg = _coerce_cfg(cfg)
     level_name = cfg.get("logging", "level", fallback="INFO").upper()
     return getattr(logging, level_name, logging.INFO)
@@ -141,6 +166,25 @@ def _ensure_rotating_file_handler(
     max_bytes: int,
     backups: int,
 ) -> RotatingFileHandler:
+    """Attach (or update) a `RotatingFileHandler` pointed at `log_file`.
+
+    If `logger` already has a rotating file handler for the same path, its
+    level, formatter, and request-id filter are updated in place and it is
+    reused; otherwise a new handler is created and attached. Idempotent, so
+    it's safe to call on every `configure_logging` invocation.
+
+    Args:
+        logger: Logger to attach the handler to (typically the root logger).
+        log_file: Path of the log file the handler should write to.
+        formatter: Formatter to apply to the handler.
+        level: Log level to set on the handler.
+        request_id_filter: Filter ensuring records carry a request ID.
+        max_bytes: Max size in bytes before the log file is rotated.
+        backups: Number of rotated backup files to keep.
+
+    Returns:
+        The attached (or reused) `RotatingFileHandler`.
+    """
     for h in logger.handlers:
         if isinstance(h, RotatingFileHandler) and Path(h.baseFilename) == log_file:
             h.setLevel(level)
@@ -166,6 +210,23 @@ def _ensure_console_handler(
     level: int,
     request_id_filter: RequestIdFilter,
 ) -> logging.Handler:
+    """Attach (or update) a console (`StreamHandler`) log handler.
+
+    If `logger` already has a plain `StreamHandler` (excluding the
+    `RotatingFileHandler`, which subclasses `StreamHandler`), its level,
+    formatter, and request-id filter are updated in place and it is
+    reused; otherwise a new handler is created and attached. Idempotent,
+    so it's safe to call on every `configure_logging` invocation.
+
+    Args:
+        logger: Logger to attach the handler to (typically the root logger).
+        formatter: Formatter to apply to the handler.
+        level: Log level to set on the handler.
+        request_id_filter: Filter ensuring records carry a request ID.
+
+    Returns:
+        The attached (or reused) console handler.
+    """
     for h in logger.handlers:
         # NOTE: RotatingFileHandler is also a StreamHandler; exclude it.
         if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):

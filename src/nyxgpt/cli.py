@@ -1,3 +1,12 @@
+"""Command-line entry point for nyxGPT.
+
+Defines the `nyxgpt` argparse-based CLI: subcommands for chatting, managing
+sessions, RAG ingestion/query, Ollama model management, the MCP server, the
+terminal UI, and local ops/deploy/canary/self-heal operations. Each
+`cmd_*` function implements one subcommand and is invoked from `cli()`,
+which builds the argument parser and dispatches to the matching handler.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -34,6 +43,16 @@ from nyxgpt.wizard import run_wizard
 
 
 def _list_sessions_in_dir(sessions_dir: Path) -> list[dict[str, object]]:
+    """Collect summary rows for every readable session file in `sessions_dir`.
+
+    Args:
+        sessions_dir: Directory containing session `*.json` files.
+
+    Returns:
+        A list of dicts (name, file, messages, modified, meta) for each
+        session, or an empty list if the directory doesn't exist. Files that
+        are metadata sidecars (`*.meta.json`) or fail to parse are skipped.
+    """
     sessions_dir = Path(sessions_dir).expanduser()
     if not sessions_dir.exists():
         return []
@@ -64,6 +83,14 @@ def _list_sessions_in_dir(sessions_dir: Path) -> list[dict[str, object]]:
 
 
 def cmd_info(cfg_path: Path | None) -> int:
+    """Print the resolved config defaults: Ollama base URL and default model.
+
+    Args:
+        cfg_path: Optional path to a config.ini to load instead of the default.
+
+    Returns:
+        0 always.
+    """
     cfg = load_config(cfg_path)
     base_url = get_ollama_base_url(cfg)
     model = get_default_model(cfg)
@@ -85,6 +112,27 @@ def cmd_chat(
     sessions_dir: Path | None,
     rag_mode: bool | None = None,
 ) -> int:
+    """Chat with the configured Ollama model, either as a single prompt or interactively.
+
+    If `prompt` is given, sends it once (streaming to stdout unless `stream`
+    is False) and returns. Otherwise starts a REPL that reads lines from
+    stdin, sending each to the model, until `/exit`, `/quit`, EOF, or
+    Ctrl-C.
+
+    Args:
+        cfg_path: Optional path to a config.ini to load instead of the default.
+        model_override: Model name to use instead of the configured default.
+        system: Optional system prompt to prepend.
+        prompt: Single prompt to send; if None, enters interactive mode.
+        stream: Whether to stream the reply token-by-token.
+        session_name: Name of the conversation session to use/persist.
+        new_session: If True, start a fresh session instead of resuming.
+        sessions_dir: Override for the directory sessions are stored in.
+        rag_mode: If set, force-enable/disable RAG for this chat.
+
+    Returns:
+        0 on normal exit (including user-initiated quit).
+    """
     cfg = load_config(cfg_path)
 
     # Single-prompt mode
@@ -197,6 +245,32 @@ def cmd_sessions(
     rag_enabled: bool | None = None,
     force_include: bool = False,
 ) -> int:
+    """Manage stored chat sessions: list, inspect, edit, search, or bulk-operate on them.
+
+    Dispatches on `action` (list, show, delete, rename, pin/unpin, tag-add/rm,
+    title, summarize, export, search, merge, batch-*, stats, attach, detach,
+    list-attachments). The meaning of `name`, `new_name`, and `extras` varies
+    per action (e.g. for `rename` they are old/new name; for `merge` they are
+    output name/input session names; for `search` `name` is the query).
+
+    Args:
+        action: Which sessions operation to perform.
+        name: Primary argument (usually a session name), meaning depends on `action`.
+        new_name: Secondary argument (e.g. new name, title, or doc_id), meaning depends on `action`.
+        extras: Additional positional arguments (e.g. tags, session name lists).
+        sessions_dir: Override for the directory sessions are stored in.
+        format: Export format (markdown, json, or html).
+        output: Output file path for export (stdout if not given).
+        case_sensitive: Whether `search` matching is case-sensitive.
+        role: Restrict `search` to a specific message role.
+        limit: Maximum number of `search` results to return.
+        model: Model name to set for `batch-update-meta`.
+        rag_enabled: RAG-enabled flag to set for `batch-update-meta`.
+        force_include: For `attach`, force-include the document in every RAG query.
+
+    Returns:
+        0 on success, 1 if the target session/action failed, 2 on invalid arguments.
+    """
     cfg = load_config(None)
     effective_dir = sessions_dir or get_sessions_dir(cfg)
 
@@ -729,6 +803,20 @@ def cmd_tools(
     tail: int | None,
     max_matches: int,
 ) -> int:
+    """Run a local filesystem tool (`ls`, `cat`, or `grep`) on `path`.
+
+    Args:
+        action: Which tool to run: "ls", "cat", or "grep".
+        path: File or directory to operate on.
+        pattern: Regex pattern to search for (required for `grep`).
+        head: Print only the first N lines (`cat` only).
+        tail: Print only the last N lines (`cat` only).
+        max_matches: Maximum number of matches to print (`grep` only).
+
+    Returns:
+        The invoked tool's exit code, 2 if `action` is invalid or `grep` is
+        missing a pattern.
+    """
     if action == "ls":
         return tools_fs.ls(path)
     if action == "cat":
@@ -750,6 +838,23 @@ def cmd_rag_ingest(
     model: str | None = None,
     dimension: int | None = None,
 ) -> int:
+    """Ingest a text file into the RAG vector store under the given `doc_id`.
+
+    Skips re-ingestion if the document's content hash is unchanged since the
+    last ingest, and reports whether the document was newly ingested,
+    updated, or skipped.
+
+    Args:
+        doc_id: Identifier to store the document under.
+        path: Path to the text file to ingest.
+        ensure_schema: Whether to create the vector store schema if missing.
+        collection: Vector store collection to ingest into.
+        model: Embedding model to use (default: from config).
+        dimension: Embedding dimension to use (default: from config).
+
+    Returns:
+        0 on success.
+    """
     text = path.read_text(encoding="utf-8")
     result = ingest_document(
         doc_id,
@@ -795,6 +900,26 @@ def cmd_rag_query(
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> int:
+    """Query the RAG vector store for chunks relevant to `question` and print them.
+
+    Optionally restricts results using metadata filters (doc IDs, filename,
+    tags, ingestion date range) built from the provided arguments.
+
+    Args:
+        question: Query text to retrieve context for.
+        top_k: Number of results to return.
+        collection: Vector store collection to query.
+        model: Embedding model to use (default: from config).
+        dimension: Embedding dimension to use (default: from config).
+        doc_ids: Comma-separated document IDs to restrict results to.
+        filename: Partial filename to filter results by.
+        tags: Comma-separated tags results must all have.
+        date_from: ISO date; only include documents ingested on/after this date.
+        date_to: ISO date; only include documents ingested on/before this date.
+
+    Returns:
+        0 always.
+    """
     from datetime import datetime
 
     from nyxgpt.rag.vectorstore_cassandra import MetadataFilter
@@ -861,6 +986,15 @@ def cmd_rag_query(
 
 
 def cmd_rag_info(doc_id: str, collection: str = "default") -> int:
+    """Print version/ingestion metadata for a single RAG document.
+
+    Args:
+        doc_id: Document ID to inspect.
+        collection: Vector store collection the document belongs to.
+
+    Returns:
+        0 if the document was found, 1 if it doesn't exist in `collection`.
+    """
     store = CassandraVectorStore(collection=collection)
     try:
         info = store.get_document_info(doc_id)
@@ -882,6 +1016,14 @@ def cmd_rag_info(doc_id: str, collection: str = "default") -> int:
 
 
 def cmd_rag_list(collection: str = "default") -> int:
+    """Print a table of all documents ingested into a RAG collection.
+
+    Args:
+        collection: Vector store collection to list documents from.
+
+    Returns:
+        0 always.
+    """
     store = CassandraVectorStore(collection=collection)
     try:
         rows = store.list_docs()
@@ -979,6 +1121,15 @@ def cmd_rag_compare(
 
 
 def cmd_rag_delete(doc_id: str, collection: str = "default") -> int:
+    """Delete a single document (and its chunks) from a RAG collection.
+
+    Args:
+        doc_id: Document ID to delete.
+        collection: Vector store collection the document belongs to.
+
+    Returns:
+        0 always.
+    """
     store = CassandraVectorStore(collection=collection)
     try:
         store.delete_doc(doc_id)
@@ -990,6 +1141,15 @@ def cmd_rag_delete(doc_id: str, collection: str = "default") -> int:
 
 
 def cmd_rag_wipe(confirm: bool, collection: str = "default") -> int:
+    """Delete every document in a RAG collection; requires an explicit confirmation flag.
+
+    Args:
+        confirm: Must be True (from `--yes-really`) or the wipe is refused.
+        collection: Vector store collection to truncate.
+
+    Returns:
+        0 on success, 2 if `confirm` is False.
+    """
     if not confirm:
         print("ERROR: refusing to wipe RAG store without --yes-really", file=sys.stderr)
         return 2
@@ -1186,12 +1346,22 @@ def cmd_mcp() -> int:
 
 
 def _deploy_namespace(cfg_path: Path | None, override: str | None) -> str:
+    """Resolve the Kubernetes namespace for deploy commands: `override` if given, else config."""
     if override:
         return override
     return get_deploy_namespace(load_config(cfg_path))
 
 
 def cmd_deploy_status(cfg_path: Path | None, namespace: str | None) -> int:
+    """Print which blue/green color is currently active and each color's health.
+
+    Args:
+        cfg_path: Optional path to a config.ini to load instead of the default.
+        namespace: Kubernetes namespace override (default: from config).
+
+    Returns:
+        0 always.
+    """
     ns = _deploy_namespace(cfg_path, namespace)
     data = deploy_mod.status(ns)
     print(f"Active color: {data['active']} (namespace={data['namespace']})")
@@ -1209,6 +1379,17 @@ def cmd_deploy_status(cfg_path: Path | None, namespace: str | None) -> int:
 def cmd_deploy_switch(
     cfg_path: Path | None, namespace: str | None, target: str | None, force: bool
 ) -> int:
+    """Cut traffic over to a blue/green color, health-checking it first unless forced.
+
+    Args:
+        cfg_path: Optional path to a config.ini to load instead of the default.
+        namespace: Kubernetes namespace override (default: from config).
+        target: Color to switch to (default: the currently inactive one).
+        force: If True, switch even if the target color is unhealthy.
+
+    Returns:
+        0 if the switch succeeded, 2 if it failed (e.g. target unhealthy).
+    """
     ns = _deploy_namespace(cfg_path, namespace)
     result = deploy_mod.switch(target=target, namespace=ns, force=force)
     print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
@@ -1218,6 +1399,15 @@ def cmd_deploy_switch(
 
 
 def cmd_deploy_rollback(cfg_path: Path | None, namespace: str | None) -> int:
+    """Switch traffic back to the previously active blue/green color.
+
+    Args:
+        cfg_path: Optional path to a config.ini to load instead of the default.
+        namespace: Kubernetes namespace override (default: from config).
+
+    Returns:
+        0 if the rollback succeeded, 2 if it failed.
+    """
     ns = _deploy_namespace(cfg_path, namespace)
     result = deploy_mod.rollback(ns)
     print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
@@ -1227,12 +1417,22 @@ def cmd_deploy_rollback(cfg_path: Path | None, namespace: str | None) -> int:
 
 
 def _canary_namespace(cfg_path: Path | None, override: str | None) -> str:
+    """Resolve the Kubernetes namespace for canary commands: `override` if given, else config."""
     if override:
         return override
     return get_canary_namespace(load_config(cfg_path))
 
 
 def cmd_canary_status(cfg_path: Path | None, namespace: str | None) -> int:
+    """Print canary rollout progress, stable/canary health, and live traffic metrics.
+
+    Args:
+        cfg_path: Optional path to a config.ini to load instead of the default.
+        namespace: Kubernetes namespace override (default: from config).
+
+    Returns:
+        0 always.
+    """
     ns = _canary_namespace(cfg_path, namespace)
     data = canary_mod.status(ns)
     state = "in progress" if data["active"] else "idle"
@@ -1256,6 +1456,16 @@ def cmd_canary_status(cfg_path: Path | None, namespace: str | None) -> int:
 
 
 def cmd_canary_start(cfg_path: Path | None, namespace: str | None, weight_percent: int) -> int:
+    """Start a canary rollout, initially routing `weight_percent` of traffic to it.
+
+    Args:
+        cfg_path: Optional path to a config.ini to load instead of the default.
+        namespace: Kubernetes namespace override (default: from config).
+        weight_percent: Initial percentage of traffic to route to the canary.
+
+    Returns:
+        0 if the rollout started successfully, 2 if it failed.
+    """
     ns = _canary_namespace(cfg_path, namespace)
     cfg = load_config(cfg_path)
     result = canary_mod.start(
@@ -1268,6 +1478,18 @@ def cmd_canary_start(cfg_path: Path | None, namespace: str | None, weight_percen
 
 
 def cmd_canary_evaluate(cfg_path: Path | None, namespace: str | None) -> int:
+    """Check the canary's live error-rate/latency metrics against configured thresholds.
+
+    Automatically rolls back the canary if it's regressing (see
+    `canary.evaluate`).
+
+    Args:
+        cfg_path: Optional path to a config.ini to load instead of the default.
+        namespace: Kubernetes namespace override (default: from config).
+
+    Returns:
+        0 if the canary passed evaluation, 2 if it failed (and was rolled back).
+    """
     ns = _canary_namespace(cfg_path, namespace)
     cfg = load_config(cfg_path)
     result = canary_mod.evaluate(
@@ -1285,6 +1507,16 @@ def cmd_canary_evaluate(cfg_path: Path | None, namespace: str | None) -> int:
 def cmd_canary_promote(
     cfg_path: Path | None, namespace: str | None, step_percent: int | None
 ) -> int:
+    """Increase the canary's traffic share by a step percentage.
+
+    Args:
+        cfg_path: Optional path to a config.ini to load instead of the default.
+        namespace: Kubernetes namespace override (default: from config).
+        step_percent: Percentage points to add (default: from config).
+
+    Returns:
+        0 if the promotion succeeded, 2 if it failed.
+    """
     ns = _canary_namespace(cfg_path, namespace)
     cfg = load_config(cfg_path)
     result = canary_mod.promote(
@@ -1299,6 +1531,15 @@ def cmd_canary_promote(
 
 
 def cmd_canary_rollback(cfg_path: Path | None, namespace: str | None) -> int:
+    """Cut all traffic back to the stable deployment, abandoning the canary.
+
+    Args:
+        cfg_path: Optional path to a config.ini to load instead of the default.
+        namespace: Kubernetes namespace override (default: from config).
+
+    Returns:
+        0 if the rollback succeeded, 2 if it failed.
+    """
     ns = _canary_namespace(cfg_path, namespace)
     cfg = load_config(cfg_path)
     result = canary_mod.rollback(namespace=ns, total_replicas=get_canary_total_replicas(cfg))
@@ -1309,6 +1550,14 @@ def cmd_canary_rollback(cfg_path: Path | None, namespace: str | None) -> int:
 
 
 def cmd_self_heal_status(_cfg_path: Path | None) -> int:
+    """Print whether the self-heal watchdog is enabled, per-component health, and recent heal events.
+
+    Args:
+        _cfg_path: Unused; accepted for symmetry with the other config-aware commands.
+
+    Returns:
+        0 always.
+    """
     data = self_heal_mod.status()
     print(f"Self-heal watchdog: {'enabled' if data['enabled'] else 'disabled'}")
     if not data["components"]:
@@ -1328,12 +1577,29 @@ def cmd_self_heal_status(_cfg_path: Path | None) -> int:
 
 
 def cmd_self_heal_toggle(enabled: bool) -> int:
+    """Enable or disable the automatic self-heal watchdog.
+
+    Args:
+        enabled: True to enable automatic self-healing, False to disable it.
+
+    Returns:
+        0 always.
+    """
     result = self_heal_mod.set_enabled(enabled)
     print(f"Self-heal watchdog: {'enabled' if result else 'disabled'}")
     return 0
 
 
 def cmd_self_heal_heal(service: str | None) -> int:
+    """Manually trigger a self-heal restart for an unhealthy component (or all of them).
+
+    Args:
+        service: Compose service name to restart; if None, heals every
+            currently unhealthy component.
+
+    Returns:
+        0 if healing succeeded (or nothing needed healing), 2 on failure.
+    """
     result = self_heal_mod.heal_now(service=service)
     if result.get("error"):
         print(f"[FAIL] {result['error']}")
@@ -1349,6 +1615,20 @@ def cmd_self_heal_heal(service: str | None) -> int:
 
 
 def cli(argv: list[str] | None = None) -> int:
+    """Entry point for the `nyxgpt` command-line tool.
+
+    Builds the full argparse parser (chat, sessions, tools, rag, models, mcp,
+    tui, wizard, ops, deploy, canary, self-heal subcommands), parses `argv`,
+    initializes logging, and dispatches to the matching `cmd_*` handler. If
+    no subcommand is given, defaults to `info`. Prints help and returns 2 if
+    the resolved command/subcommand combination isn't recognized.
+
+    Args:
+        argv: Argument list to parse (default: `sys.argv[1:]` via argparse).
+
+    Returns:
+        The invoked subcommand's exit code (0 for success by convention).
+    """
     parser = argparse.ArgumentParser(prog="nyxgpt")
     parser.add_argument(
         "--config",

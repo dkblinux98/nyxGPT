@@ -38,6 +38,7 @@ _CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
 
 
 def _usage_log_path(cfg: ConfigParser | None = None) -> Path:
+    """Return the path of the JSONL file usage events are appended to."""
     return get_log_dir(cfg) / "usage_analytics.jsonl"
 
 
@@ -117,6 +118,19 @@ def recent(limit: int = 500, cfg: ConfigParser | None = None) -> list[dict[str, 
 
 
 def _load_from_disk(limit: int, cfg: ConfigParser | None) -> list[dict[str, Any]]:
+    """Load up to the last `limit` events from the on-disk JSONL log.
+
+    Used as a fallback by `recent` when the in-memory ring buffer is empty
+    (e.g. right after a process restart). Malformed lines are skipped.
+
+    Args:
+        limit: Maximum number of trailing lines to read from the log file.
+        cfg: Optional config, used to locate the log directory.
+
+    Returns:
+        Parsed events in file order (oldest to newest), or an empty list
+        if the log file doesn't exist or can't be read.
+    """
     path = _usage_log_path(cfg)
     if not path.exists():
         return []

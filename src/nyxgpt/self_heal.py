@@ -76,6 +76,7 @@ class ComponentStatus:
     healthy: bool
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to a plain dict suitable for JSON responses."""
         return {
             "service": self.service,
             "container": self.container,
@@ -87,6 +88,8 @@ class ComponentStatus:
 
 @dataclass(frozen=True)
 class HealResult:
+    """Outcome of a single restart/log-fetch action against a component."""
+
     ok: bool
     message: str
     details: str = ""
@@ -94,6 +97,8 @@ class HealResult:
 
 @dataclass(frozen=True)
 class HealEvent:
+    """A single recorded self-heal action, as shown in the dashboard event log."""
+
     ts: float
     service: str
     reason: str
@@ -103,6 +108,7 @@ class HealEvent:
     message: str = ""
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize to a plain dict suitable for JSON responses/state storage."""
         return {
             "ts": self.ts,
             "service": self.service,
@@ -115,14 +121,17 @@ class HealEvent:
 
 
 def _which(prog: str) -> str | None:
+    """Return the resolved path of `prog` on PATH, or None if not found."""
     return shutil.which(prog)
 
 
 def _run(cmd: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
+    """Run `cmd`, capturing stdout/stderr as text instead of raising on failure."""
     return subprocess.run(cmd, check=False, text=True, capture_output=True, timeout=timeout)
 
 
 def _state_path() -> Path:
+    """Path to the on-disk self-heal state file (`~/.nyxGPT/self_heal_state.json`)."""
     return Path.home() / ".nyxGPT" / "self_heal_state.json"
 
 
@@ -130,10 +139,15 @@ _state_lock = threading.Lock()
 
 
 def _default_state() -> dict[str, Any]:
+    """Build the default (disabled, empty history) self-heal state dict."""
     return {"enabled": False, "events": [], "restart_counts": {}, "last_restart_ts": {}}
 
 
 def _load_state() -> dict[str, Any]:
+    """Load self-heal state from disk, merging in any missing default keys.
+
+    Returns the default state if the file doesn't exist or fails to parse.
+    """
     path = _state_path()
     if not path.exists():
         return _default_state()
@@ -149,6 +163,7 @@ def _load_state() -> dict[str, Any]:
 
 
 def _save_state(state: dict[str, Any]) -> None:
+    """Persist `state` to disk as JSON, creating the parent directory if needed."""
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -185,6 +200,11 @@ def set_enabled(enabled: bool) -> bool:
 
 
 def recent_events(limit: int = 50) -> list[dict[str, Any]]:
+    """Return up to `limit` most recent heal events, newest last.
+
+    `limit` is clamped between 1 and `EVENT_LOG_LIMIT`, the number of events
+    actually retained in state.
+    """
     with _state_lock:
         events = _load_state().get("events", [])
     bounded = max(1, min(limit, EVENT_LOG_LIMIT))
@@ -385,6 +405,10 @@ class Watchdog:
         max_consecutive_restarts: int = DEFAULT_MAX_CONSECUTIVE_RESTARTS,
         backoff_seconds: float = DEFAULT_BACKOFF_SECONDS,
     ) -> None:
+        """Configure the watchdog's check cadence and restart limits.
+
+        Does not start the background thread; call `start()` for that.
+        """
         self.interval_seconds = interval_seconds
         self.max_consecutive_restarts = max_consecutive_restarts
         self.backoff_seconds = backoff_seconds
@@ -392,6 +416,10 @@ class Watchdog:
         self._stop_event = threading.Event()
 
     def start(self) -> None:
+        """Start the background heal-check loop in a daemon thread.
+
+        No-op (with a warning logged) if the loop is already running.
+        """
         if self._thread is not None and self._thread.is_alive():
             logger.warning("Self-heal watchdog already running")
             return
@@ -405,12 +433,18 @@ class Watchdog:
         )
 
     def stop(self, timeout: float = 5.0) -> None:
+        """Signal the background loop to stop and join it (waiting up to `timeout` seconds)."""
         self._stop_event.set()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=timeout)
         self._thread = None
 
     def _loop(self) -> None:
+        """Background loop: call `heal_now()` on each interval while enabled.
+
+        Runs until `stop()` is called. Exceptions from a heal pass are
+        logged and swallowed so one failed pass doesn't kill the thread.
+        """
         while not self._stop_event.is_set():
             try:
                 if is_enabled():
@@ -427,6 +461,7 @@ _watchdog: Watchdog | None = None
 
 
 def get_watchdog() -> Watchdog:
+    """Return the process-wide `Watchdog` singleton, creating it on first call."""
     global _watchdog
     if _watchdog is None:
         _watchdog = Watchdog()
