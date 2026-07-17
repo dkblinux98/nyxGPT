@@ -1068,6 +1068,15 @@ def test_batch_export(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Non
     assert "Exported 1 session(s)" in captured.out
 
 
+def test_batch_export_missing_session_names(capsys: pytest.CaptureFixture[str]) -> None:
+    """batch-export with no session names at all fails before the --output check."""
+    exit_code = cli(["sessions", "batch-export"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "at least one session name is required" in captured.err
+
+
 def test_batch_export_missing_output(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """Test batch-export fails when output directory is missing."""
     # Need at least 3 positional args for extras to have values
@@ -1577,6 +1586,46 @@ def test_deploy_rollback(
     assert "[OK] Switched traffic from green to blue" in capsys.readouterr().out
 
 
+def test_deploy_switch_prints_details_when_present(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.deploy import DeployResult
+
+    monkeypatch.setattr(
+        cli_mod.deploy_mod,
+        "switch",
+        lambda **kwargs: DeployResult(False, "Refusing to switch", "green: 0/1 ready"),
+    )
+
+    exit_code = cli(["deploy", "switch", "--namespace", "test-ns"])
+
+    assert exit_code == 2
+    out = capsys.readouterr().out
+    assert "[FAIL] Refusing to switch" in out
+    assert "green: 0/1 ready" in out
+
+
+def test_deploy_rollback_prints_details_when_present(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.deploy import DeployResult
+
+    monkeypatch.setattr(
+        cli_mod.deploy_mod,
+        "rollback",
+        lambda namespace: DeployResult(True, "Rolled back", "blue: 1/1 ready"),
+    )
+
+    exit_code = cli(["deploy", "rollback", "--namespace", "test-ns"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "[OK] Rolled back" in out
+    assert "blue: 1/1 ready" in out
+
+
 def test_ops_observability_dispatches_to_ops_module(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1622,3 +1671,1593 @@ def test_ops_install_skip_observability_flag_parses(
 
     assert exit_code == 0
     assert called == []
+
+
+# --- Interactive chat mode tests ---
+
+
+def _queue_inputs(monkeypatch: pytest.MonkeyPatch, values: list[str]) -> None:
+    """Make builtins.input() return each value in turn, then raise EOFError."""
+    it = iter(values)
+
+    def fake_input(prompt: str = "") -> str:
+        try:
+            return next(it)
+        except StopIteration:
+            raise EOFError from None
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+
+def test_chat_interactive_immediate_eof(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Interactive chat exits cleanly when input immediately hits EOF."""
+    _queue_inputs(monkeypatch, [])
+
+    exit_code = cli(["chat"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "nyxGPT chat" in captured.out
+    assert "Type /exit to quit." in captured.out
+
+
+def test_chat_interactive_empty_line_then_exit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Blank lines are skipped; /exit ends the interactive loop."""
+    _queue_inputs(monkeypatch, ["", "/exit"])
+
+    exit_code = cli(["chat"])
+
+    assert exit_code == 0
+
+
+def test_chat_interactive_quit_command(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """/quit also ends the interactive loop."""
+    _queue_inputs(monkeypatch, ["/quit"])
+
+    exit_code = cli(["chat"])
+
+    assert exit_code == 0
+
+
+def test_chat_interactive_streaming_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A real (non-command) line is sent via chat_stream and echoed to stdout."""
+    import nyxgpt.cli as cli_mod
+
+    _queue_inputs(monkeypatch, ["hello", "/exit"])
+
+    def fake_chat_stream(prompt, **kwargs):
+        assert prompt == "hello"
+        return iter(["Hi", " there"])
+
+    monkeypatch.setattr(cli_mod, "chat_stream", fake_chat_stream)
+
+    exit_code = cli(["chat"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Hi there" in captured.out
+
+
+def test_chat_interactive_no_stream_message(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A real line is sent via chat (non-streaming) and the reply is printed."""
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.chat import ChatResult
+
+    _queue_inputs(monkeypatch, ["hello", "/exit"])
+
+    def fake_chat(prompt, **kwargs):
+        assert prompt == "hello"
+        return ChatResult(
+            session="default", model="m", reply="Hi there", rag_used=False, rag_chunks=0
+        )
+
+    monkeypatch.setattr(cli_mod, "chat", fake_chat)
+
+    exit_code = cli(["chat", "--no-stream"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Hi there" in captured.out
+
+
+def test_chat_interactive_keyboard_interrupt_continues(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A KeyboardInterrupt raised mid-turn is swallowed and the loop continues."""
+    import nyxgpt.cli as cli_mod
+
+    _queue_inputs(monkeypatch, ["hello", "/exit"])
+
+    def fake_chat(prompt, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_mod, "chat", fake_chat)
+
+    exit_code = cli(["chat", "--no-stream"])
+
+    assert exit_code == 0
+
+
+def test_chat_interactive_exception_prints_error_and_continues(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unexpected exception mid-turn is reported to stderr and the loop continues."""
+    import nyxgpt.cli as cli_mod
+
+    _queue_inputs(monkeypatch, ["hello", "/exit"])
+
+    def fake_chat(prompt, **kwargs):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(cli_mod, "chat", fake_chat)
+
+    exit_code = cli(["chat", "--no-stream"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "ERROR: boom" in captured.err
+
+
+# --- _list_sessions_in_dir edge cases ---
+
+
+def test_sessions_list_nonexistent_dir(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Listing sessions in a directory that doesn't exist returns an empty list, not an error."""
+    sessions_dir = tmp_path / "does-not-exist"
+
+    exit_code = cli(["sessions", "list", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert f"No sessions found in {sessions_dir}" in captured.out
+
+
+def test_sessions_list_skips_unreadable_session_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session file that raises while being read is silently skipped, not fatal to `list`."""
+    import nyxgpt.cli as cli_mod
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    good_file = sessions.session_file_for("good-session", sessions_dir)
+    sessions.save_session_messages(good_file, [{"role": "user", "content": "hi"}])
+
+    bad_file = sessions.session_file_for("bad-session", sessions_dir)
+    sessions.save_session_messages(bad_file, [{"role": "user", "content": "hi"}])
+
+    orig_load = sessions.load_session_messages
+
+    def flaky_load(path: Path) -> list[dict[str, str]]:
+        if path == bad_file:
+            raise RuntimeError("simulated read failure")
+        return orig_load(path)
+
+    monkeypatch.setattr(cli_mod.sessions, "load_session_messages", flaky_load)
+
+    exit_code = cli(["sessions", "list", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "good-session" in captured.out
+    assert "bad-session" not in captured.out
+
+
+def test_sessions_list_shows_summary(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The `list` action prints a session's summary line when present."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("with-summary", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+    sessions.save_session_messages(session_file, [{"role": "user", "content": "hi"}])
+    sessions.save_session_meta(meta_file, {"summary": "A brief summary of the chat"})
+
+    exit_code = cli(["sessions", "list", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "summary: A brief summary of the chat" in captured.out
+
+
+def test_sessions_show_no_metadata(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`show` prints "(no metadata)" when the session has no metadata file."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    session_file = sessions.session_file_for("no-meta", sessions_dir)
+    sessions.save_session_messages(session_file, [{"role": "user", "content": "hi"}])
+
+    exit_code = cli(["sessions", "show", "no-meta", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "(no metadata)" in captured.out
+
+
+# --- Failure paths for single-session mutation actions ---
+
+
+def test_sessions_rename_nonexistent_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli(["sessions", "rename", "nope", "new-name"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "No such session" in captured.out
+
+
+def test_sessions_pin_nonexistent_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli(["sessions", "pin", "nope"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "No such session" in captured.out
+
+
+def test_sessions_tag_add_nonexistent_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    # "nope" -> name, "unused" -> new_name (ignored by tag-add), "sometag" -> extras (the tag)
+    exit_code = cli(["sessions", "tag-add", "nope", "unused", "sometag"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "No such session" in captured.out
+
+
+def test_sessions_title_nonexistent_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli(["sessions", "title", "nope", "New Title"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "No such session" in captured.out
+
+
+# --- summarize action ---
+
+
+def test_sessions_summarize_missing_name(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli(["sessions", "summarize"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "session name required" in captured.err
+
+
+def test_sessions_summarize_nonexistent_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli(["sessions", "summarize", "nope"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "No such session" in captured.out
+
+
+def test_sessions_summarize_success(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Successful summarize prints a confirmation; the LLM call itself is mocked
+    (sessions.summarize_session's own LLM-calling logic is covered by sessions.py's
+    own test suite -- this test only needs to exercise the cli.py dispatch)."""
+    import nyxgpt.cli as cli_mod
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_file = sessions.session_file_for("to-summarize", sessions_dir)
+    sessions.save_session_messages(session_file, [{"role": "user", "content": "hi"}])
+
+    monkeypatch.setattr(cli_mod.sessions, "summarize_session", lambda name, d: (True, "OK"))
+
+    exit_code = cli(["sessions", "summarize", "to-summarize", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Summarized session: to-summarize" in captured.out
+
+
+# --- Session search pagination ---
+
+
+def test_sessions_search_pagination_continue_then_finish(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With >10 matches, pressing Enter at the prompt advances to the next page."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    messages = [{"role": "user", "content": f"needle number {i}"} for i in range(12)]
+    session_file = sessions.session_file_for("many-matches", sessions_dir)
+    sessions.save_session_messages(session_file, messages)
+
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+
+    exit_code = cli(["sessions", "search", "needle", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Found 12 result(s)" in captured.out
+
+
+def test_sessions_search_pagination_quit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With >10 matches, typing 'q' at the prompt stops early."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    messages = [{"role": "user", "content": f"needle number {i}"} for i in range(12)]
+    session_file = sessions.session_file_for("many-matches", sessions_dir)
+    sessions.save_session_messages(session_file, messages)
+
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "q")
+
+    exit_code = cli(["sessions", "search", "needle", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Stopped." in captured.out
+    assert "not shown" in captured.out
+
+
+def test_sessions_search_pagination_keyboard_interrupt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Ctrl-C/EOF at the pagination prompt stops cleanly."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    messages = [{"role": "user", "content": f"needle number {i}"} for i in range(12)]
+    session_file = sessions.session_file_for("many-matches", sessions_dir)
+    sessions.save_session_messages(session_file, messages)
+
+    def raise_interrupt(_prompt: str = "") -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", raise_interrupt)
+
+    exit_code = cli(["sessions", "search", "needle", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Stopped." in captured.out
+
+
+# --- merge failure paths ---
+
+
+def test_sessions_merge_missing_output_name(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli(["sessions", "merge"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "output session name is required" in captured.err
+
+
+def test_sessions_merge_nonexistent_input_fails(capsys: pytest.CaptureFixture[str]) -> None:
+    # "merged-out" -> name (output), "unused" -> new_name (ignored by merge),
+    # "no-such-session" -> extras (the input session names)
+    exit_code = cli(["sessions", "merge", "merged-out", "unused", "no-such-session"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "not found" in captured.err
+
+
+# --- batch operation failure paths ---
+
+
+def test_batch_delete_partial_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_file = sessions.session_file_for("real-one", sessions_dir)
+    sessions.save_session_messages(session_file, [{"role": "user", "content": "hi"}])
+
+    # First two positionals are consumed by argparse as name/new_name (unused by
+    # batch-delete); everything from the third onward lands in `extras`, which is
+    # what batch-delete actually operates on.
+    exit_code = cli(
+        [
+            "sessions",
+            "batch-delete",
+            "unused1",
+            "unused2",
+            "real-one",
+            "ghost-one",
+            "ghost-two",
+            "--sessions-dir",
+            str(sessions_dir),
+        ]
+    )
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Deleted 1 session(s)" in captured.out
+    assert "Failed to delete" in captured.err
+
+
+def test_batch_tag_add_missing_session_names(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli(["sessions", "batch-tag-add", "onlytag"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "at least one session name is required" in captured.err
+
+
+def test_batch_tag_add_partial_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_file = sessions.session_file_for("real-tag", sessions_dir)
+    sessions.save_session_messages(session_file, [{"role": "user", "content": "hi"}])
+
+    # "newtag" -> name (the tags string); "unused" -> new_name (ignored);
+    # everything after -> extras (session names)
+    exit_code = cli(
+        [
+            "sessions",
+            "batch-tag-add",
+            "newtag",
+            "unused",
+            "real-tag",
+            "ghost-tag",
+            "--sessions-dir",
+            str(sessions_dir),
+        ]
+    )
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Added tags to 1 session(s)" in captured.out
+    assert "Failed to update" in captured.err
+
+
+def test_batch_export_partial_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = tmp_path / "exports"
+    output_dir.mkdir()
+    session_file = sessions.session_file_for("real-export", sessions_dir)
+    sessions.save_session_messages(session_file, [{"role": "user", "content": "hi"}])
+
+    exit_code = cli(
+        [
+            "sessions",
+            "batch-export",
+            "unused1",
+            "unused2",
+            "real-export",
+            "ghost-export",
+            "another-ghost",
+            "--sessions-dir",
+            str(sessions_dir),
+            "--output",
+            str(output_dir),
+        ]
+    )
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Exported 1 session(s)" in captured.out
+    assert "Failed to export" in captured.err
+
+
+def test_batch_pin_partial_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_file = sessions.session_file_for("real-pin", sessions_dir)
+    sessions.save_session_messages(session_file, [{"role": "user", "content": "hi"}])
+
+    exit_code = cli(
+        [
+            "sessions",
+            "batch-pin",
+            "unused1",
+            "unused2",
+            "real-pin",
+            "ghost-pin",
+            "another-ghost",
+            "--sessions-dir",
+            str(sessions_dir),
+        ]
+    )
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Pinned 1 session(s)" in captured.out
+    assert "Failed to update" in captured.err
+
+
+def test_batch_unpin_partial_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_file = sessions.session_file_for("real-unpin", sessions_dir)
+    sessions.save_session_messages(session_file, [{"role": "user", "content": "hi"}])
+
+    exit_code = cli(
+        [
+            "sessions",
+            "batch-unpin",
+            "unused1",
+            "unused2",
+            "real-unpin",
+            "ghost-unpin",
+            "another-ghost",
+            "--sessions-dir",
+            str(sessions_dir),
+        ]
+    )
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Unpinned 1 session(s)" in captured.out
+    assert "Failed to update" in captured.err
+
+
+# --- batch-update-meta ---
+
+
+def test_batch_update_meta_missing_session_names(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli(["sessions", "batch-update-meta"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "at least one session name is required" in captured.err
+
+
+def test_batch_update_meta_missing_fields(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli(["sessions", "batch-update-meta", "s1", "s2", "s3"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "at least one metadata field is required" in captured.err
+
+
+def test_batch_update_meta_success(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_file = sessions.session_file_for("meta-target", sessions_dir)
+    sessions.save_session_messages(session_file, [{"role": "user", "content": "hi"}])
+
+    exit_code = cli(
+        [
+            "sessions",
+            "batch-update-meta",
+            "unused1",
+            "unused2",
+            "meta-target",
+            "ghost-meta",
+            "--sessions-dir",
+            str(sessions_dir),
+            "--model",
+            "llama3.1:8b",
+            "--rag-enabled",
+            "true",
+        ]
+    )
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Updated metadata for 1 session(s)" in captured.out
+    assert "Failed to update" in captured.err
+
+
+def test_batch_update_meta_full_success(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """When every named session updates cleanly, batch-update-meta returns 0."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("meta-a", "meta-b"):
+        f = sessions.session_file_for(name, sessions_dir)
+        sessions.save_session_messages(f, [{"role": "user", "content": "hi"}])
+
+    exit_code = cli(
+        [
+            "sessions",
+            "batch-update-meta",
+            "unused1",
+            "unused2",
+            "meta-a",
+            "meta-b",
+            "--sessions-dir",
+            str(sessions_dir),
+            "--model",
+            "llama3.1:8b",
+        ]
+    )
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Updated metadata for 2 session(s)" in captured.out
+    assert captured.err == ""
+
+
+# --- detach failure path ---
+
+
+def test_sessions_detach_missing_args(capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli(["sessions", "detach", "only-name"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "session name and doc_id are required" in captured.err
+
+
+# --- unknown sessions action (unreachable through argparse choices, so we call
+# cmd_sessions directly to exercise the defensive fallback branch) ---
+
+
+def test_cmd_sessions_unknown_action_direct(capsys: pytest.CaptureFixture[str]) -> None:
+    from nyxgpt.cli import cmd_sessions
+
+    exit_code = cmd_sessions(
+        action="bogus-action",
+        name=None,
+        new_name=None,
+        extras=[],
+        sessions_dir=None,
+    )
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "Unknown sessions action: bogus-action" in captured.err
+
+
+# --- unsupported export format (unreachable through argparse choices) ---
+
+
+def test_cmd_sessions_export_unsupported_format_direct(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from nyxgpt.cli import cmd_sessions
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_file = sessions.session_file_for("fmt-test", sessions_dir)
+    sessions.save_session_messages(session_file, [{"role": "user", "content": "hi"}])
+
+    exit_code = cmd_sessions(
+        action="export",
+        name="fmt-test",
+        new_name=None,
+        extras=[],
+        sessions_dir=sessions_dir,
+        format="yaml",
+    )
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "unsupported format: yaml" in captured.err
+
+
+# --- session stats: format_age branches ---
+
+
+def test_sessions_stats_unknown_timestamps(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Stats with no created_at/updated_at in metadata falls back to "Unknown"."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_file = sessions.session_file_for("no-timestamps", sessions_dir)
+    sessions.save_session_messages(session_file, [{"role": "user", "content": "hi"}])
+    # No metadata saved at all -> created_at/updated_at default to "Unknown"
+
+    exit_code = cli(["sessions", "stats", "no-timestamps", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Created: Unknown" in captured.out
+    assert "Age: Unknown" in captured.out
+
+
+def test_sessions_stats_invalid_timestamp_format(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A non-ISO timestamp string is echoed back as-is instead of crashing."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_file = sessions.session_file_for("bad-timestamp", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+    sessions.save_session_messages(session_file, [{"role": "user", "content": "hi"}])
+    sessions.save_session_meta(
+        meta_file, {"created_at": "not-a-real-timestamp", "updated_at": "not-a-real-timestamp"}
+    )
+
+    exit_code = cli(["sessions", "stats", "bad-timestamp", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Age: not-a-real-timestamp" in captured.out
+
+
+def test_sessions_stats_recent_activity_buckets(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Exercise the minutes/hours/seconds formatting buckets in format_age."""
+    from datetime import UTC, datetime, timedelta
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_file = sessions.session_file_for("recent", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+    sessions.save_session_messages(session_file, [{"role": "user", "content": "hi"}])
+
+    now = datetime.now(UTC)
+    created = (now - timedelta(hours=3, minutes=15)).isoformat()
+    updated = (now - timedelta(minutes=5)).isoformat()
+    sessions.save_session_meta(meta_file, {"created_at": created, "updated_at": updated})
+
+    exit_code = cli(["sessions", "stats", "recent", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "hour(s)" in captured.out
+    assert "minute(s)" in captured.out
+
+
+def test_sessions_stats_just_now_activity(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A timestamp from right now falls into the "< 1 minute" bucket."""
+    from datetime import UTC, datetime
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_file = sessions.session_file_for("just-now", sessions_dir)
+    meta_file = sessions.meta_file_for(session_file)
+    sessions.save_session_messages(session_file, [{"role": "user", "content": "hi"}])
+
+    now = datetime.now(UTC).isoformat()
+    sessions.save_session_meta(meta_file, {"created_at": now, "updated_at": now})
+
+    exit_code = cli(["sessions", "stats", "just-now", "--sessions-dir", str(sessions_dir)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "< 1 minute" in captured.out
+
+
+# --- cmd_tools ---
+
+
+def test_tools_ls(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / "a.txt").write_text("hello")
+
+    exit_code = cli(["tools", "ls", str(tmp_path)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "a.txt" in captured.out
+
+
+def test_tools_cat(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    f = tmp_path / "a.txt"
+    f.write_text("line1\nline2\nline3\n")
+
+    exit_code = cli(["tools", "cat", str(f), "--head", "2"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "line1" in captured.out
+    assert "line3" not in captured.out
+
+
+def test_tools_grep(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    f = tmp_path / "a.txt"
+    f.write_text("apple\nbanana\ncherry\n")
+
+    exit_code = cli(["tools", "grep", "banana", str(f)])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "banana" in captured.out
+
+
+def test_tools_grep_missing_pattern(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    exit_code = cli(["tools", "grep", "", str(tmp_path)])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "pattern is required for grep" in captured.err
+
+
+def test_cmd_tools_unknown_action_direct(capsys: pytest.CaptureFixture[str]) -> None:
+    """The 'unknown tools action' fallback is unreachable via argparse (choices=
+    ls/cat/grep), so exercise cmd_tools directly."""
+    from nyxgpt.cli import cmd_tools
+
+    exit_code = cmd_tools(
+        action="bogus",
+        path=Path("."),
+        pattern=None,
+        head=None,
+        tail=None,
+        max_matches=50,
+    )
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "Unknown tools action: bogus" in captured.err
+
+
+# --- models command error branches ---
+
+
+def test_models_list_exception(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.models as models_mod
+
+    def raise_error():
+        raise RuntimeError("ollama down")
+
+    monkeypatch.setattr(models_mod, "list_models", raise_error)
+
+    exit_code = cli(["models", "list"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "ERROR: Failed to list models" in captured.err
+
+
+def test_models_pull_value_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.models as models_mod
+
+    def raise_value_error(name, progress_callback=None):
+        raise ValueError("invalid model name")
+
+    monkeypatch.setattr(models_mod, "pull_model", raise_value_error)
+
+    exit_code = cli(["models", "pull", "bogus-model"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "ERROR: invalid model name" in captured.err
+
+
+def test_models_pull_generic_exception(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.models as models_mod
+
+    def raise_error(name, progress_callback=None):
+        raise RuntimeError("network error")
+
+    monkeypatch.setattr(models_mod, "pull_model", raise_error)
+
+    exit_code = cli(["models", "pull", "some-model"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "ERROR: Failed to pull model" in captured.err
+
+
+def test_models_delete_prompt_confirm_yes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.models as models_mod
+
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+    monkeypatch.setattr(models_mod, "delete_model", lambda name: None)
+
+    exit_code = cli(["models", "delete", "some-model"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Deleted model: some-model" in captured.out
+
+
+def test_models_delete_prompt_declined(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
+
+    exit_code = cli(["models", "delete", "some-model"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Cancelled" in captured.out
+
+
+def test_models_delete_prompt_eof_cancels(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def raise_eof(_prompt: str = "") -> str:
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", raise_eof)
+
+    exit_code = cli(["models", "delete", "some-model"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Cancelled" in captured.out
+
+
+def test_models_delete_value_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.models as models_mod
+
+    def raise_value_error(name):
+        raise ValueError("unknown model")
+
+    monkeypatch.setattr(models_mod, "delete_model", raise_value_error)
+
+    exit_code = cli(["models", "delete", "some-model", "--force"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "ERROR: unknown model" in captured.err
+
+
+def test_models_delete_generic_exception(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.models as models_mod
+
+    def raise_error(name):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(models_mod, "delete_model", raise_error)
+
+    exit_code = cli(["models", "delete", "some-model", "--force"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "ERROR: Failed to delete model" in captured.err
+
+
+def test_models_show_other_fields(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.models as models_mod
+
+    monkeypatch.setattr(
+        models_mod,
+        "show_model",
+        lambda name: {"modelfile": "FROM x", "size": 123, "family": "llama"},
+    )
+
+    exit_code = cli(["models", "show", "some-model"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "Other info:" in captured.out
+    assert '"size": 123' in captured.out
+
+
+def test_models_show_value_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.models as models_mod
+
+    def raise_value_error(name):
+        raise ValueError("not found")
+
+    monkeypatch.setattr(models_mod, "show_model", raise_value_error)
+
+    exit_code = cli(["models", "show", "some-model"])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "ERROR: not found" in captured.err
+
+
+def test_models_show_generic_exception(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.models as models_mod
+
+    def raise_error(name):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(models_mod, "show_model", raise_error)
+
+    exit_code = cli(["models", "show", "some-model"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "ERROR: Failed to get model info" in captured.err
+
+
+# --- mcp command ---
+
+
+def test_cmd_mcp_clean_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.mcp_server as mcp_server_mod
+
+    monkeypatch.setattr(mcp_server_mod, "serve", lambda: None)
+
+    exit_code = cli(["mcp"])
+
+    assert exit_code == 0
+
+
+def test_cmd_mcp_keyboard_interrupt(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.mcp_server as mcp_server_mod
+
+    def raise_interrupt():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(mcp_server_mod, "serve", raise_interrupt)
+
+    exit_code = cli(["mcp"])
+
+    assert exit_code == 0
+
+
+def test_cmd_mcp_generic_exception(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.mcp_server as mcp_server_mod
+
+    def raise_error():
+        raise RuntimeError("mcp boom")
+
+    monkeypatch.setattr(mcp_server_mod, "serve", raise_error)
+
+    exit_code = cli(["mcp"])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "ERROR: MCP server failed: mcp boom" in captured.err
+
+
+# --- wizard and tui dispatch ---
+
+
+def test_cli_wizard_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[Path | None] = []
+
+    def fake_run_wizard(output_path=None):
+        calls.append(output_path)
+        return 0
+
+    monkeypatch.setattr(cli_mod, "run_wizard", fake_run_wizard)
+
+    output = tmp_path / "config.ini"
+    exit_code = cli(["wizard", "--output", str(output)])
+
+    assert exit_code == 0
+    assert calls == [output]
+
+
+def test_cli_tui_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[dict] = []
+
+    class FakeTUI:
+        def __init__(self, session, api_base_url):
+            calls.append({"session": session, "api_base_url": api_base_url})
+
+        def run(self) -> None:
+            calls.append({"ran": True})
+
+    monkeypatch.setattr(cli_mod, "NyxGPTTUI", FakeTUI)
+
+    exit_code = cli(["tui", "--session", "my-session"])
+
+    assert exit_code == 0
+    assert calls[0]["session"] == "my-session"
+    assert calls[1] == {"ran": True}
+
+
+# --- ops command dispatch (status/doctor/restart/env-sync/logs) ---
+
+
+def test_ops_status_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "status", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["ops", "status"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+
+
+def test_ops_doctor_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "doctor", lambda args: (calls.append(args), 1)[1])
+
+    exit_code = cli(["ops", "doctor"])
+
+    assert exit_code == 1
+    assert len(calls) == 1
+
+
+def test_ops_restart_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "restart", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["ops", "restart", "api"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+
+
+def test_ops_env_sync_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "env_sync", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["ops", "env-sync"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+
+
+def test_ops_logs_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "logs", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["ops", "logs", "ollama"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+
+
+# --- deploy namespace resolution from config (no --namespace override) ---
+
+
+def test_deploy_status_uses_config_namespace(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without --namespace, the namespace is resolved via get_deploy_namespace(config)."""
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "get_deploy_namespace", lambda cfg: "from-config-ns")
+    monkeypatch.setattr(
+        cli_mod.deploy_mod,
+        "status",
+        lambda namespace: {
+            "namespace": namespace,
+            "active": "blue",
+            "colors": {"blue": {"healthy": True, "message": "ok"}},
+            "history": [],
+        },
+    )
+
+    exit_code = cli(["deploy", "status"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "namespace=from-config-ns" in out
+
+
+# --- canary command dispatch ---
+
+
+def test_canary_status(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod.canary_mod,
+        "status",
+        lambda namespace: {
+            "namespace": namespace,
+            "active": True,
+            "weight_percent": 20,
+            "stable": {"healthy": True, "message": "stable ok"},
+            "canary": {"healthy": False, "message": "canary not ready"},
+            "metrics": {
+                "total_requests": 100,
+                "error_rate_percent": 1.5,
+                "p95_latency_ms": 42.0,
+            },
+            "history": ["start at 10%"],
+        },
+    )
+
+    exit_code = cli(["canary", "status", "--namespace", "test-ns"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "in progress at 20%" in out
+    assert "namespace=test-ns" in out
+    assert "stable: healthy" in out
+    assert "canary: unhealthy" in out
+    assert "100 requests" in out
+    assert "start at 10%" in out
+
+
+def test_canary_start(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.ops import OpsResult
+
+    calls: list[dict] = []
+
+    def fake_start(*, namespace, weight_percent, total_replicas):
+        calls.append(
+            {
+                "namespace": namespace,
+                "weight_percent": weight_percent,
+                "total_replicas": total_replicas,
+            }
+        )
+        return OpsResult(True, "Started canary rollout at 15%")
+
+    monkeypatch.setattr(cli_mod.canary_mod, "start", fake_start)
+
+    exit_code = cli(["canary", "start", "--weight", "15", "--namespace", "test-ns"])
+
+    assert exit_code == 0
+    assert calls[0]["weight_percent"] == 15
+    assert "[OK] Started canary rollout at 15%" in capsys.readouterr().out
+
+
+def test_canary_evaluate_pass(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.ops import OpsResult
+
+    monkeypatch.setattr(
+        cli_mod.canary_mod,
+        "evaluate",
+        lambda namespace, **kwargs: OpsResult(True, "Canary healthy, promoting eligible"),
+    )
+
+    exit_code = cli(["canary", "evaluate", "--namespace", "test-ns"])
+
+    assert exit_code == 0
+    assert "[OK] Canary healthy" in capsys.readouterr().out
+
+
+def test_canary_evaluate_fail_returns_nonzero(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.ops import OpsResult
+
+    monkeypatch.setattr(
+        cli_mod.canary_mod,
+        "evaluate",
+        lambda namespace, **kwargs: OpsResult(False, "Error rate too high, rolled back"),
+    )
+
+    exit_code = cli(["canary", "evaluate", "--namespace", "test-ns"])
+
+    assert exit_code == 2
+    assert "[FAIL] Error rate too high" in capsys.readouterr().out
+
+
+def test_canary_promote(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.ops import OpsResult
+
+    calls: list[dict] = []
+
+    def fake_promote(*, namespace, step_percent, total_replicas):
+        calls.append({"step_percent": step_percent})
+        return OpsResult(True, "Promoted canary to 30%")
+
+    monkeypatch.setattr(cli_mod.canary_mod, "promote", fake_promote)
+
+    exit_code = cli(["canary", "promote", "--step", "10", "--namespace", "test-ns"])
+
+    assert exit_code == 0
+    assert calls[0]["step_percent"] == 10
+    assert "[OK] Promoted canary to 30%" in capsys.readouterr().out
+
+
+def test_canary_rollback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.ops import OpsResult
+
+    monkeypatch.setattr(
+        cli_mod.canary_mod,
+        "rollback",
+        lambda *, namespace, total_replicas: OpsResult(True, "Rolled back canary"),
+    )
+
+    exit_code = cli(["canary", "rollback", "--namespace", "test-ns"])
+
+    assert exit_code == 0
+    assert "[OK] Rolled back canary" in capsys.readouterr().out
+
+
+def test_canary_status_uses_config_namespace(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without --namespace, the namespace is resolved via get_canary_namespace(config)."""
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "get_canary_namespace", lambda cfg: "canary-config-ns")
+    monkeypatch.setattr(
+        cli_mod.canary_mod,
+        "status",
+        lambda namespace: {
+            "namespace": namespace,
+            "active": False,
+            "weight_percent": 0,
+            "stable": {"healthy": True, "message": "ok"},
+            "canary": {"healthy": True, "message": "ok"},
+            "metrics": {"total_requests": 0, "error_rate_percent": 0.0, "p95_latency_ms": 0.0},
+            "history": [],
+        },
+    )
+
+    exit_code = cli(["canary", "status"])
+
+    assert exit_code == 0
+    assert "namespace=canary-config-ns" in capsys.readouterr().out
+
+
+def test_canary_start_prints_details_when_present(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.ops import OpsResult
+
+    monkeypatch.setattr(
+        cli_mod.canary_mod,
+        "start",
+        lambda **kwargs: OpsResult(False, "Already in progress", "at 15%"),
+    )
+
+    exit_code = cli(["canary", "start", "--namespace", "test-ns"])
+
+    assert exit_code == 2
+    out = capsys.readouterr().out
+    assert "[FAIL] Already in progress" in out
+    assert "at 15%" in out
+
+
+def test_canary_evaluate_prints_details_when_present(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.ops import OpsResult
+
+    monkeypatch.setattr(
+        cli_mod.canary_mod,
+        "evaluate",
+        lambda namespace, **kwargs: OpsResult(False, "Rolled back", "error_rate=9.0%"),
+    )
+
+    exit_code = cli(["canary", "evaluate", "--namespace", "test-ns"])
+
+    assert exit_code == 2
+    out = capsys.readouterr().out
+    assert "[FAIL] Rolled back" in out
+    assert "error_rate=9.0%" in out
+
+
+def test_canary_promote_prints_details_when_present(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.ops import OpsResult
+
+    monkeypatch.setattr(
+        cli_mod.canary_mod,
+        "promote",
+        lambda **kwargs: OpsResult(True, "Promoted", "now at 40%"),
+    )
+
+    exit_code = cli(["canary", "promote", "--namespace", "test-ns"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "[OK] Promoted" in out
+    assert "now at 40%" in out
+
+
+def test_canary_rollback_prints_details_when_present(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.ops import OpsResult
+
+    monkeypatch.setattr(
+        cli_mod.canary_mod,
+        "rollback",
+        lambda *, namespace, total_replicas: OpsResult(True, "Rolled back", "stable at 100%"),
+    )
+
+    exit_code = cli(["canary", "rollback", "--namespace", "test-ns"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "[OK] Rolled back" in out
+    assert "stable at 100%" in out
+
+
+# --- self-heal command dispatch ---
+
+
+def test_self_heal_status_with_components(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod.self_heal_mod,
+        "status",
+        lambda: {
+            "enabled": True,
+            "components": [
+                {"service": "api", "healthy": True, "state": "running", "health": "healthy"},
+                {"service": "ollama", "healthy": False, "state": "running", "health": "unhealthy"},
+            ],
+            "events": [
+                {"service": "ollama", "action": "restart", "ok": True, "reason": "unhealthy"},
+            ],
+        },
+    )
+
+    exit_code = cli(["self-heal", "status"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "Self-heal watchdog: enabled" in out
+    assert "api: state=running health=healthy" in out
+    assert "ollama: state=running health=unhealthy" in out
+    assert "Recent heal events:" in out
+
+
+def test_self_heal_status_no_components(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod.self_heal_mod,
+        "status",
+        lambda: {"enabled": False, "components": [], "events": []},
+    )
+
+    exit_code = cli(["self-heal", "status"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "No Docker Compose containers found" in out
+
+
+def test_self_heal_enable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        cli_mod.self_heal_mod, "set_enabled", lambda enabled: (calls.append(enabled), True)[1]
+    )
+
+    exit_code = cli(["self-heal", "enable"])
+
+    assert exit_code == 0
+    assert calls == [True]
+    assert "Self-heal watchdog: enabled" in capsys.readouterr().out
+
+
+def test_self_heal_disable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        cli_mod.self_heal_mod, "set_enabled", lambda enabled: (calls.append(enabled), False)[1]
+    )
+
+    exit_code = cli(["self-heal", "disable"])
+
+    assert exit_code == 0
+    assert calls == [False]
+    assert "Self-heal watchdog: disabled" in capsys.readouterr().out
+
+
+def test_self_heal_heal_all(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod.self_heal_mod,
+        "heal_now",
+        lambda service=None: {
+            "healed": [{"service": "ollama", "ok": True, "message": "restarted"}],
+        },
+    )
+
+    exit_code = cli(["self-heal", "heal"])
+
+    assert exit_code == 0
+    assert "[OK] ollama: restarted" in capsys.readouterr().out
+
+
+def test_self_heal_heal_nothing_to_heal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod.self_heal_mod, "heal_now", lambda service=None: {"healed": []})
+
+    exit_code = cli(["self-heal", "heal"])
+
+    assert exit_code == 0
+    assert "Nothing to heal" in capsys.readouterr().out
+
+
+def test_self_heal_heal_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod.self_heal_mod,
+        "heal_now",
+        lambda service=None: {"error": "Unknown or not-running component: bogus"},
+    )
+
+    exit_code = cli(["self-heal", "heal", "--service", "bogus"])
+
+    assert exit_code == 2
+    assert "[FAIL] Unknown or not-running component: bogus" in capsys.readouterr().out
+
+
+# --- logging setup failure is non-fatal ---
+
+
+def test_cli_logging_setup_failure_does_not_crash(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+
+    def raise_error(cfg, console=True):
+        raise RuntimeError("logging misconfigured")
+
+    monkeypatch.setattr(cli_mod, "configure_logging", raise_error)
+
+    exit_code = cli(["info"])
+
+    assert exit_code == 0
+    assert "nyxGPT OK" in capsys.readouterr().out
+
+
+# --- unknown top-level command (unreachable through real argparse parsing since
+# every valid subcommand is enumerated in cli()'s if/elif chain; we bypass
+# argparse's own validation to exercise the defensive help+exit-2 fallback) ---
+
+
+def test_cli_unknown_command_prints_help_and_exits_2(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import argparse
+
+    def fake_parse_args(self, argv=None, namespace=None):
+        return argparse.Namespace(command="bogus-command", config=None)
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", fake_parse_args)
+
+    exit_code = cli([])
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "usage" in captured.out.lower()
