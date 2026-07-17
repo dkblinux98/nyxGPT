@@ -10,6 +10,7 @@ involved.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -17,7 +18,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from nyxgpt import metrics as prom_metrics
 from nyxgpt.ops import OpsResult as DeployResult
+
+logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "nyxgpt-api"
 DEPLOYMENT_PREFIX = "nyxgpt-api"
@@ -169,6 +173,7 @@ def status(namespace: str = DEFAULT_NAMESPACE) -> dict[str, Any]:
     for color in COLORS:
         health = deployment_health(color, namespace)
         colors[color] = {"healthy": health.ok, "message": health.message}
+        prom_metrics.DEPLOY_ACTIVE_COLOR.labels(color=color).set(1 if color == active else 0)
 
     state = _load_state()
     kubectl_present = _which("kubectl") is not None
@@ -199,25 +204,77 @@ def switch(
     `force=True` (used by rollback()).
     """
     if _which("kubectl") is None:
-        return DeployResult(
-            False, _kubectl_missing_message("kubectl not found; cannot switch deployment")
-        )
+        message = _kubectl_missing_message("kubectl not found; cannot switch deployment")
+        logger.warning("deploy: switch failed, %s", message, extra={"component": "deploy"})
+        return DeployResult(False, message)
 
     active = get_active_color(namespace)
     target = target or _other_color(active)
     if target not in COLORS:
+        logger.warning(
+            "deploy: switch failed, unknown color %s",
+            target,
+            extra={"component": "deploy", "target": target},
+        )
         return DeployResult(False, f"Unknown color: {target}")
     if target == active:
+        logger.info(
+            "deploy: switch no-op, %s is already active",
+            target,
+            extra={"component": "deploy", "active": active, "target": target},
+        )
         return DeployResult(False, f"{target} is already active")
 
     if not force:
         health = deployment_health(target, namespace)
         if not health.ok:
+            logger.warning(
+                "deploy: refusing switch from %s to %s, target unhealthy: %s",
+                active,
+                target,
+                health.message,
+                extra={
+                    "component": "deploy",
+                    "from_color": active,
+                    "to_color": target,
+                    "healthy": False,
+                    "decision": "refused",
+                },
+            )
             return DeployResult(False, f"Refusing to switch: {health.message}", health.details)
+
+    logger.info(
+        "deploy: switching traffic from %s to %s (force=%s)",
+        active,
+        target,
+        force,
+        extra={
+            "component": "deploy",
+            "from_color": active,
+            "to_color": target,
+            "force": force,
+            "decision": "attempting",
+        },
+    )
 
     patch = json.dumps({"spec": {"selector": {"app": DEPLOYMENT_PREFIX, "color": target}}})
     cp = _run(["kubectl", "patch", "service", SERVICE_NAME, "-n", namespace, "-p", patch])
     if cp.returncode != 0:
+        prom_metrics.DEPLOY_SWITCHES_TOTAL.labels(
+            from_color=active, to_color=target, result="failed"
+        ).inc()
+        logger.error(
+            "deploy: kubectl patch failed switching %s -> %s: %s",
+            active,
+            target,
+            (cp.stderr or "").strip(),
+            extra={
+                "component": "deploy",
+                "from_color": active,
+                "to_color": target,
+                "outcome": "failed",
+            },
+        )
         return DeployResult(False, "kubectl patch failed", (cp.stderr or "").strip())
 
     state = _load_state()
@@ -226,6 +283,21 @@ def switch(
     history.append({"from": active, "to": target, "ts": time.time()})
     state["history"] = history[-HISTORY_LIMIT:]
     _save_state(state)
+
+    prom_metrics.DEPLOY_SWITCHES_TOTAL.labels(from_color=active, to_color=target, result="ok").inc()
+    prom_metrics.DEPLOY_ACTIVE_COLOR.labels(color=target).set(1)
+    prom_metrics.DEPLOY_ACTIVE_COLOR.labels(color=active).set(0)
+    logger.info(
+        "deploy: switched traffic from %s to %s",
+        active,
+        target,
+        extra={
+            "component": "deploy",
+            "from_color": active,
+            "to_color": target,
+            "outcome": "ok",
+        },
+    )
 
     return DeployResult(True, f"Switched traffic from {active} to {target}")
 
@@ -236,16 +308,43 @@ def rollback(namespace: str = DEFAULT_NAMESPACE) -> DeployResult:
     Bypasses the health gate in switch() -- rollback is the emergency escape
     hatch and must not be blocked by a flaky readiness check.
     """
+    logger.info("deploy: rollback requested", extra={"component": "deploy", "action": "rollback"})
+
     state = _load_state()
     history = state.get("history", [])
     if not history:
+        logger.warning(
+            "deploy: rollback failed, no deployment history to roll back to",
+            extra={"component": "deploy", "action": "rollback"},
+        )
+        prom_metrics.DEPLOY_ROLLBACKS_TOTAL.labels(result="failed").inc()
         return DeployResult(False, "No deployment history to roll back to")
 
     previous = history[-1].get("from")
     if previous not in COLORS:
+        logger.warning(
+            "deploy: rollback failed, no valid previous color recorded",
+            extra={"component": "deploy", "action": "rollback"},
+        )
+        prom_metrics.DEPLOY_ROLLBACKS_TOTAL.labels(result="failed").inc()
         return DeployResult(False, "No valid previous color recorded")
 
-    return switch(target=previous, namespace=namespace, force=True)
+    result = switch(target=previous, namespace=namespace, force=True)
+    prom_metrics.DEPLOY_ROLLBACKS_TOTAL.labels(result="ok" if result.ok else "failed").inc()
+    log = logger.info if result.ok else logger.error
+    log(
+        "deploy: rollback to %s %s: %s",
+        previous,
+        "succeeded" if result.ok else "failed",
+        result.message,
+        extra={
+            "component": "deploy",
+            "action": "rollback",
+            "target": previous,
+            "outcome": "ok" if result.ok else "failed",
+        },
+    )
+    return result
 
 
 __all__ = [

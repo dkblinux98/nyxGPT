@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from nyxgpt import canary
+from nyxgpt import metrics as prom_metrics
 
 
 class CP:
@@ -481,3 +482,189 @@ def test_metrics_snapshot_returns_zeros_when_monitor_unset(monkeypatch):
         "error_rate_percent": 0.0,
         "p95_latency_ms": 0.0,
     }
+
+
+def _metric_value(name, **labels):
+    return prom_metrics.REGISTRY.get_sample_value(name, labels or None)
+
+
+@pytest.mark.unit
+def test_start_logs_and_records_metrics(monkeypatch, caplog):
+    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+
+    with caplog.at_level("INFO"):
+        result = canary.start(namespace="nyxgpt", weight_percent=10, total_replicas=4)
+
+    assert result.ok
+    assert "canary: starting rollout at 10%" in caplog.text
+    assert "canary: started rollout at 10%" in caplog.text
+    assert _metric_value("nyxgpt_canary_events_total", action="start", result="ok") >= 1
+    assert _metric_value("nyxgpt_canary_rollout_active") == 1
+    assert _metric_value("nyxgpt_canary_weight_percent") == 10
+
+
+@pytest.mark.unit
+def test_start_logs_and_records_metric_on_scale_failure(monkeypatch, caplog):
+    def fake_run(cmd):
+        if "nyxgpt-api-canary" in cmd:
+            return CP(returncode=1, stderr="boom")
+        return CP(returncode=0)
+
+    monkeypatch.setattr(canary, "_run", fake_run)
+
+    with caplog.at_level("ERROR"):
+        result = canary.start(namespace="nyxgpt", weight_percent=10, total_replicas=4)
+
+    assert not result.ok
+    assert "canary: start failed scaling canary" in caplog.text
+    assert _metric_value("nyxgpt_canary_events_total", action="start", result="failed") >= 1
+
+
+@pytest.mark.unit
+def test_evaluate_pass_logs_and_records_metric(monkeypatch, caplog):
+    canary._save_state({"active": True, "weight_percent": 10, "history": []})
+    monkeypatch.setattr(
+        canary,
+        "metrics_snapshot",
+        lambda: {"total_requests": 50, "error_rate_percent": 1.0, "p95_latency_ms": 500.0},
+    )
+
+    with caplog.at_level("INFO"):
+        result = canary.evaluate("nyxgpt", min_requests=20)
+
+    assert result.ok
+    assert "canary: evaluate passed" in caplog.text
+    assert _metric_value("nyxgpt_canary_evaluations_total", result="pass") >= 1
+
+
+@pytest.mark.unit
+def test_evaluate_insufficient_data_logs_and_records_metric(monkeypatch, caplog):
+    canary._save_state({"active": True, "weight_percent": 10, "history": []})
+    monkeypatch.setattr(
+        canary,
+        "metrics_snapshot",
+        lambda: {"total_requests": 5, "error_rate_percent": 0.0, "p95_latency_ms": 100.0},
+    )
+
+    with caplog.at_level("INFO"):
+        result = canary.evaluate("nyxgpt", min_requests=20)
+
+    assert result.ok
+    assert "canary: evaluate holding, insufficient data" in caplog.text
+    assert _metric_value("nyxgpt_canary_evaluations_total", result="insufficient_data") >= 1
+
+
+@pytest.mark.unit
+def test_evaluate_regression_logs_and_triggers_auto_rollback(monkeypatch, caplog):
+    canary._save_state({"active": True, "weight_percent": 25, "total_replicas": 4, "history": []})
+    monkeypatch.setattr(
+        canary,
+        "metrics_snapshot",
+        lambda: {"total_requests": 50, "error_rate_percent": 12.0, "p95_latency_ms": 200.0},
+    )
+    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+
+    with caplog.at_level("INFO"):
+        result = canary.evaluate(
+            "nyxgpt",
+            error_rate_threshold_percent=5.0,
+            latency_p95_threshold_ms=2000.0,
+            min_requests=20,
+        )
+
+    assert not result.ok
+    assert "canary: evaluate detected regression" in caplog.text
+    assert "trigger=auto" in caplog.text
+    assert _metric_value("nyxgpt_canary_evaluations_total", result="regression") >= 1
+    assert _metric_value("nyxgpt_canary_events_total", action="rollback", result="ok") >= 1
+
+
+@pytest.mark.unit
+def test_promote_logs_and_records_metrics(monkeypatch, caplog):
+    canary._save_state({"active": True, "weight_percent": 10, "total_replicas": 4, "history": []})
+    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+
+    with caplog.at_level("INFO"):
+        result = canary.promote(namespace="nyxgpt", step_percent=25)
+
+    assert result.ok
+    assert "canary: promoting rollout from 10% to 35%" in caplog.text
+    assert "canary: promoted rollout to 35%" in caplog.text
+    assert _metric_value("nyxgpt_canary_events_total", action="promote", result="ok") >= 1
+    assert _metric_value("nyxgpt_canary_weight_percent") == 35
+
+
+@pytest.mark.unit
+def test_promote_fully_promoted_logs_and_clears_active_gauge(monkeypatch, caplog):
+    canary._save_state({"active": True, "weight_percent": 90, "total_replicas": 4, "history": []})
+    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+
+    with caplog.at_level("INFO"):
+        result = canary.promote(namespace="nyxgpt", step_percent=25)
+
+    assert result.ok
+    assert "canary: rollout fully promoted to 100%" in caplog.text
+    assert _metric_value("nyxgpt_canary_rollout_active") == 0
+
+
+@pytest.mark.unit
+def test_rollback_logs_and_records_metric_manual_trigger(monkeypatch, caplog):
+    canary._save_state({"active": True, "weight_percent": 50, "total_replicas": 4, "history": []})
+    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+
+    with caplog.at_level("INFO"):
+        result = canary.rollback(namespace="nyxgpt")
+
+    assert result.ok
+    assert "canary: rolling back from 50% (trigger=manual)" in caplog.text
+    assert "canary: rolled back from 50% to 0% (trigger=manual)" in caplog.text
+    assert _metric_value("nyxgpt_canary_events_total", action="rollback", result="ok") >= 1
+    assert _metric_value("nyxgpt_canary_rollout_active") == 0
+    assert _metric_value("nyxgpt_canary_weight_percent") == 0
+
+
+@pytest.mark.unit
+def test_rollback_logs_and_records_metric_on_canary_scale_failure(monkeypatch, caplog):
+    canary._save_state({"active": True, "weight_percent": 50, "total_replicas": 4, "history": []})
+    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=1, stderr="boom"))
+
+    with caplog.at_level("ERROR"):
+        result = canary.rollback(namespace="nyxgpt")
+
+    assert not result.ok
+    assert "canary: rollback failed scaling canary to 0" in caplog.text
+    assert _metric_value("nyxgpt_canary_events_total", action="rollback", result="failed") >= 1
+
+
+@pytest.mark.unit
+def test_rollback_logs_partial_failure_metric(monkeypatch, caplog):
+    canary._save_state({"active": True, "weight_percent": 50, "total_replicas": 4, "history": []})
+
+    def fake_run(cmd):
+        if "nyxgpt-api-canary" in cmd:
+            return CP(returncode=0)
+        return CP(returncode=1, stderr="boom")
+
+    monkeypatch.setattr(canary, "_run", fake_run)
+
+    with caplog.at_level("WARNING"):
+        result = canary.rollback(namespace="nyxgpt")
+
+    assert result.ok
+    assert "canary: rollback partially failed" in caplog.text
+    assert _metric_value("nyxgpt_canary_events_total", action="rollback", result="partial") >= 1
+
+
+@pytest.mark.unit
+def test_status_updates_rollout_gauges(monkeypatch):
+    canary._save_state({"active": True, "weight_percent": 42, "history": []})
+    monkeypatch.setattr(
+        canary,
+        "deployment_health",
+        lambda name, ns: canary.CanaryResult(True, f"{name} healthy"),
+    )
+
+    canary.status("nyxgpt")
+
+    assert _metric_value("nyxgpt_canary_rollout_active") == 1
+    assert _metric_value("nyxgpt_canary_weight_percent") == 42

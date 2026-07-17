@@ -172,6 +172,13 @@ Prometheus text exposition format metrics for scraping. Unauthenticated
 | `nyxgpt_selfheal_restarts_total` | Counter | `service`, `result` | Self-heal restart attempts, by service and outcome (`ok`/`failed`) |
 | `nyxgpt_selfheal_restart_count` | Gauge | `service` | Current consecutive-restart count per service (resets to 0 once healthy) |
 | `nyxgpt_selfheal_last_recovery_timestamp` | Gauge | `service` | Unix timestamp of the last successful self-heal restart, by service |
+| `nyxgpt_deploy_active_color` | Gauge | `color` | Whether a blue/green color is currently receiving traffic (1) or not (0) |
+| `nyxgpt_deploy_switches_total` | Counter | `from_color`, `to_color`, `result` | Blue/green switch attempts, by direction and outcome (`ok`/`failed`) |
+| `nyxgpt_deploy_rollbacks_total` | Counter | `result` | Blue/green rollback attempts, by outcome (`ok`/`failed`) |
+| `nyxgpt_canary_rollout_active` | Gauge | — | Whether a canary rollout is currently in progress (1) or idle (0) |
+| `nyxgpt_canary_weight_percent` | Gauge | — | Current canary traffic weight percentage (0-100) |
+| `nyxgpt_canary_evaluations_total` | Counter | `result` | Canary metric evaluations, by result (`pass`/`insufficient_data`/`regression`) |
+| `nyxgpt_canary_events_total` | Counter | `action`, `result` | Canary lifecycle events (`start`/`promote`/`rollback`), by outcome |
 
 `path` labels use the route's path template (e.g. `/api/v1/sessions/{name}`),
 not the raw request path, to keep cardinality bounded.
@@ -738,6 +745,12 @@ Local blue/green deployment for `nyxgpt-api` on a local Kubernetes cluster
 for the full workflow and the `nyxgpt deploy` CLI. These endpoints back the
 SRE/admin dashboard at `/admin/deploy`.
 
+Every switch/rollback decision (attempt, refusal, outcome) is logged with
+structured fields and exported as the `nyxgpt_deploy_*` metrics above -- see
+[kubernetes.md#deploy-logging--metrics](kubernetes.md#deploy-logging--metrics)
+for the pre-provisioned Grafana **Blue-Green Deployment** dashboard and the
+Loki saved query, both linked directly from `/admin/deploy`.
+
 ### `GET /api/v1/deploy/status`
 
 Return which color is active, each color's health, and recent switch history.
@@ -812,6 +825,12 @@ SRE/admin dashboard at `/admin/canary`. Traffic is split by the
 `nyxgpt-api-stable`/`nyxgpt-api-canary` Deployments' replica-count ratio
 behind a shared Service (kube-proxy is the traffic layer — no in-cluster
 proxy or cloud LB involved).
+
+Every start/evaluate/promote/rollback decision is logged with structured
+fields and exported as the `nyxgpt_canary_*` metrics above -- see
+[kubernetes.md#canary-logging--metrics](kubernetes.md#canary-logging--metrics)
+for the pre-provisioned Grafana **Canary Rollout** dashboard and the Loki
+saved query, both linked directly from `/admin/canary`.
 
 ### `GET /api/v1/canary/status`
 

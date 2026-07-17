@@ -35,6 +35,13 @@ KNOWN_METRIC_NAMES = {
     "nyxgpt_selfheal_restarts_total",
     "nyxgpt_selfheal_restart_count",
     "nyxgpt_selfheal_last_recovery_timestamp",
+    "nyxgpt_deploy_active_color",
+    "nyxgpt_deploy_switches_total",
+    "nyxgpt_deploy_rollbacks_total",
+    "nyxgpt_canary_rollout_active",
+    "nyxgpt_canary_weight_percent",
+    "nyxgpt_canary_evaluations_total",
+    "nyxgpt_canary_events_total",
     "up",
 }
 
@@ -55,6 +62,13 @@ def test_known_metric_names_match_registry() -> None:
         "nyxgpt_selfheal_restarts_total",
         "nyxgpt_selfheal_restart_count",
         "nyxgpt_selfheal_last_recovery_timestamp",
+        "nyxgpt_deploy_active_color",
+        "nyxgpt_deploy_switches_total",
+        "nyxgpt_deploy_rollbacks_total",
+        "nyxgpt_canary_rollout_active",
+        "nyxgpt_canary_weight_percent",
+        "nyxgpt_canary_evaluations_total",
+        "nyxgpt_canary_events_total",
     }
 
 
@@ -127,6 +141,8 @@ def _referenced_metric_names(expr: str) -> set[str]:
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "rag-performance.json",
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "api-metrics.json",
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "self-healing.json",
+        REPO_ROOT / "docker" / "grafana" / "dashboards" / "deployment.json",
+        REPO_ROOT / "docker" / "grafana" / "dashboards" / "canary.json",
     ],
 )
 def test_promql_expressions_only_reference_known_metrics(config_path: Path) -> None:
@@ -150,6 +166,8 @@ def test_grafana_dashboards_are_provisioned() -> None:
     dashboard_files = sorted(p.name for p in dashboards_dir.glob("*.json"))
     assert dashboard_files == [
         "api-metrics.json",
+        "canary.json",
+        "deployment.json",
         "logs-explorer.json",
         "rag-performance.json",
         "self-healing.json",

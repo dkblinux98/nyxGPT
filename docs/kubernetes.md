@@ -159,6 +159,44 @@ The same status/switch/rollback actions are available from the web UI at
 `GET/POST /api/v1/deploy/status`, `/api/v1/deploy/switch`, and
 `/api/v1/deploy/rollback` on the FastAPI backend.
 
+### Deploy logging & metrics
+
+Every switch/rollback decision is logged from `src/nyxgpt/deploy.py` with
+structured fields (via the logging module's `extra={}`, rendered as JSON
+when `[logging] format = json` -- see
+[configuration.md](configuration.md#logging-section)): the switch attempt
+(`deploy: switching traffic from <color> to <color>`), a refusal when the
+target is unhealthy (`deploy: refusing switch from ... target unhealthy:
+...`), the outcome (`deploy: switched traffic from ... to ...` on success,
+`deploy: kubectl patch failed switching ...` on failure), and rollback
+requests/outcomes (`deploy: rollback requested`, `deploy: rollback to
+<color> succeeded/failed: ...`).
+
+These are exported as Prometheus metrics (scraped from
+[`/api/v1/metrics`](api.md#get-metrics)):
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `nyxgpt_deploy_active_color` | Gauge | `color` | Whether a color is currently receiving traffic (1) or not (0) |
+| `nyxgpt_deploy_switches_total` | Counter | `from_color`, `to_color`, `result` | Switch attempts, by direction and outcome (`ok`/`failed`) |
+| `nyxgpt_deploy_rollbacks_total` | Counter | `result` | Rollback attempts, by outcome (`ok`/`failed`) |
+
+The pre-provisioned Grafana **Blue-Green Deployment** dashboard
+(`docker/grafana/dashboards/deployment.json`, auto-provisioned like the
+other dashboards -- see [docker-compose.md's Monitoring
+Dashboards](docker-compose.md#monitoring-dashboards)) shows the active
+color, switch/rollback counts, and a Loki-backed switch/rollback timeline.
+The Loki saved query behind that timeline (requires the `logging` Compose
+profile -- see [Log Aggregation](docker-compose.md#log-aggregation)):
+
+```logql
+{job="nyxgpt"} |= `deploy:` |~ `switched|switching|rollback|refusing`
+```
+
+`/admin/deploy` links directly to both the Grafana dashboard and Grafana
+Explore with this query pre-filled (when the `monitoring`/`logging`
+profiles are active).
+
 ## Canary Deployment
 
 `k8s/deployment-stable.yaml` and `k8s/deployment-canary.yaml` are two
@@ -239,6 +277,46 @@ latency) rather than a dedicated Prometheus scrape, since per-pod Prometheus
 metrics haven't landed yet. This means `evaluate`'s error rate/latency
 reflect whichever `nyxgpt-api` process the dashboard/CLI talks to, not a
 canary-Pod-specific view.
+
+### Canary logging & metrics
+
+Every start/evaluate/promote/rollback decision is logged from
+`src/nyxgpt/canary.py` with structured fields (via the logging module's
+`extra={}`, rendered as JSON when `[logging] format = json` -- see
+[configuration.md](configuration.md#logging-section)): rollout start
+(`canary: starting/started rollout at N%`), evaluation results (`canary:
+evaluate passed`, `canary: evaluate holding, insufficient data`, `canary:
+evaluate detected regression ...; rolling back`), promotion (`canary:
+promoting/promoted rollout from N% to M%`), and rollback (`canary: rolling
+back/rolled back from N% (trigger=manual|auto)` -- `trigger` distinguishes
+an operator-initiated rollback from `evaluate`'s automatic one).
+
+These are exported as Prometheus metrics (scraped from
+[`/api/v1/metrics`](api.md#get-metrics)):
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `nyxgpt_canary_rollout_active` | Gauge | — | Whether a canary rollout is currently in progress (1) or idle (0) |
+| `nyxgpt_canary_weight_percent` | Gauge | — | Current canary traffic weight percentage (0-100) |
+| `nyxgpt_canary_evaluations_total` | Counter | `result` | Metric evaluations, by result (`pass`/`insufficient_data`/`regression`) |
+| `nyxgpt_canary_events_total` | Counter | `action`, `result` | Lifecycle events (`start`/`promote`/`rollback`), by outcome |
+
+The pre-provisioned Grafana **Canary Rollout** dashboard
+(`docker/grafana/dashboards/canary.json`, auto-provisioned like the other
+dashboards -- see [docker-compose.md's Monitoring
+Dashboards](docker-compose.md#monitoring-dashboards)) shows rollout
+active/idle, the live traffic split, evaluation results, lifecycle events,
+and a Loki-backed start/promote/rollback timeline. The Loki saved query
+behind that timeline (requires the `logging` Compose profile -- see [Log
+Aggregation](docker-compose.md#log-aggregation)):
+
+```logql
+{job="nyxgpt"} |= `canary:` |~ `starting|started|promoting|promoted|rolling back|rolled back|regression`
+```
+
+`/admin/canary` links directly to both the Grafana dashboard and Grafana
+Explore with this query pre-filled (when the `monitoring`/`logging`
+profiles are active).
 
 ## Scaling behavior
 

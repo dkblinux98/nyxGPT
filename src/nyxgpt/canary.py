@@ -18,6 +18,7 @@ Prometheus metrics (#2693) have not landed yet.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -25,8 +26,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+from nyxgpt import metrics as prom_metrics
 from nyxgpt.ops import OpsResult as CanaryResult
 from nyxgpt.resource_monitor import get_resource_monitor
+
+logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "nyxgpt-api-canary"
 STABLE_DEPLOYMENT = "nyxgpt-api-stable"
@@ -186,10 +190,14 @@ def status(namespace: str = DEFAULT_NAMESPACE) -> dict[str, Any]:
     stable_health = deployment_health(STABLE_DEPLOYMENT, namespace)
     canary_health = deployment_health(CANARY_DEPLOYMENT, namespace)
     kubectl_present = _which("kubectl") is not None
+    active = bool(state.get("active", False))
+    weight_percent = state.get("weight_percent", 0)
+    prom_metrics.CANARY_ROLLOUT_ACTIVE.set(1 if active else 0)
+    prom_metrics.CANARY_WEIGHT_PERCENT.set(weight_percent)
     return {
         "namespace": namespace,
-        "active": bool(state.get("active", False)),
-        "weight_percent": state.get("weight_percent", 0),
+        "active": active,
+        "weight_percent": weight_percent,
         "stable": {"healthy": stable_health.ok, "message": stable_health.message},
         "canary": {"healthy": canary_health.ok, "message": canary_health.message},
         "metrics": metrics_snapshot(),
@@ -211,22 +219,49 @@ def start(
     """Start a canary rollout: scale up nyxgpt-api-canary to `weight_percent` of traffic."""
     state = _load_state()
     if state.get("active"):
+        logger.info(
+            "canary: start rejected, rollout already in progress at %s%%",
+            state.get("weight_percent", 0),
+            extra={"component": "canary", "action": "start", "outcome": "rejected"},
+        )
         return CanaryResult(
             False, f"Canary rollout already in progress at {state.get('weight_percent', 0)}%"
         )
     if _which("kubectl") is None:
-        return CanaryResult(
-            False, _kubectl_missing_message("kubectl not found; cannot start canary rollout")
+        message = _kubectl_missing_message("kubectl not found; cannot start canary rollout")
+        logger.warning(
+            "canary: start failed, %s", message, extra={"component": "canary", "action": "start"}
         )
+        return CanaryResult(False, message)
 
     weight_percent = max(1, min(99, weight_percent))
     canary_replicas, stable_replicas = _split_replicas(total_replicas, weight_percent)
 
+    logger.info(
+        "canary: starting rollout at %d%% (canary=%d, stable=%d)",
+        weight_percent,
+        canary_replicas,
+        stable_replicas,
+        extra={"component": "canary", "action": "start", "weight_percent": weight_percent},
+    )
+
     canary_result = _scale(CANARY_DEPLOYMENT, canary_replicas, namespace)
     if not canary_result.ok:
+        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="start", result="failed").inc()
+        logger.error(
+            "canary: start failed scaling canary: %s",
+            canary_result.message,
+            extra={"component": "canary", "action": "start", "outcome": "failed"},
+        )
         return canary_result
     stable_result = _scale(STABLE_DEPLOYMENT, stable_replicas, namespace)
     if not stable_result.ok:
+        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="start", result="failed").inc()
+        logger.error(
+            "canary: start failed scaling stable: %s",
+            stable_result.message,
+            extra={"component": "canary", "action": "start", "outcome": "failed"},
+        )
         return stable_result
 
     state["active"] = True
@@ -236,6 +271,22 @@ def start(
     history.append({"action": "start", "weight_percent": weight_percent, "ts": time.time()})
     state["history"] = history[-HISTORY_LIMIT:]
     _save_state(state)
+
+    prom_metrics.CANARY_EVENTS_TOTAL.labels(action="start", result="ok").inc()
+    prom_metrics.CANARY_ROLLOUT_ACTIVE.set(1)
+    prom_metrics.CANARY_WEIGHT_PERCENT.set(weight_percent)
+    logger.info(
+        "canary: started rollout at %d%% (%d/%d replicas)",
+        weight_percent,
+        canary_replicas,
+        total_replicas,
+        extra={
+            "component": "canary",
+            "action": "start",
+            "outcome": "ok",
+            "weight_percent": weight_percent,
+        },
+    )
 
     return CanaryResult(
         True,
@@ -263,6 +314,13 @@ def evaluate(
 
     metrics = metrics_snapshot()
     if metrics["total_requests"] < min_requests:
+        prom_metrics.CANARY_EVALUATIONS_TOTAL.labels(result="insufficient_data").inc()
+        logger.info(
+            "canary: evaluate holding, insufficient data (%d/%d requests)",
+            metrics["total_requests"],
+            min_requests,
+            extra={"component": "canary", "action": "evaluate", "outcome": "insufficient_data"},
+        )
         return CanaryResult(
             True,
             f"Insufficient data to evaluate ({metrics['total_requests']}/{min_requests} "
@@ -280,13 +338,26 @@ def evaluate(
         )
 
     if breaches:
-        rollback_result = rollback(namespace)
+        prom_metrics.CANARY_EVALUATIONS_TOTAL.labels(result="regression").inc()
+        logger.warning(
+            "canary: evaluate detected regression (%s); rolling back",
+            "; ".join(breaches),
+            extra={"component": "canary", "action": "evaluate", "outcome": "regression"},
+        )
+        rollback_result = rollback(namespace, trigger="auto")
         return CanaryResult(
             False,
             f"Metrics regression detected ({'; '.join(breaches)}); automatically rolled back",
             rollback_result.message,
         )
 
+    prom_metrics.CANARY_EVALUATIONS_TOTAL.labels(result="pass").inc()
+    logger.info(
+        "canary: evaluate passed (error_rate=%.2f%%, p95=%.2fms); safe to promote",
+        metrics["error_rate_percent"],
+        metrics["p95_latency_ms"],
+        extra={"component": "canary", "action": "evaluate", "outcome": "pass"},
+    )
     return CanaryResult(
         True,
         f"Metrics within thresholds (error_rate={metrics['error_rate_percent']:.2f}%, "
@@ -304,19 +375,44 @@ def promote(
     if not state.get("active"):
         return CanaryResult(False, "No canary rollout in progress")
     if _which("kubectl") is None:
-        return CanaryResult(
-            False, _kubectl_missing_message("kubectl not found; cannot promote canary rollout")
+        message = _kubectl_missing_message("kubectl not found; cannot promote canary rollout")
+        logger.warning(
+            "canary: promote failed, %s",
+            message,
+            extra={"component": "canary", "action": "promote"},
         )
+        return CanaryResult(False, message)
 
     total = state.get("total_replicas", total_replicas)
     new_weight = min(100, state.get("weight_percent", 0) + max(1, step_percent))
     canary_replicas, stable_replicas = _split_replicas(total, new_weight)
 
+    logger.info(
+        "canary: promoting rollout from %d%% to %d%% (canary=%d, stable=%d)",
+        state.get("weight_percent", 0),
+        new_weight,
+        canary_replicas,
+        stable_replicas,
+        extra={"component": "canary", "action": "promote", "weight_percent": new_weight},
+    )
+
     canary_result = _scale(CANARY_DEPLOYMENT, canary_replicas, namespace)
     if not canary_result.ok:
+        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="promote", result="failed").inc()
+        logger.error(
+            "canary: promote failed scaling canary: %s",
+            canary_result.message,
+            extra={"component": "canary", "action": "promote", "outcome": "failed"},
+        )
         return canary_result
     stable_result = _scale(STABLE_DEPLOYMENT, stable_replicas, namespace)
     if not stable_result.ok:
+        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="promote", result="failed").inc()
+        logger.error(
+            "canary: promote failed scaling stable: %s",
+            stable_result.message,
+            extra={"component": "canary", "action": "promote", "outcome": "failed"},
+        )
         return stable_result
 
     fully_promoted = new_weight >= 100
@@ -327,19 +423,45 @@ def promote(
     state["history"] = history[-HISTORY_LIMIT:]
     _save_state(state)
 
+    prom_metrics.CANARY_EVENTS_TOTAL.labels(action="promote", result="ok").inc()
+    prom_metrics.CANARY_WEIGHT_PERCENT.set(new_weight)
+    prom_metrics.CANARY_ROLLOUT_ACTIVE.set(0 if fully_promoted else 1)
+
     if fully_promoted:
+        logger.info(
+            "canary: rollout fully promoted to 100%",
+            extra={
+                "component": "canary",
+                "action": "promote",
+                "outcome": "ok",
+                "weight_percent": 100,
+            },
+        )
         return CanaryResult(
             True,
             "Canary fully promoted to 100% traffic; deploy the new image to "
             f"{STABLE_DEPLOYMENT} and rerun `nyxgpt canary start` for the next rollout",
         )
+    logger.info(
+        "canary: promoted rollout to %d%%",
+        new_weight,
+        extra={
+            "component": "canary",
+            "action": "promote",
+            "outcome": "ok",
+            "weight_percent": new_weight,
+        },
+    )
     return CanaryResult(
         True, f"Promoted canary to {new_weight}% ({canary_replicas}/{total} replicas)"
     )
 
 
 def rollback(
-    namespace: str = DEFAULT_NAMESPACE, total_replicas: int = DEFAULT_TOTAL_REPLICAS
+    namespace: str = DEFAULT_NAMESPACE,
+    total_replicas: int = DEFAULT_TOTAL_REPLICAS,
+    *,
+    trigger: str = "manual",
 ) -> CanaryResult:
     """Cut all traffic back to nyxgpt-api-stable.
 
@@ -347,21 +469,47 @@ def rollback(
     endpoints, which stops it receiving traffic) before restoring stable --
     this is the emergency escape hatch and must not be blocked by a flaky
     stable-scale-up.
+
+    `trigger` is "manual" for an operator-initiated rollback (dashboard/CLI/
+    API) or "auto" when called from `evaluate()`'s automatic regression
+    rollback -- recorded on the `nyxgpt_canary_events_total` metric and in
+    the log line so a dashboard/log query can distinguish the two.
     """
     state = _load_state()
     if not state.get("active"):
         return CanaryResult(False, "No canary rollout in progress")
     if _which("kubectl") is None:
-        return CanaryResult(
-            False,
-            _kubectl_missing_message("kubectl not found; cannot roll back canary rollout"),
+        message = _kubectl_missing_message("kubectl not found; cannot roll back canary rollout")
+        logger.warning(
+            "canary: rollback failed, %s",
+            message,
+            extra={"component": "canary", "action": "rollback", "trigger": trigger},
         )
+        return CanaryResult(False, message)
 
     total = state.get("total_replicas", total_replicas)
     previous_weight = state.get("weight_percent", 0)
 
+    logger.info(
+        "canary: rolling back from %d%% (trigger=%s)",
+        previous_weight,
+        trigger,
+        extra={
+            "component": "canary",
+            "action": "rollback",
+            "trigger": trigger,
+            "weight_percent": previous_weight,
+        },
+    )
+
     canary_result = _scale(CANARY_DEPLOYMENT, 0, namespace)
     if not canary_result.ok:
+        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="rollback", result="failed").inc()
+        logger.error(
+            "canary: rollback failed scaling canary to 0: %s",
+            canary_result.message,
+            extra={"component": "canary", "action": "rollback", "outcome": "failed"},
+        )
         return canary_result
     stable_result = _scale(STABLE_DEPLOYMENT, total, namespace)
 
@@ -374,12 +522,29 @@ def rollback(
     state["history"] = history[-HISTORY_LIMIT:]
     _save_state(state)
 
+    prom_metrics.CANARY_ROLLOUT_ACTIVE.set(0)
+    prom_metrics.CANARY_WEIGHT_PERCENT.set(0)
+
     if not stable_result.ok:
+        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="rollback", result="partial").inc()
+        logger.warning(
+            "canary: rollback partially failed, canary stopped but stable restore failed: %s",
+            stable_result.message,
+            extra={"component": "canary", "action": "rollback", "outcome": "partial"},
+        )
         return CanaryResult(
             True,
             f"Canary traffic stopped (scaled to 0%), but restoring {STABLE_DEPLOYMENT} to "
             f"{total} replicas failed: {stable_result.message}",
         )
+
+    prom_metrics.CANARY_EVENTS_TOTAL.labels(action="rollback", result="ok").inc()
+    logger.info(
+        "canary: rolled back from %d%% to 0%% (trigger=%s)",
+        previous_weight,
+        trigger,
+        extra={"component": "canary", "action": "rollback", "outcome": "ok", "trigger": trigger},
+    )
     return CanaryResult(True, f"Rolled back canary rollout from {previous_weight}% to 0%")
 
 

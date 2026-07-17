@@ -81,6 +81,53 @@ SELFHEAL_LAST_RECOVERY_TIMESTAMP = Gauge(
     registry=REGISTRY,
 )
 
+DEPLOY_ACTIVE_COLOR = Gauge(
+    "nyxgpt_deploy_active_color",
+    "Whether a blue/green color is currently receiving traffic (1) or not (0)",
+    ["color"],
+    registry=REGISTRY,
+)
+
+DEPLOY_SWITCHES_TOTAL = Counter(
+    "nyxgpt_deploy_switches_total",
+    "Total blue/green traffic switches attempted, by direction and outcome",
+    ["from_color", "to_color", "result"],
+    registry=REGISTRY,
+)
+
+DEPLOY_ROLLBACKS_TOTAL = Counter(
+    "nyxgpt_deploy_rollbacks_total",
+    "Total blue/green rollback attempts, by outcome",
+    ["result"],
+    registry=REGISTRY,
+)
+
+CANARY_ROLLOUT_ACTIVE = Gauge(
+    "nyxgpt_canary_rollout_active",
+    "Whether a canary rollout is currently in progress (1) or idle (0)",
+    registry=REGISTRY,
+)
+
+CANARY_WEIGHT_PERCENT = Gauge(
+    "nyxgpt_canary_weight_percent",
+    "Current canary traffic weight percentage (0-100)",
+    registry=REGISTRY,
+)
+
+CANARY_EVALUATIONS_TOTAL = Counter(
+    "nyxgpt_canary_evaluations_total",
+    "Total canary metric evaluations, by result (pass/insufficient_data/regression)",
+    ["result"],
+    registry=REGISTRY,
+)
+
+CANARY_EVENTS_TOTAL = Counter(
+    "nyxgpt_canary_events_total",
+    "Total canary rollout lifecycle events, by action and outcome",
+    ["action", "result"],
+    registry=REGISTRY,
+)
+
 
 def render_metrics() -> tuple[bytes, str]:
     """Render all registered metrics in Prometheus text exposition format.
