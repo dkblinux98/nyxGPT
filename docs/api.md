@@ -12,7 +12,7 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 62 available endpoints:
+Quick reference of all 85 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -24,10 +24,19 @@ Quick reference of all 62 available endpoints:
 | `/api/v1/tracing` | GET | Distributed tracing status (enabled/active, service name, OTLP endpoint, Jaeger UI URL) |
 | `/api/v1/error-tracking` | GET | Error tracking status (enabled/active, DSN, environment, GlitchTip UI URL) |
 | `/api/v1/monitoring` | GET | Monitoring stack status (enabled/active, Grafana UI URL) |
+| `/api/v1/log-aggregation` | GET | Log aggregation stack status (enabled/active, Grafana Loki UI URL) |
 | `/api/v1/error-tracking/report` | POST | Forward a web UI client-side error to the local error tracker |
 | `/api/v1/config` | GET | Get current configuration |
 | `/api/v1/config` | POST | Update configuration (full replace) |
 | `/api/v1/config` | PATCH | Partial configuration update |
+| `/api/v1/admin/overview` | GET | Admin dashboard overview (system status summary) |
+| `/api/v1/admin/health` | GET | Admin dashboard component health checks |
+| `/api/v1/admin/activity` | GET | Recent admin/operational activity feed |
+| `/api/v1/admin/access` | GET | Get API-key access configuration (masked) |
+| `/api/v1/admin/access` | POST | Update API-key access configuration / rotate key |
+| `/api/v1/admin/workflow-analytics` | GET | CI/CD workflow run history and analytics |
+| `/api/v1/analytics/usage` | GET | Aggregated chat usage analytics (tokens, sessions, by model/day) |
+| `/api/v1/analytics/export` | GET | Export recorded usage events (json/csv) |
 | `/api/v1/deploy/status` | GET | Blue/green deployment status (active color, health, history) |
 | `/api/v1/deploy/switch` | POST | Cut traffic over to a color (health-checked) |
 | `/api/v1/deploy/rollback` | POST | Switch traffic back to the previously active color |
@@ -60,9 +69,13 @@ Quick reference of all 62 available endpoints:
 | `/api/v1/sessions/{name}/metadata` | GET | Get session metadata |
 | `/api/v1/sessions/{name}/rag/enable` | POST | Enable RAG for session |
 | `/api/v1/sessions/{name}/rag/disable` | POST | Disable RAG for session |
+| `/api/v1/sessions/{name}/documents` | GET | List documents force-included for session RAG context |
+| `/api/v1/sessions/{name}/documents` | POST | Attach a document to a session for force-inclusion |
+| `/api/v1/sessions/{name}/documents/{doc_id}` | DELETE | Detach a document from a session |
 | `/api/v1/sessions/{name}/messages/{index}` | PATCH | Edit message (with fork option) |
 | `/api/v1/sessions/{name}/messages/{index}/regenerate` | POST | Regenerate response |
 | `/api/v1/sessions/{name}/messages/{index}/rag` | GET | Get RAG chunks for message |
+| `/api/v1/sessions/{name}/citations/export` | GET | Export session RAG citations (json/markdown) |
 | `/api/v1/sessions/{name}/export` | GET | Export session (markdown/json/html) |
 | `/api/v1/chat` | POST | Send chat message |
 | `/api/v1/chat/stream` | POST | Stream chat response |
@@ -71,9 +84,17 @@ Quick reference of all 62 available endpoints:
 | `/api/v1/tools/grep` | POST | Search files |
 | `/api/v1/rag/config` | GET | Get RAG configuration (score thresholds) |
 | `/api/v1/rag/collections` | GET | List all RAG collections with statistics |
+| `/api/v1/rag/collections` | POST | Create a new RAG collection |
 | `/api/v1/rag/collections/{name}` | DELETE | Clear RAG collection (truncate all data) |
+| `/api/v1/rag/collections/{name}/settings` | GET | Get collection settings (embedding model, chunk size/overlap) |
+| `/api/v1/rag/collections/{name}/settings` | PUT | Update collection settings |
+| `/api/v1/rag/collections/{name}/reindex` | POST | Re-index a collection with a different embedding model |
 | `/api/v1/rag/ingest` | POST | Ingest text document (with update detection) |
+| `/api/v1/rag/index-repo` | POST | Bulk-ingest a code repository into RAG |
+| `/api/v1/rag/documents` | GET | List all documents in the RAG vector store |
 | `/api/v1/rag/documents/{doc_id}` | GET | Get document version information |
+| `/api/v1/rag/cache/stats` | GET | Query result cache statistics |
+| `/api/v1/rag/cache/clear` | POST | Clear the query result cache |
 | `/api/v1/rag/query` | POST | Query RAG vector store (supports metadata filters) |
 | `/api/v1/rag/metrics/query` | POST | Query RAG with evaluation metrics |
 | `/api/v1/rag/upload` | POST | Upload and ingest file |
@@ -641,6 +662,22 @@ again by `GET /admin/access`, which only shows the masked value.
   "api_key": "8f3a1b2c...e5f691c2"
 }
 ```
+
+### `GET /api/v1/admin/workflow-analytics`
+
+CI/CD workflow run history and analytics for the admin dashboard. Wraps
+the SQLite store built by `scripts/collect_workflow_logs.py collect`
+(success rate, average duration, per-workflow/day breakdowns, top failing
+workflows, and recent runs) so it's visible from the dashboard, not just
+the CLI.
+
+**Query Parameters:**
+- `days` (int, default: `30`) - How many days of history to summarize
+- `limit` (int, default: `50`) - Maximum number of recent runs to return
+
+**Response:** summary object produced by `workflow_analytics.summary()` —
+success rate, average duration, per-workflow/day breakdowns, top failing
+workflows, and a `recent_runs` list.
 
 ---
 
@@ -1401,6 +1438,42 @@ Get RAG chunks associated with a specific message. Enables lazy loading of RAG c
   ]
 }
 ```
+
+### `GET /api/v1/sessions/{name}/citations/export`
+
+Export all RAG citations from a session's assistant messages, for
+generating bibliographies or reference lists.
+
+**Query Parameters:**
+- `format` (str, default: `json`) - `json` or `markdown`
+- `sessions_dir` (str, optional) - Override the sessions directory
+
+**Response (`format=json`):**
+
+```json
+{
+  "session": "default",
+  "total_citations": 2,
+  "citations": [
+    {
+      "message_index": 5,
+      "citation_index": 0,
+      "doc_id": "doc123",
+      "chunk_id": 6,
+      "text": "Relevant document content here...",
+      "score": 0.95,
+      "similarity_score": 0.95
+    }
+  ]
+}
+```
+
+**Response (`format=markdown`):** returned as `text/markdown` with a
+`Content-Disposition: attachment; filename="{name}-citations.md"` header.
+
+**Error Responses:**
+- `400 Bad Request` - Invalid session name, or `format` is not `json`/`markdown`
+- `404 Not Found` - Session does not exist
 
 ---
 

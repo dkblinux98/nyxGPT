@@ -287,6 +287,19 @@ cassandra_table = rag_chunks
 | `cassandra_health_check_interval` | Seconds between automatic health check queries; a check is run on the next `get_session()` call once this interval has elapsed (float > 0, default: `30.0`) |
 | `cassandra_reconnect_max_attempts` | Maximum number of reconnection attempts before giving up (integer ≥ 1, default: `3`) |
 | `cassandra_batch_size` | Maximum number of chunk upserts grouped into a single Cassandra batch during ingestion (integer 1-100, default: `20`); batches are also flushed early once their estimated payload nears Cassandra's default 50KB batch size limit, so this is a ceiling and does not need to be tuned down for larger `embedding_dim`/`chunk_size` values |
+| `vector_similarity_function` | Distance metric for the Cassandra SAI vector index and ANN scoring: `cosine`, `dot_product`, or `euclidean` (default: `cosine`). Changing this after ingestion requires recreating the vector index. |
+| `ann_oversample_factor` | Multiplier applied to ANN candidate fetch size to improve recall (range: 1.0-5.0, default: `1.0`) |
+| `cassandra_batch_query_concurrency` | Maximum ANN queries executed concurrently within a single batch search call (range: 1-32, default: `4`) |
+| `debug_mode` | Collect and return detailed RAG troubleshooting metrics (timing, query analysis, embedding details, filtering stats) (default: `false`) |
+| `enable_hybrid_search` | Combine BM25 keyword search with vector similarity search; when `false`, uses vector-only (legacy) search (default: `true`) |
+| `bm25_k1` | BM25 term-frequency saturation parameter (typical range: 1.2-2.0, default: `1.5`) |
+| `bm25_b` | BM25 document-length normalization parameter (0.0 = none, 1.0 = full, default: `0.75`) |
+| `rrf_k` | Reciprocal Rank Fusion constant for rank weighting; higher = less emphasis on rank differences (default: `60`) |
+| `hybrid_alpha` | Optional weighted-fusion alpha (vector vs. keyword weight) that overrides RRF fusion when set |
+| `enable_reranking` | Re-score top retrieval results with a cross-encoder model for improved precision (default: `false`) |
+| `reranker_model` | Model used for reranking (optional, defaults to `nyxgpt.default_model`) |
+| `rerank_top_n` | Number of results to keep after reranking (default: `3`) |
+| `reranker_timeout_seconds` | Timeout per reranking score request; total time scales with number of results scored (default: `30`) |
 
 **RAG Prompt Templates:**
 
@@ -637,8 +650,25 @@ embedding_cache_ttl_seconds = 86400
 # ...matching query_cache_* and response_cache_* keys
 ```
 
-Memory caches use LRU eviction; disk caches persist across restarts. See
-`example.config.ini` for the full key list per cache.
+Memory caches use LRU eviction; disk caches persist across restarts.
+
+| Key | Description |
+|---|---|
+| `embedding_cache_enabled` | Cache embeddings to avoid recomputing vectors for identical texts (default: `false`) |
+| `embedding_cache_backend` | `memory` (fast, volatile, LRU eviction) or `disk` (persistent pickle files) |
+| `embedding_cache_max_size` | Maximum cached embedding entries (memory backend only, default: `1000`) |
+| `embedding_cache_ttl_seconds` | TTL in seconds; `0` = no expiration (default: `3600` memory, `86400` disk) |
+| `embedding_cache_dir` | Cache directory for disk backend (default: `~/.nyxGPT/cache/embeddings`) |
+| `response_cache_enabled` | Cache LLM responses for identical prompts (default: `false`). Only recommended for deterministic use cases or short TTLs — may serve stale responses if context changes. |
+| `response_cache_backend` | `memory` or `disk` |
+| `response_cache_max_size` | Maximum cached response entries (memory backend only, default: `100`) |
+| `response_cache_ttl_seconds` | TTL in seconds (default: `1800` memory, `3600` disk) |
+| `response_cache_dir` | Cache directory for disk backend (default: `~/.nyxGPT/cache/responses`) |
+| `query_cache_enabled` | Cache fully retrieved/fused/reranked RAG results for repeated queries, skipping vector search, BM25, fusion, and reranking on a hit (default: `false`). Auto-invalidated on document ingestion/update/deletion. Monitor via `GET /api/v1/rag/cache/stats`. |
+| `query_cache_backend` | `memory` or `disk` |
+| `query_cache_max_size` | Maximum cached query results (memory backend only, default: `500`) |
+| `query_cache_ttl_seconds` | TTL in seconds (default: `300` memory, `600` disk) |
+| `query_cache_dir` | Cache directory for disk backend (default: `~/.nyxGPT/cache/queries`) |
 
 ---
 
@@ -691,6 +721,7 @@ namespace = nyxgpt
 total_replicas = 4
 step_percent = 25                       # traffic increment per step
 error_rate_threshold_percent = 5        # auto-rollback threshold
+latency_p95_threshold_ms = 2000.0       # auto-rollback threshold
 min_requests_for_evaluation = 20
 ```
 

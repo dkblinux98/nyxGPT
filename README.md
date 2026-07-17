@@ -125,6 +125,12 @@ Edit `~/.nyxGPT/config.ini` to select models, logging options, RAG settings, and
 
 ### CLI
 
+**Info** (default command when run with no arguments):
+```bash
+nyxgpt info
+```
+Prints config-derived defaults (Ollama base URL, default model).
+
 **Chat:**
 ```bash
 nyxgpt chat "Hello"
