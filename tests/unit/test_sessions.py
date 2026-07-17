@@ -3,7 +3,10 @@ from __future__ import annotations
 import configparser
 import json
 import logging
+import sys
+import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -20,6 +23,23 @@ def _cfg_with_sessions_dir(sessions_dir: Path) -> configparser.ConfigParser:
         # Disable auto-summarization and auto-sync to prevent session renaming during tests
         "auto_summarize_enabled": "false",
         "auto_sync_filename": "false",
+    }
+    return cfg
+
+
+def _cfg_auto_summarize(
+    sessions_dir: Path, *, after_messages: int = 2, auto_sync: bool = False
+) -> configparser.ConfigParser:
+    """Config with auto-summarize enabled (and optionally auto-sync), used to
+    exercise the auto-summarization trigger paths in persist_after_exchange /
+    save_session."""
+    cfg = configparser.ConfigParser()
+    cfg["nyxgpt"] = {
+        "sessions_dir": str(sessions_dir),
+        "default_model": "llama3.1:8b",
+        "auto_summarize_enabled": "true",
+        "auto_summarize_after_messages": str(after_messages),
+        "auto_sync_filename": "true" if auto_sync else "false",
     }
     return cfg
 
@@ -2305,3 +2325,1184 @@ def test_export_citations_text_truncation(tmp_path: Path) -> None:
     assert "..." in content
     # Full 500 characters should not appear
     assert "A" * 500 not in content
+
+
+# --- file_lock: win32 branch coverage ---
+#
+# Tests run on Linux, so sys.platform is monkeypatched to "win32" and a fake
+# msvcrt module is injected into sys.modules (the real module doesn't exist on
+# Linux and file_lock does an inline `import msvcrt`).
+
+
+def test_file_lock_win32_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """file_lock should use msvcrt.locking on win32 and unlock on the way out."""
+    test_file = tmp_path / "win32.lock"
+
+    fake_msvcrt = types.ModuleType("msvcrt")
+    fake_msvcrt.LK_NBLCK = 1  # type: ignore[attr-defined]
+    fake_msvcrt.LK_UNLCK = 2  # type: ignore[attr-defined]
+    fake_msvcrt.locking = MagicMock()  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    with sessions.file_lock(test_file, timeout=1.0) as fd:
+        assert fd >= 0
+
+    # Called once to acquire (LK_NBLCK) and once to release (LK_UNLCK)
+    assert fake_msvcrt.locking.call_count == 2
+    lock_call, unlock_call = fake_msvcrt.locking.call_args_list
+    assert lock_call.args[1] == fake_msvcrt.LK_NBLCK
+    assert unlock_call.args[1] == fake_msvcrt.LK_UNLCK
+
+
+def test_file_lock_win32_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """file_lock should raise TimeoutError on win32 if locking() keeps failing."""
+    test_file = tmp_path / "win32-timeout.lock"
+
+    fake_msvcrt = types.ModuleType("msvcrt")
+    fake_msvcrt.LK_NBLCK = 1  # type: ignore[attr-defined]
+    fake_msvcrt.LK_UNLCK = 2  # type: ignore[attr-defined]
+    fake_msvcrt.locking = MagicMock(side_effect=OSError("already locked"))  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    with (
+        pytest.raises(TimeoutError, match="Could not acquire lock"),
+        sessions.file_lock(test_file, timeout=0.2),
+    ):
+        pass  # pragma: no cover - should never be entered
+
+
+def test_file_lock_unlock_exception_is_logged(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """If unlocking raises, file_lock should log a warning instead of crashing."""
+    from unittest.mock import patch
+
+    test_file = tmp_path / "unlock-fail.lock"
+
+    with (
+        caplog.at_level(logging.WARNING, logger="nyxgpt.sessions"),
+        # First call (acquire) succeeds, second call (release) raises.
+        patch("fcntl.flock", side_effect=[None, OSError("boom")]),
+        sessions.file_lock(test_file, timeout=1.0) as fd,
+    ):
+        assert fd >= 0
+
+    assert "Failed to unlock" in caplog.text
+
+
+# --- load_session_messages_paginated: remaining branches ---
+
+
+def test_load_session_messages_paginated_io_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Paginated loading should handle OSError while reading gracefully."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("io-error-test", sessions_dir)
+    sf.write_text('[{"role": "user", "content": "test"}]')
+
+    def raise_io_error(*args, **kwargs):
+        raise OSError("Simulated IO error")
+
+    monkeypatch.setattr("pathlib.Path.read_text", raise_io_error)
+
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.sessions"):
+        msgs, total = sessions.load_session_messages_paginated(sf)
+
+    assert msgs == []
+    assert total == 0
+    assert "Failed to read session file" in caplog.text
+
+
+def test_load_session_messages_paginated_non_list(tmp_path: Path) -> None:
+    """Paginated loading should return empty when JSON top-level isn't a list."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf = sessions.session_file_for("non-list", sessions_dir)
+    sf.write_text('{"not": "a list"}')
+
+    msgs, total = sessions.load_session_messages_paginated(sf)
+    assert msgs == []
+    assert total == 0
+
+
+# --- ensure_meta_defaults: rag_enabled exception fallback ---
+
+
+def test_ensure_meta_defaults_rag_enabled_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If get_rag_enabled raises, ensure_meta_defaults should fall back to False."""
+
+    def raise_error(cfg):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(sessions, "get_rag_enabled", raise_error)
+
+    meta: dict = {}
+    result = sessions.ensure_meta_defaults(meta)
+    assert result["rag_enabled"] is False
+
+
+# --- init_session: new_session=True removes pre-existing meta file ---
+
+
+def test_init_session_new_session_removes_existing_files(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+
+    sf, mf, msgs, meta = sessions.init_session(
+        "reset-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    msgs.append({"role": "user", "content": "hello"})
+    sessions.save_session_messages(sf, msgs)
+    meta["title"] = "Should be gone"
+    sessions.save_session_meta(mf, meta)
+
+    assert sf.exists()
+    assert mf.exists()
+
+    # Re-initializing with new_session=True should unlink both existing files
+    # (session + meta) before recreating them fresh.
+    sf2, mf2, msgs2, meta2 = sessions.init_session(
+        "reset-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    assert msgs2 == []
+    assert meta2.get("title") is None
+
+
+# --- persist_after_exchange: config loading / error-handling / auto-summarize ---
+
+
+def test_persist_after_exchange_loads_config_when_none(tmp_path: Path) -> None:
+    """persist_after_exchange should load the global config when cfg is None."""
+    sessions_dir = tmp_path / "sessions"
+    sf, mf, msgs, meta = sessions.init_session(
+        "persist-no-cfg", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    msgs.append({"role": "user", "content": "hi"})
+
+    name = sessions.persist_after_exchange(sf, mf, msgs, model="llama3.1:8b")
+    assert name == "persist-no-cfg"
+
+
+class _RaisingCfg:
+    """A stub cfg object whose getboolean/getint always raise."""
+
+    def getboolean(self, *args, **kwargs):
+        raise RuntimeError("boom")
+
+    def getint(self, *args, **kwargs):
+        raise RuntimeError("boom")
+
+
+def test_persist_after_exchange_config_error_falls_back(tmp_path: Path) -> None:
+    """If cfg.getboolean/getint raise, auto-summarize should default to disabled."""
+    sessions_dir = tmp_path / "sessions"
+    sf, mf, msgs, meta = sessions.init_session(
+        "persist-bad-cfg", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    msgs.append({"role": "user", "content": "hi"})
+
+    name = sessions.persist_after_exchange(sf, mf, msgs, model="llama3.1:8b", cfg=_RaisingCfg())
+    assert name == "persist-bad-cfg"
+
+
+def test_persist_after_exchange_auto_summarize_and_sync_renames(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Successful auto-summarize + auto-sync should rename the session."""
+    sessions_dir = tmp_path / "sessions"
+    sf, mf, msgs, meta = sessions.init_session(
+        "auto-sum-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    msgs.append({"role": "user", "content": "Hello"})
+    msgs.append({"role": "assistant", "content": "Hi there"})
+
+    fake_response = json.dumps({"title": "Auto Title", "summary": "A summary", "tags": ["a", "b"]})
+    monkeypatch.setattr(sessions, "ollama_chat", lambda **kwargs: fake_response)
+
+    # sync_filename_with_title (called internally without force=True) reads the
+    # *global* config via load_config(None), so that must also report
+    # auto_sync_filename=true for the rename branch to trigger.
+    sync_cfg = configparser.ConfigParser()
+    sync_cfg["nyxgpt"] = {"auto_sync_filename": "true"}
+    monkeypatch.setattr(sessions, "load_config", lambda path=None: sync_cfg)
+
+    cfg = _cfg_auto_summarize(sessions_dir)
+    new_name = sessions.persist_after_exchange(sf, mf, msgs, model="llama3.1:8b", cfg=cfg)
+
+    assert new_name == "auto-title"
+    new_sf = sessions.session_file_for(new_name, sessions_dir)
+    assert new_sf.exists()
+
+
+def test_persist_after_exchange_auto_summarize_failure_logs_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """If auto-summarization fails, a warning should be logged and name unchanged."""
+    sessions_dir = tmp_path / "sessions"
+    sf, mf, msgs, meta = sessions.init_session(
+        "auto-sum-fail", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    msgs.append({"role": "user", "content": "Hello"})
+    msgs.append({"role": "assistant", "content": "Hi there"})
+
+    def raise_err(**kwargs):
+        raise RuntimeError("ollama down")
+
+    monkeypatch.setattr(sessions, "ollama_chat", raise_err)
+
+    cfg = _cfg_auto_summarize(sessions_dir)
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.sessions"):
+        new_name = sessions.persist_after_exchange(sf, mf, msgs, model="llama3.1:8b", cfg=cfg)
+
+    assert new_name == "auto-sum-fail"
+    assert "Auto-summarization failed" in caplog.text
+
+
+def test_save_session_updates_state_on_auto_sync_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """save_session should update the SessionState when auto-sync renames it."""
+    sessions_dir = tmp_path / "sessions"
+    cfg = _cfg_auto_summarize(sessions_dir, auto_sync=True)
+
+    state = sessions.load_session("rename-me", cfg, new_session=True)
+    state.messages.append({"role": "user", "content": "Hello"})
+    state.messages.append({"role": "assistant", "content": "Hi"})
+
+    fake_response = json.dumps({"title": "Renamed Title", "summary": "S", "tags": []})
+    monkeypatch.setattr(sessions, "ollama_chat", lambda **kwargs: fake_response)
+
+    sync_cfg = configparser.ConfigParser()
+    sync_cfg["nyxgpt"] = {"auto_sync_filename": "true"}
+    monkeypatch.setattr(sessions, "load_config", lambda path=None: sync_cfg)
+
+    sessions.save_session(state, cfg)
+
+    assert state.name == "renamed-title"
+    assert state.session_file.name == "renamed-title.json"
+    assert state.session_file.exists()
+
+
+# --- list_sessions: stat() exception fallback ---
+
+
+def test_list_sessions_handles_stat_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sessions.init_session("stat-error", sessions_dir, new_session=True, model="llama3.1:8b")
+
+    original_stat = Path.stat
+    call_count = {"n": 0}
+
+    def flaky_stat(self, *args, **kwargs):
+        # Only fail on the *first* stat() call for this file (the explicit
+        # `p.stat().st_mtime` in list_sessions). Later calls for the same path
+        # (e.g. via Path.exists() while loading messages) should behave
+        # normally, so we don't break unrelated code paths.
+        if self.name == "stat-error.json":
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise OSError("stat failed")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+
+    result = sessions.list_sessions(sessions_dir)
+    assert len(result) == 1
+    assert result[0]["modified"] == "?"
+
+
+# --- add_tags / remove_tags: nonexistent session ---
+
+
+def test_add_tags_nonexistent_session(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.add_tags("does-not-exist", ["tag"], sessions_dir)
+    assert not ok
+    assert msg == "No such session"
+
+
+def test_remove_tags_nonexistent_session(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.remove_tags("does-not-exist", ["tag"], sessions_dir)
+    assert not ok
+    assert msg == "No such session"
+
+
+# --- summarize_session: full coverage of branches ---
+
+
+def test_summarize_session_nonexistent(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.summarize_session("nonexistent", sessions_dir)
+    assert not ok
+    assert msg == "No such session"
+
+
+def test_summarize_session_no_messages(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sessions.init_session("empty-session", sessions_dir, new_session=True, model="llama3.1:8b")
+
+    ok, msg = sessions.summarize_session("empty-session", sessions_dir)
+    assert not ok
+    assert msg == "Session has no messages"
+
+
+def test_summarize_session_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sf, mf, msgs, meta = sessions.init_session(
+        "summarize-me", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    msgs.append({"role": "user", "content": "Tell me about cats"})
+    msgs.append({"role": "assistant", "content": "Cats are great"})
+    sessions.save_session_messages(sf, msgs)
+
+    fake_response = json.dumps(
+        {"title": "Cat Chat", "summary": "About cats", "tags": ["cats", "pets"]}
+    )
+    monkeypatch.setattr(sessions, "ollama_chat", lambda **kwargs: fake_response)
+
+    ok, msg = sessions.summarize_session("summarize-me", sessions_dir)
+    assert ok
+    assert msg == "OK"
+
+    result_meta = sessions.load_session_meta(mf)
+    assert result_meta["title"] == "Cat Chat"
+    assert result_meta["summary"] == "About cats"
+    assert set(result_meta["tags"]) == {"cats", "pets"}
+
+
+def test_summarize_session_ollama_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sf, mf, msgs, meta = sessions.init_session(
+        "summarize-fail", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    msgs.append({"role": "user", "content": "hi"})
+    sessions.save_session_messages(sf, msgs)
+
+    def raise_err(**kwargs):
+        raise RuntimeError("ollama unreachable")
+
+    monkeypatch.setattr(sessions, "ollama_chat", raise_err)
+
+    ok, msg = sessions.summarize_session("summarize-fail", sessions_dir)
+    assert not ok
+    assert msg.startswith("summarize failed:")
+
+
+def test_summarize_session_invalid_json_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sf, mf, msgs, meta = sessions.init_session(
+        "summarize-badjson", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    msgs.append({"role": "user", "content": "hi"})
+    sessions.save_session_messages(sf, msgs)
+
+    monkeypatch.setattr(sessions, "ollama_chat", lambda **kwargs: "not valid json")
+
+    ok, msg = sessions.summarize_session("summarize-badjson", sessions_dir)
+    assert not ok
+    assert msg.startswith("summarize failed:")
+
+
+def test_summarize_session_wrong_types_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If title/summary/tags have unexpected types, fall back to empty defaults."""
+    sessions_dir = tmp_path / "sessions"
+    sf, mf, msgs, meta = sessions.init_session(
+        "summarize-wrongtypes", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    msgs.append({"role": "user", "content": "hi"})
+    sessions.save_session_messages(sf, msgs)
+
+    fake_response = json.dumps(
+        {"title": 123, "summary": ["not", "a", "string"], "tags": "not-a-list"}
+    )
+    monkeypatch.setattr(sessions, "ollama_chat", lambda **kwargs: fake_response)
+
+    ok, msg = sessions.summarize_session("summarize-wrongtypes", sessions_dir)
+    assert ok
+    assert msg == "OK"
+
+    result_meta = sessions.load_session_meta(mf)
+    assert "title" not in result_meta
+    assert "summary" not in result_meta
+    assert result_meta["tags"] == []
+
+
+# --- export_session_markdown: system role and unrecognized role ---
+
+
+def test_export_markdown_system_and_unknown_roles(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sf = sessions.session_file_for("roles-test", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    messages = [
+        {"role": "system", "content": "System prompt content"},
+        {"role": "tool", "content": "Tool output content"},
+    ]
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, {"title": "Roles Test"})
+
+    ok, content = sessions.export_session_markdown("roles-test", sessions_dir)
+    assert ok
+    assert "## System" in content
+    assert "System prompt content" in content
+    assert "## Tool" in content
+    assert "Tool output content" in content
+
+
+# --- export_session_html: score fallback when similarity_score is missing ---
+
+
+def test_export_html_score_fallback_to_score_key(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sf = sessions.session_file_for("score-fallback", sessions_dir)
+    mf = sessions.meta_file_for(sf)
+
+    messages = [
+        {"role": "user", "content": "Q"},
+        {
+            "role": "assistant",
+            "content": "A",
+            "rag_chunks": [
+                {"doc_id": "doc.md", "chunk_id": 1, "score": 0.75, "text": "chunk text"}
+            ],
+        },
+    ]
+    sessions.save_session_messages(sf, messages)
+    sessions.save_session_meta(mf, {"title": "Score Fallback"})
+
+    ok, content = sessions.export_session_html("score-fallback", sessions_dir)
+    assert ok
+    assert "Confidence: 0.750" in content
+
+
+# --- sync_filename_with_title: remaining branches ---
+
+
+def test_sync_filename_with_title_nonexistent_session(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    success, message, new_name = sessions.sync_filename_with_title("nope", sessions_dir, force=True)
+    assert not success
+    assert message == "Session not found"
+    assert new_name == "nope"
+
+
+class _BadBoolCfg:
+    """A stub cfg whose getboolean always raises (for the auto_sync error path)."""
+
+    def getboolean(self, *args, **kwargs):
+        raise ValueError("bad bool")
+
+
+def test_sync_filename_with_title_config_error_disables_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sf, mf, msgs, meta = sessions.init_session(
+        "cfg-error-sync", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    meta["title"] = "Should Not Rename"
+    sessions.save_session_meta(mf, meta)
+
+    monkeypatch.setattr(sessions, "load_config", lambda path=None: _BadBoolCfg())
+
+    success, message, new_name = sessions.sync_filename_with_title(
+        "cfg-error-sync", sessions_dir, force=False
+    )
+    assert success
+    assert message == "disabled"
+    assert new_name == "cfg-error-sync"
+
+
+def test_sync_filename_with_title_too_many_collisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If 100+ collisions exist, sync_filename_with_title should give up.
+
+    Creating 100 real colliding session files would be wasteful, so instead we
+    make Path.exists() report True for the candidate "busy-title-1.json"
+    through "busy-title-100.json" filenames (without actually creating them),
+    forcing the collision-counter loop past its `counter > 100` limit.
+    """
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sf, mf, msgs, meta = sessions.init_session(
+        "collision-source", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    meta["title"] = "Busy Title"
+    sessions.save_session_meta(mf, meta)
+
+    # The direct target ("busy-title.json") must actually exist so the
+    # collision loop is entered in the first place.
+    target_sf = sessions.session_file_for("busy-title", sessions_dir)
+    target_sf.write_text("[]")
+
+    original_exists = Path.exists
+
+    def fake_exists(self):
+        name = self.name
+        if name.startswith("busy-title-") and name.endswith(".json"):
+            candidate = name[len("busy-title-") : -len(".json")]
+            if candidate.isdigit() and 1 <= int(candidate) <= 100:
+                return True
+        return original_exists(self)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+    success, message, new_name = sessions.sync_filename_with_title(
+        "collision-source", sessions_dir, force=True
+    )
+    assert not success
+    assert message == "Could not find unique filename"
+    assert new_name == "collision-source"
+
+
+def test_sync_filename_with_title_single_lock_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Covers the len(files_to_lock) == 1 branch: meta file disappears between
+    the initial title-read and the (re-)existence check used to decide which
+    files need locking. We simulate this by deleting the meta file as a side
+    effect of sanitize_title_for_filename, which runs in between those two
+    points in sync_filename_with_title.
+    """
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sf, mf, msgs, meta = sessions.init_session(
+        "solo-lock-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    meta["title"] = "Solo Lock Title"
+    sessions.save_session_meta(mf, meta)
+    assert mf.exists()
+
+    original_sanitize = sessions.sanitize_title_for_filename
+
+    def sanitize_and_delete_meta(title):
+        if mf.exists():
+            mf.unlink()
+        return original_sanitize(title)
+
+    monkeypatch.setattr(sessions, "sanitize_title_for_filename", sanitize_and_delete_meta)
+
+    success, message, new_name = sessions.sync_filename_with_title(
+        "solo-lock-test", sessions_dir, force=True
+    )
+
+    assert success
+    assert message == "renamed"
+    assert new_name == "solo-lock-title"
+
+    new_sf = sessions.session_file_for(new_name, sessions_dir)
+    new_mf = sessions.meta_file_for(new_sf)
+    assert new_sf.exists()
+    # meta_existed_initially was False by the time it was (re-)checked, so no
+    # new metadata file should have been written.
+    assert not new_mf.exists()
+
+
+def test_sync_filename_with_title_lock_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sf, mf, msgs, meta = sessions.init_session(
+        "timeout-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    meta["title"] = "Timeout Title"
+    sessions.save_session_meta(mf, meta)
+
+    def raise_timeout(file_path, timeout=5.0):
+        raise TimeoutError("locked elsewhere")
+
+    monkeypatch.setattr(sessions, "file_lock", raise_timeout)
+
+    success, message, new_name = sessions.sync_filename_with_title(
+        "timeout-test", sessions_dir, force=True
+    )
+    assert not success
+    assert message == "Session is busy, please try again"
+    assert new_name == "timeout-test"
+
+
+def test_sync_filename_with_title_rename_failure_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sf, mf, msgs, meta = sessions.init_session(
+        "fail-rename-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    meta["title"] = "Fail Rename Title"
+    sessions.save_session_meta(mf, meta)
+
+    def raise_save_error(session_file, messages):
+        # Simulate a failure partway through the copy, after new_sf has
+        # already been (partially) written.
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        session_file.write_text("partial")
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(sessions, "save_session_messages", raise_save_error)
+
+    success, message, new_name = sessions.sync_filename_with_title(
+        "fail-rename-test", sessions_dir, force=True
+    )
+
+    assert not success
+    assert message.startswith("Rename failed:")
+    assert new_name == "fail-rename-test"
+
+    new_sf = sessions.session_file_for("fail-rename-title", sessions_dir)
+    new_mf = sessions.meta_file_for(new_sf)
+    assert not new_sf.exists()
+    assert not new_mf.exists()
+
+    # Original files should remain untouched
+    assert sf.exists()
+    assert mf.exists()
+
+
+def test_sync_filename_with_title_cleans_up_new_meta_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the copy succeeds but deleting the original session file fails,
+    cleanup should also remove the already-written new meta file."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sf, mf, msgs, meta = sessions.init_session(
+        "cleanup-meta-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    meta["title"] = "Cleanup Meta Title"
+    sessions.save_session_meta(mf, meta)
+
+    original_unlink = Path.unlink
+
+    def flaky_unlink(self, *args, **kwargs):
+        if self.name == "cleanup-meta-test.json":
+            raise RuntimeError("unlink failed")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    success, message, new_name = sessions.sync_filename_with_title(
+        "cleanup-meta-test", sessions_dir, force=True
+    )
+
+    assert not success
+    assert message.startswith("Rename failed:")
+
+    new_sf = sessions.session_file_for("cleanup-meta-title", sessions_dir)
+    new_mf = sessions.meta_file_for(new_sf)
+    assert not new_sf.exists()
+    assert not new_mf.exists()
+
+
+def test_sync_filename_with_title_cleanup_failure_is_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the cleanup itself raises, the exception should be swallowed and the
+    original rename failure message still returned."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sf, mf, msgs, meta = sessions.init_session(
+        "cleanup-fail-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    meta["title"] = "Cleanup Fail Title"
+    sessions.save_session_meta(mf, meta)
+
+    def raise_save_error(session_file, messages):
+        session_file.parent.mkdir(parents=True, exist_ok=True)
+        session_file.write_text("partial")
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(sessions, "save_session_messages", raise_save_error)
+
+    original_unlink = Path.unlink
+
+    def flaky_unlink(self, *args, **kwargs):
+        # Make cleanup's own unlink of the partially-written new session file
+        # fail too, exercising the inner `except Exception: pass` swallow.
+        if self.name == "cleanup-fail-title.json":
+            raise RuntimeError("cleanup unlink failed")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    success, message, new_name = sessions.sync_filename_with_title(
+        "cleanup-fail-test", sessions_dir, force=True
+    )
+
+    assert not success
+    assert message.startswith("Rename failed:")
+    # Original files should remain untouched
+    assert sf.exists()
+    assert mf.exists()
+
+
+# --- edit_message: success paths ---
+
+
+def test_edit_message_fork_true_truncates(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sf, mf, msgs, meta = sessions.init_session(
+        "edit-fork-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "A1"},
+        {"role": "user", "content": "Q2"},
+        {"role": "assistant", "content": "A2"},
+    ]
+    sessions.save_session_messages(sf, messages)
+
+    ok, msg = sessions.edit_message("edit-fork-test", 1, "Edited A1", sessions_dir, fork=True)
+    assert ok
+    assert msg == "Message edited"
+
+    result = sessions.load_session_messages(sf)
+    assert len(result) == 2  # truncated after the edited message
+    assert result[1]["content"] == "Edited A1"
+    assert result[1]["original_content"] == "A1"
+    assert "edited_at" in result[1]
+
+    meta_after = sessions.load_session_meta(mf)
+    assert "updated_at" in meta_after
+
+
+def test_edit_message_fork_false_keeps_later_messages(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sf, mf, msgs, meta = sessions.init_session(
+        "edit-nofork-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "A1"},
+        {"role": "user", "content": "Q2"},
+    ]
+    sessions.save_session_messages(sf, messages)
+
+    ok, msg = sessions.edit_message("edit-nofork-test", 0, "Edited Q1", sessions_dir, fork=False)
+    assert ok
+
+    result = sessions.load_session_messages(sf)
+    assert len(result) == 3
+    assert result[0]["content"] == "Edited Q1"
+    assert result[1]["content"] == "A1"
+
+
+def test_edit_message_preserves_original_content_once(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sf, mf, msgs, meta = sessions.init_session(
+        "edit-preserve-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    messages = [{"role": "user", "content": "Original"}]
+    sessions.save_session_messages(sf, messages)
+
+    sessions.edit_message("edit-preserve-test", 0, "First edit", sessions_dir, fork=False)
+    sessions.edit_message("edit-preserve-test", 0, "Second edit", sessions_dir, fork=False)
+
+    result = sessions.load_session_messages(sf)
+    assert result[0]["content"] == "Second edit"
+    assert result[0]["original_content"] == "Original"  # unchanged by 2nd edit
+
+
+def test_edit_message_nonexistent_session(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.edit_message("nonexistent", 0, "content", sessions_dir)
+    assert not ok
+    assert msg == "No such session"
+
+
+def test_edit_message_invalid_index(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sf, mf, msgs, meta = sessions.init_session(
+        "edit-invalid-index", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    sessions.save_session_messages(sf, [{"role": "user", "content": "hi"}])
+
+    ok, msg = sessions.edit_message("edit-invalid-index", 5, "content", sessions_dir)
+    assert not ok
+    assert "Invalid message index" in msg
+
+
+# --- truncate_after_message ---
+
+
+def test_truncate_after_message_success(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sf, mf, msgs, meta = sessions.init_session(
+        "truncate-test", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    messages = [
+        {"role": "user", "content": "Q1"},
+        {"role": "assistant", "content": "A1"},
+        {"role": "user", "content": "Q2"},
+        {"role": "assistant", "content": "A2"},
+    ]
+    sessions.save_session_messages(sf, messages)
+
+    ok, msg = sessions.truncate_after_message("truncate-test", 1, sessions_dir)
+    assert ok
+    assert msg == "Conversation truncated"
+
+    result = sessions.load_session_messages(sf)
+    assert len(result) == 2
+    assert result[-1]["content"] == "A1"
+
+
+def test_truncate_after_message_invalid_index(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sf, mf, msgs, meta = sessions.init_session(
+        "truncate-invalid", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    sessions.save_session_messages(sf, [{"role": "user", "content": "hi"}])
+
+    ok, msg = sessions.truncate_after_message("truncate-invalid", 10, sessions_dir)
+    assert not ok
+    assert "Invalid message index" in msg
+
+
+def test_truncate_after_message_nonexistent_session(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.truncate_after_message("nonexistent", 0, sessions_dir)
+    assert not ok
+    assert msg == "No such session"
+
+
+# --- search_messages: per-session exception handling ---
+
+
+def test_search_messages_handles_per_session_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf_good = sessions.session_file_for("good-session", sessions_dir)
+    sessions.save_session_messages(sf_good, [{"role": "user", "content": "find me"}])
+
+    sf_bad = sessions.session_file_for("bad-session", sessions_dir)
+    sessions.save_session_messages(sf_bad, [{"role": "user", "content": "find me"}])
+
+    original_load = sessions.load_session_messages
+
+    def flaky_load(path):
+        if path.stem == "bad-session":
+            raise RuntimeError("boom")
+        return original_load(path)
+
+    monkeypatch.setattr(sessions, "load_session_messages", flaky_load)
+
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.sessions"):
+        results = sessions.search_messages("find me", sessions_dir)
+
+    assert len(results) == 1
+    assert results[0]["session_name"] == "good-session"
+    assert "Error searching session" in caplog.text
+
+
+# --- _generate_preview: no-match fallback ---
+
+
+def test_generate_preview_no_match_fallback() -> None:
+    short_content = "Some content without the search term"
+    preview = sessions._generate_preview(short_content, "nonexistent-term", case_sensitive=False)
+    assert preview == short_content
+
+    long_content = "B" * 300
+    preview_long = sessions._generate_preview(long_content, "not-there", case_sensitive=False)
+    assert preview_long == "B" * 200 + "..."
+
+
+# --- merge_sessions: remaining validation / metadata / failure branches ---
+
+
+def test_merge_sessions_missing_output_name(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.merge_sessions(["a"], "", sessions_dir)
+    assert not ok
+    assert msg == "Output session name is required"
+
+
+def test_merge_sessions_invalid_output_name(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.merge_sessions(["a"], "invalid name!", sessions_dir)
+    assert not ok
+    assert "Invalid output session name" in msg
+
+
+def test_merge_sessions_invalid_input_name(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    ok, msg = sessions.merge_sessions(["bad name!"], "output", sessions_dir)
+    assert not ok
+    assert "Invalid session name" in msg
+
+
+def test_merge_sessions_no_metadata_uses_current_time(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf1 = sessions.session_file_for("nometa1", sessions_dir)
+    sessions.save_session_messages(sf1, [{"role": "user", "content": "hi"}])
+    sf2 = sessions.session_file_for("nometa2", sessions_dir)
+    sessions.save_session_messages(sf2, [{"role": "user", "content": "there"}])
+    # Intentionally no .meta.json files for either input session.
+
+    before = sessions.iso_now()
+    ok, msg = sessions.merge_sessions(["nometa1", "nometa2"], "merged-nometa", sessions_dir)
+    assert ok
+
+    merged_meta_file = sessions.meta_file_for(
+        sessions.session_file_for("merged-nometa", sessions_dir)
+    )
+    merged_meta = sessions.load_session_meta(merged_meta_file)
+    assert merged_meta["created_at"] >= before
+
+
+def test_merge_sessions_propagates_summary_model_rag(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf1 = sessions.session_file_for("meta-rich", sessions_dir)
+    mf1 = sessions.meta_file_for(sf1)
+    sessions.save_session_messages(sf1, [{"role": "user", "content": "hi"}])
+    sessions.save_session_meta(
+        mf1,
+        {
+            "created_at": sessions.iso_now(),
+            "updated_at": sessions.iso_now(),
+            "pinned": False,
+            "tags": [],
+            "title": "Rich Meta",
+            "summary": "A rich summary",
+            "model": "llama3.1:8b",
+            "rag_enabled": True,
+        },
+    )
+
+    sf2 = sessions.session_file_for("meta-plain", sessions_dir)
+    sessions.save_session_messages(sf2, [{"role": "user", "content": "there"}])
+
+    ok, msg = sessions.merge_sessions(["meta-rich", "meta-plain"], "merged-rich", sessions_dir)
+    assert ok
+
+    merged_meta_file = sessions.meta_file_for(
+        sessions.session_file_for("merged-rich", sessions_dir)
+    )
+    merged_meta = sessions.load_session_meta(merged_meta_file)
+    assert merged_meta["summary"] == "A rich summary"
+    assert merged_meta["model"] == "llama3.1:8b"
+    assert merged_meta["rag_enabled"] is True
+
+
+def test_merge_sessions_save_failure_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf1 = sessions.session_file_for("merge-src", sessions_dir)
+    sessions.save_session_messages(sf1, [{"role": "user", "content": "hi"}])
+
+    def raise_save_meta(meta_file, meta):
+        # Write the meta file before failing so the cleanup branch has to
+        # unlink an *existing* output_meta_file (not just a no-op check).
+        meta_file.parent.mkdir(parents=True, exist_ok=True)
+        meta_file.write_text("partial")
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(sessions, "save_session_meta", raise_save_meta)
+
+    ok, msg = sessions.merge_sessions(["merge-src"], "merge-fail-out", sessions_dir)
+    assert not ok
+    assert msg.startswith("Failed to save merged session:")
+
+    output_file = sessions.session_file_for("merge-fail-out", sessions_dir)
+    output_meta_file = sessions.meta_file_for(output_file)
+    assert not output_file.exists()
+    assert not output_meta_file.exists()
+
+
+def test_merge_sessions_cleanup_failure_is_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If cleanup itself raises after a failed save, the error should be
+    swallowed and the original failure message still returned."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    sf1 = sessions.session_file_for("merge-src2", sessions_dir)
+    sessions.save_session_messages(sf1, [{"role": "user", "content": "hi"}])
+
+    def raise_save_meta(meta_file, meta):
+        meta_file.parent.mkdir(parents=True, exist_ok=True)
+        meta_file.write_text("partial")
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(sessions, "save_session_meta", raise_save_meta)
+
+    original_unlink = Path.unlink
+
+    def flaky_unlink(self, *args, **kwargs):
+        if self.name == "merge-fail-out2.json":
+            raise RuntimeError("cleanup unlink failed")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+
+    ok, msg = sessions.merge_sessions(["merge-src2"], "merge-fail-out2", sessions_dir)
+    assert not ok
+    assert msg.startswith("Failed to save merged session:")
+
+
+# --- batch operations: remaining failure branches ---
+
+
+def test_batch_tag_sessions_reports_failures(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sessions.init_session("real-session", sessions_dir, new_session=True, model="llama3.1:8b")
+
+    success, failure, failed = sessions.batch_tag_sessions(
+        ["real-session", "ghost-session"], ["tag1"], sessions_dir
+    )
+    assert success == 1
+    assert failure == 1
+    assert failed == ["ghost-session"]
+
+
+def test_batch_export_sessions_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    output_dir = tmp_path / "exports"
+
+    sessions.init_session("export-ok", sessions_dir, new_session=True, model="llama3.1:8b")
+    sf2, mf2, msgs2, meta2 = sessions.init_session(
+        "export-fail", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    msgs2.append({"role": "user", "content": "content"})
+    sessions.save_session_messages(sf2, msgs2)
+
+    original_write_text = Path.write_text
+
+    def flaky_write_text(self, *args, **kwargs):
+        if self.name == "export-fail.md":
+            raise OSError("disk full")
+        return original_write_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", flaky_write_text)
+
+    success, failure, failed = sessions.batch_export_sessions(
+        ["export-ok", "export-fail"], output_dir, sessions_dir, format="markdown"
+    )
+    assert success == 1
+    assert failure == 1
+    assert failed == ["export-fail"]
+
+
+def test_batch_export_sessions_html_format(tmp_path: Path) -> None:
+    """Covers the format == "html" branch of batch_export_sessions."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    output_dir = tmp_path / "exports_html"
+
+    sf, mf, msgs, meta = sessions.init_session(
+        "export-html", sessions_dir, new_session=True, model="llama3.1:8b"
+    )
+    msgs.append({"role": "user", "content": "hello"})
+    sessions.save_session_messages(sf, msgs)
+
+    success, failure, failed = sessions.batch_export_sessions(
+        ["export-html"], output_dir, sessions_dir, format="html"
+    )
+    assert success == 1
+    assert failure == 0
+    assert (output_dir / "export-html.html").exists()
+    assert "<!DOCTYPE html>" in (output_dir / "export-html.html").read_text()
+
+
+def test_batch_export_sessions_nonexistent_session(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    output_dir = tmp_path / "exports2"
+
+    success, failure, failed = sessions.batch_export_sessions(
+        ["nonexistent"], output_dir, sessions_dir, format="markdown"
+    )
+    assert success == 0
+    assert failure == 1
+    assert failed == ["nonexistent"]
+
+
+def test_batch_update_metadata_nonexistent_session(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+
+    success, failure, failed = sessions.batch_update_metadata(
+        ["nonexistent"], sessions_dir, pinned=True
+    )
+    assert success == 0
+    assert failure == 1
+    assert failed == ["nonexistent"]
+
+
+def test_batch_update_metadata_handles_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    sessions.init_session("update-fail", sessions_dir, new_session=True, model="llama3.1:8b")
+
+    def raise_error(meta_file, meta):
+        raise RuntimeError("write failed")
+
+    monkeypatch.setattr(sessions, "save_session_meta", raise_error)
+
+    success, failure, failed = sessions.batch_update_metadata(
+        ["update-fail"], sessions_dir, pinned=True
+    )
+    assert success == 0
+    assert failure == 1
+    assert failed == ["update-fail"]

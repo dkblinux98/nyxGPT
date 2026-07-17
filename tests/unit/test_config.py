@@ -6,16 +6,62 @@ from pathlib import Path
 import pytest
 
 from nyxgpt.config import (
+    get_ann_oversample_factor,
+    get_api_host,
     get_api_port,
+    get_batch_enabled,
+    get_batch_size,
+    get_batch_wait_time_ms,
+    get_canary_error_rate_threshold,
+    get_canary_latency_p95_threshold_ms,
+    get_canary_min_requests,
+    get_canary_namespace,
+    get_canary_step_percent,
+    get_canary_total_replicas,
+    get_cassandra_batch_query_concurrency,
+    get_cassandra_batch_size,
+    get_cassandra_health_check_interval,
+    get_cassandra_pool_size,
+    get_cassandra_reconnect_max_attempts,
+    get_chat_timeout_seconds,
+    get_context_warning_threshold,
+    get_context_window_size,
+    get_deploy_namespace,
+    get_error_tracking_config,
+    get_error_tracking_enabled,
+    get_log_aggregation_config,
+    get_log_aggregation_enabled,
     get_monitoring_config,
+    get_monitoring_enabled,
     get_monitoring_grafana_admin_password,
     get_prompt_mode_enabled,
     get_prompt_mode_long_threshold,
     get_prompt_mode_short_threshold,
+    get_rag_chat_context_max_chars,
+    get_rag_chat_top_k,
+    get_rag_context_format,
+    get_rag_debug_mode,
+    get_rag_dedupe,
     get_rag_enabled,
     get_rag_good_score_threshold,
+    get_rag_include_headers,
+    get_rag_include_scores,
+    get_rag_instruction_template,
+    get_rag_max_chunks,
     get_rag_medium_score_threshold,
+    get_rag_min_score,
+    get_rate_limit_config,
+    get_rate_limit_enabled,
+    get_self_heal_backoff_seconds,
+    get_self_heal_check_interval_seconds,
+    get_self_heal_default_enabled,
+    get_self_heal_max_consecutive_restarts,
+    get_system_prompt_minimize,
     get_tools_root,
+    get_tracing_config,
+    get_tracing_enabled,
+    get_vector_similarity_function,
+    get_vectorstore_dir,
     load_config,
     validate_config,
 )
@@ -123,6 +169,32 @@ def test_load_config_missing_file_raises_error() -> None:
     """load_config should raise FileNotFoundError for missing config file."""
     with pytest.raises(FileNotFoundError, match=r"Missing config file.*config\.ini"):
         load_config("/nonexistent/path/config.ini")
+
+
+def test_load_config_prints_validation_errors_on_first_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """load_config prints validation errors to stderr on first load, but doesn't raise."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+""".lstrip(),
+    )
+
+    # Force the "first load" path regardless of test ordering/module state.
+    monkeypatch.setattr("nyxgpt.config._CACHED_CFG", None)
+    monkeypatch.setattr("nyxgpt.config._CACHED_PATH", None)
+    monkeypatch.setattr("nyxgpt.config._CACHED_MTIME_NS", None)
+
+    cfg = load_config(str(ini))
+
+    captured = capsys.readouterr()
+    assert "ERROR: Configuration validation failed" in captured.err
+    assert "Missing required section: [ollama]" in captured.err
+    assert cfg.get("nyxgpt", "default_model") == "llama3.1:8b"
 
 
 def test_validate_config_detects_invalid_port(tmp_path: Path) -> None:
@@ -1138,3 +1210,796 @@ tools_root =
     cfg = load_config(str(ini))
 
     assert get_tools_root(cfg) == Path.home()
+
+
+# ---------------------------------------------------------------------------
+# validate_config: additional branches (api.host, ollama.base_url, rag ints,
+# chunk_overlap/chunk_size relationship)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_config_detects_blank_api_host(tmp_path: Path) -> None:
+    """validate_config should detect a blank/whitespace-only api.host."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[api]
+host =
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any("Invalid api.host" in err and "cannot be empty" in err for err in errors)
+
+
+def test_validate_config_detects_invalid_ollama_base_url(tmp_path: Path) -> None:
+    """validate_config should detect an ollama.base_url without http(s):// scheme."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[ollama]
+base_url = ftp://example.com
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any("Invalid ollama.base_url" in err and "must start with http" in err for err in errors)
+
+
+def test_validate_config_detects_rag_int_setting_out_of_range(tmp_path: Path) -> None:
+    """validate_config should detect a parseable but out-of-range rag int setting."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[rag]
+chat_top_k = 500
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any("Invalid rag.chat_top_k" in err and "must be 1-100" in err for err in errors)
+
+
+def test_validate_config_detects_rag_int_setting_non_integer(tmp_path: Path) -> None:
+    """validate_config should detect a non-integer rag int setting."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[rag]
+chat_top_k = not_a_number
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any("Invalid rag.chat_top_k" in err and "must be an integer" in err for err in errors)
+
+
+def test_validate_config_detects_chunk_overlap_gte_chunk_size(tmp_path: Path) -> None:
+    """validate_config should detect chunk_overlap >= chunk_size."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[rag]
+chunk_size = 500
+chunk_overlap = 500
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    errors = validate_config(cfg)
+
+    assert len(errors) > 0
+    assert any(
+        "Invalid RAG config: chunk_overlap" in err and "must be less than chunk_size" in err
+        for err in errors
+    )
+
+
+# ---------------------------------------------------------------------------
+# load_config: stat() failure branch (falls back to mtime_ns = None)
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_stat_failure_still_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """load_config should tolerate config_path.stat() raising and still load the file."""
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+""".lstrip(),
+    )
+
+    original_stat = Path.stat
+    call_count = {"n": 0}
+
+    def bad_stat(self: Path, *args: object, **kwargs: object) -> object:
+        if self == ini:
+            # The first call comes from config_path.exists() (line 165), which
+            # must succeed so we reach the explicit stat() call on line 172 --
+            # that second call is the one we want to fail.
+            call_count["n"] += 1
+            if call_count["n"] > 1:
+                raise OSError("simulated stat failure")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", bad_stat)
+
+    cfg = load_config(str(ini))
+    assert cfg.get("nyxgpt", "default_model") == "llama3.1:8b"
+
+
+# ---------------------------------------------------------------------------
+# get_chat_timeout_seconds: except branch
+# ---------------------------------------------------------------------------
+
+
+def test_get_chat_timeout_seconds_invalid_value(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+chat_timeout_seconds = not_a_number
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
+    timeout = get_chat_timeout_seconds(cfg)
+
+    assert timeout == 180
+    assert "Invalid nyxgpt.chat_timeout_seconds" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# get_vectorstore_dir / get_api_host: never directly exercised
+# ---------------------------------------------------------------------------
+
+
+def test_get_vectorstore_dir_default(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+
+    cfg = load_config(str(ini))
+    assert get_vectorstore_dir(cfg) == Path.home() / ".nyxGPT" / "vectorstore"
+
+
+def test_get_vectorstore_dir_override(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    custom = tmp_path / "custom-vectorstore"
+    _write(
+        ini,
+        f"""
+[nyxgpt]
+vectorstore_dir = {custom}
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_vectorstore_dir(cfg) == custom
+
+
+def test_get_api_host_default(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+
+    cfg = load_config(str(ini))
+    assert get_api_host(cfg) == "127.0.0.1"
+
+
+def test_get_api_host_override(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[api]
+host = 0.0.0.0
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_api_host(cfg) == "0.0.0.0"
+
+
+# ---------------------------------------------------------------------------
+# get_deploy_namespace / get_canary_namespace
+# ---------------------------------------------------------------------------
+
+
+def test_get_deploy_namespace_default() -> None:
+    cfg = load_config(None)
+    assert get_deploy_namespace(cfg) == "nyxgpt"
+
+
+def test_get_deploy_namespace_override(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[deploy]\nnamespace = custom-ns\n")
+
+    cfg = load_config(str(ini))
+    assert get_deploy_namespace(cfg) == "custom-ns"
+
+
+def test_get_canary_namespace_defaults_to_deploy_namespace(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[deploy]\nnamespace = custom-ns\n")
+
+    cfg = load_config(str(ini))
+    assert get_canary_namespace(cfg) == "custom-ns"
+
+
+def test_get_canary_namespace_override(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[deploy]\nnamespace = custom-ns\n[canary]\nnamespace = canary-ns\n")
+
+    cfg = load_config(str(ini))
+    assert get_canary_namespace(cfg) == "canary-ns"
+
+
+# ---------------------------------------------------------------------------
+# Canary getters: except branches
+# ---------------------------------------------------------------------------
+
+
+def test_get_canary_total_replicas_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[canary]\ntotal_replicas = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_canary_total_replicas(cfg) == 4
+
+
+def test_get_canary_step_percent_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[canary]\nstep_percent = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_canary_step_percent(cfg) == 25
+
+
+def test_get_canary_error_rate_threshold_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[canary]\nerror_rate_threshold_percent = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_canary_error_rate_threshold(cfg) == 5.0
+
+
+def test_get_canary_latency_p95_threshold_ms_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[canary]\nlatency_p95_threshold_ms = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_canary_latency_p95_threshold_ms(cfg) == 2000.0
+
+
+def test_get_canary_min_requests_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[canary]\nmin_requests_for_evaluation = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_canary_min_requests(cfg) == 20
+
+
+# ---------------------------------------------------------------------------
+# get_rag_enabled / _get_rag_enabled_legacy_alias: except branches
+# ---------------------------------------------------------------------------
+
+
+def test_get_rag_enabled_invalid_canonical_falls_through_to_legacy(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Invalid enable_chat_context should log and fall through to the legacy alias."""
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\nenable_chat_context = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
+    result = get_rag_enabled(cfg)
+
+    assert result is False
+    assert "Invalid rag.enable_chat_context" in caplog.text
+
+
+def test_get_rag_enabled_legacy_alias_invalid_value(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Invalid [rag] enabled (legacy alias) should log and return False."""
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\nenabled = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
+    result = get_rag_enabled(cfg)
+
+    assert result is False
+    assert "Invalid rag.enabled" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Simple rag getters: except branches (all fall back to their documented default)
+# ---------------------------------------------------------------------------
+
+
+def test_get_rag_chat_top_k_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\nchat_top_k = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_rag_chat_top_k(cfg) == 3
+
+
+def test_get_rag_min_score_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\nmin_score = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_rag_min_score(cfg) == 0.0
+
+
+def test_get_rag_max_chunks_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\nmax_chunks = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_rag_max_chunks(cfg) == 6
+
+
+def test_get_rag_chat_context_max_chars_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\nchat_context_max_chars = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_rag_chat_context_max_chars(cfg) == 2400
+
+
+def test_get_rag_dedupe_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ndedupe = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    assert get_rag_dedupe(cfg) is True
+
+
+def test_get_rag_include_scores_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ninclude_scores = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    assert get_rag_include_scores(cfg) is False
+
+
+def test_get_rag_include_headers_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ninclude_headers = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    assert get_rag_include_headers(cfg) is True
+
+
+def test_get_rag_debug_mode_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ndebug_mode = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    assert get_rag_debug_mode(cfg) is False
+
+
+def test_get_rag_good_score_threshold_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ngood_score_threshold = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_rag_good_score_threshold(cfg) == 0.7
+
+
+def test_get_rag_medium_score_threshold_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\nmedium_score_threshold = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_rag_medium_score_threshold(cfg) == 0.4
+
+
+# ---------------------------------------------------------------------------
+# Rate limit getters: except branches
+# ---------------------------------------------------------------------------
+
+
+def test_get_rate_limit_enabled_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rate_limit]\nenabled = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    assert get_rate_limit_enabled(cfg) is False
+
+
+def test_get_rate_limit_config_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rate_limit]\nrequests_per_second = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    result = get_rate_limit_config(cfg)
+
+    assert result == {"requests_per_second": 10, "burst_size": 20}
+
+
+# ---------------------------------------------------------------------------
+# get_context_window_size: model-specific inner except and outer except
+# ---------------------------------------------------------------------------
+
+
+def test_get_context_window_size_model_specific_invalid_falls_back_to_default(
+    tmp_path: Path,
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[context]
+default_window_size = 4096
+context_window_mistral = not_a_number
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_context_window_size(cfg, model="mistral") == 4096
+
+
+def test_get_context_window_size_default_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[context]\ndefault_window_size = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_context_window_size(cfg) == 8192
+
+
+def test_get_context_warning_threshold_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[context]\nwarning_threshold = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_context_warning_threshold(cfg) == 0.8
+
+
+def test_get_context_warning_threshold_valid_value_is_clamped(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[context]\nwarning_threshold = 1.5\n")
+
+    cfg = load_config(str(ini))
+    assert get_context_warning_threshold(cfg) == 1.0
+
+
+def test_get_system_prompt_minimize_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\nsystem_prompt_minimize = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    assert get_system_prompt_minimize(cfg) is False
+
+
+# ---------------------------------------------------------------------------
+# get_rag_instruction_template / get_rag_context_format / get_vector_similarity_function:
+# except branches, triggered via a stray "%" causing configparser's string
+# interpolation to raise InterpolationSyntaxError at .get() time.
+# ---------------------------------------------------------------------------
+
+
+def test_get_rag_instruction_template_interpolation_error_falls_back_to_default(
+    tmp_path: Path,
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ninstruction_template = 50% off today\n")
+
+    cfg = load_config(str(ini))
+    result = get_rag_instruction_template(cfg)
+
+    assert "Use the retrieved context below" in result
+
+
+def test_get_rag_context_format_interpolation_error_falls_back_to_default(
+    tmp_path: Path,
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ncontext_format = 50% off today\n")
+
+    cfg = load_config(str(ini))
+    result = get_rag_context_format(cfg)
+
+    assert "BEGIN RETRIEVED CONTEXT" in result
+
+
+def test_get_vector_similarity_function_interpolation_error_falls_back_to_cosine(
+    tmp_path: Path,
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\nvector_similarity_function = cos%ine\n")
+
+    cfg = load_config(str(ini))
+    assert get_vector_similarity_function(cfg) == "cosine"
+
+
+# ---------------------------------------------------------------------------
+# Cassandra getters: except branches
+# ---------------------------------------------------------------------------
+
+
+def test_get_cassandra_pool_size_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ncassandra_pool_size = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_cassandra_pool_size(cfg) == 2
+
+
+def test_get_cassandra_pool_size_valid_value_is_clamped(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ncassandra_pool_size = 8\n")
+
+    cfg = load_config(str(ini))
+    assert get_cassandra_pool_size(cfg) == 8
+
+
+def test_get_cassandra_health_check_interval_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ncassandra_health_check_interval = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_cassandra_health_check_interval(cfg) == 30.0
+
+
+def test_get_cassandra_health_check_interval_valid_value_is_clamped(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ncassandra_health_check_interval = 60.0\n")
+
+    cfg = load_config(str(ini))
+    assert get_cassandra_health_check_interval(cfg) == 60.0
+
+
+def test_get_cassandra_reconnect_max_attempts_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ncassandra_reconnect_max_attempts = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_cassandra_reconnect_max_attempts(cfg) == 3
+
+
+def test_get_cassandra_reconnect_max_attempts_valid_value_is_clamped(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ncassandra_reconnect_max_attempts = 5\n")
+
+    cfg = load_config(str(ini))
+    assert get_cassandra_reconnect_max_attempts(cfg) == 5
+
+
+def test_get_cassandra_batch_size_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ncassandra_batch_size = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_cassandra_batch_size(cfg) == 20
+
+
+def test_get_cassandra_batch_size_valid_value_is_clamped(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ncassandra_batch_size = 50\n")
+
+    cfg = load_config(str(ini))
+    assert get_cassandra_batch_size(cfg) == 50
+
+
+def test_get_ann_oversample_factor_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\nann_oversample_factor = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_ann_oversample_factor(cfg) == 1.0
+
+
+def test_get_cassandra_batch_query_concurrency_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\ncassandra_batch_query_concurrency = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_cassandra_batch_query_concurrency(cfg) == 4
+
+
+# ---------------------------------------------------------------------------
+# Batch getters: except branches
+# ---------------------------------------------------------------------------
+
+
+def test_get_batch_enabled_invalid(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[batch]\nenabled = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
+    assert get_batch_enabled(cfg) is False
+    assert "Invalid batch.enabled" in caplog.text
+
+
+def test_get_batch_size_valid_value_is_clamped(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[batch]\nbatch_size = 8\n")
+
+    cfg = load_config(str(ini))
+    assert get_batch_size(cfg) == 8
+
+
+def test_get_batch_size_invalid(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[batch]\nbatch_size = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
+    assert get_batch_size(cfg) == 4
+    assert "Invalid batch.batch_size" in caplog.text
+
+
+def test_get_batch_wait_time_ms_valid_value_is_clamped(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[batch]\nwait_time_ms = 250\n")
+
+    cfg = load_config(str(ini))
+    assert get_batch_wait_time_ms(cfg) == 250
+
+
+def test_get_batch_wait_time_ms_invalid(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[batch]\nwait_time_ms = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
+    assert get_batch_wait_time_ms(cfg) == 100
+    assert "Invalid batch.wait_time_ms" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Observability getters: except branches
+# ---------------------------------------------------------------------------
+
+
+def test_get_tracing_enabled_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[tracing]\nenabled = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    assert get_tracing_enabled(cfg) is False
+
+
+def test_get_tracing_config_returns_expected_shape(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[tracing]
+enabled = true
+service_name = my-service
+otlp_endpoint = http://collector:4318/v1/traces
+jaeger_ui_url = http://jaeger:16686
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    result = get_tracing_config(cfg)
+
+    assert result == {
+        "enabled": True,
+        "service_name": "my-service",
+        "otlp_endpoint": "http://collector:4318/v1/traces",
+        "jaeger_ui_url": "http://jaeger:16686",
+    }
+
+
+def test_get_error_tracking_enabled_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[error_tracking]\nenabled = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    assert get_error_tracking_enabled(cfg) is False
+
+
+def test_get_error_tracking_config_invalid_traces_sample_rate(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[error_tracking]\ntraces_sample_rate = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    result = get_error_tracking_config(cfg)
+
+    assert result["traces_sample_rate"] == 0.0
+
+
+def test_get_monitoring_enabled_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[monitoring]\nenabled = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    assert get_monitoring_enabled(cfg) is False
+
+
+def test_get_log_aggregation_enabled_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[log_aggregation]\nenabled = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    assert get_log_aggregation_enabled(cfg) is False
+
+
+def test_get_log_aggregation_config_returns_expected_shape(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[log_aggregation]
+enabled = true
+grafana_explore_url = http://grafana:3001/explore
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    result = get_log_aggregation_config(cfg)
+
+    assert result == {
+        "enabled": True,
+        "grafana_explore_url": "http://grafana:3001/explore",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Self-heal getters: except branches
+# ---------------------------------------------------------------------------
+
+
+def test_get_self_heal_default_enabled_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[self_heal]\nenabled = not_a_boolean\n")
+
+    cfg = load_config(str(ini))
+    assert get_self_heal_default_enabled(cfg) is False
+
+
+def test_get_self_heal_check_interval_seconds_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[self_heal]\ncheck_interval_seconds = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_self_heal_check_interval_seconds(cfg) == 15.0
+
+
+def test_get_self_heal_max_consecutive_restarts_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[self_heal]\nmax_consecutive_restarts = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_self_heal_max_consecutive_restarts(cfg) == 5
+
+
+def test_get_self_heal_backoff_seconds_invalid(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[self_heal]\nbackoff_seconds = not_a_number\n")
+
+    cfg = load_config(str(ini))
+    assert get_self_heal_backoff_seconds(cfg) == 30.0
