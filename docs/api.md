@@ -1510,6 +1510,9 @@ generating bibliographies or reference lists.
 
 **Response (`format=markdown`):** returned as `text/markdown` with a
 `Content-Disposition: attachment; filename="{name}-citations.md"` header.
+Citations with a missing (`null`) or malformed (non-string) `doc_id`/`text`
+field are rendered with that field coerced to a safe string instead of
+failing the export.
 
 **Error Responses:**
 - `400 Bad Request` - Invalid session name, or `format` is not `json`/`markdown`
