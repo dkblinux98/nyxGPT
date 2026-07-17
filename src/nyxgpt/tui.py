@@ -1484,7 +1484,13 @@ class NyxGPTTUI(App):
                                     first_content = False
                                 self.output.append(buffer)
                                 buffer = ""
-                            elif safe_idx == 0 and len(buffer) > MARKER_BUFFER_OVERFLOW_THRESHOLD:
+                            elif (  # pragma: no cover
+                                safe_idx == 0 and len(buffer) > MARKER_BUFFER_OVERFLOW_THRESHOLD
+                            ):
+                                # Unreachable with the current marker constants: safe_idx can only
+                                # be 0 when len(buffer) <= 15 (the longest marker prefix checked
+                                # above), which can never exceed MARKER_BUFFER_OVERFLOW_THRESHOLD
+                                # (100). Kept as a defensive safeguard in case those constants change.
                                 # Entire buffer is potential partial marker but too large, flush it
                                 if first_content and buffer.strip():
                                     self.output.remove_typing_indicator()
@@ -1529,7 +1535,13 @@ class NyxGPTTUI(App):
                                 first_content = False
                             self.output.append(buffer)
                             buffer = ""
-                        elif safe_idx == 0 and len(buffer) > MARKER_BUFFER_OVERFLOW_THRESHOLD:
+                        elif (  # pragma: no cover
+                            safe_idx == 0 and len(buffer) > MARKER_BUFFER_OVERFLOW_THRESHOLD
+                        ):
+                            # Unreachable with the current marker constants: safe_idx can only
+                            # be 0 when len(buffer) <= 15 (the longest marker prefix checked
+                            # above), which can never exceed MARKER_BUFFER_OVERFLOW_THRESHOLD
+                            # (100). Kept as a defensive safeguard in case those constants change.
                             # Entire buffer is potential partial marker but too large, flush it
                             if first_content and buffer.strip():
                                 self.output.remove_typing_indicator()
@@ -1553,5 +1565,5 @@ class NyxGPTTUI(App):
             self._unlock_prompt()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     NyxGPTTUI().run()
