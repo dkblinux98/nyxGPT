@@ -58,6 +58,29 @@ def test_chat_and_rag_counters_are_registered() -> None:
 
 
 @pytest.mark.unit
+def test_selfheal_metrics_are_registered() -> None:
+    prom_metrics.SELFHEAL_UNHEALTHY_COMPONENTS.set(2)
+    prom_metrics.SELFHEAL_RESTARTS_TOTAL.labels(service="unit-test-svc", result="ok").inc()
+    prom_metrics.SELFHEAL_RESTART_COUNT.labels(service="unit-test-svc").set(3)
+    prom_metrics.SELFHEAL_LAST_RECOVERY_TIMESTAMP.labels(service="unit-test-svc").set(1700000000)
+
+    body, _ = prom_metrics.render_metrics()
+    text = body.decode("utf-8")
+    names = _sample_names(text)
+
+    assert "nyxgpt_selfheal_unhealthy_components" in names
+    assert "nyxgpt_selfheal_restarts_total" in names
+    assert "nyxgpt_selfheal_restart_count" in names
+    assert "nyxgpt_selfheal_last_recovery_timestamp" in names
+
+    restart_samples = _samples(text, "nyxgpt_selfheal_restarts_total")
+    assert any(
+        s.labels.get("service") == "unit-test-svc" and s.labels.get("result") == "ok"
+        for s in restart_samples
+    )
+
+
+@pytest.mark.unit
 def test_metrics_endpoint_exposes_http_metrics() -> None:
     client = TestClient(app)
 

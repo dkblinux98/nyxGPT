@@ -59,6 +59,69 @@ action when **enabled** — controlled at runtime, not by editing
 exist yet); once that file exists, the dashboard/CLI/API toggle is the
 source of truth and config.ini is no longer consulted.
 
+## Observability: logs, metrics, and the Self-Healing dashboard
+
+Every self-heal decision is logged from `src/nyxgpt/self_heal.py` with
+structured fields (via the logging module's `extra={}`, rendered as JSON
+when `[logging] format = json` -- see
+[configuration.md](configuration.md#logging-section)):
+
+- **Per-component health check** (`self-heal: health check <service>
+  healthy=... state=... health=...`) -- logged at `DEBUG` on every check
+  (every `check_interval_seconds`) for every component. Set `[logging]
+  level = DEBUG` in config.ini to see these; they're intentionally not at
+  `INFO` since a healthy stack would otherwise log one line per component
+  every 15 seconds forever.
+- **Restart attempt** (`self-heal: attempting restart of <service>
+  (reason=..., attempt=N)`) and **outcome** (`self-heal: restart of
+  <service> succeeded/failed (restart_count=N): <message>`, `INFO` on
+  success, `ERROR` on failure) -- logged at `INFO`/`ERROR` since these are
+  actual actions, not routine polling.
+- **Backoff skip** (`self-heal: skipping restart of <service>, backoff
+  active (Xs remaining)`) -- `DEBUG`, since it repeats every check while a
+  component is in backoff.
+- **Restart-count reset** (`self-heal: <service> recovered, resetting
+  consecutive-restart count`) and **giving up** after
+  `max_consecutive_restarts` (`self-heal: giving up on <service>, N
+  consecutive restart(s) already failed (max=N)`) -- both `INFO`/`WARNING`.
+- **Watchdog start/stop** and a **heal-pass summary**
+  (`self-heal: heal pass complete (checked=N, unhealthy=N, healed=N,
+  manual=bool)`) after every automatic or manual pass -- `INFO`.
+
+**Metrics** (Prometheus, scraped from [`/metrics`](api.md#get-metrics)):
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `nyxgpt_selfheal_unhealthy_components` | Gauge | — | Components currently unhealthy or stopped |
+| `nyxgpt_selfheal_restarts_total` | Counter | `service`, `result` | Restart attempts, by service and outcome |
+| `nyxgpt_selfheal_restart_count` | Gauge | `service` | Current consecutive-restart count per service |
+| `nyxgpt_selfheal_last_recovery_timestamp` | Gauge | `service` | Unix timestamp of the last successful restart |
+
+**Grafana dashboard**: `docker/grafana/dashboards/self-healing.json` is
+auto-provisioned exactly like the other three dashboards (System Overview,
+RAG Performance, API Metrics -- see [docker-compose.md's Monitoring
+Dashboards](docker-compose.md#monitoring-dashboards)), no separate install
+step. It shows live unhealthy-component count, restarts in the last 24h,
+consecutive-restart count per service (the "backoff state" view), restart
+rate by service/outcome, time since each service's last recovery, and a
+Loki-backed restart/recovery event timeline.
+
+**Loki saved query** for self-heal events (heal attempts/outcomes), used by
+that timeline panel and pasteable directly into Grafana Explore:
+
+```logql
+{job="nyxgpt"} |= `self-heal:` |~ `restart|heal pass|giving up|recovered`
+```
+
+Requires the `logging` Compose profile (see [Log
+Aggregation](docker-compose.md#log-aggregation)).
+
+The SRE/admin dashboard's `/admin/self-heal` page links directly to both
+the Grafana Self-Healing dashboard and Grafana Explore with this query
+(when the `monitoring`/`logging` profiles are active), so an operator can
+go from "what's unhealthy right now" straight to "why" without leaving the
+app.
+
 ## Docker access from inside the `api` container
 
 The watchdog shells out to `docker compose ps`/`restart`, but it runs

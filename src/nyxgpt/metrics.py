@@ -12,6 +12,7 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
     CollectorRegistry,
     Counter,
+    Gauge,
     Histogram,
     generate_latest,
 )
@@ -50,6 +51,33 @@ RAG_QUERIES_TOTAL = Counter(
     "nyxgpt_rag_queries_total",
     "Total RAG retrieval queries executed",
     ["source"],
+    registry=REGISTRY,
+)
+
+SELFHEAL_UNHEALTHY_COMPONENTS = Gauge(
+    "nyxgpt_selfheal_unhealthy_components",
+    "Number of self-heal-monitored components currently unhealthy or stopped",
+    registry=REGISTRY,
+)
+
+SELFHEAL_RESTARTS_TOTAL = Counter(
+    "nyxgpt_selfheal_restarts_total",
+    "Total self-heal restart attempts, by service and outcome",
+    ["service", "result"],
+    registry=REGISTRY,
+)
+
+SELFHEAL_RESTART_COUNT = Gauge(
+    "nyxgpt_selfheal_restart_count",
+    "Current consecutive-restart count per service (resets to 0 once healthy again)",
+    ["service"],
+    registry=REGISTRY,
+)
+
+SELFHEAL_LAST_RECOVERY_TIMESTAMP = Gauge(
+    "nyxgpt_selfheal_last_recovery_timestamp",
+    "Unix timestamp of the last successful self-heal restart, by service",
+    ["service"],
     registry=REGISTRY,
 )
 
