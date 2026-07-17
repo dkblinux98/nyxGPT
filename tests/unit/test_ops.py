@@ -20,11 +20,13 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "_start_observability_stack", return_value=ok_results) as obs,
     ):
-        rc = ops.install(MagicMock())
+        rc = ops.install(MagicMock(skip_observability=False))
         assert rc == 0
         out = capsys.readouterr().out
         assert "[OK]" in out
+        obs.assert_called_once()
 
 
 @pytest.mark.unit
@@ -37,12 +39,30 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_install_homebrew_api", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_homebrew_web", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_start_observability_stack", return_value=[ops.OpsResult(True, "ok")]),
     ):
-        rc = ops.install(MagicMock())
+        rc = ops.install(MagicMock(skip_observability=False))
         assert rc == 2
         out = capsys.readouterr().out
         assert "[FAIL]" in out
         assert "details" in out
+
+
+@pytest.mark.unit
+def test_ops_install_skip_observability_flag_skips_the_step(capsys):
+    ok_results = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_install_scripts", return_value=ok_results),
+        patch.object(ops, "_ensure_web_deps", return_value=ok_results),
+        patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_homebrew_api", return_value=ok_results),
+        patch.object(ops, "_install_homebrew_web", return_value=ok_results),
+        patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "_start_observability_stack") as obs,
+    ):
+        rc = ops.install(MagicMock(skip_observability=True))
+        assert rc == 0
+        obs.assert_not_called()
 
 
 @pytest.mark.unit
@@ -1949,3 +1969,238 @@ def test_env_sync_logs_summary(caplog, tmp_path):
     messages = [r.getMessage() for r in caplog.records]
     assert any("env-sync starting" in m for m in messages)
     assert any("env-sync succeeded" in m for m in messages)
+
+
+# --- Observability stack ---
+
+
+@pytest.mark.unit
+def test_compose_available_false_without_docker(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: None)
+    assert ops._compose_available() is False
+
+
+@pytest.mark.unit
+def test_compose_available_false_when_compose_plugin_missing(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stderr="unknown command")
+    )
+    assert ops._compose_available() is False
+
+
+@pytest.mark.unit
+def test_compose_available_true(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="v2.38.2")
+    )
+    assert ops._compose_available() is True
+
+
+@pytest.mark.unit
+def test_start_observability_stack_skips_without_docker(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: False)
+    results = ops._start_observability_stack()
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert "Skipped observability stack" in results[0].message
+
+
+_ALL_COMPOSE_SERVICES = (
+    "grafana\nprometheus\nloki\npromtail\notel-collector\njaeger\n"
+    "glitchtip\nglitchtip-worker\nglitchtip-postgres\nglitchtip-redis\nglitchtip-migrate\n"
+    "nyxgpt\nollama\ncassandra\napi\nweb\n"
+)
+
+
+def _fake_run_resolving_services(calls, *, up_rc=0):
+    def fake_run(cmd, check=True):
+        calls.append(cmd)
+        if cmd[-2:] == ["config", "--services"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout=_ALL_COMPOSE_SERVICES)
+        return subprocess.CompletedProcess(cmd, up_rc, stderr="up failed" if up_rc else "")
+
+    return fake_run
+
+
+@pytest.mark.unit
+def test_start_observability_stack_runs_compose_up_with_all_profiles(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_run", _fake_run_resolving_services(calls))
+    monkeypatch.setattr(ops, "_enable_observability_config", lambda: None)
+
+    results = ops._start_observability_stack()
+
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert len(calls) == 2
+
+    services_cmd = calls[0]
+    assert services_cmd[:2] == ["docker", "compose"]
+    for profile in ops.OBSERVABILITY_PROFILES:
+        assert "--profile" in services_cmd
+        assert profile in services_cmd
+    assert services_cmd[-2:] == ["config", "--services"]
+
+    up_cmd = calls[1]
+    assert up_cmd[:2] == ["docker", "compose"]
+    for profile in ops.OBSERVABILITY_PROFILES:
+        assert "--profile" in up_cmd
+        assert profile in up_cmd
+    up_idx = up_cmd.index("up")
+    assert up_cmd[up_idx : up_idx + 2] == ["up", "-d"]
+    started_services = up_cmd[up_idx + 2 :]
+    assert started_services
+    assert "grafana" in started_services
+    assert "glitchtip" in started_services
+    # Regression guard: `--profile` alone does not stop Compose from also
+    # starting unprofiled "default" services, so the core app stack
+    # (ollama/cassandra/api/web) must never appear in the resolved `up -d`
+    # service list -- otherwise `nyxgpt ops install` on a native host would
+    # silently launch a full Dockerized copy of the app alongside it.
+    assert not (ops.CORE_APP_SERVICES & set(started_services))
+
+
+@pytest.mark.unit
+def test_start_observability_stack_excludes_core_app_services_even_if_listed(monkeypatch):
+    """Even if `config --services` reports core services, they must be filtered out."""
+    calls = []
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_run", _fake_run_resolving_services(calls))
+    monkeypatch.setattr(ops, "_enable_observability_config", lambda: None)
+
+    ops._start_observability_stack()
+
+    up_cmd = calls[1]
+    for core_service in ops.CORE_APP_SERVICES:
+        assert core_service not in up_cmd
+
+
+@pytest.mark.unit
+def test_start_observability_stack_reports_config_resolution_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stderr="profile error"),
+    )
+    enable_calls = []
+    monkeypatch.setattr(ops, "_enable_observability_config", lambda: enable_calls.append(True))
+
+    results = ops._start_observability_stack()
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "profile error" in results[0].details
+    # Config flags must not be flipped to enabled when the stack failed to start.
+    assert enable_calls == []
+
+
+@pytest.mark.unit
+def test_start_observability_stack_reports_up_failure(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_run", _fake_run_resolving_services(calls, up_rc=1))
+    enable_calls = []
+    monkeypatch.setattr(ops, "_enable_observability_config", lambda: enable_calls.append(True))
+
+    results = ops._start_observability_stack()
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "up failed" in results[0].details
+    assert enable_calls == []
+
+
+@pytest.mark.unit
+def test_start_observability_stack_no_services_resolved(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(
+            cmd, 0, stdout="nyxgpt\nollama\ncassandra\napi\nweb\n"
+        ),
+    )
+    enable_calls = []
+    monkeypatch.setattr(ops, "_enable_observability_config", lambda: enable_calls.append(True))
+
+    results = ops._start_observability_stack()
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "No observability services resolved" in results[0].message
+    assert enable_calls == []
+
+
+@pytest.mark.unit
+def test_enable_observability_config_sets_flags(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text(
+        "[monitoring]\nenabled = false\n\n[tracing]\nenabled = false\n",
+        encoding="utf-8",
+    )
+
+    ops._enable_observability_config(cfg_path=cfg_path)
+
+    from configparser import ConfigParser
+
+    parser = ConfigParser()
+    parser.read(cfg_path)
+    assert parser.get("monitoring", "enabled") == "true"
+    assert parser.get("tracing", "enabled") == "true"
+    assert parser.get("log_aggregation", "enabled") == "true"
+    # error_tracking needs a GlitchTip DSN nothing here can safely create --
+    # it must be left untouched.
+    assert not parser.has_section("error_tracking")
+
+
+@pytest.mark.unit
+def test_enable_observability_config_is_idempotent(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[monitoring]\nenabled = true\n", encoding="utf-8")
+    before_mtime = cfg_path.stat().st_mtime_ns
+
+    ops._enable_observability_config(cfg_path=cfg_path)
+    ops._enable_observability_config(cfg_path=cfg_path)
+
+    # Second call re-flips already-true monitoring plus adds the other
+    # sections once; a further no-op call shouldn't rewrite the file again.
+    from configparser import ConfigParser
+
+    parser = ConfigParser()
+    parser.read(cfg_path)
+    assert parser.get("monitoring", "enabled") == "true"
+    assert parser.get("tracing", "enabled") == "true"
+    assert cfg_path.stat().st_mtime_ns >= before_mtime
+
+
+@pytest.mark.unit
+def test_enable_observability_config_missing_file_is_a_noop(tmp_path):
+    cfg_path = tmp_path / "does-not-exist.ini"
+    # Must not raise.
+    ops._enable_observability_config(cfg_path=cfg_path)
+    assert not cfg_path.exists()
+
+
+@pytest.mark.unit
+def test_observability_cli_entrypoint_returns_zero_on_success(capsys):
+    with patch.object(ops, "_start_observability_stack", return_value=[ops.OpsResult(True, "up")]):
+        rc = ops.observability(MagicMock())
+        assert rc == 0
+        assert "[OK]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_observability_cli_entrypoint_returns_nonzero_on_failure(capsys):
+    with patch.object(
+        ops,
+        "_start_observability_stack",
+        return_value=[ops.OpsResult(False, "down", "boom")],
+    ):
+        rc = ops.observability(MagicMock())
+        assert rc == 2
+        assert "[FAIL]" in capsys.readouterr().out

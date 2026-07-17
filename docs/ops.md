@@ -39,6 +39,7 @@ nyxgpt ops restart
 nyxgpt ops doctor
 nyxgpt ops env-sync
 nyxgpt ops logs
+nyxgpt ops observability
 ```
 
 ---
@@ -54,11 +55,22 @@ This command:
 - Verifies Docker availability
 - Ensures the Cassandra container exists
 - Installs log-following helpers
+- Starts the observability stack (Grafana, Prometheus, Loki, promtail, the
+  OTel collector, Jaeger, GlitchTip) — see
+  [`nyxgpt ops observability`](#nyxgpt-ops-observability) below
 
 Usage:
 
 ```bash
 nyxgpt ops install
+```
+
+Pass `--skip-observability` to leave the monitoring/logging/tracing/errors
+Compose profiles stopped (e.g. on a host with no Docker, or to save
+resources):
+
+```bash
+nyxgpt ops install --skip-observability
 ```
 
 This command is idempotent. Existing services are not reinstalled unnecessarily.
@@ -224,6 +236,47 @@ scriptable equivalent of that dashboard button.
 
 ---
 
+## `nyxgpt ops observability`
+
+Starts the full SRE observability stack -- the `monitoring`, `logging`,
+`tracing`, and `errors` Docker Compose profiles (Grafana, Prometheus, Loki,
+promtail, the OTel collector, Jaeger, GlitchTip) -- so operators never run a
+raw `docker compose --profile <name> up` command themselves.
+
+Usage:
+
+```bash
+nyxgpt ops observability
+```
+
+`nyxgpt ops install` already runs this by default (see
+[`nyxgpt ops install`](#nyxgpt-ops-install) above); use this command on its
+own to re-run it later (e.g. after a reboot, or if you first installed with
+`--skip-observability`).
+
+Behavior:
+
+- Idempotent -- `docker compose up -d` only (re)creates what's
+  missing/changed, so re-running never duplicates a dashboard or container.
+- Skips (without failing) on a host with no Docker, since these tools have
+  no native/Homebrew path -- see [docker-compose.md](docker-compose.md).
+- Once the profiles are up, flips `[monitoring]`, `[log_aggregation]`, and
+  `[tracing] enabled = true` in `~/.nyxGPT/config.ini` so the SRE/admin
+  dashboard (`/admin/observability`) immediately reflects that they're
+  live, instead of still showing "opt-in, not running".
+- Deliberately leaves `[error_tracking] enabled` and `dsn` untouched:
+  GlitchTip needs a human to sign in and create a project before it has a
+  DSN to report to -- see [Error Tracking](api.md#error-tracking) and the
+  Error Tracking panel on `/admin/observability` for that one remaining
+  manual step.
+
+Grafana dashboards, the Operational Logs curated Loki queries, and the
+curated Jaeger trace views are all pre-provisioned as code (see
+[docker-compose.md](docker-compose.md#monitoring-dashboards)) -- starting
+the stack is the only step needed to get a populated SRE view.
+
+---
+
 ## Logs
 
 All nyxGPT-managed services write logs under:
@@ -244,7 +297,7 @@ Typical files include:
 ### Structured `nyxgpt ops` activity logging
 
 Every `nyxgpt ops` command (`install`, `status`, `restart`, `logs`,
-`env-sync`, `doctor`) logs its steps and outcomes from
+`env-sync`, `doctor`, `observability`) logs its steps and outcomes from
 `src/nyxgpt/ops.py` with structured fields (via the logging module's
 `extra={}`, rendered as JSON when `[logging] format = json` -- see
 [configuration.md](configuration.md#logging-section)), in addition to the

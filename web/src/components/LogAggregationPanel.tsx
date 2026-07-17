@@ -2,10 +2,17 @@
 
 import { useEffect, useState } from 'react';
 
+type CuratedQuery = {
+  label: string;
+  hint: string;
+  query: string;
+};
+
 type LogAggregationStatus = {
   enabled: boolean;
   active: boolean;
   grafana_explore_url: string;
+  curated_queries: CuratedQuery[];
 };
 
 export default function LogAggregationPanel() {
@@ -66,15 +73,18 @@ export default function LogAggregationPanel() {
             sent to an external/cloud log service.
           </p>
           <p style={{ margin: 0, color: '#666' }}>
-            To enable: set <code>[log_aggregation] enabled = true</code> in{' '}
             <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
-              ~/.nyxGPT/config.ini
+              nyxgpt ops install
             </code>{' '}
-            and start the local stack with{' '}
+            starts the local stack and flips this on automatically. If you skipped it (
             <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
-              docker compose --profile logging up
+              --skip-observability
             </code>
-            .
+            ) or need to re-run it, use{' '}
+            <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
+              nyxgpt ops observability
+            </code>{' '}
+            -- no raw <code>docker</code> command needed.
           </p>
         </>
       )}
@@ -93,6 +103,36 @@ export default function LogAggregationPanel() {
           >
             Open Grafana Explore ↗
           </a>
+
+          {status.curated_queries && status.curated_queries.length > 0 && (
+            <div style={{ marginTop: '0.75rem' }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Curated saved queries</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {status.curated_queries.map((q) => (
+                  <div key={q.label}>
+                    <div style={{ fontSize: 13 }}>{q.label}</div>
+                    <div style={{ color: '#666', fontSize: 12, marginBottom: 2 }}>{q.hint}</div>
+                    <code
+                      style={{
+                        display: 'block',
+                        background: 'var(--code-bg)',
+                        padding: '2px 6px',
+                        borderRadius: 4,
+                        fontSize: 12,
+                        overflowWrap: 'anywhere',
+                      }}
+                    >
+                      {q.query}
+                    </code>
+                  </div>
+                ))}
+              </div>
+              <p style={{ margin: '0.5rem 0 0 0', color: '#666', fontSize: 12 }}>
+                Paste any of these into Grafana Explore (Loki datasource), or find them as panels
+                on the &quot;Operational Logs&quot; dashboard.
+              </p>
+            </div>
+          )}
         </>
       )}
     </div>

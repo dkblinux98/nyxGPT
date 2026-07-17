@@ -141,8 +141,11 @@ export default function ErrorTrackingPanel() {
           </p>
           <ol style={{ margin: '0 0 0.75rem 0', paddingLeft: '1.25rem', color: '#666' }}>
             <li style={{ marginBottom: 4 }}>
-              Start the local tracker:{' '}
-              <code style={codeStyle}>docker compose --profile errors up</code>
+              The local tracker is already running -- <code style={codeStyle}>nyxgpt ops install</code>{' '}
+              starts it automatically. If you skipped it (<code style={codeStyle}>--skip-observability</code>)
+              or need to re-run it, use <code style={codeStyle}>nyxgpt ops observability</code>. This
+              step is the one part of the SRE suite that still needs a human: nothing can safely
+              create your GlitchTip account or its DSN for you.
             </li>
             <li style={{ marginBottom: 4 }}>
               Register the first account at{' '}

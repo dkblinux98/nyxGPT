@@ -75,15 +75,18 @@ export default function TracingPanel() {
             Jaeger instance -- no data ever leaves this machine.
           </p>
           <p style={{ margin: 0, color: '#666' }}>
-            To enable: set <code>[tracing] enabled = true</code> in{' '}
             <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
-              ~/.nyxGPT/config.ini
+              nyxgpt ops install
             </code>{' '}
-            and start the local collector with{' '}
+            starts the local collector and flips this on automatically. If you skipped it (
             <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
-              docker compose --profile tracing up
+              --skip-observability
             </code>
-            .
+            ) or need to re-run it, use{' '}
+            <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
+              nyxgpt ops observability
+            </code>{' '}
+            -- no raw <code>docker</code> command needed.
           </p>
         </>
       )}

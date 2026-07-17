@@ -3245,10 +3245,12 @@ otlp_endpoint = http://localhost:4318/v1/traces
 jaeger_ui_url = http://localhost:16686
 ```
 
-Then start the local collector + Jaeger all-in-one (opt-in Compose profile):
+The local collector + Jaeger all-in-one (`tracing` Compose profile) already
+starts automatically with `nyxgpt ops install`. To start it on its own or
+re-run it later (never a raw `docker compose` command):
 
 ```bash
-docker compose --profile tracing up
+nyxgpt ops observability
 ```
 
 Browse traces at `http://localhost:16686` (also linked from the SRE/admin
@@ -3337,10 +3339,13 @@ with a DSN:
 
 **Enabling error tracking:**
 
-1. Start the local tracker (opt-in Compose profile):
+1. The local tracker (`errors` Compose profile) already starts
+   automatically with `nyxgpt ops install`. If you skipped it
+   (`--skip-observability`) or need to re-run it, use (never a raw `docker
+   compose` command):
 
    ```bash
-   docker compose --profile errors up
+   nyxgpt ops observability
    ```
 
 2. Register the first account at `http://localhost:8080`. Its confirmation
@@ -3441,11 +3446,12 @@ grafana_ui_url = http://localhost:3001
 prometheus_ui_url = http://localhost:9090
 ```
 
-Then start the local Prometheus + Grafana instances (opt-in Compose
-profile):
+The local Prometheus + Grafana instances (`monitoring` Compose profile)
+already start automatically with `nyxgpt ops install`. To start it on its
+own or re-run it later (never a raw `docker compose` command):
 
 ```bash
-docker compose --profile monitoring up
+nyxgpt ops observability
 ```
 
 Browse dashboards at `http://localhost:3001` (also linked from the
@@ -3473,7 +3479,14 @@ curl http://127.0.0.1:8000/api/v1/log-aggregation
 {
   "enabled": true,
   "grafana_explore_url": "http://localhost:3001/explore",
-  "active": true
+  "active": true,
+  "curated_queries": [
+    {
+      "label": "Self-heal events",
+      "hint": "Restart / recovery / backoff activity",
+      "query": "{job=\"nyxgpt\", logger=\"nyxgpt.self_heal\"}"
+    }
+  ]
 }
 ```
 
@@ -3481,6 +3494,7 @@ curl http://127.0.0.1:8000/api/v1/log-aggregation
 - `enabled` - Whether `[log_aggregation] enabled = true` in config.ini
 - `grafana_explore_url` - URL of the Grafana Explore view for searching logs
 - `active` - Mirrors `enabled` (the Loki/promtail stack itself runs outside this process, as Docker Compose services)
+- `curated_queries` - Saved LogQL queries provisioned as code, mirroring the per-component panels in the Operational Logs dashboard (self-heal, deploy, canary, chat errors, RAG pipeline) -- each has a `label`, a `hint`, and the raw `query` text to paste into Grafana Explore
 
 **How it works:**
 
@@ -3500,11 +3514,13 @@ enabled = true
 grafana_explore_url = http://localhost:3001/explore
 ```
 
-Then start the local Loki + promtail instances (opt-in Compose profile),
-alongside the `monitoring` profile for Grafana:
+The local Loki + promtail instances (`logging` Compose profile), alongside
+the `monitoring` profile for Grafana, already start automatically with
+`nyxgpt ops install`. To start them on their own or re-run them later
+(never a raw `docker compose` command):
 
 ```bash
-docker compose --profile monitoring --profile logging up
+nyxgpt ops observability
 ```
 
 Search logs at `http://localhost:3001/explore` (also linked from the

@@ -18,6 +18,7 @@ import subprocess
 import tarfile
 import tomllib
 from collections.abc import Callable
+from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -785,12 +786,18 @@ def _ensure_mcp_deps() -> list[OpsResult]:
     return results
 
 
-def install(_args) -> int:
+def install(args) -> int:
     """CLI entrypoint for `nyxgpt ops install`.
 
     Runs every install step (scripts, web deps, MCP deps, Cassandra
-    LaunchAgent, Homebrew formulas, log symlinks), printing an OK/FAIL line
-    per result. A failure in one step doesn't stop the rest from running.
+    LaunchAgent, Homebrew formulas, log symlinks, the observability stack),
+    printing an OK/FAIL line per result. A failure in one step doesn't stop
+    the rest from running.
+
+    The observability step (Grafana/Loki/Jaeger/GlitchTip) runs by default so
+    a fresh install comes up with the full SRE view already populated --
+    pass `--skip-observability` to opt out (e.g. on a host with no Docker,
+    or to keep those Compose profiles stopped for resource reasons).
 
     Returns 0 if every step succeeded, else 2.
     """
@@ -806,6 +813,8 @@ def install(_args) -> int:
         ("homebrew web", _install_homebrew_web),
         ("log symlinks", _ensure_log_symlinks),
     ]
+    if not getattr(args, "skip_observability", False):
+        steps.append(("observability stack", _start_observability_stack))
     for step_name, fn in steps:
         try:
             results += fn()
@@ -1116,6 +1125,188 @@ def logs(args) -> int:
         extra={"component": "ops", "action": "logs", "service": service, "ok": True},
     )
     return 0
+
+
+# --- Observability stack (Grafana/Prometheus/Loki/Jaeger/GlitchTip) ---
+
+# Docker Compose profiles that make up the SRE observability suite. These
+# tools have no native/Homebrew path (see docker/config.docker.ini) -- they
+# only ever run as Compose services, regardless of whether the core app
+# (api/web/cassandra/ollama) is deployed native or Compose.
+OBSERVABILITY_PROFILES: list[str] = ["monitoring", "logging", "tracing", "errors"]
+
+# Core app services in docker-compose.yml that have no `profiles:` key, which
+# makes Compose treat them as "default" services started on *every* `up`
+# regardless of which `--profile` flags are passed -- `--profile` only adds
+# services, it never filters the always-on ones. `_start_observability_stack`
+# must explicitly exclude these from the service list it starts, or `nyxgpt
+# ops install` would silently bring up a full Dockerized copy of the app
+# (building api/web images) alongside a native install.
+CORE_APP_SERVICES: frozenset[str] = frozenset({"nyxgpt", "ollama", "cassandra", "api", "web"})
+
+# config.ini sections flipped to `enabled = true` once their matching
+# Compose profile is confirmed up, so the SRE/admin dashboard (and, for
+# tracing, the API's own span-export init) reflect that the stack is
+# actually live instead of still showing "opt-in, not running". Deliberately
+# excludes `error_tracking`: it needs a GlitchTip project DSN, which nothing
+# here can safely provision without an owner to sign in and create it -- see
+# `_start_observability_stack`'s returned message.
+OBSERVABILITY_ENABLE_SECTIONS: list[str] = ["monitoring", "log_aggregation", "tracing"]
+
+
+def _compose_available() -> bool:
+    """Return True if both `docker` and `docker compose` are usable on this host."""
+    if _which("docker") is None:
+        return False
+    cp = _run(["docker", "compose", "version"], check=False)
+    return cp.returncode == 0
+
+
+def _enable_observability_config(cfg_path: Path | None = None) -> None:
+    """Flip `enabled = true` for `OBSERVABILITY_ENABLE_SECTIONS` in config.ini.
+
+    Only writes the file if a change is actually needed, so re-running
+    `nyxgpt ops install`/`nyxgpt ops observability` after the first time is a
+    no-op here. Silently does nothing if config.ini doesn't exist yet (run
+    `nyxgpt wizard` first) -- this is a follow-on convenience, not something
+    that should fail the observability step itself.
+    """
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return
+
+    parser = ConfigParser()
+    parser.optionxform = str  # type: ignore[assignment]
+    parser.read(cfg_path)
+
+    changed = False
+    for section in OBSERVABILITY_ENABLE_SECTIONS:
+        if not parser.has_section(section):
+            parser.add_section(section)
+        if parser.get(section, "enabled", fallback="false").strip().lower() != "true":
+            parser.set(section, "enabled", "true")
+            changed = True
+
+    if not changed:
+        return
+
+    with cfg_path.open("w", encoding="utf-8") as f:
+        parser.write(f)
+    os.chmod(cfg_path, 0o600)
+
+
+def _start_observability_stack() -> list[OpsResult]:
+    """Start the Grafana/Loki/Jaeger/GlitchTip Compose profiles (idempotent).
+
+    Wraps `docker compose --profile monitoring --profile logging --profile
+    tracing --profile errors up -d <services>` so operators never type that
+    raw command themselves (the ops-wrapper principle) -- dashboards are
+    already pre-provisioned as code via docker/grafana/provisioning, so
+    bringing the stack up is the only step needed to get a populated SRE
+    view. Re-running is safe: `docker compose up -d` only (re)creates what's
+    missing/changed.
+
+    The service list passed to `up -d` is resolved dynamically via `docker
+    compose config --services` and explicitly excludes `CORE_APP_SERVICES`.
+    This matters because `ollama`/`cassandra`/`api`/`web` have no `profiles:`
+    key in docker-compose.yml, so Compose treats them as always-on default
+    services -- `--profile` flags alone would NOT stop `up -d` from also
+    building and starting the entire core app stack, which would collide
+    with a native install's own processes on the same ports.
+
+    Skips (without failing `ops install`) on hosts without Docker: these
+    tools have no native/Homebrew path, so a native-only host simply won't
+    have dashboards until Docker is installed.
+    """
+    if not _compose_available():
+        return [
+            OpsResult(
+                True,
+                "Skipped observability stack (Docker not found)",
+                "Grafana/Loki/Jaeger/GlitchTip only ship as Docker Compose profiles -- "
+                "install Docker, then re-run `nyxgpt ops install` (or `nyxgpt ops "
+                "observability`) to get dashboards. See docs/docker-compose.md.",
+            )
+        ]
+
+    base_cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE)]
+    for profile in OBSERVABILITY_PROFILES:
+        base_cmd += ["--profile", profile]
+
+    services_cp = _run(base_cmd + ["config", "--services"], check=False)
+    if services_cp.returncode != 0:
+        return [
+            OpsResult(
+                False,
+                "Failed to resolve observability services",
+                (services_cp.stderr or services_cp.stdout or "").strip(),
+            )
+        ]
+
+    observability_services = sorted(
+        {s.strip() for s in services_cp.stdout.splitlines() if s.strip()} - CORE_APP_SERVICES
+    )
+    if not observability_services:
+        return [
+            OpsResult(
+                False,
+                "No observability services resolved",
+                "`docker compose config --services` returned no services outside the "
+                "core app stack for the monitoring/logging/tracing/errors profiles -- "
+                "check docker-compose.yml.",
+            )
+        ]
+
+    cmd = base_cmd + ["up", "-d"] + observability_services
+
+    cp = _run(cmd, check=False)
+    if cp.returncode != 0:
+        return [
+            OpsResult(
+                False,
+                "Failed to start observability stack",
+                (cp.stderr or cp.stdout or "").strip(),
+            )
+        ]
+
+    _enable_observability_config()
+
+    return [
+        OpsResult(
+            True,
+            "Observability stack up: Grafana http://localhost:3001, "
+            "Jaeger http://localhost:16686, Loki via Grafana Explore, "
+            "GlitchTip http://localhost:8080",
+            "Dashboards, tracing, and log search are live with no further steps. GlitchTip "
+            "has one remaining manual step: sign in, create a project, and paste its DSN "
+            "into [error_tracking] dsn in config.ini -- nothing here can safely create "
+            "that DSN without an owner to sign in and claim the account first. See "
+            "docs/self-healing.md.",
+        )
+    ]
+
+
+def observability(_args) -> int:
+    """CLI entrypoint for `nyxgpt ops observability`.
+
+    Starts the monitoring/logging/tracing/errors Compose profiles (Grafana,
+    Prometheus, Loki, promtail, the OTel collector, Jaeger, GlitchTip) so
+    operators never need to run a raw `docker compose --profile X up`
+    themselves. Idempotent: re-running just confirms everything is already up.
+
+    Returns 0 on success, else 2.
+    """
+    logger.info(
+        "ops: observability starting", extra={"component": "ops", "action": "observability"}
+    )
+    results = _start_observability_stack()
+    ok = _emit_results("observability", results)
+    logger.info(
+        "ops: observability %s",
+        "succeeded" if ok else "failed",
+        extra={"component": "ops", "action": "observability", "ok": ok},
+    )
+    return 0 if ok else 2
 
 
 # --- Env sync public API ---
