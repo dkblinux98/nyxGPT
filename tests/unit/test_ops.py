@@ -1470,6 +1470,83 @@ def test_ensure_log_symlinks_reports_failure_on_exception(monkeypatch, tmp_path)
     assert all("Failed to symlink" in r.message for r in results)
 
 
+@pytest.mark.unit
+def test_ensure_log_symlinks_skips_ollama_when_compose_container_present(monkeypatch, tmp_path):
+    """Compose mode: `follow-ollama-logs.sh` owns ollama.log, so this must leave it alone.
+
+    Regression test for the #3276 review finding: previously this
+    unconditionally replaced ollama.log with a (dangling, in Compose mode)
+    symlink, clobbering the file the log-follower LaunchAgent was actively
+    appending to.
+    """
+    home = tmp_path / "home"
+    (home / ".nyxGPT" / "logs").mkdir(parents=True)
+    real_log = home / ".nyxGPT" / "logs" / "ollama.log"
+    real_log.write_text("existing ollama container logs\n", encoding="utf-8")
+
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
+    monkeypatch.setattr(
+        ops,
+        "_docker_container_state",
+        lambda name: "running" if name == ops.OLLAMA_CONTAINER_NAME else "absent",
+    )
+
+    results = ops._ensure_log_symlinks()
+    assert all(r.ok for r in results)
+    ollama_result = next(r for r in results if "ollama.log" in r.message)
+    assert "Skipped" in ollama_result.message
+
+    assert not real_log.is_symlink()
+    assert real_log.read_text(encoding="utf-8") == "existing ollama container logs\n"
+
+
+@pytest.mark.unit
+def test_ensure_log_symlinks_symlinks_ollama_when_no_compose_container(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+
+    results = ops._ensure_log_symlinks()
+    assert all(r.ok for r in results)
+    ollama_link = home / ".nyxGPT" / "logs" / "ollama.log"
+    assert ollama_link.is_symlink()
+
+
+@pytest.mark.unit
+def test_install_step_order_does_not_clobber_compose_ollama_log(monkeypatch, tmp_path):
+    """Integration-style check of the two steps in `install()`'s actual order.
+
+    Runs `_install_ollama_launchagent()` followed by `_ensure_log_symlinks()`
+    -- the order `install()` uses -- against a fake home dir with a
+    pre-existing real ollama.log (simulating an already-running Compose
+    follower), which is exactly the scenario the #3276 review found broken.
+    """
+    tpl = tmp_path / "com.nyxgpt.ollama-logs.plist"
+    tpl.write_text("<plist/>", encoding="utf-8")
+    home = tmp_path / "home"
+    (home / ".nyxGPT" / "logs").mkdir(parents=True)
+    real_log = home / ".nyxGPT" / "logs" / "ollama.log"
+    real_log.write_text("existing ollama container logs\n", encoding="utf-8")
+
+    monkeypatch.setattr(ops, "_find_launchagent_template", lambda name: (tpl, [tpl]))
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+    monkeypatch.setattr(
+        ops,
+        "_docker_container_state",
+        lambda name: "running" if name == ops.OLLAMA_CONTAINER_NAME else "absent",
+    )
+
+    ops._install_ollama_launchagent()
+    ops._ensure_log_symlinks()
+
+    assert not real_log.is_symlink()
+    assert real_log.read_text(encoding="utf-8") == "existing ollama container logs\n"
+
+
 # --- _create_dist_tarball ---
 
 

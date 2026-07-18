@@ -59,6 +59,11 @@ COMPOSE_COMPONENT_PORTS: dict[str, int] = {
 NATIVE_CONFIG_HINT = "~/.nyxGPT/config.ini"
 COMPOSE_CONFIG_HINT = "docker/config.docker.ini (mounted into the Compose 'api' container)"
 
+# Referenced by `_ensure_log_symlinks` to detect Compose mode and avoid
+# clobbering the file `follow-ollama-logs.sh`/its LaunchAgent is actively
+# writing to (see #3276 review).
+OLLAMA_CONTAINER_NAME = "nyxgpt-ollama"
+
 # Container path promtail's docker-compose.yml service binds to native-mode
 # host logs (~/.nyxGPT/logs). `_log_aggregation_wiring_issue` greps for this
 # marker to catch a regression (see #3277) where that bind mount is dropped
@@ -513,6 +518,13 @@ def _ensure_log_symlinks() -> list[OpsResult]:
     Compose mode Ollama isn't a Homebrew service at all -- `nyxgpt-ollama-logs`
     (see `_install_ollama_launchagent`) follows the container's docker logs
     into this same `ollama.log` path instead.
+
+    Skips the `ollama.log` entry entirely when a `nyxgpt-ollama` Docker
+    container exists: in that case `follow-ollama-logs.sh` (via its
+    LaunchAgent) owns that path and is actively appending to it, so
+    replacing it with a (likely dangling, since there's no Homebrew Ollama
+    log in Compose mode) symlink here would silently cut off Loki's view of
+    Ollama's logs on every `nyxgpt ops install` re-run (see #3276 review).
     """
     results: list[OpsResult] = []
     home_logs = Path.home() / ".nyxGPT" / "logs"
@@ -526,8 +538,18 @@ def _ensure_log_symlinks() -> list[OpsResult]:
     ]
     for base, exts in targets:
         for ext in exts:
-            src = brew_logs / f"{base}{ext}"
             dst = home_logs / f"{base}{ext}"
+            if base == "ollama" and _docker_container_state(OLLAMA_CONTAINER_NAME) != "absent":
+                results.append(
+                    OpsResult(
+                        True,
+                        f"Skipped {dst.name} symlink (Compose-mode {OLLAMA_CONTAINER_NAME} "
+                        "container owns this file via follow-ollama-logs.sh)",
+                        str(dst),
+                    )
+                )
+                continue
+            src = brew_logs / f"{base}{ext}"
             try:
                 if dst.exists() or dst.is_symlink():
                     dst.unlink()
