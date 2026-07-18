@@ -327,12 +327,8 @@ def test_reindex_collection_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
             json={"target_embedding_model": "m", "embedding_dim": 768},
         )
 
-    # The 404 HTTPException raised inside the outer try block is re-caught by
-    # the endpoint's own blanket `except Exception` handler and re-wrapped,
-    # so the final response is a 500 -- this is the endpoint's real, observed
-    # behavior (not a test assumption).
-    assert resp.status_code == 500
-    assert "Failed to re-index collection" in resp.json()["error"]["message"]
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["error"]["message"]
     store.close.assert_called_once()
 
 
@@ -372,8 +368,11 @@ def test_reindex_collection_embed_failure_returns_500(monkeypatch: pytest.Monkey
             json={"target_embedding_model": "m", "embedding_dim": 768},
         )
 
+    # The embedding failure is already raised as an HTTPException(500) with a
+    # specific detail message inside the handler; that HTTPException now
+    # propagates as-is instead of being re-wrapped by the outer catch-all.
     assert resp.status_code == 500
-    assert "Failed to re-index collection" in resp.json()["error"]["message"]
+    assert "Failed to generate embeddings" in resp.json()["error"]["message"]
     store.close.assert_called_once()
 
 

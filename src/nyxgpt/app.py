@@ -3545,6 +3545,8 @@ def rag_collection_reindex(
             chunks_processed=chunks_total,
             chunks_total=chunks_total,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"Failed to re-index collection '{collection_name}': {e}", exc_info=True)
         raise HTTPException(
