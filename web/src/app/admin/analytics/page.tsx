@@ -136,16 +136,16 @@ export default function AdminAnalyticsPage() {
         <LoadingSpinner label="Loading usage analytics..." />
       ) : error ? (
         <ErrorMessage title="Failed to load usage analytics" message={error} onRetry={loadSummary} retrying={loading} />
-      ) : summary ? (
+      ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
           {/* Summary stat tiles */}
           <section aria-label="Usage totals">
             <div style={{ display: 'grid', gap: '1rem', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
-              <StatTile label="Total requests" value={formatNumber(summary.total_requests)} />
-              <StatTile label="Total tokens" value={formatNumber(summary.total_tokens)} />
-              <StatTile label="Prompt tokens" value={formatNumber(summary.total_prompt_tokens)} />
-              <StatTile label="Completion tokens" value={formatNumber(summary.total_completion_tokens)} />
-              <StatTile label="Sessions" value={formatNumber(summary.session_count)} />
+              <StatTile label="Total requests" value={formatNumber(summary!.total_requests)} />
+              <StatTile label="Total tokens" value={formatNumber(summary!.total_tokens)} />
+              <StatTile label="Prompt tokens" value={formatNumber(summary!.total_prompt_tokens)} />
+              <StatTile label="Completion tokens" value={formatNumber(summary!.total_completion_tokens)} />
+              <StatTile label="Sessions" value={formatNumber(summary!.session_count)} />
             </div>
           </section>
 
@@ -153,7 +153,7 @@ export default function AdminAnalyticsPage() {
             {/* Model usage breakdown */}
             <section style={cardStyle} aria-label="Model usage breakdown">
               <h2 style={sectionTitleStyle}>Model Usage</h2>
-              {summary.by_model.length === 0 ? (
+              {summary!.by_model.length === 0 ? (
                 <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>No usage recorded yet.</p>
               ) : (
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
@@ -166,7 +166,7 @@ export default function AdminAnalyticsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {summary.by_model.map((m) => (
+                    {summary!.by_model.map((m) => (
                       <tr key={m.model} style={{ borderBottom: '1px solid var(--border-light)' }}>
                         <td style={{ padding: '6px 4px' }}>{m.model}</td>
                         <td style={{ padding: '6px 4px' }}>{formatNumber(m.requests)}</td>
@@ -182,11 +182,11 @@ export default function AdminAnalyticsPage() {
             {/* Requests over time */}
             <section style={cardStyle} aria-label="Requests over time">
               <h2 style={sectionTitleStyle}>Requests by Day</h2>
-              {summary.by_day.length === 0 ? (
+              {summary!.by_day.length === 0 ? (
                 <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>No usage recorded yet.</p>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {summary.by_day.map((d) => (
+                  {summary!.by_day.map((d) => (
                     <div key={d.date} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
                       <span style={{ width: 90, color: 'var(--muted-foreground)' }}>{d.date}</span>
                       <div style={{ flex: 1, background: 'var(--muted)', borderRadius: 4, height: 14 }}>
@@ -254,7 +254,7 @@ export default function AdminAnalyticsPage() {
             )}
           </section>
         </div>
-      ) : null}
+      )}
     </main>
   );
 }
