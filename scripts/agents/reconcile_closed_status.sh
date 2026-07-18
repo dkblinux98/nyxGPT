@@ -27,6 +27,7 @@ DRY_RUN="${DRY_RUN:-true}"
 
 load_config
 require_gh_auth
+require_cmd python3
 project_id="$(get_project_id)"
 echo "[reconcile] Project id: ${project_id} (dry_run=${DRY_RUN})" >&2
 
@@ -90,7 +91,7 @@ for it in d["data"]["node"]["items"]["nodes"]:
                 status = fv.get("name")
                 break
     if status in stuck:
-        title = (c.get("title") or "").replace("\t", " ")[:60]
+        title = (c.get("title") or "").replace("\t", " ").replace("\n", " ")[:60]
         print(f"{c['number']}\t{status}\t{c.get('stateReason')}\t{title}")
 PY
 
@@ -119,7 +120,7 @@ while IFS=$'\t' read -r num status reason title; do
   echo "[reconcile] #${num}: ${status} -> ${STATUS_IN_REVIEW}; assign @${HUMAN_OWNER}" >&2
   set_issue_status "$num" "$STATUS_IN_REVIEW" \
     || echo "[reconcile] WARN: failed to set Status on #${num}" >&2
-  gh issue edit "$num" --repo "${REPO_OWNER}/${REPO_NAME}" --add-assignee "${HUMAN_OWNER}" >/dev/null \
+  issue_assign_only "$num" "${HUMAN_OWNER}" \
     || echo "[reconcile] WARN: failed to assign #${num}" >&2
 done < "$targets_file"
 
