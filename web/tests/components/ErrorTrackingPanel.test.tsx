@@ -22,26 +22,27 @@ const activeStatus = {
 };
 
 describe('ErrorTrackingPanel', () => {
-  it('shows Python-specific, step-by-step guidance when inactive -- not the GlitchTip Node.js onboarding', async () => {
+  it('shows Python-specific, zero-touch guidance when inactive -- not the GlitchTip Node.js onboarding', async () => {
     server.use(http.get('/api/v1/error-tracking', () => HttpResponse.json(disabledStatus)));
 
     render(<ErrorTrackingPanel />);
 
     await waitFor(() => {
-      expect(screen.getByText(/error tracking is disabled/i)).toBeInTheDocument();
+      expect(screen.getByText(/error tracking is not yet active/i)).toBeInTheDocument();
     });
     expect(screen.getByText(/sentry_sdk/)).toBeInTheDocument();
     expect(screen.getByText(/ignore them/i)).toBeInTheDocument();
-    expect(screen.getByText(/nyxgpt ops logs glitchtip/)).toBeInTheDocument();
+    expect(screen.getByText(/nyxgpt ops glitchtip-init/)).toBeInTheDocument();
   });
 
-  it('links to the GlitchTip UI when active', async () => {
+  it('links to the GlitchTip UI and shows the DSN when active', async () => {
     server.use(http.get('/api/v1/error-tracking', () => HttpResponse.json(activeStatus)));
 
     render(<ErrorTrackingPanel />);
 
     const link = await screen.findByRole('link', { name: /open glitchtip ui/i });
     expect(link).toHaveAttribute('href', 'http://localhost:8080');
+    expect(screen.getByText(activeStatus.dsn)).toBeInTheDocument();
   });
 
   it('reports a delivered test event when tracking is active', async () => {
