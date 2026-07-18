@@ -279,7 +279,7 @@ Access settings at `http://127.0.0.1:3000/settings`, which has two tabs:
 
 Click **⚙️ Settings** at the bottom of the sidebar to open the navigation menu that gates every admin/ops destination:
 
-- **Admin** — a collapsible group. Clicking it expands in place (chevron rotates) to reveal: Dashboard, Configuration Wizard, Resource Usage, View Logs, Usage Analytics, [Observability](#admin-dashboard) (SRE overview), Manage Models, RAG Collections, RAG Playground, Deployment, and Canary Rollout. The group stays open until you click a link, click outside the menu, or press `Escape` — clicking **Admin** itself only toggles the submenu and never closes the menu.
+- **Admin** — a collapsible group. Clicking it expands in place (chevron rotates) to reveal: Dashboard, Configuration Wizard, Resource Usage, View Logs, Usage Analytics, [Observability](docker-compose.md#monitoring-dashboards) (SRE overview), Manage Models, RAG Collections, RAG Playground, Deployment, and Canary Rollout. The group stays open until you click a link, click outside the menu, or press `Escape` — clicking **Admin** itself only toggles the submenu and never closes the menu.
 - **Theme** — Light/Dark toggle, same state as the [Settings page](#settings) appearance setting.
 
 Clicking any link navigates and closes the menu. Clicking anywhere outside the menu (tracked via a ref on the menu container, not `stopPropagation`) or pressing `Escape` closes it without navigating.
