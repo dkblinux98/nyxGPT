@@ -188,13 +188,22 @@ services:
       start_period: 20s
 
   # Log aggregation (opt-in): `docker compose --profile logging up`. Promtail
-  # tails the API's log files under ~/.nyxGPT/logs (the same nyxgpt_data
-  # volume the api service writes to) and ships them to Loki; Grafana (see
-  # the `monitoring` profile above) is pre-provisioned with a Loki
-  # datasource and a Logs Explorer dashboard under docker/grafana/dashboards.
-  # Everything stays on this machine -- nothing is sent to an
-  # external/cloud log service. Set `[log_aggregation] enabled = true` in
-  # config.ini to have the SRE/admin dashboard reflect that it's running.
+  # ships logs to Loki from TWO sources, since promtail is always a
+  # container regardless of whether the core app runs native or Compose:
+  #   - Compose mode: the api container writes to /root/.nyxGPT, which is
+  #     the nyxgpt_data named volume -- promtail mounts that same volume
+  #     read-only at /var/log/nyxgpt.
+  #   - Native mode (the primary local path, see docs/ops.md): api/self-heal
+  #     /ops run on the host and write to ~/.nyxGPT/logs, a plain host
+  #     directory that is NOT part of nyxgpt_data -- promtail separately
+  #     bind-mounts that host directory read-only at /var/log/nyxgpt-native.
+  # Both paths are scraped by docker/promtail-config.yml so logs reach Loki
+  # no matter which mode produced them. Grafana (see the `monitoring`
+  # profile above) is pre-provisioned with a Loki datasource and a Logs
+  # Explorer dashboard under docker/grafana/dashboards. Everything stays on
+  # this machine -- nothing is sent to an external/cloud log service. Set
+  # `[log_aggregation] enabled = true` in config.ini to have the SRE/admin
+  # dashboard reflect that it's running. See docs/docker-compose.md#log-aggregation.
   loki:
     image: grafana/loki:latest
     restart: unless-stopped
@@ -217,6 +226,12 @@ services:
     volumes:
       - ./docker/promtail-config.yml:/etc/promtail/config.yml:ro
       - nyxgpt_data:/var/log/nyxgpt:ro
+      # Host bind for native-mode logs -- see the comment block above.
+      # ${HOME} is interpolated from the environment `docker compose` runs
+      # in, not from .env (matching how the api/web services' host user
+      # already resolves paths natively); a fresh install with no native
+      # logs yet just means this mounts (and scrapes) an empty directory.
+      - ${HOME}/.nyxGPT/logs:/var/log/nyxgpt-native/logs:ro
     command: -config.file=/etc/promtail/config.yml
     depends_on:
       - loki
