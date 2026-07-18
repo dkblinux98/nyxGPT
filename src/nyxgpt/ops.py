@@ -385,16 +385,18 @@ def _restart_launchagent(label: str) -> list[OpsResult]:
         ]
 
 
-def _find_launchagent_template() -> tuple[Path | None, list[Path]]:
+def _find_launchagent_template(
+    name: str = "com.nyxgpt.cassandra-logs.plist",
+) -> tuple[Path | None, list[Path]]:
     """
-    Locate the Cassandra log follower LaunchAgent template inside the repo.
+    Locate a log-follower LaunchAgent template (by plist filename) inside the repo.
     Returns (path_or_none, candidates_checked).
     """
     candidates = [
-        REPO_ROOT / "ops" / "launchagents" / "com.nyxgpt.cassandra-logs.plist",
-        REPO_ROOT / "ops" / "LaunchAgents" / "com.nyxgpt.cassandra-logs.plist",
-        REPO_ROOT / "com.nyxgpt.cassandra-logs.plist",
-        REPO_ROOT / "homebrew" / "com.nyxgpt.cassandra-logs.plist",
+        REPO_ROOT / "ops" / "launchagents" / name,
+        REPO_ROOT / "ops" / "LaunchAgents" / name,
+        REPO_ROOT / name,
+        REPO_ROOT / "homebrew" / name,
     ]
     for p in candidates:
         try:
@@ -407,7 +409,8 @@ def _find_launchagent_template() -> tuple[Path | None, list[Path]]:
 
 
 def _install_scripts() -> list[OpsResult]:
-    """Copy the run-web/follow-cassandra-logs helper scripts into ~/.nyxGPT/scripts, executable.
+    """Copy the run-web/follow-cassandra-logs/follow-ollama-logs helper scripts into
+    ~/.nyxGPT/scripts, executable.
 
     Scripts not present in the repo's `scripts/` dir are skipped (reported
     as ok, since not every deployment needs them). Returns one OpsResult per
@@ -418,7 +421,7 @@ def _install_scripts() -> list[OpsResult]:
     dst_dir = Path.home() / ".nyxGPT" / "scripts"
     _ensure_dir(dst_dir)
 
-    for name in ("run-web.sh", "follow-cassandra-logs.sh"):
+    for name in ("run-web.sh", "follow-cassandra-logs.sh", "follow-ollama-logs.sh"):
         src = src_dir / name
         if not src.exists():
             # Not required — some users run the web/API without wrappers.
@@ -462,19 +465,67 @@ def _install_cassandra_launchagent() -> list[OpsResult]:
     return results
 
 
+def _install_ollama_launchagent() -> list[OpsResult]:
+    """Install and (re)load the Ollama container-logs LaunchAgent (Compose mode).
+
+    Mirrors `_install_cassandra_launchagent`: locates the plist template,
+    copies it into ~/Library/LaunchAgents, then boots it out and back in via
+    `launchctl bootout`/`bootstrap`/`kickstart`. Installed unconditionally by
+    `nyxgpt ops install` regardless of deployment mode, same as the Cassandra
+    LaunchAgent -- in native mode there's no `nyxgpt-ollama` Docker container
+    yet, so `follow-ollama-logs.sh` just idles waiting for one (Ollama's
+    native-mode logs instead reach ~/.nyxGPT/logs via the Homebrew log
+    symlink in `_ensure_log_symlinks`). Returns a single-element list of
+    OpsResult; fails if the template can't be found among the candidate
+    paths.
+    """
+    results: list[OpsResult] = []
+    tpl, checked = _find_launchagent_template("com.nyxgpt.ollama-logs.plist")
+    if tpl is None:
+        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        results.append(OpsResult(False, "Missing Ollama logs LaunchAgent template", details))
+        return results
+    la_dir = Path.home() / "Library" / "LaunchAgents"
+    _ensure_dir(la_dir)
+    dst = la_dir / tpl.name
+    _copy_file(tpl, dst)
+
+    label = "com.nyxgpt.ollama-logs"
+    domain = f"gui/{os.getuid()}"
+
+    _run(["launchctl", "bootout", domain, str(dst)], check=False)
+    _run(["launchctl", "bootstrap", domain, str(dst)], check=False)
+    _run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=False)
+
+    results.append(OpsResult(True, "Installed Ollama logs LaunchAgent", str(dst)))
+    return results
+
+
 def _ensure_log_symlinks() -> list[OpsResult]:
     """Symlink each Homebrew-managed service log into ~/.nyxGPT/logs for convenient access.
 
     Replaces any existing file/symlink at the destination. Returns one
     OpsResult per (component, extension) log symlink attempted.
+
+    Ollama gets only `.log` (no `.err.log`): its Homebrew formula's service
+    block points both StandardOutPath and StandardErrorPath at the same
+    file, unlike nyxgpt-api/nyxgpt-web which get separate error logs. In
+    Compose mode Ollama isn't a Homebrew service at all -- `nyxgpt-ollama-logs`
+    (see `_install_ollama_launchagent`) follows the container's docker logs
+    into this same `ollama.log` path instead.
     """
     results: list[OpsResult] = []
     home_logs = Path.home() / ".nyxGPT" / "logs"
     _ensure_dir(home_logs)
 
     brew_logs = _brew_prefix() / "var" / "log"
-    for base in ("nyxgpt-api", "nyxgpt-web"):
-        for ext in (".log", ".err.log"):
+    targets: list[tuple[str, tuple[str, ...]]] = [
+        ("nyxgpt-api", (".log", ".err.log")),
+        ("nyxgpt-web", (".log", ".err.log")),
+        ("ollama", (".log",)),
+    ]
+    for base, exts in targets:
+        for ext in exts:
             src = brew_logs / f"{base}{ext}"
             dst = home_logs / f"{base}{ext}"
             try:
@@ -970,9 +1021,10 @@ def install(args) -> int:
     docs/ops.md): first stopping any phantom Docker Compose app-tier containers
     leaked from an earlier run or a raw `docker compose up`, then ensuring the
     local Cassandra container plus every other install step (scripts, web deps,
-    MCP deps, Cassandra LaunchAgent, Homebrew formulas, log symlinks, the
-    observability stack) -- printing an OK/FAIL line per result. A failure in
-    one step doesn't stop the rest from running.
+    MCP deps, Cassandra LaunchAgent, Ollama logs LaunchAgent, Homebrew
+    formulas, log symlinks, the observability stack) -- printing an OK/FAIL
+    line per result. A failure in one step doesn't stop the rest from
+    running.
 
     The observability step (Grafana/Loki/Jaeger/GlitchTip) runs by default so
     a fresh install comes up with the full SRE view already populated --
@@ -991,6 +1043,7 @@ def install(args) -> int:
         ("mcp deps", _ensure_mcp_deps),
         ("cassandra container", _ensure_cassandra_container),
         ("cassandra launchagent", _install_cassandra_launchagent),
+        ("ollama logs launchagent", _install_ollama_launchagent),
         ("homebrew api", _install_homebrew_api),
         ("homebrew web", _install_homebrew_web),
         ("log symlinks", _ensure_log_symlinks),
@@ -1185,7 +1238,7 @@ def doctor(_args) -> int:
     if not cfg.exists():
         issues.append(f"Missing config {cfg}")
 
-    for name in ("run-web.sh", "follow-cassandra-logs.sh"):
+    for name in ("run-web.sh", "follow-cassandra-logs.sh", "follow-ollama-logs.sh"):
         p = Path.home() / ".nyxGPT" / "scripts" / name
         if p.exists() and not os.access(p, os.X_OK):
             issues.append(f"Script not executable {p}")
