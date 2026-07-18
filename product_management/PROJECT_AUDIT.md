@@ -110,7 +110,7 @@ A grouped `docs/README.md` index (User / Ops / Developer / Agent-system) now cov
 ### F1 — MEDIUM/HIGH: The "single command deploys everything, OS-aware" story does not exist yet
 Confirmed by inspection — the capstone (#3160) delivered self-heal end-to-end but the
 unified deploy story is not met. Now the headline scope of **Phase 6 / v3.0.0** (see
-`product_management/PHASE_6_PLAN.md`). Concretely today:
+`PHASE_6_PLAN.md`). Concretely today:
 - **No unified command.** Docker Compose, k8s (`kubectl apply`), Terraform (`terraform
   apply`), and native install (`nyxgpt ops install`) are four separate hand-invoked paths.
   No `nyxgpt up` / `make deploy` orchestrates them.

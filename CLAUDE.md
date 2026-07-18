@@ -50,6 +50,18 @@ This project uses Python (primary), TypeScript, YAML workflows, and Markdown doc
 
 ---
 
+## Repository Organization
+
+Product-management planning documents live in **`product_management/`**, not the repo root. This includes:
+
+- All phase-planning docs (`PHASE_*_PLAN.md`)
+- The project-completion plan (`PROJECT_COMPLETION_PLAN.md`)
+- Project audits (`PROJECT_AUDIT.md`)
+
+Any new planning, roadmap, phase, or audit document must be created under `product_management/` — do not add these to the repo root.
+
+---
+
 ## Sources of Truth
 
 - AGENTS.md
