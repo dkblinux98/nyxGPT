@@ -107,4 +107,55 @@ describe('Chat page Admin menu', () => {
     expect(screen.getByRole('button', { name: /light/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /dark/i })).toBeInTheDocument();
   });
+
+  it('does not close the Settings menu when toggling the Admin group', async () => {
+    renderHome();
+
+    const settingsButton = await screen.findByRole('button', { name: /settings/i });
+    const user = userEvent.setup();
+    await user.click(settingsButton);
+
+    const adminToggle = await screen.findByRole('button', { name: /admin/i });
+    await user.click(adminToggle);
+
+    // The menu (and its Theme section) is still open, not collapsed.
+    expect(await screen.findByText('Theme')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /light/i })).toBeInTheDocument();
+    expect(adminToggle).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('closes the Settings menu when clicking outside of it', async () => {
+    renderHome();
+
+    const settingsButton = await screen.findByRole('button', { name: /settings/i });
+    const user = userEvent.setup();
+    await user.click(settingsButton);
+
+    expect(await screen.findByText('Theme')).toBeInTheDocument();
+
+    await user.click(document.body);
+
+    await waitFor(() => {
+      expect(screen.queryByText('Theme')).not.toBeInTheDocument();
+    });
+  });
+
+  it('closes the Settings menu when a submenu link is clicked', async () => {
+    renderHome();
+
+    const settingsButton = await screen.findByRole('button', { name: /settings/i });
+    const user = userEvent.setup();
+    await user.click(settingsButton);
+
+    const adminToggle = await screen.findByRole('button', { name: /admin/i });
+    await user.click(adminToggle);
+
+    const dashboardLink = await screen.findByRole('link', { name: /dashboard/i });
+    expect(dashboardLink).toHaveAttribute('href', '/admin/dashboard');
+    await user.click(dashboardLink);
+
+    await waitFor(() => {
+      expect(screen.queryByText('Theme')).not.toBeInTheDocument();
+    });
+  });
 });

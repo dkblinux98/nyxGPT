@@ -119,6 +119,7 @@ function Home() {
   const searchRef = useRef<UnifiedSearchRef>(null);
   const feedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const srTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settingsMenuRef = useRef<HTMLDivElement>(null);
 
   // Accessibility: Screen reader announcements
   const [srAnnouncement, setSrAnnouncement] = useState<string>('');
@@ -525,9 +526,11 @@ function Home() {
 
   // Close settings menu when clicking outside
   useEffect(() => {
-    const handleClick = () => {
-      setShowSettingsMenu(false);
-      setShowAdminSubmenu(false);
+    const handleClick = (e: MouseEvent) => {
+      if (settingsMenuRef.current && !settingsMenuRef.current.contains(e.target as Node)) {
+        setShowSettingsMenu(false);
+        setShowAdminSubmenu(false);
+      }
     };
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -537,10 +540,10 @@ function Home() {
     };
 
     if (showSettingsMenu) {
-      document.addEventListener('click', handleClick);
+      document.addEventListener('mousedown', handleClick);
       document.addEventListener('keydown', handleEscape);
       return () => {
-        document.removeEventListener('click', handleClick);
+        document.removeEventListener('mousedown', handleClick);
         document.removeEventListener('keydown', handleEscape);
       };
     }
@@ -1191,10 +1194,9 @@ function Home() {
         )}
 
         {/* Settings menu */}
-        <div style={{ position: 'relative', marginTop: 16 }}>
+        <div ref={settingsMenuRef} style={{ position: 'relative', marginTop: 16 }}>
           <button
-            onClick={(e) => {
-              e.stopPropagation();
+            onClick={() => {
               setShowSettingsMenu(!showSettingsMenu);
             }}
             style={{
@@ -1238,12 +1240,10 @@ function Home() {
                 padding: '6px 0',
                 zIndex: 1000,
               }}
-              onClick={(e) => e.stopPropagation()}
             >
               {/* Admin (collapsible group) */}
               <button
-                onClick={(e) => {
-                  e.stopPropagation();
+                onClick={() => {
                   setShowAdminSubmenu((prev) => !prev);
                 }}
                 aria-expanded={showAdminSubmenu}
