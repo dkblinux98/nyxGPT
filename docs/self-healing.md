@@ -122,6 +122,14 @@ the Grafana Self-Healing dashboard and Grafana Explore with this query
 go from "what's unhealthy right now" straight to "why" without leaving the
 app.
 
+That query is scoped to self-heal's own decision log, not the underlying
+component's own output -- for a service's raw logs (e.g. Ollama's model
+serving output, not just self-heal's restart decisions about it), see
+[Ollama logs](api.md#ollama-logs) and [Cassandra logs via Docker
+(LaunchAgent)](api.md#cassandra-logs-via-docker-launchagent). Both are
+captured into `~/.nyxGPT/logs` automatically by `nyxgpt ops install` and
+reach Loki through the same pipeline.
+
 ## Docker access from inside the `api` container
 
 The watchdog shells out to `docker compose ps`/`restart`, but it runs

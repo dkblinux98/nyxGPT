@@ -2701,7 +2701,8 @@ This includes:
 - nyxGPT application logs
 - test logs
 - streamed Cassandra logs
-- Ollama logs (symlinked)
+- Ollama logs (symlinked in native mode, streamed in Compose mode -- see
+  [Ollama logs](#ollama-logs))
 
 ---
 
@@ -2804,14 +2805,44 @@ nyxgpt ops restart
 
 ### Ollama logs
 
-Ollama is typically managed via Homebrew services and logs to a Homebrew-managed log file.
+`nyxgpt ops install` captures Ollama's logs into `~/.nyxGPT/logs/ollama.log`
+automatically, in whichever mode Ollama is actually running:
 
-Common locations:
+- **Native mode** (Ollama as a Homebrew service): `_ensure_log_symlinks`
+  symlinks Homebrew's `ollama.log` into `~/.nyxGPT/logs/ollama.log`.
+- **Compose mode** (Ollama as the `ollama`/`nyxgpt-ollama` container): the
+  `com.nyxgpt.ollama-logs` LaunchAgent runs `scripts/follow-ollama-logs.sh`,
+  which tails `docker logs -f nyxgpt-ollama` into the same
+  `~/.nyxGPT/logs/ollama.log` path -- mirroring how the
+  [Cassandra log follower](#cassandra-logs-via-docker-launchagent) works.
+  It replaces any leftover symlink from the native-mode path the first time
+  it sees the container, so the two mechanisms never collide.
 
-- Intel Homebrew: `/usr/local/var/log/ollama.log`
-- Apple Silicon Homebrew: `/opt/homebrew/var/log/ollama.log`
+Either way, `~/.nyxGPT/logs/ollama.log` is picked up by promtail's existing
+`*.log*` glob (see [Centralized logs](#centralized-logs)) with no extra
+configuration, so it's searchable in Grafana Logs Explorer -- filter on
+Loki's auto-attached `filename` label to isolate it from the rest of the
+`job="nyxgpt"` stream. Ollama's own log lines don't match nyxGPT's
+`level`/`logger` extraction regex (that's for the app's own structured
+format), so -- like the existing Cassandra logs -- they won't populate the
+Operational Logs dashboard's per-component `$logger` dropdown; they're
+still fully text-searchable there and in Explore.
 
-You can symlink whichever exists into `~/.nyxGPT/logs`:
+Verify:
+
+```bash
+tail -f ~/.nyxGPT/logs/ollama.log
+```
+
+If you don't see output, confirm Ollama is actually running:
+
+```bash
+brew services info ollama
+curl -s http://127.0.0.1:11434/api/tags | head
+```
+
+**Manual fallback** (e.g. troubleshooting, or a non-Homebrew Ollama
+install) -- symlink whichever Homebrew log path exists:
 
 ```bash
 mkdir -p ~/.nyxGPT/logs
@@ -2822,19 +2853,6 @@ for p in /usr/local/var/log/ollama.log /opt/homebrew/var/log/ollama.log; do
     break
   fi
 done
-```
-
-Verify:
-
-```bash
-tail -f ~/.nyxGPT/logs/ollama.log
-```
-
-If you don’t see output, confirm Ollama is running:
-
-```bash
-brew services info ollama
-curl -s http://127.0.0.1:11434/api/tags | head
 ```
 
 ---
@@ -2916,11 +2934,8 @@ By default, the UI will be available at:
 http://127.0.0.1:3000
 ```
 
-Ollama logs are symlinked into the same directory:
-
-```bash
-ln -sf /opt/homebrew/var/log/ollama.log ~/.nyxGPT/logs/ollama.log
-```
+Ollama logs land in the same directory automatically -- see [Ollama
+logs](#ollama-logs) above.
 
 Verify:
 

@@ -21,6 +21,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
@@ -46,6 +47,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_ensure_web_deps", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_cassandra_container", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_cassandra_launchagent", return_value=mixed),
+        patch.object(ops, "_install_ollama_launchagent", return_value=mixed),
         patch.object(ops, "_install_homebrew_api", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_homebrew_web", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
@@ -67,6 +69,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
@@ -104,6 +107,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
             ops, "_ensure_cassandra_container", side_effect=_record("cassandra container")
         ),
         patch.object(ops, "_install_cassandra_launchagent", side_effect=_record("cassandra la")),
+        patch.object(ops, "_install_ollama_launchagent", side_effect=_record("ollama la")),
         patch.object(ops, "_install_homebrew_api", side_effect=_record("homebrew api")),
         patch.object(ops, "_install_homebrew_web", side_effect=_record("homebrew web")),
         patch.object(ops, "_ensure_log_symlinks", side_effect=_record("log symlinks")),
@@ -1084,6 +1088,19 @@ def test_find_launchagent_template_skips_candidate_that_errors(monkeypatch, tmp_
     assert len(candidates) == 4
 
 
+@pytest.mark.unit
+def test_find_launchagent_template_accepts_a_different_plist_name(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    target = tmp_path / "ops" / "launchagents" / "com.nyxgpt.ollama-logs.plist"
+    target.parent.mkdir(parents=True)
+    target.write_text("<plist/>", encoding="utf-8")
+
+    tpl, candidates = ops._find_launchagent_template("com.nyxgpt.ollama-logs.plist")
+    assert tpl == target
+    assert len(candidates) == 4
+    assert all(c.name == "com.nyxgpt.ollama-logs.plist" for c in candidates)
+
+
 # --- _install_scripts ---
 
 
@@ -1094,6 +1111,7 @@ def test_install_scripts_installs_present_scripts(monkeypatch, tmp_path):
     (repo_root / "scripts").mkdir(parents=True)
     (repo_root / "scripts" / "run-web.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     (repo_root / "scripts" / "follow-cassandra-logs.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    (repo_root / "scripts" / "follow-ollama-logs.sh").write_text("#!/bin/sh\n", encoding="utf-8")
 
     monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
     monkeypatch.setattr(ops.Path, "home", lambda: home)
@@ -1102,6 +1120,7 @@ def test_install_scripts_installs_present_scripts(monkeypatch, tmp_path):
     assert all(r.ok for r in results)
     assert (home / ".nyxGPT" / "scripts" / "run-web.sh").exists()
     assert (home / ".nyxGPT" / "scripts" / "follow-cassandra-logs.sh").exists()
+    assert (home / ".nyxGPT" / "scripts" / "follow-ollama-logs.sh").exists()
 
 
 @pytest.mark.unit
@@ -1149,6 +1168,48 @@ def test_install_cassandra_launchagent_installs_when_template_found(monkeypatch,
     dst = home / "Library" / "LaunchAgents" / tpl.name
     assert dst.exists()
     assert len(run_calls) == 3
+
+
+# --- _install_ollama_launchagent ---
+
+
+@pytest.mark.unit
+def test_install_ollama_launchagent_missing_template(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_find_launchagent_template", lambda name: (None, [Path("/a"), Path("/b")])
+    )
+    results = ops._install_ollama_launchagent()
+    assert results[0].ok is False
+    assert "Missing Ollama logs LaunchAgent template" in results[0].message
+
+
+@pytest.mark.unit
+def test_install_ollama_launchagent_installs_when_template_found(monkeypatch, tmp_path):
+    tpl = tmp_path / "com.nyxgpt.ollama-logs.plist"
+    tpl.write_text("<plist/>", encoding="utf-8")
+    home = tmp_path / "home"
+
+    calls = []
+
+    def fake_find(name):
+        calls.append(name)
+        return tpl, [tpl]
+
+    monkeypatch.setattr(ops, "_find_launchagent_template", fake_find)
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    run_calls = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: run_calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+
+    results = ops._install_ollama_launchagent()
+    assert results[0].ok is True
+    dst = home / "Library" / "LaunchAgents" / tpl.name
+    assert dst.exists()
+    assert len(run_calls) == 3
+    assert calls == ["com.nyxgpt.ollama-logs.plist"]
 
 
 # --- _ensure_cassandra_container ---
@@ -1366,11 +1427,14 @@ def test_ensure_log_symlinks_creates_new_links(monkeypatch, tmp_path):
 
     results = ops._ensure_log_symlinks()
     assert all(r.ok for r in results)
-    assert len(results) == 4
+    assert len(results) == 5
     for base in ("nyxgpt-api", "nyxgpt-web"):
         for ext in (".log", ".err.log"):
             link = home / ".nyxGPT" / "logs" / f"{base}{ext}"
             assert link.is_symlink()
+    ollama_link = home / ".nyxGPT" / "logs" / "ollama.log"
+    assert ollama_link.is_symlink()
+    assert ollama_link.resolve() == (tmp_path / "brew" / "var" / "log" / "ollama.log").resolve()
 
 
 @pytest.mark.unit
@@ -1404,6 +1468,83 @@ def test_ensure_log_symlinks_reports_failure_on_exception(monkeypatch, tmp_path)
     results = ops._ensure_log_symlinks()
     assert all(r.ok is False for r in results)
     assert all("Failed to symlink" in r.message for r in results)
+
+
+@pytest.mark.unit
+def test_ensure_log_symlinks_skips_ollama_when_compose_container_present(monkeypatch, tmp_path):
+    """Compose mode: `follow-ollama-logs.sh` owns ollama.log, so this must leave it alone.
+
+    Regression test for the #3276 review finding: previously this
+    unconditionally replaced ollama.log with a (dangling, in Compose mode)
+    symlink, clobbering the file the log-follower LaunchAgent was actively
+    appending to.
+    """
+    home = tmp_path / "home"
+    (home / ".nyxGPT" / "logs").mkdir(parents=True)
+    real_log = home / ".nyxGPT" / "logs" / "ollama.log"
+    real_log.write_text("existing ollama container logs\n", encoding="utf-8")
+
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
+    monkeypatch.setattr(
+        ops,
+        "_docker_container_state",
+        lambda name: "running" if name == ops.OLLAMA_CONTAINER_NAME else "absent",
+    )
+
+    results = ops._ensure_log_symlinks()
+    assert all(r.ok for r in results)
+    ollama_result = next(r for r in results if "ollama.log" in r.message)
+    assert "Skipped" in ollama_result.message
+
+    assert not real_log.is_symlink()
+    assert real_log.read_text(encoding="utf-8") == "existing ollama container logs\n"
+
+
+@pytest.mark.unit
+def test_ensure_log_symlinks_symlinks_ollama_when_no_compose_container(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+
+    results = ops._ensure_log_symlinks()
+    assert all(r.ok for r in results)
+    ollama_link = home / ".nyxGPT" / "logs" / "ollama.log"
+    assert ollama_link.is_symlink()
+
+
+@pytest.mark.unit
+def test_install_step_order_does_not_clobber_compose_ollama_log(monkeypatch, tmp_path):
+    """Integration-style check of the two steps in `install()`'s actual order.
+
+    Runs `_install_ollama_launchagent()` followed by `_ensure_log_symlinks()`
+    -- the order `install()` uses -- against a fake home dir with a
+    pre-existing real ollama.log (simulating an already-running Compose
+    follower), which is exactly the scenario the #3276 review found broken.
+    """
+    tpl = tmp_path / "com.nyxgpt.ollama-logs.plist"
+    tpl.write_text("<plist/>", encoding="utf-8")
+    home = tmp_path / "home"
+    (home / ".nyxGPT" / "logs").mkdir(parents=True)
+    real_log = home / ".nyxGPT" / "logs" / "ollama.log"
+    real_log.write_text("existing ollama container logs\n", encoding="utf-8")
+
+    monkeypatch.setattr(ops, "_find_launchagent_template", lambda name: (tpl, [tpl]))
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+    monkeypatch.setattr(
+        ops,
+        "_docker_container_state",
+        lambda name: "running" if name == ops.OLLAMA_CONTAINER_NAME else "absent",
+    )
+
+    ops._install_ollama_launchagent()
+    ops._ensure_log_symlinks()
+
+    assert not real_log.is_symlink()
+    assert real_log.read_text(encoding="utf-8") == "existing ollama container logs\n"
 
 
 # --- _create_dist_tarball ---
@@ -1893,6 +2034,7 @@ def test_ops_install_catches_exception_from_a_step(capsys):
         patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
@@ -2190,6 +2332,7 @@ def test_ops_install_logs_start_and_summary(caplog):
         patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
@@ -2212,6 +2355,7 @@ def test_ops_install_logs_error_when_step_raises(caplog):
         patch.object(ops, "_ensure_mcp_deps", return_value=[]),
         patch.object(ops, "_ensure_cassandra_container", return_value=[]),
         patch.object(ops, "_install_cassandra_launchagent", return_value=[]),
+        patch.object(ops, "_install_ollama_launchagent", return_value=[]),
         patch.object(ops, "_install_homebrew_api", return_value=[]),
         patch.object(ops, "_install_homebrew_web", return_value=[]),
         patch.object(ops, "_ensure_log_symlinks", return_value=[]),

@@ -62,7 +62,10 @@ This command:
   `ollama`, `cassandra`) left running from an earlier raw `docker compose
   up` or a previous mixed-mode install, reporting what it stopped
 - Installs Homebrew formulas (`nyxgpt-api`, `nyxgpt-web`) if missing
-- Registers and loads required LaunchAgents
+- Registers and loads required LaunchAgents, including `com.nyxgpt.ollama-logs`
+  (follows the `nyxgpt-ollama` container's docker logs into
+  `~/.nyxGPT/logs/ollama.log` if/when Ollama is ever run via Compose instead
+  of natively — see [Ollama logs](api.md#ollama-logs))
 - Verifies Docker availability
 - Creates the local Cassandra container if it doesn't exist yet (name
   `nyxgpt-cassandra`, image `cassandra:5.0`, bound to

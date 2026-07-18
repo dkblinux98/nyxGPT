@@ -31,6 +31,12 @@ volumes:
 services:
   ollama:
     image: ollama/ollama:latest
+    # Fixed name (rather than Compose's default `nyxgpt-ollama-1`) so the
+    # host-side `com.nyxgpt.ollama-logs` LaunchAgent (scripts/follow-ollama-logs.sh)
+    # can find this container by a predictable name, mirroring how the
+    # native-mode Cassandra container is always named `nyxgpt-cassandra` --
+    # see docs/api.md#ollama-logs.
+    container_name: nyxgpt-ollama
     restart: unless-stopped
     networks:
       - nyxgpt
