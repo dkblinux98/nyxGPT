@@ -11,6 +11,25 @@ import { useSessionCache } from '../../src/hooks/useSessionCache';
 // Mock fetch
 const mockFetch = vi.fn();
 
+function successResponse(sessions: unknown) {
+  return new Response(JSON.stringify({ sessions }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+// A promise whose resolve/reject can be triggered externally, for precisely
+// controlling fetch timing/ordering across concurrent refresh() calls.
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe('useSessionCache', () => {
   const mockSessions = [
     { name: 'session1', title: 'Session 1', messages: 5, pinned: false },
@@ -619,6 +638,431 @@ describe('useSessionCache', () => {
       expect(
         result.current.sessions.length === 1 || result.current.sessions.length === 2
       ).toBe(true);
+    });
+  });
+
+  it('should stringify non-Error rejection values into the error message', async () => {
+    mockFetch.mockRejectedValueOnce('a plain string rejection');
+
+    const { result } = renderHook(() => useSessionCache());
+
+    await act(async () => {
+      try {
+        await result.current.getSessions();
+      } catch (e) {
+        // Expected to throw
+      }
+    });
+
+    await waitFor(() => {
+      expect(result.current.error).toBe('a plain string rejection');
+    });
+  });
+
+  it('mutate() falls back to an empty array when there is no cache yet', async () => {
+    const { result } = renderHook(() => useSessionCache());
+
+    let rollback: (() => void) | undefined;
+    act(() => {
+      const mutation = result.current.mutate((sessions) => [
+        ...sessions,
+        { name: 'brand-new-session', title: 'Brand New', messages: 0, pinned: false },
+      ]);
+      rollback = mutation.rollback;
+    });
+
+    expect(result.current.sessions).toEqual([
+      { name: 'brand-new-session', title: 'Brand New', messages: 0, pinned: false },
+    ]);
+
+    // Rollback with no previous cache is a no-op (nothing to restore to)
+    act(() => {
+      rollback?.();
+    });
+    expect(result.current.sessions).toEqual([
+      { name: 'brand-new-session', title: 'Brand New', messages: 0, pinned: false },
+    ]);
+  });
+
+  it('should throw when the API response is missing a sessions array', async () => {
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ notSessions: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+
+    const { result } = renderHook(() => useSessionCache());
+
+    await act(async () => {
+      try {
+        await result.current.getSessions();
+      } catch (e) {
+        // Expected to throw
+      }
+    });
+
+    await waitFor(() => {
+      expect(result.current.error).toBe('Invalid API response format');
+    });
+  });
+
+  it('returns an empty array when an in-flight request is aborted before any cache exists', async () => {
+    const first = deferred<Response>();
+    mockFetch.mockImplementationOnce((_url: string, options: RequestInit) => {
+      options.signal?.addEventListener('abort', () => {
+        first.reject(new DOMException('Aborted', 'AbortError'));
+      });
+      return first.promise;
+    });
+    mockFetch.mockResolvedValueOnce(successResponse(mockSessions));
+
+    const { result } = renderHook(() => useSessionCache());
+
+    let firstPromise: Promise<unknown>;
+    act(() => {
+      firstPromise = result.current.getSessions();
+    });
+
+    // Trigger a new request before the first resolves - this aborts the first
+    await act(async () => {
+      await result.current.invalidate();
+    });
+
+    await expect(firstPromise!).resolves.toEqual([]);
+    expect(result.current.sessions).toEqual(mockSessions);
+  });
+
+  it('returns the existing cached data when an in-flight background refresh is aborted by a newer request', async () => {
+    mockFetch.mockResolvedValueOnce(successResponse(mockSessions));
+    const { result } = renderHook(() => useSessionCache());
+
+    await act(async () => {
+      await result.current.getSessions();
+    });
+    await waitFor(() => {
+      expect(result.current.sessions).toEqual(mockSessions);
+    });
+
+    const updatedSessions = [
+      { name: 'session3', title: 'Session 3', messages: 1, pinned: false },
+    ];
+
+    const first = deferred<Response>();
+    mockFetch.mockImplementationOnce((_url: string, options: RequestInit) => {
+      options.signal?.addEventListener('abort', () => {
+        first.reject(new DOMException('Aborted', 'AbortError'));
+      });
+      return first.promise;
+    });
+    mockFetch.mockResolvedValueOnce(successResponse(updatedSessions));
+
+    let firstPromise: Promise<unknown>;
+    act(() => {
+      firstPromise = result.current.refresh();
+    });
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    // The aborted call falls back to whatever was cached at the time it lost the race
+    await expect(firstPromise!).resolves.toEqual(mockSessions);
+    await waitFor(() => {
+      expect(result.current.sessions).toEqual(updatedSessions);
+    });
+  });
+
+  it('warns when a background refresh triggered by getSessions fails with a non-abort error', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockFetch.mockResolvedValueOnce(successResponse(mockSessions));
+
+    const { result } = renderHook(() =>
+      useSessionCache({ staleTime: 1000, backgroundRefresh: true })
+    );
+    await act(async () => {
+      await result.current.getSessions();
+    });
+    await waitFor(() => {
+      expect(result.current.sessions).toEqual(mockSessions);
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(1500);
+    });
+
+    mockFetch.mockRejectedValueOnce(new Error('network down'));
+
+    await act(async () => {
+      await result.current.getSessions();
+    });
+
+    await waitFor(() => {
+      expect(warnSpy).toHaveBeenCalledWith('Background refresh failed:', expect.any(Error));
+    });
+
+    warnSpy.mockRestore();
+  });
+
+  it('does not warn when a background refresh triggered by getSessions is aborted', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockFetch.mockResolvedValueOnce(successResponse(mockSessions));
+
+    const { result } = renderHook(() =>
+      useSessionCache({ staleTime: 1000, backgroundRefresh: true })
+    );
+    await act(async () => {
+      await result.current.getSessions();
+    });
+    await waitFor(() => {
+      expect(result.current.sessions).toEqual(mockSessions);
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(1500);
+    });
+
+    const stalled = deferred<Response>();
+    mockFetch.mockImplementationOnce((_url: string, options: RequestInit) => {
+      options.signal?.addEventListener('abort', () => {
+        stalled.reject(new DOMException('Aborted', 'AbortError'));
+      });
+      return stalled.promise;
+    });
+    mockFetch.mockResolvedValueOnce(successResponse(mockSessions));
+
+    await act(async () => {
+      // Returns stale data immediately and kicks off a background refresh in the background
+      await result.current.getSessions();
+    });
+
+    await act(async () => {
+      // Aborts the pending background refresh started above
+      await result.current.refresh();
+    });
+
+    expect(warnSpy).not.toHaveBeenCalledWith('Background refresh failed:', expect.anything());
+    warnSpy.mockRestore();
+  });
+
+  describe('scheduled automatic background refresh', () => {
+    it('schedules and fires an automatic refresh once the cache is set and config changes', async () => {
+      mockFetch.mockResolvedValueOnce(successResponse(mockSessions));
+      const { result, rerender } = renderHook(
+        (props) => useSessionCache(props),
+        { initialProps: { staleTime: 5000, backgroundRefresh: true } }
+      );
+
+      await act(async () => {
+        await result.current.getSessions();
+      });
+      await waitFor(() => {
+        expect(result.current.sessions).toEqual(mockSessions);
+      });
+
+      const updatedSessions = [
+        { name: 'session3', title: 'Session 3', messages: 1, pinned: false },
+      ];
+      mockFetch.mockResolvedValueOnce(successResponse(updatedSessions));
+
+      // Changing staleTime re-runs the scheduling effect now that cache is set
+      rerender({ staleTime: 1000, backgroundRefresh: true });
+
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+
+      await waitFor(() => {
+        expect(result.current.sessions).toEqual(updatedSessions);
+      });
+    });
+
+    it('warns when a scheduled automatic refresh fails with a non-abort error', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockFetch.mockResolvedValueOnce(successResponse(mockSessions));
+      const { result, rerender } = renderHook(
+        (props) => useSessionCache(props),
+        { initialProps: { staleTime: 5000, backgroundRefresh: true } }
+      );
+
+      await act(async () => {
+        await result.current.getSessions();
+      });
+      await waitFor(() => {
+        expect(result.current.sessions).toEqual(mockSessions);
+      });
+
+      mockFetch.mockRejectedValueOnce(new Error('scheduled refresh network error'));
+      rerender({ staleTime: 1000, backgroundRefresh: true });
+
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+
+      await waitFor(() => {
+        expect(warnSpy).toHaveBeenCalledWith('Scheduled refresh failed:', expect.any(Error));
+      });
+
+      warnSpy.mockRestore();
+    });
+
+    it('does not warn when a scheduled automatic refresh is aborted', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      mockFetch.mockResolvedValueOnce(successResponse(mockSessions));
+      const { result, rerender } = renderHook(
+        (props) => useSessionCache(props),
+        { initialProps: { staleTime: 5000, backgroundRefresh: true } }
+      );
+
+      await act(async () => {
+        await result.current.getSessions();
+      });
+      await waitFor(() => {
+        expect(result.current.sessions).toEqual(mockSessions);
+      });
+
+      const stalled = deferred<Response>();
+      mockFetch.mockImplementationOnce((_url: string, options: RequestInit) => {
+        options.signal?.addEventListener('abort', () => {
+          stalled.reject(new DOMException('Aborted', 'AbortError'));
+        });
+        return stalled.promise;
+      });
+      rerender({ staleTime: 1000, backgroundRefresh: true });
+
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+
+      // Abort the now-pending scheduled refresh via an explicit manual refresh
+      mockFetch.mockResolvedValueOnce(successResponse(mockSessions));
+      await act(async () => {
+        await result.current.refresh();
+      });
+
+      expect(warnSpy).not.toHaveBeenCalledWith('Scheduled refresh failed:', expect.anything());
+      warnSpy.mockRestore();
+    });
+
+    it('clears a pending scheduled refresh timer when the config changes again before it fires', async () => {
+      mockFetch.mockResolvedValueOnce(successResponse(mockSessions));
+      const { result, rerender } = renderHook(
+        (props) => useSessionCache(props),
+        { initialProps: { staleTime: 5000, backgroundRefresh: true } }
+      );
+
+      await act(async () => {
+        await result.current.getSessions();
+      });
+      await waitFor(() => {
+        expect(result.current.sessions).toEqual(mockSessions);
+      });
+
+      // First change schedules a timer (timeUntilStale > 0)
+      rerender({ staleTime: 10000, backgroundRefresh: true });
+      // Second change re-runs the effect, whose cleanup clears the pending timer
+      rerender({ staleTime: 20000, backgroundRefresh: true });
+
+      mockFetch.mockClear();
+      await act(async () => {
+        vi.advanceTimersByTime(10000);
+      });
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('does not schedule a refresh when the recomputed time-until-stale has already elapsed', async () => {
+      mockFetch.mockResolvedValueOnce(successResponse(mockSessions));
+      const { result, rerender } = renderHook(
+        (props) => useSessionCache(props),
+        { initialProps: { staleTime: 100_000, backgroundRefresh: true } }
+      );
+
+      await act(async () => {
+        await result.current.getSessions();
+      });
+      await waitFor(() => {
+        expect(result.current.sessions).toEqual(mockSessions);
+      });
+
+      // Shrinking staleTime makes the cache already "expired" relative to now
+      rerender({ staleTime: 1, backgroundRefresh: true });
+
+      mockFetch.mockClear();
+      await act(async () => {
+        vi.advanceTimersByTime(10_000);
+      });
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
+
+  it('clears a pending scheduled refresh timer on unmount', async () => {
+    mockFetch.mockResolvedValueOnce(successResponse(mockSessions));
+    const { result, rerender, unmount } = renderHook(
+      (props) => useSessionCache(props),
+      { initialProps: { staleTime: 5000, backgroundRefresh: true } }
+    );
+
+    await act(async () => {
+      await result.current.getSessions();
+    });
+    await waitFor(() => {
+      expect(result.current.sessions).toEqual(mockSessions);
+    });
+
+    // Schedules a pending timer (refreshTimeoutRef.current truthy) that never fires
+    rerender({ staleTime: 10_000, backgroundRefresh: true });
+
+    mockFetch.mockClear();
+    unmount();
+
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+    });
+
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('aborts an in-flight fetch on unmount', async () => {
+    const abortSpy = vi.fn();
+    const stalled = deferred<Response>();
+    mockFetch.mockImplementationOnce((_url: string, options: RequestInit) => {
+      options.signal?.addEventListener('abort', abortSpy);
+      return stalled.promise;
+    });
+
+    const { result, unmount } = renderHook(() => useSessionCache());
+
+    act(() => {
+      void result.current.getSessions();
+    });
+
+    unmount();
+
+    expect(abortSpy).toHaveBeenCalled();
+  });
+
+  it('exposes a manual refresh() wrapper that performs a background refresh', async () => {
+    mockFetch.mockResolvedValueOnce(successResponse(mockSessions));
+    const { result } = renderHook(() => useSessionCache());
+
+    await act(async () => {
+      await result.current.getSessions();
+    });
+    await waitFor(() => {
+      expect(result.current.sessions).toEqual(mockSessions);
+    });
+
+    const updatedSessions = [
+      { name: 'session3', title: 'Session 3', messages: 1, pinned: false },
+    ];
+    mockFetch.mockResolvedValueOnce(successResponse(updatedSessions));
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    await waitFor(() => {
+      expect(result.current.sessions).toEqual(updatedSessions);
     });
   });
 });

@@ -1,7 +1,7 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Toast } from '../../src/components/Toast';
+import { Toast, ToastType } from '../../src/components/Toast';
 
 describe('Toast', () => {
   const mockOnDismiss = vi.fn();
@@ -143,6 +143,43 @@ describe('Toast', () => {
 
     expect(mockOnDismiss).toHaveBeenCalledWith('test-manual-dismiss');
     expect(mockOnDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to default icon and background color for an unrecognized type', () => {
+    render(
+      <Toast
+        id="test-unknown"
+        type={'unknown' as unknown as ToastType}
+        message="Unknown type toast"
+        onDismiss={mockOnDismiss}
+      />
+    );
+
+    // getIcon() default branch returns '' - no known icon glyph renders
+    expect(screen.getByText('Unknown type toast')).toBeInTheDocument();
+    expect(screen.queryByText('✓')).not.toBeInTheDocument();
+    expect(screen.queryByText('✕')).not.toBeInTheDocument();
+    expect(screen.queryByText('⚠')).not.toBeInTheDocument();
+    expect(screen.queryByText('ℹ')).not.toBeInTheDocument();
+  });
+
+  it('restores dismiss button opacity on mouse leave after hovering', () => {
+    render(
+      <Toast
+        id="test-hover"
+        type="success"
+        message="Hover test"
+        onDismiss={mockOnDismiss}
+      />
+    );
+
+    const dismissButton = screen.getByLabelText('Dismiss notification');
+
+    fireEvent.mouseEnter(dismissButton);
+    expect(dismissButton.style.opacity).toBe('1');
+
+    fireEvent.mouseLeave(dismissButton);
+    expect(dismissButton.style.opacity).toBe('0.8');
   });
 
   it('has correct accessibility attributes', () => {
