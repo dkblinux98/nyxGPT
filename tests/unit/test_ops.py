@@ -2204,3 +2204,624 @@ def test_observability_cli_entrypoint_returns_nonzero_on_failure(capsys):
         rc = ops.observability(MagicMock())
         assert rc == 2
         assert "[FAIL]" in capsys.readouterr().out
+
+
+# --- _stop_brew_service ---
+
+
+@pytest.mark.unit
+def test_stop_brew_service_not_found(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: None)
+    results = ops._stop_brew_service("nyxgpt-api")
+    assert results[0].ok is False
+    assert "brew not found" in results[0].message
+
+
+@pytest.mark.unit
+def test_stop_brew_service_success(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/brew")
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+    results = ops._stop_brew_service("nyxgpt-api")
+    assert results[0].ok is True
+    assert "Stopped brew service" in results[0].message
+
+
+@pytest.mark.unit
+def test_stop_brew_service_failure_includes_details(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/brew")
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stdout="out", stderr="err"),
+    )
+    results = ops._stop_brew_service("nyxgpt-api")
+    assert results[0].ok is False
+    assert "Failed to stop brew service" in results[0].message
+    assert "out" in results[0].details
+    assert "err" in results[0].details
+
+
+@pytest.mark.unit
+def test_stop_brew_service_exception(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/brew")
+
+    def raise_run(cmd, **k):
+        raise OSError("boom")
+
+    monkeypatch.setattr(ops, "_run", raise_run)
+    results = ops._stop_brew_service("nyxgpt-api")
+    assert results[0].ok is False
+    assert "OSError" in results[0].details
+
+
+# --- _stop_docker_container ---
+
+
+@pytest.mark.unit
+def test_stop_docker_container_no_docker(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: None)
+    results = ops._stop_docker_container("nyxgpt-cassandra")
+    assert results[0].ok is False
+    assert "docker not found" in results[0].message
+
+
+@pytest.mark.unit
+def test_stop_docker_container_success(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/docker")
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+    results = ops._stop_docker_container("nyxgpt-cassandra")
+    assert results[0].ok is True
+    assert "Stopped docker container" in results[0].message
+
+
+@pytest.mark.unit
+def test_stop_docker_container_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/docker")
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stderr="no such container"),
+    )
+    results = ops._stop_docker_container("nyxgpt-cassandra")
+    assert results[0].ok is False
+    assert "no such container" in results[0].details
+
+
+@pytest.mark.unit
+def test_stop_docker_container_exception(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/docker")
+
+    def raise_run(cmd, **k):
+        raise OSError("boom")
+
+    monkeypatch.setattr(ops, "_run", raise_run)
+    results = ops._stop_docker_container("nyxgpt-cassandra")
+    assert results[0].ok is False
+    assert "OSError" in results[0].details
+
+
+# --- _stop_launchagent ---
+
+
+@pytest.mark.unit
+def test_stop_launchagent_success(monkeypatch):
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+    results = ops._stop_launchagent("com.nyxgpt.cassandra-logs")
+    assert results[0].ok is True
+    assert "Stopped LaunchAgent" in results[0].message
+
+
+@pytest.mark.unit
+def test_stop_launchagent_already_stopped_is_ok(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(
+            cmd, 1, stderr="Could not find service in domain"
+        ),
+    )
+    results = ops._stop_launchagent("com.nyxgpt.cassandra-logs")
+    assert results[0].ok is True
+    assert "already stopped" in results[0].message
+
+
+@pytest.mark.unit
+def test_stop_launchagent_real_failure(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stdout="out", stderr="err"),
+    )
+    results = ops._stop_launchagent("com.nyxgpt.cassandra-logs")
+    assert results[0].ok is False
+    assert "Failed to stop LaunchAgent" in results[0].message
+    assert "out" in results[0].details
+    assert "err" in results[0].details
+
+
+@pytest.mark.unit
+def test_stop_launchagent_exception(monkeypatch):
+    def raise_run(cmd, **k):
+        raise OSError("boom")
+
+    monkeypatch.setattr(ops, "_run", raise_run)
+    results = ops._stop_launchagent("com.nyxgpt.cassandra-logs")
+    assert results[0].ok is False
+    assert "OSError" in results[0].details
+
+
+# --- _compose_stop_service ---
+
+
+@pytest.mark.unit
+def test_compose_stop_service_no_docker(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: None)
+    results = ops._compose_stop_service("api")
+    assert results[0].ok is False
+    assert "docker not found" in results[0].message
+
+
+@pytest.mark.unit
+def test_compose_stop_service_success(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+    results = ops._compose_stop_service("api")
+    assert results[0].ok is True
+    assert "Stopped Compose service: api" in results[0].message
+
+
+@pytest.mark.unit
+def test_compose_stop_service_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/bin/docker")
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stderr="boom")
+    )
+    results = ops._compose_stop_service("api")
+    assert results[0].ok is False
+    assert "boom" in results[0].details
+
+
+# --- _resolve_observability_services / _resolve_app_services ---
+
+
+@pytest.mark.unit
+def test_resolve_observability_services_success(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout=_ALL_COMPOSE_SERVICES),
+    )
+    services, err = ops._resolve_observability_services()
+    assert err is None
+    assert "grafana" in services
+    assert not (ops.CORE_APP_SERVICES & set(services))
+
+
+@pytest.mark.unit
+def test_resolve_observability_services_failure(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stderr="boom")
+    )
+    services, err = ops._resolve_observability_services()
+    assert services is None
+    assert err is not None
+    assert err.ok is False
+    assert "boom" in err.details
+
+
+@pytest.mark.unit
+def test_resolve_app_services_success(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout=_ALL_COMPOSE_SERVICES),
+    )
+    services, err = ops._resolve_app_services()
+    assert err is None
+    assert set(services) == ops.CORE_APP_SERVICES & {
+        s.strip() for s in _ALL_COMPOSE_SERVICES.splitlines() if s.strip()
+    }
+
+
+@pytest.mark.unit
+def test_resolve_app_services_failure(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stderr="boom")
+    )
+    services, err = ops._resolve_app_services()
+    assert services is None
+    assert err is not None
+    assert "boom" in err.details
+
+
+# --- _stop_observability_stack ---
+
+
+@pytest.mark.unit
+def test_stop_observability_stack_skips_without_docker(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: False)
+    results = ops._stop_observability_stack()
+    assert results[0].ok is True
+    assert "Skipped observability stack" in results[0].message
+
+
+@pytest.mark.unit
+def test_stop_observability_stack_no_services(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(
+        ops,
+        "_resolve_observability_services",
+        lambda: ([], None),
+    )
+    results = ops._stop_observability_stack()
+    assert results[0].ok is True
+    assert "No observability services resolved" in results[0].message
+
+
+@pytest.mark.unit
+def test_stop_observability_stack_resolution_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(
+        ops,
+        "_resolve_observability_services",
+        lambda: (None, ops.OpsResult(False, "Failed to resolve observability services", "boom")),
+    )
+    results = ops._stop_observability_stack()
+    assert results[0].ok is False
+    assert "Failed to resolve observability services" in results[0].message
+
+
+@pytest.mark.unit
+def test_stop_observability_stack_success(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_resolve_observability_services", lambda: (["grafana"], None))
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+    results = ops._stop_observability_stack()
+    assert results[0].ok is True
+    assert "stopped" in results[0].message.lower()
+    assert calls[0][:3] == ["docker", "compose", "-f"]
+    assert "stop" in calls[0]
+    assert "grafana" in calls[0]
+
+
+@pytest.mark.unit
+def test_stop_observability_stack_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_resolve_observability_services", lambda: (["grafana"], None))
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stderr="boom")
+    )
+    results = ops._stop_observability_stack()
+    assert results[0].ok is False
+    assert "boom" in results[0].details
+
+
+# --- _compose_down ---
+
+
+@pytest.mark.unit
+def test_compose_down_skips_without_docker(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: False)
+    results = ops._compose_down(["api"], volumes=False)
+    assert results[0].ok is True
+    assert "Skipped Compose teardown" in results[0].message
+
+
+@pytest.mark.unit
+def test_compose_down_no_services(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    results = ops._compose_down([], volumes=False)
+    assert results[0].ok is True
+    assert "No Compose services" in results[0].message
+
+
+@pytest.mark.unit
+def test_compose_down_success_preserves_volumes_by_default(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+    results = ops._compose_down(["api", "web"], volumes=False)
+    assert results[0].ok is True
+    assert "volumes preserved" in results[0].message
+    assert "--volumes" not in calls[0]
+    assert "down" in calls[0]
+    assert "api" in calls[0] and "web" in calls[0]
+
+
+@pytest.mark.unit
+def test_compose_down_with_volumes(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+    results = ops._compose_down(["cassandra"], volumes=True)
+    assert results[0].ok is True
+    assert "their volumes" in results[0].message
+    assert calls[0][-1] == "--volumes"
+
+
+@pytest.mark.unit
+def test_compose_down_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stderr="boom")
+    )
+    results = ops._compose_down(["api"], volumes=False)
+    assert results[0].ok is False
+    assert "boom" in results[0].details
+
+
+# --- ops.stop() orchestration ---
+
+
+def _mode(native=None, compose=None):
+    return ops.DeploymentMode(native=native or {}, compose=compose or {}, conflicts=[])
+
+
+@pytest.mark.unit
+def test_stop_native_only_target_all(capsys):
+    mode = _mode(
+        native={"api": "started", "web": "started", "ollama": "started", "cassandra": "running"},
+        compose={},
+    )
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=mode),
+        patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]) as sb,
+        patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]) as sd,
+        patch.object(ops, "_stop_launchagent", return_value=[ops.OpsResult(True, "ok")]) as sl,
+        patch.object(ops, "_compose_stop_service") as cs,
+    ):
+        args = MagicMock()
+        args.target = "all"
+        rc = ops.stop(args)
+        assert rc == 0
+
+        assert sb.call_count == 3
+        sd.assert_called_once_with("nyxgpt-cassandra")
+        sl.assert_called_once_with("com.nyxgpt.cassandra-logs")
+        cs.assert_not_called()
+        assert "[OK]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_stop_compose_only_target_api(capsys):
+    mode = _mode(native={"api": "none"}, compose={"api": "running"})
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=mode),
+        patch.object(ops, "_stop_brew_service") as sb,
+        patch.object(ops, "_compose_stop_service", return_value=[ops.OpsResult(True, "ok")]) as cs,
+    ):
+        args = MagicMock()
+        args.target = "api"
+        rc = ops.stop(args)
+        assert rc == 0
+
+        sb.assert_not_called()
+        cs.assert_called_once_with("api")
+
+
+@pytest.mark.unit
+def test_stop_mixed_mode_stops_both_and_reports_it(capsys):
+    mode = _mode(native={"api": "started"}, compose={"api": "running"})
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=mode),
+        patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]) as sb,
+        patch.object(ops, "_compose_stop_service", return_value=[ops.OpsResult(True, "ok")]) as cs,
+    ):
+        args = MagicMock()
+        args.target = "api"
+        rc = ops.stop(args)
+        assert rc == 0
+
+        sb.assert_called_once_with("nyxgpt-api")
+        cs.assert_called_once_with("api")
+        out = capsys.readouterr().out
+        assert "mixed mode" in out
+
+
+@pytest.mark.unit
+def test_stop_already_stopped_component_does_nothing(capsys):
+    mode = _mode(native={"api": "none"}, compose={})
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=mode),
+        patch.object(ops, "_stop_brew_service") as sb,
+        patch.object(ops, "_compose_stop_service") as cs,
+    ):
+        args = MagicMock()
+        args.target = "api"
+        rc = ops.stop(args)
+        assert rc == 0
+
+        sb.assert_not_called()
+        cs.assert_not_called()
+        assert "already stopped" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_stop_observability_target_calls_stop_observability_stack():
+    mode = _mode()
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=mode),
+        patch.object(
+            ops, "_stop_observability_stack", return_value=[ops.OpsResult(True, "ok")]
+        ) as so,
+    ):
+        args = MagicMock()
+        args.target = "observability"
+        rc = ops.stop(args)
+        assert rc == 0
+        so.assert_called_once()
+
+
+@pytest.mark.unit
+def test_stop_all_target_does_not_touch_observability():
+    mode = _mode(native={}, compose={})
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=mode),
+        patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_launchagent", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_observability_stack") as so,
+    ):
+        args = MagicMock()
+        args.target = "all"
+        ops.stop(args)
+        so.assert_not_called()
+
+
+@pytest.mark.unit
+def test_stop_returns_nonzero_on_failure(capsys):
+    mode = _mode(native={"api": "started"}, compose={})
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=mode),
+        patch.object(
+            ops,
+            "_stop_brew_service",
+            return_value=[ops.OpsResult(False, "bad", "details")],
+        ),
+    ):
+        args = MagicMock()
+        args.target = "api"
+        rc = ops.stop(args)
+        assert rc == 2
+        out = capsys.readouterr().out
+        assert "[FAIL]" in out
+        assert "details" in out
+
+
+# --- ops.down() orchestration ---
+
+
+@pytest.mark.unit
+def test_down_refuses_volumes_without_yes_really(capsys):
+    args = MagicMock(app_only=False, observability_only=False, volumes=True, yes_really=False)
+    rc = ops.down(args)
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--yes-really" in err
+
+
+@pytest.mark.unit
+def test_down_all_scope_stops_native_and_composes_down(capsys):
+    args = MagicMock(app_only=False, observability_only=False, volumes=False, yes_really=False)
+    with (
+        patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]) as sb,
+        patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]) as sd,
+        patch.object(ops, "_stop_launchagent", return_value=[ops.OpsResult(True, "ok")]) as sl,
+        patch.object(ops, "_compose_available", return_value=True),
+        patch.object(ops, "_resolve_app_services", return_value=(["api", "web"], None)) as ra,
+        patch.object(
+            ops, "_resolve_observability_services", return_value=(["grafana"], None)
+        ) as ro,
+        patch.object(ops, "_compose_down", return_value=[ops.OpsResult(True, "ok")]) as cd,
+    ):
+        rc = ops.down(args)
+        assert rc == 0
+
+        assert sb.call_count == 3
+        sd.assert_called_once_with("nyxgpt-cassandra")
+        sl.assert_called_once_with("com.nyxgpt.cassandra-logs")
+        ra.assert_called_once()
+        ro.assert_called_once()
+        cd.assert_called_once()
+        composed_services = cd.call_args.args[0]
+        assert set(composed_services) == {"api", "web", "grafana"}
+        assert cd.call_args.kwargs == {"volumes": False}
+
+
+@pytest.mark.unit
+def test_down_app_only_scope_skips_observability(capsys):
+    args = MagicMock(app_only=True, observability_only=False, volumes=False, yes_really=False)
+    with (
+        patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_launchagent", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_compose_available", return_value=True),
+        patch.object(ops, "_resolve_app_services", return_value=(["api"], None)),
+        patch.object(ops, "_resolve_observability_services") as ro,
+        patch.object(ops, "_compose_down", return_value=[ops.OpsResult(True, "ok")]) as cd,
+    ):
+        rc = ops.down(args)
+        assert rc == 0
+        ro.assert_not_called()
+        assert cd.call_args.args[0] == ["api"]
+
+
+@pytest.mark.unit
+def test_down_observability_only_scope_skips_native_and_app(capsys):
+    args = MagicMock(app_only=False, observability_only=True, volumes=False, yes_really=False)
+    with (
+        patch.object(ops, "_stop_brew_service") as sb,
+        patch.object(ops, "_stop_docker_container") as sd,
+        patch.object(ops, "_stop_launchagent") as sl,
+        patch.object(ops, "_compose_available", return_value=True),
+        patch.object(ops, "_resolve_app_services") as ra,
+        patch.object(ops, "_resolve_observability_services", return_value=(["grafana"], None)),
+        patch.object(ops, "_compose_down", return_value=[ops.OpsResult(True, "ok")]) as cd,
+    ):
+        rc = ops.down(args)
+        assert rc == 0
+
+        sb.assert_not_called()
+        sd.assert_not_called()
+        sl.assert_not_called()
+        ra.assert_not_called()
+        assert cd.call_args.args[0] == ["grafana"]
+
+
+@pytest.mark.unit
+def test_down_with_volumes_and_yes_really_passes_volumes_flag():
+    args = MagicMock(app_only=True, observability_only=False, volumes=True, yes_really=True)
+    with (
+        patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_launchagent", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_compose_available", return_value=True),
+        patch.object(ops, "_resolve_app_services", return_value=(["api"], None)),
+        patch.object(ops, "_compose_down", return_value=[ops.OpsResult(True, "ok")]) as cd,
+    ):
+        rc = ops.down(args)
+        assert rc == 0
+        assert cd.call_args.kwargs == {"volumes": True}
+
+
+@pytest.mark.unit
+def test_down_skips_compose_teardown_without_docker():
+    args = MagicMock(app_only=False, observability_only=False, volumes=False, yes_really=False)
+    with (
+        patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_launchagent", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_compose_available", return_value=False),
+        patch.object(ops, "_compose_down") as cd,
+    ):
+        rc = ops.down(args)
+        assert rc == 0
+        cd.assert_not_called()
+
+
+@pytest.mark.unit
+def test_down_returns_nonzero_on_failure():
+    args = MagicMock(app_only=False, observability_only=False, volumes=False, yes_really=False)
+    with (
+        patch.object(
+            ops, "_stop_brew_service", return_value=[ops.OpsResult(False, "bad", "details")]
+        ),
+        patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_launchagent", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_compose_available", return_value=False),
+    ):
+        rc = ops.down(args)
+        assert rc == 2

@@ -15,6 +15,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import tarfile
 import tomllib
 from collections.abc import Callable
@@ -872,14 +873,16 @@ def status(_args) -> int:
         print("  compose: not detected (no Docker Compose stack running)")
 
     if mode.conflicts:
+        stop_examples = ", ".join(f"nyxgpt ops stop {c}" for c in sorted(mode.conflicts))
         print(
             "\nWARNING: "
             + ", ".join(sorted(mode.conflicts))
             + " reported running in BOTH native and Docker Compose. Only one is actually "
             "serving traffic on the shared port -- the other is a phantom backend. Config "
             f"edits to {NATIVE_CONFIG_HINT} only reach the native process; if Compose is the "
-            f"one answering, edit {COMPOSE_CONFIG_HINT} instead. Stop one deployment before "
-            "continuing."
+            f"one answering, edit {COMPOSE_CONFIG_HINT} instead. Run `{stop_examples}` to stop "
+            "both and pick one, or `nyxgpt ops down --app-only` to drop the Compose app tier "
+            "entirely."
         )
     else:
         config_hint = NATIVE_CONFIG_HINT
@@ -906,6 +909,11 @@ def status(_args) -> int:
         print(f"\nDocker container nyxgpt-cassandra: {'RUNNING' if running else 'NOT RUNNING'}")
     else:
         print("\nDocker: docker not found")
+
+    print(
+        "\nCleanup: `nyxgpt ops stop <target>` stops one component (native and/or Compose), "
+        "`nyxgpt ops down` tears down the whole stack."
+    )
 
     logger.info(
         "ops: status complete (native=%s, compose=%s, conflicts=%s)",
@@ -1070,6 +1078,353 @@ def restart(args) -> int:
         sum(1 for r in results if r.ok),
         len(results),
         extra={"component": "ops", "action": "restart", "target": target, "ok": ok},
+    )
+
+    return 0 if ok else 2
+
+
+# --- Stop/down helpers ---
+
+
+def _stop_brew_service(name: str) -> list[OpsResult]:
+    """Stop Homebrew service `name` via `brew services stop`.
+
+    Returns a single-element list: an OpsResult reporting brew missing, the
+    stop command's success, or its failure with captured stdout/stderr.
+    """
+    if _which("brew") is None:
+        return [OpsResult(False, f"brew not found; cannot stop {name}")]
+    try:
+        cp = _run(["brew", "services", "stop", name], check=False)
+        if cp.returncode == 0:
+            return [OpsResult(True, f"Stopped brew service: {name}")]
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return [OpsResult(False, f"Failed to stop brew service: {name}", details.strip())]
+    except Exception as e:
+        return [
+            OpsResult(
+                False,
+                f"Failed to stop brew service: {name}",
+                f"{type(e).__name__}: {e}",
+            )
+        ]
+
+
+def _stop_docker_container(name: str) -> list[OpsResult]:
+    """Stop Docker container `name` via `docker stop` (container is preserved, not removed)."""
+    if _which("docker") is None:
+        return [OpsResult(False, f"docker not found; cannot stop {name}")]
+    try:
+        cp = _run(["docker", "stop", name], check=False)
+    except Exception as e:
+        return [
+            OpsResult(
+                False,
+                f"Failed to stop docker container: {name}",
+                f"{type(e).__name__}: {e}",
+            )
+        ]
+    if cp.returncode == 0:
+        return [OpsResult(True, f"Stopped docker container: {name}")]
+    details = (cp.stdout or "").strip() + (
+        "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+    )
+    return [OpsResult(False, f"Failed to stop docker container: {name}", details.strip())]
+
+
+def _stop_launchagent(label: str) -> list[OpsResult]:
+    """Unload the LaunchAgent `label` via `launchctl bootout` in the current GUI domain.
+
+    Unlike `_restart_launchagent`'s kickstart, `bootout` actually unloads the
+    agent so it stops for good instead of being immediately relaunched by
+    launchd. A "not loaded" failure (already stopped) is reported as success.
+    """
+    domain = f"gui/{os.getuid()}/{label}"
+    try:
+        cp = _run(["launchctl", "bootout", domain], check=False)
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        if cp.returncode == 0:
+            return [OpsResult(True, f"Stopped LaunchAgent: {label}")]
+        if "no such process" in details.lower() or "could not find" in details.lower():
+            return [OpsResult(True, f"LaunchAgent already stopped: {label}")]
+        return [OpsResult(False, f"Failed to stop LaunchAgent: {label}", details.strip())]
+    except Exception as e:
+        return [
+            OpsResult(
+                False,
+                f"Failed to stop LaunchAgent: {label}",
+                f"{type(e).__name__}: {e}",
+            )
+        ]
+
+
+def _compose_stop_service(service: str) -> list[OpsResult]:
+    """Stop (but don't remove) a single running Compose service: `docker compose stop`."""
+    if _which("docker") is None:
+        return [OpsResult(False, f"docker not found; cannot stop compose service: {service}")]
+    cp = _run(
+        ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "stop", service], check=False
+    )
+    if cp.returncode == 0:
+        return [OpsResult(True, f"Stopped Compose service: {service}")]
+    details = (cp.stdout or "").strip() + (
+        "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+    )
+    return [OpsResult(False, f"Failed to stop Compose service: {service}", details.strip())]
+
+
+def _resolve_observability_services() -> tuple[list[str] | None, OpsResult | None]:
+    """Resolve the Compose service names for the observability profiles.
+
+    Mirrors `_start_observability_stack`'s own resolution (profiles minus
+    `CORE_APP_SERVICES`) so `stop`/`down` agree with `install`/`observability`
+    on what "observability" means. Returns `(services, None)` on success or
+    `(None, failure_result)` if the services list couldn't be resolved.
+    """
+    base_cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE)]
+    for profile in OBSERVABILITY_PROFILES:
+        base_cmd += ["--profile", profile]
+    cp = _run(base_cmd + ["config", "--services"], check=False)
+    if cp.returncode != 0:
+        return None, OpsResult(
+            False,
+            "Failed to resolve observability services",
+            (cp.stderr or cp.stdout or "").strip(),
+        )
+    services = sorted({s.strip() for s in cp.stdout.splitlines() if s.strip()} - CORE_APP_SERVICES)
+    return services, None
+
+
+def _resolve_app_services() -> tuple[list[str] | None, OpsResult | None]:
+    """Resolve the Compose service names for the core app tier (`CORE_APP_SERVICES`).
+
+    Returns `(services, None)` on success or `(None, failure_result)` if the
+    services list couldn't be resolved.
+    """
+    cp = _run(
+        ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "config", "--services"],
+        check=False,
+    )
+    if cp.returncode != 0:
+        return None, OpsResult(
+            False,
+            "Failed to resolve app services",
+            (cp.stderr or cp.stdout or "").strip(),
+        )
+    services = sorted({s.strip() for s in cp.stdout.splitlines() if s.strip()} & CORE_APP_SERVICES)
+    return services, None
+
+
+def _stop_observability_stack() -> list[OpsResult]:
+    """Stop (but don't remove) every running observability Compose service."""
+    if not _compose_available():
+        return [OpsResult(True, "Skipped observability stack (Docker not found)")]
+
+    services, err = _resolve_observability_services()
+    if err is not None:
+        return [err]
+    if not services:
+        return [OpsResult(True, "No observability services resolved to stop")]
+
+    cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "stop"] + services
+    cp = _run(cmd, check=False)
+    if cp.returncode != 0:
+        return [
+            OpsResult(
+                False,
+                "Failed to stop observability stack",
+                (cp.stderr or cp.stdout or "").strip(),
+            )
+        ]
+    return [OpsResult(True, "Observability stack stopped (containers and data preserved)")]
+
+
+def _compose_down(services: list[str], *, volumes: bool) -> list[OpsResult]:
+    """Tear down the given Compose `services` via `docker compose down`.
+
+    Removes containers/networks for exactly the listed services; `volumes`
+    additionally removes their named volumes (destructive -- data loss).
+    """
+    if not _compose_available():
+        return [OpsResult(True, "Skipped Compose teardown (Docker not found)")]
+    if not services:
+        return [OpsResult(True, "No Compose services to tear down for this scope")]
+
+    cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "down"] + services
+    if volumes:
+        cmd.append("--volumes")
+    cp = _run(cmd, check=False)
+    if cp.returncode != 0:
+        return [
+            OpsResult(
+                False,
+                "Failed to tear down Compose services",
+                (cp.stderr or cp.stdout or "").strip(),
+            )
+        ]
+    suffix = " and their volumes" if volumes else " (volumes preserved)"
+    return [
+        OpsResult(True, f"Removed Compose containers{suffix}: {', '.join(services)}"),
+    ]
+
+
+def stop(args) -> int:
+    """Stop operational components.
+
+    target: all|api|web|ollama|cassandra|cassandra-logs|observability
+
+    For components that can run either natively or under Docker Compose
+    (api/web/ollama/cassandra), detects which mode is actually running and
+    stops the right one -- if both are live (mixed mode), stops both and
+    reports it clearly. Does not delete data volumes or remove containers
+    (Compose services are stopped, not brought down).
+
+    `observability` has no native equivalent, so -- like `restart` -- it is
+    not included in `all`; select it explicitly to stop the Grafana/Loki/
+    Jaeger/GlitchTip Compose profiles.
+    """
+    target = getattr(args, "target", "all") or "all"
+    logger.info(
+        "ops: stop starting (target=%s)",
+        target,
+        extra={"component": "ops", "action": "stop", "target": target},
+    )
+
+    results: list[OpsResult] = []
+    mode = detect_deployment_mode()
+
+    def _stop_dual_mode(
+        component: str, native_stop: Callable[[str], list[OpsResult]], native_arg: str
+    ) -> None:
+        native_running = mode.native.get(component) in ("started", "running")
+        compose_running = mode.compose.get(component) == "running"
+        if not native_running and not compose_running:
+            results.append(OpsResult(True, f"{component}: already stopped"))
+            return
+        if native_running and compose_running:
+            results.append(
+                OpsResult(
+                    True,
+                    f"{component}: running in BOTH native and Compose (mixed mode) -- "
+                    "stopping both",
+                )
+            )
+        if native_running:
+            results.extend(native_stop(native_arg))
+        if compose_running:
+            results.extend(_compose_stop_service(component))
+
+    if target in ("all", "api"):
+        _stop_dual_mode("api", _stop_brew_service, "nyxgpt-api")
+
+    if target in ("all", "web"):
+        _stop_dual_mode("web", _stop_brew_service, "nyxgpt-web")
+
+    if target in ("all", "ollama"):
+        _stop_dual_mode("ollama", _stop_brew_service, "ollama")
+
+    if target in ("all", "cassandra"):
+        _stop_dual_mode("cassandra", _stop_docker_container, "nyxgpt-cassandra")
+
+    if target in ("all", "cassandra-logs"):
+        results += _stop_launchagent("com.nyxgpt.cassandra-logs")
+
+    if target == "observability":
+        # Not part of "all" -- like `restart`, "all" only covers the core
+        # api/web/ollama/cassandra/cassandra-logs components; observability
+        # has no native equivalent and is opt-in via its own target/command.
+        results += _stop_observability_stack()
+
+    ok = _emit_results("stop", results)
+    logger.info(
+        "ops: stop %s (target=%s, %d/%d ok)",
+        "succeeded" if ok else "failed",
+        target,
+        sum(1 for r in results if r.ok),
+        len(results),
+        extra={"component": "ops", "action": "stop", "target": target, "ok": ok},
+    )
+
+    return 0 if ok else 2
+
+
+def down(args) -> int:
+    """Tear down the local stack: native services plus the Compose app/observability tiers.
+
+    Native services (api/web/ollama/cassandra/cassandra-logs) are stopped;
+    Compose containers for the selected scope are removed via `docker
+    compose down` (networks too, volumes preserved unless `--volumes` is
+    also given). `--app-only`/`--observability-only` scope the teardown to
+    one tier so, e.g., a stale Compose app tier can be dropped while
+    observability (or vice versa) stays up.
+    """
+    app_only = bool(getattr(args, "app_only", False))
+    observability_only = bool(getattr(args, "observability_only", False))
+    volumes = bool(getattr(args, "volumes", False))
+    yes_really = bool(getattr(args, "yes_really", False))
+
+    if volumes and not yes_really:
+        print(
+            "ERROR: refusing to remove volumes without --yes-really "
+            "(this deletes Cassandra/Postgres/Grafana data)",
+            file=sys.stderr,
+        )
+        return 2
+
+    scope = "observability" if observability_only else ("app" if app_only else "all")
+    logger.info(
+        "ops: down starting (scope=%s, volumes=%s)",
+        scope,
+        volumes,
+        extra={"component": "ops", "action": "down", "scope": scope, "volumes": volumes},
+    )
+
+    results: list[OpsResult] = []
+
+    if scope in ("all", "app"):
+        results.extend(_stop_brew_service("nyxgpt-api"))
+        results.extend(_stop_brew_service("nyxgpt-web"))
+        results.extend(_stop_brew_service("ollama"))
+        results.extend(_stop_docker_container("nyxgpt-cassandra"))
+        results.extend(_stop_launchagent("com.nyxgpt.cassandra-logs"))
+
+    compose_services: list[str] = []
+
+    if not _compose_available():
+        results.append(OpsResult(True, "Skipped Compose teardown (Docker not found)"))
+    else:
+        if scope in ("all", "app"):
+            app_services, err = _resolve_app_services()
+            if err is not None:
+                results.append(err)
+            elif app_services:
+                compose_services += app_services
+
+        if scope in ("all", "observability"):
+            obs_services, err = _resolve_observability_services()
+            if err is not None:
+                results.append(err)
+            elif obs_services:
+                compose_services += obs_services
+
+        if compose_services:
+            results.extend(_compose_down(compose_services, volumes=volumes))
+        else:
+            results.append(OpsResult(True, "No Compose services running for this scope"))
+
+    ok = _emit_results("down", results)
+    logger.info(
+        "ops: down %s (scope=%s, volumes=%s, %d/%d ok)",
+        "succeeded" if ok else "failed",
+        scope,
+        volumes,
+        sum(1 for r in results if r.ok),
+        len(results),
+        extra={"component": "ops", "action": "down", "scope": scope, "ok": ok},
     )
 
     return 0 if ok else 2
