@@ -131,83 +131,72 @@ export default function ErrorTrackingPanel() {
       {status && !status.active && (
         <>
           <p style={{ margin: '0 0 0.75rem 0', color: '#666' }}>
-            Error tracking is disabled. Unhandled backend exceptions and web UI errors can be
-            reported to a <strong>self-hosted</strong> GlitchTip instance -- no data ever leaves
-            this machine, and nothing talks to Sentry&apos;s own SaaS. nyxGPT reports via the{' '}
-            <strong>Python</strong> <code style={codeStyle}>sentry_sdk</code> (see{' '}
+            Error tracking is not yet active. Unhandled backend exceptions and web UI errors can
+            be reported to a <strong>self-hosted</strong> GlitchTip instance -- no data ever
+            leaves this machine, and nothing talks to Sentry&apos;s own SaaS. nyxGPT reports via
+            the <strong>Python</strong> <code style={codeStyle}>sentry_sdk</code> (see{' '}
             <code style={codeStyle}>src/nyxgpt/error_tracking.py</code>) -- if GlitchTip&apos;s own
             onboarding screen shows Node.js/<code>@sentry/node</code> setup instructions, ignore
             them, that&apos;s not this integration.
           </p>
-          <ol style={{ margin: '0 0 0.75rem 0', paddingLeft: '1.25rem', color: '#666' }}>
-            <li style={{ marginBottom: 4 }}>
-              The local tracker is already running -- <code style={codeStyle}>nyxgpt ops install</code>{' '}
-              starts it automatically. If you skipped it (<code style={codeStyle}>--skip-observability</code>)
-              or need to re-run it, use <code style={codeStyle}>nyxgpt ops observability</code>. This
-              step is the one part of the SRE suite that still needs a human: nothing can safely
-              create your GlitchTip account or its DSN for you.
-            </li>
-            <li style={{ marginBottom: 4 }}>
-              Register the first account at{' '}
-              <code style={codeStyle}>http://localhost:8080</code>. Its confirmation email goes to
-              the container&apos;s console log, not a real inbox -- read it below (or run{' '}
-              <code style={codeStyle}>nyxgpt ops logs glitchtip</code> from a terminal) and open
-              the confirmation link it prints.
-              <div style={{ marginTop: 6 }}>
-                <button
-                  type="button"
-                  onClick={loadGlitchtipLogs}
-                  disabled={loadingLogs}
-                  style={{
-                    fontSize: 12,
-                    padding: '4px 10px',
-                    borderRadius: 4,
-                    border: '1px solid var(--border)',
-                    background: 'var(--code-bg)',
-                    cursor: loadingLogs ? 'default' : 'pointer',
-                  }}
-                >
-                  {loadingLogs ? 'Loading…' : 'View GlitchTip logs'}
-                </button>
-                {logsError && (
-                  <p role="alert" style={{ margin: '0.5rem 0 0 0', color: 'var(--error-text)' }}>
-                    {logsError}
-                  </p>
-                )}
-                {glitchtipLogs !== null && !logsError && (
-                  <pre
-                    style={{
-                      margin: '0.5rem 0 0 0',
-                      padding: '0.5rem',
-                      maxHeight: 240,
-                      overflow: 'auto',
-                      background: 'var(--code-bg)',
-                      borderRadius: 4,
-                      fontSize: 11,
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-all',
-                    }}
-                  >
-                    {glitchtipLogs}
-                  </pre>
-                )}
-              </div>
-            </li>
-            <li style={{ marginBottom: 4 }}>
-              Create a project in the GlitchTip UI and copy its DSN -- it&apos;ll look like{' '}
-              <code style={codeStyle}>http://&lt;key&gt;@localhost:8080/&lt;id&gt;</code>.
-            </li>
-            <li style={{ marginBottom: 4 }}>
-              Paste it as-is into <code style={codeStyle}>[error_tracking] dsn</code> in{' '}
-              <code style={codeStyle}>~/.nyxGPT/config.ini</code> (native) or{' '}
-              <code style={codeStyle}>docker/config.docker.ini</code> (Compose), and set{' '}
-              <code style={codeStyle}>enabled = true</code>. The{' '}
-              <code style={codeStyle}>localhost</code> host is fine either way -- nyxGPT
-              automatically rewrites it to the Compose service name when the API is
-              containerized, so there&apos;s no host to edit by hand.
-            </li>
-            <li>Restart the API (config.ini isn&apos;t hot-reloaded for this setting).</li>
-          </ol>
+          <p style={{ margin: '0 0 0.75rem 0', color: '#666' }}>
+            This is now <strong>zero-touch</strong>: <code style={codeStyle}>nyxgpt ops install</code>{' '}
+            starts the local GlitchTip container and auto-provisions its admin user,
+            organization, project, and DSN -- no sign-in, no pasting a DSN by hand. If it&apos;s
+            still showing inactive here, either GlitchTip is still starting up (its health check
+            takes a little while after a fresh <code style={codeStyle}>up -d</code>) or
+            provisioning hasn&apos;t run yet -- retry it directly with{' '}
+            <code style={codeStyle}>nyxgpt ops glitchtip-init</code> from a terminal and read its
+            output, or check what the container itself logged:
+          </p>
+          <div style={{ marginBottom: '0.75rem' }}>
+            <button
+              type="button"
+              onClick={loadGlitchtipLogs}
+              disabled={loadingLogs}
+              style={{
+                fontSize: 12,
+                padding: '4px 10px',
+                borderRadius: 4,
+                border: '1px solid var(--border)',
+                background: 'var(--code-bg)',
+                cursor: loadingLogs ? 'default' : 'pointer',
+              }}
+            >
+              {loadingLogs ? 'Loading…' : 'View GlitchTip logs'}
+            </button>
+            {logsError && (
+              <p role="alert" style={{ margin: '0.5rem 0 0 0', color: 'var(--error-text)' }}>
+                {logsError}
+              </p>
+            )}
+            {glitchtipLogs !== null && !logsError && (
+              <pre
+                style={{
+                  margin: '0.5rem 0 0 0',
+                  padding: '0.5rem',
+                  maxHeight: 240,
+                  overflow: 'auto',
+                  background: 'var(--code-bg)',
+                  borderRadius: 4,
+                  fontSize: 11,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-all',
+                }}
+              >
+                {glitchtipLogs}
+              </pre>
+            )}
+          </div>
+          <p style={{ margin: 0, color: '#666' }}>
+            Prefer to configure it yourself instead? Paste a DSN (
+            <code style={codeStyle}>http://&lt;key&gt;@localhost:8080/&lt;id&gt;</code>) into{' '}
+            <code style={codeStyle}>[error_tracking] dsn</code> in{' '}
+            <code style={codeStyle}>~/.nyxGPT/config.ini</code> (native) or{' '}
+            <code style={codeStyle}>docker/config.docker.ini</code> (Compose), set{' '}
+            <code style={codeStyle}>enabled = true</code>, and restart the API (this setting
+            isn&apos;t hot-reloaded).
+          </p>
         </>
       )}
 
@@ -225,6 +214,12 @@ export default function ErrorTrackingPanel() {
           >
             Open GlitchTip UI ↗
           </a>
+          {status.dsn && (
+            <p style={{ margin: '0.5rem 0 0 0', color: '#666' }}>
+              DSN:{' '}
+              <code style={{ ...codeStyle, wordBreak: 'break-all' }}>{status.dsn}</code>
+            </p>
+          )}
         </>
       )}
 

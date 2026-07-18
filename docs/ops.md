@@ -42,6 +42,7 @@ nyxgpt ops doctor
 nyxgpt ops env-sync
 nyxgpt ops logs
 nyxgpt ops observability
+nyxgpt ops glitchtip-init
 ```
 
 ---
@@ -73,6 +74,8 @@ This command:
 - Starts the observability stack (Grafana, Prometheus, Loki, promtail, the
   OTel collector, Jaeger, GlitchTip) — see
   [`nyxgpt ops observability`](#nyxgpt-ops-observability) below
+- Auto-provisions GlitchTip's admin user, organization, project, and DSN —
+  see [`nyxgpt ops glitchtip-init`](#nyxgpt-ops-glitchtip-init) below
 
 Usage:
 
@@ -401,15 +404,69 @@ Behavior:
   dashboard (`/admin/observability`) immediately reflects that they're
   live, instead of still showing "opt-in, not running".
 - Deliberately leaves `[error_tracking] enabled` and `dsn` untouched:
-  GlitchTip needs a human to sign in and create a project before it has a
-  DSN to report to -- see [Error Tracking](api.md#error-tracking) and the
-  Error Tracking panel on `/admin/observability` for that one remaining
-  manual step.
+  GlitchTip isn't reachable until its container passes its health check,
+  which takes a little while after `up -d` returns. `nyxgpt ops install`
+  runs [`nyxgpt ops glitchtip-init`](#nyxgpt-ops-glitchtip-init) right
+  after this step, which waits for that health check and then flips those
+  settings on once it has actually provisioned a DSN.
 
 Grafana dashboards, the Operational Logs curated Loki queries, and the
 curated Jaeger trace views are all pre-provisioned as code (see
 [docker-compose.md](docker-compose.md#monitoring-dashboards)) -- starting
 the stack is the only step needed to get a populated SRE view.
+
+---
+
+## `nyxgpt ops glitchtip-init`
+
+Auto-provisions GlitchTip's admin user, organization, project, and DSN --
+the last manual step in the SRE observability suite, now zero-touch. No
+sign-in, no copy-pasting a DSN.
+
+Usage:
+
+```bash
+nyxgpt ops glitchtip-init
+```
+
+`nyxgpt ops install` already runs this by default, right after starting
+the observability stack (see [`nyxgpt ops install`](#nyxgpt-ops-install)
+above); use this command on its own to re-run it later (e.g. after
+`--skip-observability`, or if the `glitchtip` container wasn't finished
+starting when `install` first ran).
+
+Behavior:
+
+- **Only runs when the `glitchtip` container is up and passes its health
+  check** -- it waits out that container's post-start health-check window
+  (up to ~2 minutes) before giving up. A no-op with a clear message
+  otherwise (no Docker, `--skip-observability`, or the container still
+  isn't healthy after waiting) -- it never fails `nyxgpt ops install` for
+  this.
+- **Idempotent** -- every step (admin user, organization, project, project
+  key) first checks for an existing one before creating it, so re-running
+  never duplicates anything.
+- Bootstraps a superuser non-interactively via GlitchTip's own
+  `manage.py createsuperuser --noinput` (no raw `docker exec` -- this
+  shells out internally, the user never runs it directly), using
+  `[error_tracking] admin_email`/`admin_password` from config.ini if set,
+  else generating a strong password and saving it back there (chmod 600,
+  same trust model as `[auth] api_key` -- safe because GlitchTip is
+  loopback-only).
+- Creates (or reuses) a scoped API token, then the `nyxgpt` organization,
+  `nyxgpt-backend` project, and its DSN via GlitchTip's Sentry-compatible
+  REST API -- the upgrade-stable path, not an ORM/`manage.py shell` seed.
+- Writes the resulting DSN and `enabled = true` into
+  `~/.nyxGPT/config.ini` (native) and `docker/config.docker.ini` (Compose)
+  -- the DSN is a public key, safe to store in both, including the
+  git-tracked Compose template.
+
+Exit codes:
+
+- `0` -- provisioned successfully, or a clean no-op (GlitchTip not
+  up/healthy yet)
+- `2` -- a step actually failed (e.g. couldn't reach the GlitchTip API,
+  or config.ini is missing -- run `nyxgpt wizard` first)
 
 ---
 
@@ -432,8 +489,8 @@ Typical files include:
 
 ### Structured `nyxgpt ops` activity logging
 
-Every `nyxgpt ops` command (`install`, `status`, `restart`, `stop`, `down`,
-`logs`, `env-sync`, `doctor`, `observability`) logs its steps and outcomes from
+Every `nyxgpt ops` command (`install`, `status`, `restart`, `stop`, `down`, `logs`,
+`env-sync`, `doctor`, `observability`, `glitchtip-init`) logs its steps and outcomes from
 `src/nyxgpt/ops.py` with structured fields (via the logging module's
 `extra={}`, rendered as JSON when `[logging] format = json` -- see
 [configuration.md](configuration.md#logging-section)), in addition to the

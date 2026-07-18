@@ -1998,6 +1998,14 @@ def cli(argv: list[str] | None = None) -> int:
     )
 
     ops_sub.add_parser(
+        "glitchtip-init",
+        help=(
+            "Auto-provision a GlitchTip admin user, org, project, and DSN "
+            "(zero-touch error tracking); no-ops if glitchtip isn't up/healthy"
+        ),
+    )
+
+    ops_sub.add_parser(
         "observability",
         help=(
             "Start the Grafana/Loki/Jaeger/GlitchTip Compose profiles "
@@ -2238,6 +2246,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.env_sync(args)
         if args.ops_cmd == "logs":
             return ops_mod.logs(args)
+        if args.ops_cmd == "glitchtip-init":
+            return ops_mod.glitchtip_init(args)
         if args.ops_cmd == "observability":
             return ops_mod.observability(args)
 

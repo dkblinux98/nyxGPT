@@ -1668,6 +1668,7 @@ def test_ops_install_skip_observability_flag_parses(
 
     called = []
     monkeypatch.setattr(cli_mod.ops_mod, "_start_observability_stack", lambda: called.append(True))
+    monkeypatch.setattr(cli_mod.ops_mod, "_provision_glitchtip", lambda: called.append(True))
 
     exit_code = cli(["ops", "install", "--skip-observability"])
 
@@ -2814,6 +2815,18 @@ def test_ops_logs_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_mod.ops_mod, "logs", lambda args: (calls.append(args), 0)[1])
 
     exit_code = cli(["ops", "logs", "ollama"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+
+
+def test_ops_glitchtip_init_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "glitchtip_init", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["ops", "glitchtip-init"])
 
     assert exit_code == 0
     assert len(calls) == 1

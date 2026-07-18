@@ -1,9 +1,11 @@
 import hashlib
 import subprocess
 import tarfile
+from configparser import ConfigParser
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from nyxgpt import ops, self_heal
@@ -3209,3 +3211,704 @@ def test_down_returns_nonzero_on_failure():
     ):
         rc = ops.down(args)
         assert rc == 2
+
+
+def _mock_client(base_url, handler):
+    return httpx.Client(base_url=base_url, transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.unit
+def test_glitchtip_container_healthy_true(monkeypatch):
+    status = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="running", health="healthy", healthy=True
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [status])
+    assert ops._glitchtip_container_healthy() is True
+
+
+@pytest.mark.unit
+def test_glitchtip_container_healthy_false_when_unhealthy(monkeypatch):
+    status = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="starting", health="starting", healthy=False
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [status])
+    assert ops._glitchtip_container_healthy() is False
+
+
+@pytest.mark.unit
+def test_glitchtip_container_healthy_false_when_absent(monkeypatch):
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [])
+    assert ops._glitchtip_container_healthy() is False
+
+
+@pytest.mark.unit
+def test_wait_for_glitchtip_healthy_absent_returns_false_without_sleeping(monkeypatch):
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [])
+    sleeps = []
+    monkeypatch.setattr(ops.time, "sleep", lambda s: sleeps.append(s))
+
+    assert ops._wait_for_glitchtip_healthy(timeout=5, poll_interval=0.01) is False
+    assert sleeps == []
+
+
+@pytest.mark.unit
+def test_wait_for_glitchtip_healthy_already_healthy_returns_true_immediately(monkeypatch):
+    status = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="running", health="healthy", healthy=True
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [status])
+    sleeps = []
+    monkeypatch.setattr(ops.time, "sleep", lambda s: sleeps.append(s))
+
+    assert ops._wait_for_glitchtip_healthy(timeout=5, poll_interval=0.01) is True
+    assert sleeps == []
+
+
+@pytest.mark.unit
+def test_wait_for_glitchtip_healthy_polls_until_healthy(monkeypatch):
+    unhealthy = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="starting", health="starting", healthy=False
+    )
+    healthy = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="running", health="healthy", healthy=True
+    )
+    calls = {"n": 0}
+
+    def fake_status():
+        calls["n"] += 1
+        return [healthy] if calls["n"] >= 3 else [unhealthy]
+
+    monkeypatch.setattr(ops.self_heal, "list_component_status", fake_status)
+    monkeypatch.setattr(ops.time, "sleep", lambda s: None)
+
+    assert ops._wait_for_glitchtip_healthy(timeout=5, poll_interval=0.01) is True
+    assert calls["n"] >= 3
+
+
+@pytest.mark.unit
+def test_wait_for_glitchtip_healthy_times_out(monkeypatch):
+    unhealthy = self_heal.ComponentStatus(
+        service="glitchtip", container="c", state="starting", health="starting", healthy=False
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [unhealthy])
+    monkeypatch.setattr(ops.time, "sleep", lambda s: None)
+
+    assert ops._wait_for_glitchtip_healthy(timeout=0.05, poll_interval=0.01) is False
+
+
+@pytest.mark.unit
+def test_resolve_admin_credentials_generates_when_missing(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[nyxgpt]\n", encoding="utf-8")
+
+    email, password, generated = ops._resolve_admin_credentials(cfg_path)
+
+    assert email == ops.GLITCHTIP_DEFAULT_ADMIN_EMAIL
+    assert generated is True
+    assert len(password) > 10
+
+
+@pytest.mark.unit
+def test_resolve_admin_credentials_reads_existing(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text(
+        "[error_tracking]\nadmin_email = owner@example.com\nadmin_password = s3cr3t\n",
+        encoding="utf-8",
+    )
+
+    email, password, generated = ops._resolve_admin_credentials(cfg_path)
+
+    assert email == "owner@example.com"
+    assert password == "s3cr3t"
+    assert generated is False
+
+
+@pytest.mark.unit
+def test_persist_admin_credentials_writes_and_chmods(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[nyxgpt]\ndefault_model = llama3.1:8b\n", encoding="utf-8")
+
+    ops._persist_admin_credentials(cfg_path, "admin@nyxgpt.local", "generated-pw")
+
+    parser = ConfigParser()
+    parser.read(cfg_path)
+    assert parser.get("error_tracking", "admin_email") == "admin@nyxgpt.local"
+    assert parser.get("error_tracking", "admin_password") == "generated-pw"
+    assert parser.get("nyxgpt", "default_model") == "llama3.1:8b"
+    assert oct(cfg_path.stat().st_mode)[-3:] == "600"
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_superuser_success(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    )
+    result = ops._glitchtip_ensure_superuser("admin@nyxgpt.local", "pw")
+    assert result.ok
+    assert "Created" in result.message
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_superuser_already_exists_is_ok(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr="Error: That email address is already taken."
+        ),
+    )
+    result = ops._glitchtip_ensure_superuser("admin@nyxgpt.local", "pw")
+    assert result.ok
+    assert "already exists" in result.message
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_superuser_other_failure(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom"),
+    )
+    result = ops._glitchtip_ensure_superuser("admin@nyxgpt.local", "pw")
+    assert not result.ok
+    assert "boom" in result.details
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_superuser_command_shape(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **k):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    ops._glitchtip_ensure_superuser("admin@nyxgpt.local", "pw")
+
+    cmd = captured["cmd"]
+    assert cmd[:4] == ["docker", "compose", "-f", str(ops.self_heal.COMPOSE_FILE)]
+    assert "glitchtip" in cmd
+    assert "createsuperuser" in cmd
+    assert "--noinput" in cmd
+    assert "DJANGO_SUPERUSER_EMAIL=admin@nyxgpt.local" in cmd
+    assert "DJANGO_SUPERUSER_PASSWORD=pw" in cmd
+
+
+@pytest.mark.unit
+def test_glitchtip_login_success(monkeypatch):
+    def handler(request):
+        if request.url.path == "/api/auth/login/" and request.method == "GET":
+            return httpx.Response(200, headers={"set-cookie": "csrftoken=abc123; Path=/"})
+        if request.url.path == "/api/auth/login/" and request.method == "POST":
+            assert request.headers.get("x-csrftoken") == "abc123"
+            return httpx.Response(200, json={"detail": "ok"})
+        return httpx.Response(404)
+
+    monkeypatch.setattr(
+        ops, "_glitchtip_http_client", lambda base_url, **k: _mock_client(base_url, handler)
+    )
+
+    client, result = ops._glitchtip_login("http://localhost:8080", "admin@nyxgpt.local", "pw")
+    assert result.ok
+    assert client is not None
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_login_failure(monkeypatch):
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200)
+        return httpx.Response(400, text="Invalid credentials")
+
+    monkeypatch.setattr(
+        ops, "_glitchtip_http_client", lambda base_url, **k: _mock_client(base_url, handler)
+    )
+
+    client, result = ops._glitchtip_login("http://localhost:8080", "admin@nyxgpt.local", "wrong")
+    assert not result.ok
+    assert client is None
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_api_token_creates_new():
+    def handler(request):
+        if request.method == "GET" and request.url.path == "/api/0/api-tokens/":
+            return httpx.Response(200, json=[])
+        if request.method == "POST" and request.url.path == "/api/0/api-tokens/":
+            return httpx.Response(201, json={"token": "abc-token"})
+        return httpx.Response(404)
+
+    client = _mock_client("http://localhost:8080", handler)
+    token, result = ops._glitchtip_ensure_api_token(client, "http://localhost:8080")
+    assert token == "abc-token"
+    assert result.ok
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_api_token_reuses_existing():
+    def handler(request):
+        if request.url.path == "/api/0/api-tokens/" and request.method == "GET":
+            return httpx.Response(
+                200, json=[{"name": ops.GLITCHTIP_TOKEN_NAME, "token": "existing-token"}]
+            )
+        return httpx.Response(404)
+
+    client = _mock_client("http://localhost:8080", handler)
+    token, result = ops._glitchtip_ensure_api_token(client, "http://localhost:8080")
+    assert token == "existing-token"
+    assert result.ok
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_api_token_failure():
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        return httpx.Response(500, text="boom")
+
+    client = _mock_client("http://localhost:8080", handler)
+    token, result = ops._glitchtip_ensure_api_token(client, "http://localhost:8080")
+    assert token is None
+    assert not result.ok
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_organization_creates_new():
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        return httpx.Response(201, json={"slug": ops.GLITCHTIP_ORG_SLUG})
+
+    client = _mock_client("http://localhost:8080", handler)
+    slug, result = ops._glitchtip_ensure_organization(client)
+    assert slug == ops.GLITCHTIP_ORG_SLUG
+    assert result.ok
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_organization_reuses_existing():
+    def handler(request):
+        return httpx.Response(200, json=[{"slug": ops.GLITCHTIP_ORG_SLUG}])
+
+    client = _mock_client("http://localhost:8080", handler)
+    slug, result = ops._glitchtip_ensure_organization(client)
+    assert slug == ops.GLITCHTIP_ORG_SLUG
+    assert "existing" in result.message
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_organization_failure():
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        return httpx.Response(500, text="boom")
+
+    client = _mock_client("http://localhost:8080", handler)
+    slug, result = ops._glitchtip_ensure_organization(client)
+    assert slug is None
+    assert not result.ok
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_project_creates_new():
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        return httpx.Response(201, json={"slug": ops.GLITCHTIP_PROJECT_SLUG})
+
+    client = _mock_client("http://localhost:8080", handler)
+    slug, result = ops._glitchtip_ensure_project(client, ops.GLITCHTIP_ORG_SLUG)
+    assert slug == ops.GLITCHTIP_PROJECT_SLUG
+    assert result.ok
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_project_reuses_existing():
+    def handler(request):
+        return httpx.Response(200, json=[{"slug": ops.GLITCHTIP_PROJECT_SLUG}])
+
+    client = _mock_client("http://localhost:8080", handler)
+    slug, result = ops._glitchtip_ensure_project(client, ops.GLITCHTIP_ORG_SLUG)
+    assert slug == ops.GLITCHTIP_PROJECT_SLUG
+    assert "existing" in result.message
+    client.close()
+
+
+@pytest.mark.unit
+def test_extract_dsn_variants():
+    assert ops._extract_dsn({"dsn": {"public": "http://a"}}) == "http://a"
+    assert ops._extract_dsn({"dsn": "http://b"}) == "http://b"
+    assert ops._extract_dsn({"dsn": None}) == ""
+    assert ops._extract_dsn({}) == ""
+    assert ops._extract_dsn("not-a-dict") == ""
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_project_key_creates_new_with_dict_dsn():
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        return httpx.Response(201, json={"dsn": {"public": "http://key@localhost:8080/1"}})
+
+    client = _mock_client("http://localhost:8080", handler)
+    dsn, result = ops._glitchtip_ensure_project_key(client, "nyxgpt", "nyxgpt-backend")
+    assert dsn == "http://key@localhost:8080/1"
+    assert result.ok
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_project_key_reuses_existing_string_dsn():
+    def handler(request):
+        return httpx.Response(200, json=[{"dsn": "http://key@localhost:8080/1"}])
+
+    client = _mock_client("http://localhost:8080", handler)
+    dsn, result = ops._glitchtip_ensure_project_key(client, "nyxgpt", "nyxgpt-backend")
+    assert dsn == "http://key@localhost:8080/1"
+    assert "existing" in result.message
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_project_key_failure():
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        return httpx.Response(500, text="boom")
+
+    client = _mock_client("http://localhost:8080", handler)
+    dsn, result = ops._glitchtip_ensure_project_key(client, "nyxgpt", "nyxgpt-backend")
+    assert dsn is None
+    assert not result.ok
+    client.close()
+
+
+@pytest.mark.unit
+def test_write_error_tracking_dsn_missing_file_is_noop(tmp_path):
+    cfg_path = tmp_path / "missing.ini"
+    result = ops._write_error_tracking_dsn(cfg_path, "http://key@localhost:8080/1", chmod_600=True)
+    assert result.ok
+    assert not cfg_path.exists()
+
+
+@pytest.mark.unit
+def test_write_error_tracking_dsn_writes_and_chmods(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
+
+    result = ops._write_error_tracking_dsn(cfg_path, "http://key@localhost:8080/1", chmod_600=True)
+    assert result.ok
+
+    parser = ConfigParser()
+    parser.read(cfg_path)
+    assert parser.get("error_tracking", "dsn") == "http://key@localhost:8080/1"
+    assert parser.get("error_tracking", "enabled") == "true"
+    assert oct(cfg_path.stat().st_mode)[-3:] == "600"
+
+
+@pytest.mark.unit
+def test_write_error_tracking_dsn_no_chmod_for_compose_path(tmp_path):
+    cfg_path = tmp_path / "config.docker.ini"
+    cfg_path.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
+    cfg_path.chmod(0o644)
+
+    ops._write_error_tracking_dsn(cfg_path, "http://key@localhost:8080/1", chmod_600=False)
+
+    assert oct(cfg_path.stat().st_mode)[-3:] == "644"
+
+
+@pytest.mark.unit
+def test_write_error_tracking_dsn_preserves_comments(tmp_path):
+    """Regression test: a `ConfigParser` read/write round-trip silently drops
+    comment lines, which would destroy the hand-written documentation
+    comments in the git-tracked `docker/config.docker.ini`. The DSN/enabled
+    write must patch only those two lines in place."""
+    cfg_path = tmp_path / "config.docker.ini"
+    original = (
+        "[error_tracking]\n"
+        "# Error tracking is local-only -- see docs/self-healing.md.\n"
+        "enabled = false\n"
+        "# Auto-filled by `nyxgpt ops glitchtip-init`.\n"
+        "dsn =\n"
+        "environment = docker\n"
+        "\n"
+        "[monitoring]\n"
+        "# Monitoring section comment.\n"
+        "enabled = false\n"
+    )
+    cfg_path.write_text(original, encoding="utf-8")
+
+    result = ops._write_error_tracking_dsn(cfg_path, "http://key@localhost:8080/1", chmod_600=False)
+    assert result.ok
+
+    written = cfg_path.read_text(encoding="utf-8")
+    assert "# Error tracking is local-only -- see docs/self-healing.md.\n" in written
+    assert "# Auto-filled by `nyxgpt ops glitchtip-init`.\n" in written
+    assert "# Monitoring section comment.\n" in written
+    assert "dsn = http://key@localhost:8080/1\n" in written
+    assert "enabled = true\n" in written
+    assert "environment = docker\n" in written
+
+    parser = ConfigParser()
+    parser.read(cfg_path)
+    assert parser.get("error_tracking", "dsn") == "http://key@localhost:8080/1"
+    assert parser.get("error_tracking", "enabled") == "true"
+    assert parser.get("monitoring", "enabled") == "false"
+
+
+@pytest.mark.unit
+def test_patch_ini_value_appends_missing_key():
+    text = "[error_tracking]\nenvironment = docker\n"
+    patched = ops._patch_ini_value(text, "error_tracking", "dsn", "http://key@localhost:8080/1")
+    assert "dsn = http://key@localhost:8080/1\n" in patched
+    assert "environment = docker\n" in patched
+
+
+@pytest.mark.unit
+def test_patch_ini_value_appends_missing_section():
+    text = "[monitoring]\nenabled = false\n"
+    patched = ops._patch_ini_value(text, "error_tracking", "dsn", "http://key@localhost:8080/1")
+    parser = ConfigParser()
+    parser.read_string(patched)
+    assert parser.get("error_tracking", "dsn") == "http://key@localhost:8080/1"
+    assert parser.get("monitoring", "enabled") == "false"
+
+
+@pytest.mark.unit
+def test_provision_glitchtip_skips_without_docker(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: False)
+    results = ops._provision_glitchtip()
+    assert len(results) == 1
+    assert results[0].ok
+    assert "Docker not found" in results[0].message
+
+
+@pytest.mark.unit
+def test_provision_glitchtip_skips_when_not_healthy(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_wait_for_glitchtip_healthy", lambda: False)
+    results = ops._provision_glitchtip()
+    assert len(results) == 1
+    assert results[0].ok
+    assert "not up/healthy" in results[0].message
+
+
+@pytest.mark.unit
+def test_provision_glitchtip_fails_when_config_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_wait_for_glitchtip_healthy", lambda: True)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    results = ops._provision_glitchtip()
+
+    assert len(results) == 1
+    assert not results[0].ok
+    assert "Missing config" in results[0].message
+
+
+@pytest.mark.unit
+def test_provision_glitchtip_stops_after_superuser_failure(monkeypatch, tmp_path):
+    cfg_path = tmp_path / ".nyxGPT" / "config.ini"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("[error_tracking]\n", encoding="utf-8")
+
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_wait_for_glitchtip_healthy", lambda: True)
+    monkeypatch.setattr(
+        ops, "_glitchtip_ensure_superuser", lambda e, p: ops.OpsResult(False, "boom", "details")
+    )
+    login_calls = []
+
+    def fake_login(*a, **k):
+        login_calls.append(True)
+        return None, ops.OpsResult(False, "should not be called")
+
+    monkeypatch.setattr(ops, "_glitchtip_login", fake_login)
+
+    results = ops._provision_glitchtip()
+
+    assert not results[-1].ok
+    assert login_calls == []
+
+
+@pytest.mark.unit
+def test_provision_glitchtip_stops_after_login_failure(monkeypatch, tmp_path):
+    cfg_path = tmp_path / ".nyxGPT" / "config.ini"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("[error_tracking]\n", encoding="utf-8")
+
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_wait_for_glitchtip_healthy", lambda: True)
+    monkeypatch.setattr(ops, "_glitchtip_ensure_superuser", lambda e, p: ops.OpsResult(True, "ok"))
+    monkeypatch.setattr(
+        ops,
+        "_glitchtip_login",
+        lambda base_url, e, p: (None, ops.OpsResult(False, "auth failed")),
+    )
+    token_calls = []
+
+    def fake_token(*a, **k):
+        token_calls.append(True)
+        return None, ops.OpsResult(False, "should not be called")
+
+    monkeypatch.setattr(ops, "_glitchtip_ensure_api_token", fake_token)
+
+    results = ops._provision_glitchtip()
+
+    assert not results[-1].ok
+    assert token_calls == []
+
+
+@pytest.mark.unit
+def test_provision_glitchtip_stops_after_token_failure(monkeypatch, tmp_path):
+    cfg_path = tmp_path / ".nyxGPT" / "config.ini"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("[error_tracking]\n", encoding="utf-8")
+
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_wait_for_glitchtip_healthy", lambda: True)
+    monkeypatch.setattr(ops, "_glitchtip_ensure_superuser", lambda e, p: ops.OpsResult(True, "ok"))
+    fake_client = MagicMock()
+    monkeypatch.setattr(
+        ops,
+        "_glitchtip_login",
+        lambda base_url, e, p: (fake_client, ops.OpsResult(True, "logged in")),
+    )
+    monkeypatch.setattr(
+        ops,
+        "_glitchtip_ensure_api_token",
+        lambda client, base_url: (None, ops.OpsResult(False, "token failed")),
+    )
+    org_calls = []
+
+    def fake_org(*a, **k):
+        org_calls.append(True)
+        return None, ops.OpsResult(False, "should not be called")
+
+    monkeypatch.setattr(ops, "_glitchtip_ensure_organization", fake_org)
+
+    results = ops._provision_glitchtip()
+
+    assert not results[-1].ok
+    assert org_calls == []
+    fake_client.close.assert_called_once()
+
+
+@pytest.mark.unit
+def test_provision_glitchtip_full_happy_path(monkeypatch, tmp_path):
+    cfg_path = tmp_path / ".nyxGPT" / "config.ini"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
+
+    (tmp_path / "docker").mkdir()
+    compose_cfg = tmp_path / "docker" / "config.docker.ini"
+    compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
+
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_wait_for_glitchtip_healthy", lambda: True)
+    monkeypatch.setattr(
+        ops, "_glitchtip_ensure_superuser", lambda e, p: ops.OpsResult(True, "created")
+    )
+
+    fake_login_client = MagicMock()
+    monkeypatch.setattr(
+        ops,
+        "_glitchtip_login",
+        lambda base_url, e, p: (fake_login_client, ops.OpsResult(True, "logged in")),
+    )
+    monkeypatch.setattr(
+        ops,
+        "_glitchtip_ensure_api_token",
+        lambda client, base_url: ("tok", ops.OpsResult(True, "token")),
+    )
+    fake_api_client = MagicMock()
+    monkeypatch.setattr(ops, "_glitchtip_http_client", lambda base_url, **k: fake_api_client)
+    monkeypatch.setattr(
+        ops, "_glitchtip_ensure_organization", lambda client: ("nyxgpt", ops.OpsResult(True, "org"))
+    )
+    monkeypatch.setattr(
+        ops,
+        "_glitchtip_ensure_project",
+        lambda client, org: ("nyxgpt-backend", ops.OpsResult(True, "project")),
+    )
+    monkeypatch.setattr(
+        ops,
+        "_glitchtip_ensure_project_key",
+        lambda client, org, proj: ("http://key@localhost:8080/1", ops.OpsResult(True, "key")),
+    )
+
+    results = ops._provision_glitchtip()
+
+    assert all(r.ok for r in results)
+    fake_login_client.close.assert_called_once()
+    fake_api_client.close.assert_called_once()
+
+    parser = ConfigParser()
+    parser.read(cfg_path)
+    assert parser.get("error_tracking", "dsn") == "http://key@localhost:8080/1"
+    assert parser.get("error_tracking", "enabled") == "true"
+
+    compose_parser = ConfigParser()
+    compose_parser.read(compose_cfg)
+    assert compose_parser.get("error_tracking", "dsn") == "http://key@localhost:8080/1"
+    assert compose_parser.get("error_tracking", "enabled") == "true"
+
+
+@pytest.mark.unit
+def test_provision_glitchtip_persists_generated_password(monkeypatch, tmp_path):
+    cfg_path = tmp_path / ".nyxGPT" / "config.ini"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("[error_tracking]\n", encoding="utf-8")
+
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_wait_for_glitchtip_healthy", lambda: True)
+
+    captured_creds = {}
+
+    def fake_superuser(email, password):
+        captured_creds["email"] = email
+        captured_creds["password"] = password
+        return ops.OpsResult(False, "stop here so the test doesn't need the whole HTTP flow")
+
+    monkeypatch.setattr(ops, "_glitchtip_ensure_superuser", fake_superuser)
+
+    ops._provision_glitchtip()
+
+    parser = ConfigParser()
+    parser.read(cfg_path)
+    assert parser.get("error_tracking", "admin_email") == ops.GLITCHTIP_DEFAULT_ADMIN_EMAIL
+    assert parser.get("error_tracking", "admin_password") == captured_creds["password"]
+    assert len(captured_creds["password"]) > 10
+
+
+@pytest.mark.unit
+def test_glitchtip_init_cli_entrypoint_returns_zero_on_success(capsys):
+    with patch.object(ops, "_provision_glitchtip", return_value=[ops.OpsResult(True, "up")]):
+        rc = ops.glitchtip_init(MagicMock())
+        assert rc == 0
+        assert "[OK]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_glitchtip_init_cli_entrypoint_returns_nonzero_on_failure(capsys):
+    with patch.object(
+        ops, "_provision_glitchtip", return_value=[ops.OpsResult(False, "down", "boom")]
+    ):
+        rc = ops.glitchtip_init(MagicMock())
+        assert rc == 2
+        assert "[FAIL]" in capsys.readouterr().out

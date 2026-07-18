@@ -13,15 +13,21 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
+import secrets
 import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import tomllib
 from collections.abc import Callable
 from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+import httpx
 
 from nyxgpt import self_heal
 from nyxgpt.config import get_log_aggregation_enabled
@@ -991,6 +997,7 @@ def install(args) -> int:
     ]
     if not getattr(args, "skip_observability", False):
         steps.append(("observability stack", _start_observability_stack))
+        steps.append(("glitchtip auto-provisioning", _provision_glitchtip))
     for step_name, fn in steps:
         try:
             results += fn()
@@ -1745,9 +1752,9 @@ CORE_APP_SERVICES: frozenset[str] = frozenset({"nyxgpt", "ollama", "cassandra", 
 # Compose profile is confirmed up, so the SRE/admin dashboard (and, for
 # tracing, the API's own span-export init) reflect that the stack is
 # actually live instead of still showing "opt-in, not running". Deliberately
-# excludes `error_tracking`: it needs a GlitchTip project DSN, which nothing
-# here can safely provision without an owner to sign in and create it -- see
-# `_start_observability_stack`'s returned message.
+# excludes `error_tracking`: GlitchTip is only reachable once its container
+# passes its health check (well after `up -d` returns), so it's flipped on
+# by `_provision_glitchtip` instead, once a DSN actually exists to report to.
 OBSERVABILITY_ENABLE_SECTIONS: list[str] = ["monitoring", "log_aggregation", "tracing"]
 
 
@@ -1874,11 +1881,10 @@ def _start_observability_stack() -> list[OpsResult]:
             "Observability stack up: Grafana http://localhost:3001, "
             "Jaeger http://localhost:16686, Loki via Grafana Explore, "
             "GlitchTip http://localhost:8080",
-            "Dashboards, tracing, and log search are live with no further steps. GlitchTip "
-            "has one remaining manual step: sign in, create a project, and paste its DSN "
-            "into [error_tracking] dsn in config.ini -- nothing here can safely create "
-            "that DSN without an owner to sign in and claim the account first. See "
-            "docs/self-healing.md.",
+            "Dashboards, tracing, and log search are live with no further steps. "
+            "GlitchTip's admin user/org/project/DSN are auto-provisioned next by "
+            "`nyxgpt ops glitchtip-init` (run automatically as part of `nyxgpt ops "
+            "install`) once its container passes its health check.",
         )
     ]
 
@@ -2015,4 +2021,544 @@ def env_sync(args) -> int:
         extra={"component": "ops", "action": "env-sync", "ok": ok},
     )
 
+    return 0 if ok else 2
+
+
+# --- GlitchTip auto-provisioning (`nyxgpt ops glitchtip-init`) ---
+
+# Fixed org/project names -- reused (not recreated) on every re-run, which is
+# what makes this idempotent.
+GLITCHTIP_ORG_SLUG = "nyxgpt"
+GLITCHTIP_ORG_NAME = "nyxgpt"
+GLITCHTIP_PROJECT_SLUG = "nyxgpt-backend"
+GLITCHTIP_PROJECT_NAME = "nyxgpt-backend"
+GLITCHTIP_TOKEN_NAME = "nyxgpt-ops-glitchtip-init"
+GLITCHTIP_TOKEN_SCOPES = ["org:read", "org:write", "project:read", "project:write"]
+GLITCHTIP_DEFAULT_ADMIN_EMAIL = "admin@nyxgpt.local"
+
+
+def _glitchtip_container_healthy() -> bool:
+    """Whether the `glitchtip` Compose container currently reports healthy."""
+    for status in self_heal.list_component_status():
+        if status.service == "glitchtip":
+            return status.healthy
+    return False
+
+
+def _wait_for_glitchtip_healthy(timeout: float = 120.0, poll_interval: float = 3.0) -> bool:
+    """Poll until the `glitchtip` container reports healthy, or `timeout` elapses.
+
+    Returns False immediately (no polling) if the container isn't part of the
+    currently running Compose stack at all -- e.g. `--skip-observability` was
+    used, or Docker isn't installed -- so a host with no GlitchTip never
+    stalls `nyxgpt ops install`. Otherwise waits out its health-check
+    `start_period` (see docker-compose.yml), since a container freshly
+    started by `_start_observability_stack` is not immediately reachable.
+    """
+    statuses = [s for s in self_heal.list_component_status() if s.service == "glitchtip"]
+    if not statuses:
+        return False
+    if statuses[0].healthy:
+        return True
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval)
+        if _glitchtip_container_healthy():
+            return True
+    return False
+
+
+def _resolve_admin_credentials(cfg_path: Path) -> tuple[str, str, bool]:
+    """Return `(email, password, generated)` for the GlitchTip admin user.
+
+    Reads `[error_tracking] admin_email`/`admin_password` from `cfg_path` if
+    already set; generates a strong password when none is configured. Does
+    not write anything -- see `_persist_admin_credentials`.
+    """
+    parser = ConfigParser()
+    parser.optionxform = str  # type: ignore[assignment]
+    parser.read(cfg_path)
+
+    email = parser.get("error_tracking", "admin_email", fallback="").strip()
+    email = email or GLITCHTIP_DEFAULT_ADMIN_EMAIL
+    password = parser.get("error_tracking", "admin_password", fallback="").strip()
+    generated = not password
+    if generated:
+        password = secrets.token_urlsafe(24)
+    return email, password, generated
+
+
+def _persist_admin_credentials(cfg_path: Path, email: str, password: str) -> None:
+    """Write the (possibly generated) admin email/password back to `cfg_path`.
+
+    Same trust model as `[auth] api_key`: GlitchTip is loopback-only, so this
+    is acceptable to store in config.ini chmod 600 -- see docs/self-healing.md.
+    Only ever called with the native `~/.nyxGPT/config.ini` path, never the
+    git-tracked `docker/config.docker.ini` template.
+    """
+    parser = ConfigParser()
+    parser.optionxform = str  # type: ignore[assignment]
+    parser.read(cfg_path)
+    if not parser.has_section("error_tracking"):
+        parser.add_section("error_tracking")
+    parser.set("error_tracking", "admin_email", email)
+    parser.set("error_tracking", "admin_password", password)
+
+    with cfg_path.open("w", encoding="utf-8") as f:
+        parser.write(f)
+    os.chmod(cfg_path, 0o600)
+
+
+def _glitchtip_ensure_superuser(email: str, password: str) -> OpsResult:
+    """Idempotently ensure a GlitchTip superuser exists via Django's `createsuperuser --noinput`.
+
+    Non-interactive: credentials are passed as the `DJANGO_SUPERUSER_*`
+    environment variables Django's own `createsuperuser` management command
+    reads directly, so this never blocks on a TTY prompt. `--noinput` exits
+    non-zero if the account already exists -- treated as success here so
+    re-running `glitchtip-init` after the first successful run is a no-op.
+    """
+    cmd = [
+        "docker",
+        "compose",
+        "-f",
+        str(self_heal.COMPOSE_FILE),
+        "exec",
+        "-T",
+        "-e",
+        f"DJANGO_SUPERUSER_EMAIL={email}",
+        "-e",
+        f"DJANGO_SUPERUSER_PASSWORD={password}",
+        "-e",
+        f"DJANGO_SUPERUSER_USERNAME={email}",
+        "glitchtip",
+        "./manage.py",
+        "createsuperuser",
+        "--noinput",
+    ]
+    try:
+        cp = _run(cmd, check=False)
+    except Exception as e:
+        return OpsResult(
+            False, "Failed to run GlitchTip createsuperuser", f"{type(e).__name__}: {e}"
+        )
+
+    if cp.returncode == 0:
+        return OpsResult(True, f"Created GlitchTip admin user {email}")
+
+    combined = ((cp.stdout or "") + (cp.stderr or "")).lower()
+    if "already" in combined or "unique" in combined:
+        return OpsResult(True, f"GlitchTip admin user {email} already exists")
+
+    details = (cp.stdout or "").strip() + (
+        "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+    )
+    return OpsResult(False, "Failed to ensure GlitchTip admin user", details.strip())
+
+
+def _glitchtip_http_client(base_url: str, **kwargs: Any) -> httpx.Client:
+    """Construct an `httpx.Client` against GlitchTip's base URL.
+
+    A thin wrapper purely so tests can monkeypatch it to inject an
+    `httpx.MockTransport` instead of hitting a real network socket.
+    """
+    return httpx.Client(base_url=base_url, timeout=10.0, **kwargs)
+
+
+def _glitchtip_login(
+    base_url: str, email: str, password: str
+) -> tuple[httpx.Client | None, OpsResult]:
+    """Log into GlitchTip as `email`/`password`, returning an authenticated client.
+
+    GlitchTip's login view (`POST /api/auth/login/`) is a standard
+    Django/DRF session view, CSRF-protected like any other unsafe request --
+    a GET first primes the `csrftoken` cookie, which is then echoed back as
+    `X-CSRFToken` on the login POST. The returned client's cookie jar carries
+    that session forward for `_glitchtip_ensure_api_token` to mint a bearer
+    token from (every call after that switches to token auth, which is
+    CSRF-exempt).
+    """
+    client = _glitchtip_http_client(base_url, follow_redirects=True)
+    try:
+        client.get("/api/auth/login/")
+        csrf_token = client.cookies.get("csrftoken", "")
+        headers = {"Referer": base_url}
+        if csrf_token:
+            headers["X-CSRFToken"] = csrf_token
+
+        resp = client.post(
+            "/api/auth/login/",
+            json={"email": email, "password": password},
+            headers=headers,
+        )
+        if resp.status_code >= 400:
+            client.close()
+            return None, OpsResult(
+                False,
+                "Failed to authenticate to GlitchTip",
+                f"HTTP {resp.status_code}: {resp.text[:500]}",
+            )
+        return client, OpsResult(True, "Authenticated to GlitchTip")
+    except httpx.HTTPError as e:
+        client.close()
+        return None, OpsResult(False, "Failed to reach GlitchTip API", f"{type(e).__name__}: {e}")
+
+
+def _glitchtip_ensure_api_token(
+    client: httpx.Client, base_url: str
+) -> tuple[str | None, OpsResult]:
+    """Mint (or reuse) a scoped GlitchTip API token for `nyxgpt ops` automation.
+
+    Uses the authenticated session from `_glitchtip_login` for this one call
+    (token creation is CSRF-guarded like any other POST); every call after
+    this switches to `Authorization: Bearer <token>`.
+    """
+    try:
+        listing = client.get("/api/0/api-tokens/")
+        if listing.status_code == 200:
+            existing: Any = listing.json()
+            if isinstance(existing, list):
+                for tok in existing:
+                    if not isinstance(tok, dict):
+                        continue
+                    if tok.get("name") == GLITCHTIP_TOKEN_NAME and tok.get("token"):
+                        return str(tok["token"]), OpsResult(
+                            True, "Reusing existing GlitchTip API token"
+                        )
+
+        csrf_token = client.cookies.get("csrftoken", "")
+        headers = {"Referer": base_url}
+        if csrf_token:
+            headers["X-CSRFToken"] = csrf_token
+
+        resp = client.post(
+            "/api/0/api-tokens/",
+            json={"name": GLITCHTIP_TOKEN_NAME, "scopes": GLITCHTIP_TOKEN_SCOPES},
+            headers=headers,
+        )
+        if resp.status_code not in (200, 201):
+            return None, OpsResult(
+                False,
+                "Failed to create GlitchTip API token",
+                f"HTTP {resp.status_code}: {resp.text[:500]}",
+            )
+        data: Any = resp.json()
+        token = None
+        if isinstance(data, dict):
+            token = data.get("token") or data.get("key")
+        if not token:
+            return None, OpsResult(
+                False, "GlitchTip API token response missing a token", str(data)[:500]
+            )
+        return str(token), OpsResult(True, "Created GlitchTip API token")
+    except httpx.HTTPError as e:
+        return None, OpsResult(
+            False, "Failed to create GlitchTip API token", f"{type(e).__name__}: {e}"
+        )
+
+
+def _glitchtip_ensure_organization(client: httpx.Client) -> tuple[str | None, OpsResult]:
+    """Ensure the `nyxgpt` GlitchTip organization exists, returning its slug."""
+    try:
+        listing = client.get("/api/0/organizations/")
+        if listing.status_code == 200:
+            existing: Any = listing.json()
+            if isinstance(existing, list):
+                for org in existing:
+                    if isinstance(org, dict) and org.get("slug") == GLITCHTIP_ORG_SLUG:
+                        return GLITCHTIP_ORG_SLUG, OpsResult(
+                            True, f"Using existing GlitchTip organization {GLITCHTIP_ORG_SLUG}"
+                        )
+
+        resp = client.post("/api/0/organizations/", json={"name": GLITCHTIP_ORG_NAME})
+        if resp.status_code not in (200, 201):
+            return None, OpsResult(
+                False,
+                "Failed to create GlitchTip organization",
+                f"HTTP {resp.status_code}: {resp.text[:500]}",
+            )
+        data: Any = resp.json()
+        slug = (
+            str(data.get("slug", GLITCHTIP_ORG_SLUG))
+            if isinstance(data, dict)
+            else GLITCHTIP_ORG_SLUG
+        )
+        return slug, OpsResult(True, f"Created GlitchTip organization {slug}")
+    except httpx.HTTPError as e:
+        return None, OpsResult(
+            False, "Failed to ensure GlitchTip organization", f"{type(e).__name__}: {e}"
+        )
+
+
+def _glitchtip_ensure_project(client: httpx.Client, org_slug: str) -> tuple[str | None, OpsResult]:
+    """Ensure the `nyxgpt-backend` GlitchTip project exists under `org_slug`, returning its slug."""
+    try:
+        listing = client.get(f"/api/0/organizations/{org_slug}/projects/")
+        if listing.status_code == 200:
+            existing: Any = listing.json()
+            if isinstance(existing, list):
+                for proj in existing:
+                    if isinstance(proj, dict) and proj.get("slug") == GLITCHTIP_PROJECT_SLUG:
+                        return GLITCHTIP_PROJECT_SLUG, OpsResult(
+                            True, f"Using existing GlitchTip project {GLITCHTIP_PROJECT_SLUG}"
+                        )
+
+        resp = client.post(
+            f"/api/0/organizations/{org_slug}/projects/",
+            json={"name": GLITCHTIP_PROJECT_NAME, "platform": "python"},
+        )
+        if resp.status_code not in (200, 201):
+            return None, OpsResult(
+                False,
+                "Failed to create GlitchTip project",
+                f"HTTP {resp.status_code}: {resp.text[:500]}",
+            )
+        data: Any = resp.json()
+        slug = (
+            str(data.get("slug", GLITCHTIP_PROJECT_SLUG))
+            if isinstance(data, dict)
+            else GLITCHTIP_PROJECT_SLUG
+        )
+        return slug, OpsResult(True, f"Created GlitchTip project {slug}")
+    except httpx.HTTPError as e:
+        return None, OpsResult(
+            False, "Failed to ensure GlitchTip project", f"{type(e).__name__}: {e}"
+        )
+
+
+def _extract_dsn(key: Any) -> str:
+    """Pull the public DSN out of a GlitchTip ProjectKey response, tolerating shape variants."""
+    if not isinstance(key, dict):
+        return ""
+    dsn_field = key.get("dsn")
+    if isinstance(dsn_field, dict):
+        return str(dsn_field.get("public") or "")
+    if isinstance(dsn_field, str):
+        return dsn_field
+    return ""
+
+
+def _glitchtip_ensure_project_key(
+    client: httpx.Client, org_slug: str, project_slug: str
+) -> tuple[str | None, OpsResult]:
+    """Ensure a GlitchTip project key exists for `org_slug`/`project_slug`, returning its DSN."""
+    try:
+        listing = client.get(f"/api/0/projects/{org_slug}/{project_slug}/keys/")
+        if listing.status_code == 200:
+            existing: Any = listing.json()
+            if isinstance(existing, list):
+                for key in existing:
+                    dsn = _extract_dsn(key)
+                    if dsn:
+                        return dsn, OpsResult(True, "Using existing GlitchTip project key")
+
+        resp = client.post(
+            f"/api/0/projects/{org_slug}/{project_slug}/keys/", json={"name": "nyxgpt"}
+        )
+        if resp.status_code not in (200, 201):
+            return None, OpsResult(
+                False,
+                "Failed to create GlitchTip project key",
+                f"HTTP {resp.status_code}: {resp.text[:500]}",
+            )
+        data: Any = resp.json()
+        dsn = _extract_dsn(data)
+        if not dsn:
+            return None, OpsResult(
+                False, "GlitchTip project key response missing a DSN", str(data)[:500]
+            )
+        return dsn, OpsResult(True, "Created GlitchTip project key")
+    except httpx.HTTPError as e:
+        return None, OpsResult(
+            False, "Failed to ensure GlitchTip project key", f"{type(e).__name__}: {e}"
+        )
+
+
+def _patch_ini_value(text: str, section: str, key: str, value: str) -> str:
+    """Return `text` with `key = value` set inside `[section]`, preserving
+    every other line -- including comments -- verbatim.
+
+    Unlike a `ConfigParser` read/write round-trip (which drops comments),
+    this only ever rewrites the single matching `key = ...` line, or
+    appends one if the key/section isn't present yet. Used for
+    `docker/config.docker.ini`, a git-tracked file whose `[error_tracking]`
+    section carries hand-written documentation comments that must survive
+    `nyxgpt ops glitchtip-init` re-runs.
+    """
+    lines = text.splitlines(keepends=True)
+    section_header_re = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+    key_re = re.compile(rf"^(\s*){re.escape(key)}(\s*=\s*).*$")
+
+    section_start: int | None = None
+    section_end = len(lines)
+    for i, line in enumerate(lines):
+        m = section_header_re.match(line)
+        if m:
+            if section_start is not None:
+                section_end = i
+                break
+            if m.group(1) == section:
+                section_start = i
+
+    if section_start is None:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        if lines and lines[-1].strip():
+            lines.append("\n")
+        lines.append(f"[{section}]\n")
+        lines.append(f"{key} = {value}\n")
+        return "".join(lines)
+
+    for i in range(section_start + 1, section_end):
+        if key_re.match(lines[i]):
+            lines[i] = f"{key} = {value}\n"
+            return "".join(lines)
+
+    lines.insert(section_end, f"{key} = {value}\n")
+    return "".join(lines)
+
+
+def _write_error_tracking_dsn(cfg_path: Path, dsn: str, *, chmod_600: bool) -> OpsResult:
+    """Write the provisioned DSN and `enabled = true` into `[error_tracking]` in `cfg_path`.
+
+    No-ops (reports ok) if `cfg_path` doesn't exist -- not every host has
+    both `~/.nyxGPT/config.ini` (native) and `docker/config.docker.ini`
+    (Compose) in play. `chmod_600` should only be set for the native path:
+    `docker/config.docker.ini` is a git-tracked template, not a secrets
+    file -- the DSN is a public key, safe to store there (see
+    docs/self-healing.md) -- so its permissions are left untouched.
+
+    Patches only the `dsn`/`enabled` lines in place (via `_patch_ini_value`)
+    rather than round-tripping through `ConfigParser`, so any comments in
+    `cfg_path` -- notably the documentation comments in the git-tracked
+    `docker/config.docker.ini` -- survive untouched.
+    """
+    if not cfg_path.exists():
+        return OpsResult(True, f"Skipped {cfg_path} (not present)")
+
+    text = cfg_path.read_text(encoding="utf-8")
+    text = _patch_ini_value(text, "error_tracking", "dsn", dsn)
+    text = _patch_ini_value(text, "error_tracking", "enabled", "true")
+    cfg_path.write_text(text, encoding="utf-8")
+
+    if chmod_600:
+        os.chmod(cfg_path, 0o600)
+
+    return OpsResult(True, f"Wrote GlitchTip DSN into {cfg_path}")
+
+
+def _provision_glitchtip() -> list[OpsResult]:
+    """Auto-provision a GlitchTip admin user, org, project, and DSN -- idempotent, zero-touch.
+
+    Only runs when the `glitchtip` Compose container is up and passes its
+    health check; no-ops with a clear message otherwise (e.g.
+    `--skip-observability`, no Docker, or a freshly started container still
+    inside its health-check `start_period`). Safe to call repeatedly: every
+    step first checks for an existing admin user / org / project / key
+    before creating one, so re-running never duplicates anything.
+    """
+    if not _compose_available():
+        return [OpsResult(True, "Skipped GlitchTip auto-provisioning (Docker not found)")]
+
+    if not _wait_for_glitchtip_healthy():
+        return [
+            OpsResult(
+                True,
+                "Skipped GlitchTip auto-provisioning (glitchtip container not up/healthy)",
+                "Run `nyxgpt ops observability` (or `nyxgpt ops install`) to start it, then "
+                "retry `nyxgpt ops glitchtip-init`.",
+            )
+        ]
+
+    native_cfg_path = Path.home() / ".nyxGPT" / "config.ini"
+    if not native_cfg_path.exists():
+        return [
+            OpsResult(
+                False,
+                f"Missing config {native_cfg_path}",
+                "Run `nyxgpt wizard` first to generate config.ini.",
+            )
+        ]
+
+    results: list[OpsResult] = []
+
+    email, password, generated = _resolve_admin_credentials(native_cfg_path)
+    if generated:
+        _persist_admin_credentials(native_cfg_path, email, password)
+        results.append(
+            OpsResult(True, f"Generated and saved a GlitchTip admin password to {native_cfg_path}")
+        )
+
+    su_result = _glitchtip_ensure_superuser(email, password)
+    results.append(su_result)
+    if not su_result.ok:
+        return results
+
+    parser = ConfigParser()
+    parser.optionxform = str  # type: ignore[assignment]
+    parser.read(native_cfg_path)
+    base_url = parser.get("error_tracking", "glitchtip_ui_url", fallback="http://localhost:8080")
+
+    login_client, login_result = _glitchtip_login(base_url, email, password)
+    results.append(login_result)
+    if login_client is None:
+        return results
+
+    token: str | None = None
+    try:
+        token, token_result = _glitchtip_ensure_api_token(login_client, base_url)
+        results.append(token_result)
+    finally:
+        login_client.close()
+    if token is None:
+        return results
+
+    api_client = _glitchtip_http_client(base_url, headers={"Authorization": f"Bearer {token}"})
+    dsn: str | None = None
+    try:
+        org_slug, org_result = _glitchtip_ensure_organization(api_client)
+        results.append(org_result)
+        if org_slug is None:
+            return results
+
+        project_slug, project_result = _glitchtip_ensure_project(api_client, org_slug)
+        results.append(project_result)
+        if project_slug is None:
+            return results
+
+        dsn, key_result = _glitchtip_ensure_project_key(api_client, org_slug, project_slug)
+        results.append(key_result)
+        if dsn is None:
+            return results
+    finally:
+        api_client.close()
+
+    compose_cfg_path = REPO_ROOT / "docker" / "config.docker.ini"
+    results.append(_write_error_tracking_dsn(native_cfg_path, dsn, chmod_600=True))
+    results.append(_write_error_tracking_dsn(compose_cfg_path, dsn, chmod_600=False))
+
+    return results
+
+
+def glitchtip_init(_args: Any) -> int:
+    """CLI entrypoint for `nyxgpt ops glitchtip-init`.
+
+    Auto-provisions a GlitchTip admin user, organization, project, and DSN
+    with no manual sign-in step, writing the DSN into config.ini. Idempotent
+    -- safe to re-run any time. No-ops with a clear message if the
+    `glitchtip` Compose container isn't up/healthy.
+
+    Returns 0 on success (including a clean no-op), else 2.
+    """
+    logger.info(
+        "ops: glitchtip-init starting", extra={"component": "ops", "action": "glitchtip-init"}
+    )
+    results = _provision_glitchtip()
+    ok = _emit_results("glitchtip-init", results)
+    logger.info(
+        "ops: glitchtip-init %s",
+        "succeeded" if ok else "failed",
+        extra={"component": "ops", "action": "glitchtip-init", "ok": ok},
+    )
     return 0 if ok else 2
