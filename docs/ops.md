@@ -36,6 +36,8 @@ Logs default to:
 nyxgpt ops install
 nyxgpt ops status
 nyxgpt ops restart
+nyxgpt ops stop
+nyxgpt ops down
 nyxgpt ops doctor
 nyxgpt ops env-sync
 nyxgpt ops logs
@@ -98,6 +100,9 @@ Reports:
 - Homebrew service state (`started`, `stopped`, `error`)
 - Docker container state for Cassandra
 - LaunchAgent load state
+- A closing pointer to [`nyxgpt ops stop`](#nyxgpt-ops-stop) (stop one
+  component) and [`nyxgpt ops down`](#nyxgpt-ops-down) (tear down the whole
+  stack) for cleanup
 
 This command does not modify system state.
 
@@ -155,6 +160,120 @@ After restarting, it is recommended to run:
 ```bash
 nyxgpt ops doctor
 ```
+
+---
+
+## `nyxgpt ops stop`
+
+Stops one or more nyxGPT-managed services -- native (Homebrew/LaunchAgent)
+and/or Docker Compose, whichever is actually running -- without requiring a
+raw `docker compose stop` or `brew services stop` command. Data volumes are
+never removed; Compose containers are stopped, not brought down (see
+[`nyxgpt ops down`](#nyxgpt-ops-down) for that).
+
+### Stop all core components
+
+```bash
+nyxgpt ops stop
+```
+
+Equivalent to `nyxgpt ops stop all` -- stops `api`, `web`, `ollama`,
+`cassandra`, and `cassandra-logs`. Like `restart`, `all` does **not**
+include `observability` -- that's opt-in via its own target (below), since
+it has no native/Homebrew equivalent.
+
+### Stop individual components
+
+```bash
+nyxgpt ops stop api
+nyxgpt ops stop web
+nyxgpt ops stop ollama
+nyxgpt ops stop cassandra
+nyxgpt ops stop cassandra-logs
+nyxgpt ops stop observability
+```
+
+### Behavior
+
+- For `api`/`web`/`ollama`/`cassandra`, `stop` first detects which
+  deployment mode is actually running for that component (native, Compose,
+  or both) -- reusing the same detection as
+  [`nyxgpt ops status`](#nyxgpt-ops-status) -- and stops the right one.
+- If a component is reported running in **both** native and Compose (mixed
+  mode), `stop` stops **both** and prints a message calling that out, rather
+  than silently leaving the other one live.
+- If a component isn't running in either mode, `stop` reports
+  `already stopped` and does nothing.
+- `cassandra-logs` unloads the LaunchAgent (`launchctl bootout`) so it
+  doesn't immediately relaunch; an already-unloaded agent is reported as
+  already stopped rather than a failure.
+- `observability` stops the running `monitoring`/`logging`/`tracing`/`errors`
+  Compose containers (via `docker compose stop`) -- their data (Grafana
+  dashboards, Loki logs, GlitchTip issues) is preserved.
+
+### Exit codes
+
+- `0` — every requested component stopped (or was already stopped)
+  successfully
+- `2` — one or more components failed to stop
+
+---
+
+## `nyxgpt ops down`
+
+Tears down the full local stack -- native services plus the Docker Compose
+app and observability tiers -- in one wrapped command, so you never need a
+raw `docker compose down`/`brew services stop`/`launchctl` invocation.
+
+### Full teardown
+
+```bash
+nyxgpt ops down
+```
+
+Stops the native `api`/`web`/`ollama`/`cassandra`/`cassandra-logs`
+components (same as `nyxgpt ops stop`), then runs `docker compose down` for
+every Compose service in the core app tier and the observability profiles.
+Named volumes (Cassandra data, pulled Ollama models, Grafana/Loki state)
+are **preserved** by default.
+
+### Scoping to one tier
+
+```bash
+nyxgpt ops down --app-only            # drop only the Compose app tier (api/web/ollama/cassandra)
+nyxgpt ops down --observability-only  # drop only the observability Compose profiles
+```
+
+`--app-only` and `--observability-only` are mutually exclusive. This is the
+wrapped fix for a native/Compose mixed-mode collision (e.g. a stale
+`docker compose up` app tier holding a port a native service also wants):
+run `nyxgpt ops down --app-only` to drop the Compose app tier while leaving
+observability dashboards running.
+
+### Removing data volumes
+
+```bash
+nyxgpt ops down --volumes --yes-really
+```
+
+`--volumes` also removes the stack's named Compose volumes -- Cassandra's
+data directory, pulled Ollama models, Prometheus/Grafana/Loki state. This is
+**destructive** and irreversible, so `--volumes` alone is refused; you must
+also pass `--yes-really` to confirm.
+
+### Behavior
+
+- Compose teardown is skipped gracefully (reported as `[OK] Skipped ...`,
+  not a failure) on a host with no Docker.
+- If neither the app tier nor the observability tier has any Compose
+  services actually resolved for the given scope, `down` reports that and
+  exits `0` -- it's a no-op, not an error.
+
+### Exit codes
+
+- `0` — teardown completed (or nothing needed tearing down) successfully
+- `2` — one or more steps failed, or `--volumes` was passed without
+  `--yes-really`
 
 ---
 
@@ -296,8 +415,8 @@ Typical files include:
 
 ### Structured `nyxgpt ops` activity logging
 
-Every `nyxgpt ops` command (`install`, `status`, `restart`, `logs`,
-`env-sync`, `doctor`, `observability`) logs its steps and outcomes from
+Every `nyxgpt ops` command (`install`, `status`, `restart`, `stop`, `down`,
+`logs`, `env-sync`, `doctor`, `observability`) logs its steps and outcomes from
 `src/nyxgpt/ops.py` with structured fields (via the logging module's
 `extra={}`, rendered as JSON when `[logging] format = json` -- see
 [configuration.md](configuration.md#logging-section)), in addition to the
