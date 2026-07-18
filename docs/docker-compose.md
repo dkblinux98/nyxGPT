@@ -2,10 +2,18 @@
 
 `docker-compose.yml` brings up every component of nyxGPT with one command:
 the FastAPI backend, the Next.js web UI, Ollama, and Cassandra (for RAG).
-This is an alternative to the Homebrew / `nyxgpt ops` workflow described in
-[ops.md](ops.md) and the API-only [Kubernetes deployment](kubernetes.md) —
-useful when you want the whole stack running in containers with a single
-command, e.g. for evaluation or a non-macOS host.
+This is an alternative **cloud/server** deployment path to the native-mode
+Homebrew / `nyxgpt ops` workflow described in [ops.md](ops.md) and the
+API-only [Kubernetes deployment](kubernetes.md) — useful when you want the
+whole stack running in containers with a single command, e.g. for
+evaluation, a non-macOS host, or a server deployment.
+
+Don't mix the two on the same machine: in native mode, `api`/`web`/`ollama`
+run natively and only Cassandra runs in a container (see
+[`nyxgpt ops install`](ops.md#nyxgpt-ops-install)), so bringing up this
+Compose stack's app-tier services (`api`/`web`/`ollama`/`cassandra`)
+alongside a native install collides on the same ports. `nyxgpt ops install`
+detects and stops any of those Compose containers it finds running.
 
 ## Services
 
