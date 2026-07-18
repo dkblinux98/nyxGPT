@@ -519,8 +519,9 @@ status endpoint.
 
 Self-hosted error tracking via the Sentry SDK protocol. Opt-in and
 local-only: there is no default DSN, so error tracking stays fully inert
-until an operator sets both `enabled = true` and a `dsn` pointed at their
-own tracker (e.g. GlitchTip). Nothing here ever talks to Sentry's own SaaS.
+until `enabled = true` and a `dsn` are set -- both of which
+`nyxgpt ops glitchtip-init` fills in automatically (see below). Nothing
+here ever talks to Sentry's own SaaS.
 
 ```ini
 [error_tracking]
@@ -530,16 +531,20 @@ environment = development
 release =
 traces_sample_rate = 0.0
 glitchtip_ui_url = http://localhost:8080
+admin_email =
+admin_password =
 ```
 
 | Key | Description |
 |---|---|
-| `enabled` | Enable error tracking (default: `false`) |
-| `dsn` | DSN of your self-hosted GlitchTip project. Empty by default -- required, in addition to `enabled = true`, for anything to actually be reported. Paste it exactly as GlitchTip's UI shows it (`localhost` host) -- a containerized API automatically rewrites that host to the `glitchtip` Compose service name at startup, so there's nothing to edit by hand for either deployment mode |
+| `enabled` | Enable error tracking (default: `false`). Flipped to `true` automatically once `nyxgpt ops glitchtip-init` provisions a DSN |
+| `dsn` | DSN of your self-hosted GlitchTip project. Empty by default; filled in automatically by `nyxgpt ops glitchtip-init`, or paste one yourself exactly as GlitchTip's UI shows it (`localhost` host) -- a containerized API automatically rewrites that host to the `glitchtip` Compose service name at startup, so there's nothing to edit by hand for either deployment mode |
 | `environment` | Environment tag attached to every event (e.g. `development`, `production`) |
 | `release` | Release tag attached to every event, for release tracking. Blank omits it |
 | `traces_sample_rate` | Fraction of requests also sampled for performance monitoring, `0.0`-`1.0` (`0.0` disables performance monitoring; only exceptions are captured) |
-| `glitchtip_ui_url` | URL of the local GlitchTip UI, used for the "Error Tracking" link in the SRE/admin dashboard |
+| `glitchtip_ui_url` | URL of the local GlitchTip UI, used for the "Error Tracking" link in the SRE/admin dashboard, and as the API base URL `nyxgpt ops glitchtip-init` provisions against |
+| `admin_email` | GlitchTip admin login `nyxgpt ops glitchtip-init` provisions (or reuses if it already exists). Blank picks a default (`admin@nyxgpt.local`) |
+| `admin_password` | GlitchTip admin password. Blank generates a strong one and saves it back here (chmod 600, same trust model as `[auth] api_key`) -- never returned by any API endpoint |
 
 When enabled with a DSN, unhandled backend exceptions are reported
 automatically, and web UI client errors reported via
@@ -548,16 +553,14 @@ automatically, and web UI client errors reported via
 The `errors` Compose profile itself already starts automatically with
 `nyxgpt ops install` (or standalone via `nyxgpt ops observability` --
 never a raw `docker compose` command, see
-[`docs/ops.md`](ops.md#nyxgpt-ops-observability)); `enabled`/`dsn` are the
-one part of the SRE suite still requiring a human, since nothing can
-safely create your GlitchTip account or project DSN for you.
+[`docs/ops.md`](ops.md#nyxgpt-ops-observability)), and `nyxgpt ops
+glitchtip-init` -- also run automatically as part of `nyxgpt ops install`
+-- provisions the admin user, organization, project, and DSN with no
+manual sign-in step; see [`docs/ops.md`](ops.md#nyxgpt-ops-glitchtip-init).
 
 nyxGPT reports via the **Python** `sentry_sdk` (`src/nyxgpt/error_tracking.py`)
 -- if GlitchTip's own onboarding screen shows Node.js/`@sentry/node` setup
-instructions when you create a project, ignore them. To find the
-first-account registration confirmation link (printed to the container's
-console instead of a real inbox), run `nyxgpt ops logs glitchtip` rather
-than a raw `docker` command -- see [`docs/ops.md`](ops.md#nyxgpt-ops-logs).
+instructions when you create a project, ignore them.
 
 See [`docs/api.md`](api.md#error-tracking) for the full guided setup steps
 and the `GET /api/v1/error-tracking` status endpoint.

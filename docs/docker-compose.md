@@ -36,9 +36,9 @@ below.
 below.
 
 <sup>‡</sup> Started via the `errors` Compose profile, automatically by
-`nyxgpt ops install` — see [Error Tracking](#error-tracking) below. (The
-GlitchTip project/DSN that makes error reporting actually active still
-needs a human, though.)
+`nyxgpt ops install`, which also auto-provisions the GlitchTip
+project/DSN that makes error reporting actually active — see
+[Error Tracking](#error-tracking) below.
 
 <sup>§</sup> Started via the `logging` Compose profile, automatically by
 `nyxgpt ops install` — see [Log Aggregation](#log-aggregation) below.
@@ -315,15 +315,17 @@ Self-hosted error tracking (GlitchTip) is local-only — no exception data is
 ever sent to Sentry's own SaaS. It ships as a separate `errors` Compose
 profile, started automatically by `nyxgpt ops install` alongside the rest
 of the observability stack (see
-[ops.md](ops.md#nyxgpt-ops-observability)). Unlike monitoring/log
-aggregation/tracing above, `[error_tracking] enabled` stays `false` by
-default even once the container is running: this is the one part of the
-SRE suite that still needs a human, since nothing can safely create your
-GlitchTip account or project DSN for you. If you need to (re-)start just
-this profile:
+[ops.md](ops.md#nyxgpt-ops-observability)). `nyxgpt ops install` then runs
+`nyxgpt ops glitchtip-init` (see
+[ops.md](ops.md#nyxgpt-ops-glitchtip-init)), which auto-provisions its
+admin user, organization, project, and DSN with no manual sign-in step,
+flipping `[error_tracking] enabled = true` and filling in `dsn` once it
+succeeds. If you need to (re-)start just this profile, or re-run
+provisioning on its own:
 
 ```bash
 nyxgpt ops observability
+nyxgpt ops glitchtip-init
 ```
 
 This starts `glitchtip-postgres`, `glitchtip-redis`, a one-shot
@@ -332,21 +334,17 @@ This starts `glitchtip-postgres`, `glitchtip-redis`, a one-shot
 SRE/admin dashboard's Resource Usage step), and `glitchtip-worker`.
 
 Set a real `GLITCHTIP_SECRET_KEY` in `.env` before running this profile
-(see `.env.example`). After first boot, register the first account at
-`http://localhost:8080` — its confirmation email is printed to the
-`glitchtip` container's console rather than sent anywhere, so read it with
-`nyxgpt ops logs glitchtip` (see [ops.md](ops.md#nyxgpt-ops-logs)) instead
-of a raw `docker` command. Create a project in the GlitchTip UI to get a
-DSN, then set `[error_tracking] enabled = true` and `dsn = <that DSN>` in
-`docker/config.docker.ini` (disabled by default, no default DSN) to have
-the API actually report exceptions. Paste the DSN exactly as GlitchTip
-shows it (`localhost` host) — the API automatically rewrites that host to
-the `glitchtip` service name at startup, since "localhost" inside the `api`
-container would otherwise mean the `api` container itself. nyxGPT reports
-via the **Python** `sentry_sdk`, not the Node.js instructions GlitchTip's
-own onboarding screen shows — see
+(see `.env.example`). `glitchtip-init` is idempotent (safe to re-run any
+time) and no-ops with a clear message if the `glitchtip` container isn't
+up/healthy yet. Its admin login lands in `~/.nyxGPT/config.ini`'s
+`[error_tracking] admin_email`/`admin_password` (generated if left blank,
+chmod 600); the DSN itself is also written into
+`docker/config.docker.ini` since it's a public key, safe to store there.
+nyxGPT reports via the **Python** `sentry_sdk`, not the Node.js
+instructions GlitchTip's own onboarding screen shows — see
 [configuration.md](configuration.md#error_tracking-section) and
-[api.md](api.md#error-tracking) for the full guided flow.
+[api.md](api.md#error-tracking) for the full guided flow, including how to
+configure it by hand instead.
 
 ## Self-Healing
 

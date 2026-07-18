@@ -3340,29 +3340,30 @@ with a DSN:
 - Unhandled backend exceptions are captured automatically, enriched with the request ID, path, and method
 - Web UI errors reported via `POST /api/v1/error-tracking/report` are forwarded as message-level events
 
-**Enabling error tracking:**
+**Enabling error tracking (zero-touch):**
 
-1. The local tracker (`errors` Compose profile) already starts
-   automatically with `nyxgpt ops install`. If you skipped it
-   (`--skip-observability`) or need to re-run it, use (never a raw `docker
-   compose` command):
+1. `nyxgpt ops install` already does everything below by default:
+   starts the local tracker (`errors` Compose profile), then runs
+   `nyxgpt ops glitchtip-init` to auto-provision its admin user,
+   organization, project, and DSN — no sign-in, no copy-pasting a DSN. The
+   API still needs a restart to pick it up (this setting isn't
+   hot-reloaded).
+
+2. If you skipped observability (`--skip-observability`) or need to
+   re-run either step on its own (never a raw `docker compose` command):
 
    ```bash
-   nyxgpt ops observability
+   nyxgpt ops observability     # starts the errors Compose profile
+   nyxgpt ops glitchtip-init    # provisions admin user/org/project/DSN
    ```
 
-2. Register the first account at `http://localhost:8080`. Its confirmation
-   email is printed to the `glitchtip` container's console (`EMAIL_URL=
-   consolemail://`), not sent anywhere — read it with the "View GlitchTip
-   logs" button on the Error Tracking panel (`/admin/observability`, backed
-   by `GET /api/v1/self-heal/logs` above) or `nyxgpt ops logs glitchtip`
-   (see [`docs/ops.md`](ops.md#nyxgpt-ops-logs)) — either way, no raw
-   `docker` command needed — and open the link it prints.
+   `glitchtip-init` is idempotent and safe to re-run any time — it reuses
+   an existing admin user/org/project/key rather than duplicating them,
+   and no-ops with a clear message if the `glitchtip` container isn't
+   up/healthy yet (e.g. still inside its post-start health-check window).
 
-3. Create a project in the GlitchTip UI and copy its DSN, e.g.
-   `http://<public_key>@localhost:8080/<project_id>`.
-
-4. Paste it as-is into config.ini:
+3. Once it succeeds, `[error_tracking] enabled`/`dsn` in config.ini are
+   filled in for you:
 
    ```ini
    [error_tracking]
@@ -3377,13 +3378,19 @@ with a DSN:
    containerized API, GlitchTip still hands out a `localhost`-hosted DSN
    (browsers need to reach its UI), but `init_error_tracking` automatically
    rewrites that host to the `glitchtip` Compose service name at startup —
-   there is no host to edit by hand, and the DSN copied from the UI works
-   unmodified either way.
+   there is no host to edit by hand.
 
-5. Restart the API — this setting isn't hot-reloaded.
+Prefer to do it by hand instead? Register an account at
+`http://localhost:8080` (its confirmation email is printed to the
+`glitchtip` container's console — `EMAIL_URL=consolemail://` — read it
+with the "View GlitchTip logs" button on the Error Tracking panel or
+`nyxgpt ops logs glitchtip`), create a project, and paste its DSN into
+config.ini yourself, same as above, then restart the API.
 
 Browse events at `http://localhost:8080` (also linked from the SRE/admin
-dashboard's Resource Usage step).
+dashboard's Resource Usage step). See
+[`docs/ops.md`](ops.md#nyxgpt-ops-glitchtip-init) for the full
+`glitchtip-init` reference.
 
 **Recommended alerting for the default project:** GlitchTip has no
 file-based provisioning for projects or alert rules (unlike Grafana's
