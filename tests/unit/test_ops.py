@@ -14,8 +14,10 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
     # Mock internal steps to all succeed
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
         patch.object(ops, "_install_scripts", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
@@ -33,8 +35,14 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
 def test_ops_install_returns_nonzero_when_any_fail(capsys):
     mixed = [ops.OpsResult(True, "ok"), ops.OpsResult(False, "bad", "details")]
     with (
+        patch.object(
+            ops,
+            "_reconcile_phantom_compose_app_containers",
+            return_value=[ops.OpsResult(True, "ok")],
+        ),
         patch.object(ops, "_install_scripts", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_web_deps", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_ensure_cassandra_container", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_cassandra_launchagent", return_value=mixed),
         patch.object(ops, "_install_homebrew_api", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_homebrew_web", return_value=[ops.OpsResult(True, "ok")]),
@@ -52,8 +60,10 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
 def test_ops_install_skip_observability_flag_skips_the_step(capsys):
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
         patch.object(ops, "_install_scripts", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
@@ -63,6 +73,44 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         rc = ops.install(MagicMock(skip_observability=True))
         assert rc == 0
         obs.assert_not_called()
+
+
+@pytest.mark.unit
+def test_ops_install_step_order_reconciles_before_creating(capsys):
+    # Phantom reconciliation and the Cassandra container step must both run as
+    # part of `nyxgpt ops install`, and reconciliation must run before anything
+    # else so a leaked Compose app-tier container is cleared before native
+    # services/the local Cassandra container are (re)created.
+    ok_results = [ops.OpsResult(True, "ok")]
+    call_order = []
+
+    def _record(name):
+        def _fn(*_a, **_k):
+            call_order.append(name)
+            return ok_results
+
+        return _fn
+
+    with (
+        patch.object(
+            ops, "_reconcile_phantom_compose_app_containers", side_effect=_record("reconcile")
+        ),
+        patch.object(ops, "_install_scripts", side_effect=_record("scripts")),
+        patch.object(ops, "_ensure_web_deps", side_effect=_record("web deps")),
+        patch.object(ops, "_ensure_mcp_deps", side_effect=_record("mcp deps")),
+        patch.object(
+            ops, "_ensure_cassandra_container", side_effect=_record("cassandra container")
+        ),
+        patch.object(ops, "_install_cassandra_launchagent", side_effect=_record("cassandra la")),
+        patch.object(ops, "_install_homebrew_api", side_effect=_record("homebrew api")),
+        patch.object(ops, "_install_homebrew_web", side_effect=_record("homebrew web")),
+        patch.object(ops, "_ensure_log_symlinks", side_effect=_record("log symlinks")),
+    ):
+        rc = ops.install(MagicMock(skip_observability=True))
+        assert rc == 0
+
+    assert call_order[0] == "reconcile"
+    assert "cassandra container" in call_order
 
 
 @pytest.mark.unit
@@ -322,6 +370,9 @@ def test_ops_doctor_ok(monkeypatch, capsys, tmp_path):
     # Tools exist
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
 
+    # Cassandra container is present and running
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+
     # Mock REPO_ROOT to point to tmp_path (no web/ directory)
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
 
@@ -357,12 +408,31 @@ def test_ops_doctor_warns_when_web_deps_missing(monkeypatch, capsys, tmp_path):
 def test_ops_doctor_fail_when_missing_config(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
 
     rc = ops.doctor(MagicMock())
     assert rc == 2
     out = capsys.readouterr().out
     assert "doctor: FAIL" in out
     assert "Missing config" in out
+
+
+@pytest.mark.unit
+def test_ops_doctor_warns_when_cassandra_container_missing(monkeypatch, capsys, tmp_path):
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "config.ini").write_text("[project]\nname=nyxGPT\n", encoding="utf-8")
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+
+    rc = ops.doctor(MagicMock())
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "Missing local Cassandra container" in out
+    assert "nyxgpt-cassandra" in out
 
 
 def _write_config(path, *, api_key="", grafana_password=""):
@@ -979,6 +1049,210 @@ def test_install_cassandra_launchagent_installs_when_template_found(monkeypatch,
     assert len(run_calls) == 3
 
 
+# --- _ensure_cassandra_container ---
+
+
+@pytest.mark.unit
+def test_ensure_cassandra_container_no_docker():
+    with patch.object(ops, "_which", lambda _: None):
+        results = ops._ensure_cassandra_container()
+    assert results[0].ok is False
+    assert "docker not found" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_cassandra_container_already_running():
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_container_state", lambda name: "running"),
+    ):
+        results = ops._ensure_cassandra_container()
+    assert results[0].ok is True
+    assert "already running" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_cassandra_container_starts_existing_stopped_container():
+    run_calls = []
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_container_state", lambda name: "exited"),
+        patch.object(
+            ops,
+            "_run",
+            lambda cmd, **k: run_calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+        ),
+    ):
+        results = ops._ensure_cassandra_container()
+    assert results[0].ok is True
+    assert "Started existing" in results[0].message
+    assert run_calls == [["docker", "start", "nyxgpt-cassandra"]]
+
+
+@pytest.mark.unit
+def test_ensure_cassandra_container_start_failure_reports_details():
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_container_state", lambda name: "exited"),
+        patch.object(
+            ops,
+            "_run",
+            lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom"),
+        ),
+    ):
+        results = ops._ensure_cassandra_container()
+    assert results[0].ok is False
+    assert "Failed to start existing" in results[0].message
+    assert "boom" in results[0].details
+
+
+@pytest.mark.unit
+def test_ensure_cassandra_container_creates_when_absent(monkeypatch):
+    monkeypatch.delenv("NYXGPT_BIND_ADDR", raising=False)
+    monkeypatch.delenv("CASSANDRA_PORT", raising=False)
+    run_calls = []
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_container_state", lambda name: "absent"),
+        patch.object(
+            ops,
+            "_run",
+            lambda cmd, **k: run_calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+        ),
+    ):
+        results = ops._ensure_cassandra_container()
+    assert results[0].ok is True
+    assert "Created Cassandra container" in results[0].message
+    assert run_calls == [
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            "nyxgpt-cassandra",
+            "--restart",
+            "unless-stopped",
+            "-p",
+            "127.0.0.1:9042:9042",
+            "-v",
+            "nyxgpt_cassandra_data:/var/lib/cassandra",
+            "cassandra:5.0",
+        ]
+    ]
+
+
+@pytest.mark.unit
+def test_ensure_cassandra_container_creates_with_env_overrides(monkeypatch):
+    monkeypatch.setenv("NYXGPT_BIND_ADDR", "0.0.0.0")
+    monkeypatch.setenv("CASSANDRA_PORT", "19042")
+    run_calls = []
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_container_state", lambda name: "absent"),
+        patch.object(
+            ops,
+            "_run",
+            lambda cmd, **k: run_calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+        ),
+    ):
+        ops._ensure_cassandra_container()
+    assert "-p" in run_calls[0]
+    assert run_calls[0][run_calls[0].index("-p") + 1] == "0.0.0.0:19042:9042"
+
+
+@pytest.mark.unit
+def test_ensure_cassandra_container_create_failure_reports_details():
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_container_state", lambda name: "absent"),
+        patch.object(
+            ops,
+            "_run",
+            lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no such image"),
+        ),
+    ):
+        results = ops._ensure_cassandra_container()
+    assert results[0].ok is False
+    assert "Failed to create Cassandra container" in results[0].message
+    assert "no such image" in results[0].details
+
+
+# --- _detect_phantom_compose_app_containers / _reconcile_phantom_compose_app_containers ---
+
+
+@pytest.mark.unit
+def test_detect_phantom_compose_app_containers_filters_to_core_app_services():
+    with patch.object(
+        ops,
+        "_compose_stack_snapshot",
+        return_value={"api": "running", "grafana": "running", "web": "exited"},
+    ):
+        phantoms = ops._detect_phantom_compose_app_containers()
+    assert phantoms == {"api": "running"}
+
+
+@pytest.mark.unit
+def test_reconcile_phantom_compose_app_containers_no_docker():
+    with patch.object(ops, "_which", lambda _: None):
+        results = ops._reconcile_phantom_compose_app_containers()
+    assert results == []
+
+
+@pytest.mark.unit
+def test_reconcile_phantom_compose_app_containers_none_detected():
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_detect_phantom_compose_app_containers", return_value={}),
+    ):
+        results = ops._reconcile_phantom_compose_app_containers()
+    assert results[0].ok is True
+    assert "No phantom" in results[0].message
+
+
+@pytest.mark.unit
+def test_reconcile_phantom_compose_app_containers_stops_each_phantom():
+    run_calls = []
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(
+            ops,
+            "_detect_phantom_compose_app_containers",
+            return_value={"api": "running", "cassandra": "running"},
+        ),
+        patch.object(
+            ops,
+            "_run",
+            lambda cmd, **k: run_calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+        ),
+    ):
+        results = ops._reconcile_phantom_compose_app_containers()
+    assert len(results) == 2
+    assert all(r.ok for r in results)
+    assert any("api" in r.message for r in results)
+    assert any("cassandra" in r.message for r in results)
+    stopped_services = {cmd[-1] for cmd in run_calls}
+    assert stopped_services == {"api", "cassandra"}
+
+
+@pytest.mark.unit
+def test_reconcile_phantom_compose_app_containers_reports_per_service_failure():
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(
+            ops, "_detect_phantom_compose_app_containers", return_value={"api": "running"}
+        ),
+        patch.object(
+            ops,
+            "_run",
+            lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="conflict"),
+        ),
+    ):
+        results = ops._reconcile_phantom_compose_app_containers()
+    assert results[0].ok is False
+    assert "Failed to stop phantom Compose container for api" in results[0].message
+    assert "conflict" in results[0].details
+
+
 # --- _ensure_log_symlinks ---
 
 
@@ -1511,9 +1785,11 @@ def test_ensure_mcp_deps_install_raises(monkeypatch, tmp_path):
 def test_ops_install_catches_exception_from_a_step(capsys):
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
         patch.object(ops, "_install_scripts", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", side_effect=RuntimeError("kaboom")),
         patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
@@ -1654,6 +1930,7 @@ def test_ops_doctor_web_deps_present_and_undici_resolves(monkeypatch, capsys, tm
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
     monkeypatch.setattr(
         ops.subprocess,
         "run",
@@ -1678,6 +1955,7 @@ def test_ops_doctor_web_deps_present_but_undici_unresolvable(monkeypatch, capsys
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
     monkeypatch.setattr(
         ops.subprocess,
         "run",
@@ -1702,6 +1980,7 @@ def test_ops_doctor_can_resolve_handles_exception(monkeypatch, capsys, tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
 
     def raise_run(cmd, cwd=None, text=True, capture_output=True):
         raise OSError("boom")
@@ -1803,9 +2082,11 @@ def test_emit_results_logs_ok_at_info_and_failure_at_warning(caplog):
 def test_ops_install_logs_start_and_summary(caplog):
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
         patch.object(ops, "_install_scripts", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
         patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
@@ -1823,9 +2104,11 @@ def test_ops_install_logs_start_and_summary(caplog):
 @pytest.mark.unit
 def test_ops_install_logs_error_when_step_raises(caplog):
     with (
+        patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=[]),
         patch.object(ops, "_install_scripts", side_effect=RuntimeError("boom")),
         patch.object(ops, "_ensure_web_deps", return_value=[]),
         patch.object(ops, "_ensure_mcp_deps", return_value=[]),
+        patch.object(ops, "_ensure_cassandra_container", return_value=[]),
         patch.object(ops, "_install_cassandra_launchagent", return_value=[]),
         patch.object(ops, "_install_homebrew_api", return_value=[]),
         patch.object(ops, "_install_homebrew_web", return_value=[]),
@@ -1884,6 +2167,7 @@ def test_ops_doctor_logs_ok_at_info(caplog, monkeypatch, tmp_path):
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
 
     with caplog.at_level("INFO", logger="nyxgpt.ops"):
         rc = ops.doctor(MagicMock())

@@ -786,13 +786,179 @@ def _ensure_mcp_deps() -> list[OpsResult]:
     return results
 
 
+# --- Local Cassandra container lifecycle ---
+
+# Canonical definition of the one ops-managed Docker container in a native-mode
+# local deployment (api/web/ollama run natively via Homebrew; see docs/ops.md).
+# Mirrors the `cassandra` service in docker-compose.yml so the native and
+# Compose paths agree on image/port/volume -- but this container is created and
+# managed via plain `docker run`/`docker start`, entirely separate from the
+# Compose "cloud/server" stack, so its lifecycle never requires (or pulls in)
+# the rest of docker-compose.yml.
+CASSANDRA_CONTAINER_NAME = "nyxgpt-cassandra"
+CASSANDRA_IMAGE = "cassandra:5.0"
+CASSANDRA_VOLUME = "nyxgpt_cassandra_data"
+
+
+def _ensure_cassandra_container() -> list[OpsResult]:
+    """Ensure the local `nyxgpt-cassandra` Docker container exists and is running.
+
+    Reconciles to the intended state rather than only adding:
+    - running: nothing to do.
+    - present but not running (exited/created/paused/...): `docker start` it.
+    - absent: `docker run` a fresh container from `CASSANDRA_IMAGE`/`CASSANDRA_VOLUME`,
+      bound to `${NYXGPT_BIND_ADDR:-127.0.0.1}:${CASSANDRA_PORT:-9042}`.
+
+    This is what `nyxgpt ops install` was missing entirely: without it, no
+    `nyxgpt` command ever created the container in the first place, so
+    `nyxgpt ops restart cassandra` (a plain `docker restart`) had nothing to
+    restart on a fresh machine or after the container was removed.
+    """
+    if _which("docker") is None:
+        return [
+            OpsResult(
+                False,
+                "docker not found; cannot ensure local Cassandra container",
+                "Install Docker Desktop (or the docker CLI) -- Cassandra is the one "
+                "Docker-managed piece of a native-mode local install.",
+            )
+        ]
+
+    state = _docker_container_state(CASSANDRA_CONTAINER_NAME)
+
+    if state == "running":
+        return [OpsResult(True, f"Cassandra container already running: {CASSANDRA_CONTAINER_NAME}")]
+
+    if state != "absent":
+        cp = _run(["docker", "start", CASSANDRA_CONTAINER_NAME], check=False)
+        if cp.returncode == 0:
+            return [
+                OpsResult(True, f"Started existing Cassandra container: {CASSANDRA_CONTAINER_NAME}")
+            ]
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return [
+            OpsResult(
+                False,
+                f"Failed to start existing Cassandra container: {CASSANDRA_CONTAINER_NAME}",
+                details.strip(),
+            )
+        ]
+
+    bind_addr = os.environ.get("NYXGPT_BIND_ADDR", "127.0.0.1")
+    port = os.environ.get("CASSANDRA_PORT", "9042")
+    cmd = [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        CASSANDRA_CONTAINER_NAME,
+        "--restart",
+        "unless-stopped",
+        "-p",
+        f"{bind_addr}:{port}:9042",
+        "-v",
+        f"{CASSANDRA_VOLUME}:/var/lib/cassandra",
+        CASSANDRA_IMAGE,
+    ]
+    cp = _run(cmd, check=False)
+    if cp.returncode == 0:
+        return [
+            OpsResult(
+                True,
+                f"Created Cassandra container: {CASSANDRA_CONTAINER_NAME} ({CASSANDRA_IMAGE})",
+                f"Bound to {bind_addr}:{port}, data persisted in volume {CASSANDRA_VOLUME}",
+            )
+        ]
+    details = (cp.stdout or "").strip() + (
+        "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+    )
+    return [
+        OpsResult(
+            False,
+            f"Failed to create Cassandra container: {CASSANDRA_CONTAINER_NAME}",
+            details.strip(),
+        )
+    ]
+
+
+# --- Phantom Compose app-tier reconciliation ---
+
+
+def _detect_phantom_compose_app_containers() -> dict[str, str]:
+    """Return {service: state} for app-tier services currently running under Compose.
+
+    In the native mode `nyxgpt ops install` targets, `api`/`web`/`ollama` run
+    natively and `cassandra` runs as the one ops-managed Docker container
+    (`_ensure_cassandra_container`) -- none of `CORE_APP_SERVICES` should also be
+    running as Docker Compose services. A prior raw `docker compose up` (or the
+    pre-#3231 observability bring-up, which started every profile-less default
+    service too) can leave these running alongside the native ones, colliding on
+    the same ports.
+    """
+    compose = _compose_stack_snapshot()
+    return {
+        service: state
+        for service, state in compose.items()
+        if service in CORE_APP_SERVICES and state == "running"
+    }
+
+
+def _reconcile_phantom_compose_app_containers() -> list[OpsResult]:
+    """Stop any leaked Compose app-tier containers (api/web/ollama/cassandra).
+
+    Uses `docker compose stop <service>` (not `down`) so containers/volumes are
+    preserved -- consistent with `nyxgpt ops` avoiding destructive actions by
+    default. This is what makes `nyxgpt ops install` a reconciler instead of an
+    additive-only installer: re-running it now cleans up a mixed-mode mess left
+    by an earlier run (or a raw `docker compose up`) instead of adding to it.
+    """
+    if _which("docker") is None:
+        return []
+
+    phantoms = _detect_phantom_compose_app_containers()
+    if not phantoms:
+        return [OpsResult(True, "No phantom Docker Compose app-tier containers detected")]
+
+    results: list[OpsResult] = []
+    for service in sorted(phantoms):
+        cp = _run(
+            ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "stop", service],
+            check=False,
+        )
+        if cp.returncode == 0:
+            results.append(
+                OpsResult(
+                    True,
+                    f"Stopped phantom Compose container for {service} (was running "
+                    "alongside the native/local deployment)",
+                )
+            )
+        else:
+            details = (cp.stdout or "").strip() + (
+                "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+            )
+            results.append(
+                OpsResult(
+                    False,
+                    f"Failed to stop phantom Compose container for {service}",
+                    details.strip(),
+                )
+            )
+    return results
+
+
 def install(args) -> int:
     """CLI entrypoint for `nyxgpt ops install`.
 
-    Runs every install step (scripts, web deps, MCP deps, Cassandra
-    LaunchAgent, Homebrew formulas, log symlinks, the observability stack),
-    printing an OK/FAIL line per result. A failure in one step doesn't stop
-    the rest from running.
+    Reconciles the local machine to the intended native-mode topology (see
+    docs/ops.md): first stopping any phantom Docker Compose app-tier containers
+    leaked from an earlier run or a raw `docker compose up`, then ensuring the
+    local Cassandra container plus every other install step (scripts, web deps,
+    MCP deps, Cassandra LaunchAgent, Homebrew formulas, log symlinks, the
+    observability stack) -- printing an OK/FAIL line per result. A failure in
+    one step doesn't stop the rest from running.
 
     The observability step (Grafana/Loki/Jaeger/GlitchTip) runs by default so
     a fresh install comes up with the full SRE view already populated --
@@ -805,9 +971,11 @@ def install(args) -> int:
 
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        ("phantom compose reconciliation", _reconcile_phantom_compose_app_containers),
         ("scripts", _install_scripts),
         ("web deps", _ensure_web_deps),
         ("mcp deps", _ensure_mcp_deps),
+        ("cassandra container", _ensure_cassandra_container),
         ("cassandra launchagent", _install_cassandra_launchagent),
         ("homebrew api", _install_homebrew_api),
         ("homebrew web", _install_homebrew_web),
@@ -949,6 +1117,15 @@ def doctor(_args) -> int:
     for tool in ("brew", "docker"):
         if _which(tool) is None:
             issues.append(f"Missing tool in PATH: {tool}")
+
+    if (
+        _which("docker") is not None
+        and _docker_container_state(CASSANDRA_CONTAINER_NAME) == "absent"
+    ):
+        issues.append(
+            f"Missing local Cassandra container: {CASSANDRA_CONTAINER_NAME} "
+            "(run: nyxgpt ops install)"
+        )
 
     web_dir = REPO_ROOT / "web"
     if web_dir.exists():
