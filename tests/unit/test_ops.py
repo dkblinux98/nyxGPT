@@ -2629,6 +2629,63 @@ def test_write_error_tracking_dsn_no_chmod_for_compose_path(tmp_path):
 
 
 @pytest.mark.unit
+def test_write_error_tracking_dsn_preserves_comments(tmp_path):
+    """Regression test: a `ConfigParser` read/write round-trip silently drops
+    comment lines, which would destroy the hand-written documentation
+    comments in the git-tracked `docker/config.docker.ini`. The DSN/enabled
+    write must patch only those two lines in place."""
+    cfg_path = tmp_path / "config.docker.ini"
+    original = (
+        "[error_tracking]\n"
+        "# Error tracking is local-only -- see docs/self-healing.md.\n"
+        "enabled = false\n"
+        "# Auto-filled by `nyxgpt ops glitchtip-init`.\n"
+        "dsn =\n"
+        "environment = docker\n"
+        "\n"
+        "[monitoring]\n"
+        "# Monitoring section comment.\n"
+        "enabled = false\n"
+    )
+    cfg_path.write_text(original, encoding="utf-8")
+
+    result = ops._write_error_tracking_dsn(cfg_path, "http://key@localhost:8080/1", chmod_600=False)
+    assert result.ok
+
+    written = cfg_path.read_text(encoding="utf-8")
+    assert "# Error tracking is local-only -- see docs/self-healing.md.\n" in written
+    assert "# Auto-filled by `nyxgpt ops glitchtip-init`.\n" in written
+    assert "# Monitoring section comment.\n" in written
+    assert "dsn = http://key@localhost:8080/1\n" in written
+    assert "enabled = true\n" in written
+    assert "environment = docker\n" in written
+
+    parser = ConfigParser()
+    parser.read(cfg_path)
+    assert parser.get("error_tracking", "dsn") == "http://key@localhost:8080/1"
+    assert parser.get("error_tracking", "enabled") == "true"
+    assert parser.get("monitoring", "enabled") == "false"
+
+
+@pytest.mark.unit
+def test_patch_ini_value_appends_missing_key():
+    text = "[error_tracking]\nenvironment = docker\n"
+    patched = ops._patch_ini_value(text, "error_tracking", "dsn", "http://key@localhost:8080/1")
+    assert "dsn = http://key@localhost:8080/1\n" in patched
+    assert "environment = docker\n" in patched
+
+
+@pytest.mark.unit
+def test_patch_ini_value_appends_missing_section():
+    text = "[monitoring]\nenabled = false\n"
+    patched = ops._patch_ini_value(text, "error_tracking", "dsn", "http://key@localhost:8080/1")
+    parser = ConfigParser()
+    parser.read_string(patched)
+    assert parser.get("error_tracking", "dsn") == "http://key@localhost:8080/1"
+    assert parser.get("monitoring", "enabled") == "false"
+
+
+@pytest.mark.unit
 def test_provision_glitchtip_skips_without_docker(monkeypatch):
     monkeypatch.setattr(ops, "_compose_available", lambda: False)
     results = ops._provision_glitchtip()

@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -1777,6 +1778,50 @@ def _glitchtip_ensure_project_key(
         )
 
 
+def _patch_ini_value(text: str, section: str, key: str, value: str) -> str:
+    """Return `text` with `key = value` set inside `[section]`, preserving
+    every other line -- including comments -- verbatim.
+
+    Unlike a `ConfigParser` read/write round-trip (which drops comments),
+    this only ever rewrites the single matching `key = ...` line, or
+    appends one if the key/section isn't present yet. Used for
+    `docker/config.docker.ini`, a git-tracked file whose `[error_tracking]`
+    section carries hand-written documentation comments that must survive
+    `nyxgpt ops glitchtip-init` re-runs.
+    """
+    lines = text.splitlines(keepends=True)
+    section_header_re = re.compile(r"^\s*\[([^\]]+)\]\s*$")
+    key_re = re.compile(rf"^(\s*){re.escape(key)}(\s*=\s*).*$")
+
+    section_start: int | None = None
+    section_end = len(lines)
+    for i, line in enumerate(lines):
+        m = section_header_re.match(line)
+        if m:
+            if section_start is not None:
+                section_end = i
+                break
+            if m.group(1) == section:
+                section_start = i
+
+    if section_start is None:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        if lines and lines[-1].strip():
+            lines.append("\n")
+        lines.append(f"[{section}]\n")
+        lines.append(f"{key} = {value}\n")
+        return "".join(lines)
+
+    for i in range(section_start + 1, section_end):
+        if key_re.match(lines[i]):
+            lines[i] = f"{key} = {value}\n"
+            return "".join(lines)
+
+    lines.insert(section_end, f"{key} = {value}\n")
+    return "".join(lines)
+
+
 def _write_error_tracking_dsn(cfg_path: Path, dsn: str, *, chmod_600: bool) -> OpsResult:
     """Write the provisioned DSN and `enabled = true` into `[error_tracking]` in `cfg_path`.
 
@@ -1786,20 +1831,20 @@ def _write_error_tracking_dsn(cfg_path: Path, dsn: str, *, chmod_600: bool) -> O
     `docker/config.docker.ini` is a git-tracked template, not a secrets
     file -- the DSN is a public key, safe to store there (see
     docs/self-healing.md) -- so its permissions are left untouched.
+
+    Patches only the `dsn`/`enabled` lines in place (via `_patch_ini_value`)
+    rather than round-tripping through `ConfigParser`, so any comments in
+    `cfg_path` -- notably the documentation comments in the git-tracked
+    `docker/config.docker.ini` -- survive untouched.
     """
     if not cfg_path.exists():
         return OpsResult(True, f"Skipped {cfg_path} (not present)")
 
-    parser = ConfigParser()
-    parser.optionxform = str  # type: ignore[assignment]
-    parser.read(cfg_path)
-    if not parser.has_section("error_tracking"):
-        parser.add_section("error_tracking")
-    parser.set("error_tracking", "dsn", dsn)
-    parser.set("error_tracking", "enabled", "true")
+    text = cfg_path.read_text(encoding="utf-8")
+    text = _patch_ini_value(text, "error_tracking", "dsn", dsn)
+    text = _patch_ini_value(text, "error_tracking", "enabled", "true")
+    cfg_path.write_text(text, encoding="utf-8")
 
-    with cfg_path.open("w", encoding="utf-8") as f:
-        parser.write(f)
     if chmod_600:
         os.chmod(cfg_path, 0o600)
 
