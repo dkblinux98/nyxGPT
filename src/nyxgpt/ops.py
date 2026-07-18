@@ -64,6 +64,14 @@ COMPOSE_CONFIG_HINT = "docker/config.docker.ini (mounted into the Compose 'api' 
 # writing to (see #3276 review).
 OLLAMA_CONTAINER_NAME = "nyxgpt-ollama"
 
+# Placeholder substituted with the installing user's home directory when a
+# LaunchAgent plist template is copied into ~/Library/LaunchAgents -- the
+# templates in ops/launchagents/ must never hard-code a real account's home
+# directory (see #3276 acceptance failure: the merged plists hard-coded the
+# original author's `/Users/darlabaker`, so the installed LaunchAgent pointed
+# at a nonexistent script path for every other user).
+LAUNCHAGENT_HOME_PLACEHOLDER = "__NYXGPT_HOME__"
+
 # Container path promtail's docker-compose.yml service binds to native-mode
 # host logs (~/.nyxGPT/logs). `_log_aggregation_wiring_issue` greps for this
 # marker to catch a regression (see #3277) where that bind mount is dropped
@@ -413,6 +421,18 @@ def _find_launchagent_template(
     return None, candidates
 
 
+def _install_launchagent_from_template(tpl: Path, dst: Path) -> None:
+    """Render a LaunchAgent plist template to `dst`, substituting
+    `LAUNCHAGENT_HOME_PLACEHOLDER` with the installing user's actual home
+    directory so the installed plist works for whichever account runs
+    `nyxgpt ops install`, not just the template's original author.
+    """
+    _ensure_dir(dst.parent)
+    text = tpl.read_text(encoding="utf-8")
+    text = text.replace(LAUNCHAGENT_HOME_PLACEHOLDER, str(Path.home()))
+    dst.write_text(text, encoding="utf-8")
+
+
 def _install_scripts() -> list[OpsResult]:
     """Copy the run-web/follow-cassandra-logs/follow-ollama-logs helper scripts into
     ~/.nyxGPT/scripts, executable.
@@ -457,7 +477,7 @@ def _install_cassandra_launchagent() -> list[OpsResult]:
     la_dir = Path.home() / "Library" / "LaunchAgents"
     _ensure_dir(la_dir)
     dst = la_dir / tpl.name
-    _copy_file(tpl, dst)
+    _install_launchagent_from_template(tpl, dst)
 
     label = "com.nyxgpt.cassandra-logs"
     domain = f"gui/{os.getuid()}"
@@ -493,7 +513,7 @@ def _install_ollama_launchagent() -> list[OpsResult]:
     la_dir = Path.home() / "Library" / "LaunchAgents"
     _ensure_dir(la_dir)
     dst = la_dir / tpl.name
-    _copy_file(tpl, dst)
+    _install_launchagent_from_template(tpl, dst)
 
     label = "com.nyxgpt.ollama-logs"
     domain = f"gui/{os.getuid()}"
