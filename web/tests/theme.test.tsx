@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ThemeProvider, useTheme } from '../src/contexts/ThemeContext';
 import ThemeToggle from '../src/components/ThemeToggle';
 
@@ -336,5 +336,108 @@ describe('System Theme Detection', () => {
     await waitFor(() => {
       expect(screen.getByTestId('current-theme')).toHaveTextContent('light');
     });
+  });
+
+  it('updates the theme when the system preference changes and no user preference is stored', async () => {
+    let changeHandler: ((e: MediaQueryListEvent) => void) | undefined;
+    const removeEventListener = vi.fn();
+    matchMediaMock.mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn((event: string, handler: (e: MediaQueryListEvent) => void) => {
+        if (event === 'change') changeHandler = handler;
+      }),
+      removeEventListener,
+    });
+
+    render(
+      <ThemeProvider>
+        <TestComponent />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('current-theme')).toHaveTextContent('light');
+    });
+
+    expect(changeHandler).toBeDefined();
+    act(() => {
+      changeHandler!({ matches: true } as MediaQueryListEvent);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('current-theme')).toHaveTextContent('dark');
+    });
+
+    act(() => {
+      changeHandler!({ matches: false } as MediaQueryListEvent);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('current-theme')).toHaveTextContent('light');
+    });
+  });
+
+  it('ignores system preference changes when the user has an explicit stored preference', async () => {
+    localStorage.setItem('theme', 'light');
+    let changeHandler: ((e: MediaQueryListEvent) => void) | undefined;
+    matchMediaMock.mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn((event: string, handler: (e: MediaQueryListEvent) => void) => {
+        if (event === 'change') changeHandler = handler;
+      }),
+      removeEventListener: vi.fn(),
+    });
+
+    render(
+      <ThemeProvider>
+        <TestComponent />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('current-theme')).toHaveTextContent('light');
+    });
+
+    expect(changeHandler).toBeDefined();
+    act(() => {
+      changeHandler!({ matches: true } as MediaQueryListEvent);
+    });
+
+    // Stored preference wins - theme should remain unchanged
+    expect(screen.getByTestId('current-theme')).toHaveTextContent('light');
+  });
+
+  it('removes the system theme change listener on unmount', async () => {
+    const removeEventListener = vi.fn();
+    matchMediaMock.mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener,
+    });
+
+    const { unmount } = render(
+      <ThemeProvider>
+        <TestComponent />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('current-theme')).toHaveTextContent('light');
+    });
+
+    unmount();
+    expect(removeEventListener).toHaveBeenCalledWith('change', expect.any(Function));
+  });
+});
+
+describe('useTheme outside ThemeProvider', () => {
+  it('throws an error when used outside a ThemeProvider', () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(() => {
+      render(<TestComponent />);
+    }).toThrow('useTheme must be used within a ThemeProvider');
+
+    consoleSpy.mockRestore();
   });
 });

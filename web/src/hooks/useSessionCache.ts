@@ -65,9 +65,11 @@ export function useSessionCache(config: CacheConfig = {}) {
 
   /**
    * Check if cache entry is stale
+   *
+   * Callers always narrow to a non-null entry before invoking this (via `cache &&`
+   * or a truthy ternary), so unlike isExpired, this never needs to handle null itself.
    */
-  const isStale = useCallback((entry: CacheEntry | null): boolean => {
-    if (!entry) return true;
+  const isStale = useCallback((entry: CacheEntry): boolean => {
     const age = Date.now() - entry.timestamp;
     return age > cfg.staleTime;
   }, [cfg.staleTime]);
@@ -171,39 +173,36 @@ export function useSessionCache(config: CacheConfig = {}) {
   const getSessions = useCallback(async (): Promise<Session[]> => {
     const cache = cacheRef.current;
 
-    // If cache is expired, force fresh fetch
+    // If cache is missing or expired, force a fresh fetch
     if (isExpired(cache)) {
       return refresh(false);
     }
 
+    // isExpired(null) is always true, so cache is guaranteed non-null past this point
+    const freshCache = cache as CacheEntry;
+
     // If cache exists and is fresh, return it immediately
-    if (cache && !isStale(cache)) {
-      setSessions(cache.data);
+    if (!isStale(freshCache)) {
+      setSessions(freshCache.data);
       setIsLoading(false);
-      return cache.data;
+      return freshCache.data;
     }
 
-    // If cache is stale but exists, return it immediately
+    // Cache is stale but exists - return it immediately
     // and fetch fresh data in background
-    if (cache && isStale(cache)) {
-      setSessions(cache.data);
-      setIsLoading(false);
+    setSessions(freshCache.data);
+    setIsLoading(false);
 
-      if (cfg.backgroundRefresh) {
-        // Fetch fresh data in background
-        refresh(true).catch((e) => {
-          // Ignore errors for background refresh
-          if (!(e instanceof Error && e.name === 'AbortError')) {
-            console.warn('Background refresh failed:', e);
-          }
-        });
-      }
-
-      return cache.data;
+    if (cfg.backgroundRefresh) {
+      // Fetch fresh data in background. refresh() absorbs AbortErrors internally
+      // (see its own catch block) and resolves rather than rejecting, so any
+      // rejection reaching here is always a genuine, worth-logging failure.
+      refresh(true).catch((e) => {
+        console.warn('Background refresh failed:', e);
+      });
     }
 
-    // No cache, fetch fresh data
-    return refresh(false);
+    return freshCache.data;
   }, [cfg.backgroundRefresh, isExpired, isStale, refresh]);
 
   /**
@@ -259,10 +258,10 @@ export function useSessionCache(config: CacheConfig = {}) {
 
     if (timeUntilStale > 0) {
       refreshTimeoutRef.current = setTimeout(() => {
+        // refresh() absorbs AbortErrors internally and resolves rather than
+        // rejecting, so any rejection reaching here is a genuine failure.
         refresh(true).catch((e) => {
-          if (!(e instanceof Error && e.name === 'AbortError')) {
-            console.warn('Scheduled refresh failed:', e);
-          }
+          console.warn('Scheduled refresh failed:', e);
         });
       }, timeUntilStale);
     }
@@ -281,14 +280,15 @@ export function useSessionCache(config: CacheConfig = {}) {
 
   /**
    * Cleanup on unmount
+   *
+   * refreshTimeoutRef is already owned and cleared by the scheduled-refresh
+   * effect's own cleanup above (which always runs before this one on unmount),
+   * so only the in-flight fetch needs cancelling here.
    */
   useEffect(() => {
     return () => {
       if (fetchControllerRef.current) {
         fetchControllerRef.current.abort();
-      }
-      if (refreshTimeoutRef.current) {
-        clearTimeout(refreshTimeoutRef.current);
       }
     };
   }, []);

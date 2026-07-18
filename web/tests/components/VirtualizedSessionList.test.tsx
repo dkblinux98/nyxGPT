@@ -553,6 +553,208 @@ describe('VirtualizedSessionList', () => {
     expect(mockHandlers.onSelectSession).toHaveBeenCalledWith('session-3');
   });
 
+  it('falls back to the session name when title is missing or blank', () => {
+    const mockHandlers = {
+      onSelectSession: vi.fn(),
+      onContextMenu: vi.fn(),
+    };
+
+    const sessionsWithoutTitle = [
+      { name: 'raw-session-name', messages: 1, pinned: false, tags: [] },
+      { name: 'blank-title-session', title: '   ', messages: 2, pinned: false, tags: [] },
+    ];
+
+    render(
+      <VirtualizedSessionList
+        sessions={sessionsWithoutTitle}
+        selectedSession="raw-session-name"
+        onSelectSession={mockHandlers.onSelectSession}
+        onContextMenu={mockHandlers.onContextMenu}
+        searchText=""
+        pendingSessions={new Set()}
+        highlightText={mockHighlightText}
+      />
+    );
+
+    expect(screen.getByText('raw-session-name')).toBeInTheDocument();
+    expect(screen.getByText('blank-title-session')).toBeInTheDocument();
+  });
+
+  it('renders blank model text when session has no model', () => {
+    const mockHandlers = {
+      onSelectSession: vi.fn(),
+      onContextMenu: vi.fn(),
+    };
+
+    const sessionsWithoutModel = [
+      { name: 'no-model-session', title: 'No Model', messages: 4, pinned: false, tags: [] },
+      { name: 'no-messages-session', title: 'No Messages', pinned: false, tags: [] },
+    ];
+
+    render(
+      <VirtualizedSessionList
+        sessions={sessionsWithoutModel}
+        selectedSession="no-model-session"
+        onSelectSession={mockHandlers.onSelectSession}
+        onContextMenu={mockHandlers.onContextMenu}
+        searchText=""
+        pendingSessions={new Set()}
+        highlightText={mockHighlightText}
+      />
+    );
+
+    expect(screen.getByText(/4 msg/)).toBeInTheDocument();
+    // session.messages defaults to 0 when missing
+    expect(screen.getByText(/^0 msg/)).toBeInTheDocument();
+  });
+
+  it('invokes highlightText when a search term is active', () => {
+    const mockHandlers = {
+      onSelectSession: vi.fn(),
+      onContextMenu: vi.fn(),
+    };
+
+    const highlightSpy = vi.fn((text: string, search: string) => (
+      <mark data-testid={`highlight-${text}`}>{text}</mark>
+    ));
+
+    render(
+      <VirtualizedSessionList
+        sessions={mockSessions}
+        selectedSession="session-1"
+        onSelectSession={mockHandlers.onSelectSession}
+        onContextMenu={mockHandlers.onContextMenu}
+        searchText="First"
+        pendingSessions={new Set()}
+        highlightText={highlightSpy}
+      />
+    );
+
+    expect(highlightSpy).toHaveBeenCalledWith('First Session', 'First');
+    expect(screen.getByTestId('highlight-First Session')).toBeInTheDocument();
+  });
+
+  it('supports keyboard navigation with the ArrowUp key', () => {
+    const mockHandlers = {
+      onSelectSession: vi.fn(),
+      onContextMenu: vi.fn(),
+    };
+
+    const { container } = render(
+      <VirtualizedSessionList
+        sessions={mockSessions}
+        selectedSession="session-2"
+        onSelectSession={mockHandlers.onSelectSession}
+        onContextMenu={mockHandlers.onContextMenu}
+        searchText=""
+        pendingSessions={new Set()}
+        highlightText={mockHighlightText}
+      />
+    );
+
+    const listContainer = container.querySelector('div[tabindex="-1"]');
+    fireEvent.keyDown(listContainer!, { key: 'ArrowUp' });
+
+    expect(mockHandlers.onSelectSession).toHaveBeenCalledWith('session-1');
+  });
+
+  it('does nothing on Enter or Space key (already selected)', () => {
+    const mockHandlers = {
+      onSelectSession: vi.fn(),
+      onContextMenu: vi.fn(),
+    };
+
+    const { container } = render(
+      <VirtualizedSessionList
+        sessions={mockSessions}
+        selectedSession="session-1"
+        onSelectSession={mockHandlers.onSelectSession}
+        onContextMenu={mockHandlers.onContextMenu}
+        searchText=""
+        pendingSessions={new Set()}
+        highlightText={mockHighlightText}
+      />
+    );
+
+    const listContainer = container.querySelector('div[tabindex="-1"]');
+    fireEvent.keyDown(listContainer!, { key: 'Enter' });
+    fireEvent.keyDown(listContainer!, { key: ' ' });
+
+    expect(mockHandlers.onSelectSession).not.toHaveBeenCalled();
+  });
+
+  it('ignores unrecognized keys', () => {
+    const mockHandlers = {
+      onSelectSession: vi.fn(),
+      onContextMenu: vi.fn(),
+    };
+
+    const { container } = render(
+      <VirtualizedSessionList
+        sessions={mockSessions}
+        selectedSession="session-1"
+        onSelectSession={mockHandlers.onSelectSession}
+        onContextMenu={mockHandlers.onContextMenu}
+        searchText=""
+        pendingSessions={new Set()}
+        highlightText={mockHighlightText}
+      />
+    );
+
+    const listContainer = container.querySelector('div[tabindex="-1"]');
+    fireEvent.keyDown(listContainer!, { key: 'Tab' });
+
+    expect(mockHandlers.onSelectSession).not.toHaveBeenCalled();
+  });
+
+  it('does nothing on keydown when the selected session is not in the list', () => {
+    const mockHandlers = {
+      onSelectSession: vi.fn(),
+      onContextMenu: vi.fn(),
+    };
+
+    const { container } = render(
+      <VirtualizedSessionList
+        sessions={mockSessions}
+        selectedSession="not-a-real-session"
+        onSelectSession={mockHandlers.onSelectSession}
+        onContextMenu={mockHandlers.onContextMenu}
+        searchText=""
+        pendingSessions={new Set()}
+        highlightText={mockHighlightText}
+      />
+    );
+
+    const listContainer = container.querySelector('div[tabindex="-1"]');
+    fireEvent.keyDown(listContainer!, { key: 'ArrowDown' });
+
+    expect(mockHandlers.onSelectSession).not.toHaveBeenCalled();
+  });
+
+  it('does not call onSelectSession when ArrowUp is pressed at the first item', () => {
+    const mockHandlers = {
+      onSelectSession: vi.fn(),
+      onContextMenu: vi.fn(),
+    };
+
+    const { container } = render(
+      <VirtualizedSessionList
+        sessions={mockSessions}
+        selectedSession="session-1"
+        onSelectSession={mockHandlers.onSelectSession}
+        onContextMenu={mockHandlers.onContextMenu}
+        searchText=""
+        pendingSessions={new Set()}
+        highlightText={mockHighlightText}
+      />
+    );
+
+    const listContainer = container.querySelector('div[tabindex="-1"]');
+    fireEvent.keyDown(listContainer!, { key: 'ArrowUp' });
+
+    expect(mockHandlers.onSelectSession).not.toHaveBeenCalled();
+  });
+
   it('updated ARIA label mentions keyboard navigation', () => {
     const mockHandlers = {
       onSelectSession: vi.fn(),
