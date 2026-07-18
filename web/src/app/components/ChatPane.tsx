@@ -672,8 +672,9 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   // Scroll to message when scrollToMessageIndex changes
   useEffect(() => {
     if (scrollToMessageIndex !== null && scrollToMessageIndex !== undefined) {
+      let clearHighlightTimeout: ReturnType<typeof setTimeout> | undefined;
       // Wait a bit for messages to render
-      setTimeout(() => {
+      const scrollTimeout = setTimeout(() => {
         virtuosoRef.current?.scrollToIndex({
           index: scrollToMessageIndex,
           align: 'center',
@@ -682,10 +683,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
         // Highlight the message
         setHighlightedMessageIndex(scrollToMessageIndex);
         // Remove highlight after 2 seconds
-        setTimeout(() => {
+        clearHighlightTimeout = setTimeout(() => {
           setHighlightedMessageIndex(null);
         }, 2000);
       }, 100);
+      return () => {
+        clearTimeout(scrollTimeout);
+        clearTimeout(clearHighlightTimeout);
+      };
     }
   }, [scrollToMessageIndex, loadedOffset]);
 
