@@ -51,11 +51,6 @@ export default function CollectionsPage() {
   }
 
   async function handleDeleteCollection(collectionName: string) {
-    if (collectionName === 'default') {
-      alert('Cannot delete the default collection.');
-      return;
-    }
-
     setDeletingCollection(collectionName);
     setError(null);
     try {
@@ -154,15 +149,13 @@ export default function CollectionsPage() {
   }
 
   async function handleSaveSettings() {
-    if (!viewingSettings) return;
-
     setEditingSettings(true);
     setError(null);
     try {
       const chunkSize = settingsChunkSize.trim() ? parseInt(settingsChunkSize, 10) : null;
       const chunkOverlap = settingsChunkOverlap.trim() ? parseInt(settingsChunkOverlap, 10) : null;
 
-      const res = await fetch(`/api/v1/rag/collections/${encodeURIComponent(viewingSettings)}/settings`, {
+      const res = await fetch(`/api/v1/rag/collections/${encodeURIComponent(viewingSettings!)}/settings`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -628,7 +621,7 @@ export default function CollectionsPage() {
                 <LoadingSpinner size="medium" />
                 <p style={{ marginTop: '1rem', color: 'var(--foreground-muted)' }}>Loading settings...</p>
               </div>
-            ) : collectionSettings ? (
+            ) : (
               <div>
                 <div style={{ marginBottom: '1rem' }}>
                   <label style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', textTransform: 'uppercase', marginBottom: '0.5rem', display: 'block' }}>
@@ -739,7 +732,7 @@ export default function CollectionsPage() {
                   </button>
                 </div>
               </div>
-            ) : null}
+            )}
           </div>
         </div>
       )}
