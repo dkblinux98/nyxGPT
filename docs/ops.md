@@ -48,14 +48,27 @@ nyxgpt ops observability
 
 ## `nyxgpt ops install`
 
-Installs and registers all required local services.
+Reconciles the local machine to nyxGPT's intended **local** topology:
+`api`/`web`/`ollama` running natively (Homebrew), plus the single
+ops-managed local Cassandra container. (The full `docker-compose.yml` stack
+described in [docker-compose.md](docker-compose.md) is a separate,
+alternative **cloud/server** deployment path — `nyxgpt ops install` never
+starts it.)
 
 This command:
 
+- Detects and stops any Docker Compose app-tier containers (`api`, `web`,
+  `ollama`, `cassandra`) left running from an earlier raw `docker compose
+  up` or a previous mixed-mode install, reporting what it stopped
 - Installs Homebrew formulas (`nyxgpt-api`, `nyxgpt-web`) if missing
 - Registers and loads required LaunchAgents
 - Verifies Docker availability
-- Ensures the Cassandra container exists
+- Creates the local Cassandra container if it doesn't exist yet (name
+  `nyxgpt-cassandra`, image `cassandra:5.0`, bound to
+  `${NYXGPT_BIND_ADDR:-127.0.0.1}:${CASSANDRA_PORT:-9042}`, persisted in a
+  named volume), starts it if it exists but is stopped, or leaves it alone
+  if it's already running — via plain `docker run`/`docker start`, entirely
+  separate from the Compose stack
 - Installs log-following helpers
 - Starts the observability stack (Grafana, Prometheus, Loki, promtail, the
   OTel collector, Jaeger, GlitchTip) — see
@@ -75,7 +88,10 @@ resources):
 nyxgpt ops install --skip-observability
 ```
 
-This command is idempotent. Existing services are not reinstalled unnecessarily.
+This command is idempotent and **reconciling**: re-running it converges the
+machine to the intended local topology rather than only adding new state —
+including cleaning up a mixed-mode mess (native services plus a leaked
+Compose app tier) left by an earlier run.
 
 ---
 
@@ -293,7 +309,8 @@ Checks include:
 - Homebrew availability
 - Running services
 - Docker daemon availability
-- Cassandra container presence
+- Local Cassandra container presence (flags a missing `nyxgpt-cassandra`
+  container and suggests `nyxgpt ops install` to create it)
 - Log directory writability
 
 Results are reported with clear PASS / FAIL indicators.
