@@ -1151,7 +1151,10 @@ def test_install_cassandra_launchagent_missing_template(monkeypatch):
 @pytest.mark.unit
 def test_install_cassandra_launchagent_installs_when_template_found(monkeypatch, tmp_path):
     tpl = tmp_path / "com.nyxgpt.cassandra-logs.plist"
-    tpl.write_text("<plist/>", encoding="utf-8")
+    tpl.write_text(
+        "<plist>__NYXGPT_HOME__/.nyxGPT/scripts/follow-cassandra-logs.sh</plist>",
+        encoding="utf-8",
+    )
     home = tmp_path / "home"
 
     monkeypatch.setattr(ops, "_find_launchagent_template", lambda: (tpl, [tpl]))
@@ -1167,6 +1170,9 @@ def test_install_cassandra_launchagent_installs_when_template_found(monkeypatch,
     assert results[0].ok is True
     dst = home / "Library" / "LaunchAgents" / tpl.name
     assert dst.exists()
+    installed = dst.read_text(encoding="utf-8")
+    assert "__NYXGPT_HOME__" not in installed
+    assert f"{home}/.nyxGPT/scripts/follow-cassandra-logs.sh" in installed
     assert len(run_calls) == 3
 
 
@@ -1186,7 +1192,10 @@ def test_install_ollama_launchagent_missing_template(monkeypatch):
 @pytest.mark.unit
 def test_install_ollama_launchagent_installs_when_template_found(monkeypatch, tmp_path):
     tpl = tmp_path / "com.nyxgpt.ollama-logs.plist"
-    tpl.write_text("<plist/>", encoding="utf-8")
+    tpl.write_text(
+        "<plist>__NYXGPT_HOME__/.nyxGPT/scripts/follow-ollama-logs.sh</plist>",
+        encoding="utf-8",
+    )
     home = tmp_path / "home"
 
     calls = []
@@ -1208,8 +1217,35 @@ def test_install_ollama_launchagent_installs_when_template_found(monkeypatch, tm
     assert results[0].ok is True
     dst = home / "Library" / "LaunchAgents" / tpl.name
     assert dst.exists()
+    installed = dst.read_text(encoding="utf-8")
+    assert "__NYXGPT_HOME__" not in installed
+    assert f"{home}/.nyxGPT/scripts/follow-ollama-logs.sh" in installed
     assert len(run_calls) == 3
     assert calls == ["com.nyxgpt.ollama-logs.plist"]
+
+
+@pytest.mark.unit
+def test_install_launchagent_from_template_uses_installing_users_home(monkeypatch, tmp_path):
+    """Regression test for #3276 acceptance failure: the merged plist
+    templates hard-coded the original author's home directory, so
+    `nyxgpt ops install` produced a non-functional LaunchAgent for every
+    other user. `_install_launchagent_from_template` must substitute the
+    placeholder for the actual installing user's home directory.
+    """
+    tpl = tmp_path / "com.nyxgpt.ollama-logs.plist"
+    tpl.write_text(
+        "<plist>__NYXGPT_HOME__/.nyxGPT/scripts/follow-ollama-logs.sh</plist>",
+        encoding="utf-8",
+    )
+    home = tmp_path / "some-other-user"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    dst = tmp_path / "installed.plist"
+
+    ops._install_launchagent_from_template(tpl, dst)
+
+    installed = dst.read_text(encoding="utf-8")
+    assert "__NYXGPT_HOME__" not in installed
+    assert installed == f"<plist>{home}/.nyxGPT/scripts/follow-ollama-logs.sh</plist>"
 
 
 # --- _ensure_cassandra_container ---
