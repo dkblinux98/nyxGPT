@@ -1,0 +1,127 @@
+name: Cleanup Stale Claude Branches
+
+# Belt-and-suspenders branch hygiene for the agent loop.
+#
+# The repo's "Automatically delete head branches" setting only deletes a
+# branch when its PR is *merged*. Branches from issues that were abandoned,
+# superseded, or closed as duplicates never merge, so nothing ever removes
+# them. This workflow sweeps both cases:
+#   * merged/contained branches (in case the setting missed one), and
+#   * unmerged `claude/*` branches with no open PR that are older than
+#     STALE_DAYS (the orphans).
+# Head branches of OPEN pull requests are always protected.
+
+on:
+  schedule:
+    - cron: '17 4 * * 1'   # Mondays 04:17 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview only — list what would be deleted, delete nothing'
+        type: boolean
+        default: true
+      stale_days:
+        description: 'Delete unmerged orphan branches whose tip is older than this many days'
+        default: '14'
+      base_branch:
+        description: 'Base/release branch to check merges against'
+        default: 'v2.0.0'
+
+permissions:
+  contents: write        # delete refs
+  pull-requests: read     # read open PRs to protect their head branches
+
+concurrency:
+  group: cleanup-stale-branches
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sweep merged and stale-orphan claude/* branches
+        uses: actions/github-script@v7
+        env:
+          # On a scheduled run there are no inputs, so these fall back to the
+          # defaults below (dry_run=false → real deletions on the weekly sweep).
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          STALE_DAYS: ${{ github.event.inputs.stale_days || '14' }}
+          BASE_BRANCH: ${{ github.event.inputs.base_branch || 'v2.0.0' }}
+        with:
+          script: |
+            const dryRun = (process.env.DRY_RUN || 'false') === 'true';
+            const staleDays = parseInt(process.env.STALE_DAYS || '14', 10);
+            const base = process.env.BASE_BRANCH || 'v2.0.0';
+            const { owner, repo } = context.repo;
+            const PREFIX = 'claude/';
+            const now = Date.now();
+            const staleMs = staleDays * 24 * 60 * 60 * 1000;
+
+            // 1. Protect head branches of every OPEN PR.
+            const openPRs = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+            const protectedHeads = new Set(openPRs.map(p => p.head.ref));
+            core.info(`Protected open-PR heads: ${[...protectedHeads].join(', ') || '(none)'}`);
+
+            // 2. Candidate branches: claude/* except the base branch itself.
+            const branches = await github.paginate(github.rest.repos.listBranches, {
+              owner, repo, per_page: 100,
+            });
+            const candidates = branches.filter(b => b.name.startsWith(PREFIX) && b.name !== base);
+
+            const deleted = [];
+            const kept = [];
+
+            for (const b of candidates) {
+              const name = b.name;
+
+              if (protectedHeads.has(name)) { kept.push(`${name} — open PR`); continue; }
+
+              let reason = null;
+              try {
+                const cmp = await github.rest.repos.compareCommitsWithBasehead({
+                  owner, repo, basehead: `${base}...${encodeURIComponent(name)}`,
+                });
+                if (cmp.data.ahead_by === 0) {
+                  // No commits beyond base → already merged/contained.
+                  reason = 'merged/contained';
+                } else {
+                  // Unmerged. Delete only if the tip commit is stale.
+                  const tip = await github.rest.repos.getCommit({ owner, repo, ref: name });
+                  const tipMs = new Date(tip.data.commit.committer.date).getTime();
+                  const ageDays = Math.floor((now - tipMs) / 86400000);
+                  if (now - tipMs > staleMs) {
+                    reason = `stale orphan — unmerged, no open PR, tip ${ageDays}d old`;
+                  } else {
+                    kept.push(`${name} — unmerged but fresh (tip ${ageDays}d < ${staleDays}d)`);
+                  }
+                }
+              } catch (e) {
+                kept.push(`${name} — skipped (inspection failed: ${e.message})`);
+                continue;
+              }
+
+              if (!reason) continue;
+
+              if (dryRun) {
+                deleted.push(`[dry run] would delete ${name} — ${reason}`);
+              } else {
+                try {
+                  await github.rest.git.deleteRef({ owner, repo, ref: `heads/${name}` });
+                  deleted.push(`deleted ${name} — ${reason}`);
+                } catch (e) {
+                  kept.push(`${name} — delete failed: ${e.message}`);
+                }
+              }
+            }
+
+            core.summary
+              .addHeading(`Branch cleanup${dryRun ? ' (dry run)' : ''}`)
+              .addRaw(`Base: \`${base}\` · stale threshold: ${staleDays}d · candidates: ${candidates.length}\n\n`)
+              .addHeading(dryRun ? 'Would delete' : 'Deleted', 3)
+              .addRaw((deleted.length ? deleted.map(x => `- ${x}`).join('\n') : '_none_') + '\n\n')
+              .addHeading('Kept', 3)
+              .addRaw(kept.length ? kept.map(x => `- ${x}`).join('\n') : '_none_');
+            await core.summary.write();
+            core.info(`Result — removed: ${deleted.length}, kept: ${kept.length}`);

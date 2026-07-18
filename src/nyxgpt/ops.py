@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Maps a logical component to its Homebrew service name for native mode.
-# Cassandra has no native brew service -- per PHASE_6_PLAN.md it stays the one
+# Cassandra has no native brew service -- per product_management/PHASE_6_PLAN.md it stays the one
 # ops-managed Docker container even under native-first, so it's tracked via
 # `_docker_container_state` instead (see `detect_deployment_mode`).
 NATIVE_BREW_SERVICES: dict[str, str] = {
