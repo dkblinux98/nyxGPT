@@ -282,6 +282,9 @@ Or restart just the API:
 nyxgpt ops restart api
 ```
 
+Stop it (or any other component) with `nyxgpt ops stop api` — see
+[docs/ops.md](docs/ops.md#nyxgpt-ops-stop).
+
 Verify:
 
 ```bash
@@ -348,6 +351,11 @@ cp .env.example .env
 docker compose up --build
 ```
 
+Stop it with `nyxgpt ops stop <target>` or tear it down entirely with
+`nyxgpt ops down` (add `--volumes --yes-really` to also discard Cassandra
+data and pulled models) — never a raw `docker compose stop`/`down`. See
+[docs/ops.md](docs/ops.md#nyxgpt-ops-down).
+
 #### Terraform (local infrastructure as code, optional)
 
 For `terraform apply`/`destroy` semantics over the same core stack (Ollama,
@@ -372,6 +380,9 @@ The web UI is managed via the `nyxgpt ops` command:
 ```bash
 nyxgpt ops restart web
 ```
+
+Stop it with `nyxgpt ops stop web` — see
+[docs/ops.md](docs/ops.md#nyxgpt-ops-stop).
 
 Open in your browser:
 

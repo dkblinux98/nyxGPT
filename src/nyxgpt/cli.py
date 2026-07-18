@@ -1934,6 +1934,51 @@ def cli(argv: list[str] | None = None) -> int:
         help="Service to restart",
     )
 
+    ops_stop = ops_sub.add_parser("stop", help="Stop local services (native and/or Docker Compose)")
+    ops_stop.add_argument(
+        "target",
+        nargs="?",
+        default="all",
+        choices=[
+            "all",
+            "api",
+            "web",
+            "ollama",
+            "cassandra",
+            "cassandra-logs",
+            "observability",
+        ],
+        help="Service to stop",
+    )
+
+    ops_down = ops_sub.add_parser(
+        "down", help="Tear down the full stack (native services + Docker Compose)"
+    )
+    ops_down_scope = ops_down.add_mutually_exclusive_group()
+    ops_down_scope.add_argument(
+        "--app-only",
+        action="store_true",
+        dest="app_only",
+        help="Only tear down the core app tier (api/web/ollama/cassandra), leave observability up",
+    )
+    ops_down_scope.add_argument(
+        "--observability-only",
+        action="store_true",
+        dest="observability_only",
+        help="Only tear down the observability Compose profiles, leave the app tier up",
+    )
+    ops_down.add_argument(
+        "--volumes",
+        action="store_true",
+        help="Also remove Compose data volumes (Cassandra/Postgres/Grafana/etc.) -- destructive",
+    )
+    ops_down.add_argument(
+        "--yes-really",
+        action="store_true",
+        dest="yes_really",
+        help="Required together with --volumes to confirm destructive volume removal",
+    )
+
     ops_env_sync = ops_sub.add_parser(
         "env-sync",
         help="Derive Docker Compose's .env secrets from config.ini (single source of truth)",
@@ -2193,6 +2238,10 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.doctor(args)
         if args.ops_cmd == "restart":
             return ops_mod.restart(args)
+        if args.ops_cmd == "stop":
+            return ops_mod.stop(args)
+        if args.ops_cmd == "down":
+            return ops_mod.down(args)
         if args.ops_cmd == "env-sync":
             return ops_mod.env_sync(args)
         if args.ops_cmd == "logs":

@@ -2,10 +2,18 @@
 
 `docker-compose.yml` brings up every component of nyxGPT with one command:
 the FastAPI backend, the Next.js web UI, Ollama, and Cassandra (for RAG).
-This is an alternative to the Homebrew / `nyxgpt ops` workflow described in
-[ops.md](ops.md) and the API-only [Kubernetes deployment](kubernetes.md) —
-useful when you want the whole stack running in containers with a single
-command, e.g. for evaluation or a non-macOS host.
+This is an alternative **cloud/server** deployment path to the native-mode
+Homebrew / `nyxgpt ops` workflow described in [ops.md](ops.md) and the
+API-only [Kubernetes deployment](kubernetes.md) — useful when you want the
+whole stack running in containers with a single command, e.g. for
+evaluation, a non-macOS host, or a server deployment.
+
+Don't mix the two on the same machine: in native mode, `api`/`web`/`ollama`
+run natively and only Cassandra runs in a container (see
+[`nyxgpt ops install`](ops.md#nyxgpt-ops-install)), so bringing up this
+Compose stack's app-tier services (`api`/`web`/`ollama`/`cassandra`)
+alongside a native install collides on the same ports. `nyxgpt ops install`
+detects and stops any of those Compose containers it finds running.
 
 ## Services
 
@@ -18,7 +26,7 @@ command, e.g. for evaluation or a non-macOS host.
 | `prometheus` <sup>*</sup> | `prom/prometheus` | Scrapes the API's `/metrics` endpoint, evaluates alerting rules | `9090` |
 | `grafana` <sup>*</sup> | `grafana/grafana` | Pre-provisioned dashboards (system overview, RAG performance, API metrics, logs explorer) | `3001` |
 | `loki` <sup>§</sup> | `grafana/loki` | Log storage + search API, with retention | — |
-| `promtail` <sup>§</sup> | `grafana/promtail` | Tails `~/.nyxGPT/logs` and ships to Loki | — |
+| `promtail` <sup>§</sup> | `grafana/promtail` | Tails logs from both deployment modes and ships to Loki | — |
 | `otel-collector` <sup>†</sup> | `otel/opentelemetry-collector-contrib` | Receives OTLP spans from the API, forwards to Jaeger | — |
 | `jaeger` <sup>†</sup> | `jaegertracing/all-in-one` | Trace storage + UI              | `16686`              |
 | `glitchtip` <sup>‡</sup> | `glitchtip/glitchtip` | Self-hosted error tracker UI + ingest | `8080` |
@@ -64,8 +72,11 @@ Named volumes persist state across `docker compose down` / `up`:
   and dashboard state
 - `loki_data` — the `logging` profile's indexed/stored log chunks
 
-Run `docker compose down -v` to discard all persisted state, including
-Cassandra data and pulled models.
+Run `nyxgpt ops down --volumes --yes-really` to discard all persisted state,
+including Cassandra data and pulled models -- see
+[`nyxgpt ops down`](ops.md#nyxgpt-ops-down). Never run a raw
+`docker compose down -v`; the wrapper above stops native services too and
+requires the explicit `--yes-really` confirmation before removing data.
 
 ## Quickstart
 
@@ -105,6 +116,12 @@ curl -H "X-API-Key: <NYXGPT_AUTH_API_KEY from .env>" http://127.0.0.1:8000/healt
 ```
 
 Open the web UI at [http://localhost:3000](http://localhost:3000).
+
+To stop the stack later, use `nyxgpt ops stop <target>` (stops one
+component, containers preserved) or `nyxgpt ops down` (full teardown) --
+see [`nyxgpt ops stop`](ops.md#nyxgpt-ops-stop) and
+[`nyxgpt ops down`](ops.md#nyxgpt-ops-down). Never run a raw
+`docker compose stop`/`down`.
 
 ## Configuration
 
@@ -257,13 +274,33 @@ alongside `monitoring` (part of the observability stack, see
 nyxgpt ops observability
 ```
 
-This starts `promtail` (tails the API's log files under `~/.nyxGPT/logs` —
-the same `nyxgpt_data` volume the `api` service writes to — using
-`docker/promtail-config.yml`) and `loki` (stores and indexes log lines
-using `docker/loki-config.yml`, which sets a 14-day retention policy via
-the compactor). promtail extracts both `level` and `logger` (the Python
-module, e.g. `nyxgpt.self_heal`) as Loki labels from the API's log format,
-so log streams can be filtered per-component. Search logs in the Grafana
+This starts `promtail` (ships logs to Loki using `docker/promtail-config.yml`)
+and `loki` (stores and indexes log lines using `docker/loki-config.yml`,
+which sets a 14-day retention policy via the compactor).
+
+promtail is always a Compose container, but the core app (`api`,
+self-heal, `nyxgpt ops`) can be running either natively or as Compose
+services (see [ops.md](ops.md)) -- and those two modes write logs to two
+different places, so promtail is wired to tail both:
+
+- **Compose mode**: the `api` container writes to `/root/.nyxGPT`, backed
+  by the `nyxgpt_data` named volume (see [Volumes](#volumes) above).
+  promtail mounts that same volume read-only at `/var/log/nyxgpt`.
+- **Native mode** (the primary local path): `api`/self-heal/`nyxgpt ops`
+  run on the host and write to `~/.nyxGPT/logs` directly -- a plain host
+  directory, **not** part of the `nyxgpt_data` volume. promtail separately
+  bind-mounts that host directory read-only at `/var/log/nyxgpt-native`.
+
+`docker/promtail-config.yml` scrapes both paths under the same `job`
+label, so log streams from either mode are indistinguishable in Grafana.
+If you're running native mode and don't see logs in Grafana, run `nyxgpt
+ops doctor` first -- it flags a missing native-log bind mount (e.g. after
+a `docker-compose.yml` edit that dropped it) rather than leaving it to a
+silently-empty dashboard.
+
+promtail extracts both `level` and `logger` (the Python module, e.g.
+`nyxgpt.self_heal`) as Loki labels from the API's log format, so log
+streams can be filtered per-component. Search logs in the Grafana
 instance from the `monitoring` profile (also required — start both
 profiles together), which is pre-provisioned with a Loki datasource and
 two dashboards under `docker/grafana/dashboards`:

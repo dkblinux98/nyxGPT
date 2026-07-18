@@ -32,7 +32,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib/gh_project.sh"
 
 MILESTONE_TITLE="Phase 6: Cloud & Unified Deployment"
-MILESTONE_DESC="v3.0.0 — cloud-native AWS deploy + unified one-command, OS-aware deployment. See PHASE_6_PLAN.md."
+MILESTONE_DESC="v3.0.0 — cloud-native AWS deploy + unified one-command, OS-aware deployment. See product_management/PHASE_6_PLAN.md."
 MILESTONE_DUE="2026-09-13T23:59:59Z"
 
 SPRINT_60="Sprint 6.0"
@@ -86,7 +86,7 @@ body() {
   local out="## Problem / Motivation\n\n${problem}\n\n## Acceptance Criteria\n"
   local IFS=';'
   for c in $1; do out+="- [ ] ${c}\n"; done
-  out+="\n## Related\n\n- Part of Phase 6 / v3.0.0 (see PHASE_6_PLAN.md)"
+  out+="\n## Related\n\n- Part of Phase 6 / v3.0.0 (see product_management/PHASE_6_PLAN.md)"
   printf '%b' "$out"
 }
 
