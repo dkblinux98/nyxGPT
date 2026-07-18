@@ -62,6 +62,20 @@ describe('/api/prometheus-metrics proxy route', () => {
     expect(response.headers.get('Content-Type')).toBe('text/plain; version=0.0.4; charset=utf-8');
   });
 
+  it('falls back to text/plain when the backend response has no Content-Type header', async () => {
+    global.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      body: null,
+      headers: new Headers(),
+    });
+
+    const { GET } = await import('../../../../src/app/api/prometheus-metrics/route');
+    const response = (await GET()) as Response;
+
+    expect(response.headers.get('Content-Type')).toBe('text/plain; charset=utf-8');
+  });
+
   it('returns 502 with a plain-text error when backend is unreachable', async () => {
     global.fetch = vi.fn().mockRejectedValueOnce(new Error('ECONNREFUSED'));
 

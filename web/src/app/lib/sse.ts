@@ -37,7 +37,9 @@ export function extractSseEvents(buffer: string): {
   rest: string;
 } {
   const parts = buffer.split(/\r?\n\r?\n/);
-  const rest = parts.pop() ?? '';
+  // String.split() on a defined regex always returns at least one element,
+  // so pop() here is never undefined.
+  const rest = parts.pop()!;
   const events: SseEvent[] = [];
 
   for (const part of parts) {
