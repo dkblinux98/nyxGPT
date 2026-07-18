@@ -64,8 +64,11 @@ Named volumes persist state across `docker compose down` / `up`:
   and dashboard state
 - `loki_data` — the `logging` profile's indexed/stored log chunks
 
-Run `docker compose down -v` to discard all persisted state, including
-Cassandra data and pulled models.
+Run `nyxgpt ops down --volumes --yes-really` to discard all persisted state,
+including Cassandra data and pulled models -- see
+[`nyxgpt ops down`](ops.md#nyxgpt-ops-down). Never run a raw
+`docker compose down -v`; the wrapper above stops native services too and
+requires the explicit `--yes-really` confirmation before removing data.
 
 ## Quickstart
 
@@ -105,6 +108,12 @@ curl -H "X-API-Key: <NYXGPT_AUTH_API_KEY from .env>" http://127.0.0.1:8000/healt
 ```
 
 Open the web UI at [http://localhost:3000](http://localhost:3000).
+
+To stop the stack later, use `nyxgpt ops stop <target>` (stops one
+component, containers preserved) or `nyxgpt ops down` (full teardown) --
+see [`nyxgpt ops stop`](ops.md#nyxgpt-ops-stop) and
+[`nyxgpt ops down`](ops.md#nyxgpt-ops-down). Never run a raw
+`docker compose stop`/`down`.
 
 ## Configuration
 
