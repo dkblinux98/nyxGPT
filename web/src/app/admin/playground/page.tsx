@@ -147,11 +147,6 @@ export default function PlaygroundPage() {
   }, [queryHistory]);
 
   async function handleExecuteQuery() {
-    if (!query.trim()) {
-      setError('Query cannot be empty');
-      return;
-    }
-
     setExecuting(true);
     setError(null);
     setCurrentResult(null);
@@ -899,8 +894,7 @@ export default function PlaygroundPage() {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                 {selectedHistoryIds.map((id) => {
-                  const item = queryHistory.find((q) => q.id === id);
-                  if (!item) return null;
+                  const item = queryHistory.find((q) => q.id === id)!;
 
                   return (
                     <div
