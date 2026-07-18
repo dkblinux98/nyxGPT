@@ -435,6 +435,106 @@ def test_ops_doctor_warns_when_cassandra_container_missing(monkeypatch, capsys, 
     assert "nyxgpt-cassandra" in out
 
 
+def _write_log_aggregation_config(path, *, enabled=True):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"[log_aggregation]\nenabled = {'true' if enabled else 'false'}\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.unit
+def test_log_aggregation_wiring_issue_none_when_no_config(tmp_path):
+    assert ops._log_aggregation_wiring_issue(tmp_path / "missing.ini") is None
+
+
+@pytest.mark.unit
+def test_log_aggregation_wiring_issue_none_when_disabled(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_log_aggregation_config(cfg_path, enabled=False)
+    assert ops._log_aggregation_wiring_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_log_aggregation_wiring_issue_none_when_promtail_not_running(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_log_aggregation_config(cfg_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+
+    assert ops._log_aggregation_wiring_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_log_aggregation_wiring_issue_none_when_no_native_logs(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_log_aggregation_config(cfg_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    assert ops._log_aggregation_wiring_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_log_aggregation_wiring_issue_flags_missing_mount(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_log_aggregation_config(cfg_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    log_dir = tmp_path / ".nyxGPT" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "nyxgpt.log").write_text("2026-07-18 00:00:00 INFO [-] nyxgpt: hi\n")
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    (tmp_path / "docker-compose.yml").write_text("services:\n  promtail:\n    image: x\n")
+
+    issue = ops._log_aggregation_wiring_issue(cfg_path)
+    assert issue is not None
+    assert "not reaching Loki" in issue
+
+
+@pytest.mark.unit
+def test_log_aggregation_wiring_issue_none_when_mount_present(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_log_aggregation_config(cfg_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    log_dir = tmp_path / ".nyxGPT" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "nyxgpt.log").write_text("2026-07-18 00:00:00 INFO [-] nyxgpt: hi\n")
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    (tmp_path / "docker-compose.yml").write_text(
+        f"services:\n  promtail:\n    volumes:\n      - x:{ops.PROMTAIL_NATIVE_LOG_MOUNT_MARKER}:ro\n"
+    )
+
+    assert ops._log_aggregation_wiring_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_ops_doctor_flags_missing_promtail_native_mount(monkeypatch, capsys, tmp_path):
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    _write_log_aggregation_config(cfg_dir / "config.ini")
+
+    log_dir = cfg_dir / "logs"
+    log_dir.mkdir()
+    (log_dir / "nyxgpt.log").write_text("2026-07-18 00:00:00 INFO [-] nyxgpt: hi\n")
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+    (tmp_path / "docker-compose.yml").write_text("services:\n  promtail:\n    image: x\n")
+
+    rc = ops.doctor(MagicMock())
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "not reaching Loki" in out
+
+
 def _write_config(path, *, api_key="", grafana_password=""):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(

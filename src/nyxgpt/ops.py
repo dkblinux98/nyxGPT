@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from nyxgpt import self_heal
+from nyxgpt.config import get_log_aggregation_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,12 @@ COMPOSE_COMPONENT_PORTS: dict[str, int] = {
 
 NATIVE_CONFIG_HINT = "~/.nyxGPT/config.ini"
 COMPOSE_CONFIG_HINT = "docker/config.docker.ini (mounted into the Compose 'api' container)"
+
+# Container path promtail's docker-compose.yml service binds to native-mode
+# host logs (~/.nyxGPT/logs). `_log_aggregation_wiring_issue` greps for this
+# marker to catch a regression (see #3277) where that bind mount is dropped
+# and native-mode logs silently stop reaching Loki.
+PROMTAIL_NATIVE_LOG_MOUNT_MARKER = "/var/log/nyxgpt-native/logs"
 
 
 @dataclass(frozen=True)
@@ -1100,13 +1107,67 @@ def status(_args) -> int:
     return 0
 
 
+def _log_aggregation_wiring_issue(cfg_path: Path | None = None) -> str | None:
+    """Detect the #3277 failure mode: native-mode logs never reaching Loki.
+
+    promtail always runs as a Compose container regardless of whether the
+    core app is deployed native or Compose (see `OBSERVABILITY_PROFILES`).
+    In native mode, api/self-heal/ops write logs to the host `~/.nyxGPT/logs`
+    directly -- a plain directory, not the `nyxgpt_data` Docker-managed
+    volume promtail otherwise mounts for Compose-mode logs. If
+    docker-compose.yml's promtail service ever loses its host bind mount for
+    that directory, native logs silently stop reaching Loki -- Grafana just
+    shows nothing rather than erroring, so this needs an explicit check
+    rather than relying on someone noticing an empty dashboard.
+
+    Only reports an issue when there's something to actually verify: log
+    aggregation is enabled, promtail is confirmed running, and native-mode
+    log files actually exist to be missed. Returns None otherwise (nothing
+    to check yet, or the wiring is intact).
+    """
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return None
+
+    parser = ConfigParser()
+    try:
+        parser.read(cfg_path)
+    except Exception:
+        return None
+    if not get_log_aggregation_enabled(parser):
+        return None
+
+    if _compose_stack_snapshot().get("promtail") != "running":
+        return None
+
+    native_log_dir = Path.home() / ".nyxGPT" / "logs"
+    if not native_log_dir.exists() or not any(native_log_dir.glob("*.log*")):
+        return None
+
+    compose_file = REPO_ROOT / "docker-compose.yml"
+    try:
+        compose_text = compose_file.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if PROMTAIL_NATIVE_LOG_MOUNT_MARKER in compose_text:
+        return None
+
+    return (
+        f"Log aggregation is enabled and native-mode logs exist under {native_log_dir}, "
+        "but promtail's docker-compose.yml service has no host bind mount for them -- "
+        "native logs are not reaching Loki. See docs/docker-compose.md#log-aggregation."
+    )
+
+
 def doctor(_args) -> int:
     """CLI entrypoint for `nyxgpt ops doctor`.
 
     Checks for common misconfigurations: missing ~/.nyxGPT/config.ini,
     non-executable helper scripts, missing brew/docker/node/npm tools on
-    PATH, and missing/incomplete web dependencies (node_modules, undici).
-    Prints each issue found.
+    PATH, missing/incomplete web dependencies (node_modules, undici), and
+    (when log aggregation is enabled and native logs exist) whether
+    promtail is actually wired to see native-mode host logs. Prints each
+    issue found.
 
     Returns 0 if no issues were found, else 2.
     """
@@ -1158,6 +1219,10 @@ def doctor(_args) -> int:
             issues.append(f"Missing web deps: {web_dir / 'node_modules'} (run: nyxgpt ops install)")
         elif not _can_resolve("undici"):
             issues.append("Missing web dependency: undici (run: nyxgpt ops install)")
+
+    log_issue = _log_aggregation_wiring_issue()
+    if log_issue:
+        issues.append(log_issue)
 
     if issues:
         print("nyxGPT ops doctor: FAIL")
