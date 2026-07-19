@@ -155,7 +155,7 @@ jobs:
           (cd web && npx tsc --noEmit) || echo "tsc_failed=true" >> "$GITHUB_OUTPUT"
 
           echo "Running vitest..."
-          (cd web && npx vitest run) || echo "vitest_failed=true" >> "$GITHUB_OUTPUT"
+          (cd web && npx vitest run --coverage) || echo "vitest_failed=true" >> "$GITHUB_OUTPUT"
 
       - name: Check test coverage
         id: test_coverage
