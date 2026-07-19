@@ -169,15 +169,20 @@ function Home() {
 
   // Initialize session cache on mount
   useEffect(() => {
-    void getSessions().then((sessionList) => {
-      // Keep selection stable; if current selection disappears, fall back.
-      const names = new Set(sessionList.map((s) => s.name));
-      if (!names.has(selectedSession)) {
-        // selectedSession starts as 'default', so reaching here means the
-        // list has no 'default' — fall back to the first session.
-        setSelectedSession(sessionList[0]?.name ?? 'default');
-      }
-    });
+    getSessions()
+      .then((sessionList) => {
+        // Keep selection stable; if current selection disappears, fall back.
+        const names = new Set(sessionList.map((s) => s.name));
+        if (!names.has(selectedSession)) {
+          // selectedSession starts as 'default', so reaching here means the
+          // list has no 'default' — fall back to the first session.
+          setSelectedSession(sessionList[0]?.name ?? 'default');
+        }
+      })
+      .catch(() => {
+        // Load failures are surfaced via the cache hook's sessionsError state;
+        // swallowing here prevents an unhandled rejection.
+      });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
