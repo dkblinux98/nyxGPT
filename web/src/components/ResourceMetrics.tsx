@@ -37,6 +37,7 @@ export default function ResourceMetrics() {
   const [timeRange, setTimeRange] = useState<TimeRange>('1h');
 
   async function loadMetrics() {
+    setLoading(true);
     try {
       const res = await fetch('/api/v1/metrics', { cache: 'no-store' });
       if (!res.ok) throw new Error(`Failed to fetch metrics: HTTP ${res.status}`);
@@ -65,9 +66,7 @@ export default function ResourceMetrics() {
     return () => clearInterval(interval);
   }, [autoRefresh]);
 
-  function exportMetrics(format: 'json' | 'csv') {
-    if (!metrics) return;
-
+  function exportMetrics(metrics: MetricsData, format: 'json' | 'csv') {
     let content: string;
     let filename: string;
     let mimeType: string;
@@ -216,7 +215,7 @@ export default function ResourceMetrics() {
           </label>
 
           <button
-            onClick={() => exportMetrics('json')}
+            onClick={() => exportMetrics(metrics, 'json')}
             style={{
               padding: '6px 12px',
               fontSize: 14,
@@ -231,7 +230,7 @@ export default function ResourceMetrics() {
           </button>
 
           <button
-            onClick={() => exportMetrics('csv')}
+            onClick={() => exportMetrics(metrics, 'csv')}
             style={{
               padding: '6px 12px',
               fontSize: 14,
