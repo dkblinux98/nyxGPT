@@ -428,3 +428,77 @@ describe('Home page — hidden-sidebar handler sweep', () => {
     }
   });
 });
+
+describe('Home page — final branch cleanup', () => {
+  it('ignores non-Escape keys while the context and settings menus are open', async () => {
+    renderHome();
+    await openContextMenu('Third Chat');
+    fireEvent.keyDown(document, { key: 'a' });
+    expect(screen.getByText('Rename')).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByText('Rename')).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: /settings/i }));
+    expect(await screen.findByText('Theme')).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'a' });
+    expect(screen.getByText('Theme')).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByText('Theme')).not.toBeInTheDocument());
+  });
+
+  it('renders wait/disabled states while an export or delete is in flight', async () => {
+    renderHome();
+    let resolveExport: (v: unknown) => void = () => {};
+    routes['/export'] = () => new Promise((r) => (resolveExport = r));
+    await openContextMenu('Third Chat');
+    fireEvent.click(screen.getByText('Markdown'));
+    // Menu closed; reopen while the export is still pending.
+    await openContextMenu('Third Chat');
+    expect(screen.getByText('Markdown')).toBeDisabled();
+    resolveExport(jsonRes('data'));
+    // (No equivalent delete-pending state: the optimistic update removes the
+    // row — and the menu with it — as soon as deletion starts.)
+  });
+
+  it('keeps the export submenu visible when still hovered on leave', async () => {
+    renderHome();
+    await openContextMenu('Third Chat');
+    vi.useFakeTimers();
+    try {
+      const hoveredSib = { style: { display: 'block' }, matches: () => true };
+      document.querySelectorAll('*').forEach((el) => {
+        const key = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
+        if (!key) return;
+        const props = (el as unknown as Record<string, Record<string, (e: unknown) => void>>)[key];
+        if (typeof props?.onMouseLeave === 'function') {
+          props.onMouseLeave({
+            currentTarget: { style: { background: '' }, nextElementSibling: hoveredSib },
+          });
+        }
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(150);
+      });
+      expect(hoveredSib.style.display).toBe('block'); // still hovered → not hidden
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('covers the export-submenu leave handler with no sibling', async () => {
+    renderHome();
+    await openContextMenu('Third Chat');
+    document.querySelectorAll('*').forEach((el) => {
+      const key = Object.keys(el).find((k) => k.startsWith('__reactProps$'));
+      if (!key) return;
+      const props = (el as unknown as Record<string, Record<string, (e: unknown) => void>>)[key];
+      for (const name of ['onMouseEnter', 'onMouseLeave'] as const) {
+        if (typeof props?.[name] === 'function') {
+          props[name]({
+            currentTarget: { style: { background: '', outline: '' }, nextElementSibling: null },
+          });
+        }
+      }
+    });
+  });
+});

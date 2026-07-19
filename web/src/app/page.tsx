@@ -124,7 +124,6 @@ function Home() {
     y: number;
     sessionName: string;
   } | null>(null);
-  const [deletingSession, setDeletingSession] = useState<string | null>(null);
   const [exportingSession, setExportingSession] = useState<string | null>(null);
 
   // Pending operations state for visual feedback
@@ -291,8 +290,6 @@ function Home() {
         return;
       }
 
-      setDeletingSession(sessionName);
-
       const previousSelection = selectedSession;
 
       // Optimistic update: remove session from cache immediately
@@ -330,8 +327,6 @@ function Home() {
         setSelectedSession(previousSelection);
         const errorMsg = `Failed to delete session: ${e instanceof Error ? e.message : String(e)}`;
         toast.error(errorMsg);
-      } finally {
-        setDeletingSession(null);
       }
     } catch (error) {
       // Catch any unexpected errors in state updates or operations
@@ -1168,14 +1163,16 @@ function Home() {
                 void deleteSession(contextMenu.sessionName);
                 setContextMenu(null);
               }}
-              disabled={deletingSession === contextMenu.sessionName}
               style={{
                 width: '100%',
                 padding: '8px 16px',
                 border: 'none',
                 background: 'transparent',
                 textAlign: 'left',
-                cursor: deletingSession === contextMenu.sessionName ? 'wait' : 'pointer',
+                // No pending-state guard needed: the optimistic update removes
+                // the session row (and with it this menu) as soon as deletion
+                // starts, so the menu can never render mid-delete.
+                cursor: 'pointer',
                 fontSize: 14,
                 display: 'flex',
                 alignItems: 'center',
