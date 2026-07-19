@@ -1629,6 +1629,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       );
     },
     [
+      messages,
       highlightedMessageIndex,
       sessionName,
       ragChunksCache,
