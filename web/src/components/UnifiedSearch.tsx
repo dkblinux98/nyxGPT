@@ -196,6 +196,8 @@ export const UnifiedSearch = forwardRef<UnifiedSearchRef, UnifiedSearchProps>(
     setIsOpen(false);
   };
 
+  // Show the dropdown for any non-empty query, even with zero results, so the
+  // "No results found" state below is reachable instead of silently unmounting.
   const showDropdown = isOpen && Boolean(query.trim());
 
   return (
@@ -289,8 +291,8 @@ export const UnifiedSearch = forwardRef<UnifiedSearchRef, UnifiedSearchProps>(
                     borderBottom: '1px solid var(--border-light)',
                     transition: 'background 0.15s ease',
                   }}
-                  onMouseOver={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
-                  onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                 >
                   <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 2 }}>
                     {session.pinned && <span style={{ marginRight: 4 }}>📌</span>}
@@ -337,8 +339,8 @@ export const UnifiedSearch = forwardRef<UnifiedSearchRef, UnifiedSearchProps>(
                     borderBottom: '1px solid var(--border-light)',
                     transition: 'background 0.15s ease',
                   }}
-                  onMouseOver={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
-                  onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
                     <span style={{ fontSize: 14 }}>

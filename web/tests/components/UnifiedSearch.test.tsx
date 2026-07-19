@@ -280,7 +280,7 @@ describe('UnifiedSearch', () => {
     const { input } = renderSearch();
     await typeAndOpen(input, 'delta');
 
-    // happy-dom neither propagates mouseover/mouseout through React's
+    // happy-dom neither propagates mouseenter/mouseleave through React's
     // delegated listeners nor accepts `background = 'transparent'` in its
     // style parser, so run the rows' real handlers via their React props and
     // assert the out-handler's effect on a stub target.
@@ -292,16 +292,16 @@ describe('UnifiedSearch', () => {
     };
     const rowOf = (el: HTMLElement): HTMLElement => {
       let n: HTMLElement | null = el;
-      while (n && typeof propsOf(n)?.onMouseOver !== 'function') n = n.parentElement;
+      while (n && typeof propsOf(n)?.onMouseEnter !== 'function') n = n.parentElement;
       if (!n) throw new Error('no ancestor with hover handlers');
       return n;
     };
     const checkHover = (start: HTMLElement) => {
       const el = rowOf(start);
-      propsOf(el)!.onMouseOver({ currentTarget: el });
+      propsOf(el)!.onMouseEnter({ currentTarget: el });
       expect(el.style.background).toContain('button-hover');
       const stub = { style: { background: '' } };
-      propsOf(el)!.onMouseOut({ currentTarget: stub });
+      propsOf(el)!.onMouseLeave({ currentTarget: stub });
       expect(stub.style.background).toBe('transparent');
     };
 
