@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -116,5 +116,38 @@ describe('DashboardCatalog rendering', () => {
 
     const link = screen.getByRole('link', { name: /System Overview/i });
     expect(link).toHaveAttribute('href', 'http://localhost:3001/d/nyxgpt-system-overview');
+  });
+
+  it('does not update state after unmounting before the monitoring status request resolves', async () => {
+    let resolveRequest: (() => void) | undefined;
+    server.use(
+      http.get(
+        '/api/v1/monitoring',
+        () =>
+          new Promise((resolve) => {
+            resolveRequest = () =>
+              resolve(
+                HttpResponse.json({
+                  enabled: true,
+                  active: true,
+                  grafana_ui_url: 'http://localhost:3001',
+                  prometheus_ui_url: 'http://localhost:9090',
+                })
+              );
+          })
+      )
+    );
+
+    const { unmount } = render(<DashboardCatalog />);
+
+    await vi.waitFor(() => {
+      expect(resolveRequest).toBeDefined();
+    });
+
+    unmount();
+
+    expect(() => {
+      resolveRequest?.();
+    }).not.toThrow();
   });
 });
