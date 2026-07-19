@@ -96,8 +96,7 @@ export default function SelfHealPage() {
     };
   }, []);
 
-  async function handleToggle() {
-    if (!status) return;
+  async function handleToggle(current: SelfHealStatus) {
     setToggling(true);
     setActionError(null);
     setActionMessage(null);
@@ -105,7 +104,7 @@ export default function SelfHealPage() {
       const res = await fetch('/api/v1/self-heal/toggle', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: !status.enabled }),
+        body: JSON.stringify({ enabled: !current.enabled }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -308,7 +307,7 @@ export default function SelfHealPage() {
               </span>
             )}
             <button
-              onClick={handleToggle}
+              onClick={() => handleToggle(status)}
               disabled={toggling}
               style={{
                 padding: '0.5rem 1rem',
