@@ -62,6 +62,22 @@ type SessionsResponse = {
   }>;
 };
 
+// Highlight search matches in text (module-scope: pure, and exported so it
+// is directly testable; passed to VirtualizedSessionList as its highlighter).
+export function highlightText(text: string, search: string) {
+  if (!search) return text;
+  const parts = text.split(new RegExp(`(${search})`, 'gi'));
+  return parts.map((part, i) =>
+    part.toLowerCase() === search.toLowerCase() ? (
+      <mark key={i} style={{ background: 'var(--highlight)', padding: '0 2px' }}>
+        {part}
+      </mark>
+    ) : (
+      part
+    )
+  );
+}
+
 function Home() {
   const toast = useToast();
   const { theme, setTheme } = useTheme();
@@ -158,7 +174,9 @@ function Home() {
       // Keep selection stable; if current selection disappears, fall back.
       const names = new Set(sessionList.map((s) => s.name));
       if (!names.has(selectedSession)) {
-        setSelectedSession(names.has('default') ? 'default' : (sessionList[0]?.name ?? 'default'));
+        // selectedSession starts as 'default', so reaching here means the
+        // list has no 'default' — fall back to the first session.
+        setSelectedSession(sessionList[0]?.name ?? 'default');
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -647,21 +665,6 @@ function Home() {
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [contextMenu, createNewChat, announce, setSidebarVisible]);
-
-  // Highlight search matches in text
-  const highlightText = useCallback((text: string, search: string) => {
-    if (!search) return text;
-    const parts = text.split(new RegExp(`(${search})`, 'gi'));
-    return parts.map((part, i) =>
-      part.toLowerCase() === search.toLowerCase() ? (
-        <mark key={i} style={{ background: 'var(--highlight)', padding: '0 2px' }}>
-          {part}
-        </mark>
-      ) : (
-        part
-      )
-    );
-  }, []);
 
   // Handle context menu for virtualized list
   const handleContextMenu = useCallback((e: React.MouseEvent, sessionName: string) => {

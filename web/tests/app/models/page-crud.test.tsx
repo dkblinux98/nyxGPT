@@ -203,6 +203,27 @@ describe('ModelsPage CRUD flows', () => {
     expect(screen.getByText('stuck:1b')).toBeInTheDocument();
   });
 
+  it('reports non-Error rejections via String(e) for pull and delete', async () => {
+    fetchMock.mockResolvedValueOnce(okJson({ models: ['m:1b'] }));
+    render(<ModelsPage />);
+    await screen.findByText('m:1b');
+
+    fireEvent.change(screen.getByPlaceholderText(/Model name/i), {
+      target: { value: 'x:2b' },
+    });
+    fetchMock.mockRejectedValueOnce('raw pull failure');
+    fireEvent.click(screen.getByRole('button', { name: 'Pull' }));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith('Failed to pull model: raw pull failure')
+    );
+
+    fetchMock.mockRejectedValueOnce('raw delete failure');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith('Failed to delete model: raw delete failure')
+    );
+  });
+
   it('falls back to HTTP status for a delete failure without detail', async () => {
     fetchMock.mockResolvedValueOnce(okJson({ models: ['m:1b'] }));
     render(<ModelsPage />);
