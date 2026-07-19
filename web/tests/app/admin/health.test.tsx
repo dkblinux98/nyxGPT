@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
@@ -79,5 +79,90 @@ describe('AdminHealthPage', () => {
     await waitFor(() => {
       expect(screen.getAllByText(/Failed to load system health/).length).toBeGreaterThan(0);
     });
+  });
+
+  it('shows a string error message when a non-Error value is thrown', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch').mockRejectedValueOnce('boom');
+    render(<AdminHealthPage />);
+    await waitFor(() => {
+      expect(screen.getAllByText(/boom/).length).toBeGreaterThan(0);
+    });
+    fetchSpy.mockRestore();
+  });
+
+  it('formats uptime including days for long-running services', async () => {
+    server.use(
+      http.get('/api/v1/admin/health', () => {
+        return HttpResponse.json({
+          service: { status: 'ok', uptime_s: 100000 },
+          dependencies: [],
+          resource_metrics: null,
+          alerts: [],
+        });
+      })
+    );
+
+    render(<AdminHealthPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/1d 3h 46m 40s/)).toBeInTheDocument();
+    });
+  });
+
+  it('formats uptime under a minute with only seconds', async () => {
+    server.use(
+      http.get('/api/v1/admin/health', () => {
+        return HttpResponse.json({
+          service: { status: 'ok', uptime_s: 5 },
+          dependencies: [],
+          resource_metrics: null,
+          alerts: [],
+        });
+      })
+    );
+
+    render(<AdminHealthPage />);
+    await waitFor(() => {
+      expect(screen.getByText('5s')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/0m/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/0h/)).not.toBeInTheDocument();
+  });
+
+  it('shows resource metrics unavailable when metrics are null', async () => {
+    server.use(
+      http.get('/api/v1/admin/health', () => {
+        return HttpResponse.json({
+          service: { status: 'ok', uptime_s: 60 },
+          dependencies: [],
+          resource_metrics: null,
+          alerts: [],
+        });
+      })
+    );
+
+    render(<AdminHealthPage />);
+    await waitFor(() => {
+      expect(screen.getByText('Resource metrics unavailable.')).toBeInTheDocument();
+    });
+  });
+
+  it('renders a warning-severity alert distinctly from critical', async () => {
+    server.use(
+      http.get('/api/v1/admin/health', () => {
+        return HttpResponse.json({
+          service: { status: 'ok', uptime_s: 60 },
+          dependencies: [],
+          resource_metrics: null,
+          alerts: [{ severity: 'warning', message: 'Queue depth elevated' }],
+        });
+      })
+    );
+
+    render(<AdminHealthPage />);
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Queue depth elevated/)).toBeInTheDocument();
+    expect(screen.getByText('warning')).toBeInTheDocument();
   });
 });
