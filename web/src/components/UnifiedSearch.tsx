@@ -34,7 +34,7 @@ export interface UnifiedSearchRef {
   focus: () => void;
 }
 
-function highlightMatches(text: string, query: string): ReactNode {
+export function highlightMatches(text: string, query: string): ReactNode {
   if (!query) return text;
 
   const searchText = text.toLowerCase();
@@ -114,12 +114,9 @@ export const UnifiedSearch = forwardRef<UnifiedSearchRef, UnifiedSearchProps>(
     : [];
 
   // Search messages via API
+  // Only ever invoked with a non-blank query (the debounce effect clears
+  // results for blank input instead of calling this).
   const searchMessages = useCallback(async (searchQuery: string) => {
-    if (!searchQuery.trim()) {
-      setMessageResults([]);
-      return;
-    }
-
     setIsSearchingMessages(true);
     try {
       const params = new URLSearchParams({
@@ -199,8 +196,9 @@ export const UnifiedSearch = forwardRef<UnifiedSearchRef, UnifiedSearchProps>(
     setIsOpen(false);
   };
 
-  const hasResults = filteredSessions.length > 0 || messageResults.length > 0 || isSearchingMessages;
-  const showDropdown = isOpen && query.trim() && hasResults;
+  // Show the dropdown for any non-empty query, even with zero results, so the
+  // "No results found" state below is reachable instead of silently unmounting.
+  const showDropdown = isOpen && Boolean(query.trim());
 
   return (
     <div ref={containerRef} style={{ position: 'relative', marginBottom: 12 }}>

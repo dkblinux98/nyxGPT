@@ -62,6 +62,22 @@ type SessionsResponse = {
   }>;
 };
 
+// Highlight search matches in text (module-scope: pure, and exported so it
+// is directly testable; passed to VirtualizedSessionList as its highlighter).
+export function highlightText(text: string, search: string) {
+  if (!search) return text;
+  const parts = text.split(new RegExp(`(${search})`, 'gi'));
+  return parts.map((part, i) =>
+    part.toLowerCase() === search.toLowerCase() ? (
+      <mark key={i} style={{ background: 'var(--highlight)', padding: '0 2px' }}>
+        {part}
+      </mark>
+    ) : (
+      part
+    )
+  );
+}
+
 function Home() {
   const toast = useToast();
   const { theme, setTheme } = useTheme();
@@ -70,7 +86,6 @@ function Home() {
   const [showAdminSubmenu, setShowAdminSubmenu] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [loadingInfo, setLoadingInfo] = useState<boolean>(true);
-  const [retryingInfo, setRetryingInfo] = useState<boolean>(false);
 
   // Use session cache hook with stale-while-revalidate
   const {
@@ -109,7 +124,6 @@ function Home() {
     y: number;
     sessionName: string;
   } | null>(null);
-  const [deletingSession, setDeletingSession] = useState<string | null>(null);
   const [exportingSession, setExportingSession] = useState<string | null>(null);
 
   // Pending operations state for visual feedback
@@ -132,12 +146,8 @@ function Home() {
   const modKey = isMac ? '⌘' : 'Ctrl';
 
   // Fetch API info with retry support
-  const fetchInfo = useCallback(async (isRetry = false) => {
-    if (isRetry) {
-      setRetryingInfo(true);
-    } else {
-      setLoadingInfo(true);
-    }
+  const fetchInfo = useCallback(async () => {
+    setLoadingInfo(true);
     setError(null);
 
     try {
@@ -150,7 +160,6 @@ function Home() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoadingInfo(false);
-      setRetryingInfo(false);
     }
   }, []);
 
@@ -160,13 +169,20 @@ function Home() {
 
   // Initialize session cache on mount
   useEffect(() => {
-    void getSessions().then((sessionList) => {
-      // Keep selection stable; if current selection disappears, fall back.
-      const names = new Set(sessionList.map((s) => s.name));
-      if (!names.has(selectedSession)) {
-        setSelectedSession(names.has('default') ? 'default' : (sessionList[0]?.name ?? 'default'));
-      }
-    });
+    getSessions()
+      .then((sessionList) => {
+        // Keep selection stable; if current selection disappears, fall back.
+        const names = new Set(sessionList.map((s) => s.name));
+        if (!names.has(selectedSession)) {
+          // selectedSession starts as 'default', so reaching here means the
+          // list has no 'default' — fall back to the first session.
+          setSelectedSession(sessionList[0]?.name ?? 'default');
+        }
+      })
+      .catch(() => {
+        // Load failures are surfaced via the cache hook's sessionsError state;
+        // swallowing here prevents an unhandled rejection.
+      });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -279,8 +295,6 @@ function Home() {
         return;
       }
 
-      setDeletingSession(sessionName);
-
       const previousSelection = selectedSession;
 
       // Optimistic update: remove session from cache immediately
@@ -318,8 +332,6 @@ function Home() {
         setSelectedSession(previousSelection);
         const errorMsg = `Failed to delete session: ${e instanceof Error ? e.message : String(e)}`;
         toast.error(errorMsg);
-      } finally {
-        setDeletingSession(null);
       }
     } catch (error) {
       // Catch any unexpected errors in state updates or operations
@@ -653,21 +665,6 @@ function Home() {
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [contextMenu, createNewChat, announce, setSidebarVisible]);
-
-  // Highlight search matches in text
-  const highlightText = useCallback((text: string, search: string) => {
-    if (!search) return text;
-    const parts = text.split(new RegExp(`(${search})`, 'gi'));
-    return parts.map((part, i) =>
-      part.toLowerCase() === search.toLowerCase() ? (
-        <mark key={i} style={{ background: 'var(--highlight)', padding: '0 2px' }}>
-          {part}
-        </mark>
-      ) : (
-        part
-      )
-    );
-  }, []);
 
   // Handle context menu for virtualized list
   const handleContextMenu = useCallback((e: React.MouseEvent, sessionName: string) => {
@@ -1171,14 +1168,16 @@ function Home() {
                 void deleteSession(contextMenu.sessionName);
                 setContextMenu(null);
               }}
-              disabled={deletingSession === contextMenu.sessionName}
               style={{
                 width: '100%',
                 padding: '8px 16px',
                 border: 'none',
                 background: 'transparent',
                 textAlign: 'left',
-                cursor: deletingSession === contextMenu.sessionName ? 'wait' : 'pointer',
+                // No pending-state guard needed: the optimistic update removes
+                // the session row (and with it this menu) as soon as deletion
+                // starts, so the menu can never render mid-delete.
+                cursor: 'pointer',
                 fontSize: 14,
                 display: 'flex',
                 alignItems: 'center',
