@@ -135,15 +135,12 @@ export default function LogsPage() {
     loadLogContent(filename);
   }
 
-  function handleDownload() {
-    if (!selectedFile) return;
-    window.open(`/api/v1/logs/stream/${selectedFile}`, '_blank');
+  function handleDownload(filename: string) {
+    window.open(`/api/v1/logs/stream/${filename}`, '_blank');
   }
 
-  function handleRefresh() {
-    if (selectedFile) {
-      loadLogContent(selectedFile);
-    }
+  function handleRefresh(filename: string) {
+    loadLogContent(filename);
   }
 
   function formatBytes(bytes: number): string {
@@ -293,7 +290,7 @@ export default function LogsPage() {
                       value={logLevel}
                       onChange={(e) => {
                         setLogLevel(e.target.value as LogLevel);
-                        if (selectedFile) loadLogContent(selectedFile);
+                        loadLogContent(selectedFile);
                       }}
                       style={{
                         width: '100%',
@@ -324,7 +321,7 @@ export default function LogsPage() {
                       value={searchText}
                       onChange={(e) => setSearchText(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter' && selectedFile) {
+                        if (e.key === 'Enter') {
                           loadLogContent(selectedFile);
                         }
                       }}
@@ -369,7 +366,7 @@ export default function LogsPage() {
                 {/* Action buttons */}
                 <div style={{ marginTop: '1rem', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button
-                    onClick={handleRefresh}
+                    onClick={() => handleRefresh(selectedFile)}
                     disabled={loadingContent}
                     style={{
                       padding: '8px 16px',
@@ -385,7 +382,7 @@ export default function LogsPage() {
                     {loadingContent ? 'Loading...' : '🔄 Refresh'}
                   </button>
                   <button
-                    onClick={handleDownload}
+                    onClick={() => handleDownload(selectedFile)}
                     style={{
                       padding: '8px 16px',
                       background: 'var(--muted)',
@@ -481,7 +478,7 @@ export default function LogsPage() {
                     <ErrorMessage
                       title="Failed to load log content"
                       message={contentError}
-                      onRetry={handleRefresh}
+                      onRetry={() => handleRefresh(selectedFile)}
                       retrying={loadingContent}
                     />
                   </div>
