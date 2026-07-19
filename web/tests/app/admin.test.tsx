@@ -1,6 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
+import { server } from '../mocks/server';
 import AdminPage from '../../src/app/admin/page';
+
+/** Selects a model and clicks through to the given wizard step via button clicks. */
+async function selectModelAndClickNext(times: number) {
+  await waitFor(() => {
+    const selects = screen.getAllByRole('combobox');
+    fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+  });
+  for (let i = 0; i < times; i++) {
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /next/i }));
+    });
+  }
+}
 
 /**
  * Configuration Wizard Tests
@@ -528,6 +543,435 @@ describe('AdminPage Component', () => {
     await waitFor(() => {
       expect(screen.getByText('Failed to load configuration')).toBeInTheDocument();
     });
+  });
+
+  it('shows an error message when models fail to load', async () => {
+    server.use(
+      http.get('/api/models', () => new HttpResponse(null, { status: 500 }))
+    );
+
+    render(<AdminPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load models: HTTP 500/)).toBeInTheDocument();
+    });
+    // The rest of the wizard should still be usable even though models failed.
+    expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+  });
+
+  it('shows string error messages when config and models both throw non-Error values', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch').mockRejectedValue('boom');
+    render(<AdminPage />);
+    await waitFor(() => {
+      expect(screen.getAllByText(/boom/).length).toBeGreaterThan(0);
+    });
+    fetchSpy.mockRestore();
+  });
+
+  it('applies fallback defaults for the opposite side of each configuration field', async () => {
+    server.use(
+      http.get('/api/config', () =>
+        HttpResponse.json({
+          ollama_base_url: '',
+          default_model: 'llama3.1:8b',
+          rag_enabled: true,
+          log_level: '',
+        })
+      )
+    );
+
+    render(<AdminPage />);
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: 'llama3.1:8b', selected: true })).toBeInTheDocument();
+    });
+
+    await selectModelAndClickNext(0);
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /next/i }));
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('checkbox')).toBeChecked();
+    });
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /next/i }));
+    });
+
+    await waitFor(() => {
+      const ollamaInput = screen.getByLabelText('Ollama Base URL') as HTMLInputElement;
+      expect(ollamaInput.value).toBe('');
+      const logLevelSelect = screen.getByLabelText('Log level selection') as HTMLSelectElement;
+      expect(logLevelSelect.value).toBe('INFO');
+    });
+  });
+
+  it('updates the log level when the select value changes', async () => {
+    render(<AdminPage />);
+    await selectModelAndClickNext(2);
+
+    await waitFor(() => {
+      expect(screen.getByText('Log Level')).toBeInTheDocument();
+    });
+
+    const logLevelSelect = screen.getByLabelText('Log level selection') as HTMLSelectElement;
+    fireEvent.change(logLevelSelect, { target: { value: 'DEBUG' } });
+    expect(logLevelSelect.value).toBe('DEBUG');
+  });
+
+  it('shows a failure message when the connection test fails', async () => {
+    server.use(
+      http.get('/api/info', () => new HttpResponse(null, { status: 500 }))
+    );
+
+    render(<AdminPage />);
+    await selectModelAndClickNext(2);
+
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /test connection/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Connection failed: HTTP 500/)).toBeInTheDocument();
+    });
+  });
+
+  it('shows a string connection failure message when a non-Error value is thrown', async () => {
+    render(<AdminPage />);
+    await selectModelAndClickNext(2);
+
+    const realFetch = global.fetch;
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation((input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/api/info')) {
+        return Promise.reject('nope');
+      }
+      return realFetch(input, init);
+    });
+
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /test connection/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Connection failed: nope/)).toBeInTheDocument();
+    });
+    fetchSpy.mockRestore();
+  });
+
+  it('shows an error message with the server detail when saving configuration fails', async () => {
+    server.use(
+      http.post('/api/config', () =>
+        HttpResponse.json({ detail: 'Invalid model name' }, { status: 400 })
+      )
+    );
+
+    render(<AdminPage />);
+    await selectModelAndClickNext(4);
+
+    await waitFor(() => {
+      expect(screen.getByText('Summary')).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Invalid model name/)).toBeInTheDocument();
+    });
+  });
+
+  it('falls back to an HTTP status message when the save error has no detail', async () => {
+    server.use(
+      http.post('/api/config', () => HttpResponse.json({}, { status: 500 }))
+    );
+
+    render(<AdminPage />);
+    await selectModelAndClickNext(4);
+
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/HTTP 500/)).toBeInTheDocument();
+    });
+  });
+
+  it('shows a string error message when saving throws a non-Error value', async () => {
+    render(<AdminPage />);
+    await selectModelAndClickNext(4);
+
+    const realFetch = global.fetch;
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation((input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/api/config') && init?.method === 'POST') {
+        return Promise.reject('save-boom');
+      }
+      return realFetch(input, init);
+    });
+
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('save-boom')).toBeInTheDocument();
+    });
+    fetchSpy.mockRestore();
+  });
+
+  it('resets to the model step 3 seconds after a successful save', async () => {
+    render(<AdminPage />);
+    await selectModelAndClickNext(4);
+
+    await waitFor(() => {
+      expect(screen.getByText('Summary')).toBeInTheDocument();
+    });
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/configuration saved successfully/i)).toBeInTheDocument();
+      });
+
+      await act(async () => {
+        vi.advanceTimersByTime(3000);
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('Model Selection')).toBeInTheDocument();
+        expect(screen.queryByText(/configuration saved successfully/i)).not.toBeInTheDocument();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('advances to the next step on a real ArrowRight keydown', async () => {
+    render(<AdminPage />);
+    await selectModelAndClickNext(0);
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'RAG Configuration' })).toBeInTheDocument();
+    });
+  });
+
+  it('does not advance on a real ArrowRight keydown when no model is selected', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      expect(screen.getByText('Model Selection')).toBeInTheDocument();
+    });
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+
+    expect(screen.getByText('Model Selection')).toBeInTheDocument();
+  });
+
+  it('goes back a step on a real ArrowLeft keydown', async () => {
+    render(<AdminPage />);
+    await selectModelAndClickNext(0);
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'RAG Configuration' })).toBeInTheDocument();
+    });
+
+    fireEvent.keyDown(window, { key: 'ArrowLeft' });
+    await waitFor(() => {
+      expect(screen.getByText('Model Selection')).toBeInTheDocument();
+    });
+  });
+
+  it('advances to the next step on a real Enter keydown', async () => {
+    render(<AdminPage />);
+    await selectModelAndClickNext(0);
+
+    fireEvent.keyDown(window, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'RAG Configuration' })).toBeInTheDocument();
+    });
+  });
+
+  it('triggers save on a real Enter keydown while on the summary step', async () => {
+    render(<AdminPage />);
+    await selectModelAndClickNext(4);
+
+    await waitFor(() => {
+      expect(screen.getByText('Summary')).toBeInTheDocument();
+    });
+
+    fireEvent.keyDown(window, { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(screen.getByText(/configuration saved successfully/i)).toBeInTheDocument();
+    });
+  });
+
+  it('ignores a real keydown event when the target is a select element', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      const selects = screen.getAllByRole('combobox');
+      fireEvent.change(selects[0], { target: { value: 'llama3.1:8b' } });
+    });
+
+    const modelSelect = screen.getAllByRole('combobox')[0];
+    fireEvent.keyDown(modelSelect, { key: 'ArrowRight' });
+
+    // Even though a model is selected (which would normally allow ArrowRight
+    // to advance), the keydown handler ignores events whose target is a
+    // form control, so the wizard should remain on the model step.
+    expect(screen.getByText('Model Selection')).toBeInTheDocument();
+  });
+
+  it('does not navigate or re-trigger save via keyboard shortcuts while a save is in progress', async () => {
+    server.use(
+      http.post('/api/config', async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return HttpResponse.json({
+          ollama_base_url: 'http://127.0.0.1:11434',
+          default_model: 'llama3.1:8b',
+          rag_enabled: false,
+          log_level: 'INFO',
+        });
+      })
+    );
+
+    render(<AdminPage />);
+    await selectModelAndClickNext(4);
+
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /saving/i })).toBeInTheDocument();
+    });
+
+    fireEvent.keyDown(window, { key: 'ArrowLeft' });
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    fireEvent.keyDown(window, { key: 'Enter' });
+    expect(screen.getByText('Summary')).toBeInTheDocument();
+
+    await waitFor(
+      () => {
+        expect(screen.getByText(/configuration saved successfully/i)).toBeInTheDocument();
+      },
+      { timeout: 3000 }
+    );
+  });
+
+  it('does not go before the first step on a real ArrowLeft keydown', async () => {
+    render(<AdminPage />);
+    await waitFor(() => {
+      expect(screen.getByText('Model Selection')).toBeInTheDocument();
+    });
+
+    fireEvent.keyDown(window, { key: 'ArrowLeft' });
+
+    expect(screen.getByText('Model Selection')).toBeInTheDocument();
+  });
+
+  it('defaults to an empty models list when the models response has no models field', async () => {
+    server.use(
+      http.get('/api/models', () => HttpResponse.json({}))
+    );
+
+    render(<AdminPage />);
+    await waitFor(() => {
+      expect(screen.getByText('Configuration Wizard')).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('option', { name: 'llama3.1:8b' })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Select a model...' })).toBeInTheDocument();
+  });
+
+  it('does not re-fetch models when the tab visibility changes to something other than visible', async () => {
+    let modelsResponse = ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b'];
+    server.use(
+      http.get('/api/models', () => HttpResponse.json({ models: modelsResponse }))
+    );
+
+    render(<AdminPage />);
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: 'llama3.1:8b' })).toBeInTheDocument();
+    });
+
+    modelsResponse = ['llama3.1:8b', 'llama3.1:70b', 'mistral:7b', 'phi3:mini'];
+    const visibilityStateSpy = vi
+      .spyOn(document, 'visibilityState', 'get')
+      .mockReturnValue('hidden');
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    // Give any (unwanted) re-fetch a chance to complete, then assert the
+    // newly available model still hasn't appeared, since the tab is hidden.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByRole('option', { name: 'phi3:mini' })).not.toBeInTheDocument();
+
+    visibilityStateSpy.mockRestore();
+  });
+
+  it('sanitizes an invalid log level to INFO when saving', async () => {
+    server.use(
+      http.get('/api/config', () =>
+        HttpResponse.json({
+          ollama_base_url: 'http://127.0.0.1:11434',
+          default_model: 'llama3.1:8b',
+          rag_enabled: false,
+          log_level: 'weird-value',
+        })
+      )
+    );
+    let capturedBody: Record<string, unknown> | undefined;
+    server.use(
+      http.post('/api/config', async ({ request }) => {
+        capturedBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json(capturedBody);
+      })
+    );
+
+    render(<AdminPage />);
+    await selectModelAndClickNext(4);
+
+    await waitFor(() => {
+      expect(screen.getByText('Summary')).toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+    });
+
+    await waitFor(() => {
+      expect(capturedBody?.log_level).toBe('INFO');
+    });
+  });
+
+  it('shows "Enabled" in the summary review when RAG has been turned on', async () => {
+    render(<AdminPage />);
+    await selectModelAndClickNext(1);
+
+    await waitFor(() => {
+      const checkbox = screen.getByRole('checkbox');
+      fireEvent.click(checkbox);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('checkbox')).toBeChecked();
+    });
+
+    for (let i = 0; i < 3; i++) {
+      await waitFor(() => {
+        fireEvent.click(screen.getByRole('button', { name: /next/i }));
+      });
+    }
+
+    await waitFor(() => {
+      expect(screen.getByText('Summary')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Enabled')).toBeInTheDocument();
   });
 });
 

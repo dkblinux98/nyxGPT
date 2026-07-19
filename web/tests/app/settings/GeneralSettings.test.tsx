@@ -97,6 +97,90 @@ describe('GeneralSettings', () => {
     });
   });
 
+  it('reports a non-Error app info failure with a stringified reason', async () => {
+    (global.fetch as any).mockRejectedValueOnce('plain string failure');
+
+    renderWithTheme();
+
+    await waitFor(() => {
+      expect(screen.getByText('plain string failure')).toBeInTheDocument();
+    });
+  });
+
+  it('displays an error message when the app info response is not ok', async () => {
+    (global.fetch as any).mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+    });
+
+    renderWithTheme();
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to fetch app info: HTTP 500/)).toBeInTheDocument();
+    });
+  });
+
+  it('shows a fallback version label when release_version is not set', async () => {
+    (global.fetch as any).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ...mockInfo, release_version: null }),
+    });
+
+    renderWithTheme();
+
+    await waitFor(() => {
+      expect(screen.getByText('unknown')).toBeInTheDocument();
+    });
+  });
+
+  it('does not update state after unmounting before the app info request resolves', async () => {
+    let resolveRequest: (() => void) | undefined;
+    (global.fetch as any).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRequest = () =>
+            resolve({
+              ok: true,
+              json: async () => mockInfo,
+            });
+        })
+    );
+
+    const { unmount } = renderWithTheme();
+
+    await waitFor(() => {
+      expect(resolveRequest).toBeDefined();
+    });
+
+    unmount();
+
+    expect(() => {
+      resolveRequest?.();
+    }).not.toThrow();
+  });
+
+  it('does not update state after unmounting before the app info request rejects', async () => {
+    let rejectRequest: ((reason: unknown) => void) | undefined;
+    (global.fetch as any).mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectRequest = reject;
+        })
+    );
+
+    const { unmount } = renderWithTheme();
+
+    await waitFor(() => {
+      expect(rejectRequest).toBeDefined();
+    });
+
+    unmount();
+
+    expect(() => {
+      rejectRequest?.(new Error('network error'));
+    }).not.toThrow();
+  });
+
   it('links to the Configuration Wizard for advanced settings', async () => {
     (global.fetch as any).mockResolvedValueOnce({
       ok: true,

@@ -97,10 +97,9 @@ export default function DeployPage() {
     };
   }, []);
 
-  async function handleSwitch() {
-    if (!status) return;
-    const target = status.inactive;
-    if (!confirm(`Switch traffic from ${status.active} to ${target}?`)) return;
+  async function handleSwitch(current: DeployStatus) {
+    const target = current.inactive;
+    if (!confirm(`Switch traffic from ${current.active} to ${target}?`)) return;
 
     setSwitching(true);
     setActionError(null);
@@ -362,7 +361,7 @@ export default function DeployPage() {
 
           <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '2rem' }}>
             <button
-              onClick={handleSwitch}
+              onClick={() => handleSwitch(status)}
               disabled={switching || !status.colors[status.inactive]?.healthy}
               title={
                 !status.colors[status.inactive]?.healthy

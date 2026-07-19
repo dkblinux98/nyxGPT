@@ -85,6 +85,42 @@ describe('ResourceMetrics', () => {
     });
   });
 
+  it('displays an error message when the metrics response is not ok', async () => {
+    (global.fetch as any).mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+    });
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to fetch metrics: HTTP 500/)).toBeInTheDocument();
+    });
+  });
+
+  it('reports a non-Error metrics failure with a stringified reason', async () => {
+    (global.fetch as any).mockRejectedValueOnce('plain string failure');
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('plain string failure')).toBeInTheDocument();
+    });
+  });
+
+  it('shows a fallback message when no metrics data is available', async () => {
+    (global.fetch as any).mockResolvedValueOnce({
+      ok: true,
+      json: async () => null,
+    });
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('No metrics data available')).toBeInTheDocument();
+    });
+  });
+
   it('allows switching time ranges', async () => {
     (global.fetch as any).mockResolvedValue({
       ok: true,
@@ -97,12 +133,38 @@ describe('ResourceMetrics', () => {
       expect(screen.getByText('Memory Usage')).toBeInTheDocument();
     });
 
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+
     const dayButton = screen.getByRole('button', { name: /Last 24 Hours/i });
     fireEvent.click(dayButton);
 
     // toHaveStyle can't resolve CSS custom properties in happy-dom, so
     // compare the inline style value directly.
     expect(dayButton.style.background).toBe('var(--button)');
+
+    // Switching ranges re-runs the fetch effect, which recomputes the
+    // historical-data retention window for the new range.
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    const weekButton = screen.getByRole('button', { name: /Last 7 Days/i });
+    fireEvent.click(weekButton);
+
+    expect(weekButton.style.background).toBe('var(--button)');
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+    });
+
+    const hourButton = screen.getByRole('button', { name: /Last Hour/i });
+    fireEvent.click(hourButton);
+
+    expect(hourButton.style.background).toBe('var(--button)');
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledTimes(4);
+    });
   });
 
   it('auto-refreshes when enabled', async () => {
@@ -124,6 +186,38 @@ describe('ResourceMetrics', () => {
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it('keeps the historical trend display bounded after many auto-refreshes', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => mockMetricsData,
+    });
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Memory Usage')).toBeInTheDocument();
+    });
+
+    // Accumulate well past the 100-point retention cap (1 initial fetch +
+    // 105 auto-refresh ticks), while staying inside the "1h" retention
+    // window so entries aren't dropped by the time-based cutoff instead.
+    await vi.advanceTimersByTimeAsync(5000 * 105);
+
+    await waitFor(() => {
+      expect((global.fetch as any).mock.calls.length).toBeGreaterThan(100);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Historical Trends')).toBeInTheDocument();
+    });
+
+    // The trend view only ever shows the most recent 10 points, regardless
+    // of how many samples have been collected in total.
+    const memoryTrendHeading = screen.getByText('Memory Trend');
+    const memoryTrendLines = memoryTrendHeading.nextElementSibling;
+    expect(memoryTrendLines?.children.length).toBe(10);
   });
 
   it('stops auto-refresh when disabled', async () => {
@@ -192,6 +286,31 @@ describe('ResourceMetrics', () => {
     expect(mockCreateObjectURL).toHaveBeenCalled();
   });
 
+  it('changes export button backgrounds on hover', async () => {
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => mockMetricsData,
+    });
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Memory Usage')).toBeInTheDocument();
+    });
+
+    const csvButton = screen.getByRole('button', { name: /Export CSV/i });
+    fireEvent.mouseEnter(csvButton);
+    expect(csvButton.style.background).toBe('var(--button-hover)');
+    fireEvent.mouseLeave(csvButton);
+    expect(csvButton.style.background).toBe('var(--button)');
+
+    const jsonButton = screen.getByRole('button', { name: /Export JSON/i });
+    fireEvent.mouseEnter(jsonButton);
+    expect(jsonButton.style.background).toBe('var(--button-hover)');
+    fireEvent.mouseLeave(jsonButton);
+    expect(jsonButton.style.background).toBe('var(--button)');
+  });
+
   it('displays warning colors for high memory usage', async () => {
     const highMemoryData = {
       ...mockMetricsData,
@@ -242,5 +361,131 @@ describe('ResourceMetrics', () => {
     // "Historical Trends" summary line, which embeds the same percentage.
     const cpuPercent = screen.getByText('85.0%');
     expect(cpuPercent).toHaveStyle({ color: '#ef4444' });
+  });
+
+  it('displays critical colors for very high memory usage', async () => {
+    const criticalMemoryData = {
+      ...mockMetricsData,
+      memory: { ...mockMetricsData.memory, percent: 95.0 },
+    };
+
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => criticalMemoryData,
+    });
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Memory Usage')).toBeInTheDocument();
+    });
+
+    const memoryPercent = screen.getByText('95.0%');
+    expect(memoryPercent).toHaveStyle({ color: '#ef4444' });
+  });
+
+  it('displays warning colors for elevated CPU process usage', async () => {
+    const warningCpuData = {
+      ...mockMetricsData,
+      cpu: { process_percent: 70.0, system_percent: 25.8 },
+    };
+
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => warningCpuData,
+    });
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('CPU Utilization')).toBeInTheDocument();
+    });
+
+    const cpuPercent = screen.getByText('70.0%');
+    expect(cpuPercent).toHaveStyle({ color: '#f59e0b' });
+  });
+
+  it('displays warning colors for elevated system CPU usage', async () => {
+    const warningSystemCpuData = {
+      ...mockMetricsData,
+      cpu: { process_percent: 5.3, system_percent: 80.0 },
+    };
+
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => warningSystemCpuData,
+    });
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('CPU Utilization')).toBeInTheDocument();
+    });
+
+    const systemPercent = screen.getByText('80.0%');
+    expect(systemPercent).toHaveStyle({ color: '#f59e0b' });
+  });
+
+  it('displays critical colors for very high system CPU usage', async () => {
+    const criticalSystemCpuData = {
+      ...mockMetricsData,
+      cpu: { process_percent: 5.3, system_percent: 95.0 },
+    };
+
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => criticalSystemCpuData,
+    });
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('CPU Utilization')).toBeInTheDocument();
+    });
+
+    const systemPercent = screen.getByText('95.0%');
+    expect(systemPercent).toHaveStyle({ color: '#ef4444' });
+  });
+
+  it('displays warning colors for elevated P99 latency', async () => {
+    const warningLatencyData = {
+      ...mockMetricsData,
+      latency: { ...mockMetricsData.latency, p99_ms: 700.0 },
+    };
+
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => warningLatencyData,
+    });
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Request Latency')).toBeInTheDocument();
+    });
+
+    const p99 = screen.getByText(/700\.0 ms/);
+    expect(p99).toHaveStyle({ color: '#f59e0b' });
+  });
+
+  it('displays critical colors for very high P99 latency', async () => {
+    const criticalLatencyData = {
+      ...mockMetricsData,
+      latency: { ...mockMetricsData.latency, p99_ms: 1500.0 },
+    };
+
+    (global.fetch as any).mockResolvedValue({
+      ok: true,
+      json: async () => criticalLatencyData,
+    });
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Request Latency')).toBeInTheDocument();
+    });
+
+    const p99 = screen.getByText(/1500\.0 ms/);
+    expect(p99).toHaveStyle({ color: '#ef4444' });
   });
 });

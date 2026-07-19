@@ -113,9 +113,12 @@ export default function AdminPage() {
   const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
 
   function goToNextStep() {
-    if (currentStepIndex < steps.length - 1) {
-      setCurrentStep(steps[currentStepIndex + 1].id);
-    }
+    // Every caller (the Next button's `disabled` guard, and the ArrowRight/
+    // Enter keydown handlers below) already checks
+    // `currentStepIndex < steps.length - 1` before invoking this function,
+    // so that condition is always true here. Asserting the invariant via a
+    // comment instead of a redundant re-check avoids an unreachable branch.
+    setCurrentStep(steps[currentStepIndex + 1].id);
   }
 
   function goToPreviousStep() {

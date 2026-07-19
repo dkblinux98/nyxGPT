@@ -4,9 +4,10 @@ import '@testing-library/jest-dom';
 import SettingsPage from '../../../src/app/settings/page';
 
 // Mock useRouter
+const mockPush = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
-    push: vi.fn(),
+    push: mockPush,
   }),
 }));
 
@@ -64,5 +65,26 @@ describe('SettingsPage', () => {
     render(<SettingsPage />);
 
     expect(screen.getByRole('button', { name: /Back/i })).toBeInTheDocument();
+  });
+
+  it('navigates home when the back button is clicked', () => {
+    mockPush.mockClear();
+    render(<SettingsPage />);
+
+    const backButton = screen.getByRole('button', { name: /Back/i });
+    fireEvent.click(backButton);
+
+    expect(mockPush).toHaveBeenCalledWith('/');
+  });
+
+  it('changes the back button background on hover', () => {
+    render(<SettingsPage />);
+
+    const backButton = screen.getByRole('button', { name: /Back/i });
+    fireEvent.mouseEnter(backButton);
+    expect(backButton.style.background).toBe('var(--button-hover)');
+
+    fireEvent.mouseLeave(backButton);
+    expect(backButton.style.background).toBe('var(--button)');
   });
 });
