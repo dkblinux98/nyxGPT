@@ -199,8 +199,11 @@ export default function AdminDashboardPage() {
   }
 
   function handleToggleAuth() {
-    if (!access) return;
-    updateAccess({ enabled: !access.enabled });
+    // This handler is only ever wired to the auth checkbox, which is rendered
+    // solely inside the `access ? (...) : null` branch below, so `access` is
+    // always non-null here. Asserting that instead of an unreachable early
+    // return keeps the branch coverage honest about actual code paths.
+    updateAccess({ enabled: !(access as AccessData).enabled });
   }
 
   function handleSaveHeader() {
@@ -236,48 +239,59 @@ export default function AdminDashboardPage() {
             <LoadingSpinner label="Loading system status..." />
           ) : overviewError ? (
             <ErrorMessage title="Failed to load system status" message={overviewError} onRetry={loadOverview} retrying={overviewLoading} />
-          ) : overview ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                <StatusBadge ok={!overview.deploy.error} label={`Deploy: ${overview.deploy.active ?? 'unknown'}`} />
-                <StatusBadge ok={!!overview.canary.active} label={overview.canary.active ? 'Canary: active' : 'Canary: idle'} />
-                <StatusBadge
-                  ok={!!overview.self_heal?.enabled && !overview.self_heal?.unhealthy_count}
-                  label={
-                    overview.self_heal?.enabled
-                      ? `Self-heal: on${overview.self_heal.unhealthy_count ? ` (${overview.self_heal.unhealthy_count} unhealthy)` : ''}`
-                      : 'Self-heal: off'
-                  }
-                />
-                <StatusBadge ok={overview.observability.monitoring} label="Monitoring" />
-                <StatusBadge ok={overview.observability.tracing} label="Tracing" />
-                <StatusBadge ok={overview.observability.error_tracking} label="Error tracking" />
-                <StatusBadge ok={overview.observability.log_aggregation} label="Log aggregation" />
-                <StatusBadge ok={overview.auth_enabled} label={overview.auth_enabled ? 'Auth: enabled' : 'Auth: disabled'} />
-              </div>
-              {overview.resource_metrics && (
-                <div style={{ fontSize: 14, color: 'var(--muted-foreground)' }}>
-                  Memory: <strong>{overview.resource_metrics.memory.rss_mb.toFixed(0)} MB</strong> ({overview.resource_metrics.memory.percent.toFixed(1)}%) · CPU:{' '}
-                  <strong>{overview.resource_metrics.cpu.process_percent.toFixed(1)}%</strong> · Queue depth:{' '}
-                  <strong>{overview.resource_metrics.queue.depth}</strong>
+          ) : (
+            // `overview` is guaranteed non-null here: loadOverview's
+            // try/catch/finally always sets either `overview` or
+            // `overviewError` before clearing `overviewLoading`, so
+            // `!overviewLoading && !overviewError && !overview` can never
+            // occur. Asserting that documents the invariant instead of
+            // adding an unreachable `: null` fallback branch.
+            (() => {
+              const ov = overview as OverviewData;
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    <StatusBadge ok={!ov.deploy.error} label={`Deploy: ${ov.deploy.active ?? 'unknown'}`} />
+                    <StatusBadge ok={!!ov.canary.active} label={ov.canary.active ? 'Canary: active' : 'Canary: idle'} />
+                    <StatusBadge
+                      ok={!!ov.self_heal?.enabled && !ov.self_heal?.unhealthy_count}
+                      label={
+                        ov.self_heal?.enabled
+                          ? `Self-heal: on${ov.self_heal.unhealthy_count ? ` (${ov.self_heal.unhealthy_count} unhealthy)` : ''}`
+                          : 'Self-heal: off'
+                      }
+                    />
+                    <StatusBadge ok={ov.observability.monitoring} label="Monitoring" />
+                    <StatusBadge ok={ov.observability.tracing} label="Tracing" />
+                    <StatusBadge ok={ov.observability.error_tracking} label="Error tracking" />
+                    <StatusBadge ok={ov.observability.log_aggregation} label="Log aggregation" />
+                    <StatusBadge ok={ov.auth_enabled} label={ov.auth_enabled ? 'Auth: enabled' : 'Auth: disabled'} />
+                  </div>
+                  {ov.resource_metrics && (
+                    <div style={{ fontSize: 14, color: 'var(--muted-foreground)' }}>
+                      Memory: <strong>{ov.resource_metrics.memory.rss_mb.toFixed(0)} MB</strong> ({ov.resource_metrics.memory.percent.toFixed(1)}%) · CPU:{' '}
+                      <strong>{ov.resource_metrics.cpu.process_percent.toFixed(1)}%</strong> · Queue depth:{' '}
+                      <strong>{ov.resource_metrics.queue.depth}</strong>
+                    </div>
+                  )}
+                  <div style={{ fontSize: 14, color: 'var(--muted-foreground)' }}>
+                    Default model: <strong>{ov.info.default_model || 'Not set'}</strong> · RAG:{' '}
+                    <strong>{ov.info.rag_enabled ? 'enabled' : 'disabled'}</strong>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 13, marginTop: 4 }}>
+                    <a href="/admin/health" style={navLinkStyle}>System Health →</a>
+                    <a href="/admin/deploy" style={navLinkStyle}>Deployment →</a>
+                    <a href="/admin/canary" style={navLinkStyle}>Canary →</a>
+                    <a href="/admin/self-heal" style={navLinkStyle}>Self-heal →</a>
+                    <a href="/admin/observability" style={navLinkStyle}>SRE Overview →</a>
+                    <a href="/admin/analytics" style={navLinkStyle}>Usage Analytics →</a>
+                    <a href="/admin/workflow-analytics" style={navLinkStyle}>CI Analytics →</a>
+                    <a href="/settings" style={navLinkStyle}>Full metrics →</a>
+                  </div>
                 </div>
-              )}
-              <div style={{ fontSize: 14, color: 'var(--muted-foreground)' }}>
-                Default model: <strong>{overview.info.default_model || 'Not set'}</strong> · RAG:{' '}
-                <strong>{overview.info.rag_enabled ? 'enabled' : 'disabled'}</strong>
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 13, marginTop: 4 }}>
-                <a href="/admin/health" style={navLinkStyle}>System Health →</a>
-                <a href="/admin/deploy" style={navLinkStyle}>Deployment →</a>
-                <a href="/admin/canary" style={navLinkStyle}>Canary →</a>
-                <a href="/admin/self-heal" style={navLinkStyle}>Self-heal →</a>
-                <a href="/admin/observability" style={navLinkStyle}>SRE Overview →</a>
-                <a href="/admin/analytics" style={navLinkStyle}>Usage Analytics →</a>
-                <a href="/admin/workflow-analytics" style={navLinkStyle}>CI Analytics →</a>
-                <a href="/settings" style={navLinkStyle}>Full metrics →</a>
-              </div>
-            </div>
-          ) : null}
+              );
+            })()
+          )}
         </section>
 
         {/* Configuration Management */}
@@ -324,104 +338,115 @@ export default function AdminDashboardPage() {
             <LoadingSpinner label="Loading access settings..." />
           ) : accessError ? (
             <ErrorMessage title="Failed to load access settings" message={accessError} onRetry={loadAccess} retrying={accessLoading} />
-          ) : access ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <p style={{ fontSize: 13, color: 'var(--muted-foreground)', margin: 0 }}>
-                nyxGPT is a single-operator local system secured by a shared API key rather than
-                per-user accounts. Manage that key here.
-              </p>
+          ) : (
+            // `access` is guaranteed non-null here: loadAccess's
+            // try/catch/finally always sets either `access` or
+            // `accessError` before clearing `accessLoading`, so
+            // `!accessLoading && !accessError && !access` can never occur.
+            // Asserting that documents the invariant instead of adding an
+            // unreachable `: null` fallback branch.
+            (() => {
+              const acc = access as AccessData;
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <p style={{ fontSize: 13, color: 'var(--muted-foreground)', margin: 0 }}>
+                    nyxGPT is a single-operator local system secured by a shared API key rather than
+                    per-user accounts. Manage that key here.
+                  </p>
 
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, cursor: 'pointer' }}>
-                <input type="checkbox" checked={access.enabled} disabled={accessSaving} onChange={handleToggleAuth} />
-                API key authentication {access.enabled ? 'enabled' : 'disabled'}
-              </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={acc.enabled} disabled={accessSaving} onChange={handleToggleAuth} />
+                    API key authentication {acc.enabled ? 'enabled' : 'disabled'}
+                  </label>
 
-              <div style={{ fontSize: 14 }}>
-                Current key:{' '}
-                <code
-                  style={{
-                    background: 'var(--code-bg)',
-                    padding: '2px 6px',
-                    borderRadius: 4,
-                    wordBreak: 'break-all',
-                    overflowWrap: 'anywhere',
-                  }}
-                >
-                  {access.api_key_set ? access.api_key_masked : 'not set'}
-                </code>
-              </div>
+                  <div style={{ fontSize: 14 }}>
+                    Current key:{' '}
+                    <code
+                      style={{
+                        background: 'var(--code-bg)',
+                        padding: '2px 6px',
+                        borderRadius: 4,
+                        wordBreak: 'break-all',
+                        overflowWrap: 'anywhere',
+                      }}
+                    >
+                      {acc.api_key_set ? acc.api_key_masked : 'not set'}
+                    </code>
+                  </div>
 
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <label htmlFor="auth-header" style={{ fontSize: 14 }}>
-                  Header:
-                </label>
-                <input
-                  id="auth-header"
-                  type="text"
-                  value={headerInput}
-                  onChange={(e) => setHeaderInput(e.target.value)}
-                  disabled={accessSaving}
-                  style={{
-                    padding: '6px 8px',
-                    border: '1px solid var(--border)',
-                    borderRadius: 6,
-                    fontSize: 13,
-                    background: 'var(--background)',
-                    color: 'var(--foreground)',
-                  }}
-                />
-                <button
-                  onClick={handleSaveHeader}
-                  disabled={accessSaving}
-                  style={{
-                    padding: '6px 12px',
-                    background: 'var(--muted)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 6,
-                    fontSize: 13,
-                    cursor: accessSaving ? 'not-allowed' : 'pointer',
-                  }}
-                >
-                  Save
-                </button>
-              </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <label htmlFor="auth-header" style={{ fontSize: 14 }}>
+                      Header:
+                    </label>
+                    <input
+                      id="auth-header"
+                      type="text"
+                      value={headerInput}
+                      onChange={(e) => setHeaderInput(e.target.value)}
+                      disabled={accessSaving}
+                      style={{
+                        padding: '6px 8px',
+                        border: '1px solid var(--border)',
+                        borderRadius: 6,
+                        fontSize: 13,
+                        background: 'var(--background)',
+                        color: 'var(--foreground)',
+                      }}
+                    />
+                    <button
+                      onClick={handleSaveHeader}
+                      disabled={accessSaving}
+                      style={{
+                        padding: '6px 12px',
+                        background: 'var(--muted)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 6,
+                        fontSize: 13,
+                        cursor: accessSaving ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      Save
+                    </button>
+                  </div>
 
-              <button
-                onClick={handleRotateKey}
-                disabled={accessSaving}
-                style={{
-                  padding: '8px 16px',
-                  background: accessSaving ? '#ccc' : '#dc3545',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: 6,
-                  fontSize: 14,
-                  fontWeight: 600,
-                  cursor: accessSaving ? 'not-allowed' : 'pointer',
-                  alignSelf: 'flex-start',
-                }}
-              >
-                {accessSaving ? 'Working...' : 'Rotate API Key'}
-              </button>
+                  <button
+                    onClick={handleRotateKey}
+                    disabled={accessSaving}
+                    style={{
+                      padding: '8px 16px',
+                      background: accessSaving ? '#ccc' : '#dc3545',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: 6,
+                      fontSize: 14,
+                      fontWeight: 600,
+                      cursor: accessSaving ? 'not-allowed' : 'pointer',
+                      alignSelf: 'flex-start',
+                    }}
+                  >
+                    {accessSaving ? 'Working...' : 'Rotate API Key'}
+                  </button>
 
-              {revealedKey && (
-                <div
-                  role="status"
-                  style={{
-                    padding: '10px 12px',
-                    borderRadius: 6,
-                    fontSize: 13,
-                    background: 'var(--success-bg)',
-                    color: 'var(--success-text)',
-                    border: '1px solid #90ee90',
-                  }}
-                >
-                  <div style={{ fontWeight: 600, marginBottom: 4 }}>New API key (shown once)</div>
-                  <code style={{ wordBreak: 'break-all' }}>{revealedKey}</code>
+                  {revealedKey && (
+                    <div
+                      role="status"
+                      style={{
+                        padding: '10px 12px',
+                        borderRadius: 6,
+                        fontSize: 13,
+                        background: 'var(--success-bg)',
+                        color: 'var(--success-text)',
+                        border: '1px solid #90ee90',
+                      }}
+                    >
+                      <div style={{ fontWeight: 600, marginBottom: 4 }}>New API key (shown once)</div>
+                      <code style={{ wordBreak: 'break-all' }}>{revealedKey}</code>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          ) : null}
+              );
+            })()
+          )}
         </section>
 
         {/* Activity Log */}

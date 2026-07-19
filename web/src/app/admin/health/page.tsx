@@ -129,95 +129,105 @@ export default function AdminHealthPage() {
         <LoadingSpinner label="Loading system health..." />
       ) : error ? (
         <ErrorMessage title="Failed to load system health" message={error} onRetry={loadHealth} retrying={loading} />
-      ) : health ? (
-        <div style={{ display: 'grid', gap: '1.5rem', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))' }}>
-          {/* Service Health Status */}
-          <section style={cardStyle} aria-label="Service health status">
-            <h2 style={sectionTitleStyle}>Service Status</h2>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <StatusBadge
-                ok={health.service.status === 'ok'}
-                label={`Service: ${health.service.status}`}
-              />
-              <div style={{ fontSize: 14, color: 'var(--muted-foreground)' }}>
-                Uptime: <strong>{formatUptime(health.service.uptime_s)}</strong>
-              </div>
-            </div>
-          </section>
-
-          {/* Dependency Checks */}
-          <section style={cardStyle} aria-label="Dependency checks">
-            <h2 style={sectionTitleStyle}>Dependency Checks</h2>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {health.dependencies.map((dep) => (
-                <div key={dep.name} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      ) : (
+        // `health` is guaranteed non-null here: loadHealth's try/catch always
+        // sets either `health` or `error` before `finally` clears `loading`,
+        // so `!loading && !error && !health` can never occur. The assertion
+        // below documents that invariant instead of adding an unreachable
+        // `: null` fallback branch.
+        (() => {
+          const h = health as HealthData;
+          return (
+            <div style={{ display: 'grid', gap: '1.5rem', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))' }}>
+              {/* Service Health Status */}
+              <section style={cardStyle} aria-label="Service health status">
+                <h2 style={sectionTitleStyle}>Service Status</h2>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <StatusBadge
-                    ok={dep.ok}
-                    label={`${dep.name}: ${dep.applicable ? (dep.ok ? 'healthy' : 'unreachable') : 'not applicable'}`}
+                    ok={h.service.status === 'ok'}
+                    label={`Service: ${h.service.status}`}
                   />
-                  <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>{dep.detail}</span>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          {/* Resource Utilization */}
-          <section style={cardStyle} aria-label="Resource utilization">
-            <h2 style={sectionTitleStyle}>Resource Utilization</h2>
-            {health.resource_metrics ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14 }}>
-                <div>
-                  Memory: <strong>{health.resource_metrics.memory.rss_mb.toFixed(0)} MB</strong> (
-                  {health.resource_metrics.memory.percent.toFixed(1)}%)
-                </div>
-                <div>
-                  CPU: <strong>{health.resource_metrics.cpu.process_percent.toFixed(1)}%</strong>
-                </div>
-                <div>
-                  Queue depth: <strong>{health.resource_metrics.queue.depth}</strong>
-                </div>
-                <div>
-                  Error rate: <strong>{health.resource_metrics.errors.rate_percent.toFixed(1)}%</strong>
-                </div>
-              </div>
-            ) : (
-              <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>Resource metrics unavailable.</p>
-            )}
-            <div style={{ marginTop: '1rem', fontSize: 13 }}>
-              <a href="/settings" style={{ color: '#0066cc' }}>Full metrics →</a>
-            </div>
-          </section>
-
-          {/* Alert Indicators */}
-          <section style={cardStyle} aria-label="Alert indicators">
-            <h2 style={sectionTitleStyle}>Alerts</h2>
-            {health.alerts.length === 0 ? (
-              <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>No active alerts.</p>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {health.alerts.map((alert, idx) => (
-                  <div
-                    key={idx}
-                    role="alert"
-                    style={{
-                      padding: '10px 12px',
-                      borderRadius: 6,
-                      fontSize: 13,
-                      background: alert.severity === 'critical' ? 'var(--error-bg)' : 'var(--info-bg)',
-                      color: alert.severity === 'critical' ? 'var(--error-text)' : 'inherit',
-                      border: `1px solid ${alert.severity === 'critical' ? '#ffcccc' : 'var(--border)'}`,
-                    }}
-                  >
-                    <strong style={{ textTransform: 'uppercase', fontSize: 11 }}>{alert.severity}</strong>
-                    {' — '}
-                    {alert.message}
+                  <div style={{ fontSize: 14, color: 'var(--muted-foreground)' }}>
+                    Uptime: <strong>{formatUptime(h.service.uptime_s)}</strong>
                   </div>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
-      ) : null}
+                </div>
+              </section>
+
+              {/* Dependency Checks */}
+              <section style={cardStyle} aria-label="Dependency checks">
+                <h2 style={sectionTitleStyle}>Dependency Checks</h2>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {h.dependencies.map((dep) => (
+                    <div key={dep.name} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <StatusBadge
+                        ok={dep.ok}
+                        label={`${dep.name}: ${dep.applicable ? (dep.ok ? 'healthy' : 'unreachable') : 'not applicable'}`}
+                      />
+                      <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>{dep.detail}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              {/* Resource Utilization */}
+              <section style={cardStyle} aria-label="Resource utilization">
+                <h2 style={sectionTitleStyle}>Resource Utilization</h2>
+                {h.resource_metrics ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 14 }}>
+                    <div>
+                      Memory: <strong>{h.resource_metrics.memory.rss_mb.toFixed(0)} MB</strong> (
+                      {h.resource_metrics.memory.percent.toFixed(1)}%)
+                    </div>
+                    <div>
+                      CPU: <strong>{h.resource_metrics.cpu.process_percent.toFixed(1)}%</strong>
+                    </div>
+                    <div>
+                      Queue depth: <strong>{h.resource_metrics.queue.depth}</strong>
+                    </div>
+                    <div>
+                      Error rate: <strong>{h.resource_metrics.errors.rate_percent.toFixed(1)}%</strong>
+                    </div>
+                  </div>
+                ) : (
+                  <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>Resource metrics unavailable.</p>
+                )}
+                <div style={{ marginTop: '1rem', fontSize: 13 }}>
+                  <a href="/settings" style={{ color: '#0066cc' }}>Full metrics →</a>
+                </div>
+              </section>
+
+              {/* Alert Indicators */}
+              <section style={cardStyle} aria-label="Alert indicators">
+                <h2 style={sectionTitleStyle}>Alerts</h2>
+                {h.alerts.length === 0 ? (
+                  <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>No active alerts.</p>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {h.alerts.map((alert, idx) => (
+                      <div
+                        key={idx}
+                        role="alert"
+                        style={{
+                          padding: '10px 12px',
+                          borderRadius: 6,
+                          fontSize: 13,
+                          background: alert.severity === 'critical' ? 'var(--error-bg)' : 'var(--info-bg)',
+                          color: alert.severity === 'critical' ? 'var(--error-text)' : 'inherit',
+                          border: `1px solid ${alert.severity === 'critical' ? '#ffcccc' : 'var(--border)'}`,
+                        }}
+                      >
+                        <strong style={{ textTransform: 'uppercase', fontSize: 11 }}>{alert.severity}</strong>
+                        {' — '}
+                        {alert.message}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+          );
+        })()
+      )}
     </main>
   );
 }
