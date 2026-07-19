@@ -1,0 +1,66 @@
+name: Bulk Set Issue Status
+
+# Owner acceptance tooling (manual): set the project Status field on a batch
+# of issues, e.g. moving accepted items from "In Review" to "For Release".
+# Dry-run by default.
+
+on:
+  workflow_dispatch:
+    inputs:
+      issues:
+        description: 'Issue numbers (comma/space separated)'
+        required: true
+      status:
+        description: 'Target Status option (e.g. For Release)'
+        required: true
+        default: 'For Release'
+      dry_run:
+        description: 'Preview only — change nothing'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: bulk-set-issue-status
+  cancel-in-progress: false
+
+jobs:
+  set-status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Set status on issues
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          ISSUES: ${{ github.event.inputs.issues }}
+          STATUS: ${{ github.event.inputs.status }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          cat > /tmp/nyxgpt-config.ini <<CFG
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          CFG
+          export NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini
+          bash scripts/agents/bulk_set_status.sh
