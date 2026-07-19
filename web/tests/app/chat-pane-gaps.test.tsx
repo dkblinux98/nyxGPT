@@ -202,8 +202,8 @@ describe('regenerate flows', () => {
     render(<ChatPane sessionName="regen-busy" />);
     await screen.findByText('answer one');
     const btn = screen.getByTitle('Regenerate response');
-    // Two synchronous clicks: the ref guard blocks the second before the
-    // isStreaming re-render removes the button.
+    // Two synchronous clicks: the Regenerate button is removed from the DOM
+    // once `isStreaming` flips true, so the second click has nothing to hit.
     fireEvent.click(btn);
     fireEvent.click(btn);
     await waitFor(() => expect(streamCalls.length).toBe(1));
