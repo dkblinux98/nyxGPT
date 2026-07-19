@@ -262,6 +262,9 @@ Search across all chat sessions with Ctrl+F (Cmd+F on Mac):
 - **Case-sensitive** — Toggle case-sensitive matching
 - **Jump to context** — Click results to navigate to exact message in session
 - **Match highlighting** — Visual highlighting of search terms in results
+- **No-results feedback** — When neither sessions nor messages match, the
+  dropdown stays open and shows "No results found" (rather than silently
+  disappearing), so it is always clear the search ran
 - **Historical messages** — Automatically loads and displays past conversations
 
 The search interface appears as a modal overlay. Press Escape to close. Selecting a result switches to that session and scrolls to the matching message with a temporary highlight.
