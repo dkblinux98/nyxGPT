@@ -52,6 +52,29 @@ describe('ClientErrorReporter', () => {
     expect(reportedBody).toMatchObject({ message: 'rejected' });
   });
 
+  it('reports non-Error unhandled rejections with a stringified reason', async () => {
+    let reportedBody: unknown = null;
+    server.use(
+      http.post('/api/v1/error-tracking/report', async ({ request }) => {
+        reportedBody = await request.json();
+        return HttpResponse.json({ status: 'accepted' }, { status: 202 });
+      })
+    );
+
+    render(<ClientErrorReporter />);
+
+    const event = new Event('unhandledrejection') as PromiseRejectionEvent & {
+      reason: unknown;
+    };
+    Object.defineProperty(event, 'reason', { value: 'plain string reason' });
+    window.dispatchEvent(event);
+
+    await vi.waitFor(() => {
+      expect(reportedBody).not.toBeNull();
+    });
+    expect(reportedBody).toMatchObject({ message: 'Unhandled rejection: plain string reason' });
+  });
+
   it('never throws when the report request fails', async () => {
     server.use(
       http.post('/api/v1/error-tracking/report', () => HttpResponse.error())
