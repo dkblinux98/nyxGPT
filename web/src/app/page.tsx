@@ -70,7 +70,6 @@ function Home() {
   const [showAdminSubmenu, setShowAdminSubmenu] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [loadingInfo, setLoadingInfo] = useState<boolean>(true);
-  const [retryingInfo, setRetryingInfo] = useState<boolean>(false);
 
   // Use session cache hook with stale-while-revalidate
   const {
@@ -132,12 +131,8 @@ function Home() {
   const modKey = isMac ? '⌘' : 'Ctrl';
 
   // Fetch API info with retry support
-  const fetchInfo = useCallback(async (isRetry = false) => {
-    if (isRetry) {
-      setRetryingInfo(true);
-    } else {
-      setLoadingInfo(true);
-    }
+  const fetchInfo = useCallback(async () => {
+    setLoadingInfo(true);
     setError(null);
 
     try {
@@ -150,7 +145,6 @@ function Home() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoadingInfo(false);
-      setRetryingInfo(false);
     }
   }, []);
 

@@ -199,8 +199,7 @@ export const UnifiedSearch = forwardRef<UnifiedSearchRef, UnifiedSearchProps>(
     setIsOpen(false);
   };
 
-  const hasResults = filteredSessions.length > 0 || messageResults.length > 0 || isSearchingMessages;
-  const showDropdown = isOpen && query.trim() && hasResults;
+  const showDropdown = isOpen && Boolean(query.trim());
 
   return (
     <div ref={containerRef} style={{ position: 'relative', marginBottom: 12 }}>
@@ -293,8 +292,8 @@ export const UnifiedSearch = forwardRef<UnifiedSearchRef, UnifiedSearchProps>(
                     borderBottom: '1px solid var(--border-light)',
                     transition: 'background 0.15s ease',
                   }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  onMouseOver={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                  onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
                 >
                   <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 2 }}>
                     {session.pinned && <span style={{ marginRight: 4 }}>📌</span>}
@@ -341,8 +340,8 @@ export const UnifiedSearch = forwardRef<UnifiedSearchRef, UnifiedSearchProps>(
                     borderBottom: '1px solid var(--border-light)',
                     transition: 'background 0.15s ease',
                   }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  onMouseOver={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
+                  onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
                     <span style={{ fontSize: 14 }}>
