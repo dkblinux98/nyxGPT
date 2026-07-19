@@ -12,6 +12,15 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
       include: ['src/**/*.{ts,tsx}'],
+      // 100% gate (#3266): regressions fail the build. Genuinely-untestable
+      // files must be added to `exclude` with a comment, never by lowering
+      // these thresholds.
+      thresholds: {
+        statements: 100,
+        branches: 100,
+        functions: 100,
+        lines: 100,
+      },
       exclude: [
         'node_modules/',
         'tests/',

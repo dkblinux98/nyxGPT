@@ -92,11 +92,11 @@ npm run test:coverage
 - `web/tests/mocks/handlers.ts` - MSW API mock handlers
 - `web/tests/README.md` - Detailed web UI testing documentation
 
-### Current Limitations
+### Coverage Gate
 
-- Full component testing for Next.js components requires additional runtime mocking (see issue #2776)
-- Current tests focus on infrastructure verification and utilities
-- Future improvements will add comprehensive component test coverage
+- `web/vitest.config.ts` enforces a 100% coverage gate (statements/branches/functions/lines) via `test.coverage.thresholds`; `npx vitest run --coverage` fails the build on any regression.
+- Both `.github/workflows/claude-code-review.yml` and `.github/workflows/validate-web-routes.yml` run tests with `--coverage` so the gate applies in CI.
+- Component tests (React Testing Library + Happy-DOM) are part of the standard suite alongside infrastructure/utility tests.
 
 See `web/tests/README.md` for detailed web UI testing documentation.
 

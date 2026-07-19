@@ -40,12 +40,12 @@ describe('Component Name', () => {
 });
 ```
 
-### Component Testing (Coming Soon)
+### Component Testing
 
-Component testing for React/Next.js components requires additional configuration and is planned for future iterations. The current infrastructure supports:
+Component tests for React/Next.js components run alongside the infrastructure and utility tests. The suite supports:
 - ✅ Unit tests for utilities and helpers
 - ✅ API mocking with MSW
-- ⚠️ Component tests (requires Next.js runtime mocking - see #2776)
+- ✅ Component tests (React Testing Library + Happy-DOM)
 
 ## Files
 
@@ -81,16 +81,17 @@ export const handlers = [
 
 ## Known Limitations
 
-1. **Next.js Component Testing** - Full component tests for Next.js components require additional runtime mocking (issue #2776)
-2. **Image Loading** - Next.js Image component may need special handling
-3. **Server Components** - React Server Components are not yet fully supported in test environment
+1. **Image Loading** - Next.js Image component may need special handling
+2. **Server Components** - React Server Components are not yet fully supported in test environment
+
+## Coverage Gate
+
+`web/vitest.config.ts` enforces a 100% coverage gate (statements/branches/functions/lines). Any regression fails `npx vitest run --coverage`, which both `claude-code-review.yml` and `validate-web-routes.yml` run in CI. Genuinely-untestable files (generated/config) are documented in `coverage.exclude` with a comment rather than lowering the threshold.
 
 ## Future Improvements
 
-- [ ] Add Next.js runtime mocking for full component tests (#2776)
 - [ ] Add visual regression testing
 - [ ] Add E2E testing with Playwright
-- [ ] Increase coverage to 80%+
 
 ## Related Documentation
 

@@ -9,7 +9,7 @@ import { useToast } from '../../contexts/ToastContext';
 import { useIsMobile } from '../../hooks/useIsMobile';
 
 // Error Boundary for Virtuoso rendering
-class VirtuosoErrorBoundary extends Component<
+export class VirtuosoErrorBoundary extends Component<
   {
     children: React.ReactNode;
     sessionName: string;
@@ -195,21 +195,12 @@ function getScoreQuality(score: number, config: RagConfig | null): { quality: st
   }
 }
 
-function RagCitationsCollapsible({
-  sessionName,
-  messageIndex,
-  initialChunks,
-  onChunksLoaded,
-}: {
-  sessionName: string;
-  messageIndex: number;
-  initialChunks?: RagChunk[];
-  onChunksLoaded?: (chunks: RagChunk[]) => void;
-}) {
+// The parent only mounts this component when the message already carries a
+// non-empty ragChunks/rag_chunks array (which seeds `chunks`), so no lazy
+// chunk fetching is needed here — only the display config is fetched.
+function RagCitationsCollapsible({ initialChunks }: { initialChunks: RagChunk[] }) {
   const [expanded, setExpanded] = useState(false);
-  const [chunks, setChunks] = useState<RagChunk[] | null>(initialChunks || null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [chunks] = useState<RagChunk[]>(initialChunks);
   const [ragConfig, setRagConfig] = useState<RagConfig | null>(null);
   const [expandedChunks, setExpandedChunks] = useState<Set<number>>(new Set());
 
@@ -217,36 +208,7 @@ function RagCitationsCollapsible({
     const newExpanded = !expanded;
     setExpanded(newExpanded);
 
-    // Lazy load chunks on first expand if not already loaded
-    if (newExpanded && !chunks && !loading) {
-      setLoading(true);
-      setError(null);
-
-      try {
-        const chunksRes = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/messages/${messageIndex}/rag`);
-
-        if (!chunksRes.ok) {
-          throw new Error(`Failed to load RAG chunks: ${chunksRes.status}`);
-        }
-
-        const data = await chunksRes.json();
-        const loadedChunks = data.chunks || [];
-        setChunks(loadedChunks);
-
-        // Notify parent to cache the loaded chunks
-        if (onChunksLoaded) {
-          onChunksLoaded(loadedChunks);
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setError(msg);
-        console.error('Failed to load RAG chunks:', err);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    // Fetch config separately if not yet loaded (retry on each expand if missing)
+    // Fetch config if not yet loaded (retry on each expand if missing)
     if (newExpanded && !ragConfig) {
       try {
         const configRes = await fetch('/api/v1/rag/config');
@@ -260,8 +222,7 @@ function RagCitationsCollapsible({
     }
   };
 
-  const chunkCount = chunks?.length || 0;
-  const hasChunks = chunkCount > 0 || initialChunks === undefined; // Show indicator if chunks unknown
+  const chunkCount = chunks.length;
 
   return (
     <div
@@ -290,15 +251,11 @@ function RagCitationsCollapsible({
       >
         <span>{expanded ? '▼' : '▶'}</span>
         <span>
-          {loading
-            ? 'Loading RAG sources...'
-            : chunks
-            ? `${chunkCount} RAG ${chunkCount === 1 ? 'source' : 'sources'} retrieved`
-            : 'RAG sources available'}
+          {`${chunkCount} RAG ${chunkCount === 1 ? 'source' : 'sources'} retrieved`}
         </span>
       </button>
 
-      {expanded && !loading && !error && chunks && (
+      {expanded && (
         <div style={{ marginTop: 8 }}>
           {/* Score explanation */}
           <div style={{
@@ -409,17 +366,6 @@ function RagCitationsCollapsible({
         </div>
       )}
 
-      {expanded && loading && (
-        <div style={{ marginTop: 8, opacity: 0.6, textAlign: 'center' }}>
-          Loading...
-        </div>
-      )}
-
-      {expanded && error && (
-        <div style={{ marginTop: 8, color: 'var(--error)', fontSize: 11 }}>
-          Error: {error}
-        </div>
-      )}
     </div>
   );
 }
@@ -448,7 +394,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   const [ragEnabled, setRagEnabled] = useState<boolean>(false);
   const [ragStatus, setRagStatus] = useState<'idle' | 'uploading' | 'error'>('idle');
   const [ragError, setRagError] = useState<string | null>(null);
-  const [ragChunksCache, setRagChunksCache] = useState<Map<number, RagChunk[]>>(new Map());
 
   // RAG filters state
   const [showRagFilters, setShowRagFilters] = useState<boolean>(false);
@@ -483,7 +428,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
 
   // Rename state
   const [sessionTitle, setSessionTitle] = useState<string>('');
-  const [renaming, setRenaming] = useState<boolean>(false);
 
   // Edit state
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -721,24 +665,14 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     }
   }, [showUploadMenu]);
 
-  // Load older messages function
-  // Helper to reset pagination state (Medium Issue 6: Called after message mutations)
-  const resetPaginationState = useCallback((newMessages: ChatMessage[]) => {
-    setTotalMessages(newMessages.length);
-    setLoadedOffset(0);
-    setHasMore(false);
-    setFirstItemIndex(0);
-  }, []);
-
   // Load older messages when scrolling to top (Critical Issue 2: Use Virtuoso's startReached)
   const loadOlderMessages = useCallback(async () => {
     if (isLoadingMore || !hasMore) return;
 
+    // hasMore is only true while loadedOffset > 0 (both the initial load and
+    // every older-page load set hasMore = offset > 0), so newOffset always
+    // differs from loadedOffset here.
     const newOffset = Math.max(0, loadedOffset - PAGE_SIZE);
-    if (newOffset === loadedOffset) {
-      setHasMore(false);
-      return;
-    }
 
     setIsLoadingMore(true);
 
@@ -871,43 +805,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       const msg = e instanceof Error ? e.message : String(e);
       setRagError(msg);
       setRagStatus('error');
-    }
-  }
-
-  async function renameSession() {
-    const newName = prompt('Enter new session name or title:', sessionTitle || sessionName);
-    if (!newName || newName.trim() === '') return;
-
-    setRenaming(true);
-    try {
-      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/rename`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          new_name: newName.trim(),
-          sync_filename: true,
-        }),
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.detail || 'Rename failed');
-      }
-
-      const data = await res.json();
-      setSessionTitle(newName.trim());
-
-      // If filename was synced, we might need to reload
-      // For now, just update the title display
-      if (data.new_name !== sessionName) {
-        // Filename changed - reload the page to update URL
-        window.location.href = `/?session=${encodeURIComponent(data.new_name)}`;
-      }
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      toast.error(`Failed to rename session: ${msg}`);
-    } finally {
-      setRenaming(false);
     }
   }
 
@@ -1087,12 +984,9 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 ragChunks = ragData.chunks;
                 // Update message with RAG chunks
                 setMessages((prev) => {
-                  if (prev.length === 0) return prev;
                   const next = [...prev];
-                  const last = next[next.length - 1];
-                  if (last?.role === 'assistant') {
-                    next[next.length - 1] = { ...last, ragChunks: ragChunks };
-                  }
+                  // The pre-appended assistant bubble is always last.
+                  next[next.length - 1] = { ...next[next.length - 1], ragChunks: ragChunks };
                   return next;
                 });
               }
@@ -1109,12 +1003,10 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
 
               // Append content to the last assistant message
               setMessages((prev) => {
-                if (prev.length === 0) return prev;
                 const next = [...prev];
                 const last = next[next.length - 1];
-                if (last?.role === 'assistant') {
-                  next[next.length - 1] = { ...last, content: (last.content ?? '') + content };
-                }
+                // The pre-appended assistant bubble (content: '') is always last.
+                next[next.length - 1] = { ...last, content: last.content + content };
                 return next;
               });
             }
@@ -1166,21 +1058,16 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       setStatus('error');
 
       setMessages((prev) => {
-        if (prev.length === 0) {
-          return [{ role: 'assistant', content: `[error] ${msg}` }];
-        }
+        // The empty assistant bubble is always pre-appended before streaming.
         const next = [...prev];
         const last = next[next.length - 1];
-        if (last?.role === 'assistant') {
-          next[next.length - 1] = { ...last, content: (last.content ?? '') + `\n\n[error] ${msg}` };
-          return next;
-        }
-        return [...next, { role: 'assistant', content: `\n\n[error] ${msg}` }];
+        next[next.length - 1] = { ...last, content: last.content + `\n\n[error] ${msg}` };
+        return next;
       });
     } finally {
       setIsStreaming(false);
       isStreamingRef.current = false;
-      if (status !== 'error') setStatus('idle');
+      setStatus((current) => (current !== 'error' ? 'idle' : current));
       abortRef.current = null;
     }
   }
@@ -1203,8 +1090,8 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
   }
 
   async function handleRegenerate(assistantIndex: number) {
-    if (isStreamingRef.current) return;
-
+    // (No isStreaming guard needed: the regenerate buttons are not rendered
+    // while a stream is in flight.)
     // Find the preceding user message
     let userMessageIndex = -1;
     for (let i = assistantIndex - 1; i >= 0; i--) {
@@ -1308,12 +1195,9 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 ragChunks = ragData.chunks;
                 // Update message with RAG chunks
                 setMessages((prev) => {
-                  if (prev.length === 0) return prev;
                   const next = [...prev];
-                  const last = next[next.length - 1];
-                  if (last?.role === 'assistant') {
-                    next[next.length - 1] = { ...last, ragChunks: ragChunks };
-                  }
+                  // The pre-appended assistant bubble is always last.
+                  next[next.length - 1] = { ...next[next.length - 1], ragChunks: ragChunks };
                   return next;
                 });
               }
@@ -1330,12 +1214,10 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
 
               // Append content to the last assistant message
               setMessages((prev) => {
-                if (prev.length === 0) return prev;
                 const next = [...prev];
                 const last = next[next.length - 1];
-                if (last?.role === 'assistant') {
-                  next[next.length - 1] = { ...last, content: (last.content ?? '') + content };
-                }
+                // The pre-appended assistant bubble (content: '') is always last.
+                next[next.length - 1] = { ...last, content: last.content + content };
                 return next;
               });
             }
@@ -1370,21 +1252,16 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       setStatus('error');
 
       setMessages((prev) => {
-        if (prev.length === 0) {
-          return [{ role: 'assistant', content: `[error] ${msg}` }];
-        }
+        // The empty assistant bubble is always pre-appended before streaming.
         const next = [...prev];
         const last = next[next.length - 1];
-        if (last?.role === 'assistant') {
-          next[next.length - 1] = { ...last, content: (last.content ?? '') + `\n\n[error] ${msg}` };
-          return next;
-        }
-        return [...next, { role: 'assistant', content: `\n\n[error] ${msg}` }];
+        next[next.length - 1] = { ...last, content: last.content + `\n\n[error] ${msg}` };
+        return next;
       });
     } finally {
       setIsStreaming(false);
       isStreamingRef.current = false;
-      if (status !== 'error') setStatus('idle');
+      setStatus((current) => (current !== 'error' ? 'idle' : current));
       abortRef.current = null;
     }
   }
@@ -1421,18 +1298,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
           >
             {/* Show RAG citations if available (streaming) or persisted (loaded from session) */}
             {((m.ragChunks && m.ragChunks.length > 0) || (m.rag_chunks && m.rag_chunks.length > 0)) && (
-              <RagCitationsCollapsible
-                sessionName={sessionName}
-                messageIndex={idx}
-                initialChunks={m.ragChunks || m.rag_chunks || ragChunksCache.get(idx)}
-                onChunksLoaded={(chunks) => {
-                  setRagChunksCache((prev) => {
-                    const next = new Map(prev);
-                    next.set(idx, chunks);
-                    return next;
-                  });
-                }}
-              />
+              <RagCitationsCollapsible initialChunks={(m.ragChunks || m.rag_chunks)!} />
             )}
 
             {/* Inline attachment thumbnails in message bubble */}
@@ -1632,7 +1498,6 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       messages,
       highlightedMessageIndex,
       sessionName,
-      ragChunksCache,
       status,
       editingIndex,
       isStreaming,
