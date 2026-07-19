@@ -58,29 +58,31 @@ export default function ResourceMetrics() {
       setMetrics(data);
       setError(null);
 
-      // Add to historical data
-      setHistorical((prev) => {
-        const newEntry: HistoricalData = {
-          timestamp: Date.now(),
-          memory_rss_mb: data.memory.rss_mb,
-          memory_percent: data.memory.percent,
-          cpu_process_percent: data.cpu.process_percent,
-          cpu_system_percent: data.cpu.system_percent,
-          avg_latency_ms: data.latency.avg_ms,
-          queue_depth: data.queue.depth,
-        };
+      if (data) {
+        // Add to historical data
+        setHistorical((prev) => {
+          const newEntry: HistoricalData = {
+            timestamp: Date.now(),
+            memory_rss_mb: data.memory.rss_mb,
+            memory_percent: data.memory.percent,
+            cpu_process_percent: data.cpu.process_percent,
+            cpu_system_percent: data.cpu.system_percent,
+            avg_latency_ms: data.latency.avg_ms,
+            queue_depth: data.queue.depth,
+          };
 
-        // Keep data based on time range
-        const maxAge = timeRange === '1h' ? 3600000 : timeRange === '24h' ? 86400000 : 604800000;
-        const cutoff = Date.now() - maxAge;
-        const filtered = [...prev, newEntry].filter((d) => d.timestamp > cutoff);
+          // Keep data based on time range
+          const maxAge = timeRange === '1h' ? 3600000 : timeRange === '24h' ? 86400000 : 604800000;
+          const cutoff = Date.now() - maxAge;
+          const filtered = [...prev, newEntry].filter((d) => d.timestamp > cutoff);
 
-        // Limit to 100 data points
-        if (filtered.length > 100) {
-          return filtered.slice(filtered.length - 100);
-        }
-        return filtered;
-      });
+          // Limit to 100 data points
+          if (filtered.length > 100) {
+            return filtered.slice(filtered.length - 100);
+          }
+          return filtered;
+        });
+      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
@@ -99,13 +101,12 @@ export default function ResourceMetrics() {
     return () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
+        intervalRef.current = null;
       }
     };
   }, [autoRefresh, timeRange]);
 
-  const exportData = (format: 'csv' | 'json') => {
-    if (!metrics) return;
-
+  const exportData = (metrics: MetricsData, format: 'csv' | 'json') => {
     if (format === 'json') {
       const data = {
         current: metrics,
@@ -151,7 +152,10 @@ export default function ResourceMetrics() {
     return <ErrorMessage message="No metrics data available" />;
   }
 
-  const getWarningLevel = (metric: string, value: number): 'normal' | 'warning' | 'critical' => {
+  const getWarningLevel = (
+    metric: 'memory_percent' | 'cpu_process' | 'cpu_system' | 'latency_p99',
+    value: number
+  ): 'normal' | 'warning' | 'critical' => {
     switch (metric) {
       case 'memory_percent':
         return value > 90 ? 'critical' : value > 75 ? 'warning' : 'normal';
@@ -161,8 +165,6 @@ export default function ResourceMetrics() {
         return value > 90 ? 'critical' : value > 75 ? 'warning' : 'normal';
       case 'latency_p99':
         return value > 1000 ? 'critical' : value > 500 ? 'warning' : 'normal';
-      default:
-        return 'normal';
     }
   };
 
@@ -249,7 +251,7 @@ export default function ResourceMetrics() {
           </label>
 
           <button
-            onClick={() => exportData('csv')}
+            onClick={() => exportData(metrics, 'csv')}
             style={{
               background: 'var(--button)',
               color: 'var(--button-text)',
@@ -266,7 +268,7 @@ export default function ResourceMetrics() {
           </button>
 
           <button
-            onClick={() => exportData('json')}
+            onClick={() => exportData(metrics, 'json')}
             style={{
               background: 'var(--button)',
               color: 'var(--button-text)',
