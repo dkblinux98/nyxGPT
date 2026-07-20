@@ -944,6 +944,11 @@ def _ensure_mcp_deps() -> list[OpsResult]:
 CASSANDRA_CONTAINER_NAME = "nyxgpt-cassandra"
 CASSANDRA_IMAGE = "cassandra:5.0"
 CASSANDRA_VOLUME = "nyxgpt_cassandra_data"
+# Must match the cluster name stamped into CASSANDRA_VOLUME's system keyspace:
+# Cassandra refuses to start when the saved cluster name differs from the
+# configured one, so a recreated container without this env crash-loops with
+# "Saved cluster name nyxgpt != configured name Test Cluster".
+CASSANDRA_CLUSTER_NAME = "nyxgpt"
 
 
 def _ensure_cassandra_container() -> list[OpsResult]:
@@ -1006,6 +1011,8 @@ def _ensure_cassandra_container() -> list[OpsResult]:
         f"{bind_addr}:{port}:9042",
         "-v",
         f"{CASSANDRA_VOLUME}:/var/lib/cassandra",
+        "-e",
+        f"CASSANDRA_CLUSTER_NAME={CASSANDRA_CLUSTER_NAME}",
         CASSANDRA_IMAGE,
     ]
     cp = _run(cmd, check=False)

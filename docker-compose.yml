@@ -58,6 +58,11 @@ services:
       - nyxgpt
     ports:
       - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${CASSANDRA_PORT:-9042}:9042"
+    environment:
+      # Must match the cluster name stamped into cassandra_data's system
+      # keyspace (and ops.py's CASSANDRA_CLUSTER_NAME) -- Cassandra refuses
+      # to start against data saved under a different cluster name.
+      CASSANDRA_CLUSTER_NAME: nyxgpt
     volumes:
       - cassandra_data:/var/lib/cassandra
     healthcheck:

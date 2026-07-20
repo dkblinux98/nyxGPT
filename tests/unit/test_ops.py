@@ -1443,6 +1443,8 @@ def test_ensure_cassandra_container_creates_when_absent(monkeypatch):
             "127.0.0.1:9042:9042",
             "-v",
             "nyxgpt_cassandra_data:/var/lib/cassandra",
+            "-e",
+            "CASSANDRA_CLUSTER_NAME=nyxgpt",
             "cassandra:5.0",
         ]
     ]
