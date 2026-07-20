@@ -15,7 +15,7 @@ application repo.
   `usage_limit_retry.yml`, `admin_label_rename.yml`, `auto-check-tasklist.yml`,
   `add-to-release-issue-on-milestone.yml`, `link_revert_pr_to_issue.yml`,
   `notify-merge-conflicts.yml`, `manually_trigger_pr_review.yml`, `claude.yml`.
-- **Agent definitions & docs:** `AGENT_CHARTERS/*`, `AGENT_PROMPTS/*`, `RUNBOOKS/*`, `AGENTS.md`,
+- **Agent definitions & docs:** `agents/charters/*`, `agents/prompts/*`, `agents/runbooks/*`, `AGENTS.md`,
   and the agent-generic portions of `CLAUDE.md`.
 - **Agent tooling:** `scripts/agents/*` (create_issue.sh, developer_*.sh, review_*.sh,
   scrummaster_*.sh, `lib/gh_project.sh`, validate helpers that are agent-workflow-specific).

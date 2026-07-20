@@ -155,7 +155,7 @@ see [`nyxgpt ops stop`](ops.md#nyxgpt-ops-stop) and
 
 Every port published above is bound to `NYXGPT_BIND_ADDR` (`.env`, defaults
 to `127.0.0.1`), so the stack is reachable from this machine only — matching
-the [local-first](../VISION.md) posture of a native install. Without this,
+the [local-first](../product_management/VISION.md) posture of a native install. Without this,
 Docker publishes on `0.0.0.0` and every service becomes reachable from
 anyone on the same LAN, regardless of the `[api] host` / `[web] host`
 settings in `config.ini` (those only control the bind *inside* the

@@ -7,10 +7,10 @@ GUARDRAILS
 - Do not change phase ordering or scope.
 - Do not merge PRs.
 - No secrets in repo.
-- Respect ARCHITECTURE.md invariants.
+- Respect docs/architecture.md invariants.
 
 PROCEDURE
-Follow RUNBOOKS/developer-runbook.md. In particular:
+Follow agents/runbooks/developer-runbook.md. In particular:
 - Create a short-lived feature/fix branch off the active release branch
 - Implement code + tests + docs
 - Run ALL validation checks until they pass (pre-commit hooks MUST pass):

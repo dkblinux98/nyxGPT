@@ -13,13 +13,13 @@ Claude must not invent workflow, authority, or automation.
 ### 1. Core Operating Instructions (Always read first)
 - `CLAUDE.md` (this file)
 - `AGENTS.md`
-- `ARCHITECTURE.md`
-- `VISION.md`
+- `docs/architecture.md`
+- `product_management/VISION.md`
 - `README.md`
 - All files in `.github/workflows/*`
-- All files in `AGENT_CHARTERS/*`
-- All files in `AGENT_PROMPTS/*`
-- All files in `RUNBOOKS/*`
+- All files in `agents/charters/*`
+- All files in `agents/prompts/*`
+- All files in `agents/runbooks/*`
 - All files in `scripts/agents/*`
 
 ### After Reading, Claude Must:
@@ -52,13 +52,24 @@ This project uses Python (primary), TypeScript, YAML workflows, and Markdown doc
 
 ## Repository Organization
 
-Product-management planning documents live in **`product_management/`**, not the repo root. This includes:
+Root holds only the anchored docs (`CLAUDE.md`, `AGENTS.md`, `README.md`,
+`CONTRIBUTING.md`) plus code and infra directories. Everything else has a home:
 
-- All phase-planning docs (`PHASE_*_PLAN.md`)
-- The project-completion plan (`PROJECT_COMPLETION_PLAN.md`)
-- Project audits (`PROJECT_AUDIT.md`)
+- **`agents/`** — the agent system's operating docs: `charters/`, `prompts/`,
+  `runbooks/`. (`AGENTS.md` at root is the index into it.)
+- **`docs/`** — engineering documentation, including `docs/architecture.md`
+  (the single source of truth for current architecture and its invariants).
+- **`product_management/`** — product notes, documents, and decisions:
+  - All phase-planning docs (`PHASE_*_PLAN.md`)
+  - The project-completion plan (`PROJECT_COMPLETION_PLAN.md`)
+  - Project audits (`PROJECT_AUDIT.md`)
+  - The product vision (`VISION.md`)
+  - Proposed/forward-looking architecture (`PROPOSED_ARCHITECTURE.md`)
 
-Any new planning, roadmap, phase, or audit document must be created under `product_management/` — do not add these to the repo root.
+Any new planning, roadmap, phase, audit, or product-decision document must be
+created under `product_management/` — never at the repo root. New agent-system
+docs go under `agents/`. `product_management/` is tracked; local-only scratch
+belongs in `product_management/private/` (gitignored).
 
 ---
 

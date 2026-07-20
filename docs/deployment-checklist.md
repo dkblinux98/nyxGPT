@@ -6,7 +6,7 @@ Each section links to the detailed guide that explains the *why*; this page
 is the condensed, actionable version to walk through before you flip the
 switch.
 
-nyxGPT is [local-first](../VISION.md): nothing below is required to run it on
+nyxGPT is [local-first](../product_management/VISION.md): nothing below is required to run it on
 your own machine. Work through this checklist only when nyxGPT will be
 reachable by more than just you.
 

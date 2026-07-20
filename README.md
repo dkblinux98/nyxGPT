@@ -622,7 +622,7 @@ Or override per-request via the API:
   "prompt": "Your question here",
   "rag_enabled": true,
   "rag_filters": {
-    "doc_ids": ["README.md", "ARCHITECTURE.md"],
+    "doc_ids": ["README.md", "docs/architecture.md"],
     "filename": "README",
     "date_from": "2025-01-01",
     "date_to": "2025-12-31"
@@ -1100,7 +1100,7 @@ Once history has been collected, it's also visible in the admin dashboard at
 **`/admin/workflow-analytics`** (linked from `/admin/dashboard`) — summary stats, a per-workflow
 breakdown, top failing workflows, and a recent-runs table, backed by `GET /api/v1/admin/workflow-analytics`.
 
-For details, see **docs/development.md** and **RUNBOOKS/**.
+For details, see **docs/development.md** and **agents/runbooks/**.
 
 ### Claude Code Local Automations
 

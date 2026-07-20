@@ -8,7 +8,7 @@ apply`/`destroy` over `docker compose up`/`down` for local infrastructure
 management (drift detection, plan review, etc).
 
 This is **local-only infrastructure as code**, consistent with the project's
-local-first [VISION.md](../VISION.md):
+local-first [VISION.md](../product_management/VISION.md):
 
 - No cloud provider modules (no AWS/GCP/Azure providers).
 - No cloud networking or security groups — the stack runs on a single Docker
@@ -19,7 +19,7 @@ local-first [VISION.md](../VISION.md):
 > **Scope note:** issue #2690 originally asked for cloud provider modules,
 > cloud networking/security groups, and remote state management. The owner
 > explicitly descoped that to local-only IaC on 2026-07-07 as out of step
-> with `VISION.md`'s local-first constraint, then reversed and re-scoped the
+> with `product_management/VISION.md`'s local-first constraint, then reversed and re-scoped the
 > issue on 2026-07-09 with the local-only requirements implemented here
 > (docker provider, no cloud networking/security groups, local state) —
 > see the issue's comment thread for the full rationale. Cloud provider

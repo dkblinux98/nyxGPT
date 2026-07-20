@@ -13,7 +13,7 @@ GUARDRAILS
 - Review ALL changed files in PR, not just new changes
 
 PROCEDURE
-Follow RUNBOOKS/review-runbook.md.
+Follow agents/runbooks/review-runbook.md.
 
 CI FAILURE HANDLING
 If CI fails during review (should not happen if developer phase worked correctly):
@@ -60,7 +60,7 @@ After 3rd REQUEST_CHANGES cycle:
 - Slack DM sent to human
 - Human intervenes to resolve
 
-REVIEW CRITERIA (from RUNBOOKS/review-runbook.md)
+REVIEW CRITERIA (from agents/runbooks/review-runbook.md)
 - Correctness vs acceptance criteria
 - Tests added/updated and meaningful
 - No architecture boundary violations
