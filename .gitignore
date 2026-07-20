@@ -47,7 +47,9 @@ jupyter-notebooks/
 
 # Project Analysis
 claude-project-review/*
-product_management/*
+# product_management/ is tracked planning docs (owner decision 2026-07-19).
+# Scratch that must stay local goes in product_management/private/
+product_management/private/
 project_management/*
 performance_analysis/*
 /.coverage

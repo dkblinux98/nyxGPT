@@ -365,7 +365,7 @@ jobs:
 
             Perform comprehensive code review checking:
 
-            From RUNBOOKS/review-runbook.md checklist:
+            From agents/runbooks/review-runbook.md checklist:
             - Correctness vs issue acceptance criteria
             - Tests added/updated AND effective: for each new/changed test, ask "would this
               test fail if the implementation was wrong?" If a test would pass even with a

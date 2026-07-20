@@ -16,6 +16,36 @@ nyxGPT is designed to be:
 
 ---
 
+## Architectural invariants
+
+These are the constraints agents and contributors must not violate (formerly
+the root `ARCHITECTURE.md`; this section is now the single source of truth).
+
+### Core invariants
+- CLI remains functional and is a first-class interface.
+- FastAPI is the stable integration surface for UIs/automation.
+- UIs (web/TUI) are clients; they must not become required for core operation.
+- Model runtime is pluggable behind stable interfaces.
+- Persistence is explicit and configurable.
+
+### Dependency flow
+UI -> API -> domain -> adapters (IO)
+- IO (HTTP, filesystem, DB, LLM calls) must be isolated behind interfaces.
+- No "god modules"; keep boundaries clear and testable.
+
+### Branching
+- See `CLAUDE.md` (Branch Rules) — the authority on branch/merge policy.
+
+### Config & secrets
+- No secrets committed to the repo.
+- New required external dependencies require human approval.
+
+### Quality
+- New features require appropriate tests (unit and/or integration).
+- CI must be green prior to merge (unless human explicitly authorizes an exception).
+
+---
+
 ## High-level components
 
 ```
@@ -232,15 +262,7 @@ The TUI provides:
 Launch with `nyxgpt tui`.
 
 ---
+## Proposed / future architecture
 
-## Future extensions
-
-The architecture intentionally supports additional features:
-
-- Pluggable memory backends
-- Additional vector databases beyond Cassandra
-- Multi-user authentication and authorization
-- Advanced context window management strategies
-- Custom tool/function calling
-
-No major architectural changes are required to add these features.
+Proposed extensions and forward-looking architecture discussion live in
+[`product_management/PROPOSED_ARCHITECTURE.md`](../product_management/PROPOSED_ARCHITECTURE.md).

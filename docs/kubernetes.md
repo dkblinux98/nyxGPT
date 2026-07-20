@@ -4,7 +4,7 @@ nyxGPT can be deployed to a **local** Kubernetes cluster (kind, minikube, k3s,
 Docker Desktop's built-in cluster, etc.) as an alternative to the Homebrew /
 `nyxgpt ops` workflow described in [ops.md](ops.md). This is aimed at running
 nyxGPT on your own workstation, in line with the project's local-first
-[VISION.md](../VISION.md) — it is not a guide for deploying to a cloud
+[VISION.md](../product_management/VISION.md) — it is not a guide for deploying to a cloud
 provider.
 
 Scope: this deploys the FastAPI backend (`nyxgpt-api`) only. Ollama keeps
