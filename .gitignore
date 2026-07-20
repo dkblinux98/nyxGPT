@@ -62,10 +62,10 @@ scripts/create_github_agent_config_repo_variables.sh
 /scripts/watch_agents.sh
 /scripts/watch_agents_macos.sh
 /scripts/test_agent_tokens_from_config.sh
-/AGENT_CHARTERS/myGPT-developer-agent.jpeg
-/AGENT_CHARTERS/myGPT-review-agent.jpeg
-/AGENT_CHARTERS/myGPT-scrummaster-agent.jpeg
-AGENT_CHARTERS/myGPT-qa-agent.jpeg
+/agents/charters/myGPT-developer-agent.jpeg
+/agents/charters/myGPT-review-agent.jpeg
+/agents/charters/myGPT-scrummaster-agent.jpeg
+agents/charters/myGPT-qa-agent.jpeg
 /myGPT notes.txt
 /.claude/scheduled_tasks.lock
 /.claude/worktrees/
