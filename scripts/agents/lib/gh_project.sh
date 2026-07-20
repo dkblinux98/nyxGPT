@@ -448,6 +448,21 @@ assign_and_trigger_developer() {
 # -------------------------
 # PR Project Hygiene
 # -------------------------
+# Retry a field-set a few times before giving up; transient API failures and
+# token hiccups were silently producing PRs with no project fields.
+set_field_with_retry() {
+  local item_id="$1" field="$2" value="$3" attempts="${4:-3}"
+  local i
+  for ((i = 1; i <= attempts; i++)); do
+    if set_project_field_value "$item_id" "$field" "$value"; then
+      return 0
+    fi
+    _warn "set ${field}='${value}' failed (attempt ${i}/${attempts})"
+    sleep $((2 * i))
+  done
+  return 1
+}
+
 ensure_pr_project_hygiene() {
   local pr_number="$1" issue_number="$2"
   require_cmd jq
@@ -556,9 +571,12 @@ ensure_pr_project_hygiene() {
     gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/${pr_number}" -f "milestone=${milestone_number}" >/dev/null 2>&1 || _warn "Failed to set milestone on PR #${pr_number}"
   fi
 
-  # Set PR status to In Review
+  # Set PR status to In Review. This is the hygiene-critical field: fail loud
+  # (after retries) instead of warn-and-continue, so a dead token or API
+  # outage can never again silently produce a bare PR on the board.
   _debug "Setting PR status to: $STATUS_IN_REVIEW"
-  set_project_field_value "$pr_item_id" "$STATUS_FIELD" "$STATUS_IN_REVIEW" || _warn "Failed to set Status on PR #${pr_number}"
+  set_field_with_retry "$pr_item_id" "$STATUS_FIELD" "$STATUS_IN_REVIEW" \
+    || _die "Failed to set Status on PR #${pr_number} after retries"
 
   # Link issue to PR in Development field (closedBy relationship)
   # Note: "Closes #N" in PR body creates the link, but we verify it here

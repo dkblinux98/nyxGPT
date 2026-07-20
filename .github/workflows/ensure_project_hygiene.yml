@@ -3,9 +3,12 @@ name: Ensure Project Hygiene
 on:
   issues:
     types: [opened, reopened]
+  pull_request:
+    types: [opened, reopened]
 
 jobs:
   add-to-project:
+    if: github.event_name == 'issues'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -205,3 +208,95 @@ jobs:
                     `- Sprint: Current sprint\n` +
                     `- Milestone: Current open milestone`
             });
+
+  pr-hygiene:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Setup environment
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+        run: |
+          cat > /tmp/nyxgpt-config.ini <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          EOF
+          echo "NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini" >> "$GITHUB_ENV"
+
+      - name: Check if PR hygiene needed
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          STATUS=$(gh pr view "$PR" --json projectItems \
+                   --jq '.projectItems[0].status.name // empty' 2>/dev/null || echo "")
+          if [[ -n "$STATUS" ]]; then
+            echo "PR #$PR already has Status: $STATUS — skipping (submit script handled it)"
+            echo "needs_hygiene=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "PR #$PR has no project Status — applying hygiene"
+            echo "needs_hygiene=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply PR project hygiene
+        if: steps.check.outputs.needs_hygiene == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          # Give developer_submit_for_review.sh (the normal path) a head start
+          # so we only act when the PR really came in outside the script.
+          sleep 60
+          STATUS=$(gh pr view "$PR" --json projectItems \
+                   --jq '.projectItems[0].status.name // empty' 2>/dev/null || echo "")
+          if [[ -n "$STATUS" ]]; then
+            echo "PR #$PR gained Status '$STATUS' meanwhile — nothing to do"
+            exit 0
+          fi
+
+          source scripts/agents/lib/gh_project.sh
+          load_config
+          require_gh_auth
+
+          # Linked issue from "Closes #N" in the body, if any.
+          BODY=$(gh pr view "$PR" --json body --jq '.body // ""')
+          ISSUE=$(echo "$BODY" | grep -oiE 'closes #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+
+          if [[ -n "$ISSUE" ]]; then
+            echo "PR #$PR links issue #$ISSUE — full hygiene via ensure_pr_project_hygiene"
+            ensure_pr_project_hygiene "$PR" "$ISSUE"
+          else
+            echo "PR #$PR has no linked issue — minimal hygiene (project + In Review + defaults)"
+            ITEM_ID=$(ensure_issue_in_project "$PR")
+            set_field_with_retry "$ITEM_ID" "$STATUS_FIELD" "$STATUS_IN_REVIEW" \
+              || { echo "::error::Failed to set Status on PR #$PR"; exit 1; }
+            set_field_with_retry "$ITEM_ID" "Priority" "P1 - High" || true
+            set_field_with_retry "$ITEM_ID" "Effort" "XS" || true
+          fi
+          echo "PR #$PR hygiene applied"
