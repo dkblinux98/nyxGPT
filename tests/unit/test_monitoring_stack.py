@@ -121,13 +121,22 @@ def test_grafana_volumes_do_not_nest_a_mount_inside_a_read_only_mount() -> None:
 
 
 def test_prometheus_config_scrapes_the_api_metrics_endpoint() -> None:
+    # In the local-first layout the API is a native brew service, not a
+    # Compose service, so there is no `api` hostname on the observability
+    # network -- the target must go through the host gateway instead.
     prometheus_config = yaml.safe_load((REPO_ROOT / "docker" / "prometheus.yml").read_text())
     scrape_configs = prometheus_config["scrape_configs"]
 
     nyxgpt_job = next(job for job in scrape_configs if job["job_name"] == "nyxgpt-api")
     assert nyxgpt_job["metrics_path"] == "/metrics"
     targets = nyxgpt_job["static_configs"][0]["targets"]
-    assert targets == ["api:8000"]
+    assert targets == ["host.docker.internal:8000"]
+
+
+def test_prometheus_service_maps_host_docker_internal_for_plain_linux_engines() -> None:
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    extra_hosts = compose["services"]["prometheus"]["extra_hosts"]
+    assert "host.docker.internal:host-gateway" in extra_hosts
 
 
 def _iter_promql_exprs(obj: object):

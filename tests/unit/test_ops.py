@@ -2538,6 +2538,7 @@ def test_ops_install_logs_start_and_summary(caplog):
         patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
+        patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
         caplog.at_level("INFO", logger="nyxgpt.ops"),
     ):
