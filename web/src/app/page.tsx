@@ -141,8 +141,14 @@ function Home() {
   // Accessibility: Visual feedback for shortcuts
   const [shortcutFeedback, setShortcutFeedback] = useState<string>('');
 
-  // Platform detection for keyboard shortcuts display
-  const isMac = typeof navigator !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+  // Platform detection for keyboard shortcuts display. Resolved in an effect
+  // so the first client render matches the server HTML ("Ctrl"): reading
+  // navigator.platform during render makes every Mac hydrate different text
+  // than the server sent, which fails hydration and leaves the page dead.
+  const [isMac, setIsMac] = useState<boolean>(false);
+  useEffect(() => {
+    setIsMac(navigator.platform.toUpperCase().indexOf('MAC') >= 0);
+  }, []);
   const modKey = isMac ? '⌘' : 'Ctrl';
 
   // Fetch API info with retry support
