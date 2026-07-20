@@ -26,6 +26,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_start_observability_stack", return_value=ok_results) as obs,
     ):
         rc = ops.install(MagicMock(skip_observability=False))
@@ -53,6 +54,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_install_homebrew_web", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_ollama_service", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "sync_env_from_config", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_start_observability_stack", return_value=[ops.OpsResult(True, "ok")]),
     ):
         rc = ops.install(MagicMock(skip_observability=False))
@@ -76,6 +78,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_start_observability_stack") as obs,
     ):
         rc = ops.install(MagicMock(skip_observability=True))
@@ -115,6 +118,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         patch.object(ops, "_install_homebrew_web", side_effect=_record("homebrew web")),
         patch.object(ops, "_ensure_ollama_service", side_effect=_record("ollama service")),
         patch.object(ops, "_ensure_log_symlinks", side_effect=_record("log symlinks")),
+        patch.object(ops, "sync_env_from_config", side_effect=_record("env sync")),
     ):
         rc = ops.install(MagicMock(skip_observability=True))
         assert rc == 0
@@ -122,6 +126,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
     assert call_order[0] == "reconcile"
     assert "cassandra container" in call_order
     assert "ollama service" in call_order
+    assert "env sync" in call_order
 
 
 @pytest.mark.unit
@@ -546,12 +551,12 @@ def test_ops_doctor_flags_missing_promtail_native_mount(monkeypatch, capsys, tmp
     assert "not reaching Loki" in out
 
 
-def _write_config(path, *, api_key="", grafana_password=""):
+def _write_config(path, *, api_key="", grafana_password="", auth_enabled="false"):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         f"""
 [auth]
-enabled = false
+enabled = {auth_enabled}
 api_key = {api_key}
 
 [monitoring]
@@ -576,10 +581,25 @@ def test_sync_env_from_config_missing_config_fails(tmp_path):
 
 
 @pytest.mark.unit
-def test_sync_env_from_config_no_secrets_set_fails(tmp_path, monkeypatch):
+def test_sync_env_from_config_auth_disabled_no_secrets_is_noop(tmp_path, monkeypatch):
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     cfg_path = tmp_path / "config.ini"
     _write_config(cfg_path)
+    env_path = tmp_path / ".env"
+
+    results = ops.sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
+
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert "auth disabled" in results[0].message
+    assert not env_path.exists()
+
+
+@pytest.mark.unit
+def test_sync_env_from_config_auth_enabled_but_no_secrets_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    cfg_path = tmp_path / "config.ini"
+    _write_config(cfg_path, auth_enabled="true")
     env_path = tmp_path / ".env"
 
     results = ops.sync_env_from_config(cfg_path=cfg_path, env_path=env_path)

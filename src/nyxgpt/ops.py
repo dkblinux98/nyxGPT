@@ -1103,8 +1103,9 @@ def install(args) -> int:
     leaked from an earlier run or a raw `docker compose up`, then ensuring the
     local Cassandra container plus every other install step (scripts, web deps,
     MCP deps, Cassandra LaunchAgent, Ollama logs LaunchAgent, Homebrew
-    formulas, the native Ollama service, log symlinks, the observability
-    stack) -- printing an OK/FAIL line per result. A failure in one step doesn't stop the rest from
+    formulas, the native Ollama service, log symlinks, env sync from
+    config.ini, the observability stack) -- printing an OK/FAIL line per
+    result. A failure in one step doesn't stop the rest from
     running.
 
     The observability step (Grafana/Loki/Jaeger/GlitchTip) runs by default so
@@ -1129,6 +1130,7 @@ def install(args) -> int:
         ("homebrew web", _install_homebrew_web),
         ("ollama service", _ensure_ollama_service),
         ("log symlinks", _ensure_log_symlinks),
+        ("env sync", sync_env_from_config),
     ]
     if not getattr(args, "skip_observability", False):
         steps.append(("observability stack", _start_observability_stack))
@@ -2107,6 +2109,17 @@ def sync_env_from_config(
         synced.append(var_name)
 
     if not synced:
+        if not cfg.getboolean("auth", "enabled", fallback=False):
+            return [
+                OpsResult(
+                    True,
+                    "No secrets to sync (auth disabled)",
+                    "[auth] enabled = false with no api_key set is a valid "
+                    "localhost-only configuration -- .env left untouched. Run "
+                    "`nyxgpt wizard` to generate secrets before any networked "
+                    "deploy, then re-run `nyxgpt ops env-sync`.",
+                )
+            ]
         return [
             OpsResult(
                 False,
