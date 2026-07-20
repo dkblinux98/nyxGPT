@@ -220,7 +220,7 @@ def test_ops_restart_refuses_when_compose_stack_conflicts(capsys):
 
         out = capsys.readouterr().out
         assert "[FAIL]" in out
-        assert "Refusing to restart native api" in out
+        assert "Refusing to restart local api" in out
         assert "port 8000" in out
 
 
@@ -237,7 +237,7 @@ def test_ops_restart_cassandra_refuses_when_compose_cassandra_conflicts(capsys):
 
         rd.assert_not_called()
         out = capsys.readouterr().out
-        assert "Refusing to restart native cassandra" in out
+        assert "Refusing to restart local cassandra" in out
         assert "port 9042" in out
 
 
@@ -352,7 +352,8 @@ def test_ops_status_smoke(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Homebrew services" in out
     assert "com.nyxgpt.cassandra-logs" in out
-    assert "nyxgpt-cassandra" in out
+    assert "docker  cassandra" in out
+    assert "native  cassandra" not in out
 
 
 @pytest.mark.unit
@@ -2399,7 +2400,7 @@ def test_ops_restart_web_refuses_when_compose_web_conflicts(capsys):
 
         rb.assert_not_called()
         out = capsys.readouterr().out
-        assert "Refusing to restart native web" in out
+        assert "Refusing to restart local web" in out
         assert "port 3000" in out
 
 
@@ -2416,7 +2417,7 @@ def test_ops_restart_ollama_refuses_when_compose_ollama_conflicts(capsys):
 
         rb.assert_not_called()
         out = capsys.readouterr().out
-        assert "Refusing to restart native ollama" in out
+        assert "Refusing to restart local ollama" in out
         assert "port 11434" in out
 
 

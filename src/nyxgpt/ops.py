@@ -1190,8 +1190,11 @@ def status(_args) -> int:
     mode = detect_deployment_mode()
 
     print("\nDeployment mode:")
-    for component in ("api", "web", "ollama", "cassandra"):
+    for component in ("api", "web", "ollama"):
         print(f"  native  {component}: {mode.native.get(component, 'none')}")
+    # Cassandra is the one Docker-managed piece of a local-first install --
+    # labeling it "native" here misstated the topology.
+    print(f"  docker  cassandra: {mode.native.get('cassandra', 'absent')}")
     if mode.compose:
         for component, state in sorted(mode.compose.items()):
             print(f"  compose {component}: {state}")
@@ -1230,10 +1233,7 @@ def status(_args) -> int:
     except Exception as e:
         print(f"\nLaunchAgent {label}: ERROR ({e})")
 
-    if _which("docker"):
-        running = mode.native.get("cassandra") == "running"
-        print(f"\nDocker container nyxgpt-cassandra: {'RUNNING' if running else 'NOT RUNNING'}")
-    else:
+    if _which("docker") is None:
         print("\nDocker: docker not found")
 
     print(
@@ -1406,10 +1406,10 @@ def _compose_conflict_result(component: str, compose: dict[str, str]) -> OpsResu
     port_note = f" on port {port}" if port else ""
     return OpsResult(
         False,
-        f"Refusing to restart native {component}: a Docker Compose deployment of "
+        f"Refusing to restart local {component}: a Docker Compose deployment of "
         f"{component} is already running{port_note}",
         "Both deployments would try to bind the same port. Stop the Compose deployment "
-        "of this component (or manage it there) before restarting the native service.",
+        "of this component (or manage it there) before restarting the local one.",
     )
 
 
