@@ -24,6 +24,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
+        patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
         patch.object(ops, "_start_observability_stack", return_value=ok_results) as obs,
     ):
@@ -50,6 +51,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_install_ollama_launchagent", return_value=mixed),
         patch.object(ops, "_install_homebrew_api", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_homebrew_web", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_ensure_ollama_service", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_start_observability_stack", return_value=[ops.OpsResult(True, "ok")]),
     ):
@@ -72,6 +74,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
+        patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
         patch.object(ops, "_start_observability_stack") as obs,
     ):
@@ -110,6 +113,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         patch.object(ops, "_install_ollama_launchagent", side_effect=_record("ollama la")),
         patch.object(ops, "_install_homebrew_api", side_effect=_record("homebrew api")),
         patch.object(ops, "_install_homebrew_web", side_effect=_record("homebrew web")),
+        patch.object(ops, "_ensure_ollama_service", side_effect=_record("ollama service")),
         patch.object(ops, "_ensure_log_symlinks", side_effect=_record("log symlinks")),
     ):
         rc = ops.install(MagicMock(skip_observability=True))
@@ -117,6 +121,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
 
     assert call_order[0] == "reconcile"
     assert "cassandra container" in call_order
+    assert "ollama service" in call_order
 
 
 @pytest.mark.unit
@@ -1246,6 +1251,84 @@ def test_install_launchagent_from_template_uses_installing_users_home(monkeypatc
     installed = dst.read_text(encoding="utf-8")
     assert "__NYXGPT_HOME__" not in installed
     assert installed == f"<plist>{home}/.nyxGPT/scripts/follow-ollama-logs.sh</plist>"
+
+
+# --- _ensure_ollama_service ---
+
+
+@pytest.mark.unit
+def test_ensure_ollama_service_no_brew():
+    with patch.object(ops, "_which", lambda _: None):
+        results = ops._ensure_ollama_service()
+    assert results[0].ok is False
+    assert "Homebrew not found" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_ollama_service_already_running():
+    with (
+        patch.object(ops, "_which", lambda _: "/opt/homebrew/bin/brew"),
+        patch.object(ops, "_brew_services_snapshot", lambda: {"ollama": "started"}),
+    ):
+        results = ops._ensure_ollama_service()
+    assert results[0].ok is True
+    assert "already running" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_ollama_service_starts_stopped_service():
+    run_calls = []
+    with (
+        patch.object(ops, "_which", lambda _: "/opt/homebrew/bin/brew"),
+        patch.object(ops, "_brew_services_snapshot", lambda: {"ollama": "none"}),
+        patch.object(
+            ops,
+            "_run",
+            lambda cmd, **k: run_calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+        ),
+    ):
+        results = ops._ensure_ollama_service()
+    assert [r.ok for r in results] == [True]
+    assert "Started brew service: ollama" in results[0].message
+    assert run_calls == [["brew", "services", "start", "ollama"]]
+
+
+@pytest.mark.unit
+def test_ensure_ollama_service_installs_formula_when_absent():
+    run_calls = []
+    with (
+        patch.object(ops, "_which", lambda _: "/opt/homebrew/bin/brew"),
+        patch.object(ops, "_brew_services_snapshot", lambda: {}),
+        patch.object(
+            ops,
+            "_run",
+            lambda cmd, **k: run_calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+        ),
+    ):
+        results = ops._ensure_ollama_service()
+    assert [r.ok for r in results] == [True, True]
+    assert "Installed ollama formula" in results[0].message
+    assert run_calls == [
+        ["brew", "install", "ollama"],
+        ["brew", "services", "start", "ollama"],
+    ]
+
+
+@pytest.mark.unit
+def test_ensure_ollama_service_start_failure_reports_details():
+    with (
+        patch.object(ops, "_which", lambda _: "/opt/homebrew/bin/brew"),
+        patch.object(ops, "_brew_services_snapshot", lambda: {"ollama": "none"}),
+        patch.object(
+            ops,
+            "_run",
+            lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom"),
+        ),
+    ):
+        results = ops._ensure_ollama_service()
+    assert results[0].ok is False
+    assert "Failed to start brew service: ollama" in results[0].message
+    assert "boom" in results[0].details
 
 
 # --- _ensure_cassandra_container ---

@@ -695,6 +695,45 @@ def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     return results
 
 
+def _ensure_ollama_service() -> list[OpsResult]:
+    """Ensure the native Ollama Homebrew service is installed and running.
+
+    Reconciles to the intended state like `_ensure_cassandra_container`:
+    already started -> no-op; installed but stopped -> `brew services start`;
+    formula absent -> `brew install ollama` first, then start. Without this
+    step, `ops install` only set up the Ollama *logs* LaunchAgent and never
+    started Ollama itself, so chat/embeddings stayed down after an `ops down`
+    until a manual `ops restart ollama`.
+    """
+    if _which("brew") is None:
+        return [OpsResult(False, "Homebrew not found; cannot ensure ollama service", "")]
+
+    state = _brew_services_snapshot().get("ollama")
+
+    if state == "started":
+        return [OpsResult(True, "Ollama brew service already running")]
+
+    results: list[OpsResult] = []
+    if state is None:
+        cp = _run(["brew", "install", "ollama"], check=False)
+        if cp.returncode != 0:
+            details = (cp.stdout or "").strip() + (
+                "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+            )
+            return [OpsResult(False, "Failed to brew install ollama", details.strip())]
+        results.append(OpsResult(True, "Installed ollama formula"))
+
+    cp = _run(["brew", "services", "start", "ollama"], check=False)
+    if cp.returncode == 0:
+        results.append(OpsResult(True, "Started brew service: ollama"))
+    else:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        results.append(OpsResult(False, "Failed to start brew service: ollama", details.strip()))
+    return results
+
+
 def _ensure_web_deps() -> list[OpsResult]:
     """Ensure web/node_modules is present by running npm ci/install in ./web.
 
@@ -1064,8 +1103,8 @@ def install(args) -> int:
     leaked from an earlier run or a raw `docker compose up`, then ensuring the
     local Cassandra container plus every other install step (scripts, web deps,
     MCP deps, Cassandra LaunchAgent, Ollama logs LaunchAgent, Homebrew
-    formulas, log symlinks, the observability stack) -- printing an OK/FAIL
-    line per result. A failure in one step doesn't stop the rest from
+    formulas, the native Ollama service, log symlinks, the observability
+    stack) -- printing an OK/FAIL line per result. A failure in one step doesn't stop the rest from
     running.
 
     The observability step (Grafana/Loki/Jaeger/GlitchTip) runs by default so
@@ -1088,6 +1127,7 @@ def install(args) -> int:
         ("ollama logs launchagent", _install_ollama_launchagent),
         ("homebrew api", _install_homebrew_api),
         ("homebrew web", _install_homebrew_web),
+        ("ollama service", _ensure_ollama_service),
         ("log symlinks", _ensure_log_symlinks),
     ]
     if not getattr(args, "skip_observability", False):

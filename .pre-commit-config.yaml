@@ -64,6 +64,7 @@ repos:
           - types-beautifulsoup4
           - types-Markdown
           - tiktoken>=0.5.0
+          - prometheus-client>=0.19
         args: ['--config-file=pyproject.toml']
         exclude: ^tests/
 
