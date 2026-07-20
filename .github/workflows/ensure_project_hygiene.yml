@@ -160,17 +160,25 @@ jobs:
                 }
               }
             }' -F owner="$PROJECT_OWNER" -F number="$PROJECT_NUMBER" | \
-            jq -r '.data.user.projectV2.fields.nodes[] |
+            jq -r --arg today "$(date -u +%Y-%m-%d)" '
+                   .data.user.projectV2.fields.nodes[] |
                    select(.name=="Sprint") |
                    .configuration.iterations |
+                   map(select(.startDate <= $today)) |
                    sort_by(.startDate) |
-                   reverse[0].id // empty' || echo "")
+                   (last // empty) | .title // empty' || echo "")
 
+          # set_project_field_value resolves iteration by TITLE (not id), and a
+          # failed Sprint set must never abort hygiene — Milestone still needs
+          # to be applied below (Sprint is "current sprint (if active)").
           if [[ -n "$CURRENT_SPRINT" ]]; then
-            set_project_field_value "$ITEM_ID" "Sprint" "$CURRENT_SPRINT"
-            echo "✓ Sprint: Current sprint set"
+            if set_project_field_value "$ITEM_ID" "Sprint" "$CURRENT_SPRINT"; then
+              echo "✓ Sprint: $CURRENT_SPRINT"
+            else
+              echo "⚠ Sprint: could not set '$CURRENT_SPRINT' (iteration may have ended) — continuing"
+            fi
           else
-            echo "⚠ Sprint: No active sprint found"
+            echo "⚠ Sprint: No active sprint found — skipping"
           fi
 
           # Set Milestone to current open milestone
