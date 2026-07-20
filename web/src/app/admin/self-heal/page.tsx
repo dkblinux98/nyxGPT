@@ -363,7 +363,8 @@ export default function SelfHealPage() {
             {status.components.length === 0 ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
                 No Docker Compose containers found. Bring up the stack with{' '}
-                <code>docker compose up -d</code> to see live component health here.
+                <code>nyxgpt ops install</code> (or <code>nyxgpt ops observability</code>) to see
+                live component health here.
               </p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>

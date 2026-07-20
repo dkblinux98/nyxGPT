@@ -12,6 +12,11 @@ class NyxgptApi < Formula
       #!/bin/bash
       set -euo pipefail
 
+      # launchd starts brew services with a minimal PATH (no /opt/homebrew/bin),
+      # so docker/kubectl would be invisible to the API's self-heal, deploy, and
+      # canary features without this.
+      export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
       CONFIG_FILE="$HOME/.nyxGPT/config.ini"
       SYS_PY="/usr/bin/python3"
 

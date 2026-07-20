@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import threading
 import time
+from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,18 +42,36 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def _resolve_compose_file() -> Path:
     """Resolve the docker-compose.yml the watchdog targets.
 
-    On a bare checkout (dev machine, `nyxgpt` running on the host) the repo
-    root computed above is correct. Inside the `api` container, though,
-    `self_heal.py` lives under site-packages, not a checkout of the repo --
-    there is no docker-compose.yml on that path at all. There, the actual
-    compose file is bind-mounted in and its in-container path is passed via
-    NYXGPT_COMPOSE_FILE (see the `api` service in docker-compose.yml and
-    docs/self-healing.md).
+    Three layouts, three answers:
+    - api container: `self_heal.py` lives under site-packages with no repo
+      checkout; the compose file is bind-mounted in and its in-container path
+      passed via NYXGPT_COMPOSE_FILE (see the `api` service in
+      docker-compose.yml and docs/self-healing.md).
+    - bare checkout (dev machine, `nyxgpt` running from the repo/venv): the
+      repo root computed above is correct.
+    - brew-installed native service: the module lives in the Homebrew Cellar,
+      so neither of the above applies; `nyxgpt ops install` records the repo's
+      compose path in config.ini `[paths] compose_file`, read here.
     """
     override = os.environ.get("NYXGPT_COMPOSE_FILE", "").strip()
     if override:
         return Path(override)
-    return REPO_ROOT / "docker-compose.yml"
+
+    repo_compose = REPO_ROOT / "docker-compose.yml"
+    if repo_compose.exists():
+        return repo_compose
+
+    cfg_path = Path.home() / ".nyxGPT" / "config.ini"
+    if cfg_path.exists():
+        parser = ConfigParser()
+        parser.read(cfg_path)
+        configured = parser.get("paths", "compose_file", fallback="").strip()
+        if configured:
+            configured_path = Path(configured).expanduser()
+            if configured_path.exists():
+                return configured_path
+
+    return repo_compose
 
 
 COMPOSE_FILE = _resolve_compose_file()
