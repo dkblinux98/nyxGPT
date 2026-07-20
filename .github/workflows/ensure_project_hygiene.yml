@@ -196,7 +196,7 @@ jobs:
           echo "✅ Project hygiene complete for issue #$ISSUE"
 
       - name: Comment on issue
-        if: success()
+        if: success() && steps.check_hygiene.outputs.needs_hygiene == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
