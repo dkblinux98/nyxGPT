@@ -1663,6 +1663,7 @@ def test_ops_install_skip_observability_flag_parses(
         "_install_ollama_launchagent",
         "_install_homebrew_api",
         "_install_homebrew_web",
+        "_ensure_ollama_service",
         "_ensure_log_symlinks",
     ):
         monkeypatch.setattr(cli_mod.ops_mod, step, lambda: ok)
