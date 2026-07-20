@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import '@testing-library/jest-dom';
-import LogAggregationPanel from '../../src/components/LogAggregationPanel';
+import LogAggregationPanel, { exploreQueryUrl } from '../../src/components/LogAggregationPanel';
 import { server } from '../mocks/server';
 
 const inactiveStatus = {
@@ -57,10 +57,29 @@ describe('LogAggregationPanel', () => {
     const link = await screen.findByRole('link', { name: /Open Grafana Explore/i });
     expect(link).toHaveAttribute('href', 'http://localhost:3001/explore');
 
-    expect(screen.getByText('Curated saved queries')).toBeInTheDocument();
+    expect(screen.getByText('Curated queries')).toBeInTheDocument();
     expect(screen.getByText('Errors only')).toBeInTheDocument();
     expect(screen.getByText('Filters to ERROR level lines')).toBeInTheDocument();
     expect(screen.getByText('{job="nyxgpt"} |= "ERROR"')).toBeInTheDocument();
+  });
+
+  it('deep-links each curated query into Grafana Explore with the query preloaded', async () => {
+    server.use(http.get('/api/v1/log-aggregation', () => HttpResponse.json(activeStatusWithQueries)));
+
+    render(<LogAggregationPanel />);
+
+    const queryLink = await screen.findByRole('link', { name: /Open in Explore/i });
+    const href = queryLink.getAttribute('href')!;
+    expect(href).toBe(
+      exploreQueryUrl('http://localhost:3001/explore', '{job="nyxgpt"} |= "ERROR"')
+    );
+    // The link carries Grafana's URL-encoded Explore state: the LogQL query
+    // against the provisioned Loki datasource.
+    const panesParam = new URL(href).searchParams.get('panes')!;
+    const panes = JSON.parse(panesParam);
+    expect(panes.nyx.queries[0].expr).toBe('{job="nyxgpt"} |= "ERROR"');
+    expect(panes.nyx.queries[0].datasource).toEqual({ type: 'loki', uid: 'loki' });
+    expect(queryLink).toHaveAttribute('target', '_blank');
   });
 
   it('omits the curated queries section when active but none are configured', async () => {
@@ -70,7 +89,25 @@ describe('LogAggregationPanel', () => {
 
     await screen.findByRole('link', { name: /Open Grafana Explore/i });
 
-    expect(screen.queryByText('Curated saved queries')).not.toBeInTheDocument();
+    expect(screen.queryByText('Curated queries')).not.toBeInTheDocument();
+  });
+
+  describe('exploreQueryUrl', () => {
+    it('appends with ? when the base has no query string and & when it does', () => {
+      const plain = exploreQueryUrl('http://localhost:3001/explore', '{job="nyxgpt"}');
+      expect(plain).toContain('/explore?schemaVersion=1&orgId=1&panes=');
+
+      const withQuery = exploreQueryUrl('http://localhost:3001/explore?orgId=1', '{job="nyxgpt"}');
+      expect(withQuery).toContain('/explore?orgId=1&schemaVersion=1&orgId=1&panes=');
+    });
+
+    it('round-trips the query and time range through the encoded panes state', () => {
+      const url = exploreQueryUrl('http://localhost:3001/explore', '{job="nyxgpt"} |= `x`');
+      const panes = JSON.parse(new URL(url).searchParams.get('panes')!);
+      expect(panes.nyx.datasource).toBe('loki');
+      expect(panes.nyx.queries[0].expr).toBe('{job="nyxgpt"} |= `x`');
+      expect(panes.nyx.range).toEqual({ from: 'now-1h', to: 'now' });
+    });
   });
 
   it('surfaces an error when the status response is not ok', async () => {
