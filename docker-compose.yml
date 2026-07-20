@@ -100,7 +100,12 @@ services:
       cassandra:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)\" || exit 1"]
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+          || exit 1
       interval: 10s
       timeout: 5s
       retries: 10
@@ -256,14 +261,14 @@ services:
       - nyxgpt
     volumes:
       - ./docker/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
-    depends_on:
-      jaeger:
-        condition: service_healthy
     # No healthcheck here: opentelemetry-collector-contrib ships FROM scratch
     # with no shell/wget/curl, so a CMD-SHELL probe isn't possible. Container
     # crash-restart (restart: unless-stopped) is the only signal available;
     # the self-heal watchdog falls back to Docker's own container State for
     # this service rather than a health check.
+    depends_on:
+      jaeger:
+        condition: service_healthy
 
   jaeger:
     image: jaegertracing/all-in-one:latest
@@ -326,7 +331,7 @@ services:
       start_period: 10s
 
   glitchtip-migrate:
-    image: glitchtip/glitchtip:latest
+    image: glitchtip/glitchtip:6.2.0
     profiles:
       - errors
     networks:
@@ -340,7 +345,7 @@ services:
         condition: service_healthy
 
   glitchtip:
-    image: glitchtip/glitchtip:latest
+    image: glitchtip/glitchtip:6.2.0
     restart: unless-stopped
     profiles:
       - errors
@@ -375,7 +380,7 @@ services:
       start_period: 30s
 
   glitchtip-worker:
-    image: glitchtip/glitchtip:latest
+    image: glitchtip/glitchtip:6.2.0
     restart: unless-stopped
     profiles:
       - errors

@@ -2178,6 +2178,7 @@ def env_sync(args) -> int:
 # what makes this idempotent.
 GLITCHTIP_ORG_SLUG = "nyxgpt"
 GLITCHTIP_ORG_NAME = "nyxgpt"
+GLITCHTIP_TEAM_SLUG = "nyxgpt"
 GLITCHTIP_PROJECT_SLUG = "nyxgpt-backend"
 GLITCHTIP_PROJECT_NAME = "nyxgpt-backend"
 GLITCHTIP_TOKEN_NAME = "nyxgpt-ops-glitchtip-init"
@@ -2319,27 +2320,38 @@ def _glitchtip_login(
 ) -> tuple[httpx.Client | None, OpsResult]:
     """Log into GlitchTip as `email`/`password`, returning an authenticated client.
 
-    GlitchTip's login view (`POST /api/auth/login/`) is a standard
-    Django/DRF session view, CSRF-protected like any other unsafe request --
-    a GET first primes the `csrftoken` cookie, which is then echoed back as
-    `X-CSRFToken` on the login POST. The returned client's cookie jar carries
-    that session forward for `_glitchtip_ensure_api_token` to mint a bearer
-    token from (every call after that switches to token auth, which is
-    CSRF-exempt).
+    Modern GlitchTip (>= 5.x, verified on 6.2.0) serves django-allauth's
+    headless browser API: `GET /_allauth/browser/v1/config` primes the
+    `csrftoken` cookie, which is echoed back as `X-CSRFToken` on the login
+    POST; the resulting session cookie carries auth forward for
+    `_glitchtip_ensure_api_token` to mint a bearer token from. Older
+    releases used a plain Django/DRF session view at `/api/auth/login/` --
+    if the headless route 404s, this falls back to that legacy flow so the
+    provisioning works across image pins.
     """
-    client = _glitchtip_http_client(base_url, follow_redirects=True)
-    try:
-        client.get("/api/auth/login/")
-        csrf_token = client.cookies.get("csrftoken", "")
+
+    def _csrf_headers(client: httpx.Client) -> dict[str, str]:
         headers = {"Referer": base_url}
+        csrf_token = client.cookies.get("csrftoken", "")
         if csrf_token:
             headers["X-CSRFToken"] = csrf_token
+        return headers
 
+    client = _glitchtip_http_client(base_url, follow_redirects=True)
+    try:
+        client.get("/_allauth/browser/v1/config")
         resp = client.post(
-            "/api/auth/login/",
+            "/_allauth/browser/v1/auth/login",
             json={"email": email, "password": password},
-            headers=headers,
+            headers=_csrf_headers(client),
         )
+        if resp.status_code == 404:
+            client.get("/api/auth/login/")
+            resp = client.post(
+                "/api/auth/login/",
+                json={"email": email, "password": password},
+                headers=_csrf_headers(client),
+            )
         if resp.status_code >= 400:
             client.close()
             return None, OpsResult(
@@ -2439,8 +2451,54 @@ def _glitchtip_ensure_organization(client: httpx.Client) -> tuple[str | None, Op
         )
 
 
-def _glitchtip_ensure_project(client: httpx.Client, org_slug: str) -> tuple[str | None, OpsResult]:
-    """Ensure the `nyxgpt-backend` GlitchTip project exists under `org_slug`, returning its slug."""
+def _glitchtip_ensure_team(client: httpx.Client, org_slug: str) -> tuple[str | None, OpsResult]:
+    """Ensure the `nyxgpt` GlitchTip team exists under `org_slug`, returning its slug.
+
+    Modern GlitchTip (verified on 6.2.0) only creates projects under a team
+    (the org-level projects route is list-only), so provisioning needs a team
+    before `_glitchtip_ensure_project` can create anything.
+    """
+    try:
+        listing = client.get(f"/api/0/organizations/{org_slug}/teams/")
+        if listing.status_code == 200:
+            existing: Any = listing.json()
+            if isinstance(existing, list):
+                for team in existing:
+                    if isinstance(team, dict) and team.get("slug") == GLITCHTIP_TEAM_SLUG:
+                        return GLITCHTIP_TEAM_SLUG, OpsResult(
+                            True, f"Using existing GlitchTip team {GLITCHTIP_TEAM_SLUG}"
+                        )
+
+        resp = client.post(
+            f"/api/0/organizations/{org_slug}/teams/",
+            json={"slug": GLITCHTIP_TEAM_SLUG},
+        )
+        if resp.status_code not in (200, 201):
+            return None, OpsResult(
+                False,
+                "Failed to create GlitchTip team",
+                f"HTTP {resp.status_code}: {resp.text[:500]}",
+            )
+        data: Any = resp.json()
+        slug = (
+            str(data.get("slug", GLITCHTIP_TEAM_SLUG))
+            if isinstance(data, dict)
+            else GLITCHTIP_TEAM_SLUG
+        )
+        return slug, OpsResult(True, f"Created GlitchTip team {slug}")
+    except httpx.HTTPError as e:
+        return None, OpsResult(False, "Failed to ensure GlitchTip team", f"{type(e).__name__}: {e}")
+
+
+def _glitchtip_ensure_project(
+    client: httpx.Client, org_slug: str, team_slug: str
+) -> tuple[str | None, OpsResult]:
+    """Ensure the `nyxgpt-backend` GlitchTip project exists under `org_slug`, returning its slug.
+
+    Creates via the team-scoped route (`/api/0/teams/{org}/{team}/projects/`),
+    the only creation path modern GlitchTip serves; falls back to the legacy
+    org-level POST if the team route is absent on an older image.
+    """
     try:
         listing = client.get(f"/api/0/organizations/{org_slug}/projects/")
         if listing.status_code == 200:
@@ -2453,9 +2511,14 @@ def _glitchtip_ensure_project(client: httpx.Client, org_slug: str) -> tuple[str 
                         )
 
         resp = client.post(
-            f"/api/0/organizations/{org_slug}/projects/",
+            f"/api/0/teams/{org_slug}/{team_slug}/projects/",
             json={"name": GLITCHTIP_PROJECT_NAME, "platform": "python"},
         )
+        if resp.status_code in (404, 405):
+            resp = client.post(
+                f"/api/0/organizations/{org_slug}/projects/",
+                json={"name": GLITCHTIP_PROJECT_NAME, "platform": "python"},
+            )
         if resp.status_code not in (200, 201):
             return None, OpsResult(
                 False,
@@ -2670,7 +2733,12 @@ def _provision_glitchtip() -> list[OpsResult]:
         if org_slug is None:
             return results
 
-        project_slug, project_result = _glitchtip_ensure_project(api_client, org_slug)
+        team_slug, team_result = _glitchtip_ensure_team(api_client, org_slug)
+        results.append(team_result)
+        if team_slug is None:
+            return results
+
+        project_slug, project_result = _glitchtip_ensure_project(api_client, org_slug, team_slug)
         results.append(project_result)
         if project_slug is None:
             return results

@@ -19,6 +19,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
         patch.object(ops, "_install_scripts", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
         patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
@@ -28,6 +29,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_start_observability_stack", return_value=ok_results) as obs,
+        patch.object(ops, "_provision_glitchtip", return_value=ok_results),
     ):
         rc = ops.install(MagicMock(skip_observability=False))
         assert rc == 0
@@ -47,6 +49,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         ),
         patch.object(ops, "_install_scripts", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_web_deps", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_ensure_mcp_deps", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_cassandra_container", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_cassandra_launchagent", return_value=mixed),
         patch.object(ops, "_install_ollama_launchagent", return_value=mixed),
@@ -56,6 +59,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "sync_env_from_config", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_start_observability_stack", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_provision_glitchtip", return_value=[ops.OpsResult(True, "ok")]),
     ):
         rc = ops.install(MagicMock(skip_observability=False))
         assert rc == 2
@@ -71,6 +75,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
         patch.object(ops, "_install_scripts", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
         patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
@@ -3680,6 +3685,30 @@ def test_glitchtip_ensure_superuser_command_shape(monkeypatch):
 @pytest.mark.unit
 def test_glitchtip_login_success(monkeypatch):
     def handler(request):
+        if request.url.path == "/_allauth/browser/v1/config" and request.method == "GET":
+            return httpx.Response(200, headers={"set-cookie": "csrftoken=abc123; Path=/"})
+        if request.url.path == "/_allauth/browser/v1/auth/login" and request.method == "POST":
+            assert request.headers.get("x-csrftoken") == "abc123"
+            return httpx.Response(200, json={"status": 200})
+        return httpx.Response(404)
+
+    monkeypatch.setattr(
+        ops, "_glitchtip_http_client", lambda base_url, **k: _mock_client(base_url, handler)
+    )
+
+    client, result = ops._glitchtip_login("http://localhost:8080", "admin@nyxgpt.local", "pw")
+    assert result.ok
+    assert client is not None
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_login_falls_back_to_legacy_endpoint(monkeypatch):
+    # Older GlitchTip images have no allauth headless routes; a 404 on the
+    # headless login must fall through to the legacy /api/auth/login/ flow.
+    def handler(request):
+        if request.url.path.startswith("/_allauth/"):
+            return httpx.Response(404)
         if request.url.path == "/api/auth/login/" and request.method == "GET":
             return httpx.Response(200, headers={"set-cookie": "csrftoken=abc123; Path=/"})
         if request.url.path == "/api/auth/login/" and request.method == "POST":
@@ -3800,14 +3829,67 @@ def test_glitchtip_ensure_organization_failure():
 
 
 @pytest.mark.unit
-def test_glitchtip_ensure_project_creates_new():
+def test_glitchtip_ensure_team_creates_new():
     def handler(request):
         if request.method == "GET":
             return httpx.Response(200, json=[])
+        assert request.url.path == f"/api/0/organizations/{ops.GLITCHTIP_ORG_SLUG}/teams/"
+        return httpx.Response(201, json={"slug": ops.GLITCHTIP_TEAM_SLUG})
+
+    client = _mock_client("http://localhost:8080", handler)
+    slug, result = ops._glitchtip_ensure_team(client, ops.GLITCHTIP_ORG_SLUG)
+    assert slug == ops.GLITCHTIP_TEAM_SLUG
+    assert result.ok
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_team_reuses_existing():
+    def handler(request):
+        return httpx.Response(200, json=[{"slug": ops.GLITCHTIP_TEAM_SLUG}])
+
+    client = _mock_client("http://localhost:8080", handler)
+    slug, result = ops._glitchtip_ensure_team(client, ops.GLITCHTIP_ORG_SLUG)
+    assert slug == ops.GLITCHTIP_TEAM_SLUG
+    assert "existing" in result.message
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_project_creates_new_via_team_route():
+    posted_paths = []
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        posted_paths.append(request.url.path)
         return httpx.Response(201, json={"slug": ops.GLITCHTIP_PROJECT_SLUG})
 
     client = _mock_client("http://localhost:8080", handler)
-    slug, result = ops._glitchtip_ensure_project(client, ops.GLITCHTIP_ORG_SLUG)
+    slug, result = ops._glitchtip_ensure_project(
+        client, ops.GLITCHTIP_ORG_SLUG, ops.GLITCHTIP_TEAM_SLUG
+    )
+    assert slug == ops.GLITCHTIP_PROJECT_SLUG
+    assert result.ok
+    assert posted_paths == [
+        f"/api/0/teams/{ops.GLITCHTIP_ORG_SLUG}/{ops.GLITCHTIP_TEAM_SLUG}/projects/"
+    ]
+    client.close()
+
+
+@pytest.mark.unit
+def test_glitchtip_ensure_project_falls_back_to_legacy_org_route():
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=[])
+        if request.url.path.startswith("/api/0/teams/"):
+            return httpx.Response(405, text="Method not allowed")
+        return httpx.Response(201, json={"slug": ops.GLITCHTIP_PROJECT_SLUG})
+
+    client = _mock_client("http://localhost:8080", handler)
+    slug, result = ops._glitchtip_ensure_project(
+        client, ops.GLITCHTIP_ORG_SLUG, ops.GLITCHTIP_TEAM_SLUG
+    )
     assert slug == ops.GLITCHTIP_PROJECT_SLUG
     assert result.ok
     client.close()
@@ -3819,7 +3901,9 @@ def test_glitchtip_ensure_project_reuses_existing():
         return httpx.Response(200, json=[{"slug": ops.GLITCHTIP_PROJECT_SLUG}])
 
     client = _mock_client("http://localhost:8080", handler)
-    slug, result = ops._glitchtip_ensure_project(client, ops.GLITCHTIP_ORG_SLUG)
+    slug, result = ops._glitchtip_ensure_project(
+        client, ops.GLITCHTIP_ORG_SLUG, ops.GLITCHTIP_TEAM_SLUG
+    )
     assert slug == ops.GLITCHTIP_PROJECT_SLUG
     assert "existing" in result.message
     client.close()
@@ -4124,8 +4208,13 @@ def test_provision_glitchtip_full_happy_path(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         ops,
+        "_glitchtip_ensure_team",
+        lambda client, org: ("nyxgpt", ops.OpsResult(True, "team")),
+    )
+    monkeypatch.setattr(
+        ops,
         "_glitchtip_ensure_project",
-        lambda client, org: ("nyxgpt-backend", ops.OpsResult(True, "project")),
+        lambda client, org, team: ("nyxgpt-backend", ops.OpsResult(True, "project")),
     )
     monkeypatch.setattr(
         ops,
