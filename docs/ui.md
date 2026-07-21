@@ -257,6 +257,14 @@ Attached files are previewed in a horizontal thumbnail strip above the chat inpu
 
 Search across all chat sessions with Ctrl+F (Cmd+F on Mac):
 
+> **Shortcut labels and platform detection:** the chat page's shortcut hints
+> (sidebar "Keyboard Shortcuts" panel, button tooltips) show `Ctrl` in the
+> server-rendered HTML and switch to `⌘` on Macs immediately after the page
+> mounts. Platform detection deliberately runs after mount rather than during
+> render: reading `navigator.platform` while rendering made a Mac client's
+> first render differ from the server HTML, which fails React hydration and
+> leaves the page unresponsive.
+
 - **Full-text search** — Search message content across all sessions
 - **Filters** — Filter by message role (user/assistant/system)
 - **Case-sensitive** — Toggle case-sensitive matching

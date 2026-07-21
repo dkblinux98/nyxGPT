@@ -120,6 +120,31 @@ describe('Home page — platform and init fallbacks', () => {
     }
   });
 
+  it('renders Ctrl labels on the effect-free initial pass even on Mac (hydration guard)', async () => {
+    const original = navigator.platform;
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
+    try {
+      // renderToString runs the component without effects, exactly like the
+      // server render the client must hydrate against. If render read
+      // navigator.platform directly (the #3316 bug), this markup would
+      // already contain ⌘ on a Mac and mismatch the real server HTML.
+      const { renderToString } = await import('react-dom/server');
+      const markup = renderToString(
+        <ThemeProvider>
+          <Home />
+        </ThemeProvider>
+      );
+      expect(markup).toContain('Ctrl+K');
+      expect(markup).not.toContain('⌘');
+
+      // After a client mount the platform effect flips the labels to ⌘.
+      renderHome();
+      expect(await screen.findByLabelText('Create new chat (⌘+K)')).toBeInTheDocument();
+    } finally {
+      Object.defineProperty(navigator, 'platform', { configurable: true, value: original });
+    }
+  });
+
   it('handles a non-Error /api/info rejection', async () => {
     routes['/api/info'] = () => Promise.reject('info exploded');
     renderHome();
