@@ -24,10 +24,13 @@ export function exploreQueryUrl(exploreBase: string, query: string): string {
       range: { from: 'now-1h', to: 'now' },
     },
   };
-  const sep = exploreBase.includes('?') ? '&' : '?';
-  return `${exploreBase}${sep}schemaVersion=1&orgId=1&panes=${encodeURIComponent(
-    JSON.stringify(panes)
-  )}`;
+  const url = new URL(exploreBase);
+  url.searchParams.set('schemaVersion', '1');
+  if (!url.searchParams.has('orgId')) {
+    url.searchParams.set('orgId', '1');
+  }
+  url.searchParams.set('panes', JSON.stringify(panes));
+  return url.toString();
 }
 
 type LogAggregationStatus = {
