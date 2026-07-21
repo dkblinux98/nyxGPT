@@ -3519,7 +3519,7 @@ curl http://127.0.0.1:8000/api/v1/log-aggregation
 - `enabled` - Whether `[log_aggregation] enabled = true` in config.ini
 - `grafana_explore_url` - URL of the Grafana Explore view for searching logs
 - `active` - Mirrors `enabled` (the Loki/promtail stack itself runs outside this process, as Docker Compose services)
-- `curated_queries` - Saved LogQL queries provisioned as code, mirroring the per-component panels in the Operational Logs dashboard (self-heal, deploy, canary, chat errors, RAG pipeline) -- each has a `label`, a `hint`, and the raw `query` text to paste into Grafana Explore
+- `curated_queries` - LogQL queries provisioned as code, mirroring the per-component panels in the Operational Logs dashboard (self-heal, deploy, canary, chat errors, RAG pipeline) -- each has a `label`, a `hint`, and the raw `query` text. The web UI turns each one into an "Open in Explore" deep link (Grafana has no file-based provisioning for Explore's own query library, but its state is URL-encodable, so the link opens Explore with the query already loaded against the `loki` datasource); the raw `query` text is also shown for copy/paste
 
 **How it works:**
 

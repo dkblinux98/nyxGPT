@@ -8,6 +8,31 @@ type CuratedQuery = {
   query: string;
 };
 
+// Build a Grafana Explore deep link that opens with the given LogQL query
+// already loaded against the provisioned Loki datasource (uid "loki", pinned
+// in docker/grafana/provisioning/datasources). Grafana's Explore state is
+// URL-encodable (the `panes` param, stable since Grafana 10), which is what
+// lets these curated queries be one click instead of copy/paste — Grafana has
+// no file-provisioning for Explore saved queries. Exported for direct testing.
+export function exploreQueryUrl(exploreBase: string, query: string): string {
+  const panes = {
+    nyx: {
+      datasource: 'loki',
+      queries: [
+        { refId: 'A', expr: query, queryType: 'range', datasource: { type: 'loki', uid: 'loki' } },
+      ],
+      range: { from: 'now-1h', to: 'now' },
+    },
+  };
+  const url = new URL(exploreBase);
+  url.searchParams.set('schemaVersion', '1');
+  if (!url.searchParams.has('orgId')) {
+    url.searchParams.set('orgId', '1');
+  }
+  url.searchParams.set('panes', JSON.stringify(panes));
+  return url.toString();
+}
+
 type LogAggregationStatus = {
   enabled: boolean;
   active: boolean;
@@ -106,11 +131,21 @@ export default function LogAggregationPanel() {
 
           {status.curated_queries && status.curated_queries.length > 0 && (
             <div style={{ marginTop: '0.75rem' }}>
-              <div style={{ fontWeight: 600, marginBottom: 6 }}>Curated saved queries</div>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Curated queries</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {status.curated_queries.map((q) => (
                   <div key={q.label}>
-                    <div style={{ fontSize: 13 }}>{q.label}</div>
+                    <div style={{ fontSize: 13 }}>
+                      {q.label}{' '}
+                      <a
+                        href={exploreQueryUrl(status.grafana_explore_url, q.query)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ color: '#0066cc', fontSize: 12 }}
+                      >
+                        Open in Explore ↗
+                      </a>
+                    </div>
                     <div style={{ color: '#666', fontSize: 12, marginBottom: 2 }}>{q.hint}</div>
                     <code
                       style={{
@@ -128,8 +163,8 @@ export default function LogAggregationPanel() {
                 ))}
               </div>
               <p style={{ margin: '0.5rem 0 0 0', color: '#666', fontSize: 12 }}>
-                Paste any of these into Grafana Explore (Loki datasource), or find them as panels
-                on the &quot;Operational Logs&quot; dashboard.
+                Each link opens Grafana Explore (Loki datasource) with the query already loaded.
+                They are also available as panels on the &quot;Operational Logs&quot; dashboard.
               </p>
             </div>
           )}
