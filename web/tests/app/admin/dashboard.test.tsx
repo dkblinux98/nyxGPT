@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
-import AdminDashboardPage from '../../../src/app/admin/dashboard/page';
+import AdminDashboardPage, { ADMIN_NAV } from '../../../src/app/admin/dashboard/page';
 
 describe('AdminDashboardPage', () => {
   beforeEach(() => {
@@ -62,18 +62,38 @@ describe('AdminDashboardPage', () => {
     expect(maskedKey).toHaveStyle({ wordBreak: 'break-all', overflowWrap: 'anywhere' });
   });
 
-  it('renders the quick-nav links with button-style affordance', async () => {
+  it('renders the quick-nav tiles with descriptions, tooltips, and same-tab links', async () => {
     render(<AdminDashboardPage />);
     await waitFor(() => {
       expect(screen.getByText(/Deploy: blue/)).toBeInTheDocument();
     });
 
-    const deploymentLink = screen.getByRole('link', { name: /Deployment →/ });
-    expect(deploymentLink).toHaveStyle({
-      border: '1px solid var(--border)',
-      whiteSpace: 'nowrap',
+    for (const dest of ADMIN_NAV) {
+      const tile = screen.getByRole('link', { name: new RegExp(dest.label) });
+      expect(tile).toHaveAttribute('href', dest.href);
+      // Hover tooltip explains what the screen is for; the same text is
+      // visible in the tile so the grid is self-explanatory without hovering.
+      expect(tile).toHaveAttribute('title', dest.description);
+      expect(screen.getByText(dest.description)).toBeInTheDocument();
+      // Same tab: no new-window target, no arrow decoration.
+      expect(tile).not.toHaveAttribute('target');
+      expect(tile.textContent).not.toContain('→');
+    }
+  });
+
+  it('highlights a quick-nav tile on hover and restores it on leave', async () => {
+    render(<AdminDashboardPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Deploy: blue/)).toBeInTheDocument();
     });
-    expect(deploymentLink).toHaveAttribute('href', '/admin/deploy');
+
+    const tile = screen.getByRole('link', { name: /System Health/ });
+    fireEvent.mouseEnter(tile);
+    expect(tile.style.borderColor).toBe('var(--link)');
+    expect(tile.style.background).toBe('var(--muted)');
+    fireEvent.mouseLeave(tile);
+    expect(tile.style.borderColor).toBe('var(--border)');
+    expect(tile.style.background).toBe('var(--background)');
   });
 
   it('toggles auth enabled when the checkbox is clicked', async () => {

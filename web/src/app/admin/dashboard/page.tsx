@@ -57,19 +57,31 @@ const sectionTitleStyle: React.CSSProperties = {
   fontSize: '1.1rem',
 };
 
-const navLinkStyle: React.CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 4,
-  padding: '6px 10px',
-  borderRadius: 6,
+// Quick-nav destinations. Rendered as a card grid: the visible one-line
+// description is what tells an operator what each screen is for (a tooltip
+// alone only explains tiles the user already hovers), with the title
+// attribute echoing it for hover. All open in the same tab.
+export const ADMIN_NAV: Array<{ href: string; label: string; description: string }> = [
+  { href: '/admin/health', label: 'System Health', description: 'Live status of every nyxGPT service' },
+  { href: '/admin/deploy', label: 'Deployment', description: 'Blue/green switch and rollback' },
+  { href: '/admin/canary', label: 'Canary', description: 'Gradual rollout with automatic rollback' },
+  { href: '/admin/self-heal', label: 'Self-heal', description: 'Watchdog that restarts unhealthy services' },
+  { href: '/admin/observability', label: 'SRE Overview', description: 'Monitoring, logs, tracing, and error tracking' },
+  { href: '/admin/analytics', label: 'Usage Analytics', description: 'Chat and RAG usage over time' },
+  { href: '/admin/workflow-analytics', label: 'CI Analytics', description: 'Agent workflow and CI performance' },
+  { href: '/settings', label: 'Full Metrics', description: 'Resource metrics in Settings' },
+];
+
+const navTileStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+  padding: '10px 12px',
+  borderRadius: 8,
   border: '1px solid var(--border)',
-  background: 'var(--muted)',
-  color: 'var(--link)',
+  background: 'var(--background)',
   textDecoration: 'none',
-  fontSize: 13,
-  fontWeight: 600,
-  whiteSpace: 'nowrap',
+  transition: 'border-color 0.15s ease, background 0.15s ease',
 };
 
 const inlineLinkStyle: React.CSSProperties = {
@@ -278,15 +290,37 @@ export default function AdminDashboardPage() {
                     Default model: <strong>{ov.info.default_model || 'Not set'}</strong> · RAG:{' '}
                     <strong>{ov.info.rag_enabled ? 'enabled' : 'disabled'}</strong>
                   </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 13, marginTop: 4 }}>
-                    <a href="/admin/health" style={navLinkStyle}>System Health →</a>
-                    <a href="/admin/deploy" style={navLinkStyle}>Deployment →</a>
-                    <a href="/admin/canary" style={navLinkStyle}>Canary →</a>
-                    <a href="/admin/self-heal" style={navLinkStyle}>Self-heal →</a>
-                    <a href="/admin/observability" style={navLinkStyle}>SRE Overview →</a>
-                    <a href="/admin/analytics" style={navLinkStyle}>Usage Analytics →</a>
-                    <a href="/admin/workflow-analytics" style={navLinkStyle}>CI Analytics →</a>
-                    <a href="/settings" style={navLinkStyle}>Full metrics →</a>
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                      gap: 8,
+                      marginTop: 4,
+                    }}
+                  >
+                    {ADMIN_NAV.map((dest) => (
+                      <a
+                        key={dest.href}
+                        href={dest.href}
+                        title={dest.description}
+                        style={navTileStyle}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.borderColor = 'var(--link)';
+                          e.currentTarget.style.background = 'var(--muted)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = 'var(--border)';
+                          e.currentTarget.style.background = 'var(--background)';
+                        }}
+                      >
+                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--foreground)' }}>
+                          {dest.label}
+                        </span>
+                        <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>
+                          {dest.description}
+                        </span>
+                      </a>
+                    ))}
                   </div>
                 </div>
               );
