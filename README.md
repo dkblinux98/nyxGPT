@@ -473,7 +473,6 @@ The wizard includes a real-time resource monitoring dashboard accessible from th
 - **CPU Usage** - Process and system-wide CPU utilization
 - **Request Latency** - Average, P50, P95, and P99 latency percentiles
 - **Queue Status** - Current batch processing queue depth and total requests
-- **Prometheus Endpoint** - Card showing the `/metrics` scrape path for external Prometheus servers, with a link to view current metrics (see [`docs/api.md`](docs/api.md#get-metrics))
 - **Monitoring Dashboards** - Card describing the opt-in, local-only Grafana dashboards (system overview, RAG performance, API metrics, resource usage, self-healing) backed by Prometheus, with a link to the local Grafana UI plus a Dashboard Catalog linking directly into each one (see [`docs/docker-compose.md`](docs/docker-compose.md#monitoring-dashboards))
 - **Log Aggregation** - Card describing the opt-in, local-only Loki/promtail log search stack, with a link to the Grafana Logs Explorer dashboard when active (see [`docs/api.md`](docs/api.md#log-aggregation))
 - **Distributed Tracing** - Card showing whether OpenTelemetry tracing is enabled, with a link to the local Jaeger UI and curated trace views for the main request flows when active (see [`docs/api.md`](docs/api.md#distributed-tracing))

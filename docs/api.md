@@ -198,11 +198,11 @@ scrape_configs:
       - targets: ["127.0.0.1:8000"]
 ```
 
-The admin dashboard's Resource Usage panel (`/admin`) surfaces this
-endpoint under a "Prometheus Endpoint" card, with a link to view current
-metrics. Pre-built Grafana dashboards over these metrics (system overview,
-RAG performance, API metrics, resource usage) are available via the
-opt-in, local-only `monitoring` Compose profile — see
+The `/metrics` endpoint is plumbing for the self-provisioned Prometheus,
+not an operator surface — the web UI intentionally does not link to its
+raw text output. Pre-built Grafana dashboards over these metrics (system
+overview, RAG performance, API metrics, resource usage) are the metrics
+UI, available via the opt-in, local-only `monitoring` Compose profile — see
 [Monitoring Dashboards](docker-compose.md#monitoring-dashboards). The
 `/admin/observability` page ("SRE Overview") is the single entry point
 into all of them, plus curated Loki log queries, Jaeger trace views, and
