@@ -612,6 +612,24 @@ def _create_dist_tarball(tap_dir: Path, name: str, version: str) -> Path:
     return tar_path
 
 
+def _brew_install_or_reinstall(spec: str, name: str) -> None:
+    """`brew install` a formula, or `brew reinstall` when already installed.
+
+    The formula version never changes between `ops install` runs, so a plain
+    `brew install` skips the already-installed keg -- launcher scripts
+    regenerated into the tap on every run would never reach the Cellar. The
+    `fetch --force` refreshes brew's download cache first: the tarball URL and
+    version are also constant across runs, so without it brew reinstalls from
+    a stale cached tarball and fails the formula's sha256 check.
+    """
+    installed = _run(["brew", "list", "--versions", name], check=False).returncode == 0
+    _run(["brew", "fetch", "--force", spec], check=False)
+    if installed:
+        _run(["brew", "reinstall", spec], check=False)
+    else:
+        _run(["brew", "install", "--overwrite", spec], check=False)
+
+
 def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResult]:
     """Build and install the `nyxgpt-api` Homebrew formula into `tap`, then start the service.
 
@@ -636,10 +654,15 @@ def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     sha = _sha256_file(tar)
 
     content = template.read_text(encoding="utf-8")
-    # Update the sha256 in the formula to match the generated tarball
+    # Update sha256, version, and tarball filename to match the generated
+    # tarball -- the template's hardcoded values go stale when the project
+    # version changes, leaving brew fetching an old tarball whose checksum
+    # can never match the freshly computed one.
     import re
 
     content = re.sub(r'sha256 "[a-f0-9]+"', f'sha256 "{sha}"', content)
+    content = re.sub(r'version "[^"]+"', f'version "{version}"', content)
+    content = re.sub(r"nyxgpt-api-[^\"/]+\.tar\.gz", f"nyxgpt-api-{version}.tar.gz", content)
 
     formula_dir = tap_dir / "Formula"
     _ensure_dir(formula_dir)
@@ -647,7 +670,7 @@ def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     dst.write_text(content, encoding="utf-8")
     results.append(OpsResult(True, "Installed nyxgpt-api formula", str(dst)))
 
-    _run(["brew", "install", "--overwrite", f"{tap}/nyxgpt-api"], check=False)
+    _brew_install_or_reinstall(f"{tap}/nyxgpt-api", "nyxgpt-api")
     _run(["brew", "services", "start", "nyxgpt-api"], check=False)
     results.append(OpsResult(True, "Requested brew install/start nyxgpt-api", ""))
 
@@ -678,9 +701,12 @@ def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     sha = _sha256_file(tar)
     url = f"file://{tar}"
 
+    import re
+
     content = template.read_text(encoding="utf-8")
     content = content.replace("__NYXGPT_WEB_URL__", url)
     content = content.replace("__NYXGPT_WEB_SHA256__", sha)
+    content = re.sub(r'version "[^"]+"', f'version "{version}"', content)
 
     formula_dir = tap_dir / "Formula"
     _ensure_dir(formula_dir)
@@ -688,11 +714,54 @@ def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     dst.write_text(content, encoding="utf-8")
     results.append(OpsResult(True, "Installed nyxgpt-web formula", str(dst)))
 
-    _run(["brew", "install", "--overwrite", f"{tap}/nyxgpt-web"], check=False)
+    _brew_install_or_reinstall(f"{tap}/nyxgpt-web", "nyxgpt-web")
     _run(["brew", "services", "start", "nyxgpt-web"], check=False)
     results.append(OpsResult(True, "Requested brew install/start nyxgpt-web", ""))
 
     return results
+
+
+def _persist_compose_file_path() -> list[OpsResult]:
+    """Record the repo's docker-compose.yml path in config.ini `[paths] compose_file`.
+
+    The brew-installed native API runs from the Homebrew Cellar, where
+    self_heal's module-path fallback can't find a docker-compose.yml -- so the
+    self-heal watchdog and dashboard silently reported zero components. This
+    gives `self_heal._resolve_compose_file` a config-based fallback that
+    survives the Cellar layout. No-ops (successfully) when run outside a repo
+    checkout or before `nyxgpt wizard` has created config.ini.
+    """
+    compose_path = REPO_ROOT / "docker-compose.yml"
+    if not compose_path.exists():
+        return [
+            OpsResult(
+                True,
+                "Skipped compose-file path (not running from a repo checkout)",
+                "self-heal keeps its current compose-file resolution.",
+            )
+        ]
+
+    cfg_path = Path.home() / ".nyxGPT" / "config.ini"
+    if not cfg_path.exists():
+        return [
+            OpsResult(
+                True,
+                "Skipped compose-file path (no config.ini yet)",
+                "Run `nyxgpt wizard` to create config.ini, then re-run `nyxgpt ops install`.",
+            )
+        ]
+
+    parser = ConfigParser()
+    parser.optionxform = str  # type: ignore[assignment]
+    parser.read(cfg_path)
+    if parser.get("paths", "compose_file", fallback="") == str(compose_path):
+        return [OpsResult(True, f"Compose-file path already recorded: {compose_path}")]
+    if not parser.has_section("paths"):
+        parser.add_section("paths")
+    parser.set("paths", "compose_file", str(compose_path))
+    with cfg_path.open("w", encoding="utf-8") as f:
+        parser.write(f)
+    return [OpsResult(True, f"Recorded compose-file path in config.ini: {compose_path}")]
 
 
 def _ensure_ollama_service() -> list[OpsResult]:
@@ -1138,6 +1207,7 @@ def install(args) -> int:
         ("ollama service", _ensure_ollama_service),
         ("log symlinks", _ensure_log_symlinks),
         ("env sync", sync_env_from_config),
+        ("compose file path", _persist_compose_file_path),
     ]
     if not getattr(args, "skip_observability", False):
         steps.append(("observability stack", _start_observability_stack))

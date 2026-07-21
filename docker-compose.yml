@@ -161,6 +161,11 @@ services:
       - monitoring
     networks:
       - nyxgpt
+    # The scrape target is the host-native API (see docker/prometheus.yml).
+    # Docker Desktop provides host.docker.internal out of the box; this
+    # mapping makes it resolve on plain Linux engines too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./docker/prometheus-alerts.yml:/etc/prometheus/alerts.yml:ro
