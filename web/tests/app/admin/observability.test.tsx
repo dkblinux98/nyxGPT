@@ -80,13 +80,15 @@ describe('ObservabilityPage', () => {
     expect(link).toHaveAttribute('href', '/admin/dashboard');
   });
 
-  it('renders the Prometheus scrape endpoint card', async () => {
+  it('does not render Prometheus scrape-config plumbing', async () => {
     mockAllDisabled();
     render(<ObservabilityPage />);
 
-    expect(screen.getByText('Prometheus Endpoint')).toBeInTheDocument();
-    const link = screen.getByRole('link', { name: /View current metrics/i });
-    expect(link).toHaveAttribute('href', '/api/prometheus-metrics');
+    // The stack is provisioned by nyxgpt ops; operators never point a
+    // Prometheus scrape config anywhere, and the raw /metrics text dump is
+    // not an operator surface. Grafana dashboards are the metrics UI.
+    expect(screen.queryByText('Prometheus Endpoint')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /View current metrics/i })).not.toBeInTheDocument();
   });
 
   it('renders Grafana and Prometheus links from the Monitoring Dashboards card when active', async () => {
