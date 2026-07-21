@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { createRoot } from 'react-dom/client';
+import { flushSync } from 'react-dom';
 import React from 'react';
 import Home, { highlightText } from '@/app/page';
 import { ThemeProvider } from '@/contexts/ThemeContext';
@@ -116,6 +118,51 @@ describe('Home page — platform and init fallbacks', () => {
       renderHome();
       expect(await screen.findByLabelText('Create new chat (⌘+K)')).toBeInTheDocument();
     } finally {
+      Object.defineProperty(navigator, 'platform', { configurable: true, value: original });
+    }
+  });
+
+  it('renders the SSR "Ctrl" fallback on the very first paint on Mac, then updates to "⌘" once the platform effect flushes', async () => {
+    // Regression test for the hydration mismatch this issue fixes: the first
+    // client render must match the server-rendered "Ctrl" text even on a Mac
+    // client, with "⌘" appearing only after the mount effect runs. RTL's
+    // `render`/`act` flush effects synchronously, so it can't observe the
+    // pre-effect paint; we mount manually with `flushSync` (with the act
+    // environment turned off) to capture that first frame.
+    const original = navigator.platform;
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const priorActEnvironment = (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+      .IS_REACT_ACT_ENVIRONMENT;
+    try {
+      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
+      flushSync(() => {
+        root.render(
+          <ThemeProvider>
+            <Home />
+          </ThemeProvider>
+        );
+      });
+      expect(
+        container.querySelector('[aria-label="Create new chat (Ctrl+K)"]')
+      ).toBeInTheDocument();
+
+      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+        priorActEnvironment;
+      await waitFor(() =>
+        expect(
+          container.querySelector('[aria-label="Create new chat (⌘+K)"]')
+        ).toBeInTheDocument()
+      );
+    } finally {
+      act(() => {
+        root.unmount();
+      });
+      container.remove();
+      (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+        priorActEnvironment;
       Object.defineProperty(navigator, 'platform', { configurable: true, value: original });
     }
   });
