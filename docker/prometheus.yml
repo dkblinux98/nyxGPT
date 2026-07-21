@@ -9,4 +9,11 @@ scrape_configs:
   - job_name: nyxgpt-api
     metrics_path: /metrics
     static_configs:
-      - targets: ["api:8000"]
+      # In the local-first layout the API is a native brew service on the
+      # host, not a Compose service, so there is no `api` hostname on the
+      # Docker network — scrape through the host gateway instead. This also
+      # reaches the api container's published port when the full Compose
+      # stack is used (Docker Desktop routes host.docker.internal to
+      # host-published ports; on plain Linux engines the compose file maps
+      # host.docker.internal via extra_hosts: host-gateway).
+      - targets: ["host.docker.internal:8000"]

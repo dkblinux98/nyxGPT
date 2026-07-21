@@ -50,6 +50,42 @@ def test_resolve_compose_file_defaults_to_repo_root(monkeypatch):
 
 
 @pytest.mark.unit
+def test_resolve_compose_file_falls_back_to_config_ini(monkeypatch, tmp_path):
+    # Brew-Cellar layout: no env override, no compose file on the module path;
+    # the path recorded by `nyxgpt ops install` in config.ini wins.
+    monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
+    monkeypatch.setattr(self_heal, "REPO_ROOT", tmp_path / "cellar")
+
+    compose = tmp_path / "repo" / "docker-compose.yml"
+    compose.parent.mkdir(parents=True)
+    compose.write_text("services: {}\n", encoding="utf-8")
+
+    home = tmp_path / "home"
+    (home / ".nyxGPT").mkdir(parents=True)
+    (home / ".nyxGPT" / "config.ini").write_text(
+        f"[paths]\ncompose_file = {compose}\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(self_heal.Path, "home", lambda: home)
+
+    assert self_heal._resolve_compose_file() == compose
+
+
+@pytest.mark.unit
+def test_resolve_compose_file_ignores_config_when_path_missing(monkeypatch, tmp_path):
+    monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
+    monkeypatch.setattr(self_heal, "REPO_ROOT", tmp_path / "cellar")
+
+    home = tmp_path / "home"
+    (home / ".nyxGPT").mkdir(parents=True)
+    (home / ".nyxGPT" / "config.ini").write_text(
+        "[paths]\ncompose_file = /nonexistent/docker-compose.yml\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(self_heal.Path, "home", lambda: home)
+
+    assert self_heal._resolve_compose_file() == tmp_path / "cellar" / "docker-compose.yml"
+
+
+@pytest.mark.unit
 def test_load_state_recovers_from_corrupt_json(monkeypatch, tmp_path):
     state_path = tmp_path / "self_heal_state.json"
     state_path.write_text("{not valid json", encoding="utf-8")

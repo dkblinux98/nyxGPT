@@ -28,6 +28,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
+        patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops, "_start_observability_stack", return_value=ok_results) as obs,
         patch.object(ops, "_provision_glitchtip", return_value=ok_results),
     ):
@@ -58,6 +59,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_ensure_ollama_service", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "sync_env_from_config", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_persist_compose_file_path", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_start_observability_stack", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_provision_glitchtip", return_value=[ops.OpsResult(True, "ok")]),
     ):
@@ -84,6 +86,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
+        patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops, "_start_observability_stack") as obs,
     ):
         rc = ops.install(MagicMock(skip_observability=True))
@@ -124,6 +127,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         patch.object(ops, "_ensure_ollama_service", side_effect=_record("ollama service")),
         patch.object(ops, "_ensure_log_symlinks", side_effect=_record("log symlinks")),
         patch.object(ops, "sync_env_from_config", side_effect=_record("env sync")),
+        patch.object(ops, "_persist_compose_file_path", side_effect=_record("compose file path")),
     ):
         rc = ops.install(MagicMock(skip_observability=True))
         assert rc == 0
@@ -132,6 +136,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
     assert "cassandra container" in call_order
     assert "ollama service" in call_order
     assert "env sync" in call_order
+    assert "compose file path" in call_order
 
 
 @pytest.mark.unit
@@ -1279,6 +1284,57 @@ def test_install_launchagent_from_template_uses_installing_users_home(monkeypatc
     assert installed == f"<plist>{home}/.nyxGPT/scripts/follow-ollama-logs.sh</plist>"
 
 
+# --- _persist_compose_file_path ---
+
+
+@pytest.mark.unit
+def test_persist_compose_file_path_records_path(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "REPO_ROOT", repo)
+
+    home = tmp_path / "home"
+    (home / ".nyxGPT").mkdir(parents=True)
+    cfg_path = home / ".nyxGPT" / "config.ini"
+    cfg_path.write_text("[nyxgpt]\n", encoding="utf-8")
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+
+    results = ops._persist_compose_file_path()
+    assert results[0].ok is True
+    assert "Recorded compose-file path" in results[0].message
+
+    parser = ConfigParser()
+    parser.read(cfg_path)
+    assert parser.get("paths", "compose_file") == str(repo / "docker-compose.yml")
+
+    # Idempotent: second run reports already-recorded, file unchanged.
+    again = ops._persist_compose_file_path()
+    assert again[0].ok is True
+    assert "already recorded" in again[0].message
+
+
+@pytest.mark.unit
+def test_persist_compose_file_path_skips_outside_repo_checkout(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path / "cellar")
+    results = ops._persist_compose_file_path()
+    assert results[0].ok is True
+    assert "not running from a repo checkout" in results[0].message
+
+
+@pytest.mark.unit
+def test_persist_compose_file_path_skips_without_config(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "REPO_ROOT", repo)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "empty-home")
+
+    results = ops._persist_compose_file_path()
+    assert results[0].ok is True
+    assert "no config.ini yet" in results[0].message
+
+
 # --- _ensure_ollama_service ---
 
 
@@ -1772,7 +1828,7 @@ def test_install_homebrew_api_success(monkeypatch, tmp_path):
     formula = tap_dir / "Formula" / "nyxgpt-api.rb"
     assert formula.exists()
     assert "sha256" in formula.read_text(encoding="utf-8")
-    assert any(cmd[:2] == ["brew", "install"] for cmd in run_calls)
+    assert any(cmd[:2] in (["brew", "install"], ["brew", "reinstall"]) for cmd in run_calls)
     assert any(cmd[:3] == ["brew", "services", "start"] for cmd in run_calls)
 
 
@@ -1820,7 +1876,7 @@ def test_install_homebrew_web_success(monkeypatch, tmp_path):
     content = formula.read_text(encoding="utf-8")
     assert "__NYXGPT_WEB_URL__" not in content
     assert "__NYXGPT_WEB_SHA256__" not in content
-    assert any(cmd[:2] == ["brew", "install"] for cmd in run_calls)
+    assert any(cmd[:2] in (["brew", "install"], ["brew", "reinstall"]) for cmd in run_calls)
     assert any(cmd[:3] == ["brew", "services", "start"] for cmd in run_calls)
 
 
@@ -2482,6 +2538,7 @@ def test_ops_install_logs_start_and_summary(caplog):
         patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
+        patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
         caplog.at_level("INFO", logger="nyxgpt.ops"),
     ):
