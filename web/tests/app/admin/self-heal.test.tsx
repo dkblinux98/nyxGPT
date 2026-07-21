@@ -176,18 +176,14 @@ describe('SelfHealPage', () => {
     expect(screen.getByText('No heal events recorded yet.')).toBeInTheDocument();
   });
 
-  it('navigates back to the admin dashboard', async () => {
+  it('links back to the admin dashboard like the other admin pages', async () => {
     server.use(http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockStatus)));
     mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
-    const user = userEvent.setup();
 
     render(<SelfHealPage />);
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /back to admin dashboard/i })).toBeInTheDocument();
-    });
-    await user.click(screen.getByRole('button', { name: /back to admin dashboard/i }));
-    expect(pushMock).toHaveBeenCalledWith('/admin/dashboard');
+    const backLink = await screen.findByRole('link', { name: /back to admin dashboard/i });
+    expect(backLink).toHaveAttribute('href', '/admin/dashboard');
   });
 
   it('walks every load-status error branch, then falls back to String(e) on a non-Error rejection', async () => {
