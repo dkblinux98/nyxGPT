@@ -12,6 +12,7 @@ type MonitoringStatus = {
 type DashboardEntry = {
   uid: string;
   label: string;
+  description: string;
 };
 
 type DashboardGroup = {
@@ -20,33 +21,84 @@ type DashboardGroup = {
 };
 
 // Mirrors docker/grafana/dashboards/*.json -- keep uids/labels in sync with
-// the "uid"/"title" fields provisioned there.
-const DASHBOARD_GROUPS: DashboardGroup[] = [
+// the "uid"/"title" fields provisioned there. Rendered as the same tile grid
+// as the admin dashboard's quick-nav (ADMIN_NAV in admin/dashboard/page.tsx):
+// visible one-line description, echoed as a hover tooltip, no arrow
+// decoration, same-tab navigation.
+export const DASHBOARD_GROUPS: DashboardGroup[] = [
   {
     title: 'App functionality',
     dashboards: [
-      { uid: 'nyxgpt-system-overview', label: 'System Overview' },
-      { uid: 'nyxgpt-api-metrics', label: 'API Metrics' },
-      { uid: 'nyxgpt-rag-performance', label: 'RAG Performance' },
-      { uid: 'nyxgpt-resource-usage', label: 'Resource Usage' },
+      {
+        uid: 'nyxgpt-system-overview',
+        label: 'System Overview',
+        description: 'Request rates, errors, and latency at a glance',
+      },
+      {
+        uid: 'nyxgpt-api-metrics',
+        label: 'API Metrics',
+        description: 'Endpoint-level traffic and latency detail',
+      },
+      {
+        uid: 'nyxgpt-rag-performance',
+        label: 'RAG Performance',
+        description: 'Retrieval and ingest pipeline metrics',
+      },
+      {
+        uid: 'nyxgpt-resource-usage',
+        label: 'Resource Usage',
+        description: 'Process memory, CPU, and queue depth',
+      },
     ],
   },
   {
     title: 'Self-healing & deployment',
     dashboards: [
-      { uid: 'nyxgpt-self-healing', label: 'Self-Healing' },
-      { uid: 'nyxgpt-deployment', label: 'Blue-Green Deployment' },
-      { uid: 'nyxgpt-canary', label: 'Canary Rollout' },
+      {
+        uid: 'nyxgpt-self-healing',
+        label: 'Self-Healing',
+        description: 'Watchdog restarts and recovery events',
+      },
+      {
+        uid: 'nyxgpt-deployment',
+        label: 'Blue-Green Deployment',
+        description: 'Deploy switches and rollbacks',
+      },
+      {
+        uid: 'nyxgpt-canary',
+        label: 'Canary Rollout',
+        description: 'Rollout progress, evaluation, and promotion',
+      },
     ],
   },
   {
     title: 'Logs',
     dashboards: [
-      { uid: 'nyxgpt-logs-explorer', label: 'Logs Explorer' },
-      { uid: 'nyxgpt-operational-logs', label: 'Operational Logs' },
+      {
+        uid: 'nyxgpt-logs-explorer',
+        label: 'Logs Explorer',
+        description: 'Free search across all shipped logs',
+      },
+      {
+        uid: 'nyxgpt-operational-logs',
+        label: 'Operational Logs',
+        description: 'Self-heal, deploy, and canary log panels',
+      },
     ],
   },
 ];
+
+const tileStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+  padding: '10px 12px',
+  borderRadius: 8,
+  border: '1px solid var(--border)',
+  background: 'var(--background)',
+  textDecoration: 'none',
+  transition: 'border-color 0.15s ease, background 0.15s ease',
+};
 
 export default function DashboardCatalog() {
   const [status, setStatus] = useState<MonitoringStatus | null>(null);
@@ -95,24 +147,34 @@ export default function DashboardCatalog() {
             <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 12, color: '#666' }}>
               {group.title}
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                gap: 8,
+              }}
+            >
               {group.dashboards.map((dashboard) => (
                 <a
                   key={dashboard.uid}
                   href={`${status.grafana_ui_url}/d/${dashboard.uid}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    padding: '4px 10px',
-                    borderRadius: 4,
-                    border: '1px solid var(--border)',
-                    background: 'var(--code-bg)',
-                    color: '#0066cc',
-                    fontSize: 12,
-                    textDecoration: 'none',
+                  title={dashboard.description}
+                  style={tileStyle}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = 'var(--link)';
+                    e.currentTarget.style.background = 'var(--muted)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = 'var(--border)';
+                    e.currentTarget.style.background = 'var(--background)';
                   }}
                 >
-                  {dashboard.label} ↗
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--foreground)' }}>
+                    {dashboard.label}
+                  </span>
+                  <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>
+                    {dashboard.description}
+                  </span>
                 </a>
               ))}
             </div>
