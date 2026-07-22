@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import '@testing-library/jest-dom';
-import DashboardCatalog from '../../src/components/DashboardCatalog';
+import DashboardCatalog, { DASHBOARD_GROUPS } from '../../src/components/DashboardCatalog';
 import { server } from '../mocks/server';
 
 const CATALOG_SOURCE = readFileSync(
@@ -116,6 +116,60 @@ describe('DashboardCatalog rendering', () => {
 
     const link = screen.getByRole('link', { name: /System Overview/i });
     expect(link).toHaveAttribute('href', 'http://localhost:3001/d/nyxgpt-system-overview');
+  });
+
+  it('renders every dashboard as a tile with description, tooltip, no arrow, same tab', async () => {
+    server.use(
+      http.get('/api/v1/monitoring', () =>
+        HttpResponse.json({
+          enabled: true,
+          active: true,
+          grafana_ui_url: 'http://localhost:3001',
+          prometheus_ui_url: 'http://localhost:9090',
+        })
+      )
+    );
+
+    render(<DashboardCatalog />);
+    await waitFor(() => {
+      expect(screen.getByText('Dashboard Catalog')).toBeInTheDocument();
+    });
+
+    for (const group of DASHBOARD_GROUPS) {
+      for (const dashboard of group.dashboards) {
+        const tile = screen.getByRole('link', { name: new RegExp(dashboard.label, 'i') });
+        expect(tile).toHaveAttribute('href', `http://localhost:3001/d/${dashboard.uid}`);
+        // Same treatment as the admin dashboard's quick-nav (#3324): the
+        // description is visible on the tile and echoed as a hover tooltip.
+        expect(tile).toHaveAttribute('title', dashboard.description);
+        expect(screen.getByText(dashboard.description)).toBeInTheDocument();
+        expect(tile).not.toHaveAttribute('target');
+        expect(tile.textContent).not.toContain('↗');
+      }
+    }
+  });
+
+  it('highlights a tile on hover and restores it on leave', async () => {
+    server.use(
+      http.get('/api/v1/monitoring', () =>
+        HttpResponse.json({
+          enabled: true,
+          active: true,
+          grafana_ui_url: 'http://localhost:3001',
+          prometheus_ui_url: 'http://localhost:9090',
+        })
+      )
+    );
+
+    render(<DashboardCatalog />);
+    const tile = await screen.findByRole('link', { name: /System Overview/i });
+
+    fireEvent.mouseEnter(tile);
+    expect(tile.style.borderColor).toBe('var(--link)');
+    expect(tile.style.background).toBe('var(--muted)');
+    fireEvent.mouseLeave(tile);
+    expect(tile.style.borderColor).toBe('var(--border)');
+    expect(tile.style.background).toBe('var(--background)');
   });
 
   it('does not update state after unmounting before the monitoring status request resolves', async () => {
