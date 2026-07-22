@@ -124,6 +124,14 @@ Claude must follow that role's permissions strictly.
 Agent roles (scrummaster, developer, review) follow strict workflow rules.
 Executive assistant role uses efficient means for one-off tasks outside the workflow.
 
+**"Fix it" means run the agent process (Owner Requirement, 2026-07-22):** when
+the owner reports a defect or asks for a change to be fixed, the default is the
+full cycle — file the issue, let the scrummaster select it, the developer agent
+implement it, and the review agent review and merge. Claude does not implement
+the change itself unless the owner explicitly says to hand-carry it (e.g.
+"don't file it, fix it"). A hand-carried change is the exception, not the norm,
+and still goes through review before merge.
+
 ---
 
 ## Creating Issues
