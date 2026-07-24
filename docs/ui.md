@@ -59,11 +59,22 @@ The TUI:
 
 ### TUI Keyboard Shortcuts
 
-- **Ctrl+C** — Quit the TUI
+- **Ctrl+H** / **F1** — Show help overlay with all shortcuts
+- **Ctrl+P** — Command palette (quick command access with search)
+- **Tab** — Navigate to next pane
+- **Shift+Tab** — Navigate to previous pane
 - **Ctrl+S** — Open session picker (browse and switch sessions)
+- **Ctrl+F** — Search messages across sessions
 - **Ctrl+R** — Toggle RAG for current session
 - **Ctrl+M** — Manage models
 - **Ctrl+N** — Rename current session
+- **Ctrl+D** — Delete current session (with confirmation)
+- **Ctrl+A** — Open the [document attachment manager](sessions.md#force-include-document-attachment) for the current session
+- **Ctrl+L** — Clear output buffer
+- **Ctrl+C** — Quit
+
+**Commands:**
+- `/clear` — Clear the output buffer
 
 ### Session Picker
 
@@ -75,6 +86,21 @@ Press **Ctrl+S** to open the interactive session picker which allows you to:
 - Navigate with arrow keys (Up/Down) or keyboard search
 - Press **Enter** to switch to the selected session
 - Press **Escape** or **Ctrl+C** to cancel
+
+### RAG Controls (Web UI and TUI)
+
+The underlying RAG mechanics (config, filters, ingestion, citations export)
+are documented in [RAG](rag.md) and [RAG — Per-Session RAG Control](rag.md#per-session-rag-control);
+this section covers the UI surfaces specifically.
+
+**Web UI** — RAG controls sit left of the message input in the chat interface:
+- **RAG Toggle** button to enable/disable RAG for the current session
+- **File Upload** to ingest documents into the RAG database
+- RAG status displays current state (ON/OFF)
+- **Document Filters** button (available when RAG is enabled) to narrow which documents are searched: select specific documents by checkbox, filter by filename (partial match, case-insensitive) or ingestion date range. Filters persist across page reloads via session storage, with an active-filter indicator when applied.
+- **RAG Citations** displayed inline with responses: retrieved source chunks with click-to-expand for full text, relevance scores with quality indicators (High/Medium/Low), document IDs and chunk numbers, and export to separate files (JSON, Markdown)
+
+**Terminal UI (TUI)** — press `Ctrl+R` to toggle RAG on/off for the current session (status shown in the UI). RAG citations display inline when enabled: a compact citation summary (number of sources retrieved), document IDs, chunk references, and confidence scores with color-coded quality indicators (green/yellow/red based on score).
 
 Pinned sessions are displayed with a 📌 icon and appear at the top of the list.
 
@@ -182,10 +208,22 @@ NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 The web UI includes:
 
 - **Chat interface** with streaming responses and session management
+- **Message editing and regeneration** — edit any message and fork the conversation from that point, or regenerate assistant responses (see [Message Editing](api.md#message-editing))
+- **RAG document upload and toggle** in the chat interface, plus per-message RAG citations (see [RAG](rag.md))
+- **Admin dashboard** (`/admin/dashboard`) — a unified hub with a system status overview (deploy/canary state, resource metrics, opt-in observability stacks), a configuration summary, access/API-key management (view masked key, enable/disable auth, rotate), and an activity log (audit trail of admin actions)
+- **System health dashboard** (`/admin/health`) — service uptime, dependency reachability checks (Ollama, and Cassandra when RAG is enabled), resource utilization, and threshold-based alert indicators
+- **RAG Collections management** (`/admin/collections`) for multi-model embedding support (see [RAG — Collections Management UI](rag.md#collections-management-ui))
+- **RAG Playground** (`/admin/playground`) for interactive query testing and A/B comparison (see [RAG — RAG Playground](rag.md#rag-playground))
+- **Usage analytics dashboard** (`/admin/analytics`) — total/per-model/per-day request and token breakdowns from recorded chat usage, with JSON/CSV report export (see [API — Usage Analytics](api.md#usage-analytics))
 - **Model management** page (`/models`) for pulling, deleting, and viewing Ollama models
 - **Configuration wizard** (`/admin`) for step-by-step system setup
 - **Log viewer** (`/admin/logs`) for viewing and searching application logs
 - **Mobile-responsive layout** — the session sidebar collapses into a dismissible overlay below the `useIsMobile` breakpoint (768px), chat controls grow to touch-friendly tap targets, and inputs use a 16px minimum font size to prevent iOS Safari's auto-zoom-on-focus
+- **Keyboard shortcuts** for productivity:
+  - `Cmd/Ctrl+K` — Create new chat
+  - `Cmd/Ctrl+/` — Toggle sidebar visibility
+  - `/` — Focus search input
+  - `Esc` — Close menus and dialogs
 
 #### Model List Freshness
 
@@ -308,14 +346,51 @@ Access the dashboard at `http://127.0.0.1:3000/admin/dashboard` for an at-a-glan
 
 Access the wizard at `http://127.0.0.1:3000/admin` to configure:
 
-1. **Model Selection** — Choose your default LLM model
+1. **Model Selection** — Choose your default LLM model from available Ollama models
 2. **RAG Configuration** — Enable/disable retrieval-augmented generation
-3. **API Settings** — Configure log level and test connectivity
-4. **Summary** — Review and save your configuration
+3. **API Settings** — Configure log level and test API connectivity
+4. **Resource Usage** — Monitor system performance and resource metrics
+5. **Summary** — Review and save your configuration
+
+**Features:**
+- Visual progress indicator showing current step
+- Form validation for required fields
+- Connection testing to verify API connectivity
+- Real-time resource monitoring dashboard
+- Metrics export (JSON/CSV)
+- Hot-reloadable settings (no service restart required)
+- Clear navigation between steps
 
 Keyboard shortcuts:
 - `←` / `→` — Navigate between steps
 - `Enter` — Advance to next step or save configuration
+
+**Configuration changes:** the wizard updates `~/.nyxGPT/config.ini` with
+`default_model`, `rag_enabled`, and `log_level`. Changes take effect
+immediately without requiring a service restart.
+
+**Resource Usage Monitoring:**
+
+The wizard's Resource Usage step provides a real-time system performance dashboard:
+
+- **Memory Usage** — Process memory consumption (RSS, VMS), percentage, and available memory
+- **CPU Usage** — Process and system-wide CPU utilization
+- **Request Latency** — Average, P50, P95, and P99 latency percentiles
+- **Queue Status** — Current batch processing queue depth and total requests
+- **Monitoring Dashboards** — Card describing the opt-in, local-only Grafana dashboards (system overview, RAG performance, API metrics, resource usage, self-healing) backed by Prometheus, with a link to the local Grafana UI plus a Dashboard Catalog linking directly into each one (see [`docs/docker-compose.md`](docker-compose.md#monitoring-dashboards))
+- **Log Aggregation** — Card describing the opt-in, local-only Loki/promtail log search stack, with a link to the Grafana Logs Explorer dashboard when active (see [`docs/api.md`](api.md#log-aggregation))
+- **Distributed Tracing** — Card showing whether OpenTelemetry tracing is enabled, with a link to the local Jaeger UI and curated trace views for the main request flows when active (see [`docs/api.md`](api.md#distributed-tracing))
+- **Error Tracking** — Card showing whether self-hosted error tracking is enabled, with a link to the local GlitchTip UI when active (see [`docs/api.md`](api.md#error-tracking))
+
+**Dashboard features:** real-time auto-refresh (5-second interval,
+toggleable), visual status indicators (normal/warning/critical thresholds),
+export to JSON/CSV, manual refresh, and color-coded alerts:
+**green** (< 60% utilization), **yellow** (60-80%), **red** (> 80%).
+
+**Prerequisites:**
+- FastAPI backend must be running (`nyxgpt ops install` or `nyxgpt ops restart api`)
+- If configuration fails to load, verify the API is accessible at `http://127.0.0.1:8000/health`
+- See [Troubleshooting](troubleshooting.md) for common issues
 
 #### Log Viewer
 
