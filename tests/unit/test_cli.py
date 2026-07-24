@@ -2798,6 +2798,19 @@ def test_ops_restart_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(calls) == 1
 
 
+def test_ops_restart_observability_target_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "restart", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["ops", "restart", "observability"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+    assert calls[0].target == "observability"
+
+
 def test_ops_env_sync_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     import nyxgpt.cli as cli_mod
 

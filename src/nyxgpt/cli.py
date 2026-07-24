@@ -1930,8 +1930,19 @@ def cli(argv: list[str] | None = None) -> int:
         "target",
         nargs="?",
         default="all",
-        choices=["all", "api", "web", "ollama", "cassandra", "cassandra-logs"],
-        help="Service to restart",
+        choices=[
+            "all",
+            "api",
+            "web",
+            "ollama",
+            "cassandra",
+            "cassandra-logs",
+            "observability",
+        ],
+        help=(
+            "Service to restart -- 'all' also restarts every running "
+            "observability Compose service (monitoring/logging/tracing/errors)"
+        ),
     )
 
     ops_stop = ops_sub.add_parser("stop", help="Stop local services (native and/or Docker Compose)")
