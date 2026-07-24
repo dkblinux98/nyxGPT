@@ -254,12 +254,24 @@ jobs:
 
           echo "::group::Escalating to human after 3 review cycles"
 
-          # Keep issue in "In Review" status and assign to human owner
+          # Keep issue in "In Review" status and assign to human owner.
+          # Verified + retried (not a bare issue_assign_only call) because
+          # escalation exists specifically to hand off to the human — a
+          # silently-failed assignment here means nobody ever finds out the
+          # PR needs attention (#3332).
+          ASSIGN_OK=1
           bash -lc "cd '$GITHUB_WORKSPACE' && \
             source scripts/agents/lib/gh_project.sh && \
             load_config && \
             require_gh_auth && \
-            issue_assign_only '$ISSUE' \"\$HUMAN_OWNER\""
+            assign_issue_verified '$ISSUE' \"\$HUMAN_OWNER\"" || ASSIGN_OK=0
+
+          if [[ "$ASSIGN_OK" != "1" ]]; then
+            echo "::error::Could not verify issue #${ISSUE} was assigned to" \
+              "@${{ vars.HUMAN_OWNER }} after 3 review cycles — it may still show" \
+              "@${{ vars.REVIEW_AGENT }} as assignee. Manual fix:" \
+              "gh issue edit ${ISSUE} --add-assignee ${{ vars.HUMAN_OWNER }}"
+          fi
 
           # Assign PR to human owner
           gh pr edit "$PR" --add-assignee "${{ vars.HUMAN_OWNER }}"
@@ -285,6 +297,12 @@ jobs:
           gh pr comment "$PR" --body "$BODY"
 
           echo "::endgroup::"
+
+          if [[ "$ASSIGN_OK" != "1" ]]; then
+            echo "✗ Escalation comment posted, but issue assignment could not be verified — see ::error:: above"
+            exit 1
+          fi
+
           echo "✓ Escalation complete - issue kept in 'In Review', assigned to human"
           exit 0
 
