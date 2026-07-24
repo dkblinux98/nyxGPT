@@ -146,6 +146,14 @@ This is the recommended way to:
 nyxgpt ops restart
 ```
 
+Equivalent to `nyxgpt ops restart all` -- restarts the native core services
+(`api`, `web`, `ollama`), the Cassandra container, the Cassandra logs
+LaunchAgent, **and** every currently running observability Compose service
+(the `monitoring`/`logging`/`tracing`/`errors` profiles: Prometheus, Grafana,
+Loki/promtail, Jaeger, GlitchTip). Unlike `stop`/`down`, `restart all` covers
+the whole local stack in one wrapped command -- observability services that
+aren't enabled/running are skipped cleanly (no errors) rather than started.
+
 ### Restart individual components
 
 ```bash
@@ -154,6 +162,7 @@ nyxgpt ops restart web
 nyxgpt ops restart ollama
 nyxgpt ops restart cassandra
 nyxgpt ops restart cassandra-logs
+nyxgpt ops restart observability
 ```
 
 ### Behavior
@@ -171,6 +180,11 @@ nyxgpt ops restart cassandra-logs
   leaves a previously-running container stopped, `restart` attempts one recovery start. If
   that also fails, it reports a clear `DOWN: ... is now STOPPED` result instead of silently
   leaving the container down.
+- `observability` (included in `all`, or selectable on its own) restarts only the
+  observability Compose services that are actually running -- one not currently up is
+  reported as "not running (skipped)" rather than being started, since `restart` shouldn't
+  change which services are enabled (use [`nyxgpt ops observability`](#nyxgpt-ops-observability)
+  to bring the stack up in the first place).
 
 ### Exit codes
 
@@ -200,9 +214,10 @@ nyxgpt ops stop
 ```
 
 Equivalent to `nyxgpt ops stop all` -- stops `api`, `web`, `ollama`,
-`cassandra`, and `cassandra-logs`. Like `restart`, `all` does **not**
-include `observability` -- that's opt-in via its own target (below), since
-it has no native/Homebrew equivalent.
+`cassandra`, and `cassandra-logs`. Unlike `restart all`, `stop all` does
+**not** include `observability` -- that's opt-in via its own target (below),
+since it has no native/Homebrew equivalent and stopping it isn't implied by
+stopping the core app tier.
 
 ### Stop individual components
 

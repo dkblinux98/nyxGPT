@@ -147,6 +147,7 @@ def test_ops_restart_all_ok(capsys):
         patch.object(ops, "_restart_brew_service", return_value=ok) as rb,
         patch.object(ops, "_restart_docker_container", return_value=ok) as rd,
         patch.object(ops, "_restart_launchagent", return_value=ok) as rl,
+        patch.object(ops, "_restart_observability_stack", return_value=ok) as ro,
     ):
         args = MagicMock()
         args.target = "all"
@@ -157,6 +158,7 @@ def test_ops_restart_all_ok(capsys):
         assert rb.call_count == 3  # api, web, ollama
         rd.assert_called_once_with("nyxgpt-cassandra")
         rl.assert_called_once_with("com.nyxgpt.cassandra-logs")
+        ro.assert_called_once()
 
         out = capsys.readouterr().out
         assert "[OK]" in out
@@ -171,6 +173,7 @@ def test_ops_restart_returns_nonzero_on_failure(capsys):
         patch.object(ops, "_restart_brew_service", side_effect=[ok, bad, ok]),
         patch.object(ops, "_restart_docker_container", return_value=ok),
         patch.object(ops, "_restart_launchagent", return_value=ok),
+        patch.object(ops, "_restart_observability_stack", return_value=ok),
     ):
         args = MagicMock()
         args.target = "all"
@@ -190,6 +193,7 @@ def test_ops_restart_single_target_only_restarts_that_component(capsys):
         patch.object(ops, "_restart_brew_service", return_value=ok) as rb,
         patch.object(ops, "_restart_docker_container", return_value=ok) as rd,
         patch.object(ops, "_restart_launchagent", return_value=ok) as rl,
+        patch.object(ops, "_restart_observability_stack", return_value=ok) as ro,
     ):
         args = MagicMock()
         args.target = "api"
@@ -199,9 +203,31 @@ def test_ops_restart_single_target_only_restarts_that_component(capsys):
         rb.assert_called_once_with("nyxgpt-api")
         rd.assert_not_called()
         rl.assert_not_called()
+        ro.assert_not_called()
 
         out = capsys.readouterr().out
         assert "Restarted" in out or "[OK]" in out
+
+
+@pytest.mark.unit
+def test_ops_restart_observability_target_calls_restart_observability_stack(capsys):
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_compose_stack_snapshot", return_value={}),
+        patch.object(ops, "_restart_brew_service") as rb,
+        patch.object(ops, "_restart_docker_container") as rd,
+        patch.object(ops, "_restart_launchagent") as rl,
+        patch.object(ops, "_restart_observability_stack", return_value=ok) as ro,
+    ):
+        args = MagicMock()
+        args.target = "observability"
+        rc = ops.restart(args)
+        assert rc == 0
+
+        rb.assert_not_called()
+        rd.assert_not_called()
+        rl.assert_not_called()
+        ro.assert_called_once()
 
 
 @pytest.mark.unit
@@ -3233,6 +3259,92 @@ def test_stop_observability_stack_failure(monkeypatch):
     results = ops._stop_observability_stack()
     assert results[0].ok is False
     assert "boom" in results[0].details
+
+
+# --- _restart_observability_stack ---
+
+
+@pytest.mark.unit
+def test_restart_observability_stack_skips_without_docker(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: False)
+    results = ops._restart_observability_stack()
+    assert results[0].ok is True
+    assert "Skipped observability stack" in results[0].message
+
+
+@pytest.mark.unit
+def test_restart_observability_stack_no_services(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_resolve_observability_services", lambda: ([], None))
+    results = ops._restart_observability_stack()
+    assert results[0].ok is True
+    assert "No observability services resolved" in results[0].message
+
+
+@pytest.mark.unit
+def test_restart_observability_stack_resolution_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(
+        ops,
+        "_resolve_observability_services",
+        lambda: (None, ops.OpsResult(False, "Failed to resolve observability services", "boom")),
+    )
+    results = ops._restart_observability_stack()
+    assert results[0].ok is False
+    assert "Failed to resolve observability services" in results[0].message
+
+
+@pytest.mark.unit
+def test_restart_observability_stack_skips_services_not_running(monkeypatch):
+    # grafana/loki are defined by the profiles but not currently up -- restart must
+    # report them as cleanly skipped rather than erroring or starting them.
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_resolve_observability_services", lambda: (["grafana", "loki"], None))
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    calls = []
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: calls.append(cmd))
+    results = ops._restart_observability_stack()
+    assert not calls  # no restart command issued when nothing is running
+    messages = [r.message for r in results]
+    assert any("grafana" in m and "not running (skipped)" in m for m in messages)
+    assert any("loki" in m and "not running (skipped)" in m for m in messages)
+    assert all(r.ok for r in results)
+    assert "No running observability services to restart" in results[-1].message
+
+
+@pytest.mark.unit
+def test_restart_observability_stack_restarts_only_running_services(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_resolve_observability_services", lambda: (["grafana", "loki"], None))
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+    results = ops._restart_observability_stack()
+    assert calls[0][:3] == ["docker", "compose", "-f"]
+    assert "restart" in calls[0]
+    assert "grafana" in calls[0]
+    assert "loki" not in calls[0]
+    messages = [r.message for r in results]
+    assert any("loki" in m and "not running (skipped)" in m for m in messages)
+    assert any("Restarted observability services: grafana" in m for m in messages)
+    assert all(r.ok for r in results)
+
+
+@pytest.mark.unit
+def test_restart_observability_stack_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_resolve_observability_services", lambda: (["grafana"], None))
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stderr="boom")
+    )
+    results = ops._restart_observability_stack()
+    assert results[-1].ok is False
+    assert "boom" in results[-1].details
 
 
 # --- _compose_down ---

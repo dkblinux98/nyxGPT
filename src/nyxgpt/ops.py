@@ -1486,11 +1486,18 @@ def _compose_conflict_result(component: str, compose: dict[str, str]) -> OpsResu
 def restart(args) -> int:
     """Restart operational components.
 
-    target: all|api|web|ollama|cassandra|cassandra-logs
+    target: all|api|web|ollama|cassandra|cassandra-logs|observability
 
     Before touching a native component, checks whether a Docker Compose deployment
     of that same component is already live and, if so, refuses rather than starting
     a second process/container that would collide on the same port.
+
+    Unlike `stop`/`down` (where `observability` is opt-in via its own target and
+    excluded from `all`), `restart all` also restarts every currently running
+    observability Compose service (monitoring/logging/tracing/errors profiles) --
+    so a single wrapped command can bounce the whole local stack, core services
+    plus dashboards, after a config change. Observability services that aren't
+    enabled/running are skipped cleanly rather than started.
     """
     target = getattr(args, "target", "all") or "all"
     logger.info(
@@ -1532,6 +1539,9 @@ def restart(args) -> int:
 
     if target in ("all", "cassandra-logs"):
         results += _restart_launchagent("com.nyxgpt.cassandra-logs")
+
+    if target in ("all", "observability"):
+        results.extend(_restart_observability_stack())
 
     ok = _emit_results("restart", results)
     logger.info(
@@ -1704,6 +1714,53 @@ def _stop_observability_stack() -> list[OpsResult]:
             )
         ]
     return [OpsResult(True, "Observability stack stopped (containers and data preserved)")]
+
+
+def _restart_observability_stack() -> list[OpsResult]:
+    """Restart every currently running observability Compose service.
+
+    Resolves the monitoring/logging/tracing/errors profile services --
+    the same set `_start_observability_stack`/`_stop_observability_stack` use --
+    and restarts only the ones actually running. A profile service that isn't
+    enabled/up is reported as skipped rather than started, since `restart`
+    should bounce what's live, not change which services are enabled (that's
+    `nyxgpt ops observability`'s job).
+    """
+    if not _compose_available():
+        return [OpsResult(True, "Skipped observability stack (Docker not found)")]
+
+    services, err = _resolve_observability_services()
+    if err is not None:
+        return [err]
+    if not services:
+        return [OpsResult(True, "No observability services resolved to restart")]
+
+    running = _compose_stack_snapshot()
+    to_restart = [s for s in services if running.get(s) == "running"]
+    skipped = [s for s in services if s not in to_restart]
+
+    results: list[OpsResult] = [
+        OpsResult(True, f"Observability service not running (skipped): {s}") for s in skipped
+    ]
+
+    if not to_restart:
+        results.append(OpsResult(True, "No running observability services to restart"))
+        return results
+
+    cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "restart"] + to_restart
+    cp = _run(cmd, check=False)
+    if cp.returncode != 0:
+        results.append(
+            OpsResult(
+                False,
+                "Failed to restart observability stack",
+                (cp.stderr or cp.stdout or "").strip(),
+            )
+        )
+        return results
+
+    results.append(OpsResult(True, f"Restarted observability services: {', '.join(to_restart)}"))
+    return results
 
 
 def _compose_down(services: list[str], *, volumes: bool) -> list[OpsResult]:
