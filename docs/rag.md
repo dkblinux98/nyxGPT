@@ -755,6 +755,33 @@ print(f"Available collections: {collections}")
 store.close()
 ```
 
+### Collections Management UI
+
+The web UI includes a dedicated collections management page at `/admin/collections` for visualizing and managing RAG collections.
+
+**Access:**
+- Navigate to `http://127.0.0.1:3000/admin/collections`
+- Or click **⚙️ Settings** → **RAG Collections** in the main chat interface
+
+**Features:**
+- **View all collections** with real-time statistics:
+  - Document count
+  - Total chunk count
+  - Embedding models used in each collection
+- **Clear collections** to remove all documents and chunks (with confirmation)
+- **Collection insights** showing which embedding models are active
+- **Protected default collection** cannot be cleared to prevent accidental data loss
+
+**Use Cases:**
+- Monitor collection growth and usage
+- Clean up test collections
+- Verify which embedding models are in use
+- Understand document distribution across collections
+
+**Note on collection lifecycle:**
+- **Creation**: Collections are created automatically when you ingest documents with specific embedding models using the CLI (see [Multiple Embedding Models](#multiple-embedding-models) above). No manual collection creation is needed.
+- **Deletion**: Collections can be cleared (truncated) via the UI, removing all documents and chunks while preserving the table structure. To fully drop a collection table, use Cassandra admin tools directly.
+
 ### Collection Management API
 
 These endpoints back the collection management UI in the RAG dashboard
