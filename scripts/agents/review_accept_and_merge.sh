@@ -66,7 +66,8 @@ if [[ "$pr_mergeable" == "CONFLICTING" ]]; then
 
   # Keep issue in "In Review" status and assign to human owner
   # Note: Status is already "In Review" from previous review workflow, so we only reassign
-  issue_assign_only "$ISSUE" "$HUMAN_OWNER"
+  assign_issue_verified "$ISSUE" "$HUMAN_OWNER" \
+    || _warn "Could not verify issue #${ISSUE} assignment to @${HUMAN_OWNER} — check assignee manually."
 
   # Comment on both PR and issue
   CONFLICT_MSG="⚠️ **Merge Conflicts Detected**
@@ -116,6 +117,13 @@ fi
 # ---- CRITICAL PATH: Merge and update issue ----
 echo "[review] ===== Beginning critical path =====" >&2
 
+# Tracks whether the human-owner handoff (the one bookkeeping step that must
+# never fail silently, per #3332) actually landed. The merge itself is
+# already done by this point, so a failure here doesn't abort the rest of
+# the best-effort steps below — but it does make the job exit non-zero so
+# the failure surfaces in the Actions run instead of being buried in a warn.
+OWNER_ASSIGN_FAILED=0
+
 # Merge PR via GitHub (this is the critical operation)
 echo "[review] Merging PR #${PR}..." >&2
 if ! gh pr merge "$PR" --repo "${REPO_OWNER}/${REPO_NAME}" --merge --delete-branch 2>&1; then
@@ -150,8 +158,9 @@ fi
 
 # Assign issue to human owner
 echo "[review] Assigning issue #${ISSUE} to @${HUMAN_OWNER}..." >&2
-if ! issue_assign_only "$ISSUE" "$HUMAN_OWNER" 2>&1; then
-  _warn "Failed to assign issue to ${HUMAN_OWNER}. PR is merged but assignee may be incorrect. Continuing..."
+if ! assign_issue_verified "$ISSUE" "$HUMAN_OWNER"; then
+  echo "::error::PR #${PR} is merged but issue #${ISSUE} could not be verified as assigned to @${HUMAN_OWNER} — it may still show @${REVIEW_AGENT} as assignee. Manual fix: gh issue edit ${ISSUE} --add-assignee ${HUMAN_OWNER}" >&2
+  OWNER_ASSIGN_FAILED=1
 fi
 
 # Assign PR to human owner
@@ -212,4 +221,10 @@ else
 fi
 
 echo "[review] ===== Merge process complete =====" >&2
+
+if [[ "$OWNER_ASSIGN_FAILED" == "1" ]]; then
+  echo "FAILURE: Merged PR #${PR} and closed issue #${ISSUE}, but the @${HUMAN_OWNER} assignment could not be verified. See the ::error:: above — manual assignee fix required." >&2
+  exit 1
+fi
+
 echo "SUCCESS: Merged PR #${PR}. Issue #${ISSUE} closed and set to ${STATUS_IN_REVIEW}, assigned to @${HUMAN_OWNER}."

@@ -416,6 +416,44 @@ issue_assign_only() {
   gh api -X PATCH "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}" -f "assignees[]=${assignee}" >/dev/null
 }
 
+# Reads the current assignee logins for `issue` as a sorted, comma-joined
+# string. Split out from assign_issue_verified so tests can stub it without
+# touching `gh`.
+_issue_assignee_logins() {
+  local issue="$1"
+  gh issue view "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json assignees \
+    --jq '[.assignees[].login] | sort | join(",")'
+}
+
+# Replaces the assignee list on `issue` with exactly `assignee`, verifying
+# the write actually landed and retrying transient failures.
+#
+# issue_assign_only's raw PATCH call can silently no-op (rate limit, token
+# hiccup, transient 5xx) while still returning success, or fail outright —
+# either way every existing caller treated that as a soft `_warn` and moved
+# on. That let the accept-and-merge critical path (and the 3-cycle
+# escalation path) leave a closed issue assigned to the review agent
+# instead of HUMAN_OWNER with no loud signal anywhere (#3332). This mirrors
+# set_field_with_retry below, added for the same reason on project fields.
+assign_issue_verified() {
+  local issue="$1" assignee="$2" attempts="${3:-3}"
+  local i actual
+  for ((i = 1; i <= attempts; i++)); do
+    if issue_assign_only "$issue" "$assignee"; then
+      actual="$(_issue_assignee_logins "$issue" 2>/dev/null || echo "")"
+      if [[ "$actual" == "$assignee" ]]; then
+        return 0
+      fi
+      _warn "Assignee verification mismatch for issue #${issue} (attempt ${i}/${attempts}): expected '${assignee}', got '${actual:-<empty>}'"
+    else
+      _warn "issue_assign_only failed for issue #${issue} (attempt ${i}/${attempts})"
+    fi
+    [[ "$i" -lt "$attempts" ]] && sleep $((2 * i))
+  done
+  echo "::error::Failed to verify issue #${issue} is assigned to @${assignee} after ${attempts} attempts — it may still show a stale assignee. Manual fix: gh issue edit ${issue} --add-assignee ${assignee}" >&2
+  return 1
+}
+
 issue_comment() {
   local issue="$1" body="$2"
   gh api -X POST "repos/${REPO_OWNER}/${REPO_NAME}/issues/${issue}/comments" -f "body=${body}" >/dev/null
