@@ -209,6 +209,12 @@ Set custom titles for your sessions:
 nyxgpt sessions title default "Python Debugging Session"
 ```
 
+### Manual rename
+
+- **Web UI**: Click the "✏️ Rename" button in the chat interface
+- **TUI**: Press `Ctrl+N` to rename the current session
+- **API**: `POST /api/v1/sessions/{name}/rename` — see [API — Session Metadata Management](api.md#post-apiv1sessionsnamerename)
+
 ### Filename sync
 
 Sync session filenames with their titles for better organization:
@@ -223,6 +229,13 @@ auto_sync_filename = true
 ```
 
 When enabled, session filenames automatically update to match their titles (sanitized for filesystem compatibility).
+
+**How it works:**
+1. After the configured number of messages, nyxGPT automatically generates a title
+2. The session filename is updated to match the sanitized title using atomic operations with file locking
+3. Sessions remain easily browsable in `~/.nyxGPT/sessions/`
+
+**Safety:** File renames use exclusive file locks to prevent race conditions during concurrent access. If a session is actively being written when a rename is triggered, the rename will wait up to 10 seconds for the lock or fail gracefully with a "Session is busy" message.
 
 ### Session statistics
 

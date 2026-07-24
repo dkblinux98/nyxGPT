@@ -214,12 +214,21 @@ result = ingest_document(
 ### Ingest a document
 
 ```bash
-nyxgpt rag ingest <doc_id> <path> [--ensure-schema] [--collection default]
+nyxgpt rag ingest <doc_id> <path> [--ensure-schema] [--collection default] \
+    [--model MODEL] [--dimension N]
 ```
 
-Example:
+Example — default collection:
 ```bash
 nyxgpt rag ingest readme-v1 README.md --ensure-schema
+```
+
+Example — a different embedding model/collection (see
+[Multiple Embedding Models](#multiple-embedding-models) below):
+```bash
+nyxgpt rag ingest doc2 document.txt \
+  --collection all-minilm --model all-minilm:latest --dimension 384 \
+  --ensure-schema
 ```
 
 The command now outputs update detection status:
@@ -266,6 +275,48 @@ nyxgpt rag delete <doc_id> [--collection default]
 ```bash
 nyxgpt rag wipe --yes-really [--collection default]
 ```
+
+### Query the vector store
+
+```bash
+nyxgpt rag query "<query text>" [--collection default] [--model MODEL] [--dimension N] \
+    [--doc-ids ID1,ID2] [--filename SUBSTRING] [--tags TAG1,TAG2] \
+    [--date-from YYYY-MM-DD] [--date-to YYYY-MM-DD] [--debug]
+```
+
+Examples:
+```bash
+# Query a specific collection
+nyxgpt rag query "What is the architecture?" \
+  --collection all-minilm --model all-minilm:latest --dimension 384
+
+# Filter by document ID(s), filename, tags, or date range (combine as needed)
+nyxgpt rag query "What is RAG?" --doc-ids "doc1,doc2"
+nyxgpt rag query "summarize notes" --filename "myGPT Notes"
+nyxgpt rag query "python tutorial" --tags "python,tutorial"
+nyxgpt rag query "recent updates" --date-from "2024-01-01" --date-to "2024-12-31"
+```
+
+`--debug` shows the fusion method and per-stage timing (see
+[Hybrid Search](#hybrid-search-keyword--vector) below).
+
+### List available collections
+
+```bash
+nyxgpt rag collections
+```
+
+### Compare embedding models
+
+```bash
+nyxgpt rag compare test-doc.txt \
+  nomic-embed-text:768:default \
+  all-minilm:latest:384:all-minilm \
+  mxbai-embed-large:latest:1024:mxbai
+```
+
+Benchmarks embedding speed and query performance per model to help choose
+the best fit for your use case (`<model>:<dimension>:<collection>` triples).
 
 ### Index a code repository
 
@@ -452,6 +503,47 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/upload \
   - Configurable DPI, language, and page segmentation mode
   - Requires Tesseract OCR to be installed on the system
   - See `[pdf]` section in config.ini for OCR settings
+
+#### PDF OCR Setup
+
+nyxGPT ingests image-based PDFs (little or no extractable text) by falling
+back to OCR via Tesseract:
+
+- **Automatic detection** — OCR triggers when standard text extraction
+  (pdfplumber/pypdf) produces less than the configured threshold (default:
+  50 characters)
+- **Smart fallback** — standard extraction is always attempted first; OCR
+  only runs when needed
+- **Multi-language support** — any installed Tesseract language pack
+
+**Install Tesseract:**
+
+```bash
+# macOS (Homebrew)
+brew install tesseract
+
+# Ubuntu/Debian
+sudo apt-get install tesseract-ocr
+
+# Additional language packs
+brew install tesseract-lang                    # macOS
+sudo apt-get install tesseract-ocr-[lang]      # Ubuntu/Debian, e.g. tesseract-ocr-spa
+```
+
+**How it works:**
+1. Standard text extraction is attempted using pdfplumber and pypdf
+2. If extracted text is below `ocr_min_text_threshold`, OCR is triggered automatically
+3. PDF pages are converted to images at `ocr_dpi`
+4. Tesseract extracts text from each image
+5. If OCR produces more text than standard extraction, it's used instead
+
+**Multiple languages:** combine language codes with `+`, e.g. `ocr_lang = eng+spa`.
+Download additional Tesseract language packs from
+[tesseract-ocr/tessdata](https://github.com/tesseract-ocr/tessdata).
+
+See [`docs/configuration.md`](configuration.md#pdf-section) for the full
+`[pdf]` config reference (`ocr_enabled`, `ocr_min_text_threshold`, `ocr_dpi`,
+`ocr_lang`, `ocr_psm`, `tesseract_cmd`).
 
 **ePUB Files:**
 - Extracts rich metadata (title, author, publisher, description, date, language)
@@ -662,6 +754,33 @@ collections = store.list_collections()
 print(f"Available collections: {collections}")
 store.close()
 ```
+
+### Collections Management UI
+
+The web UI includes a dedicated collections management page at `/admin/collections` for visualizing and managing RAG collections.
+
+**Access:**
+- Navigate to `http://127.0.0.1:3000/admin/collections`
+- Or click **⚙️ Settings** → **RAG Collections** in the main chat interface
+
+**Features:**
+- **View all collections** with real-time statistics:
+  - Document count
+  - Total chunk count
+  - Embedding models used in each collection
+- **Clear collections** to remove all documents and chunks (with confirmation)
+- **Collection insights** showing which embedding models are active
+- **Protected default collection** cannot be cleared to prevent accidental data loss
+
+**Use Cases:**
+- Monitor collection growth and usage
+- Clean up test collections
+- Verify which embedding models are in use
+- Understand document distribution across collections
+
+**Note on collection lifecycle:**
+- **Creation**: Collections are created automatically when you ingest documents with specific embedding models using the CLI (see [Multiple Embedding Models](#multiple-embedding-models) above). No manual collection creation is needed.
+- **Deletion**: Collections can be cleared (truncated) via the UI, removing all documents and chunks while preserving the table structure. To fully drop a collection table, use Cassandra admin tools directly.
 
 ### Collection Management API
 

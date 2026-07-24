@@ -24,6 +24,31 @@ The same configuration file is used by:
 
 ---
 
+## Creating a config file
+
+### Option 1: Interactive wizard (recommended)
+
+```bash
+nyxgpt wizard
+```
+
+The wizard tests your Ollama connection and detects available models, helps
+you select a default model, optionally configures RAG, and generates a
+production-ready `~/.nyxGPT/config.ini`.
+
+### Option 2: Manual
+
+```bash
+mkdir -p ~/.nyxGPT
+cp example.config.ini ~/.nyxGPT/config.ini
+chmod 600 ~/.nyxGPT/config.ini
+```
+
+Edit `~/.nyxGPT/config.ini` to select models, logging options, RAG settings,
+and service paths — see the section reference below.
+
+---
+
 ## `[nyxgpt]` section
 
 General application behavior.
@@ -715,6 +740,25 @@ burst_size = 20                 # max tokens in the bucket
 ```
 
 Enable this when exposing the API beyond localhost.
+
+Rate limiting uses a token bucket algorithm to track requests per IP address.
+When enabled, all API responses include rate limit headers:
+
+- `X-RateLimit-Limit` – Maximum requests allowed
+- `X-RateLimit-Remaining` – Remaining requests in current window
+- `X-RateLimit-Reset` – Unix timestamp when limit resets
+
+If the limit is exceeded, the API returns a `429 Too Many Requests` error:
+
+```json
+{
+  "error": {
+    "code": "rate_limit_exceeded",
+    "message": "Too many requests. Please try again later.",
+    "request_id": "..."
+  }
+}
+```
 
 ---
 

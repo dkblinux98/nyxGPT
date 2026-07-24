@@ -7,6 +7,7 @@ started, read [Configuration](configuration.md) and the root
 ## User guides
 
 - [Configuration](configuration.md) — every `config.ini` section and key
+- [CLI](cli.md) — the `nyxgpt` command-line reference
 - [Sessions](sessions.md) — chat sessions, pinning, tags, search, export
 - [RAG](rag.md) — retrieval-augmented generation: ingestion, collections, querying
 - [UI](ui.md) — the web interface
