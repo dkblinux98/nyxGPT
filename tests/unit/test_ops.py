@@ -2250,6 +2250,47 @@ def test_ensure_mcp_deps_install_raises(monkeypatch, tmp_path):
     assert "OSError" in results[0].details
 
 
+@pytest.mark.unit
+def test_ensure_mcp_deps_uses_npm_ci_when_lockfile_present(monkeypatch, tmp_path):
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/bin/npm")
+
+    seen_cmd = []
+
+    def fake_run(cmd, cwd=None, text=True, capture_output=True):
+        seen_cmd.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_run)
+
+    results = ops._ensure_mcp_deps()
+    assert seen_cmd == [["npm", "ci"]]
+    assert results[0].ok is True
+    assert "npm ci" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_mcp_deps_uses_npm_install_when_no_lockfile(monkeypatch, tmp_path):
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/bin/npm")
+
+    seen_cmd = []
+
+    def fake_run(cmd, cwd=None, text=True, capture_output=True):
+        seen_cmd.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_run)
+
+    results = ops._ensure_mcp_deps()
+    assert seen_cmd == [["npm", "install"]]
+    assert results[0].ok is True
+    assert "npm install" in results[0].message
+
+
 # --- install() step-failure handling ---
 
 

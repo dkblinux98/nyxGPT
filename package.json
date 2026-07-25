@@ -2,7 +2,7 @@
   "name": "nyxgpt",
   "private": true,
   "devDependencies": {
-    "@modelcontextprotocol/server-github": "*",
-    "@upstash/context7-mcp": "*"
+    "@modelcontextprotocol/server-github": "^2025.4.8",
+    "@upstash/context7-mcp": "^3.2.4"
   }
 }
