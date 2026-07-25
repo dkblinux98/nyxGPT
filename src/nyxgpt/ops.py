@@ -1019,7 +1019,10 @@ def _ensure_mcp_deps() -> list[OpsResult]:
 # Compose "cloud/server" stack, so its lifecycle never requires (or pulls in)
 # the rest of docker-compose.yml.
 CASSANDRA_CONTAINER_NAME = "nyxgpt-cassandra"
-CASSANDRA_IMAGE = "cassandra:5.0"
+# Keep this pin identical to the `cassandra` image tag in docker-compose.yml
+# and terraform/main.tf (docker_image.cassandra) -- see docs/docker-compose.md
+# for the image-pinning policy and how to bump all three together.
+CASSANDRA_IMAGE = "cassandra:5.0.8"
 CASSANDRA_VOLUME = "nyxgpt_cassandra_data"
 # Must match the cluster name stamped into CASSANDRA_VOLUME's system keyspace:
 # Cassandra refuses to start when the saved cluster name differs from the

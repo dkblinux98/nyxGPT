@@ -1529,7 +1529,7 @@ def test_ensure_cassandra_container_creates_when_absent(monkeypatch):
             "nyxgpt_cassandra_data:/var/lib/cassandra",
             "-e",
             "CASSANDRA_CLUSTER_NAME=nyxgpt",
-            "cassandra:5.0",
+            "cassandra:5.0.8",
         ]
     ]
 

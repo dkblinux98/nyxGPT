@@ -18,8 +18,11 @@ resource "docker_volume" "nyxgpt_data" {
   name = "nyxgpt_tf_nyxgpt_data"
 }
 
+# Keep this pin identical to docker-compose.yml's `ollama` service image --
+# see docs/docker-compose.md#image-pinning for the policy and how to bump
+# both together.
 resource "docker_image" "ollama" {
-  name = "ollama/ollama:latest"
+  name = "ollama/ollama:0.32.4"
 }
 
 resource "docker_container" "ollama" {
@@ -50,8 +53,12 @@ resource "docker_container" "ollama" {
   }
 }
 
+# Keep this pin identical to docker-compose.yml's `cassandra` service image
+# and src/nyxgpt/ops.py's CASSANDRA_IMAGE -- see
+# docs/docker-compose.md#image-pinning for the policy and how to bump all
+# three together.
 resource "docker_image" "cassandra" {
-  name = "cassandra:5.0"
+  name = "cassandra:5.0.8"
 }
 
 resource "docker_container" "cassandra" {
