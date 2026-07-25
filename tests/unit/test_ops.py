@@ -32,7 +32,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_start_observability_stack", return_value=ok_results) as obs,
         patch.object(ops, "_provision_glitchtip", return_value=ok_results),
     ):
-        rc = ops.install(MagicMock(skip_observability=False))
+        rc = ops.install(MagicMock(skip_observability=False, terraform=False, kubernetes=False))
         assert rc == 0
         out = capsys.readouterr().out
         assert "[OK]" in out
@@ -63,7 +63,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_start_observability_stack", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_provision_glitchtip", return_value=[ops.OpsResult(True, "ok")]),
     ):
-        rc = ops.install(MagicMock(skip_observability=False))
+        rc = ops.install(MagicMock(skip_observability=False, terraform=False, kubernetes=False))
         assert rc == 2
         out = capsys.readouterr().out
         assert "[FAIL]" in out
@@ -89,7 +89,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops, "_start_observability_stack") as obs,
     ):
-        rc = ops.install(MagicMock(skip_observability=True))
+        rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
         assert rc == 0
         obs.assert_not_called()
 
@@ -129,7 +129,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         patch.object(ops, "sync_env_from_config", side_effect=_record("env sync")),
         patch.object(ops, "_persist_compose_file_path", side_effect=_record("compose file path")),
     ):
-        rc = ops.install(MagicMock(skip_observability=True))
+        rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
         assert rc == 0
 
     assert call_order[0] == "reconcile"
@@ -2309,7 +2309,7 @@ def test_ops_install_catches_exception_from_a_step(capsys):
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
     ):
-        rc = ops.install(MagicMock())
+        rc = ops.install(MagicMock(terraform=False, kubernetes=False))
         assert rc == 2
         out = capsys.readouterr().out
         assert "ops install failed: web deps" in out
@@ -2609,7 +2609,7 @@ def test_ops_install_logs_start_and_summary(caplog):
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
         caplog.at_level("INFO", logger="nyxgpt.ops"),
     ):
-        rc = ops.install(MagicMock())
+        rc = ops.install(MagicMock(terraform=False, kubernetes=False))
 
     assert rc == 0
     messages = [r.getMessage() for r in caplog.records]
@@ -2632,7 +2632,7 @@ def test_ops_install_logs_error_when_step_raises(caplog):
         patch.object(ops, "_ensure_log_symlinks", return_value=[]),
         caplog.at_level("INFO", logger="nyxgpt.ops"),
     ):
-        rc = ops.install(MagicMock())
+        rc = ops.install(MagicMock(terraform=False, kubernetes=False))
 
     assert rc == 2
     error_records = [r for r in caplog.records if r.levelname == "ERROR"]
@@ -3593,7 +3593,14 @@ def test_stop_returns_nonzero_on_failure(capsys):
 
 @pytest.mark.unit
 def test_down_refuses_volumes_without_yes_really(capsys):
-    args = MagicMock(app_only=False, observability_only=False, volumes=True, yes_really=False)
+    args = MagicMock(
+        app_only=False,
+        observability_only=False,
+        volumes=True,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
     rc = ops.down(args)
     assert rc == 2
     err = capsys.readouterr().err
@@ -3602,7 +3609,14 @@ def test_down_refuses_volumes_without_yes_really(capsys):
 
 @pytest.mark.unit
 def test_down_all_scope_stops_native_and_composes_down(capsys):
-    args = MagicMock(app_only=False, observability_only=False, volumes=False, yes_really=False)
+    args = MagicMock(
+        app_only=False,
+        observability_only=False,
+        volumes=False,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
     with (
         patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]) as sb,
         patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]) as sd,
@@ -3630,7 +3644,14 @@ def test_down_all_scope_stops_native_and_composes_down(capsys):
 
 @pytest.mark.unit
 def test_down_app_only_scope_skips_observability(capsys):
-    args = MagicMock(app_only=True, observability_only=False, volumes=False, yes_really=False)
+    args = MagicMock(
+        app_only=True,
+        observability_only=False,
+        volumes=False,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
     with (
         patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
@@ -3648,7 +3669,14 @@ def test_down_app_only_scope_skips_observability(capsys):
 
 @pytest.mark.unit
 def test_down_observability_only_scope_skips_native_and_app(capsys):
-    args = MagicMock(app_only=False, observability_only=True, volumes=False, yes_really=False)
+    args = MagicMock(
+        app_only=False,
+        observability_only=True,
+        volumes=False,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
     with (
         patch.object(ops, "_stop_brew_service") as sb,
         patch.object(ops, "_stop_docker_container") as sd,
@@ -3670,7 +3698,14 @@ def test_down_observability_only_scope_skips_native_and_app(capsys):
 
 @pytest.mark.unit
 def test_down_with_volumes_and_yes_really_passes_volumes_flag():
-    args = MagicMock(app_only=True, observability_only=False, volumes=True, yes_really=True)
+    args = MagicMock(
+        app_only=True,
+        observability_only=False,
+        volumes=True,
+        yes_really=True,
+        terraform=False,
+        kubernetes=False,
+    )
     with (
         patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
@@ -3686,7 +3721,14 @@ def test_down_with_volumes_and_yes_really_passes_volumes_flag():
 
 @pytest.mark.unit
 def test_down_skips_compose_teardown_without_docker():
-    args = MagicMock(app_only=False, observability_only=False, volumes=False, yes_really=False)
+    args = MagicMock(
+        app_only=False,
+        observability_only=False,
+        volumes=False,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
     with (
         patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
@@ -3701,7 +3743,14 @@ def test_down_skips_compose_teardown_without_docker():
 
 @pytest.mark.unit
 def test_down_returns_nonzero_on_failure():
-    args = MagicMock(app_only=False, observability_only=False, volumes=False, yes_really=False)
+    args = MagicMock(
+        app_only=False,
+        observability_only=False,
+        volumes=False,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
     with (
         patch.object(
             ops, "_stop_brew_service", return_value=[ops.OpsResult(False, "bad", "details")]
