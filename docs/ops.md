@@ -43,6 +43,7 @@ nyxgpt ops env-sync
 nyxgpt ops logs
 nyxgpt ops observability
 nyxgpt ops glitchtip-init
+nyxgpt ops migrate-volumes
 ```
 
 ---
@@ -58,6 +59,9 @@ starts it.)
 
 This command:
 
+- Migrates any pre-#3346 named-volume container data into
+  `~/.nyxGPT/volumes/` (see [`nyxgpt ops migrate-volumes`](#nyxgpt-ops-migrate-volumes)
+  below; a no-op if you have none)
 - Detects and stops any Docker Compose app-tier containers (`api`, `web`,
   `ollama`, `cassandra`) left running from an earlier raw `docker compose
   up` or a previous mixed-mode install, reporting what it stopped
@@ -69,10 +73,14 @@ This command:
 - Verifies Docker availability
 - Creates the local Cassandra container if it doesn't exist yet (name
   `nyxgpt-cassandra`, image `cassandra:5.0`, bound to
-  `${NYXGPT_BIND_ADDR:-127.0.0.1}:${CASSANDRA_PORT:-9042}`, persisted in a
-  named volume), starts it if it exists but is stopped, or leaves it alone
-  if it's already running — via plain `docker run`/`docker start`, entirely
-  separate from the Compose stack
+  `${NYXGPT_BIND_ADDR:-127.0.0.1}:${CASSANDRA_PORT:-9042}`, persisted in
+  `~/.nyxGPT/volumes/cassandra` -- the same host directory `docker-compose.yml`
+  and `terraform/main.tf` bind-mount, see
+  [docker-compose.md#volumes](docker-compose.md#volumes)), starts it if it
+  exists but is stopped, or leaves it alone if it's already running — via
+  plain `docker run`/`docker start`, entirely separate from the Compose
+  stack. Refuses to start if the Terraform-managed Cassandra container is
+  already running against that same directory.
 - Installs log-following helpers
 - Starts the observability stack (Grafana, Prometheus, Loki, promtail, the
   OTel collector, Jaeger, GlitchTip) — see
@@ -287,8 +295,10 @@ nyxgpt ops down
 Stops the native `api`/`web`/`ollama`/`cassandra`/`cassandra-logs`
 components (same as `nyxgpt ops stop`), then runs `docker compose down` for
 every Compose service in the core app tier and the observability profiles.
-Named volumes (Cassandra data, pulled Ollama models, Grafana/Loki state)
-are **preserved** by default.
+Container data (Cassandra data, pulled Ollama models, Grafana/Loki state --
+all bind-mounted under `~/.nyxGPT/volumes/`, see
+[docker-compose.md#volumes](docker-compose.md#volumes)) is **preserved** by
+default.
 
 ### Scoping to one tier
 
@@ -320,10 +330,13 @@ deployments, not the native/Compose stack above.
 nyxgpt ops down --volumes --yes-really
 ```
 
-`--volumes` also removes the stack's named Compose volumes -- Cassandra's
-data directory, pulled Ollama models, Prometheus/Grafana/Loki state. This is
-**destructive** and irreversible, so `--volumes` alone is refused; you must
-also pass `--yes-really` to confirm.
+`--volumes` also deletes the stack's `~/.nyxGPT/volumes/` bind-mount
+directories for the services torn down -- Cassandra's data directory,
+pulled Ollama models, Prometheus/Grafana/Loki state. This is **destructive**
+and irreversible, so `--volumes` alone is refused; you must also pass
+`--yes-really` to confirm. (A raw `docker compose down -v` no longer deletes
+anything here -- there are no Docker-managed named volumes left to remove --
+this wrapper is what actually deletes the data now.)
 
 ### Behavior
 
@@ -512,6 +525,62 @@ Exit codes:
   up/healthy yet)
 - `2` -- a step actually failed (e.g. couldn't reach the GlitchTip API,
   or config.ini is missing -- run `nyxgpt wizard` first)
+
+---
+
+## `nyxgpt ops migrate-volumes`
+
+Migrates container data out of pre-#3346 named Docker volumes
+(`ollama_data`, `cassandra_data`, `nyxgpt_data`, the Terraform `nyxgpt_tf_*`
+equivalents, ...) into the `~/.nyxGPT/volumes/<component>/` bind-mount
+layout described in
+[docs/docker-compose.md#volumes](docker-compose.md#volumes).
+
+Usage:
+
+```bash
+nyxgpt ops migrate-volumes
+```
+
+`nyxgpt ops install` (native and `--terraform --local`) already runs this
+automatically as its first step, so most users never need to run it by
+hand -- this is a standalone escape hatch for Compose-only users who never
+run `install`.
+
+**Run this before your first `docker compose up`/`up --build` after
+upgrading** -- see the ordering warning below.
+
+Behavior:
+
+- **Idempotent via a marker, not directory emptiness** -- each component gets
+  a marker file under `~/.nyxGPT/.migration-state/` once it's been
+  reconciled (migrated, or confirmed to have no legacy volume), and later
+  runs skip components that already have one. This is deliberately *not*
+  "destination directory is non-empty", because a freshly-started container
+  populates its empty bind mount with new files within seconds -- an
+  emptiness check can't tell that apart from "already migrated in a prior
+  run".
+- Copies each legacy volume's contents through a throwaway container (named
+  volumes on macOS/Docker Desktop live inside the Docker VM, not directly
+  reachable from the host filesystem), then removes the old volume once the
+  copy succeeds. A volume still attached to something else is left behind
+  with a note rather than failing the migration.
+- A no-op with a clear message if Docker isn't installed, or if no legacy
+  volume is found for a component (fresh installs have nothing to migrate).
+- **Refuses to auto-migrate, loudly, if a legacy volume still exists for a
+  component whose destination is already non-empty and not yet marked
+  reconciled** -- e.g. if the new bind-mounted stack was brought up before
+  running this command. Auto-merging in that situation risks silently
+  overwriting or shadowing whichever side holds the data you actually want,
+  so it fails with instructions to inspect both sides, merge by hand, and
+  remove the old volume once done (which clears the warning on the next run).
+
+Exit codes:
+
+- `0` -- every component's data was migrated (or already up to date, or had
+  nothing to migrate)
+- `2` -- a copy failed, or a component was refused because its destination
+  was already populated while a legacy volume still exists for it
 
 ---
 

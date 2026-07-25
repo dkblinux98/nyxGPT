@@ -44,17 +44,19 @@ Wait several minutes for Cassandra to finish starting.
 
 ### Optional: persistent storage
 
-To persist data across container restarts:
+To persist data across container restarts, bind-mount a host directory
+rather than relying on Docker's own ephemeral container storage (this is
+exactly what `nyxgpt ops install` does automatically -- see
+[docs/docker-compose.md#volumes](docker-compose.md#volumes) -- prefer that
+over the manual steps below):
 
 ```bash
-docker volume create nyxgpt_cassandra_data
-
 docker rm -f nyxgpt-cassandra
 
 docker run -d \
   --name nyxgpt-cassandra \
   -p 9042:9042 \
-  -v nyxgpt_cassandra_data:/var/lib/cassandra \
+  -v ~/.nyxGPT/volumes/cassandra:/var/lib/cassandra \
   cassandra:5.0
 ```
 

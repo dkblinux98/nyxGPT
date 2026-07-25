@@ -1645,6 +1645,25 @@ def test_ops_observability_dispatches_to_ops_module(
     assert "[OK] Observability stack up" in capsys.readouterr().out
 
 
+def test_ops_migrate_volumes_dispatches_to_ops_module(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Test `nyxgpt ops migrate-volumes` parses and dispatches (issue #3346)."""
+    import nyxgpt.cli as cli_mod
+    from nyxgpt.ops import OpsResult
+
+    monkeypatch.setattr(
+        cli_mod.ops_mod,
+        "migrate_legacy_volumes",
+        lambda: [OpsResult(True, "Migrated cassandra data")],
+    )
+
+    exit_code = cli(["ops", "migrate-volumes"])
+
+    assert exit_code == 0
+    assert "[OK] Migrated cassandra data" in capsys.readouterr().out
+
+
 def test_ops_install_skip_observability_flag_parses(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1654,6 +1673,7 @@ def test_ops_install_skip_observability_flag_parses(
 
     ok = [OpsResult(True, "ok")]
     for step in (
+        "migrate_legacy_volumes",
         "_reconcile_phantom_compose_app_containers",
         "_install_scripts",
         "_ensure_web_deps",

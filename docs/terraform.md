@@ -42,12 +42,14 @@ nyxgpt ops install --terraform --local
 Per the project's [Operational Command Wrapping](../CLAUDE.md) rule, this is
 the supported way to run this deployment — no raw `brew`/`terraform`
 commands required. It wraps the whole flow described below into one step:
-installs Terraform via the official HashiCorp tap if it isn't already on
-PATH (`brew install terraform` no longer works on its own — HashiCorp pulled
-the formula from homebrew-core after the 2023 BUSL relicense), bootstraps
-`terraform.tfvars` from the example (a random `auth_api_key` is generated
-unless you pass `--api-key` or answer the interactive prompt), and runs
-`init` → `plan` → `apply`, then reports each container's health plus the
+migrates any pre-#3346 named-volume data into `~/.nyxGPT/volumes/` (see
+[docker-compose.md#volumes](docker-compose.md#volumes); a no-op if you have
+none), installs Terraform via the official HashiCorp tap if it isn't already
+on PATH (`brew install terraform` no longer works on its own — HashiCorp
+pulled the formula from homebrew-core after the 2023 BUSL relicense),
+bootstraps `terraform.tfvars` from the example (a random `auth_api_key` is
+generated unless you pass `--api-key` or answer the interactive prompt), and
+runs `init` → `plan` → `apply`, then reports each container's health plus the
 `api_url`/`web_url`/`ollama_url` outputs.
 
 `--local` is required and explicit — it's the only locality implemented
@@ -124,9 +126,10 @@ terraform apply
 This builds the `api`/`web` images from `repo_path` (equivalent to `docker
 compose up --build`) and starts all four containers on a dedicated
 `nyxgpt-terraform` bridge network. First boot still needs a model pulled into
-the `ollama` container once (state persists in the `nyxgpt_tf_ollama_data`
-volume across `terraform apply`/`destroy` cycles as long as the volume isn't
-deleted):
+the `ollama` container once (state persists in `~/.nyxGPT/volumes/ollama` --
+the same host directory `docker-compose.yml` uses, so a model already pulled
+there doesn't need re-downloading here, and vice versa; see
+[docker-compose.md#volumes](docker-compose.md#volumes)):
 
 ```bash
 docker exec nyxgpt-tf-ollama ollama pull qwen2.5:0.5b
@@ -150,12 +153,17 @@ terraform destroy
 
 (`nyxgpt ops down --terraform` wraps this — see [above](#one-command-bring-up-nyxgpt-ops).)
 
-Removes the containers, network, and named volumes (`nyxgpt_tf_ollama_data`,
-`nyxgpt_tf_cassandra_data`, `nyxgpt_tf_nyxgpt_data`) — this discards pulled
-models and any chat/RAG data stored by this stack, same as `docker compose
-down -v`. Omit the volumes from state first (`terraform state rm
-docker_volume.ollama_data`, etc.) if you want to keep pulled models across a
-destroy/apply cycle.
+Removes the containers and network only. Unlike before #3346, this does
+**not** discard pulled models or chat/RAG data: `ollama`/`cassandra`/`api`
+bind-mount `~/.nyxGPT/volumes/{ollama,cassandra,nyxgpt-data}` on the host
+(see [docker-compose.md#volumes](docker-compose.md#volumes)) rather than
+Terraform-managed `docker_volume` resources, so there's nothing for
+`terraform destroy` to remove — that data is shared with `docker-compose.yml`
+and (Cassandra only) the native `nyxgpt ops install` Cassandra container, and
+survives a destroy/apply cycle (or switching deployment modes entirely) by
+design. To actually delete it, remove the host directories yourself or use
+`nyxgpt ops down --volumes --yes-really` (Compose scope) — see
+[`nyxgpt ops down`](ops.md#nyxgpt-ops-down).
 
 ## Relationship to the other deployment paths
 
@@ -167,7 +175,15 @@ destroy/apply cycle.
 | [Kubernetes](kubernetes.md) | Local cluster (kind/minikube/k3s), blue/green and canary rollout of the API |
 
 Only run one of Compose or Terraform at a time against the same host ports —
-both default to `8000`/`3000`/`11434`/`9042`.
+both default to `8000`/`3000`/`11434`/`9042`. This also matters for data
+integrity now, not just ports: `ollama`/`cassandra`/`api` bind-mount the same
+`~/.nyxGPT/volumes/{ollama,cassandra,nyxgpt-data}` host directories as
+`docker-compose.yml` (see [docker-compose.md#volumes](docker-compose.md#volumes)),
+so two Cassandra processes writing to `~/.nyxGPT/volumes/cassandra`
+concurrently (e.g. if you've customized `cassandra_port` past the default
+collision) would corrupt it. `nyxgpt ops install --terraform --local` and the
+native `nyxgpt ops install` Cassandra container both refuse to start against
+an already-running instance of the other for this reason.
 
 ## Image versions
 

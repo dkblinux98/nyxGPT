@@ -49,6 +49,40 @@ and service paths — see the section reference below.
 
 ---
 
+## Container data layout (`~/.nyxGPT/volumes/`)
+
+`~/.nyxGPT` holds two distinct kinds of state, both on the host filesystem
+(no opaque Docker-managed storage, see issue #3346):
+
+- **Native process state** — `config.ini`, `sessions_dir`/`vectorstore_dir`
+  (see the `[nyxgpt]` section below), `logs/`, `cache/`: written directly by
+  the native `api`/`web`/`nyxgpt` processes running as your user.
+- **Container data** — `~/.nyxGPT/volumes/<component>/`: bind-mounted into
+  the Docker/Terraform-managed containers (Ollama, Cassandra, the
+  containerized api, and the opt-in observability stack). These are separate
+  from the native state above; a containerized `api` never reads or writes
+  your native `sessions_dir`/`vectorstore_dir` directly, since it sees its
+  own `/root/.nyxGPT` bind-mounted from `~/.nyxGPT/volumes/nyxgpt-data`.
+
+| Host directory | Component | Shared across |
+|---|---|---|
+| `~/.nyxGPT/volumes/ollama` | Pulled Ollama models | Compose + Terraform |
+| `~/.nyxGPT/volumes/cassandra` | Cassandra data (chats/RAG vectors) | Compose + Terraform + native `nyxgpt ops install` |
+| `~/.nyxGPT/volumes/nyxgpt-data` | Containerized api's home | Compose + Terraform |
+| `~/.nyxGPT/volumes/prometheus`, `grafana`, `loki`, `glitchtip-postgres`, `glitchtip-uploads` | Opt-in observability stack | Compose only today |
+
+See [docker-compose.md#volumes](docker-compose.md#volumes) and
+[terraform.md](terraform.md) for exactly which service/resource mounts each
+directory, and [`nyxgpt ops migrate-volumes`](ops.md) for migrating
+pre-#3346 named-volume data into this layout on upgrade.
+
+**Backup guidance:** because both native state and container data now live
+under one host directory, backing up `~/.nyxGPT` (as a whole) captures
+everything — chats, RAG vectors, pulled models, and config — regardless of
+which deployment mode (native, Compose, Terraform) produced it.
+
+---
+
 ## `[nyxgpt]` section
 
 General application behavior.

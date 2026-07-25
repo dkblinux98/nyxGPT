@@ -71,21 +71,24 @@ tuning guidance and hardware-based recommendations.
 
 ## 4. Backup configuration
 
-nyxGPT keeps all durable state under `~/.nyxGPT/` (or the `nyxgpt_data` /
-`cassandra_data` volumes when running via
-[Docker Compose](docker-compose.md#volumes)). There is no built-in backup
-command — back these up with your own snapshot/cron tooling:
+nyxGPT keeps all durable state under `~/.nyxGPT/` — both native process
+state (config, sessions, logs) and, since #3346, every container's data too
+(`~/.nyxGPT/volumes/<component>/`, bind-mounted by
+[Docker Compose](docker-compose.md#volumes) and [Terraform](terraform.md)).
+Backing up `~/.nyxGPT` as a whole now captures everything regardless of
+deployment mode. There is no built-in backup command — back it up with your
+own snapshot/cron tooling:
 
 - [ ] `~/.nyxGPT/config.ini` — runtime configuration and secrets (store the
       backup with the same access restrictions as the original, `chmod 600`)
 - [ ] `~/.nyxGPT/sessions/` — conversation history; contains user content,
       handle with the same care as the live data (see
       [`docs/security.md#session-security`](security.md#session-security))
-- [ ] Cassandra data (`~/.nyxGPT/cassandra` locally, or the `cassandra_data`
-      Docker volume) — the RAG vector store; losing it means re-ingesting all
-      documents
-- [ ] `ollama_data` / pulled models — large but re-downloadable; back up only
-      if re-pulling is impractical for your network
+- [ ] `~/.nyxGPT/volumes/cassandra` — the RAG vector store (shared by native,
+      Compose, and Terraform); losing it means re-ingesting all documents
+- [ ] `~/.nyxGPT/volumes/ollama` — pulled models (shared by Compose and
+      Terraform); large but re-downloadable, back up only if re-pulling is
+      impractical for your network
 - [ ] A documented, tested restore procedure — a backup you haven't restored
       from is not verified. At minimum, confirm you can restore
       `~/.nyxGPT/config.ini` and Cassandra data into a fresh environment and

@@ -2694,32 +2694,24 @@ Expected output:
 unless-stopped
 ```
 ```bash
-# verify Cassandra data is on a named volume (persistence)
+# verify Cassandra data is on a host bind mount (persistence)
 docker inspect nyxgpt-cassandra \
-  --format '{{ range .Mounts }}{{ .Name }} -> {{ .Destination }}{{ println }}{{ end }}'
+  --format '{{ range .Mounts }}{{ .Source }} -> {{ .Destination }}{{ println }}{{ end }}'
 ```
 
 Expected output should include something like:
 
 ```
-nyxgpt_cassandra_data -> /var/lib/cassandra
+/Users/you/.nyxGPT/volumes/cassandra -> /var/lib/cassandra
 ```
 
-If not set correctly, recreate the container:
+If not set correctly, this is exactly what `nyxgpt ops install` reconciles
+(see `_ensure_cassandra_container` in `src/nyxgpt/ops.py` and
+[docs/docker-compose.md#volumes](docker-compose.md#volumes)) -- run it rather
+than recreating the container by hand:
 
 ```bash
-docker rm -f nyxgpt-cassandra
-
-# create the named volume (safe if it already exists)
-docker volume create nyxgpt_cassandra_data
-
-docker run -d \
-  --name nyxgpt-cassandra \
-  --restart unless-stopped \
-  -p 9042:9042 \
-  -e CASSANDRA_CLUSTER_NAME=nyxgpt \
-  -v nyxgpt_cassandra_data:/var/lib/cassandra \
-  cassandra:5.0
+nyxgpt ops install
 ```
 
 

@@ -17,6 +17,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
     # Mock internal steps to all succeed
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
         patch.object(ops, "_install_scripts", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
@@ -44,6 +45,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
 def test_ops_install_returns_nonzero_when_any_fail(capsys):
     mixed = [ops.OpsResult(True, "ok"), ops.OpsResult(False, "bad", "details")]
     with (
+        patch.object(ops, "migrate_legacy_volumes", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(
             ops,
             "_reconcile_phantom_compose_app_containers",
@@ -75,6 +77,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
 def test_ops_install_skip_observability_flag_skips_the_step(capsys):
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
         patch.object(ops, "_install_scripts", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
@@ -112,6 +115,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         return _fn
 
     with (
+        patch.object(ops, "migrate_legacy_volumes", side_effect=_record("migrate volumes")),
         patch.object(
             ops, "_reconcile_phantom_compose_app_containers", side_effect=_record("reconcile")
         ),
@@ -133,7 +137,8 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
         assert rc == 0
 
-    assert call_order[0] == "reconcile"
+    assert call_order[0] == "migrate volumes"
+    assert call_order[1] == "reconcile"
     assert "cassandra container" in call_order
     assert "ollama service" in call_order
     assert "env sync" in call_order
@@ -1455,11 +1460,30 @@ def test_ensure_cassandra_container_no_docker():
 def test_ensure_cassandra_container_already_running():
     with (
         patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
-        patch.object(ops, "_docker_container_state", lambda name: "running"),
+        patch.object(
+            ops,
+            "_docker_container_state",
+            lambda name: "running" if name == "nyxgpt-cassandra" else "absent",
+        ),
     ):
         results = ops._ensure_cassandra_container()
     assert results[0].ok is True
     assert "already running" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_cassandra_container_refuses_when_terraform_cassandra_running():
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(
+            ops,
+            "_docker_container_state",
+            lambda name: "running" if name == "nyxgpt-tf-cassandra" else "absent",
+        ),
+    ):
+        results = ops._ensure_cassandra_container()
+    assert results[0].ok is False
+    assert "Terraform-managed Cassandra" in results[0].message
 
 
 @pytest.mark.unit
@@ -1498,9 +1522,11 @@ def test_ensure_cassandra_container_start_failure_reports_details():
 
 
 @pytest.mark.unit
-def test_ensure_cassandra_container_creates_when_absent(monkeypatch):
+def test_ensure_cassandra_container_creates_when_absent(monkeypatch, tmp_path):
     monkeypatch.delenv("NYXGPT_BIND_ADDR", raising=False)
     monkeypatch.delenv("CASSANDRA_PORT", raising=False)
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
     run_calls = []
     with (
         patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
@@ -1514,6 +1540,8 @@ def test_ensure_cassandra_container_creates_when_absent(monkeypatch):
         results = ops._ensure_cassandra_container()
     assert results[0].ok is True
     assert "Created Cassandra container" in results[0].message
+    data_dir = home / ".nyxGPT" / "volumes" / "cassandra"
+    assert data_dir.is_dir()
     assert run_calls == [
         [
             "docker",
@@ -1526,7 +1554,7 @@ def test_ensure_cassandra_container_creates_when_absent(monkeypatch):
             "-p",
             "127.0.0.1:9042:9042",
             "-v",
-            "nyxgpt_cassandra_data:/var/lib/cassandra",
+            f"{data_dir}:/var/lib/cassandra",
             "-e",
             "CASSANDRA_CLUSTER_NAME=nyxgpt",
             "cassandra:5.0.8",
@@ -1535,9 +1563,10 @@ def test_ensure_cassandra_container_creates_when_absent(monkeypatch):
 
 
 @pytest.mark.unit
-def test_ensure_cassandra_container_creates_with_env_overrides(monkeypatch):
+def test_ensure_cassandra_container_creates_with_env_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv("NYXGPT_BIND_ADDR", "0.0.0.0")
     monkeypatch.setenv("CASSANDRA_PORT", "19042")
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
     run_calls = []
     with (
         patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
@@ -1554,7 +1583,8 @@ def test_ensure_cassandra_container_creates_with_env_overrides(monkeypatch):
 
 
 @pytest.mark.unit
-def test_ensure_cassandra_container_create_failure_reports_details():
+def test_ensure_cassandra_container_create_failure_reports_details(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
     with (
         patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
         patch.object(ops, "_docker_container_state", lambda name: "absent"),
@@ -1568,6 +1598,265 @@ def test_ensure_cassandra_container_create_failure_reports_details():
     assert results[0].ok is False
     assert "Failed to create Cassandra container" in results[0].message
     assert "no such image" in results[0].details
+
+
+# --- Legacy named-volume migration (issue #3346) ---
+
+
+@pytest.mark.unit
+def test_docker_volume_exists_true_and_false():
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0)),
+    ):
+        assert ops._docker_volume_exists("nyxgpt_cassandra_data") is True
+
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1)),
+    ):
+        assert ops._docker_volume_exists("nyxgpt_cassandra_data") is False
+
+
+@pytest.mark.unit
+def test_docker_volume_exists_false_without_docker():
+    with patch.object(ops, "_which", lambda _: None):
+        assert ops._docker_volume_exists("anything") is False
+
+
+@pytest.mark.unit
+def test_migrate_docker_volume_to_bind_dir_success(tmp_path):
+    dest = tmp_path / "cassandra"
+    dest.mkdir()
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    with patch.object(ops, "_run", fake_run):
+        result = ops._migrate_docker_volume_to_bind_dir(
+            "nyxgpt_cassandra_data", dest, label="cassandra"
+        )
+    assert result.ok is True
+    assert "Migrated cassandra data" in result.message
+    assert "Old volume removed" in result.details
+    assert calls[0][:3] == ["docker", "run", "--rm"]
+    assert calls[1] == ["docker", "volume", "rm", "nyxgpt_cassandra_data"]
+
+
+@pytest.mark.unit
+def test_migrate_docker_volume_to_bind_dir_copy_failure(tmp_path):
+    dest = tmp_path / "cassandra"
+    dest.mkdir()
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="copy boom")
+
+    with patch.object(ops, "_run", fake_run):
+        result = ops._migrate_docker_volume_to_bind_dir(
+            "nyxgpt_cassandra_data", dest, label="cassandra"
+        )
+    assert result.ok is False
+    assert "Failed to migrate cassandra data" in result.message
+    assert "copy boom" in result.details
+    # Copy failed -- must not attempt to remove the source volume.
+    assert len(calls) == 1
+
+
+@pytest.mark.unit
+def test_migrate_docker_volume_to_bind_dir_rm_failure_is_non_fatal(tmp_path):
+    dest = tmp_path / "cassandra"
+    dest.mkdir()
+
+    def fake_run(cmd, **k):
+        if cmd[:3] == ["docker", "volume", "rm"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="volume in use")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    with patch.object(ops, "_run", fake_run):
+        result = ops._migrate_docker_volume_to_bind_dir(
+            "nyxgpt_cassandra_data", dest, label="cassandra"
+        )
+    assert result.ok is True
+    assert "Migrated cassandra data" in result.message
+    assert "Could not remove the old volume" in result.details
+
+
+@pytest.mark.unit
+def test_migrate_legacy_volumes_skipped_without_docker(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
+    with patch.object(ops, "_which", lambda _: None):
+        results = ops.migrate_legacy_volumes()
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert "docker not found" in results[0].message
+
+
+@pytest.mark.unit
+def test_migrate_legacy_volumes_refuses_when_dest_populated_and_legacy_volume_still_exists(
+    monkeypatch, tmp_path
+):
+    """Regression test for the data-stranding bug found in review of #3346.
+
+    If a legacy volume is still present but the destination directory is
+    already non-empty (e.g. the new bind-mounted stack was started before
+    `migrate-volumes` ran) and we've never confirmed reconciliation for this
+    component, migration must fail loudly rather than silently reporting
+    "already has data -- skipping" and leaving the old volume un-migrated
+    and un-flagged.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    cassandra_dir = home / ".nyxGPT" / "volumes" / "cassandra"
+    cassandra_dir.mkdir(parents=True)
+    (cassandra_dir / "system.log").write_text("freshly created by the new bind-mounted service")
+
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_volume_exists", lambda name: True),
+    ):
+        results = ops.migrate_legacy_volumes()
+
+    cassandra_result = next(r for r in results if r.message.startswith("cassandra:"))
+    assert cassandra_result.ok is False
+    assert "refusing to auto-migrate" in cassandra_result.message
+    # No marker written -- must keep warning on every subsequent run until
+    # the user resolves it by hand.
+    assert not (home / ".nyxGPT" / ".migration-state" / "cassandra.migrated").exists()
+
+
+@pytest.mark.unit
+def test_migrate_legacy_volumes_populated_dest_with_no_legacy_volume_is_fine(monkeypatch, tmp_path):
+    """A destination populated by a genuinely fresh install (no prior named
+    volumes ever existed) must not be mistaken for the stranding scenario."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    cassandra_dir = home / ".nyxGPT" / "volumes" / "cassandra"
+    cassandra_dir.mkdir(parents=True)
+    (cassandra_dir / "system.log").write_text("fresh install, never had named volumes")
+
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_volume_exists", lambda name: False),
+    ):
+        results = ops.migrate_legacy_volumes()
+
+    cassandra_result = next(r for r in results if "cassandra" in r.message)
+    assert cassandra_result.ok is True
+    assert "nothing to migrate" in cassandra_result.message
+    assert (home / ".nyxGPT" / ".migration-state" / "cassandra.migrated").exists()
+
+
+@pytest.mark.unit
+def test_migrate_legacy_volumes_marker_skips_recheck_on_later_runs(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
+    exists_calls = []
+
+    def fake_exists(name):
+        exists_calls.append(name)
+        return False
+
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_volume_exists", fake_exists),
+    ):
+        first = ops.migrate_legacy_volumes()
+        calls_after_first_run = len(exists_calls)
+        second = ops.migrate_legacy_volumes()
+
+    assert all(r.ok for r in first)
+    assert all(r.ok and "already reconciled" in r.message for r in second)
+    # Second run must not re-check Docker for components already marked reconciled.
+    assert len(exists_calls) == calls_after_first_run
+
+
+@pytest.mark.unit
+def test_migrate_legacy_volumes_reports_nothing_to_migrate(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_volume_exists", lambda name: False),
+    ):
+        results = ops.migrate_legacy_volumes()
+    assert len(results) == len(ops.LEGACY_VOLUME_SOURCES)
+    assert all(r.ok and "nothing to migrate" in r.message for r in results)
+
+
+@pytest.mark.unit
+def test_migrate_legacy_volumes_migrates_first_candidate_found(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
+    migrated = []
+
+    def fake_migrate(volume_name, dest_dir, *, label):
+        migrated.append((volume_name, label))
+        return ops.OpsResult(True, f"Migrated {label} data from legacy volume '{volume_name}'")
+
+    # Only the *second* candidate for cassandra (Terraform's) exists.
+    def fake_exists(name):
+        return name == "nyxgpt_tf_cassandra_data"
+
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_volume_exists", fake_exists),
+        patch.object(ops, "_migrate_docker_volume_to_bind_dir", fake_migrate),
+    ):
+        results = ops.migrate_legacy_volumes()
+
+    assert ("nyxgpt_tf_cassandra_data", "cassandra") in migrated
+    cassandra_result = next(
+        r for r in results if "cassandra" in r.message and "Migrated" in r.message
+    )
+    assert cassandra_result.ok is True
+
+
+@pytest.mark.unit
+def test_migrate_legacy_volumes_notes_unmigrated_second_candidate(monkeypatch, tmp_path):
+    """When both a Compose-era and Terraform-era legacy volume exist for the
+    same shared destination, only the first (priority order) is migrated --
+    but the second must be surfaced to the user, not silently dropped."""
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
+
+    def fake_migrate(volume_name, dest_dir, *, label):
+        return ops.OpsResult(
+            True,
+            f"Migrated {label} data from legacy volume '{volume_name}'",
+            "Old volume removed.",
+        )
+
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_volume_exists", lambda name: True),
+        patch.object(ops, "_migrate_docker_volume_to_bind_dir", fake_migrate),
+    ):
+        results = ops.migrate_legacy_volumes()
+
+    cassandra_result = next(
+        r for r in results if "cassandra" in r.message and "Migrated" in r.message
+    )
+    assert cassandra_result.ok is True
+    assert "nyxgpt_tf_cassandra_data" in cassandra_result.details
+    assert "also found but not migrated" in cassandra_result.details
+
+
+@pytest.mark.unit
+def test_migrate_volumes_cmd_returns_0_on_success(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
+    with patch.object(ops, "_which", lambda _: None):
+        assert ops.migrate_volumes_cmd(SimpleNamespace()) == 0
+
+
+@pytest.mark.unit
+def test_migrate_volumes_cmd_returns_2_on_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
+
+    def fake_migrate():
+        return [ops.OpsResult(False, "boom")]
+
+    with patch.object(ops, "migrate_legacy_volumes", fake_migrate):
+        assert ops.migrate_volumes_cmd(SimpleNamespace()) == 2
 
 
 # --- _detect_phantom_compose_app_containers / _reconcile_phantom_compose_app_containers ---
@@ -2299,6 +2588,7 @@ def test_ensure_mcp_deps_uses_npm_install_when_no_lockfile(monkeypatch, tmp_path
 def test_ops_install_catches_exception_from_a_step(capsys):
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
         patch.object(ops, "_install_scripts", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", side_effect=RuntimeError("kaboom")),
@@ -2597,6 +2887,7 @@ def test_emit_results_logs_ok_at_info_and_failure_at_warning(caplog):
 def test_ops_install_logs_start_and_summary(caplog):
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
         patch.object(ops, "_install_scripts", return_value=ok_results),
         patch.object(ops, "_ensure_web_deps", return_value=ok_results),
@@ -2621,6 +2912,7 @@ def test_ops_install_logs_start_and_summary(caplog):
 @pytest.mark.unit
 def test_ops_install_logs_error_when_step_raises(caplog):
     with (
+        patch.object(ops, "migrate_legacy_volumes", return_value=[]),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=[]),
         patch.object(ops, "_install_scripts", side_effect=RuntimeError("boom")),
         patch.object(ops, "_ensure_web_deps", return_value=[]),
@@ -3419,15 +3711,16 @@ def test_compose_down_success_preserves_volumes_by_default(monkeypatch):
     )
     results = ops._compose_down(["api", "web"], volumes=False)
     assert results[0].ok is True
-    assert "volumes preserved" in results[0].message
+    assert "data directories preserved" in results[0].message
     assert "--volumes" not in calls[0]
     assert "down" in calls[0]
     assert "api" in calls[0] and "web" in calls[0]
 
 
 @pytest.mark.unit
-def test_compose_down_with_volumes(monkeypatch):
+def test_compose_down_with_volumes(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
     calls = []
     monkeypatch.setattr(
         ops,
@@ -3436,8 +3729,11 @@ def test_compose_down_with_volumes(monkeypatch):
     )
     results = ops._compose_down(["cassandra"], volumes=True)
     assert results[0].ok is True
-    assert "their volumes" in results[0].message
-    assert calls[0][-1] == "--volumes"
+    assert "their data directories" in results[0].message
+    assert "--volumes" not in calls[0]
+    data_dir = tmp_path / "home" / ".nyxGPT" / "volumes" / "cassandra"
+    assert any(f"Removed data directory: {data_dir}" in r.message for r in results)
+    assert not data_dir.exists()
 
 
 @pytest.mark.unit
@@ -4860,6 +5156,7 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     ok = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok) as b,
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok) as a,
@@ -4879,6 +5176,7 @@ def test_install_terraform_stops_pipeline_on_step_failure(monkeypatch):
     args = SimpleNamespace(local=True, cloud=False, api_key=None)
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     with (
+        patch.object(ops, "migrate_legacy_volumes", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(
             ops, "_ensure_terraform_binary", return_value=[ops.OpsResult(False, "no terraform")]
         ),
@@ -5194,6 +5492,7 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     ok = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),

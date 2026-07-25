@@ -2071,6 +2071,14 @@ def cli(argv: list[str] | None = None) -> int:
         ),
     )
 
+    ops_sub.add_parser(
+        "migrate-volumes",
+        help=(
+            "Migrate container data from pre-#3346 named Docker volumes into "
+            "~/.nyxGPT/volumes/ (also run automatically by `nyxgpt ops install`)"
+        ),
+    )
+
     # Add deploy command (local blue/green switching on a local k8s cluster)
     deploy_p = sub.add_parser(
         "deploy", help="Local blue/green deployment (kind/minikube/k3s cluster)"
@@ -2308,6 +2316,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.glitchtip_init(args)
         if args.ops_cmd == "observability":
             return ops_mod.observability(args)
+        if args.ops_cmd == "migrate-volumes":
+            return ops_mod.migrate_volumes_cmd(args)
 
     if cmd == "deploy":
         if args.deploy_cmd == "status":

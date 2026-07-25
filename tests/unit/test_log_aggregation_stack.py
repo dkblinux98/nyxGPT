@@ -32,11 +32,15 @@ def test_compose_defines_opt_in_logging_profile() -> None:
             "logging"
         ], f"{name} must only start under the opt-in 'logging' profile"
 
-    assert "loki_data" in compose["volumes"]
+    loki_volumes = services["loki"]["volumes"]
+    assert any(v.endswith(".nyxGPT/volumes/loki:/loki") for v in loki_volumes)
 
-    # promtail must read from the same volume the api service writes logs to.
+    # promtail must read from the same bind-mounted directory the api
+    # service writes logs to (see docs/docker-compose.md#volumes).
     promtail_volumes = services["promtail"]["volumes"]
-    assert any(v.startswith("nyxgpt_data:") for v in promtail_volumes)
+    assert any(
+        v.endswith(".nyxGPT/volumes/nyxgpt-data:/var/log/nyxgpt:ro") for v in promtail_volumes
+    )
 
 
 def test_loki_config_has_retention_enabled() -> None:
