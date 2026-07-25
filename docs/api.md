@@ -934,14 +934,16 @@ stable-scale-up. Returns `409` if there is no rollout in progress.
 
 ## Self-Heal Watchdog
 
-Watches every component of the local Docker Compose stack (`docker
-compose ps` across the core services plus any of the
-`monitoring`/`logging`/`tracing`/`errors` profiles that are up) and
-automatically restarts anything unhealthy or stopped. See
-[self-healing.md](self-healing.md) for the full design, the
-`nyxgpt self-heal` CLI, and the known limitation around the `api`
-container. These endpoints back the SRE/admin dashboard at
-`/admin/self-heal`.
+Watches the core app components (`api`, `web`, `ollama`, `cassandra`) --
+natively (Homebrew services + the `nyxgpt-cassandra` container, the default
+local-first deployment) or via Docker Compose (`docker compose ps` across
+the core services plus any of the `monitoring`/`logging`/`tracing`/`errors`
+profiles that are up) -- and automatically restarts anything unhealthy or
+stopped. A component is only ever monitored/healed by one mode at a time;
+see [self-healing.md](self-healing.md) for the full design (including
+native/local-first mode), the `nyxgpt self-heal` CLI, and the known
+limitation around the `api` process. These endpoints back the SRE/admin
+dashboard at `/admin/self-heal`.
 
 Every decision the watchdog makes (health checks, restart attempts and
 outcomes, backoff skips, restart-count resets, giving up after too many
@@ -962,8 +964,8 @@ recent heal events.
 {
   "enabled": true,
   "components": [
-    { "service": "api", "container": "nyxgpt-api-1", "state": "running", "health": "healthy", "healthy": true },
-    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true }
+    { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native" },
+    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose" }
   ],
   "unhealthy_count": 0,
   "events": [
@@ -1007,7 +1009,7 @@ isn't a currently-known container.
 
 ```json
 {
-  "checked": [{ "service": "web", "state": "running", "health": "healthy", "healthy": true }],
+  "checked": [{ "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose" }],
   "healed": [{ "ts": 1730000000.0, "service": "web", "reason": "manual heal-now", "action": "restart", "ok": true, "restart_count": 2, "message": "Restarted web" }]
 }
 ```

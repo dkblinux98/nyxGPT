@@ -1,15 +1,29 @@
-"""Self-heal watchdog for the local Docker Compose deployed stack.
+"""Self-heal watchdog for the local deployed stack (native/local-first and Docker Compose).
 
-Periodically checks the health of every container in the `docker-compose.yml`
-project (whichever profiles are currently up: the core stack plus any of
-monitoring/logging/tracing/errors) via `docker compose ps` and restarts any
-that are unhealthy or stopped, with capped consecutive-restart backoff so a
-genuinely broken component doesn't get restart-looped forever.
+Periodically checks the health of every core app component -- `api`, `web`,
+`ollama`, `cassandra` -- plus any Compose container that's currently up
+(the core stack, if deployed via Compose, plus any of
+monitoring/logging/tracing/errors) and restarts anything unhealthy or
+stopped, with capped consecutive-restart backoff so a genuinely broken
+component doesn't get restart-looped forever.
 
-This targets Compose, the documented primary local "full stack" deploy path
-(see docs/deployment.md) -- Terraform intentionally only manages the core
-four services (see docs/terraform.md) and the Kubernetes path already has
-its own recovery mechanisms (deploy.py blue/green, canary.py auto-rollback).
+Two deployment modes are covered:
+- **Docker Compose**: containers listed via `docker compose ps`, healed via
+  `docker compose restart <service>`.
+- **Native/local-first** (the default local deployment -- see
+  `nyxgpt ops install`): `api`/`web`/`ollama` run as Homebrew services and
+  `cassandra` runs as the plain (non-Compose) `nyxgpt-cassandra` Docker
+  container. Healed via `brew services restart <name>`/`docker restart
+  <container>` -- the same mechanisms `nyxgpt ops restart` uses. A component
+  already reported by Compose is presumed to be that component's active
+  deployment and is not also monitored natively, so the two modes never
+  double-heal (or collide on) the same component.
+
+This targets Compose and the native/local-first path, the two documented
+local "full stack" deploy paths (see docs/deployment.md) -- Terraform
+intentionally only manages the core four services (see docs/terraform.md)
+and the Kubernetes path already has its own recovery mechanisms (deploy.py
+blue/green, canary.py auto-rollback).
 
 State (whether the watchdog is enabled, per-service restart counts, and the
 recent event history shown on the SRE/admin dashboard) is persisted to
@@ -85,16 +99,37 @@ DEFAULT_BACKOFF_SECONDS = 30.0
 # "down" in the self-heal sense -- they're expected to exit 0 and stay exited.
 ONE_SHOT_SERVICES = {"glitchtip-migrate"}
 
+# Maps a core native component to its Homebrew service name, for native/
+# local-first mode health-checks/heals. Mirrors ops.NATIVE_BREW_SERVICES --
+# kept as a separate copy here (rather than importing ops.py) since ops.py
+# already imports this module (see the module docstring); ops.py is the
+# place that actually installs/creates these services, this module only
+# ever restarts what's already there.
+NATIVE_BREW_SERVICES: dict[str, str] = {
+    "api": "nyxgpt-api",
+    "web": "nyxgpt-web",
+    "ollama": "ollama",
+}
+# Mirrors ops.CASSANDRA_CONTAINER_NAME -- the one Docker-managed piece of a
+# native/local-first install.
+NATIVE_CASSANDRA_CONTAINER = "nyxgpt-cassandra"
+
 
 @dataclass(frozen=True)
 class ComponentStatus:
-    """A single component's status, as read from `docker compose ps`."""
+    """A single component's status, from either `docker compose ps` or a native check.
+
+    `source` is `"compose"` (the default, for `docker compose ps`-derived
+    entries) or `"native"` (a Homebrew service or the native `nyxgpt-cassandra`
+    container, checked directly rather than through Compose).
+    """
 
     service: str
     container: str
     state: str
     health: str
     healthy: bool
+    source: str = "compose"
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict suitable for JSON responses."""
@@ -104,6 +139,7 @@ class ComponentStatus:
             "state": self.state,
             "health": self.health,
             "healthy": self.healthy,
+            "source": self.source,
         }
 
 
@@ -232,7 +268,115 @@ def recent_events(limit: int = 50) -> list[dict[str, Any]]:
     return list(events[-bounded:])
 
 
+def _brew_services_snapshot() -> dict[str, str]:
+    """Return {brew_service_name: state} parsed from `brew services list`.
+
+    Empty on any failure (brew not on PATH, non-zero exit, unreadable
+    output) -- callers treat "not in this dict" as "not installed /
+    nothing to monitor", not as an error.
+    """
+    if _which("brew") is None:
+        return {}
+    try:
+        cp = _run(["brew", "services", "list"])
+    except Exception as e:
+        logger.warning("self-heal: failed to query brew services list: %s", e)
+        return {}
+    if cp.returncode != 0:
+        return {}
+    snapshot: dict[str, str] = {}
+    for line in (cp.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            snapshot[parts[0]] = parts[1]
+    return snapshot
+
+
+def _native_container_state(name: str) -> str:
+    """Return the docker state ('running', 'exited', ...) for container `name`, or 'absent'."""
+    if _which("docker") is None:
+        return "absent"
+    try:
+        cp = _run(["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.State}}"])
+    except Exception as e:
+        logger.warning("self-heal: failed to query docker state for %s: %s", name, e)
+        return "absent"
+    if cp.returncode != 0:
+        return "absent"
+    out = (cp.stdout or "").strip()
+    return out.splitlines()[0].strip() if out else "absent"
+
+
+def _list_native_component_status(compose_managed: set[str]) -> list[ComponentStatus]:
+    """Health-check the native/local-first core components not already served by Compose.
+
+    In the default local-first deployment, `nyxgpt-api`/`nyxgpt-web`/`ollama` run as
+    Homebrew services and `nyxgpt-cassandra` is a plain (non-Compose) Docker
+    container -- none of that is visible to `docker compose ps`, which is why
+    self-heal previously reported zero core components outside a Compose
+    deployment (see #3348). A component name already present in
+    `compose_managed` is skipped here: Compose is presumed to be that
+    component's active deployment (it's already monitored/healed via
+    `_list_compose_component_status`/`restart_component`), so checking it
+    natively too would risk restarting a second, non-serving process.
+
+    Only reports a component that's actually installed/created -- a brew
+    service never set up via `nyxgpt ops install`, or a not-yet-created
+    Cassandra container, isn't "down", it's simply out of scope until
+    installed.
+    """
+    statuses: list[ComponentStatus] = []
+
+    brew_snapshot = _brew_services_snapshot()
+    for component, brew_name in NATIVE_BREW_SERVICES.items():
+        if component in compose_managed:
+            continue
+        state = brew_snapshot.get(brew_name)
+        if state is None:
+            continue
+        statuses.append(
+            ComponentStatus(
+                service=component,
+                container=brew_name,
+                state=state,
+                health="",
+                healthy=state == "started",
+                source="native",
+            )
+        )
+
+    if "cassandra" not in compose_managed:
+        state = _native_container_state(NATIVE_CASSANDRA_CONTAINER)
+        if state != "absent":
+            statuses.append(
+                ComponentStatus(
+                    service="cassandra",
+                    container=NATIVE_CASSANDRA_CONTAINER,
+                    state=state,
+                    health="",
+                    healthy=state == "running",
+                    source="native",
+                )
+            )
+
+    return statuses
+
+
 def list_component_status() -> list[ComponentStatus]:
+    """Health-check every monitored component: Compose containers plus native components.
+
+    Combines `_list_compose_component_status()` (whatever's currently up
+    under Docker Compose) with `_list_native_component_status()` (the core
+    native/local-first components not already covered by Compose), so the
+    same call surfaces the right set regardless of which deployment mode --
+    or mix of both -- is actually running.
+    """
+    compose_statuses = _list_compose_component_status()
+    compose_managed = {s.service for s in compose_statuses}
+    return compose_statuses + _list_native_component_status(compose_managed)
+
+
+def _list_compose_component_status() -> list[ComponentStatus]:
     """Query `docker compose ps -a` for every container the project has created.
 
     Only reports containers that actually exist -- an opt-in profile
@@ -321,6 +465,54 @@ def restart_component(service: str) -> HealResult:
         )
         return HealResult(False, f"Failed to restart {service}", details.strip())
     return HealResult(True, f"Restarted {service}")
+
+
+def _restart_brew_service(name: str) -> HealResult:
+    """Restart Homebrew service `name` via `brew services restart` (native mode)."""
+    if _which("brew") is None:
+        return HealResult(False, f"brew not found; cannot restart {name}")
+    try:
+        cp = _run(["brew", "services", "restart", name], timeout=60.0)
+    except Exception as e:
+        return HealResult(False, f"Failed to restart {name}", f"{type(e).__name__}: {e}")
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return HealResult(False, f"Failed to restart brew service: {name}", details.strip())
+    return HealResult(True, f"Restarted brew service: {name}")
+
+
+def _restart_native_container(name: str) -> HealResult:
+    """Restart Docker container `name` via `docker restart` (native mode's Cassandra)."""
+    if _which("docker") is None:
+        return HealResult(False, f"docker not found; cannot restart {name}")
+    try:
+        cp = _run(["docker", "restart", name], timeout=60.0)
+    except Exception as e:
+        return HealResult(False, f"Failed to restart {name}", f"{type(e).__name__}: {e}")
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return HealResult(False, f"Failed to restart docker container: {name}", details.strip())
+    return HealResult(True, f"Restarted docker container: {name}")
+
+
+def restart_native_component(component: str) -> HealResult:
+    """Restart a native/local-first core component.
+
+    `api`/`web`/`ollama` restart via `brew services restart <name>`;
+    `cassandra` (the one Docker-managed piece of a native install) restarts
+    via `docker restart <container>` -- the same mechanisms `nyxgpt ops
+    restart` uses, so the user never needs a raw `brew`/`docker` command.
+    """
+    if component == "cassandra":
+        return _restart_native_container(NATIVE_CASSANDRA_CONTAINER)
+    brew_name = NATIVE_BREW_SERVICES.get(component)
+    if brew_name is None:
+        return HealResult(False, f"Unknown native component: {component}")
+    return _restart_brew_service(brew_name)
 
 
 def component_logs(service: str, *, tail: int = 200) -> HealResult:
@@ -474,7 +666,11 @@ def heal_now(
                     "manual": manual,
                 },
             )
-            result = restart_component(status.service)
+            result = (
+                restart_native_component(status.service)
+                if status.source == "native"
+                else restart_component(status.service)
+            )
 
             new_count = count + 1
             restart_counts[status.service] = new_count
@@ -635,6 +831,7 @@ __all__ = [
     "recent_events",
     "list_component_status",
     "restart_component",
+    "restart_native_component",
     "component_logs",
     "heal_now",
     "get_watchdog",

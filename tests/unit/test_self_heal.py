@@ -31,10 +31,22 @@ def _ps_line(service, *, state="running", health=""):
     )
 
 
+# Captured before the autouse fixture below stubs these two module attributes
+# out (for every other test's sake) -- the tests that exercise these helpers'
+# own logic call these plain function objects directly, bypassing the stub.
+_real_brew_services_snapshot = self_heal._brew_services_snapshot
+_real_native_container_state = self_heal._native_container_state
+
+
 @pytest.fixture(autouse=True)
 def _isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(self_heal, "_state_path", lambda: tmp_path / "self_heal_state.json")
     monkeypatch.setattr(self_heal, "_which", lambda _: "/usr/bin/docker")
+    # Neutralize native/local-first detection by default so pre-existing
+    # Compose-only tests (and their generic `_run` mocks) aren't affected by
+    # it -- tests that actually exercise native detection override these two.
+    monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {})
+    monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "absent")
 
 
 @pytest.mark.unit
@@ -180,6 +192,124 @@ def test_list_component_status_compose_failure(monkeypatch):
 
 
 @pytest.mark.unit
+def test_brew_services_snapshot_parses_output(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(
+            stdout="nyxgpt-api started user ~/foo\nollama stopped user ~/bar\n"
+        ),
+    )
+    snapshot = _real_brew_services_snapshot()
+    assert snapshot["nyxgpt-api"] == "started"
+    assert snapshot["ollama"] == "stopped"
+
+
+@pytest.mark.unit
+def test_brew_services_snapshot_no_brew(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    assert _real_brew_services_snapshot() == {}
+
+
+@pytest.mark.unit
+def test_brew_services_snapshot_run_failure(monkeypatch):
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1))
+    assert _real_brew_services_snapshot() == {}
+
+
+@pytest.mark.unit
+def test_brew_services_snapshot_run_raises(monkeypatch, caplog):
+    def _boom(cmd, timeout=30.0):
+        raise OSError("brew not reachable")
+
+    monkeypatch.setattr(self_heal, "_run", _boom)
+
+    with caplog.at_level("WARNING"):
+        assert _real_brew_services_snapshot() == {}
+    assert "failed to query brew services list" in caplog.text
+
+
+@pytest.mark.unit
+def test_native_container_state_running(monkeypatch):
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout="running\n"))
+    assert _real_native_container_state("nyxgpt-cassandra") == "running"
+
+
+@pytest.mark.unit
+def test_native_container_state_absent_when_no_output(monkeypatch):
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    assert _real_native_container_state("nyxgpt-cassandra") == "absent"
+
+
+@pytest.mark.unit
+def test_native_container_state_no_docker(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    assert _real_native_container_state("nyxgpt-cassandra") == "absent"
+
+
+@pytest.mark.unit
+def test_native_container_state_run_raises(monkeypatch, caplog):
+    def _boom(cmd, timeout=30.0):
+        raise OSError("docker daemon not reachable")
+
+    monkeypatch.setattr(self_heal, "_run", _boom)
+
+    with caplog.at_level("WARNING"):
+        assert _real_native_container_state("nyxgpt-cassandra") == "absent"
+    assert "failed to query docker state" in caplog.text
+
+
+@pytest.mark.unit
+def test_list_native_component_status_reports_brew_and_cassandra(monkeypatch):
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(
+        self_heal,
+        "_brew_services_snapshot",
+        lambda: {"nyxgpt-api": "started", "nyxgpt-web": "stopped"},
+    )
+    monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "running")
+
+    statuses = self_heal.list_component_status()
+    by_service = {s.service: s for s in statuses}
+
+    assert by_service["api"].source == "native"
+    assert by_service["api"].healthy is True
+    assert by_service["web"].source == "native"
+    assert by_service["web"].healthy is False
+    # ollama isn't in the brew snapshot -- not installed via `nyxgpt ops install`
+    # yet, so it's out of scope rather than reported "down".
+    assert "ollama" not in by_service
+    assert by_service["cassandra"].source == "native"
+    assert by_service["cassandra"].container == "nyxgpt-cassandra"
+    assert by_service["cassandra"].healthy is True
+
+
+@pytest.mark.unit
+def test_list_native_component_status_skips_absent_cassandra(monkeypatch):
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {})
+    monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "absent")
+
+    assert self_heal.list_component_status() == []
+
+
+@pytest.mark.unit
+def test_list_component_status_compose_managed_component_skips_native_duplicate(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=_ps_line("api", state="running"))
+    )
+    monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {"nyxgpt-api": "started"})
+    monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "running")
+
+    statuses = self_heal.list_component_status()
+    api_entries = [s for s in statuses if s.service == "api"]
+
+    # Compose already reports "api" -- it isn't also checked/reported natively.
+    assert len(api_entries) == 1
+    assert api_entries[0].source == "compose"
+
+
+@pytest.mark.unit
 def test_restart_component_success(monkeypatch):
     run_mock = MagicMock(return_value=CP(returncode=0))
     monkeypatch.setattr(self_heal, "_run", run_mock)
@@ -223,6 +353,91 @@ def test_restart_component_no_docker(monkeypatch):
     result = self_heal.restart_component("api")
     assert not result.ok
     assert "docker not found" in result.message
+
+
+@pytest.mark.unit
+def test_restart_native_component_brew_service_success(monkeypatch):
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.restart_native_component("api")
+
+    assert result.ok
+    assert "Restarted brew service: nyxgpt-api" in result.message
+    cmd = run_mock.call_args[0][0]
+    assert cmd == ["brew", "services", "restart", "nyxgpt-api"]
+
+
+@pytest.mark.unit
+def test_restart_native_component_brew_service_failure(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1, stderr="boom")
+    )
+    result = self_heal.restart_native_component("web")
+    assert not result.ok
+    assert "boom" in result.details
+
+
+@pytest.mark.unit
+def test_restart_native_component_brew_service_run_raises(monkeypatch):
+    def _boom(cmd, timeout=30.0):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+    monkeypatch.setattr(self_heal, "_run", _boom)
+
+    result = self_heal.restart_native_component("ollama")
+
+    assert not result.ok
+    assert "Failed to restart ollama" in result.message
+    assert "TimeoutExpired" in result.details
+
+
+@pytest.mark.unit
+def test_restart_native_component_no_brew(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "_which", lambda prog: None if prog == "brew" else "/usr/bin/docker"
+    )
+    result = self_heal.restart_native_component("ollama")
+    assert not result.ok
+    assert "brew not found" in result.message
+
+
+@pytest.mark.unit
+def test_restart_native_component_cassandra_success(monkeypatch):
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.restart_native_component("cassandra")
+
+    assert result.ok
+    assert "Restarted docker container: nyxgpt-cassandra" in result.message
+    cmd = run_mock.call_args[0][0]
+    assert cmd == ["docker", "restart", "nyxgpt-cassandra"]
+
+
+@pytest.mark.unit
+def test_restart_native_component_cassandra_failure(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1, stderr="boom")
+    )
+    result = self_heal.restart_native_component("cassandra")
+    assert not result.ok
+    assert "boom" in result.details
+
+
+@pytest.mark.unit
+def test_restart_native_component_cassandra_no_docker(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    result = self_heal.restart_native_component("cassandra")
+    assert not result.ok
+    assert "docker not found" in result.message
+
+
+@pytest.mark.unit
+def test_restart_native_component_unknown(monkeypatch):
+    result = self_heal.restart_native_component("does-not-exist")
+    assert not result.ok
+    assert "Unknown native component" in result.message
 
 
 @pytest.mark.unit
@@ -385,6 +600,25 @@ def test_heal_now_manual_restarts_even_when_healthy(monkeypatch):
 
     restart_mock.assert_called_once_with("api")
     assert result["healed"][0]["reason"] == "manual heal-now"
+
+
+@pytest.mark.unit
+def test_heal_now_dispatches_native_restart_for_native_source(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("ollama", "ollama", "stopped", "", False, "native")],
+    )
+    restart_component_mock = MagicMock()
+    restart_native_mock = MagicMock(return_value=self_heal.HealResult(True, "Restarted ollama"))
+    monkeypatch.setattr(self_heal, "restart_component", restart_component_mock)
+    monkeypatch.setattr(self_heal, "restart_native_component", restart_native_mock)
+
+    result = self_heal.heal_now()
+
+    restart_native_mock.assert_called_once_with("ollama")
+    restart_component_mock.assert_not_called()
+    assert result["healed"][0]["service"] == "ollama"
 
 
 @pytest.mark.unit
