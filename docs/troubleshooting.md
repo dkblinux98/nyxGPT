@@ -466,8 +466,8 @@ grep WARNING ~/.nyxGPT/logs/nyxgpt.log
 
 **Grafana Logs Explorer shows nothing (native mode):** the `logging`
 Compose profile's promtail container needs its own bind mount to see
-`~/.nyxGPT/logs` -- it's not the same thing as the `nyxgpt_data` Docker
-volume Compose mode uses (see
+`~/.nyxGPT/logs` -- it's not the same thing as `~/.nyxGPT/volumes/nyxgpt-data`,
+the host directory Compose mode's `api` container uses (see
 [docker-compose.md#log-aggregation](docker-compose.md#log-aggregation)).
 Run `nyxgpt ops doctor` -- it flags a missing/regressed bind mount here
 rather than leaving you with a dashboard that just silently shows no

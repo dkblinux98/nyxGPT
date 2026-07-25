@@ -87,21 +87,56 @@ image reference) reappears in `docker-compose.yml`, `terraform/main.tf`, or
 
 ## Volumes
 
-Named volumes persist state across `docker compose down` / `up`:
+Container data is **not** kept in opaque named Docker volumes -- every
+component bind-mounts a plainly labeled directory under `$HOME/.nyxGPT/volumes/`
+on the host (see issue #3346), so it's visible on the host filesystem,
+attributable to its component, and (for the three "Shared" rows below) reused
+as-is by every deployment mode that mounts it rather than each mode keeping
+its own duplicate copy:
 
-- `ollama_data` — pulled models (`/root/.ollama`)
-- `cassandra_data` — Cassandra's data directory (`/var/lib/cassandra`)
-- `nyxgpt_data` — chat sessions, vector store, and logs (`/root/.nyxGPT` in
-  the `api` container)
-- `prometheus_data` / `grafana_data` — the `monitoring` profile's metrics
-  and dashboard state
-- `loki_data` — the `logging` profile's indexed/stored log chunks
+| Host directory                         | Container path                | Component  | Shared across |
+|-----------------------------------------|--------------------------------|------------|---------------|
+| `~/.nyxGPT/volumes/ollama`               | `/root/.ollama`                | Pulled Ollama models | Compose + Terraform |
+| `~/.nyxGPT/volumes/cassandra`            | `/var/lib/cassandra`           | Cassandra's data directory (chats/RAG vectors) | Compose + Terraform + native `nyxgpt ops install` |
+| `~/.nyxGPT/volumes/nyxgpt-data`          | `/root/.nyxGPT` (in `api`)     | The containerized api's chat sessions/vector store/logs | Compose + Terraform |
+| `~/.nyxGPT/volumes/prometheus`           | `/prometheus`                  | `monitoring` profile's metrics | Compose only today |
+| `~/.nyxGPT/volumes/grafana`              | `/var/lib/grafana`             | `monitoring` profile's dashboard state | Compose only today |
+| `~/.nyxGPT/volumes/loki`                 | `/loki`                        | `logging` profile's indexed/stored log chunks | Compose only today |
+| `~/.nyxGPT/volumes/glitchtip-postgres`   | `/var/lib/postgresql/data`     | GlitchTip's database | Compose only today |
+| `~/.nyxGPT/volumes/glitchtip-uploads`    | `/code/uploads`                | GlitchTip's uploaded attachments | Compose only today |
+
+Native mode doesn't touch `ollama`/`nyxgpt-data` here at all: native Ollama is
+a plain Homebrew service with its own model store, and the native api process
+uses `~/.nyxGPT` directly (as itself, not `/root/.nyxGPT` in a container) --
+those are unrelated to this table. Cassandra is the one component native mode
+*does* share: `nyxgpt ops install`'s Cassandra container
+(`_ensure_cassandra_container` in `src/nyxgpt/ops.py`) binds the exact same
+`~/.nyxGPT/volumes/cassandra` directory, so chats survive switching between
+native, Compose, and Terraform. It refuses to start if the Terraform-managed
+Cassandra container is already running against that same directory (two
+writers on one Cassandra data directory would corrupt it) -- run
+`nyxgpt ops down --terraform` first if you hit that.
+
+**Backup guidance:** backing up `~/.nyxGPT` now captures all container state
+in addition to the native config/logs already there -- there's nothing left
+in Docker's own storage area to separately back up.
+
+**Migrating from before #3346:** if you're upgrading from a version that used
+named Docker volumes (`ollama_data`, `cassandra_data`, `nyxgpt_data`, ...),
+run `nyxgpt ops migrate-volumes` once to copy that data into the layout above
+(the old volumes are removed only after a successful copy). This also runs
+automatically as the first step of `nyxgpt ops install` (native or
+`--terraform --local`) -- `migrate-volumes` is there for Compose-only users
+who never run `install`.
 
 Run `nyxgpt ops down --volumes --yes-really` to discard all persisted state,
 including Cassandra data and pulled models -- see
 [`nyxgpt ops down`](ops.md#nyxgpt-ops-down). Never run a raw
-`docker compose down -v`; the wrapper above stops native services too and
-requires the explicit `--yes-really` confirmation before removing data.
+`docker compose down -v`; besides also stopping native services and
+requiring the explicit `--yes-really` confirmation, a raw `-v` no longer even
+deletes anything here (there are no named volumes left for Compose to
+manage) -- the wrapper explicitly removes the `~/.nyxGPT/volumes/` directories
+for the torn-down services instead.
 
 ## Quickstart
 
@@ -125,7 +160,7 @@ above for anything longer-lived.)
 First boot takes a few minutes: Cassandra needs time to become healthy and
 Ollama needs models. Once `ollama` is up, pull the default chat model and
 the embedding model RAG uses for `/api/embed` (this only needs to be done
-once — both are stored in the `ollama_data` volume). The chat model does
+once — both are stored in `~/.nyxGPT/volumes/ollama`). The chat model does
 *not* serve embeddings, so both pulls are required for chat with RAG context
 to work:
 
@@ -314,12 +349,13 @@ services (see [ops.md](ops.md)) -- and those two modes write logs to two
 different places, so promtail is wired to tail both:
 
 - **Compose mode**: the `api` container writes to `/root/.nyxGPT`, backed
-  by the `nyxgpt_data` named volume (see [Volumes](#volumes) above).
-  promtail mounts that same volume read-only at `/var/log/nyxgpt`.
+  by `~/.nyxGPT/volumes/nyxgpt-data` (see [Volumes](#volumes) above).
+  promtail mounts that same host directory read-only at `/var/log/nyxgpt`.
 - **Native mode** (the primary local path): `api`/self-heal/`nyxgpt ops`
-  run on the host and write to `~/.nyxGPT/logs` directly -- a plain host
-  directory, **not** part of the `nyxgpt_data` volume. promtail separately
-  bind-mounts that host directory read-only at `/var/log/nyxgpt-native`.
+  run on the host and write to `~/.nyxGPT/logs` directly -- a separate plain
+  host directory, **not** part of `~/.nyxGPT/volumes/nyxgpt-data`. promtail
+  separately bind-mounts that host directory read-only at
+  `/var/log/nyxgpt-native`.
 
 `docker/promtail-config.yml` scrapes both paths under the same `job`
 label, so log streams from either mode are indistinguishable in Grafana.

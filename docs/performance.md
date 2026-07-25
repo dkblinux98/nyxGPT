@@ -614,7 +614,7 @@ docker run -d \
   --memory=4g \
   --cpus=2 \
   -p 9042:9042 \
-  -v nyxgpt_cassandra_data:/var/lib/cassandra \
+  -v ~/.nyxGPT/volumes/cassandra:/var/lib/cassandra \
   cassandra:5.0
 ```
 
