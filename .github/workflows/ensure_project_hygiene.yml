@@ -69,6 +69,7 @@ jobs:
           fi
 
       - name: Set all required project fields
+        id: set_fields
         if: steps.check_hygiene.outputs.needs_hygiene == 'true'
         env:
           GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
@@ -138,8 +139,10 @@ jobs:
           set_project_field_value "$ITEM_ID" "Module" "$MODULE"
           echo "✓ Module: $MODULE"
 
-          # Set Sprint to current sprint (get first active/current sprint)
-          CURRENT_SPRINT=$(gh api graphql -f query='
+          # Set Sprint to current sprint (get first active/current sprint).
+          # Capture raw output first so a transport/API failure (empty due to
+          # error) is distinguishable from a genuinely empty iteration list.
+          if ! SPRINT_JSON=$(gh api graphql -f query='
             query($owner:String!, $number:Int!) {
               user(login:$owner) {
                 projectV2(number:$number) {
@@ -159,14 +162,19 @@ jobs:
                   }
                 }
               }
-            }' -F owner="$PROJECT_OWNER" -F number="$PROJECT_NUMBER" | \
-            jq -r --arg today "$(date -u +%Y-%m-%d)" '
+            }' -F owner="$PROJECT_OWNER" -F number="$PROJECT_NUMBER" 2>&1); then
+            echo "::error::Failed to query Sprint iterations for issue #$ISSUE: $SPRINT_JSON"
+            echo "sprint_result=error" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          CURRENT_SPRINT=$(echo "$SPRINT_JSON" | jq -r --arg today "$(date -u +%Y-%m-%d)" '
                    .data.user.projectV2.fields.nodes[] |
                    select(.name=="Sprint") |
                    .configuration.iterations |
                    map(select(.startDate <= $today)) |
                    sort_by(.startDate) |
-                   (last // empty) | .title // empty' || echo "")
+                   (last // empty) | .title // empty')
 
           # set_project_field_value resolves iteration by TITLE (not id), and a
           # failed Sprint set must never abort hygiene — Milestone still needs
@@ -174,22 +182,36 @@ jobs:
           if [[ -n "$CURRENT_SPRINT" ]]; then
             if set_project_field_value "$ITEM_ID" "Sprint" "$CURRENT_SPRINT"; then
               echo "✓ Sprint: $CURRENT_SPRINT"
+              echo "sprint_result=set:$CURRENT_SPRINT" >> "$GITHUB_OUTPUT"
             else
               echo "⚠ Sprint: could not set '$CURRENT_SPRINT' (iteration may have ended) — continuing"
+              echo "sprint_result=failed-set" >> "$GITHUB_OUTPUT"
             fi
           else
             echo "⚠ Sprint: No active sprint found — skipping"
+            echo "sprint_result=none" >> "$GITHUB_OUTPUT"
           fi
 
-          # Set Milestone to current open milestone
-          CURRENT_MILESTONE=$(gh api repos/"$REPO_OWNER"/"$REPO_NAME"/milestones \
-            --jq 'map(select(.state=="open")) | sort_by(.due_on) | .[0].title // empty')
+          # Set Milestone to current open milestone. Distinguish an API error
+          # from a genuinely empty open-milestone list: a transient failure
+          # (e.g. rate limit) must fail the step loud (red, re-runnable)
+          # rather than silently reporting "no open milestone found".
+          if ! MILESTONES_JSON=$(gh api repos/"$REPO_OWNER"/"$REPO_NAME"/milestones 2>&1); then
+            echo "::error::Failed to list milestones for issue #$ISSUE: $MILESTONES_JSON"
+            echo "milestone_result=error" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          CURRENT_MILESTONE=$(echo "$MILESTONES_JSON" | jq -r \
+            'map(select(.state=="open")) | sort_by(.due_on) | .[0].title // empty')
 
           if [[ -n "$CURRENT_MILESTONE" ]]; then
             gh issue edit "$ISSUE" --milestone "$CURRENT_MILESTONE"
             echo "✓ Milestone: $CURRENT_MILESTONE"
+            echo "milestone_result=set:$CURRENT_MILESTONE" >> "$GITHUB_OUTPUT"
           else
             echo "⚠ Milestone: No open milestone found"
+            echo "milestone_result=none" >> "$GITHUB_OUTPUT"
           fi
 
           echo ""
@@ -203,6 +225,24 @@ jobs:
           script: |
             const issue_number = context.payload.issue.number;
 
+            // Status/Priority/Effort/Label/Module don't need per-field outcome
+            // tracking: Actions `run:` steps use `bash -e`, so a `gh` failure
+            // on any of those already aborts the step and this comment step
+            // (gated on success()) never runs. Sprint/Milestone are different:
+            // the previous step deliberately continues past a Sprint/Milestone
+            // skip, so we render their actual outcome here instead of a static
+            // "always succeeded" claim.
+            const sprintResult = `${{ steps.set_fields.outputs.sprint_result }}`;
+            const milestoneResult = `${{ steps.set_fields.outputs.milestone_result }}`;
+
+            const sprintLine = sprintResult.startsWith('set:')
+              ? `- Sprint: ${sprintResult.slice(4)}\n`
+              : `- ⚠ Sprint: not set (${sprintResult === 'none' ? 'no active sprint' : 'failed to apply'})\n`;
+
+            const milestoneLine = milestoneResult.startsWith('set:')
+              ? `- Milestone: ${milestoneResult.slice(4)}\n`
+              : `- ⚠ Milestone: not set (${milestoneResult === 'none' ? 'no open milestone' : 'API error'})\n`;
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -213,8 +253,8 @@ jobs:
                     `- Effort: XS\n` +
                     `- Label: Feature\n` +
                     `- Module: (auto-detected)\n` +
-                    `- Sprint: Current sprint\n` +
-                    `- Milestone: Current open milestone`
+                    sprintLine +
+                    milestoneLine
             });
 
   pr-hygiene:
