@@ -73,6 +73,18 @@ describe('QueryCacheStatsPanel', () => {
     expect(screen.getByText('600s')).toBeInTheDocument();
   });
 
+  it('shows "n/a" for TTL when an enabled cache reports no configured TTL', async () => {
+    server.use(
+      http.get('/api/v1/rag/cache/stats', () => HttpResponse.json({ ...enabledStats, ttl_seconds: null }))
+    );
+
+    render(<QueryCacheStatsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('n/a')).toBeInTheDocument();
+    });
+  });
+
   it('shows a clear message instead of an error when caching is disabled', async () => {
     server.use(http.get('/api/v1/rag/cache/stats', () => HttpResponse.json(disabledStats)));
 
@@ -119,6 +131,24 @@ describe('QueryCacheStatsPanel', () => {
     });
     await waitFor(() => {
       expect(screen.getByText('0.0%')).toBeInTheDocument();
+    });
+  });
+
+  it('falls back to a default message when the clear response has no status', async () => {
+    server.use(http.get('/api/v1/rag/cache/stats', () => HttpResponse.json(enabledStats)));
+    const user = userEvent.setup();
+
+    render(<QueryCacheStatsPanel />);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /clear cache/i })).toBeInTheDocument();
+    });
+
+    server.use(http.post('/api/v1/rag/cache/clear', () => HttpResponse.json({})));
+
+    await user.click(screen.getByRole('button', { name: /clear cache/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Query result cache cleared')).toBeInTheDocument();
     });
   });
 

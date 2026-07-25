@@ -260,6 +260,50 @@ def test_query_cache_stats_reports_disk_backend_config(
 
 
 @pytest.mark.unit
+def test_query_cache_stats_reports_memory_default_ttl_when_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without an explicit query_cache_ttl_seconds, stats must report the same
+    300s default that _get_query_result_cache actually initializes the memory
+    cache with, not None."""
+    cfg = ConfigParser()
+    cfg["cache"] = {"query_cache_enabled": "true", "query_cache_backend": "memory"}
+
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.rag import get_query_cache_stats
+
+    stats = get_query_cache_stats()
+    assert stats["enabled"] is True
+    assert stats["backend"] == "memory"
+    assert stats["ttl_seconds"] == 300
+
+
+@pytest.mark.unit
+def test_query_cache_stats_reports_disk_default_ttl_when_unconfigured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without an explicit query_cache_ttl_seconds, stats must report the same
+    600s default that _get_query_result_cache actually initializes the disk
+    cache with, not None."""
+    cfg = ConfigParser()
+    cfg["cache"] = {
+        "query_cache_enabled": "true",
+        "query_cache_backend": "disk",
+        "query_cache_dir": str(tmp_path),
+    }
+
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.rag import get_query_cache_stats
+
+    stats = get_query_cache_stats()
+    assert stats["enabled"] is True
+    assert stats["backend"] == "disk"
+    assert stats["ttl_seconds"] == 600
+
+
+@pytest.mark.unit
 def test_ingest_document_invalidates_query_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ingesting/updating a document must invalidate cached query results."""
     from unittest.mock import Mock
