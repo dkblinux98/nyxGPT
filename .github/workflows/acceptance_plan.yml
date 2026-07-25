@@ -1,0 +1,119 @@
+name: Acceptance Plan Actions
+
+# Companion automation for the owner's acceptance-testing plan issue.
+#
+# The plan issue carries a hidden `<!-- nyxgpt-acceptance-plan -->` marker and
+# one ACCEPT checkbox per app surface. Each checkbox line ends with a hidden
+# `<!-- nyxgpt-accept: <issue numbers> -->` marker listing the issues that
+# section's criteria cover. When the owner checks a box (an issue-body edit),
+# this workflow diffs the previous body against the new one, finds sections
+# that are newly checked, and moves their listed issues to "For Release" via
+# the sanctioned bulk_set_status.sh helper — the same path as the manual
+# Bulk Set Issue Status workflow. It then posts one confirmation comment.
+#
+# Guards: only the human owner's edits count, only on issues carrying the
+# plan marker, and only sections checked in this edit are processed (so
+# re-edits never re-move earlier sections). Unchecking a box does nothing —
+# rejections go through the plan's "Acceptance failed" links instead, which
+# open a prefilled Acceptance Failure issue.
+
+on:
+  issues:
+    types: [edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acceptance-plan-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  accept:
+    if: >-
+      contains(github.event.issue.body, 'nyxgpt-acceptance-plan') &&
+      github.actor == vars.HUMAN_OWNER &&
+      github.event.changes.body
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Write config
+        run: |
+          cat > /tmp/nyxgpt-config.ini <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          EOF
+          echo "NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini" >> "$GITHUB_ENV"
+
+      - name: Find newly accepted sections
+        id: parse
+        env:
+          NEW_BODY: ${{ github.event.issue.body }}
+          OLD_BODY: ${{ github.event.changes.body.from }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY' >> "$GITHUB_OUTPUT"
+          import os, re
+
+          pat = re.compile(
+              r'^[ \t]*[-*][ \t]*\[([ xX])\][^\n]*?'
+              r'<!--[ \t]*nyxgpt-accept:([0-9 ,\t]*?)-->',
+              re.M,
+          )
+
+          def checked_sections(body):
+              out = set()
+              for m in pat.finditer(body or ""):
+                  if not m.group(1).strip():
+                      continue
+                  nums = tuple(sorted(set(m.group(2).replace(",", " ").split())))
+                  if nums:
+                      out.add(nums)
+              return out
+
+          new_checked = checked_sections(os.environ.get("NEW_BODY", ""))
+          old_checked = checked_sections(os.environ.get("OLD_BODY", ""))
+          nums = sorted({int(n) for sec in (new_checked - old_checked) for n in sec})
+          print("issues=" + " ".join(str(n) for n in nums))
+          PY
+
+      - name: Move accepted issues to For Release
+        if: steps.parse.outputs.issues != ''
+        env:
+          ISSUES: ${{ steps.parse.outputs.issues }}
+          STATUS: ${{ vars.STATUS_FOR_RELEASE }}
+          DRY_RUN: 'false'
+        run: bash scripts/agents/bulk_set_status.sh
+
+      - name: Confirm on the plan issue
+        if: steps.parse.outputs.issues != ''
+        env:
+          ISSUES: ${{ steps.parse.outputs.issues }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          refs=""
+          for n in $ISSUES; do refs="${refs}#${n} "; done
+          gh api "repos/${{ vars.REPO_OWNER }}/${{ vars.REPO_NAME }}/issues/${ISSUE_NUMBER}/comments" \
+            -f body="✅ Acceptance recorded — moved to **For Release**: ${refs}"
