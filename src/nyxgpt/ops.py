@@ -1265,15 +1265,39 @@ def _migrate_docker_volume_to_bind_dir(
     )
 
 
+def _migration_marker_path(dest_name: str) -> Path:
+    """Path to `migrate_legacy_volumes`'s per-component "already reconciled" marker.
+
+    Deliberately stored outside `~/.nyxGPT/volumes/<component>/` rather than
+    inferred from that directory being non-empty: a freshly-started container
+    populates its empty bind mount with new files within seconds of `docker
+    compose up`, which an emptiness check can't tell apart from "an earlier
+    run already migrated the legacy volume in here" -- that ambiguity is what
+    let pre-#3346 data get silently stranded. A marker only appears once this
+    function has itself made that determination.
+    """
+    state_dir = Path.home() / ".nyxGPT" / ".migration-state"
+    _ensure_dir(state_dir)
+    return state_dir / f"{dest_name}.migrated"
+
+
 def migrate_legacy_volumes() -> list[OpsResult]:
     """Copy pre-#3346 named-volume data into ~/.nyxGPT/volumes/, then drop the old volumes.
 
     Idempotent and safe to run on every `nyxgpt ops install` (native and
-    `--terraform --local` both do): a destination directory that already has
-    data -- either migrated by an earlier run, or freshly created by the new
-    bind-mounted services -- is left untouched, so this never overwrites
-    live data. Also exposed standalone as `nyxgpt ops migrate-volumes` for
-    Compose-only users who never run `nyxgpt ops install`.
+    `--terraform --local` both do): once a component has been reconciled
+    (migrated, or confirmed to have no legacy volume) that's recorded in a
+    marker file under `~/.nyxGPT/.migration-state/`, and later runs skip it
+    without re-touching `~/.nyxGPT/volumes/<component>/`. Also exposed
+    standalone as `nyxgpt ops migrate-volumes` for Compose-only users who
+    never run `nyxgpt ops install`.
+
+    If a legacy volume is still found for a component whose destination
+    directory is *not yet marked reconciled* but is already non-empty (e.g.
+    the new bind-mounted stack was brought up before this ran), migration is
+    refused with a loud, actionable failure rather than silently reporting
+    success -- auto-merging risks silently overwriting or shadowing whichever
+    side holds the data the user actually wants.
     """
     if _which("docker") is None:
         return [OpsResult(True, "Skipped legacy volume migration (docker not found)")]
@@ -1281,23 +1305,52 @@ def migrate_legacy_volumes() -> list[OpsResult]:
     results: list[OpsResult] = []
     for dest_name, candidates in LEGACY_VOLUME_SOURCES.items():
         dest_dir = volume_dir(dest_name)
-        if any(dest_dir.iterdir()):
-            results.append(
-                OpsResult(
-                    True,
-                    f"{dest_name}: {dest_dir} already has data -- skipping legacy volume migration",
-                )
-            )
+        marker = _migration_marker_path(dest_name)
+        if marker.exists():
+            results.append(OpsResult(True, f"{dest_name}: already reconciled (nothing to migrate)"))
             continue
 
-        found = next((v for v in candidates if _docker_volume_exists(v)), None)
-        if found is None:
+        existing = [v for v in candidates if _docker_volume_exists(v)]
+        if not existing:
+            marker.touch()
             results.append(
                 OpsResult(True, f"No legacy volume found for {dest_name} (nothing to migrate)")
             )
             continue
 
-        results.append(_migrate_docker_volume_to_bind_dir(found, dest_dir, label=dest_name))
+        found, *unmigrated = existing
+        if any(dest_dir.iterdir()):
+            results.append(
+                OpsResult(
+                    False,
+                    f"{dest_name}: legacy volume '{found}' still holds pre-#3346 data but "
+                    f"{dest_dir} is already non-empty -- refusing to auto-migrate. This can "
+                    "happen if the new bind-mounted stack was started before running "
+                    "`nyxgpt ops migrate-volumes`, which would otherwise silently strand the "
+                    "old data.",
+                    f"Stop the stack, inspect both {dest_dir} and the legacy volume "
+                    f"(docker run --rm -v {found}:/legacy alpine ls -la /legacy), manually merge "
+                    f"whichever side holds the data you need, then `docker volume rm {found}` "
+                    "once done -- this warning repeats on every run until that volume is gone.",
+                )
+            )
+            continue
+
+        result = _migrate_docker_volume_to_bind_dir(found, dest_dir, label=dest_name)
+        if unmigrated:
+            note = (
+                f"Note: legacy volume(s) {unmigrated} for {dest_name} were also found but not "
+                "migrated (only one source can be merged in safely) -- inspect and remove "
+                "manually if they hold data you still need."
+            )
+            result = OpsResult(
+                result.ok,
+                result.message,
+                f"{result.details}\n{note}" if result.details else note,
+            )
+        if result.ok:
+            marker.touch()
+        results.append(result)
 
     return results
 

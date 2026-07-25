@@ -547,11 +547,19 @@ automatically as its first step, so most users never need to run it by
 hand -- this is a standalone escape hatch for Compose-only users who never
 run `install`.
 
+**Run this before your first `docker compose up`/`up --build` after
+upgrading** -- see the ordering warning below.
+
 Behavior:
 
-- **Idempotent** -- a destination directory that already has data (either
-  migrated by an earlier run, or freshly created by the new bind-mounted
-  services on a install with no prior named volumes) is left untouched.
+- **Idempotent via a marker, not directory emptiness** -- each component gets
+  a marker file under `~/.nyxGPT/.migration-state/` once it's been
+  reconciled (migrated, or confirmed to have no legacy volume), and later
+  runs skip components that already have one. This is deliberately *not*
+  "destination directory is non-empty", because a freshly-started container
+  populates its empty bind mount with new files within seconds -- an
+  emptiness check can't tell that apart from "already migrated in a prior
+  run".
 - Copies each legacy volume's contents through a throwaway container (named
   volumes on macOS/Docker Desktop live inside the Docker VM, not directly
   reachable from the host filesystem), then removes the old volume once the
@@ -559,12 +567,20 @@ Behavior:
   with a note rather than failing the migration.
 - A no-op with a clear message if Docker isn't installed, or if no legacy
   volume is found for a component (fresh installs have nothing to migrate).
+- **Refuses to auto-migrate, loudly, if a legacy volume still exists for a
+  component whose destination is already non-empty and not yet marked
+  reconciled** -- e.g. if the new bind-mounted stack was brought up before
+  running this command. Auto-merging in that situation risks silently
+  overwriting or shadowing whichever side holds the data you actually want,
+  so it fails with instructions to inspect both sides, merge by hand, and
+  remove the old volume once done (which clears the warning on the next run).
 
 Exit codes:
 
 - `0` -- every component's data was migrated (or already up to date, or had
   nothing to migrate)
-- `2` -- a copy actually failed
+- `2` -- a copy failed, or a component was refused because its destination
+  was already populated while a legacy volume still exists for it
 
 ---
 

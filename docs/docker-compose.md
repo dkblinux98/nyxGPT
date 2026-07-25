@@ -123,11 +123,21 @@ in Docker's own storage area to separately back up.
 
 **Migrating from before #3346:** if you're upgrading from a version that used
 named Docker volumes (`ollama_data`, `cassandra_data`, `nyxgpt_data`, ...),
-run `nyxgpt ops migrate-volumes` once to copy that data into the layout above
+run `nyxgpt ops migrate-volumes` **once, before your first `docker compose up`
+(or `up --build`) after upgrading**, to copy that data into the layout above
 (the old volumes are removed only after a successful copy). This also runs
 automatically as the first step of `nyxgpt ops install` (native or
 `--terraform --local`) -- `migrate-volumes` is there for Compose-only users
 who never run `install`.
+
+Order matters here: bringing up the new bind-mount-based Compose file
+*before* running `migrate-volumes` lets Cassandra/Ollama populate the new
+(empty) `~/.nyxGPT/volumes/...` directories with fresh data in seconds, and
+`migrate-volumes` then refuses to guess whether that's "already migrated" or
+"real new data" -- it fails loudly instead of silently discarding your old
+volume. If you see a `refusing to auto-migrate` message, your pre-upgrade
+data is still intact in the old named volume; follow the message's steps to
+merge it in by hand, then remove the old volume to clear the warning.
 
 Run `nyxgpt ops down --volumes --yes-really` to discard all persisted state,
 including Cassandra data and pulled models -- see
@@ -148,6 +158,10 @@ a generated artifact derived from it, not something you maintain by hand:
 cp .env.example .env
 nyxgpt wizard      # generates config.ini with a fresh api_key + Grafana password
 nyxgpt ops env-sync  # derives .env's secret lines from config.ini
+
+# Upgrading from before #3346 (named Docker volumes)? Run this first -- see
+# "Migrating from before #3346" above for why order matters here.
+nyxgpt ops migrate-volumes
 
 docker compose up --build
 ```

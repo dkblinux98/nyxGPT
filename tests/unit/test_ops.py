@@ -1696,12 +1696,23 @@ def test_migrate_legacy_volumes_skipped_without_docker(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
-def test_migrate_legacy_volumes_skips_dest_already_populated(monkeypatch, tmp_path):
+def test_migrate_legacy_volumes_refuses_when_dest_populated_and_legacy_volume_still_exists(
+    monkeypatch, tmp_path
+):
+    """Regression test for the data-stranding bug found in review of #3346.
+
+    If a legacy volume is still present but the destination directory is
+    already non-empty (e.g. the new bind-mounted stack was started before
+    `migrate-volumes` ran) and we've never confirmed reconciliation for this
+    component, migration must fail loudly rather than silently reporting
+    "already has data -- skipping" and leaving the old volume un-migrated
+    and un-flagged.
+    """
     home = tmp_path / "home"
     monkeypatch.setattr(ops.Path, "home", lambda: home)
     cassandra_dir = home / ".nyxGPT" / "volumes" / "cassandra"
     cassandra_dir.mkdir(parents=True)
-    (cassandra_dir / "system.log").write_text("already migrated")
+    (cassandra_dir / "system.log").write_text("freshly created by the new bind-mounted service")
 
     with (
         patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
@@ -1710,8 +1721,56 @@ def test_migrate_legacy_volumes_skips_dest_already_populated(monkeypatch, tmp_pa
         results = ops.migrate_legacy_volumes()
 
     cassandra_result = next(r for r in results if r.message.startswith("cassandra:"))
+    assert cassandra_result.ok is False
+    assert "refusing to auto-migrate" in cassandra_result.message
+    # No marker written -- must keep warning on every subsequent run until
+    # the user resolves it by hand.
+    assert not (home / ".nyxGPT" / ".migration-state" / "cassandra.migrated").exists()
+
+
+@pytest.mark.unit
+def test_migrate_legacy_volumes_populated_dest_with_no_legacy_volume_is_fine(monkeypatch, tmp_path):
+    """A destination populated by a genuinely fresh install (no prior named
+    volumes ever existed) must not be mistaken for the stranding scenario."""
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    cassandra_dir = home / ".nyxGPT" / "volumes" / "cassandra"
+    cassandra_dir.mkdir(parents=True)
+    (cassandra_dir / "system.log").write_text("fresh install, never had named volumes")
+
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_volume_exists", lambda name: False),
+    ):
+        results = ops.migrate_legacy_volumes()
+
+    cassandra_result = next(r for r in results if "cassandra" in r.message)
     assert cassandra_result.ok is True
-    assert "already has data" in cassandra_result.message
+    assert "nothing to migrate" in cassandra_result.message
+    assert (home / ".nyxGPT" / ".migration-state" / "cassandra.migrated").exists()
+
+
+@pytest.mark.unit
+def test_migrate_legacy_volumes_marker_skips_recheck_on_later_runs(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
+    exists_calls = []
+
+    def fake_exists(name):
+        exists_calls.append(name)
+        return False
+
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_volume_exists", fake_exists),
+    ):
+        first = ops.migrate_legacy_volumes()
+        calls_after_first_run = len(exists_calls)
+        second = ops.migrate_legacy_volumes()
+
+    assert all(r.ok for r in first)
+    assert all(r.ok and "already reconciled" in r.message for r in second)
+    # Second run must not re-check Docker for components already marked reconciled.
+    assert len(exists_calls) == calls_after_first_run
 
 
 @pytest.mark.unit
@@ -1751,6 +1810,35 @@ def test_migrate_legacy_volumes_migrates_first_candidate_found(monkeypatch, tmp_
         r for r in results if "cassandra" in r.message and "Migrated" in r.message
     )
     assert cassandra_result.ok is True
+
+
+@pytest.mark.unit
+def test_migrate_legacy_volumes_notes_unmigrated_second_candidate(monkeypatch, tmp_path):
+    """When both a Compose-era and Terraform-era legacy volume exist for the
+    same shared destination, only the first (priority order) is migrated --
+    but the second must be surfaced to the user, not silently dropped."""
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
+
+    def fake_migrate(volume_name, dest_dir, *, label):
+        return ops.OpsResult(
+            True,
+            f"Migrated {label} data from legacy volume '{volume_name}'",
+            "Old volume removed.",
+        )
+
+    with (
+        patch.object(ops, "_which", lambda _: "/usr/local/bin/docker"),
+        patch.object(ops, "_docker_volume_exists", lambda name: True),
+        patch.object(ops, "_migrate_docker_volume_to_bind_dir", fake_migrate),
+    ):
+        results = ops.migrate_legacy_volumes()
+
+    cassandra_result = next(
+        r for r in results if "cassandra" in r.message and "Migrated" in r.message
+    )
+    assert cassandra_result.ok is True
+    assert "nyxgpt_tf_cassandra_data" in cassandra_result.details
+    assert "also found but not migrated" in cassandra_result.details
 
 
 @pytest.mark.unit
