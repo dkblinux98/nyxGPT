@@ -1,24 +1,32 @@
-name: List Issues By Status
+name: Sweep PR Status
 
-# Read-only admin helper: dumps every project item whose Status field matches
-# the given option into the run log, one line per item. Exists because the
-# Projects v2 board is GraphQL-only, which remote owner/assistant sessions
-# cannot query directly; this is the sanctioned read path for board sweeps
-# (the write path is bulk_set_issue_status.yml).
+# Admin helper: PRs get Status "In Review" at creation (PR hygiene, #3307)
+# but nothing moves them after merge/close, so they accumulate and drown the
+# owner's issue-acceptance queue. This sweep finds project items that are
+# MERGED or CLOSED pull requests sitting in the source status and moves them
+# to the target status. Issues are never touched. Dry-run by default.
 
 on:
   workflow_dispatch:
     inputs:
-      status:
-        description: 'Status option to list (e.g. "In Review")'
+      source_status:
+        description: 'Only sweep PRs currently in this Status'
         required: true
         default: 'In Review'
+      target_status:
+        description: 'Status to move swept PRs to'
+        required: true
+        default: 'Closed'
+      dry_run:
+        description: 'true = list only, false = apply'
+        required: true
+        default: 'true'
 
 permissions:
   contents: read
 
 jobs:
-  list-by-status:
+  sweep:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
@@ -51,9 +59,11 @@ jobs:
           EOF
           echo "NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini" >> "$GITHUB_ENV"
 
-      - name: List project items with matching Status
+      - name: Sweep merged/closed PRs
         env:
-          TARGET_STATUS: ${{ inputs.status }}
+          SOURCE_STATUS: ${{ inputs.source_status }}
+          TARGET_STATUS: ${{ inputs.target_status }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           source scripts/agents/lib/gh_project.sh
@@ -62,6 +72,9 @@ jobs:
           require_cmd python3
           project_id="$(get_project_id)"
 
+          # Validate the target status option exists before touching anything.
+          single_select_option_id "$STATUS_FIELD" "$TARGET_STATUS" >/dev/null
+
           read -r -d '' QUERY <<'GQL' || true
           query($project:ID!, $after:String){
             node(id:$project){
@@ -69,9 +82,9 @@ jobs:
                 items(first:100, after:$after){
                   pageInfo{ hasNextPage endCursor }
                   nodes{
+                    id
                     content{
                       __typename
-                      ... on Issue { number state title milestone { title } }
                       ... on PullRequest { number state title }
                     }
                     fieldValues(first:50){
@@ -91,8 +104,8 @@ jobs:
           GQL
 
           page_file="$(mktemp)"
+          targets_file="$(mktemp)"
           after=""
-          echo "=== Items with Status: ${TARGET_STATUS} ==="
           while : ; do
             if [[ -n "$after" ]]; then
               graphql "$QUERY" -F project="$project_id" -f after="$after" > "$page_file"
@@ -100,25 +113,25 @@ jobs:
               graphql "$QUERY" -F project="$project_id" > "$page_file"
             fi
 
-            STATUS_FIELD="$STATUS_FIELD" TARGET_STATUS="$TARGET_STATUS" \
-            python3 - "$page_file" <<'PY'
+            STATUS_FIELD="$STATUS_FIELD" SOURCE_STATUS="$SOURCE_STATUS" \
+            python3 - "$page_file" >> "$targets_file" <<'PY'
           import json, os, sys
           d = json.load(open(sys.argv[1], encoding="utf-8"))
           status_field = os.environ.get("STATUS_FIELD", "Status")
-          target = os.environ["TARGET_STATUS"]
+          source = os.environ["SOURCE_STATUS"]
           for it in d["data"]["node"]["items"]["nodes"]:
               c = it.get("content") or {}
-              kind = c.get("__typename")
-              if kind not in ("Issue", "PullRequest"):
+              if c.get("__typename") != "PullRequest":
+                  continue
+              if c.get("state") not in ("MERGED", "CLOSED"):
                   continue
               status = None
               for fv in it["fieldValues"]["nodes"]:
                   if fv.get("__typename") == "ProjectV2ItemFieldSingleSelectValue" \
                      and (fv.get("field") or {}).get("name") == status_field:
                       status = fv.get("name")
-              if status == target:
-                  ms = (c.get("milestone") or {}).get("title") or "-"
-                  print(f"ITEM|{kind}|{c['number']}|{c['state']}|{ms}|{c['title']}")
+              if status == source:
+                  print(f"{it['id']}\t{c['number']}\t{c['state']}\t{c['title']}")
           PY
 
             has_next="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); pi=d["data"]["node"]["items"]["pageInfo"]; print("yes" if pi["hasNextPage"] else "no")' "$page_file")"
@@ -128,4 +141,22 @@ jobs:
               break
             fi
           done
-          echo "=== End of list ==="
+
+          count="$(wc -l < "$targets_file" | tr -d ' ')"
+          echo "=== ${count} merged/closed PR(s) in '${SOURCE_STATUS}' (dry_run=${DRY_RUN}) ==="
+          cut -f2- "$targets_file" | while IFS=$'\t' read -r num state title; do
+            echo "PR|${num}|${state}|${title}"
+          done
+
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "Dry run: no changes applied."
+            exit 0
+          fi
+
+          moved=0
+          while IFS=$'\t' read -r item_id num state title; do
+            set_project_field_value "$item_id" "$STATUS_FIELD" "$TARGET_STATUS"
+            moved=$((moved+1))
+            echo "moved PR #${num} -> ${TARGET_STATUS}"
+          done < "$targets_file"
+          echo "=== Moved ${moved} PR(s) to '${TARGET_STATUS}' ==="
