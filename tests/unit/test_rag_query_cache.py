@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from configparser import ConfigParser
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -208,7 +209,98 @@ def test_query_cache_stats_disabled_returns_zeros(monkeypatch: pytest.MonkeyPatc
     from nyxgpt.rag.rag import get_query_cache_stats
 
     stats = get_query_cache_stats()
-    assert stats == {"hits": 0, "misses": 0, "hit_rate": 0.0, "size": 0}
+    assert stats == {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": 0.0,
+        "size": 0,
+        "enabled": False,
+        "backend": "none",
+        "max_size": None,
+        "ttl_seconds": None,
+    }
+
+
+@pytest.mark.unit
+def test_query_cache_stats_reports_memory_backend_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A memory-backed cache should report its backend, max_size, and ttl_seconds."""
+    cfg = _base_cfg(query_cache_max_size="42", query_cache_ttl_seconds="120")
+
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.rag import get_query_cache_stats
+
+    stats = get_query_cache_stats()
+    assert stats["enabled"] is True
+    assert stats["backend"] == "memory"
+    assert stats["max_size"] == 42
+    assert stats["ttl_seconds"] == 120
+
+
+@pytest.mark.unit
+def test_query_cache_stats_reports_disk_backend_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A disk-backed cache should report backend='disk' with max_size=None."""
+    cfg = _base_cfg(
+        query_cache_backend="disk",
+        query_cache_dir=str(tmp_path),
+        query_cache_ttl_seconds="600",
+    )
+
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.rag import get_query_cache_stats
+
+    stats = get_query_cache_stats()
+    assert stats["enabled"] is True
+    assert stats["backend"] == "disk"
+    assert stats["max_size"] is None
+    assert stats["ttl_seconds"] == 600
+
+
+@pytest.mark.unit
+def test_query_cache_stats_reports_memory_default_ttl_when_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without an explicit query_cache_ttl_seconds, stats must report the same
+    300s default that _get_query_result_cache actually initializes the memory
+    cache with, not None."""
+    cfg = ConfigParser()
+    cfg["cache"] = {"query_cache_enabled": "true", "query_cache_backend": "memory"}
+
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.rag import get_query_cache_stats
+
+    stats = get_query_cache_stats()
+    assert stats["enabled"] is True
+    assert stats["backend"] == "memory"
+    assert stats["ttl_seconds"] == 300
+
+
+@pytest.mark.unit
+def test_query_cache_stats_reports_disk_default_ttl_when_unconfigured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without an explicit query_cache_ttl_seconds, stats must report the same
+    600s default that _get_query_result_cache actually initializes the disk
+    cache with, not None."""
+    cfg = ConfigParser()
+    cfg["cache"] = {
+        "query_cache_enabled": "true",
+        "query_cache_backend": "disk",
+        "query_cache_dir": str(tmp_path),
+    }
+
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.rag import get_query_cache_stats
+
+    stats = get_query_cache_stats()
+    assert stats["enabled"] is True
+    assert stats["backend"] == "disk"
+    assert stats["ttl_seconds"] == 600
 
 
 @pytest.mark.unit

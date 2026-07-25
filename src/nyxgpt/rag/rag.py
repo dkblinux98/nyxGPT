@@ -17,6 +17,7 @@ import statistics
 import time
 import uuid
 from collections.abc import Iterable
+from configparser import ConfigParser
 from dataclasses import dataclass
 from typing import cast
 
@@ -199,6 +200,18 @@ class RAGError(RuntimeError):
 _query_result_cache: CacheBackend[list[dict]] | None = None
 
 
+def _query_cache_ttl_seconds(cfg: ConfigParser, backend: str) -> int:
+    """Return the effective query cache TTL for a backend.
+
+    Mirrors the per-backend default (300s memory / 600s disk) applied when
+    the cache is initialized in `_get_query_result_cache`, so callers that
+    only have access to config (e.g. `get_query_cache_stats`) report the
+    same TTL the cache is actually using, not `None` when it's unset.
+    """
+    default = 300 if backend == "memory" else 600
+    return cfg.getint("cache", "query_cache_ttl_seconds", fallback=default)
+
+
 def _get_query_result_cache() -> CacheBackend[list[dict]]:
     """Get or initialize the global query result cache.
 
@@ -222,14 +235,14 @@ def _get_query_result_cache() -> CacheBackend[list[dict]]:
 
     if cache_backend == "memory":
         max_size = cfg.getint("cache", "query_cache_max_size", fallback=500)
-        ttl = cfg.getint("cache", "query_cache_ttl_seconds", fallback=300)
+        ttl = _query_cache_ttl_seconds(cfg, "memory")
         _query_result_cache = MemoryCache(
             max_size=max_size, default_ttl=ttl, name="rag_query_result"
         )
         log.debug(f"Query result cache initialized: memory (max_size={max_size}, ttl={ttl}s)")
     elif cache_backend == "disk":
         cache_dir = cfg.get("cache", "query_cache_dir", fallback="~/.nyxGPT/cache/queries")
-        ttl = cfg.getint("cache", "query_cache_ttl_seconds", fallback=600)
+        ttl = _query_cache_ttl_seconds(cfg, "disk")
         _query_result_cache = DiskCache(
             cache_dir=cache_dir, default_ttl=ttl, name="rag_query_result"
         )
@@ -254,17 +267,44 @@ def clear_query_cache() -> None:
         log.info("Query result cache cleared")
 
 
-def get_query_cache_stats() -> dict[str, int | float]:
-    """Return hit rate and size statistics for the query result cache.
+def get_query_cache_stats() -> dict[str, int | float | str | bool | None]:
+    """Return hit rate, size, and configuration details for the query result cache.
 
     Returns:
-        Dict with hits, misses, hit_rate, and size. All zero/empty if the
-        cache is disabled (NoOpCache has no stats() method).
+        Dict with hits, misses, hit_rate, size, enabled, backend, max_size,
+        and ttl_seconds. Zeroed/empty (with enabled=False) if query result
+        caching is disabled (`[cache] query_cache_enabled = false`).
     """
     cache = _get_query_result_cache()
-    if isinstance(cache, (MemoryCache, DiskCache)):
-        return cache.stats()
-    return {"hits": 0, "misses": 0, "hit_rate": 0.0, "size": 0}
+    cfg = load_config(None)
+
+    if isinstance(cache, MemoryCache):
+        stats = cache.stats()
+        return {
+            **stats,
+            "enabled": True,
+            "backend": "memory",
+            "ttl_seconds": _query_cache_ttl_seconds(cfg, "memory"),
+        }
+    if isinstance(cache, DiskCache):
+        stats = cache.stats()
+        return {
+            **stats,
+            "enabled": True,
+            "backend": "disk",
+            "max_size": None,
+            "ttl_seconds": _query_cache_ttl_seconds(cfg, "disk"),
+        }
+    return {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": 0.0,
+        "size": 0,
+        "enabled": False,
+        "backend": "none",
+        "max_size": None,
+        "ttl_seconds": None,
+    }
 
 
 def _query_cache_key(

@@ -264,12 +264,22 @@ class RagDocumentInfo(BaseModel):
 
 
 class QueryCacheStatsResponse(BaseModel):
-    """Hit rate and size statistics for the RAG query result cache."""
+    """Hit rate, size, and configuration details for the RAG query result cache."""
 
     hits: int = Field(description="Number of cache hits since the cache was created/cleared")
     misses: int = Field(description="Number of cache misses since the cache was created/cleared")
     hit_rate: float = Field(description="hits / (hits + misses), 0.0 if no queries yet")
     size: int = Field(description="Current number of cached query results")
+    enabled: bool = Field(description="Whether query result caching is enabled")
+    backend: str = Field(
+        description="Cache backend in use: 'memory', 'disk', or 'none' if disabled"
+    )
+    max_size: int | None = Field(
+        None, description="Maximum number of cached entries (memory backend only, else null)"
+    )
+    ttl_seconds: int | None = Field(
+        None, description="Cache entry time-to-live in seconds, null if disabled"
+    )
 
 
 class QueryCacheClearResponse(BaseModel):
