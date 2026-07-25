@@ -1,43 +1,92 @@
-# Self-Healing (Docker Compose stack)
+# Self-Healing (core app components + Docker Compose stack)
 
 The self-heal watchdog is the "self-heal" pillar of the local DevOps/SRE
-capstone (#3160): it watches every component of the [Docker Compose
-stack](docker-compose.md) and automatically restarts anything unhealthy or
-stopped, so a killed or crashed container recovers without an operator
-running `docker restart` by hand.
+capstone (#3160): it watches the core app components -- `api`, `web`,
+`ollama`, `cassandra` -- plus any running [Docker Compose
+stack](docker-compose.md) containers, and automatically restarts anything
+unhealthy or stopped, so a killed or crashed component recovers without an
+operator running `docker restart`/`brew services restart` by hand.
 
 It's implemented in `src/nyxgpt/self_heal.py` and runs as a background
-thread inside the `api` container's FastAPI process — the same process that
-already hosts the [blue/green](api.md#deployment-bluegreen) and
-[canary](api.md#canary-deployment) deployment logic.
+thread inside the `api` process -- the same process that already hosts the
+[blue/green](api.md#deployment-bluegreen) and
+[canary](api.md#canary-deployment) deployment logic. In native/local-first
+mode (the default local deployment, `nyxgpt ops install`) that's the
+Homebrew-managed `nyxgpt-api` service; in a Compose deployment it's the
+`api` container.
 
 ## How it works
 
-1. Every `check_interval_seconds` (default 15s), the watchdog runs
-   `docker compose -f <compose file> ps -a --format json` to list every
-   container the Compose project has created — the core services
-   (`ollama`, `cassandra`, `api`, `web`) plus any of the opt-in
-   `monitoring`/`logging`/`tracing`/`errors` profiles that happen to be up.
-   A profile that was never started simply doesn't appear; it isn't treated
-   as "down". See [Docker access from inside the `api`
-   container](#docker-access-from-inside-the-api-container) for how it
-   reaches the Docker daemon and resolves that compose file at all — it
+Two deployment modes are covered, and a given component is only ever
+monitored/healed by one of them at a time (see [Native/local-first
+mode](#nativelocal-first-mode) below for how that's decided):
+
+1. **Docker Compose**: every `check_interval_seconds` (default 15s), the
+   watchdog runs `docker compose -f <compose file> ps -a --format json` to
+   list every container the Compose project has created — the core services
+   (`ollama`, `cassandra`, `api`, `web`), if deployed via Compose, plus any
+   of the opt-in `monitoring`/`logging`/`tracing`/`errors` profiles that
+   happen to be up. A profile/service that was never started simply doesn't
+   appear; it isn't treated as "down". See [Docker access from inside the
+   `api` container](#docker-access-from-inside-the-api-container) for how
+   it reaches the Docker daemon and resolves that compose file at all — it
    runs inside one of the containers it's inspecting.
-2. A component is **healthy** when its Compose `State` is `running` and its
-   `Health` is either `healthy` or empty (no healthcheck configured — see
-   [Container healthchecks](#container-healthchecks) below for which
-   services have one).
-3. Anything unhealthy runs `docker compose restart <service>`, then records
-   a heal event (service, reason, restart count, success/failure) to
-   `~/.nyxGPT/self_heal_state.json`.
-4. **Backoff and giving up**: a component won't be restarted again within
-   `backoff_seconds` (default 30s) of its last restart attempt, and after
-   `max_consecutive_restarts` (default 5) consecutive attempts the watchdog
-   stops touching it automatically — a component that keeps failing needs a
-   human to look at it, not an infinite restart loop. The counter resets to
-   0 the next time the component is observed healthy.
-5. One-shot services (`glitchtip-migrate`, which runs a DB migration and is
-   expected to exit 0 and stay exited) are never treated as "down".
+   - A component is **healthy** when its Compose `State` is `running` and
+     its `Health` is either `healthy` or empty (no healthcheck configured —
+     see [Container healthchecks](#container-healthchecks) below for which
+     services have one). Anything unhealthy runs `docker compose restart
+     <service>`.
+2. **Native/local-first**: `api`/`web`/`ollama` are checked via `brew
+   services list` (**healthy** when their state is `started`) and healed
+   via `brew services restart <name>`; `cassandra` (the one Docker-managed
+   piece of a native install) is checked via `docker ps` (**healthy** when
+   `running`) and healed via `docker restart nyxgpt-cassandra` — the same
+   mechanisms `nyxgpt ops restart` uses, so the user never needs a raw
+   `brew`/`docker` command. See [Native/local-first
+   mode](#nativelocal-first-mode) below for details.
+
+Regardless of mode:
+
+- Every heal action records an event (service, reason, restart count,
+  success/failure) to `~/.nyxGPT/self_heal_state.json`.
+- **Backoff and giving up**: a component won't be restarted again within
+  `backoff_seconds` (default 30s) of its last restart attempt, and after
+  `max_consecutive_restarts` (default 5) consecutive attempts the watchdog
+  stops touching it automatically — a component that keeps failing needs a
+  human to look at it, not an infinite restart loop. The counter resets to
+  0 the next time the component is observed healthy.
+- One-shot services (`glitchtip-migrate`, which runs a DB migration and is
+  expected to exit 0 and stay exited) are never treated as "down".
+
+## Native/local-first mode
+
+In the default local-first deployment, `nyxgpt-api`/`nyxgpt-web`/`ollama`
+run as Homebrew services and `nyxgpt-cassandra` runs as a plain
+(non-Compose) Docker container -- none of that is visible to `docker
+compose ps`, which previously meant self-heal reported zero core
+components outside a Compose deployment (#3348). `src/nyxgpt/self_heal.py`
+now checks these directly, in addition to whatever `docker compose ps`
+reports:
+
+- `api` → `brew services restart nyxgpt-api`
+- `web` → `brew services restart nyxgpt-web`
+- `ollama` → `brew services restart ollama`
+- `cassandra` → `docker restart nyxgpt-cassandra`
+
+A component is only reported once it's actually installed/created (a brew
+service never set up via `nyxgpt ops install`, or a not-yet-created
+Cassandra container, is out of scope rather than "down").
+
+**Mode awareness**: if a component is already reported by `docker compose
+ps` (i.e. it's deployed via Compose), it is *not* also checked/healed
+natively — Compose is presumed to be that component's active deployment.
+This mirrors `nyxgpt ops`'s own native/Compose conflict detection (`nyxgpt
+ops status`) and means self-heal never starts a competing native service or
+restarts a container that isn't actually serving traffic.
+
+Each component's status carries a `source` field (`"native"` or
+`"compose"`) through `GET /api/v1/self-heal/status` and the `/admin/self-heal`
+dashboard, so it's clear which mechanism is monitoring/healing it.
 
 ## Turning it on
 
@@ -241,7 +290,14 @@ four going to a non-`running` state (a crash) via Compose's `State` field;
 it just can't distinguish "running but stuck" for them the way it can for
 the services above.
 
-## Known limitation: healing the `api` container itself
+## Known limitation: healing the `api` process itself
+
+The same limitation applies in native/local-first mode: the watchdog runs
+*inside* the native `nyxgpt-api` Homebrew service's process, so if that
+process is killed outright, the watchdog thread dies with it and nothing
+restarts it from within the app itself (Homebrew's own `brew services`
+supervision may or may not recover it, independent of self-heal). The rest
+of this section describes the Compose case specifically.
 
 The watchdog runs *inside* the `api` container. If `api` is killed
 (`docker kill` / `docker compose kill api` — not a graceful `docker compose
