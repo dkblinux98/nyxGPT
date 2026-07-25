@@ -1,6 +1,5 @@
 # Node / MCP tooling
 /node_modules/
-/package-lock.json
 
 # JetBrains / IntelliJ
 .idea/

@@ -982,12 +982,18 @@ def _ensure_mcp_deps() -> list[OpsResult]:
         )
         return results
 
+    lockfile = root_dir / "package-lock.json"
+    use_ci = lockfile.exists()
+    npm_cmd = ["npm", "ci"] if use_ci else ["npm", "install"]
+
     try:
-        cp = subprocess.run(["npm", "install"], cwd=str(root_dir), text=True, capture_output=True)
+        cp = subprocess.run(npm_cmd, cwd=str(root_dir), text=True, capture_output=True)
         if cp.returncode == 0:
             results.append(
                 OpsResult(
-                    True, "Installed MCP deps via npm install", str(root_dir / "node_modules")
+                    True,
+                    f"Installed MCP deps via {' '.join(npm_cmd)}",
+                    str(root_dir / "node_modules"),
                 )
             )
         else:
