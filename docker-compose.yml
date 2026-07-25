@@ -18,15 +18,18 @@ networks:
   nyxgpt:
     driver: bridge
 
-volumes:
-  ollama_data:
-  cassandra_data:
-  nyxgpt_data:
-  glitchtip_postgres_data:
-  glitchtip_uploads:
-  prometheus_data:
-  grafana_data:
-  loki_data:
+# All container data lives under $HOME/.nyxGPT/volumes/<component> on the
+# host (see docs/docker-compose.md#volumes) -- plain bind mounts, not named
+# Docker volumes, so it's visible/attributable on the host filesystem and
+# survives switching between Compose/Terraform/native. `${HOME}` is
+# interpolated from the environment `docker compose` runs in, same as the
+# promtail native-log bind mount below. ollama/cassandra/nyxgpt-data are
+# reused as-is by terraform/main.tf and (cassandra only) the native
+# `nyxgpt ops install` Cassandra container -- keep those three paths
+# identical across all three so switching deployment modes doesn't lose
+# chats or re-download models. Migrating pre-#3346 named-volume data into
+# these directories is handled by `nyxgpt ops migrate-volumes` (also run
+# automatically by `nyxgpt ops install`).
 
 services:
   ollama:
@@ -46,7 +49,7 @@ services:
     ports:
       - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${OLLAMA_PORT:-11434}:11434"
     volumes:
-      - ollama_data:/root/.ollama
+      - ${HOME}/.nyxGPT/volumes/ollama:/root/.ollama
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
       interval: 10s
@@ -71,7 +74,7 @@ services:
       # to start against data saved under a different cluster name.
       CASSANDRA_CLUSTER_NAME: nyxgpt
     volumes:
-      - cassandra_data:/var/lib/cassandra
+      - ${HOME}/.nyxGPT/volumes/cassandra:/var/lib/cassandra
     healthcheck:
       test: ["CMD-SHELL", "cqlsh -e 'describe cluster' >/dev/null 2>&1"]
       interval: 15s
@@ -103,7 +106,7 @@ services:
       NYXGPT_COMPOSE_FILE: /etc/nyxgpt/docker-compose.yml
     volumes:
       - ./docker/config.docker.ini:/etc/nyxgpt/config/config.ini:ro
-      - nyxgpt_data:/root/.nyxGPT
+      - ${HOME}/.nyxGPT/volumes/nyxgpt-data:/root/.nyxGPT
       - ./docker-compose.yml:/etc/nyxgpt/docker-compose.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -176,7 +179,7 @@ services:
     volumes:
       - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./docker/prometheus-alerts.yml:/etc/prometheus/alerts.yml:ro
-      - prometheus_data:/prometheus
+      - ${HOME}/.nyxGPT/volumes/prometheus:/prometheus
     ports:
       - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${PROMETHEUS_UI_PORT:-9090}:9090"
     healthcheck:
@@ -202,7 +205,7 @@ services:
     volumes:
       - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - grafana_data:/var/lib/grafana
+      - ${HOME}/.nyxGPT/volumes/grafana:/var/lib/grafana
     ports:
       - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${GRAFANA_UI_PORT:-3001}:3000"
     depends_on:
@@ -219,12 +222,14 @@ services:
   # ships logs to Loki from TWO sources, since promtail is always a
   # container regardless of whether the core app runs native or Compose:
   #   - Compose mode: the api container writes to /root/.nyxGPT, which is
-  #     the nyxgpt_data named volume -- promtail mounts that same volume
-  #     read-only at /var/log/nyxgpt.
+  #     bind-mounted from ~/.nyxGPT/volumes/nyxgpt-data on the host (see
+  #     docs/docker-compose.md#volumes) -- promtail mounts that same host
+  #     directory read-only at /var/log/nyxgpt.
   #   - Native mode (the primary local path, see docs/ops.md): api/self-heal
-  #     /ops run on the host and write to ~/.nyxGPT/logs, a plain host
-  #     directory that is NOT part of nyxgpt_data -- promtail separately
-  #     bind-mounts that host directory read-only at /var/log/nyxgpt-native.
+  #     /ops run on the host and write to ~/.nyxGPT/logs, a separate plain
+  #     host directory that is NOT part of ~/.nyxGPT/volumes/nyxgpt-data --
+  #     promtail separately bind-mounts that host directory read-only at
+  #     /var/log/nyxgpt-native.
   # Both paths are scraped by docker/promtail-config.yml so logs reach Loki
   # no matter which mode produced them. Grafana (see the `monitoring`
   # profile above) is pre-provisioned with a Loki datasource and a Logs
@@ -241,7 +246,7 @@ services:
       - nyxgpt
     volumes:
       - ./docker/loki-config.yml:/etc/loki/local-config.yaml:ro
-      - loki_data:/loki
+      - ${HOME}/.nyxGPT/volumes/loki:/loki
     command: -config.file=/etc/loki/local-config.yaml
 
   promtail:
@@ -253,7 +258,7 @@ services:
       - nyxgpt
     volumes:
       - ./docker/promtail-config.yml:/etc/promtail/config.yml:ro
-      - nyxgpt_data:/var/log/nyxgpt:ro
+      - ${HOME}/.nyxGPT/volumes/nyxgpt-data:/var/log/nyxgpt:ro
       # Host bind for native-mode logs -- see the comment block above.
       # ${HOME} is interpolated from the environment `docker compose` runs
       # in, not from .env (matching how the api/web services' host user
@@ -325,7 +330,7 @@ services:
       POSTGRES_PASSWORD: glitchtip
       POSTGRES_DB: glitchtip
     volumes:
-      - glitchtip_postgres_data:/var/lib/postgresql/data
+      - ${HOME}/.nyxGPT/volumes/glitchtip-postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U glitchtip"]
       interval: 10s
@@ -381,7 +386,7 @@ services:
       CELERY_WORKER_AUTOSCALE: "1,3"
       CELERY_WORKER_MAX_TASKS_PER_CHILD: "10000"
     volumes:
-      - glitchtip_uploads:/code/uploads
+      - ${HOME}/.nyxGPT/volumes/glitchtip-uploads:/code/uploads
     depends_on:
       glitchtip-postgres:
         condition: service_healthy
@@ -412,7 +417,7 @@ services:
       CELERY_WORKER_AUTOSCALE: "1,3"
       CELERY_WORKER_MAX_TASKS_PER_CHILD: "10000"
     volumes:
-      - glitchtip_uploads:/code/uploads
+      - ${HOME}/.nyxGPT/volumes/glitchtip-uploads:/code/uploads
     depends_on:
       glitchtip-postgres:
         condition: service_healthy

@@ -10,8 +10,8 @@ clients:
 
 scrape_configs:
   # Two static_configs entries, not one glob: Compose-mode logs (written by
-  # the api container into the nyxgpt_data named volume, mounted at
-  # /var/log/nyxgpt) and native-mode logs (written on the host to
+  # the api container into ~/.nyxGPT/volumes/nyxgpt-data on the host, bind-mounted
+  # read-only at /var/log/nyxgpt) and native-mode logs (written on the host to
   # ~/.nyxGPT/logs, bind-mounted at /var/log/nyxgpt-native -- see
   # docker-compose.yml's promtail service) live in different directories.
   # Both carry the same `job` label and pipeline_stages so they're

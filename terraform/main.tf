@@ -6,17 +6,18 @@ resource "docker_network" "nyxgpt" {
   name = "nyxgpt-terraform"
 }
 
-resource "docker_volume" "ollama_data" {
-  name = "nyxgpt_tf_ollama_data"
-}
-
-resource "docker_volume" "cassandra_data" {
-  name = "nyxgpt_tf_cassandra_data"
-}
-
-resource "docker_volume" "nyxgpt_data" {
-  name = "nyxgpt_tf_nyxgpt_data"
-}
+# Container data lives in plain host bind mounts under ~/.nyxGPT/volumes/
+# (see docs/docker-compose.md#volumes), not Terraform-managed docker_volume
+# resources -- ollama/cassandra/nyxgpt-data reuse the exact same host paths
+# docker-compose.yml and (cassandra only) the native `nyxgpt ops install`
+# Cassandra container mount, so pulled models and Cassandra/chat data survive
+# switching deployment modes instead of each mode keeping its own copy.
+# `pathexpand` is Terraform's `~`-expansion function (Docker's `host_path`
+# doesn't expand `~` itself). Pre-#3346 `nyxgpt_tf_*` docker_volume data is
+# migrated into these paths by `nyxgpt ops migrate-volumes` (also run
+# automatically by `nyxgpt ops install --terraform --local`) before this
+# config's `terraform apply` would otherwise destroy the now-removed
+# docker_volume resources.
 
 # Keep this pin identical to docker-compose.yml's `ollama` service image --
 # see docs/docker-compose.md#image-pinning for the policy and how to bump
@@ -40,7 +41,7 @@ resource "docker_container" "ollama" {
   }
 
   volumes {
-    volume_name    = docker_volume.ollama_data.name
+    host_path      = pathexpand("~/.nyxGPT/volumes/ollama")
     container_path = "/root/.ollama"
   }
 
@@ -76,7 +77,7 @@ resource "docker_container" "cassandra" {
   }
 
   volumes {
-    volume_name    = docker_volume.cassandra_data.name
+    host_path      = pathexpand("~/.nyxGPT/volumes/cassandra")
     container_path = "/var/lib/cassandra"
   }
 
@@ -126,7 +127,7 @@ resource "docker_container" "api" {
   }
 
   volumes {
-    volume_name    = docker_volume.nyxgpt_data.name
+    host_path      = pathexpand("~/.nyxGPT/volumes/nyxgpt-data")
     container_path = "/root/.nyxGPT"
   }
 
