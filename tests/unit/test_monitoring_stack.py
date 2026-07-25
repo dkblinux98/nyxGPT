@@ -94,8 +94,10 @@ def test_compose_defines_opt_in_monitoring_profile() -> None:
             "monitoring"
         ], f"{name} must only start under the opt-in 'monitoring' profile"
 
-    assert "prometheus_data" in compose["volumes"]
-    assert "grafana_data" in compose["volumes"]
+    prometheus_volumes = services["prometheus"]["volumes"]
+    assert any(v.endswith(".nyxGPT/volumes/prometheus:/prometheus") for v in prometheus_volumes)
+    grafana_volumes = services["grafana"]["volumes"]
+    assert any(v.endswith(".nyxGPT/volumes/grafana:/var/lib/grafana") for v in grafana_volumes)
 
 
 def test_grafana_volumes_do_not_nest_a_mount_inside_a_read_only_mount() -> None:
