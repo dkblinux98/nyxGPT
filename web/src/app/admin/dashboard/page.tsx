@@ -65,6 +65,7 @@ const sectionTitleStyle: React.CSSProperties = {
 export const ADMIN_NAV: Array<{ href: string; label: string; description: string }> = [
   { href: '/admin/health', label: 'System Health', description: 'Live status of every nyxGPT service' },
   { href: '/admin/deploy', label: 'Deployment', description: 'Blue/green switch and rollback' },
+  { href: '/admin/infrastructure', label: 'Infrastructure', description: 'Terraform and Kubernetes local deploys' },
   { href: '/admin/canary', label: 'Canary', description: 'Gradual rollout with automatic rollback' },
   { href: '/admin/self-heal', label: 'Self-heal', description: 'Watchdog that restarts unhealthy services' },
   { href: '/admin/observability', label: 'SRE Overview', description: 'Monitoring, logs, tracing, and error tracking' },
