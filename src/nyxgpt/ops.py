@@ -80,6 +80,43 @@ LAUNCHAGENT_HOME_PLACEHOLDER = "__NYXGPT_HOME__"
 # and native-mode logs silently stop reaching Loki.
 PROMTAIL_NATIVE_LOG_MOUNT_MARKER = "/var/log/nyxgpt-native/logs"
 
+# --- Container data layout (see docs/docker-compose.md#volumes, issue #3346) ---
+#
+# All container data lives in plain host bind mounts under ~/.nyxGPT/volumes/
+# instead of opaque named Docker volumes -- visible/attributable on the host
+# filesystem and, for the three "shared" directories below, reused as-is by
+# every deployment mode that mounts them (rather than each mode keeping its
+# own duplicate copy). `VOLUME_DIR_NAMES` maps a logical component name to
+# its directory under ~/.nyxGPT/volumes/; `volume_dir()` resolves the full
+# path. Kept in this module (rather than config.py) since it's purely a
+# Docker/ops concern -- native processes' own state (~/.nyxGPT/config.ini,
+# ~/.nyxGPT/logs, ...) is unrelated and untouched by any of this.
+VOLUME_DIR_NAMES: dict[str, str] = {
+    # Shared across every mode that mounts them: the native `nyxgpt-cassandra`
+    # container (`_ensure_cassandra_container` below), docker-compose.yml, and
+    # terraform/main.tf all bind to the *same* ~/.nyxGPT/volumes/cassandra and
+    # ~/.nyxGPT/volumes/nyxgpt-data directories -- ollama is shared between
+    # Compose and Terraform only (native Ollama isn't containerized; it keeps
+    # its own Homebrew-managed model store).
+    "cassandra": "cassandra",
+    "ollama": "ollama",
+    "nyxgpt-data": "nyxgpt-data",
+    # Compose-only today (no native/Terraform equivalent), so no per-mode
+    # duplication to worry about -- see OBSERVABILITY_PROFILES.
+    "prometheus": "prometheus",
+    "grafana": "grafana",
+    "loki": "loki",
+    "glitchtip-postgres": "glitchtip-postgres",
+    "glitchtip-uploads": "glitchtip-uploads",
+}
+
+
+def volume_dir(component: str) -> Path:
+    """Return `~/.nyxGPT/volumes/<component>`'s host bind-mount path, creating it if needed."""
+    p = Path.home() / ".nyxGPT" / "volumes" / VOLUME_DIR_NAMES[component]
+    _ensure_dir(p)
+    return p
+
 
 @dataclass(frozen=True)
 class DeploymentMode:
@@ -1023,11 +1060,10 @@ CASSANDRA_CONTAINER_NAME = "nyxgpt-cassandra"
 # and terraform/main.tf (docker_image.cassandra) -- see docs/docker-compose.md
 # for the image-pinning policy and how to bump all three together.
 CASSANDRA_IMAGE = "cassandra:5.0.8"
-CASSANDRA_VOLUME = "nyxgpt_cassandra_data"
-# Must match the cluster name stamped into CASSANDRA_VOLUME's system keyspace:
-# Cassandra refuses to start when the saved cluster name differs from the
-# configured one, so a recreated container without this env crash-loops with
-# "Saved cluster name nyxgpt != configured name Test Cluster".
+# Must match the cluster name stamped into the Cassandra data directory's
+# system keyspace: Cassandra refuses to start when the saved cluster name
+# differs from the configured one, so a recreated container without this env
+# crash-loops with "Saved cluster name nyxgpt != configured name Test Cluster".
 CASSANDRA_CLUSTER_NAME = "nyxgpt"
 
 
@@ -1037,8 +1073,8 @@ def _ensure_cassandra_container() -> list[OpsResult]:
     Reconciles to the intended state rather than only adding:
     - running: nothing to do.
     - present but not running (exited/created/paused/...): `docker start` it.
-    - absent: `docker run` a fresh container from `CASSANDRA_IMAGE`/`CASSANDRA_VOLUME`,
-      bound to `${NYXGPT_BIND_ADDR:-127.0.0.1}:${CASSANDRA_PORT:-9042}`.
+    - absent: `docker run` a fresh container from `CASSANDRA_IMAGE`, bind-mounted to
+      `volume_dir("cassandra")`, bound to `${NYXGPT_BIND_ADDR:-127.0.0.1}:${CASSANDRA_PORT:-9042}`.
 
     This is what `nyxgpt ops install` was missing entirely: without it, no
     `nyxgpt` command ever created the container in the first place, so
@@ -1052,6 +1088,21 @@ def _ensure_cassandra_container() -> list[OpsResult]:
                 "docker not found; cannot ensure local Cassandra container",
                 "Install Docker Desktop (or the docker CLI) -- Cassandra is the one "
                 "Docker-managed piece of a native-mode local install.",
+            )
+        ]
+
+    # ~/.nyxGPT/volumes/cassandra is the same host directory docker-compose.yml
+    # and terraform/main.tf bind-mount their `cassandra` service/container to --
+    # two Cassandra processes writing to it concurrently would corrupt the data
+    # directory, so refuse rather than create a second writer (see #3346).
+    if terraform_stack_state().get("cassandra") == "running":
+        return [
+            OpsResult(
+                False,
+                "Refusing to start native Cassandra: the Terraform-managed Cassandra "
+                f"container ({TERRAFORM_CONTAINERS['cassandra']}) is already running and "
+                "shares the same ~/.nyxGPT/volumes/cassandra data directory",
+                "Run `nyxgpt ops down --terraform` first, or skip native Cassandra.",
             )
         ]
 
@@ -1079,6 +1130,7 @@ def _ensure_cassandra_container() -> list[OpsResult]:
 
     bind_addr = os.environ.get("NYXGPT_BIND_ADDR", "127.0.0.1")
     port = os.environ.get("CASSANDRA_PORT", "9042")
+    data_dir = volume_dir("cassandra")
     cmd = [
         "docker",
         "run",
@@ -1090,7 +1142,7 @@ def _ensure_cassandra_container() -> list[OpsResult]:
         "-p",
         f"{bind_addr}:{port}:9042",
         "-v",
-        f"{CASSANDRA_VOLUME}:/var/lib/cassandra",
+        f"{data_dir}:/var/lib/cassandra",
         "-e",
         f"CASSANDRA_CLUSTER_NAME={CASSANDRA_CLUSTER_NAME}",
         CASSANDRA_IMAGE,
@@ -1101,7 +1153,7 @@ def _ensure_cassandra_container() -> list[OpsResult]:
             OpsResult(
                 True,
                 f"Created Cassandra container: {CASSANDRA_CONTAINER_NAME} ({CASSANDRA_IMAGE})",
-                f"Bound to {bind_addr}:{port}, data persisted in volume {CASSANDRA_VOLUME}",
+                f"Bound to {bind_addr}:{port}, data persisted in {data_dir}",
             )
         ]
     details = (cp.stdout or "").strip() + (
@@ -1114,6 +1166,153 @@ def _ensure_cassandra_container() -> list[OpsResult]:
             details.strip(),
         )
     ]
+
+
+# --- Legacy named-volume migration (issue #3346) ---
+#
+# Before #3346, container data lived in named Docker volumes rather than
+# ~/.nyxGPT/volumes/ bind mounts: `nyxgpt_cassandra_data` (native, and -- by
+# coincidence of docker-compose.yml's explicit `name: nyxgpt` project name --
+# also Compose's `cassandra_data`), `nyxgpt_ollama_data`/`nyxgpt_data` (Compose),
+# and `nyxgpt_tf_ollama_data`/`nyxgpt_tf_cassandra_data`/`nyxgpt_tf_nyxgpt_data`
+# (Terraform). This copies that data into the new bind-mount directories on
+# upgrade so it isn't silently lost. On macOS/Docker Desktop a named volume's
+# files live inside the Docker VM, not directly reachable from the host
+# filesystem, so the copy runs through a throwaway container rather than a
+# plain filesystem copy.
+
+# Pinned to a specific version (no floating/untagged reference), same policy
+# as every other third-party image in this file -- see
+# docs/docker-compose.md#image-pinning. This one is just a disposable `cp`
+# runner, not a long-lived service, so it isn't part of that doc's
+# pinned-images table.
+MIGRATION_HELPER_IMAGE = "alpine:3.20.3"
+
+# dest volume_dir() component -> legacy Docker volume names to check, in
+# priority order (first one found with data wins; see
+# `migrate_legacy_volumes`). Cassandra/Ollama/nyxgpt-data can have both a
+# Compose-era and a Terraform-era candidate now that both modes share one
+# destination directory; only one can be migrated in since merging two
+# independent Cassandra data directories isn't safe.
+LEGACY_VOLUME_SOURCES: dict[str, list[str]] = {
+    "cassandra": ["nyxgpt_cassandra_data", "nyxgpt_tf_cassandra_data"],
+    "ollama": ["nyxgpt_ollama_data", "nyxgpt_tf_ollama_data"],
+    # Compose's volume key was literally `nyxgpt_data:`, which Compose prefixes
+    # with the project name (`name: nyxgpt` in docker-compose.yml) to get
+    # `nyxgpt_nyxgpt_data` -- not `nyxgpt_data`.
+    "nyxgpt-data": ["nyxgpt_nyxgpt_data", "nyxgpt_tf_nyxgpt_data"],
+    "prometheus": ["nyxgpt_prometheus_data"],
+    "grafana": ["nyxgpt_grafana_data"],
+    "loki": ["nyxgpt_loki_data"],
+    "glitchtip-postgres": ["nyxgpt_glitchtip_postgres_data"],
+    "glitchtip-uploads": ["nyxgpt_glitchtip_uploads"],
+}
+
+
+def _docker_volume_exists(name: str) -> bool:
+    """Return whether a Docker volume named `name` currently exists."""
+    if _which("docker") is None:
+        return False
+    cp = _run(["docker", "volume", "inspect", name], check=False)
+    return cp.returncode == 0
+
+
+def _migrate_docker_volume_to_bind_dir(
+    volume_name: str, dest_dir: Path, *, label: str
+) -> OpsResult:
+    """Copy `volume_name`'s contents into `dest_dir` via a throwaway container, then remove it.
+
+    `dest_dir` is assumed already created and empty (checked by the caller,
+    `migrate_legacy_volumes`, so this can be tested/called standalone without
+    re-deriving that check). Removal is best-effort -- a volume still attached
+    to some other container is left behind with a note rather than failing
+    the whole migration.
+    """
+    cp = _run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            f"{volume_name}:/from:ro",
+            "-v",
+            f"{dest_dir}:/to",
+            MIGRATION_HELPER_IMAGE,
+            "sh",
+            "-c",
+            "cp -a /from/. /to/",
+        ],
+        check=False,
+    )
+    if cp.returncode != 0:
+        return OpsResult(
+            False,
+            f"Failed to migrate {label} data from legacy volume '{volume_name}'",
+            _cp_details(cp),
+        )
+
+    rm = _run(["docker", "volume", "rm", volume_name], check=False)
+    if rm.returncode == 0:
+        return OpsResult(
+            True,
+            f"Migrated {label} data from legacy volume '{volume_name}' into {dest_dir}",
+            "Old volume removed.",
+        )
+    return OpsResult(
+        True,
+        f"Migrated {label} data from legacy volume '{volume_name}' into {dest_dir}",
+        f"Could not remove the old volume (still in use?): {_cp_details(rm)}",
+    )
+
+
+def migrate_legacy_volumes() -> list[OpsResult]:
+    """Copy pre-#3346 named-volume data into ~/.nyxGPT/volumes/, then drop the old volumes.
+
+    Idempotent and safe to run on every `nyxgpt ops install` (native and
+    `--terraform --local` both do): a destination directory that already has
+    data -- either migrated by an earlier run, or freshly created by the new
+    bind-mounted services -- is left untouched, so this never overwrites
+    live data. Also exposed standalone as `nyxgpt ops migrate-volumes` for
+    Compose-only users who never run `nyxgpt ops install`.
+    """
+    if _which("docker") is None:
+        return [OpsResult(True, "Skipped legacy volume migration (docker not found)")]
+
+    results: list[OpsResult] = []
+    for dest_name, candidates in LEGACY_VOLUME_SOURCES.items():
+        dest_dir = volume_dir(dest_name)
+        if any(dest_dir.iterdir()):
+            results.append(
+                OpsResult(
+                    True,
+                    f"{dest_name}: {dest_dir} already has data -- skipping legacy volume migration",
+                )
+            )
+            continue
+
+        found = next((v for v in candidates if _docker_volume_exists(v)), None)
+        if found is None:
+            results.append(
+                OpsResult(True, f"No legacy volume found for {dest_name} (nothing to migrate)")
+            )
+            continue
+
+        results.append(_migrate_docker_volume_to_bind_dir(found, dest_dir, label=dest_name))
+
+    return results
+
+
+def migrate_volumes_cmd(_args) -> int:
+    """CLI entrypoint for `nyxgpt ops migrate-volumes`.
+
+    A standalone escape hatch for migrating pre-#3346 named-volume data
+    without running the rest of `nyxgpt ops install` -- e.g. for a
+    Compose-only user who never runs `install` (that's the native-mode
+    reconciler). Safe to re-run; see `migrate_legacy_volumes`.
+    """
+    results = migrate_legacy_volumes()
+    ok = _emit_results("migrate-volumes", results)
+    return 0 if ok else 2
 
 
 # --- Phantom Compose app-tier reconciliation ---
@@ -1396,6 +1595,11 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
     )
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        # Must run before terraform apply: main.tf no longer declares the
+        # `nyxgpt_tf_*` docker_volume resources (#3346), so apply would
+        # otherwise destroy them -- along with any not-yet-migrated data --
+        # as part of reconciling state to the new host-bind-mount config.
+        ("migrate legacy volumes", migrate_legacy_volumes),
         ("terraform binary", _ensure_terraform_binary),
         ("terraform tfvars", lambda: _ensure_terraform_tfvars(api_key)),
         ("terraform init/plan/apply", _terraform_init_plan_apply),
@@ -1736,8 +1940,10 @@ def install(args) -> int:
     """CLI entrypoint for `nyxgpt ops install`.
 
     Reconciles the local machine to the intended native-mode topology (see
-    docs/ops.md): first stopping any phantom Docker Compose app-tier containers
-    leaked from an earlier run or a raw `docker compose up`, then ensuring the
+    docs/ops.md): first migrating any pre-#3346 named-volume data into
+    ~/.nyxGPT/volumes/ (see `migrate_legacy_volumes`), then stopping any
+    phantom Docker Compose app-tier containers leaked from an earlier run or
+    a raw `docker compose up`, then ensuring the
     local Cassandra container plus every other install step (scripts, web deps,
     MCP deps, Cassandra LaunchAgent, Ollama logs LaunchAgent, Homebrew
     formulas, the native Ollama service, log symlinks, env sync from
@@ -1764,6 +1970,7 @@ def install(args) -> int:
 
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        ("migrate legacy volumes", migrate_legacy_volumes),
         ("phantom compose reconciliation", _reconcile_phantom_compose_app_containers),
         ("scripts", _install_scripts),
         ("web deps", _ensure_web_deps),
@@ -2358,11 +2565,56 @@ def _restart_observability_stack() -> list[OpsResult]:
     return results
 
 
+# Compose service name -> volume_dir() component(s) it bind-mounts (see
+# VOLUME_DIR_NAMES). `_compose_down` uses this to actually delete data when
+# `--volumes` is passed: `docker compose down --volumes` only removes
+# Docker-managed named volumes, and since #3346 these are plain host bind
+# mounts, so that flag alone is a silent no-op against the data it used to
+# delete. glitchtip/glitchtip-worker share one uploads directory.
+SERVICE_VOLUME_DIRS: dict[str, list[str]] = {
+    "ollama": ["ollama"],
+    "cassandra": ["cassandra"],
+    "api": ["nyxgpt-data"],
+    "prometheus": ["prometheus"],
+    "grafana": ["grafana"],
+    "loki": ["loki"],
+    "glitchtip-postgres": ["glitchtip-postgres"],
+    "glitchtip": ["glitchtip-uploads"],
+    "glitchtip-worker": ["glitchtip-uploads"],
+}
+
+
+def _remove_volume_dirs(services: list[str]) -> list[OpsResult]:
+    """Delete the host bind-mount directories owned by `services` (see `SERVICE_VOLUME_DIRS`).
+
+    Called only when `docker compose down --volumes` is requested -- that
+    flag no longer touches bind-mounted data itself (see `_compose_down`), so
+    this is what actually makes `--volumes` destructive again.
+    """
+    dirs = sorted({d for s in services for d in SERVICE_VOLUME_DIRS.get(s, [])})
+    if not dirs:
+        return []
+    results: list[OpsResult] = []
+    for name in dirs:
+        path = volume_dir(name)
+        try:
+            shutil.rmtree(path)
+            results.append(OpsResult(True, f"Removed data directory: {path}"))
+        except Exception as e:
+            results.append(
+                OpsResult(
+                    False, f"Failed to remove data directory: {path}", f"{type(e).__name__}: {e}"
+                )
+            )
+    return results
+
+
 def _compose_down(services: list[str], *, volumes: bool) -> list[OpsResult]:
     """Tear down the given Compose `services` via `docker compose down`.
 
     Removes containers/networks for exactly the listed services; `volumes`
-    additionally removes their named volumes (destructive -- data loss).
+    additionally deletes their ~/.nyxGPT/volumes/ bind-mount directories
+    (destructive -- data loss; see `_remove_volume_dirs`).
     """
     if not _compose_available():
         return [OpsResult(True, "Skipped Compose teardown (Docker not found)")]
@@ -2370,8 +2622,6 @@ def _compose_down(services: list[str], *, volumes: bool) -> list[OpsResult]:
         return [OpsResult(True, "No Compose services to tear down for this scope")]
 
     cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "down"] + services
-    if volumes:
-        cmd.append("--volumes")
     cp = _run(cmd, check=False)
     if cp.returncode != 0:
         return [
@@ -2381,10 +2631,11 @@ def _compose_down(services: list[str], *, volumes: bool) -> list[OpsResult]:
                 (cp.stderr or cp.stdout or "").strip(),
             )
         ]
-    suffix = " and their volumes" if volumes else " (volumes preserved)"
-    return [
-        OpsResult(True, f"Removed Compose containers{suffix}: {', '.join(services)}"),
-    ]
+    suffix = " and their data directories" if volumes else " (data directories preserved)"
+    results = [OpsResult(True, f"Removed Compose containers{suffix}: {', '.join(services)}")]
+    if volumes:
+        results += _remove_volume_dirs(services)
+    return results
 
 
 def stop(args) -> int:
