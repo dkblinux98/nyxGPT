@@ -1,0 +1,129 @@
+name: List Issues By Status
+
+# Read-only admin helper: dumps every project item whose Status field matches
+# the given option into the run log, one line per item. Exists because the
+# Projects v2 board is GraphQL-only, which remote owner/assistant sessions
+# cannot query directly; this is the sanctioned read path for board sweeps
+# (the write path is bulk_set_issue_status.yml).
+
+on:
+  workflow_dispatch:
+    inputs:
+      status:
+        description: 'Status option to list (e.g. "In Review")'
+        required: true
+        default: 'In Review'
+
+permissions:
+  contents: read
+
+jobs:
+  list-by-status:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Write config
+        run: |
+          cat > /tmp/nyxgpt-config.ini <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          EOF
+          echo "NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini" >> "$GITHUB_ENV"
+
+      - name: List project items with matching Status
+        env:
+          TARGET_STATUS: ${{ inputs.status }}
+        run: |
+          set -euo pipefail
+          source scripts/agents/lib/gh_project.sh
+          load_config
+          require_gh_auth
+          require_cmd python3
+          project_id="$(get_project_id)"
+
+          read -r -d '' QUERY <<'GQL' || true
+          query($project:ID!, $after:String){
+            node(id:$project){
+              ... on ProjectV2{
+                items(first:100, after:$after){
+                  pageInfo{ hasNextPage endCursor }
+                  nodes{
+                    content{
+                      __typename
+                      ... on Issue { number state title milestone { title } }
+                    }
+                    fieldValues(first:50){
+                      nodes{
+                        __typename
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          field{ ... on ProjectV2SingleSelectField { name } }
+                          name
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          GQL
+
+          page_file="$(mktemp)"
+          after=""
+          echo "=== Items with Status: ${TARGET_STATUS} ==="
+          while : ; do
+            if [[ -n "$after" ]]; then
+              graphql "$QUERY" -F project="$project_id" -f after="$after" > "$page_file"
+            else
+              graphql "$QUERY" -F project="$project_id" > "$page_file"
+            fi
+
+            STATUS_FIELD="$STATUS_FIELD" TARGET_STATUS="$TARGET_STATUS" \
+            python3 - "$page_file" <<'PY'
+          import json, os, sys
+          d = json.load(open(sys.argv[1], encoding="utf-8"))
+          status_field = os.environ.get("STATUS_FIELD", "Status")
+          target = os.environ["TARGET_STATUS"]
+          for it in d["data"]["node"]["items"]["nodes"]:
+              c = it.get("content") or {}
+              if c.get("__typename") != "Issue":
+                  continue
+              status = None
+              for fv in it["fieldValues"]["nodes"]:
+                  if fv.get("__typename") == "ProjectV2ItemFieldSingleSelectValue" \
+                     and (fv.get("field") or {}).get("name") == status_field:
+                      status = fv.get("name")
+              if status == target:
+                  ms = (c.get("milestone") or {}).get("title") or "-"
+                  print(f"ITEM|{c['number']}|{c['state']}|{ms}|{c['title']}")
+          PY
+
+            has_next="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); pi=d["data"]["node"]["items"]["pageInfo"]; print("yes" if pi["hasNextPage"] else "no")' "$page_file")"
+            if [[ "$has_next" == "yes" ]]; then
+              after="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["data"]["node"]["items"]["pageInfo"]["endCursor"])' "$page_file")"
+            else
+              break
+            fi
+          done
+          echo "=== End of list ==="
