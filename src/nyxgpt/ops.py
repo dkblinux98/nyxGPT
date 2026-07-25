@@ -1314,8 +1314,8 @@ def _ensure_terraform_tfvars(api_key: str | None) -> list[OpsResult]:
         return [OpsResult(False, f"Missing {example} to bootstrap tfvars from")]
     key = _resolve_api_key(api_key)
     text = example.read_text(encoding="utf-8")
-    text = re.sub(r'repo_path\s*=\s*".*"', f'repo_path    = "{REPO_ROOT}"', text)
-    text = re.sub(r'auth_api_key\s*=\s*".*"', f'auth_api_key = "{key}"', text)
+    text = re.sub(r'repo_path\s*=\s*".*"', lambda _m: f'repo_path    = "{REPO_ROOT}"', text)
+    text = re.sub(r'auth_api_key\s*=\s*".*"', lambda _m: f'auth_api_key = "{key}"', text)
     tfvars.write_text(text, encoding="utf-8")
     os.chmod(tfvars, 0o600)
     return [OpsResult(True, f"Bootstrapped {tfvars} from terraform.tfvars.example")]
@@ -1548,7 +1548,7 @@ def _ensure_k8s_secret(api_key: str | None) -> list[OpsResult]:
         return [OpsResult(False, f"Missing {example} to bootstrap the secret from")]
     key = _resolve_api_key(api_key)
     text = example.read_text(encoding="utf-8")
-    text = re.sub(r'api-key:\s*".*"', f'api-key: "{key}"', text)
+    text = re.sub(r'api-key:\s*".*"', lambda _m: f'api-key: "{key}"', text)
     secret_path.write_text(text, encoding="utf-8")
     os.chmod(secret_path, 0o600)
     return [OpsResult(True, f"Bootstrapped {secret_path} from secret.example.yaml")]
