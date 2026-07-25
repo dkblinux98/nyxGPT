@@ -10,6 +10,7 @@ type Component = {
   state: string;
   health: string;
   healthy: boolean;
+  source: string;
 };
 
 type HealEvent = {
@@ -175,8 +176,9 @@ export default function SelfHealPage() {
             Self-Heal
           </h1>
           <p style={{ color: 'var(--foreground-muted)', marginBottom: 8 }}>
-            Watches every component of the local Docker Compose stack and automatically restarts
-            anything unhealthy or stopped.
+            Watches the core app components (API, web UI, Ollama, Cassandra) -- whether they run
+            natively (the default local-first setup) or under Docker Compose -- plus any running
+            observability containers, and automatically restarts anything unhealthy or stopped.
           </p>
           <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
             ← Back to Admin Dashboard
@@ -350,9 +352,9 @@ export default function SelfHealPage() {
             </h2>
             {status.components.length === 0 ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
-                No Docker Compose containers found. Bring up the stack with{' '}
-                <code>nyxgpt ops install</code> (or <code>nyxgpt ops observability</code>) to see
-                live component health here.
+                No components found. Run <code>nyxgpt ops install</code> to set up the core app
+                components (or <code>nyxgpt ops observability</code> for monitoring/logging) and
+                see live component health here.
               </p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
@@ -371,6 +373,19 @@ export default function SelfHealPage() {
                   >
                     <div>
                       <span style={{ fontWeight: 600 }}>{c.service}</span>
+                      <span
+                        style={{
+                          marginLeft: '0.5rem',
+                          fontSize: '0.7rem',
+                          padding: '1px 6px',
+                          borderRadius: 999,
+                          background: 'var(--background)',
+                          border: '1px solid var(--border-color)',
+                          color: 'var(--foreground-muted)',
+                        }}
+                      >
+                        {c.source === 'native' ? 'native' : 'compose'}
+                      </span>
                       <span
                         style={{
                           marginLeft: '0.75rem',
