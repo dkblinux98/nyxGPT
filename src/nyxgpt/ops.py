@@ -10,7 +10,9 @@ can warn about -- and refuse to create -- port collisions between the two.
 
 from __future__ import annotations
 
+import getpass
 import hashlib
+import json
 import logging
 import os
 import re
@@ -1177,6 +1179,556 @@ def _reconcile_phantom_compose_app_containers() -> list[OpsResult]:
     return results
 
 
+def _cp_details(cp: subprocess.CompletedProcess[str]) -> str:
+    """Concatenate stdout+stderr from a CompletedProcess into one details string."""
+    stdout = (cp.stdout or "").strip()
+    stderr = (cp.stderr or "").strip()
+    return (stdout + ("\n" + stderr if stderr else "")).strip()
+
+
+def _resolve_locality(args) -> str | None:
+    """Validate the `--local`/`--cloud` locality flag shared by `--terraform`/`--kubernetes`.
+
+    Only `--local` is implemented today. `--cloud` is accepted by the CLI
+    surface (so it doesn't need a redesign later) but always rejected with a
+    "not yet implemented" message -- the local deployment is the precursor
+    to a future cloud target, not an alternative to it (see issue #3344).
+
+    Returns "local" once implemented, or None (having already printed an
+    error) if the flag is missing or unimplemented.
+    """
+    if getattr(args, "cloud", False):
+        print(
+            "ERROR: --cloud is not yet implemented. Local Terraform/Kubernetes deployment "
+            "(--local) is the precursor to a future cloud target -- see docs/terraform.md "
+            "and docs/kubernetes.md.",
+            file=sys.stderr,
+        )
+        return None
+    if not getattr(args, "local", False):
+        print(
+            "ERROR: --local is required with --terraform/--kubernetes "
+            "(the only locality implemented today; pass --local explicitly)",
+            file=sys.stderr,
+        )
+        return None
+    return "local"
+
+
+def _resolve_api_key(explicit: str | None) -> str:
+    """Resolve the auth API key for a Terraform/Kubernetes bootstrap: explicit, prompted, or random.
+
+    Prefers an explicitly-passed `--api-key`. Otherwise, when stdin is a TTY,
+    prompts for one (hidden input, never echoed or logged) so an operator can
+    set a memorable key; if left blank -- or stdin isn't interactive at all
+    (e.g. driven from the SRE/admin dashboard or a test) -- falls back to a
+    random one so the command still completes non-interactively.
+    """
+    if explicit:
+        return explicit
+    if sys.stdin.isatty():
+        try:
+            entered = getpass.getpass(
+                "API key for the deployed stack's [auth] section (blank to auto-generate): "
+            )
+        except Exception:
+            entered = ""
+        if entered:
+            return entered
+    return secrets.token_hex(32)
+
+
+def _refuse_port_collision(components: list[str]) -> OpsResult | None:
+    """Refuse to bring up a new deployment on ports already bound by native/Compose.
+
+    Terraform's containers and the native/Compose stack all default to the
+    same host ports (8000/3000/11434/9042). Returns a failing `OpsResult`
+    naming the conflicting components -- and what to run instead -- if any of
+    `components` are already live natively or via Compose, else None.
+    """
+    mode = detect_deployment_mode()
+    bound = [
+        c
+        for c in components
+        if mode.native.get(c) in ("started", "running") or mode.compose.get(c) == "running"
+    ]
+    if not bound:
+        return None
+    return OpsResult(
+        False,
+        "Refusing to start: port collision with a running native/Compose stack",
+        f"{', '.join(sorted(bound))} already serving via native/Compose on the same host "
+        "port(s) -- run `nyxgpt ops down` (or stop the conflicting components) before "
+        "bringing up the Terraform/Kubernetes deployment.",
+    )
+
+
+# --- Terraform local deployment (`nyxgpt ops install/down --terraform --local`) ---
+
+TERRAFORM_DIR = REPO_ROOT / "terraform"
+
+# Container names terraform/main.tf creates for the core stack (see docs/terraform.md).
+TERRAFORM_CONTAINERS: dict[str, str] = {
+    "ollama": "nyxgpt-tf-ollama",
+    "cassandra": "nyxgpt-tf-cassandra",
+    "api": "nyxgpt-tf-api",
+    "web": "nyxgpt-tf-web",
+}
+
+# Terraform was pulled from homebrew-core after HashiCorp's 2023 BUSL relicense,
+# so `brew install terraform` fails -- install from the official tap instead.
+HASHICORP_TAP = "hashicorp/tap"
+
+
+def _ensure_terraform_binary() -> list[OpsResult]:
+    """Ensure `terraform` is on PATH, installing it via the HashiCorp tap if missing."""
+    if _which("terraform") is not None:
+        return [OpsResult(True, "terraform already installed")]
+    if _which("brew") is None:
+        return [
+            OpsResult(
+                False,
+                "terraform not found and Homebrew is unavailable to install it",
+                "Install Terraform >= 1.5.0 manually: "
+                "https://developer.hashicorp.com/terraform/install",
+            )
+        ]
+    cp = _run(["brew", "tap", HASHICORP_TAP], check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, f"brew tap {HASHICORP_TAP} failed", _cp_details(cp))]
+    cp = _run(["brew", "install", f"{HASHICORP_TAP}/terraform"], check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, f"brew install {HASHICORP_TAP}/terraform failed", _cp_details(cp))]
+    if _which("terraform") is None:
+        return [OpsResult(False, "terraform install reported success but binary still not on PATH")]
+    return [OpsResult(True, f"Installed terraform via {HASHICORP_TAP}")]
+
+
+def _ensure_terraform_tfvars(api_key: str | None) -> list[OpsResult]:
+    """Bootstrap terraform/terraform.tfvars from the example if it doesn't exist yet."""
+    tfvars = TERRAFORM_DIR / "terraform.tfvars"
+    if tfvars.exists():
+        return [OpsResult(True, f"{tfvars} already exists")]
+    example = TERRAFORM_DIR / "terraform.tfvars.example"
+    if not example.exists():
+        return [OpsResult(False, f"Missing {example} to bootstrap tfvars from")]
+    key = _resolve_api_key(api_key)
+    text = example.read_text(encoding="utf-8")
+    text = re.sub(r'repo_path\s*=\s*".*"', lambda _m: f'repo_path    = "{REPO_ROOT}"', text)
+    text = re.sub(r'auth_api_key\s*=\s*".*"', lambda _m: f'auth_api_key = "{key}"', text)
+    tfvars.write_text(text, encoding="utf-8")
+    os.chmod(tfvars, 0o600)
+    return [OpsResult(True, f"Bootstrapped {tfvars} from terraform.tfvars.example")]
+
+
+def _terraform_init_plan_apply() -> list[OpsResult]:
+    """Run `terraform init` -> `plan` -> `apply` in terraform/, stopping at the first failure."""
+    chdir = f"-chdir={TERRAFORM_DIR}"
+    cp = _run(["terraform", chdir, "init", "-input=false"], check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, "terraform init failed", _cp_details(cp))]
+    results = [OpsResult(True, "terraform init")]
+
+    cp = _run(["terraform", chdir, "plan", "-input=false", "-out=tfplan"], check=False)
+    if cp.returncode != 0:
+        results.append(OpsResult(False, "terraform plan failed", _cp_details(cp)))
+        return results
+    results.append(OpsResult(True, "terraform plan"))
+
+    cp = _run(["terraform", chdir, "apply", "-input=false", "-auto-approve", "tfplan"], check=False)
+    if cp.returncode != 0:
+        results.append(OpsResult(False, "terraform apply failed", _cp_details(cp)))
+        return results
+    results.append(OpsResult(True, "terraform apply"))
+    return results
+
+
+def terraform_stack_state() -> dict[str, str]:
+    """{component: docker state} for the Terraform-managed containers (used by status/doctor)."""
+    return {
+        component: _docker_container_state(name) for component, name in TERRAFORM_CONTAINERS.items()
+    }
+
+
+def _terraform_stack_health() -> list[OpsResult]:
+    """Report each Terraform-managed container's state, plus the stack's output URLs."""
+    results = [
+        OpsResult(
+            state == "running", f"terraform {component}: {state}", TERRAFORM_CONTAINERS[component]
+        )
+        for component, state in terraform_stack_state().items()
+    ]
+    cp = _run(["terraform", f"-chdir={TERRAFORM_DIR}", "output", "-json"], check=False)
+    if cp.returncode == 0 and (cp.stdout or "").strip():
+        try:
+            outputs = json.loads(cp.stdout)
+            urls = ", ".join(f"{k}={v.get('value')}" for k, v in outputs.items())
+            results.append(OpsResult(True, f"terraform outputs: {urls}"))
+        except (ValueError, AttributeError):
+            pass
+    return results
+
+
+def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
+    """Run the Terraform bring-up steps and return structured results (no printing).
+
+    Ensures terraform is present (installing via the hashicorp tap if
+    missing), bootstraps terraform.tfvars from the example if absent, runs
+    init -> plan -> apply, and reports the resulting stack health. Stops at
+    the first failing step since each depends on the last (installing the
+    binary before generating tfvars before running init, etc.) -- unlike
+    `install()`'s native steps, which are independent and best-effort.
+
+    Shared by the `nyxgpt ops install --terraform --local` CLI entrypoint
+    (`_install_terraform`) and `install_terraform_local`, the SRE/admin
+    dashboard API's structured equivalent.
+    """
+    collision = _refuse_port_collision(["api", "web", "ollama", "cassandra"])
+    if collision is not None:
+        return [collision]
+
+    logger.info(
+        "ops: install --terraform --local starting",
+        extra={"component": "ops", "action": "install-terraform"},
+    )
+    results: list[OpsResult] = []
+    steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        ("terraform binary", _ensure_terraform_binary),
+        ("terraform tfvars", lambda: _ensure_terraform_tfvars(api_key)),
+        ("terraform init/plan/apply", _terraform_init_plan_apply),
+    ]
+    for step_name, fn in steps:
+        try:
+            step_results = fn()
+        except Exception as e:
+            results.append(
+                OpsResult(False, f"terraform {step_name} raised", f"{type(e).__name__}: {e}")
+            )
+            step_results = []
+        results += step_results
+        if step_results and not all(r.ok for r in step_results):
+            break
+    else:
+        results += _terraform_stack_health()
+
+    return results
+
+
+def install_terraform_local(api_key: str | None = None) -> list[OpsResult]:
+    """Structured (non-printing) Terraform local bring-up, for the SRE/admin dashboard API.
+
+    Runs the same steps as `nyxgpt ops install --terraform --local` --
+    locality is implicitly "local" here since that's the only target this
+    endpoint offers (see `_resolve_locality`) -- and returns the OpsResult
+    list directly instead of routing it through `_emit_results`, so a
+    FastAPI endpoint can translate it straight to JSON.
+    """
+    return _install_terraform_steps(api_key)
+
+
+def _install_terraform(args) -> int:
+    """`nyxgpt ops install --terraform --local`: the full Terraform bring-up in one command."""
+    if _resolve_locality(args) is None:
+        return 2
+    results = _install_terraform_steps(getattr(args, "api_key", None))
+    ok = _emit_results("install --terraform", results)
+    return 0 if ok else 2
+
+
+def _down_terraform_steps() -> list[OpsResult]:
+    """`terraform destroy` the Terraform-managed stack and return structured results."""
+    if _which("terraform") is None:
+        return [OpsResult(False, "terraform not found on PATH -- nothing to destroy")]
+
+    cp = _run(
+        ["terraform", f"-chdir={TERRAFORM_DIR}", "destroy", "-input=false", "-auto-approve"],
+        check=False,
+    )
+    if cp.returncode == 0:
+        return [OpsResult(True, "terraform destroy", _cp_details(cp))]
+    return [OpsResult(False, "terraform destroy failed", _cp_details(cp))]
+
+
+def down_terraform() -> list[OpsResult]:
+    """Structured (non-printing) `terraform destroy`, for the SRE/admin dashboard API."""
+    return _down_terraform_steps()
+
+
+def _down_terraform(_args) -> int:
+    """`nyxgpt ops down --terraform`: `terraform destroy` the Terraform-managed stack."""
+    results = _down_terraform_steps()
+    ok = _emit_results("down --terraform", results)
+    return 0 if ok else 2
+
+
+# --- Kubernetes local deployment (`nyxgpt ops install/down --kubernetes --local`) ---
+
+K8S_DIR = REPO_ROOT / "k8s"
+K8S_NAMESPACE = "nyxgpt"
+K8S_IMAGE = "nyxgpt-api:local"
+
+
+def _ensure_kubectl_and_cluster() -> list[OpsResult]:
+    """Check `kubectl` is on PATH and a cluster is reachable."""
+    if _which("kubectl") is None:
+        return [
+            OpsResult(
+                False,
+                "kubectl not found on PATH",
+                "Install kubectl: https://kubernetes.io/docs/tasks/tools/",
+            )
+        ]
+    cp = _run(["kubectl", "cluster-info"], check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, "No reachable Kubernetes cluster", _cp_details(cp))]
+    return [OpsResult(True, "Kubernetes cluster reachable")]
+
+
+def _kubectl_context() -> str:
+    """Return kubectl's current context name (e.g. `kind-nyxgpt`, `docker-desktop`), or "" if unset."""
+    cp = _run(["kubectl", "config", "current-context"], check=False)
+    return (cp.stdout or "").strip()
+
+
+def _build_and_load_k8s_image() -> list[OpsResult]:
+    """Build the `nyxgpt-api:local` image and load it into the current cluster's image cache.
+
+    Docker Desktop's built-in cluster shares the host's image cache, so a
+    build alone is enough there. kind/minikube each need an explicit
+    load step; an unrecognized cluster type is treated the same way the
+    documented manual flow would be -- skip the load and tell the operator
+    to do it themselves if their cluster doesn't share the host cache.
+    """
+    if _which("docker") is None:
+        return [OpsResult(False, "docker not found on PATH -- cannot build the nyxgpt-api image")]
+    cp = _run(["docker", "build", "-t", K8S_IMAGE, str(REPO_ROOT)], check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, "docker build failed", _cp_details(cp))]
+    results = [OpsResult(True, f"Built {K8S_IMAGE}")]
+
+    context = _kubectl_context()
+    if "docker-desktop" in context:
+        results.append(
+            OpsResult(True, "Docker Desktop cluster shares the host image cache -- skipped load")
+        )
+        return results
+    if context.startswith("kind-") and _which("kind") is not None:
+        cluster_name = context.removeprefix("kind-")
+        cp = _run(["kind", "load", "docker-image", K8S_IMAGE, "--name", cluster_name], check=False)
+        if cp.returncode != 0:
+            results.append(OpsResult(False, "kind load docker-image failed", _cp_details(cp)))
+        else:
+            results.append(OpsResult(True, f"Loaded {K8S_IMAGE} into kind cluster {cluster_name}"))
+        return results
+    if _which("minikube") is not None:
+        cp = _run(["minikube", "image", "load", K8S_IMAGE], check=False)
+        if cp.returncode != 0:
+            results.append(OpsResult(False, "minikube image load failed", _cp_details(cp)))
+        else:
+            results.append(OpsResult(True, f"Loaded {K8S_IMAGE} into minikube"))
+        return results
+    results.append(
+        OpsResult(
+            True,
+            f"Unrecognized cluster context {context!r} -- skipped image load",
+            "If this cluster doesn't share the host's image cache, load "
+            f"{K8S_IMAGE} into it manually before the Pods can start.",
+        )
+    )
+    return results
+
+
+def _ensure_k8s_secret(api_key: str | None) -> list[OpsResult]:
+    """Bootstrap k8s/secret.yaml from the example if it doesn't exist yet (never committed)."""
+    secret_path = K8S_DIR / "secret.yaml"
+    if secret_path.exists():
+        return [OpsResult(True, f"{secret_path} already exists")]
+    example = K8S_DIR / "secret.example.yaml"
+    if not example.exists():
+        return [OpsResult(False, f"Missing {example} to bootstrap the secret from")]
+    key = _resolve_api_key(api_key)
+    text = example.read_text(encoding="utf-8")
+    text = re.sub(r'api-key:\s*".*"', lambda _m: f'api-key: "{key}"', text)
+    secret_path.write_text(text, encoding="utf-8")
+    os.chmod(secret_path, 0o600)
+    return [OpsResult(True, f"Bootstrapped {secret_path} from secret.example.yaml")]
+
+
+def _kubectl_apply_kustomization() -> list[OpsResult]:
+    """Apply `k8s/`'s kustomization (namespace, RBAC, ConfigMap, Secret, Deployments, HPAs, Service)."""
+    cp = _run(["kubectl", "apply", "-k", str(K8S_DIR)], check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, "kubectl apply -k k8s/ failed", _cp_details(cp))]
+    return [OpsResult(True, "kubectl apply -k k8s/", _cp_details(cp))]
+
+
+def _k8s_stack_health() -> list[OpsResult]:
+    """Snapshot of Pod/HPA/Service health in the `nyxgpt` namespace right after apply.
+
+    A one-shot snapshot, not a wait-until-ready loop -- Pods may still be
+    starting when this runs; re-check with `nyxgpt ops status`.
+    """
+    results: list[OpsResult] = []
+
+    cp = _run(
+        [
+            "kubectl",
+            "-n",
+            K8S_NAMESPACE,
+            "get",
+            "pods",
+            "-o",
+            "jsonpath={range .items[*]}{.metadata.name}={.status.phase};{end}",
+        ],
+        check=False,
+    )
+    if cp.returncode != 0:
+        results.append(OpsResult(False, "Could not read pod status", _cp_details(cp)))
+    else:
+        entries = [e for e in (cp.stdout or "").split(";") if e]
+        if not entries:
+            results.append(OpsResult(False, f"No pods found in namespace {K8S_NAMESPACE}"))
+        for entry in entries:
+            name, _, phase = entry.partition("=")
+            results.append(OpsResult(phase == "Running", f"pod {name}: {phase}"))
+
+    cp = _run(["kubectl", "-n", K8S_NAMESPACE, "get", "hpa", "--no-headers"], check=False)
+    hpa_lines = [line for line in (cp.stdout or "").splitlines() if line.strip()]
+    results.append(
+        OpsResult(cp.returncode == 0 and bool(hpa_lines), f"{len(hpa_lines)} HPA(s) found")
+    )
+
+    cp = _run(
+        ["kubectl", "-n", K8S_NAMESPACE, "get", "svc", "nyxgpt-api", "--no-headers"], check=False
+    )
+    results.append(
+        OpsResult(
+            cp.returncode == 0,
+            "Service nyxgpt-api" + (" found" if cp.returncode == 0 else " not found"),
+        )
+    )
+    return results
+
+
+def _install_kubernetes_steps(api_key: str | None) -> list[OpsResult]:
+    """Run the Kubernetes bring-up steps and return structured results (no printing).
+
+    Prereq checks (cluster reachable, kubectl present), builds and loads
+    `nyxgpt-api:local`, bootstraps k8s/secret.yaml (prompting for the API
+    key, never committing it), applies the kustomization, and snapshots
+    Pod/HPA/Service health. Stops at the first failing step, same rationale
+    as `_install_terraform_steps`.
+
+    Shared by the `nyxgpt ops install --kubernetes --local` CLI entrypoint
+    (`_install_kubernetes`) and `install_kubernetes_local`, the SRE/admin
+    dashboard API's structured equivalent.
+    """
+    collision = _refuse_port_collision(["api"])
+    if collision is not None:
+        return [collision]
+
+    logger.info(
+        "ops: install --kubernetes --local starting",
+        extra={"component": "ops", "action": "install-kubernetes"},
+    )
+    results: list[OpsResult] = []
+    steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        ("cluster prerequisites", _ensure_kubectl_and_cluster),
+        ("build/load image", _build_and_load_k8s_image),
+        ("secret bootstrap", lambda: _ensure_k8s_secret(api_key)),
+        ("apply kustomization", _kubectl_apply_kustomization),
+    ]
+    for step_name, fn in steps:
+        try:
+            step_results = fn()
+        except Exception as e:
+            results.append(
+                OpsResult(False, f"kubernetes {step_name} raised", f"{type(e).__name__}: {e}")
+            )
+            step_results = []
+        results += step_results
+        if step_results and not all(r.ok for r in step_results):
+            break
+    else:
+        results += _k8s_stack_health()
+
+    return results
+
+
+def install_kubernetes_local(api_key: str | None = None) -> list[OpsResult]:
+    """Structured (non-printing) Kubernetes local bring-up, for the SRE/admin dashboard API.
+
+    Runs the same steps as `nyxgpt ops install --kubernetes --local` --
+    locality is implicitly "local" here since that's the only target this
+    endpoint offers (see `_resolve_locality`) -- and returns the OpsResult
+    list directly instead of routing it through `_emit_results`, so a
+    FastAPI endpoint can translate it straight to JSON.
+    """
+    return _install_kubernetes_steps(api_key)
+
+
+def _install_kubernetes(args) -> int:
+    """`nyxgpt ops install --kubernetes --local`: the full k8s bring-up in one command."""
+    if _resolve_locality(args) is None:
+        return 2
+    results = _install_kubernetes_steps(getattr(args, "api_key", None))
+    ok = _emit_results("install --kubernetes", results)
+    return 0 if ok else 2
+
+
+def _down_kubernetes_steps() -> list[OpsResult]:
+    """Remove the `nyxgpt` namespace's Kubernetes resources and return structured results."""
+    if _which("kubectl") is None:
+        return [OpsResult(False, "kubectl not found on PATH -- nothing to tear down")]
+
+    cp = _run(["kubectl", "delete", "-k", str(K8S_DIR), "--ignore-not-found"], check=False)
+    if cp.returncode == 0:
+        return [
+            OpsResult(True, "kubectl delete -k k8s/ (namespace and all resources)", _cp_details(cp))
+        ]
+    return [OpsResult(False, "kubectl delete -k k8s/ failed", _cp_details(cp))]
+
+
+def down_kubernetes() -> list[OpsResult]:
+    """Structured (non-printing) `kubectl delete -k k8s/`, for the SRE/admin dashboard API."""
+    return _down_kubernetes_steps()
+
+
+def _down_kubernetes(_args) -> int:
+    """`nyxgpt ops down --kubernetes`: remove the `nyxgpt` namespace's Kubernetes resources."""
+    results = _down_kubernetes_steps()
+    ok = _emit_results("down --kubernetes", results)
+    return 0 if ok else 2
+
+
+def infra_status() -> dict[str, Any]:
+    """Structured Terraform/Kubernetes deployment status, for the SRE/admin dashboard API.
+
+    Mirrors the Terraform/Kubernetes sections `nyxgpt ops status` prints
+    (see `status`), as JSON instead of stdout lines.
+    """
+    tf_state = terraform_stack_state()
+    terraform = {
+        "deployed": any(state != "absent" for state in tf_state.values()),
+        "containers": tf_state,
+    }
+
+    kubectl_available = _which("kubectl") is not None
+    pods: list[str] = []
+    if kubectl_available:
+        cp = _run(["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "--no-headers"], check=False)
+        if cp.returncode == 0:
+            pods = [line for line in (cp.stdout or "").splitlines() if line.strip()]
+    kubernetes = {
+        "available": kubectl_available,
+        "deployed": bool(pods),
+        "namespace": K8S_NAMESPACE,
+        "pods": pods,
+    }
+
+    return {"terraform": terraform, "kubernetes": kubernetes}
+
+
 def install(args) -> int:
     """CLI entrypoint for `nyxgpt ops install`.
 
@@ -1197,6 +1749,14 @@ def install(args) -> int:
 
     Returns 0 if every step succeeded, else 2.
     """
+    if getattr(args, "terraform", False) and getattr(args, "kubernetes", False):
+        print("ERROR: --terraform and --kubernetes are mutually exclusive", file=sys.stderr)
+        return 2
+    if getattr(args, "terraform", False):
+        return _install_terraform(args)
+    if getattr(args, "kubernetes", False):
+        return _install_kubernetes(args)
+
     logger.info("ops: install starting", extra={"component": "ops", "action": "install"})
 
     results: list[OpsResult] = []
@@ -1311,6 +1871,23 @@ def status(_args) -> int:
 
     if _which("docker") is None:
         print("\nDocker: docker not found")
+
+    tf_state = terraform_stack_state()
+    if any(state != "absent" for state in tf_state.values()):
+        print("\nTerraform-managed stack (nyxgpt ops down --terraform to tear down):")
+        for component, state in sorted(tf_state.items()):
+            print(f"  terraform {component}: {state}")
+
+    if _which("kubectl") is not None:
+        cp = _run(["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "--no-headers"], check=False)
+        pod_lines = [line for line in (cp.stdout or "").splitlines() if line.strip()]
+        if cp.returncode == 0 and pod_lines:
+            print(
+                f"\nKubernetes ({K8S_NAMESPACE} namespace, nyxgpt ops down --kubernetes to "
+                f"tear down): {len(pod_lines)} pod(s)"
+            )
+            for line in pod_lines:
+                print(f"  {line}")
 
     print(
         "\nCleanup: `nyxgpt ops stop <target>` stops one component (native and/or Compose), "
@@ -1450,6 +2027,15 @@ def doctor(_args) -> int:
     log_issue = _log_aggregation_wiring_issue()
     if log_issue:
         issues.append(log_issue)
+
+    if TERRAFORM_DIR.joinpath("terraform.tfstate").exists() and all(
+        state == "absent" for state in terraform_stack_state().values()
+    ):
+        issues.append(
+            "Terraform state exists but no nyxgpt-tf-* containers are running "
+            "(run: nyxgpt ops install --terraform --local, or nyxgpt ops down --terraform "
+            "to clean up the stale state)"
+        )
 
     if issues:
         print("nyxGPT ops doctor: FAIL")
@@ -1887,7 +2473,19 @@ def down(args) -> int:
     also given). `--app-only`/`--observability-only` scope the teardown to
     one tier so, e.g., a stale Compose app tier can be dropped while
     observability (or vice versa) stays up.
+
+    `--terraform`/`--kubernetes` tear down those deployments instead
+    (`terraform destroy` / removing the `nyxgpt` namespace's resources) --
+    mutually exclusive with the native/Compose scope flags above.
     """
+    if getattr(args, "terraform", False) and getattr(args, "kubernetes", False):
+        print("ERROR: --terraform and --kubernetes are mutually exclusive", file=sys.stderr)
+        return 2
+    if getattr(args, "terraform", False):
+        return _down_terraform(args)
+    if getattr(args, "kubernetes", False):
+        return _down_kubernetes(args)
+
     app_only = bool(getattr(args, "app_only", False))
     observability_only = bool(getattr(args, "observability_only", False))
     volumes = bool(getattr(args, "volumes", False))

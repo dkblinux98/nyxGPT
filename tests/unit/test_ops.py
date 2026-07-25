@@ -3,6 +3,7 @@ import subprocess
 import tarfile
 from configparser import ConfigParser
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -32,7 +33,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_start_observability_stack", return_value=ok_results) as obs,
         patch.object(ops, "_provision_glitchtip", return_value=ok_results),
     ):
-        rc = ops.install(MagicMock(skip_observability=False))
+        rc = ops.install(MagicMock(skip_observability=False, terraform=False, kubernetes=False))
         assert rc == 0
         out = capsys.readouterr().out
         assert "[OK]" in out
@@ -63,7 +64,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_start_observability_stack", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_provision_glitchtip", return_value=[ops.OpsResult(True, "ok")]),
     ):
-        rc = ops.install(MagicMock(skip_observability=False))
+        rc = ops.install(MagicMock(skip_observability=False, terraform=False, kubernetes=False))
         assert rc == 2
         out = capsys.readouterr().out
         assert "[FAIL]" in out
@@ -89,7 +90,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops, "_start_observability_stack") as obs,
     ):
-        rc = ops.install(MagicMock(skip_observability=True))
+        rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
         assert rc == 0
         obs.assert_not_called()
 
@@ -129,7 +130,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         patch.object(ops, "sync_env_from_config", side_effect=_record("env sync")),
         patch.object(ops, "_persist_compose_file_path", side_effect=_record("compose file path")),
     ):
-        rc = ops.install(MagicMock(skip_observability=True))
+        rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
         assert rc == 0
 
     assert call_order[0] == "reconcile"
@@ -2309,7 +2310,7 @@ def test_ops_install_catches_exception_from_a_step(capsys):
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
     ):
-        rc = ops.install(MagicMock())
+        rc = ops.install(MagicMock(terraform=False, kubernetes=False))
         assert rc == 2
         out = capsys.readouterr().out
         assert "ops install failed: web deps" in out
@@ -2609,7 +2610,7 @@ def test_ops_install_logs_start_and_summary(caplog):
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
         caplog.at_level("INFO", logger="nyxgpt.ops"),
     ):
-        rc = ops.install(MagicMock())
+        rc = ops.install(MagicMock(terraform=False, kubernetes=False))
 
     assert rc == 0
     messages = [r.getMessage() for r in caplog.records]
@@ -2632,7 +2633,7 @@ def test_ops_install_logs_error_when_step_raises(caplog):
         patch.object(ops, "_ensure_log_symlinks", return_value=[]),
         caplog.at_level("INFO", logger="nyxgpt.ops"),
     ):
-        rc = ops.install(MagicMock())
+        rc = ops.install(MagicMock(terraform=False, kubernetes=False))
 
     assert rc == 2
     error_records = [r for r in caplog.records if r.levelname == "ERROR"]
@@ -3593,7 +3594,14 @@ def test_stop_returns_nonzero_on_failure(capsys):
 
 @pytest.mark.unit
 def test_down_refuses_volumes_without_yes_really(capsys):
-    args = MagicMock(app_only=False, observability_only=False, volumes=True, yes_really=False)
+    args = MagicMock(
+        app_only=False,
+        observability_only=False,
+        volumes=True,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
     rc = ops.down(args)
     assert rc == 2
     err = capsys.readouterr().err
@@ -3602,7 +3610,14 @@ def test_down_refuses_volumes_without_yes_really(capsys):
 
 @pytest.mark.unit
 def test_down_all_scope_stops_native_and_composes_down(capsys):
-    args = MagicMock(app_only=False, observability_only=False, volumes=False, yes_really=False)
+    args = MagicMock(
+        app_only=False,
+        observability_only=False,
+        volumes=False,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
     with (
         patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]) as sb,
         patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]) as sd,
@@ -3630,7 +3645,14 @@ def test_down_all_scope_stops_native_and_composes_down(capsys):
 
 @pytest.mark.unit
 def test_down_app_only_scope_skips_observability(capsys):
-    args = MagicMock(app_only=True, observability_only=False, volumes=False, yes_really=False)
+    args = MagicMock(
+        app_only=True,
+        observability_only=False,
+        volumes=False,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
     with (
         patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
@@ -3648,7 +3670,14 @@ def test_down_app_only_scope_skips_observability(capsys):
 
 @pytest.mark.unit
 def test_down_observability_only_scope_skips_native_and_app(capsys):
-    args = MagicMock(app_only=False, observability_only=True, volumes=False, yes_really=False)
+    args = MagicMock(
+        app_only=False,
+        observability_only=True,
+        volumes=False,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
     with (
         patch.object(ops, "_stop_brew_service") as sb,
         patch.object(ops, "_stop_docker_container") as sd,
@@ -3670,7 +3699,14 @@ def test_down_observability_only_scope_skips_native_and_app(capsys):
 
 @pytest.mark.unit
 def test_down_with_volumes_and_yes_really_passes_volumes_flag():
-    args = MagicMock(app_only=True, observability_only=False, volumes=True, yes_really=True)
+    args = MagicMock(
+        app_only=True,
+        observability_only=False,
+        volumes=True,
+        yes_really=True,
+        terraform=False,
+        kubernetes=False,
+    )
     with (
         patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
@@ -3686,7 +3722,14 @@ def test_down_with_volumes_and_yes_really_passes_volumes_flag():
 
 @pytest.mark.unit
 def test_down_skips_compose_teardown_without_docker():
-    args = MagicMock(app_only=False, observability_only=False, volumes=False, yes_really=False)
+    args = MagicMock(
+        app_only=False,
+        observability_only=False,
+        volumes=False,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
     with (
         patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
@@ -3701,7 +3744,14 @@ def test_down_skips_compose_teardown_without_docker():
 
 @pytest.mark.unit
 def test_down_returns_nonzero_on_failure():
-    args = MagicMock(app_only=False, observability_only=False, volumes=False, yes_really=False)
+    args = MagicMock(
+        app_only=False,
+        observability_only=False,
+        volumes=False,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
     with (
         patch.object(
             ops, "_stop_brew_service", return_value=[ops.OpsResult(False, "bad", "details")]
@@ -4497,3 +4547,852 @@ def test_glitchtip_init_cli_entrypoint_returns_nonzero_on_failure(capsys):
         rc = ops.glitchtip_init(MagicMock())
         assert rc == 2
         assert "[FAIL]" in capsys.readouterr().out
+
+
+# --- Terraform/Kubernetes local deployment wrappers (#3344) ---
+
+
+class CP:
+    """Minimal stand-in for subprocess.CompletedProcess used across the fakes below."""
+
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+# --- _resolve_locality ---
+
+
+@pytest.mark.unit
+def test_resolve_locality_rejects_cloud(capsys):
+    args = SimpleNamespace(local=False, cloud=True)
+    assert ops._resolve_locality(args) is None
+    assert "not yet implemented" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_resolve_locality_requires_local(capsys):
+    args = SimpleNamespace(local=False, cloud=False)
+    assert ops._resolve_locality(args) is None
+    assert "--local is required" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_resolve_locality_accepts_local():
+    args = SimpleNamespace(local=True, cloud=False)
+    assert ops._resolve_locality(args) == "local"
+
+
+# --- _resolve_api_key ---
+
+
+@pytest.mark.unit
+def test_resolve_api_key_prefers_explicit(monkeypatch):
+    monkeypatch.setattr(ops.sys.stdin, "isatty", lambda: True)
+    assert ops._resolve_api_key("explicit-key") == "explicit-key"
+
+
+@pytest.mark.unit
+def test_resolve_api_key_generates_random_when_not_interactive(monkeypatch):
+    monkeypatch.setattr(ops.sys.stdin, "isatty", lambda: False)
+    key = ops._resolve_api_key(None)
+    assert len(key) == 64
+    int(key, 16)  # random hex -- raises ValueError if not
+
+
+@pytest.mark.unit
+def test_resolve_api_key_uses_prompted_value_when_interactive(monkeypatch):
+    monkeypatch.setattr(ops.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(ops.getpass, "getpass", lambda *_a, **_k: "typed-key")
+    assert ops._resolve_api_key(None) == "typed-key"
+
+
+@pytest.mark.unit
+def test_resolve_api_key_falls_back_to_random_on_blank_prompt(monkeypatch):
+    monkeypatch.setattr(ops.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(ops.getpass, "getpass", lambda *_a, **_k: "")
+    key = ops._resolve_api_key(None)
+    assert len(key) == 64
+
+
+# --- _refuse_port_collision ---
+
+
+@pytest.mark.unit
+def test_refuse_port_collision_none_when_nothing_running(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={"api": "none"}, compose={}, conflicts=[]),
+    )
+    assert ops._refuse_port_collision(["api"]) is None
+
+
+@pytest.mark.unit
+def test_refuse_port_collision_blocks_on_native(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={"api": "started"}, compose={}, conflicts=[]),
+    )
+    result = ops._refuse_port_collision(["api", "web"])
+    assert result is not None
+    assert result.ok is False
+    assert "api" in result.details
+
+
+@pytest.mark.unit
+def test_refuse_port_collision_blocks_on_compose(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={"ollama": "running"}, conflicts=[]),
+    )
+    result = ops._refuse_port_collision(["ollama"])
+    assert result is not None
+    assert "ollama" in result.details
+
+
+# --- Terraform: _ensure_terraform_binary ---
+
+
+@pytest.mark.unit
+def test_ensure_terraform_binary_already_installed(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/terraform")
+    results = ops._ensure_terraform_binary()
+    assert results == [ops.OpsResult(True, "terraform already installed")]
+
+
+@pytest.mark.unit
+def test_ensure_terraform_binary_no_brew(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    results = ops._ensure_terraform_binary()
+    assert results[0].ok is False
+    assert "Homebrew is unavailable" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_terraform_binary_installs_via_hashicorp_tap(monkeypatch):
+    which_calls = {"n": 0}
+
+    def fake_which(prog):
+        if prog == "brew":
+            return "/opt/homebrew/bin/brew"
+        if prog == "terraform":
+            which_calls["n"] += 1
+            return None if which_calls["n"] == 1 else "/opt/homebrew/bin/terraform"
+        return None
+
+    run_calls = []
+
+    def fake_run(cmd, check=True):
+        run_calls.append(cmd)
+        return CP(returncode=0)
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    results = ops._ensure_terraform_binary()
+    assert all(r.ok for r in results)
+    assert ["brew", "tap", "hashicorp/tap"] in run_calls
+    assert ["brew", "install", "hashicorp/tap/terraform"] in run_calls
+
+
+@pytest.mark.unit
+def test_ensure_terraform_binary_tap_failure(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/opt/homebrew/bin/brew" if prog == "brew" else None
+    )
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="tap failed"))
+    results = ops._ensure_terraform_binary()
+    assert results[0].ok is False
+    assert "brew tap" in results[0].message
+
+
+# --- Terraform: _ensure_terraform_tfvars ---
+
+
+@pytest.mark.unit
+def test_ensure_terraform_tfvars_already_exists(monkeypatch, tmp_path):
+    tf_dir = tmp_path / "terraform"
+    tf_dir.mkdir()
+    (tf_dir / "terraform.tfvars").write_text("existing", encoding="utf-8")
+    monkeypatch.setattr(ops, "TERRAFORM_DIR", tf_dir)
+    results = ops._ensure_terraform_tfvars(None)
+    assert results[0].ok is True
+    assert "already exists" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_terraform_tfvars_missing_example(monkeypatch, tmp_path):
+    tf_dir = tmp_path / "terraform"
+    tf_dir.mkdir()
+    monkeypatch.setattr(ops, "TERRAFORM_DIR", tf_dir)
+    results = ops._ensure_terraform_tfvars(None)
+    assert results[0].ok is False
+    assert "Missing" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_terraform_tfvars_bootstraps_from_example(monkeypatch, tmp_path):
+    tf_dir = tmp_path / "terraform"
+    tf_dir.mkdir()
+    (tf_dir / "terraform.tfvars.example").write_text(
+        'repo_path    = "/absolute/path/to/nyxGPT"\n'
+        'auth_api_key = "REPLACE_WITH_A_REAL_KEY"\n'
+        'cors_origins = "http://localhost:3000"\n',
+        encoding="utf-8",
+    )
+    repo_root = tmp_path / "repo"
+    monkeypatch.setattr(ops, "TERRAFORM_DIR", tf_dir)
+    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
+
+    results = ops._ensure_terraform_tfvars("my-key")
+    assert results[0].ok is True
+    tfvars = tf_dir / "terraform.tfvars"
+    content = tfvars.read_text(encoding="utf-8")
+    assert str(repo_root) in content
+    assert 'auth_api_key = "my-key"' in content
+
+
+# --- Terraform: _terraform_init_plan_apply ---
+
+
+def _fake_terraform_run(*, init_rc=0, plan_rc=0, apply_rc=0):
+    def fake_run(cmd, check=True):
+        assert cmd[0] == "terraform"
+        assert cmd[1].startswith("-chdir=")
+        if cmd[2] == "init":
+            return CP(returncode=init_rc, stderr="init failed" if init_rc else "")
+        if cmd[2] == "plan":
+            return CP(returncode=plan_rc, stderr="plan failed" if plan_rc else "")
+        if cmd[2] == "apply":
+            return CP(returncode=apply_rc, stderr="apply failed" if apply_rc else "")
+        raise AssertionError(f"unexpected terraform subcommand: {cmd}")
+
+    return fake_run
+
+
+@pytest.mark.unit
+def test_terraform_init_plan_apply_all_succeed(monkeypatch):
+    monkeypatch.setattr(ops, "_run", _fake_terraform_run())
+    results = ops._terraform_init_plan_apply()
+    assert [r.ok for r in results] == [True, True, True]
+
+
+@pytest.mark.unit
+def test_terraform_init_plan_apply_stops_on_init_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_run", _fake_terraform_run(init_rc=1))
+    results = ops._terraform_init_plan_apply()
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "init failed" in results[0].message
+
+
+@pytest.mark.unit
+def test_terraform_init_plan_apply_stops_on_plan_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_run", _fake_terraform_run(plan_rc=1))
+    results = ops._terraform_init_plan_apply()
+    assert [r.ok for r in results] == [True, False]
+
+
+@pytest.mark.unit
+def test_terraform_init_plan_apply_stops_on_apply_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_run", _fake_terraform_run(apply_rc=1))
+    results = ops._terraform_init_plan_apply()
+    assert [r.ok for r in results] == [True, True, False]
+
+
+# --- Terraform: state/health ---
+
+
+@pytest.mark.unit
+def test_terraform_stack_state_maps_components(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_docker_container_state",
+        lambda name: "running" if name == "nyxgpt-tf-api" else "absent",
+    )
+    state = ops.terraform_stack_state()
+    assert state["api"] == "running"
+    assert state["web"] == "absent"
+
+
+@pytest.mark.unit
+def test_terraform_stack_health_reports_outputs(monkeypatch):
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "running"})
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, check=True: CP(stdout='{"api_url": {"value": "http://localhost:8000"}}'),
+    )
+    results = ops._terraform_stack_health()
+    assert results[0].ok is True
+    assert any("api_url" in r.message for r in results)
+
+
+# --- Terraform: _install_terraform / _down_terraform ---
+
+
+@pytest.mark.unit
+def test_install_terraform_requires_locality(capsys):
+    args = SimpleNamespace(local=False, cloud=False, api_key=None)
+    assert ops._install_terraform(args) == 2
+    assert "--local is required" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_install_terraform_refuses_port_collision(monkeypatch, capsys):
+    args = SimpleNamespace(local=True, cloud=False, api_key=None)
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={"api": "started"}, compose={}, conflicts=[]),
+    )
+    assert ops._install_terraform(args) == 2
+    assert "[FAIL]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
+    args = SimpleNamespace(local=True, cloud=False, api_key="k")
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_ensure_terraform_binary", return_value=ok) as b,
+        patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
+        patch.object(ops, "_terraform_init_plan_apply", return_value=ok) as a,
+        patch.object(ops, "_terraform_stack_health", return_value=ok) as h,
+    ):
+        rc = ops._install_terraform(args)
+    assert rc == 0
+    b.assert_called_once()
+    t.assert_called_once_with("k")
+    a.assert_called_once()
+    h.assert_called_once()
+    assert "[OK]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_install_terraform_stops_pipeline_on_step_failure(monkeypatch):
+    args = SimpleNamespace(local=True, cloud=False, api_key=None)
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
+    with (
+        patch.object(
+            ops, "_ensure_terraform_binary", return_value=[ops.OpsResult(False, "no terraform")]
+        ),
+        patch.object(ops, "_ensure_terraform_tfvars") as t,
+        patch.object(ops, "_terraform_init_plan_apply") as a,
+        patch.object(ops, "_terraform_stack_health") as h,
+    ):
+        rc = ops._install_terraform(args)
+    assert rc == 2
+    t.assert_not_called()
+    a.assert_not_called()
+    h.assert_not_called()
+
+
+@pytest.mark.unit
+def test_down_terraform_no_binary(monkeypatch, capsys):
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    rc = ops._down_terraform(SimpleNamespace())
+    assert rc == 2
+    assert "nothing to destroy" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_down_terraform_destroy_success(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/opt/homebrew/bin/terraform")
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="Destroy complete")
+    )
+    rc = ops._down_terraform(SimpleNamespace())
+    assert rc == 0
+
+
+@pytest.mark.unit
+def test_down_terraform_destroy_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/opt/homebrew/bin/terraform")
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="boom"))
+    rc = ops._down_terraform(SimpleNamespace())
+    assert rc == 2
+
+
+# --- Kubernetes: _ensure_kubectl_and_cluster ---
+
+
+@pytest.mark.unit
+def test_ensure_kubectl_and_cluster_missing_kubectl(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    results = ops._ensure_kubectl_and_cluster()
+    assert results[0].ok is False
+    assert "kubectl not found" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_kubectl_and_cluster_unreachable(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="refused"))
+    results = ops._ensure_kubectl_and_cluster()
+    assert results[0].ok is False
+    assert "No reachable" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_kubectl_and_cluster_reachable(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0))
+    results = ops._ensure_kubectl_and_cluster()
+    assert results[0].ok is True
+
+
+# --- Kubernetes: _build_and_load_k8s_image ---
+
+
+@pytest.mark.unit
+def test_build_and_load_k8s_image_no_docker(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    results = ops._build_and_load_k8s_image()
+    assert results[0].ok is False
+    assert "docker not found" in results[0].message
+
+
+@pytest.mark.unit
+def test_build_and_load_k8s_image_build_fails(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/docker")
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="build boom"))
+    results = ops._build_and_load_k8s_image()
+    assert results[0].ok is False
+    assert "docker build failed" in results[0].message
+
+
+@pytest.mark.unit
+def test_build_and_load_k8s_image_skips_load_on_docker_desktop(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/docker")
+
+    def fake_run(cmd, check=True):
+        if cmd[:2] == ["docker", "build"]:
+            return CP(returncode=0)
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(stdout="docker-desktop")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._build_and_load_k8s_image()
+    assert all(r.ok for r in results)
+    assert any("Docker Desktop" in r.message for r in results)
+
+
+@pytest.mark.unit
+def test_build_and_load_k8s_image_loads_into_kind(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/" + prog if prog in ("docker", "kind") else None
+    )
+    run_calls = []
+
+    def fake_run(cmd, check=True):
+        run_calls.append(cmd)
+        if cmd[:2] == ["docker", "build"]:
+            return CP(returncode=0)
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(stdout="kind-nyxgpt")
+        if cmd[:2] == ["kind", "load"]:
+            return CP(returncode=0)
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._build_and_load_k8s_image()
+    assert all(r.ok for r in results)
+    assert ["kind", "load", "docker-image", ops.K8S_IMAGE, "--name", "nyxgpt"] in run_calls
+
+
+@pytest.mark.unit
+def test_build_and_load_k8s_image_unrecognized_context(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/docker" if prog == "docker" else None
+    )
+
+    def fake_run(cmd, check=True):
+        if cmd[:2] == ["docker", "build"]:
+            return CP(returncode=0)
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(stdout="some-other-cluster")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._build_and_load_k8s_image()
+    assert all(r.ok for r in results)
+    assert any("Unrecognized cluster context" in r.message for r in results)
+
+
+# --- Kubernetes: _ensure_k8s_secret ---
+
+
+@pytest.mark.unit
+def test_ensure_k8s_secret_already_exists(monkeypatch, tmp_path):
+    k8s_dir = tmp_path / "k8s"
+    k8s_dir.mkdir()
+    (k8s_dir / "secret.yaml").write_text("existing", encoding="utf-8")
+    monkeypatch.setattr(ops, "K8S_DIR", k8s_dir)
+    results = ops._ensure_k8s_secret(None)
+    assert results[0].ok is True
+    assert "already exists" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_k8s_secret_bootstraps_from_example(monkeypatch, tmp_path):
+    k8s_dir = tmp_path / "k8s"
+    k8s_dir.mkdir()
+    (k8s_dir / "secret.example.yaml").write_text(
+        'apiVersion: v1\nkind: Secret\nstringData:\n  api-key: "change-me"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(ops, "K8S_DIR", k8s_dir)
+    results = ops._ensure_k8s_secret("real-key")
+    assert results[0].ok is True
+    content = (k8s_dir / "secret.yaml").read_text(encoding="utf-8")
+    assert 'api-key: "real-key"' in content
+
+
+# --- Kubernetes: _kubectl_apply_kustomization / _k8s_stack_health ---
+
+
+@pytest.mark.unit
+def test_kubectl_apply_kustomization_success(monkeypatch):
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="applied"))
+    results = ops._kubectl_apply_kustomization()
+    assert results[0].ok is True
+
+
+@pytest.mark.unit
+def test_kubectl_apply_kustomization_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="boom"))
+    results = ops._kubectl_apply_kustomization()
+    assert results[0].ok is False
+
+
+@pytest.mark.unit
+def test_k8s_stack_health_reports_pods_hpa_service(monkeypatch):
+    def fake_run(cmd, check=True):
+        if cmd[4] == "pods":
+            return CP(
+                returncode=0,
+                stdout="nyxgpt-api-blue-abc=Running;nyxgpt-api-green-def=Pending;",
+            )
+        if cmd[4] == "hpa":
+            return CP(returncode=0, stdout="nyxgpt-api-blue   Deployment/nyxgpt-api-blue\n")
+        if cmd[4] == "svc":
+            return CP(returncode=0, stdout="nyxgpt-api   ClusterIP\n")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._k8s_stack_health()
+    pod_results = [r for r in results if r.message.startswith("pod ")]
+    assert len(pod_results) == 2
+    assert pod_results[0].ok is True
+    assert pod_results[1].ok is False
+    assert any("HPA" in r.message and r.ok for r in results)
+    assert any("Service nyxgpt-api found" in r.message for r in results)
+
+
+# --- Kubernetes: _install_kubernetes / _down_kubernetes ---
+
+
+@pytest.mark.unit
+def test_install_kubernetes_requires_locality(capsys):
+    args = SimpleNamespace(local=False, cloud=False, api_key=None)
+    assert ops._install_kubernetes(args) == 2
+    assert "--local is required" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_install_kubernetes_refuses_port_collision(monkeypatch, capsys):
+    args = SimpleNamespace(local=True, cloud=False, api_key=None)
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={"api": "started"}, compose={}, conflicts=[]),
+    )
+    assert ops._install_kubernetes(args) == 2
+    assert "[FAIL]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
+    args = SimpleNamespace(local=True, cloud=False, api_key="k")
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok) as c,
+        patch.object(ops, "_build_and_load_k8s_image", return_value=ok) as b,
+        patch.object(ops, "_ensure_k8s_secret", return_value=ok) as s,
+        patch.object(ops, "_kubectl_apply_kustomization", return_value=ok) as a,
+        patch.object(ops, "_k8s_stack_health", return_value=ok) as h,
+    ):
+        rc = ops._install_kubernetes(args)
+    assert rc == 0
+    c.assert_called_once()
+    b.assert_called_once()
+    s.assert_called_once_with("k")
+    a.assert_called_once()
+    h.assert_called_once()
+    assert "[OK]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_install_kubernetes_stops_pipeline_on_step_failure(monkeypatch):
+    args = SimpleNamespace(local=True, cloud=False, api_key=None)
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
+    with (
+        patch.object(
+            ops,
+            "_ensure_kubectl_and_cluster",
+            return_value=[ops.OpsResult(False, "no cluster")],
+        ),
+        patch.object(ops, "_build_and_load_k8s_image") as b,
+        patch.object(ops, "_ensure_k8s_secret") as s,
+        patch.object(ops, "_kubectl_apply_kustomization") as a,
+        patch.object(ops, "_k8s_stack_health") as h,
+    ):
+        rc = ops._install_kubernetes(args)
+    assert rc == 2
+    b.assert_not_called()
+    s.assert_not_called()
+    a.assert_not_called()
+    h.assert_not_called()
+
+
+@pytest.mark.unit
+def test_down_kubernetes_no_kubectl(monkeypatch, capsys):
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    rc = ops._down_kubernetes(SimpleNamespace())
+    assert rc == 2
+    assert "nothing to tear down" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_down_kubernetes_delete_success(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="deleted"))
+    rc = ops._down_kubernetes(SimpleNamespace())
+    assert rc == 0
+
+
+@pytest.mark.unit
+def test_down_kubernetes_delete_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="boom"))
+    rc = ops._down_kubernetes(SimpleNamespace())
+    assert rc == 2
+
+
+# --- Structured (non-printing) Terraform/Kubernetes functions for the SRE/admin dashboard API ---
+
+
+@pytest.mark.unit
+def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_ensure_terraform_binary", return_value=ok),
+        patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
+        patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
+        patch.object(ops, "_terraform_stack_health", return_value=ok),
+    ):
+        results = ops.install_terraform_local(api_key="k")
+    assert all(r.ok for r in results)
+    t.assert_called_once_with("k")
+
+
+@pytest.mark.unit
+def test_install_terraform_local_reports_port_collision(monkeypatch):
+    collision = ops.OpsResult(False, "Refusing to start: port collision")
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: collision)
+    results = ops.install_terraform_local()
+    assert results == [collision]
+
+
+@pytest.mark.unit
+def test_down_terraform_returns_results_without_printing(monkeypatch, capsys):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/terraform")
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="destroyed"))
+    results = ops.down_terraform()
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.unit
+def test_install_kubernetes_local_runs_steps_and_returns_results(monkeypatch):
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        patch.object(ops, "_ensure_k8s_secret", return_value=ok) as s,
+        patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
+        patch.object(ops, "_k8s_stack_health", return_value=ok),
+    ):
+        results = ops.install_kubernetes_local(api_key="k")
+    assert all(r.ok for r in results)
+    s.assert_called_once_with("k")
+
+
+@pytest.mark.unit
+def test_install_kubernetes_local_reports_port_collision(monkeypatch):
+    collision = ops.OpsResult(False, "Refusing to start: port collision")
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: collision)
+    results = ops.install_kubernetes_local()
+    assert results == [collision]
+
+
+@pytest.mark.unit
+def test_down_kubernetes_returns_results_without_printing(monkeypatch, capsys):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="deleted"))
+    results = ops.down_kubernetes()
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.unit
+def test_infra_status_reports_terraform_and_kubernetes(monkeypatch):
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "running", "web": "absent"})
+
+    def fake_which(prog):
+        return "/usr/local/bin/kubectl" if prog == "kubectl" else None
+
+    def fake_run(cmd, check=True):
+        return CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n")
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops.infra_status()
+    assert result["terraform"]["deployed"] is True
+    assert result["terraform"]["containers"] == {"api": "running", "web": "absent"}
+    assert result["kubernetes"]["available"] is True
+    assert result["kubernetes"]["deployed"] is True
+    assert result["kubernetes"]["namespace"] == "nyxgpt"
+    assert result["kubernetes"]["pods"] == ["nyxgpt-api-abc   1/1   Running"]
+
+
+@pytest.mark.unit
+def test_infra_status_reports_nothing_deployed(monkeypatch):
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+
+    result = ops.infra_status()
+    assert result["terraform"]["deployed"] is False
+    assert result["kubernetes"]["available"] is False
+    assert result["kubernetes"]["deployed"] is False
+    assert result["kubernetes"]["pods"] == []
+
+
+# --- install()/down() dispatch to the Terraform/Kubernetes paths ---
+
+
+@pytest.mark.unit
+def test_install_rejects_terraform_and_kubernetes_together(capsys):
+    args = SimpleNamespace(terraform=True, kubernetes=True)
+    assert ops.install(args) == 2
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_install_dispatches_to_terraform(monkeypatch):
+    args = SimpleNamespace(terraform=True, kubernetes=False)
+    with patch.object(ops, "_install_terraform", return_value=0) as it:
+        assert ops.install(args) == 0
+    it.assert_called_once_with(args)
+
+
+@pytest.mark.unit
+def test_install_dispatches_to_kubernetes(monkeypatch):
+    args = SimpleNamespace(terraform=False, kubernetes=True)
+    with patch.object(ops, "_install_kubernetes", return_value=0) as ik:
+        assert ops.install(args) == 0
+    ik.assert_called_once_with(args)
+
+
+@pytest.mark.unit
+def test_down_rejects_terraform_and_kubernetes_together(capsys):
+    args = SimpleNamespace(terraform=True, kubernetes=True)
+    assert ops.down(args) == 2
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_down_dispatches_to_terraform(monkeypatch):
+    args = SimpleNamespace(terraform=True, kubernetes=False)
+    with patch.object(ops, "_down_terraform", return_value=0) as dt:
+        assert ops.down(args) == 0
+    dt.assert_called_once_with(args)
+
+
+@pytest.mark.unit
+def test_down_dispatches_to_kubernetes(monkeypatch):
+    args = SimpleNamespace(terraform=False, kubernetes=True)
+    with patch.object(ops, "_down_kubernetes", return_value=0) as dk:
+        assert ops.down(args) == 0
+    dk.assert_called_once_with(args)
+
+
+# --- status()/doctor() recognize the Terraform/Kubernetes deployment modes ---
+
+
+@pytest.mark.unit
+def test_status_shows_terraform_stack_when_present(monkeypatch, capsys):
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    monkeypatch.setattr(ops, "_run", lambda *a, **k: CP(stdout=""))
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "running", "web": "absent"})
+
+    rc = ops.status(MagicMock())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Terraform-managed stack" in out
+    assert "terraform api: running" in out
+
+
+@pytest.mark.unit
+def test_status_shows_kubernetes_pods_when_present(monkeypatch, capsys):
+    def fake_which(prog):
+        return "/usr/local/bin/kubectl" if prog == "kubectl" else None
+
+    def fake_run(cmd, check=True):
+        if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
+            return CP(returncode=0, stdout="nyxgpt-api-blue-abc   1/1   Running\n")
+        return CP(stdout="")
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(ops, "_run", fake_run)
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+
+    rc = ops.status(MagicMock())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Kubernetes (nyxgpt namespace" in out
+    assert "nyxgpt-api-blue-abc" in out
+
+
+@pytest.mark.unit
+def test_doctor_flags_stale_terraform_state(monkeypatch, tmp_path, capsys):
+    tf_dir = tmp_path / "terraform"
+    tf_dir.mkdir()
+    (tf_dir / "terraform.tfstate").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(ops, "TERRAFORM_DIR", tf_dir)
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent", "web": "absent"})
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    rc = ops.doctor(MagicMock())
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "Terraform state exists but no nyxgpt-tf-* containers are running" in out

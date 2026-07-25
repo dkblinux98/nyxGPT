@@ -1906,6 +1906,43 @@ def cli(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Don't start the Grafana/Loki/Jaeger/GlitchTip Compose profiles",
     )
+    ops_install.add_argument(
+        "--terraform",
+        action="store_true",
+        help=(
+            "Deploy the core stack via Terraform (init/plan/apply) instead of native/Homebrew "
+            "reconciliation -- requires --local"
+        ),
+    )
+    ops_install.add_argument(
+        "--kubernetes",
+        action="store_true",
+        help=(
+            "Deploy nyxgpt-api to a local Kubernetes cluster instead of native/Homebrew "
+            "reconciliation -- requires --local"
+        ),
+    )
+    ops_install_locality = ops_install.add_mutually_exclusive_group()
+    ops_install_locality.add_argument(
+        "--local",
+        action="store_true",
+        help=(
+            "Target the local machine (required with --terraform/--kubernetes; the only "
+            "locality implemented today)"
+        ),
+    )
+    ops_install_locality.add_argument(
+        "--cloud",
+        action="store_true",
+        help="Target a cloud deployment (not yet implemented -- --local is the precursor)",
+    )
+    ops_install.add_argument(
+        "--api-key",
+        help=(
+            "API key for the Terraform/Kubernetes deploy's auth secret "
+            "(skips the interactive prompt/auto-generation)"
+        ),
+    )
 
     ops_status = ops_sub.add_parser(
         "status", help="Show status of local services (docker/cassandra/agent/api)"
@@ -1977,6 +2014,16 @@ def cli(argv: list[str] | None = None) -> int:
         action="store_true",
         dest="observability_only",
         help="Only tear down the observability Compose profiles, leave the app tier up",
+    )
+    ops_down_scope.add_argument(
+        "--terraform",
+        action="store_true",
+        help="Tear down the Terraform-managed stack (terraform destroy) instead of native/Compose",
+    )
+    ops_down_scope.add_argument(
+        "--kubernetes",
+        action="store_true",
+        help="Remove the nyxgpt namespace's Kubernetes resources instead of native/Compose",
     )
     ops_down.add_argument(
         "--volumes",
