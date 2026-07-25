@@ -99,6 +99,22 @@ machine to the intended local topology rather than only adding new state —
 including cleaning up a mixed-mode mess (native services plus a leaked
 Compose app tier) left by an earlier run.
 
+### `--terraform`/`--kubernetes`: the other local deployment paths
+
+`nyxgpt ops install --terraform --local` and
+`nyxgpt ops install --kubernetes --local` wrap the alternative
+[Terraform](terraform.md) and [Kubernetes](kubernetes.md) deployment paths
+the same way — one command each, no raw `terraform`/`kubectl` typing. They
+are mutually exclusive with each other and with the native reconciliation
+above (passing `--terraform`/`--kubernetes` skips the native steps
+entirely and runs that deployment's own install sequence instead). `--local`
+is required and explicit — see [terraform.md](terraform.md#one-command-bring-up-nyxgpt-ops)
+/ [kubernetes.md](kubernetes.md#one-command-bring-up-nyxgpt-ops) for what
+each one does and why `--cloud` is rejected today.
+
+Torn down the same way, from [`nyxgpt ops down`](#nyxgpt-ops-down) below:
+`nyxgpt ops down --terraform` / `--kubernetes`.
+
 ---
 
 ## `nyxgpt ops status`
@@ -286,6 +302,17 @@ wrapped fix for a native/Compose mixed-mode collision (e.g. a stale
 `docker compose up` app tier holding a port a native service also wants):
 run `nyxgpt ops down --app-only` to drop the Compose app tier while leaving
 observability dashboards running.
+
+### Tearing down Terraform/Kubernetes instead
+
+```bash
+nyxgpt ops down --terraform    # terraform destroy (see terraform.md)
+nyxgpt ops down --kubernetes   # removes the nyxgpt namespace (see kubernetes.md)
+```
+
+Mutually exclusive with `--app-only`/`--observability-only` and with each
+other -- these tear down the [Terraform](terraform.md)/[Kubernetes](kubernetes.md)
+deployments, not the native/Compose stack above.
 
 ### Removing data volumes
 

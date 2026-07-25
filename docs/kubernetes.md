@@ -22,6 +22,45 @@ over between them with zero downtime and roll back instantly. A second,
 independent pair -- `nyxgpt-api-stable`/`nyxgpt-api-canary` -- supports
 gradual weighted rollout; see [Canary Deployment](#canary-deployment).
 
+## One-command bring-up (`nyxgpt ops`)
+
+```bash
+nyxgpt ops install --kubernetes --local
+```
+
+Per the project's [Operational Command Wrapping](../CLAUDE.md) rule, this is
+the supported way to bring this deployment up — no raw `docker build`/
+`kubectl` commands required. It wraps the whole documented flow below into
+one step: checks prerequisites (a reachable cluster, `kubectl` on PATH),
+builds `nyxgpt-api:local` and loads it into the cluster's image cache (kind/
+minikube get an explicit load step; Docker Desktop's built-in cluster shares
+the host cache already), bootstraps `k8s/secret.yaml` from the example
+(prompting for the API key interactively, or pass `--api-key` — the value is
+never committed), applies the kustomization, and snapshots Pod/HPA/Service
+health.
+
+`--local` is required and explicit — it's the only locality implemented
+today, and is the precursor to a future cloud deployment target. `--cloud`
+is accepted by the CLI surface but rejected with a "not yet implemented"
+message rather than silently doing the wrong thing.
+
+The command refuses to start if the native/Compose stack already owns the
+`api` port — run `nyxgpt ops down` (or stop the conflicting components)
+first. `nyxgpt ops status`/`doctor` show this namespace's Pod states
+alongside native/Compose.
+
+Tear down (removes the `nyxgpt` namespace and everything in it) with:
+
+```bash
+nyxgpt ops down --kubernetes
+```
+
+The rest of this document walks through what those two commands do, plus
+the blue/green and canary rollout tooling that operates on top of this
+deployment once it's up — useful if you want to run the bring-up steps
+individually or troubleshoot a failure. It is reference material, not
+something you're expected to type by hand.
+
 ## Prerequisites
 
 - A local cluster: [kind](https://kind.sigs.k8s.io/), [minikube](https://minikube.sigs.k8s.io/), or similar

@@ -33,9 +33,50 @@ not modeled here — use
 alongside this stack (they share the `nyxgpt` service names via
 `docker/*.yml` configs) or standalone.
 
+## One-command bring-up (`nyxgpt ops`)
+
+```bash
+nyxgpt ops install --terraform --local
+```
+
+Per the project's [Operational Command Wrapping](../CLAUDE.md) rule, this is
+the supported way to run this deployment — no raw `brew`/`terraform`
+commands required. It wraps the whole flow described below into one step:
+installs Terraform via the official HashiCorp tap if it isn't already on
+PATH (`brew install terraform` no longer works on its own — HashiCorp pulled
+the formula from homebrew-core after the 2023 BUSL relicense), bootstraps
+`terraform.tfvars` from the example (a random `auth_api_key` is generated
+unless you pass `--api-key` or answer the interactive prompt), and runs
+`init` → `plan` → `apply`, then reports each container's health plus the
+`api_url`/`web_url`/`ollama_url` outputs.
+
+`--local` is required and explicit — it's the only locality implemented
+today, and is the precursor to a future cloud deployment target. `--cloud`
+is accepted by the CLI surface but rejected with a "not yet implemented"
+message rather than silently doing the wrong thing.
+
+The command refuses to start if the native/Compose stack already owns the
+same host ports (8000/3000/11434/9042) — run `nyxgpt ops down` (or stop the
+conflicting components) first. `nyxgpt ops status`/`doctor` show this
+stack's container states alongside native/Compose.
+
+Tear down with:
+
+```bash
+nyxgpt ops down --terraform
+```
+
+which runs `terraform destroy`, wrapped the same way.
+
+The rest of this document walks through what those two commands do — useful
+if you want to run the steps individually (e.g. to review `terraform plan`
+output before applying) or troubleshoot a failure. It is reference material,
+not something you're expected to type by hand.
+
 ## Prerequisites
 
 - [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.5.0
+  (installed automatically by `nyxgpt ops install --terraform --local` above)
 - Docker, with the daemon running
 
 ## 1. Configure variables
@@ -106,6 +147,8 @@ Open the web UI at the printed `web_url` (default
 ```bash
 terraform destroy
 ```
+
+(`nyxgpt ops down --terraform` wraps this — see [above](#one-command-bring-up-nyxgpt-ops).)
 
 Removes the containers, network, and named volumes (`nyxgpt_tf_ollama_data`,
 `nyxgpt_tf_cassandra_data`, `nyxgpt_tf_nyxgpt_data`) — this discards pulled
