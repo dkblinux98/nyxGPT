@@ -15,8 +15,22 @@ vi.mock('next/navigation', () => ({
 const mockStatus = {
   enabled: false,
   components: [
-    { service: 'api', container: 'nyxgpt-api-1', state: 'running', health: 'healthy', healthy: true },
-    { service: 'web', container: 'nyxgpt-web-1', state: 'exited', health: '', healthy: false },
+    {
+      service: 'api',
+      container: 'nyxgpt-api-1',
+      state: 'running',
+      health: 'healthy',
+      healthy: true,
+      source: 'native',
+    },
+    {
+      service: 'web',
+      container: 'nyxgpt-web-1',
+      state: 'exited',
+      health: '',
+      healthy: false,
+      source: 'compose',
+    },
   ],
   unhealthy_count: 1,
   events: [
@@ -102,6 +116,46 @@ describe('SelfHealPage', () => {
     expect(screen.getByText(/Giving up after 3 attempts/)).toBeInTheDocument();
     expect(screen.getByText('OK')).toBeInTheDocument();
     expect(screen.getByText('FAILED')).toBeInTheDocument();
+    // Source badge reflects native vs Compose per component.
+    expect(screen.getByText('native')).toBeInTheDocument();
+    expect(screen.getByText('compose')).toBeInTheDocument();
+  });
+
+  it('describes the monitored set as core app components regardless of source, not "the Docker Compose stack"', async () => {
+    server.use(http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockStatus)));
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('api')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText(/Watches the core app components \(API, web UI, Ollama, Cassandra\)/)
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/the local Docker Compose stack/i)).not.toBeInTheDocument();
+  });
+
+  it('falls back to the "compose" badge when a component omits its source', async () => {
+    server.use(
+      http.get('/api/v1/self-heal/status', () =>
+        HttpResponse.json({
+          ...mockStatus,
+          components: [
+            { service: 'grafana', container: 'nyxgpt-grafana-1', state: 'running', health: 'healthy', healthy: true },
+          ],
+        })
+      )
+    );
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('grafana')).toBeInTheDocument();
+    });
+    expect(screen.getByText('compose')).toBeInTheDocument();
+    expect(screen.queryByText('native')).not.toBeInTheDocument();
   });
 
   it('does not show observability links when monitoring and log aggregation are inactive', async () => {
@@ -172,7 +226,8 @@ describe('SelfHealPage', () => {
       expect(screen.getByText('AUTO-HEAL ON')).toBeInTheDocument();
     });
     expect(screen.queryByText(/unhealthy$/)).not.toBeInTheDocument();
-    expect(screen.getByText(/No Docker Compose containers found/)).toBeInTheDocument();
+    expect(screen.getByText(/No components found\. Run/)).toBeInTheDocument();
+    expect(screen.getByText(/nyxgpt ops install/)).toBeInTheDocument();
     expect(screen.getByText('No heal events recorded yet.')).toBeInTheDocument();
   });
 
