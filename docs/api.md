@@ -2090,6 +2090,49 @@ The `/api/v1/rag/query` and `/api/v1/chat/stream` endpoints support optional met
 
 All filters are optional and combined with AND logic when present.
 
+### `GET /api/v1/rag/cache/stats`
+
+Hit rate, size, and configuration details for the RAG query result cache (see `[cache]` settings in `example.config.ini`). Backed by the admin dashboard's Query Cache panel.
+
+**Response:**
+
+```json
+{
+  "hits": 128,
+  "misses": 34,
+  "hit_rate": 0.79,
+  "size": 12,
+  "enabled": true,
+  "backend": "memory",
+  "max_size": 500,
+  "ttl_seconds": 300
+}
+```
+
+**Response Fields:**
+- `hits` - Number of cache hits since the cache was created/cleared
+- `misses` - Number of cache misses since the cache was created/cleared
+- `hit_rate` - `hits / (hits + misses)`, `0.0` if no queries yet
+- `size` - Current number of cached query results
+- `enabled` - Whether query result caching is enabled (`[cache] query_cache_enabled`)
+- `backend` - `"memory"`, `"disk"`, or `"none"` if caching is disabled
+- `max_size` - Maximum number of cached entries (memory backend only, else `null`)
+- `ttl_seconds` - Cache entry time-to-live in seconds, `null` if disabled
+
+When caching is disabled, all counters are zeroed and `enabled` is `false` rather than the request erroring.
+
+### `POST /api/v1/rag/cache/clear`
+
+Manually clear the RAG query result cache. Also triggered automatically on document ingestion/update, collection deletion, and collection re-indexing; this endpoint is mainly for manual troubleshooting.
+
+**Response:**
+
+```json
+{
+  "status": "Query result cache cleared"
+}
+```
+
 ---
 
 ## Log viewing endpoints

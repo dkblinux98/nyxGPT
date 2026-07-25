@@ -65,7 +65,16 @@ def test_cache_stats_endpoint_disabled_returns_zeros(monkeypatch: pytest.MonkeyP
         resp = client.get("/api/v1/rag/cache/stats")
 
     assert resp.status_code == 200
-    assert resp.json() == {"hits": 0, "misses": 0, "hit_rate": 0.0, "size": 0}
+    assert resp.json() == {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": 0.0,
+        "size": 0,
+        "enabled": False,
+        "backend": "none",
+        "max_size": None,
+        "ttl_seconds": None,
+    }
 
 
 @pytest.mark.unit
@@ -94,6 +103,9 @@ def test_cache_stats_endpoint_reports_hits_and_misses(monkeypatch: pytest.Monkey
     assert data["misses"] == 1
     assert data["hit_rate"] == pytest.approx(0.5)
     assert data["size"] == 1
+    assert data["enabled"] is True
+    assert data["backend"] == "memory"
+    assert data["ttl_seconds"] == 3600
 
 
 @pytest.mark.unit

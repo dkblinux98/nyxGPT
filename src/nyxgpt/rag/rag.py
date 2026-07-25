@@ -254,17 +254,40 @@ def clear_query_cache() -> None:
         log.info("Query result cache cleared")
 
 
-def get_query_cache_stats() -> dict[str, int | float]:
-    """Return hit rate and size statistics for the query result cache.
+def get_query_cache_stats() -> dict[str, int | float | str | bool | None]:
+    """Return hit rate, size, and configuration details for the query result cache.
 
     Returns:
-        Dict with hits, misses, hit_rate, and size. All zero/empty if the
-        cache is disabled (NoOpCache has no stats() method).
+        Dict with hits, misses, hit_rate, size, enabled, backend, max_size,
+        and ttl_seconds. Zeroed/empty (with enabled=False) if query result
+        caching is disabled (`[cache] query_cache_enabled = false`).
     """
     cache = _get_query_result_cache()
-    if isinstance(cache, (MemoryCache, DiskCache)):
-        return cache.stats()
-    return {"hits": 0, "misses": 0, "hit_rate": 0.0, "size": 0}
+    cfg = load_config(None)
+    ttl_seconds = cfg.getint("cache", "query_cache_ttl_seconds", fallback=None)
+
+    if isinstance(cache, MemoryCache):
+        stats = cache.stats()
+        return {**stats, "enabled": True, "backend": "memory", "ttl_seconds": ttl_seconds}
+    if isinstance(cache, DiskCache):
+        stats = cache.stats()
+        return {
+            **stats,
+            "enabled": True,
+            "backend": "disk",
+            "max_size": None,
+            "ttl_seconds": ttl_seconds,
+        }
+    return {
+        "hits": 0,
+        "misses": 0,
+        "hit_rate": 0.0,
+        "size": 0,
+        "enabled": False,
+        "backend": "none",
+        "max_size": None,
+        "ttl_seconds": None,
+    }
 
 
 def _query_cache_key(

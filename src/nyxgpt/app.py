@@ -3244,17 +3244,23 @@ def rag_config(request: Request) -> dict[str, Any]:
 
 @api.get("/rag/cache/stats", response_model=QueryCacheStatsResponse)
 def rag_cache_stats(_request: Request) -> QueryCacheStatsResponse:
-    """Get hit rate and size statistics for the RAG query result cache.
+    """Get hit rate, size, and configuration details for the RAG query result cache.
 
-    Returns zeroed stats if query result caching is disabled
-    (`[cache] query_cache_enabled = false`).
+    Returns `enabled=False` with zeroed stats if query result caching is
+    disabled (`[cache] query_cache_enabled = false`).
     """
     stats = get_query_cache_stats()
+    max_size = stats["max_size"]
+    ttl_seconds = stats["ttl_seconds"]
     return QueryCacheStatsResponse(
-        hits=int(stats["hits"]),
-        misses=int(stats["misses"]),
-        hit_rate=float(stats["hit_rate"]),
-        size=int(stats["size"]),
+        hits=int(stats["hits"]),  # type: ignore[arg-type]
+        misses=int(stats["misses"]),  # type: ignore[arg-type]
+        hit_rate=float(stats["hit_rate"]),  # type: ignore[arg-type]
+        size=int(stats["size"]),  # type: ignore[arg-type]
+        enabled=bool(stats["enabled"]),
+        backend=str(stats["backend"]),
+        max_size=int(max_size) if max_size is not None else None,
+        ttl_seconds=int(ttl_seconds) if ttl_seconds is not None else None,
     )
 
 
