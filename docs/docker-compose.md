@@ -19,21 +19,21 @@ detects and stops any of those Compose containers it finds running.
 
 | Service     | Image             | Purpose                                   | Host port (default) |
 |-------------|-------------------|--------------------------------------------|----------------------|
-| `ollama`    | `ollama/ollama`   | Local LLM inference                        | `11434`              |
-| `cassandra` | `cassandra:5.0`   | Vector store for RAG                       | `9042`               |
+| `ollama`    | `ollama/ollama:0.32.4`   | Local LLM inference                  | `11434`              |
+| `cassandra` | `cassandra:5.0.8`   | Vector store for RAG                     | `9042`               |
 | `api`       | built from `Dockerfile`     | FastAPI backend (`nyxgpt-api`)  | `8000`               |
 | `web`       | built from `web/Dockerfile` | Next.js web UI (`nyxgpt-web`)   | `3000`               |
-| `prometheus` <sup>*</sup> | `prom/prometheus` | Scrapes the API's `/metrics` endpoint, evaluates alerting rules | `9090` |
-| `grafana` <sup>*</sup> | `grafana/grafana` | Pre-provisioned dashboards (system overview, RAG performance, API metrics, logs explorer) | `3001` |
-| `loki` <sup>§</sup> | `grafana/loki` | Log storage + search API, with retention | — |
-| `promtail` <sup>§</sup> | `grafana/promtail` | Tails logs from both deployment modes and ships to Loki | — |
-| `otel-collector` <sup>†</sup> | `otel/opentelemetry-collector-contrib` | Receives OTLP spans from the API, forwards to Jaeger | — |
-| `jaeger` <sup>†</sup> | `jaegertracing/all-in-one` | Trace storage + UI              | `16686`              |
-| `glitchtip` <sup>‡</sup> | `glitchtip/glitchtip` | Self-hosted error tracker UI + ingest | `8080` |
-| `glitchtip-worker` <sup>‡</sup> | `glitchtip/glitchtip` | GlitchTip Celery worker/beat    | —                    |
-| `glitchtip-migrate` <sup>‡</sup> | `glitchtip/glitchtip` | One-shot GlitchTip DB migration | —                    |
-| `glitchtip-postgres` <sup>‡</sup> | `postgres:16` | GlitchTip's database             | —                    |
-| `glitchtip-redis` <sup>‡</sup> | `redis:7-alpine` | GlitchTip's queue/cache            | —                    |
+| `prometheus` <sup>*</sup> | `prom/prometheus:v3.13.1` | Scrapes the API's `/metrics` endpoint, evaluates alerting rules | `9090` |
+| `grafana` <sup>*</sup> | `grafana/grafana:13.1.1` | Pre-provisioned dashboards (system overview, RAG performance, API metrics, logs explorer) | `3001` |
+| `loki` <sup>§</sup> | `grafana/loki:3.6.13` | Log storage + search API, with retention | — |
+| `promtail` <sup>§</sup> | `grafana/promtail:3.6.11` | Tails logs from both deployment modes and ships to Loki | — |
+| `otel-collector` <sup>†</sup> | `otel/opentelemetry-collector-contrib:0.157.0` | Receives OTLP spans from the API, forwards to Jaeger | — |
+| `jaeger` <sup>†</sup> | `jaegertracing/all-in-one:1.76.0` | Trace storage + UI      | `16686`              |
+| `glitchtip` <sup>‡</sup> | `glitchtip/glitchtip:6.2.0` | Self-hosted error tracker UI + ingest | `8080` |
+| `glitchtip-worker` <sup>‡</sup> | `glitchtip/glitchtip:6.2.0` | GlitchTip Celery worker/beat | —                    |
+| `glitchtip-migrate` <sup>‡</sup> | `glitchtip/glitchtip:6.2.0` | One-shot GlitchTip DB migration | —              |
+| `glitchtip-postgres` <sup>‡</sup> | `postgres:16.14` | GlitchTip's database         | —                    |
+| `glitchtip-redis` <sup>‡</sup> | `redis:7.4.9-alpine` | GlitchTip's queue/cache          | —                    |
 
 <sup>*</sup> Started via the `monitoring` Compose profile, automatically by
 `nyxgpt ops install` — see [Monitoring Dashboards](#monitoring-dashboards)
@@ -59,6 +59,31 @@ All four profiles above are part of the observability stack started by
 All services share a single bridge network (`nyxgpt`) and reach each other by
 service name (e.g. the API talks to Ollama at `http://ollama:11434` and to
 Cassandra at `cassandra:9042` — see `docker/config.docker.ini`).
+
+## Image Pinning
+
+Every third-party image above is pinned to a specific version (major.minor at
+minimum, exact patch where available) — no `:latest` and no bare major-only
+tag (e.g. `postgres:16` or `redis:7-alpine`), since either can silently pull
+different software on a different day, and a bad upstream `latest` push can
+break the stack with nothing in git explaining the change. First-party images
+built from this repo (`nyxgpt-api`, `nyxgpt-web`) are out of scope — their
+version is whatever commit they're built from.
+
+`ollama` and `cassandra` also run in [Terraform](terraform.md) and (Cassandra
+only) via `nyxgpt ops` (`CASSANDRA_IMAGE` in `src/nyxgpt/ops.py`) — each of
+those three definitions carries a comment pointing at the other two, and all
+three must be bumped together so the pinned version never diverges between
+deployment paths.
+
+To bump a pinned version: pick the new tag, update it in every file listed
+above for that image (cross-reference comments call out the other files),
+update the version in this table, then verify with `nyxgpt ops install` (for
+`ollama`/`cassandra`) or `nyxgpt ops observability` (for the monitoring/
+logging/tracing/errors profiles) before committing.
+`tests/unit/test_image_pins.py` fails the build if `:latest` (or an untagged
+image reference) reappears in `docker-compose.yml`, `terraform/main.tf`, or
+`src/nyxgpt/ops.py`.
 
 ## Volumes
 

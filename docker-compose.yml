@@ -30,7 +30,10 @@ volumes:
 
 services:
   ollama:
-    image: ollama/ollama:latest
+    # Keep this pin identical to terraform/main.tf's docker_image.ollama --
+    # see docs/docker-compose.md#image-pinning for the policy and how to
+    # bump both together.
+    image: ollama/ollama:0.32.4
     # Fixed name (rather than Compose's default `nyxgpt-ollama-1`) so the
     # host-side `com.nyxgpt.ollama-logs` LaunchAgent (scripts/follow-ollama-logs.sh)
     # can find this container by a predictable name, mirroring how the
@@ -52,7 +55,11 @@ services:
       start_period: 30s
 
   cassandra:
-    image: cassandra:5.0
+    # Keep this pin identical to terraform/main.tf's docker_image.cassandra
+    # and src/nyxgpt/ops.py's CASSANDRA_IMAGE -- see
+    # docs/docker-compose.md#image-pinning for the policy and how to bump
+    # all three together.
+    image: cassandra:5.0.8
     restart: unless-stopped
     networks:
       - nyxgpt
@@ -155,7 +162,7 @@ services:
   # metrics). Everything stays on this machine -- nothing is sent to an
   # external/cloud monitoring service.
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v3.13.1
     restart: unless-stopped
     profiles:
       - monitoring
@@ -180,7 +187,7 @@ services:
       start_period: 20s
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:13.1.1
     restart: unless-stopped
     profiles:
       - monitoring
@@ -226,7 +233,7 @@ services:
   # `[log_aggregation] enabled = true` in config.ini to have the SRE/admin
   # dashboard reflect that it's running. See docs/docker-compose.md#log-aggregation.
   loki:
-    image: grafana/loki:latest
+    image: grafana/loki:3.6.13
     restart: unless-stopped
     profiles:
       - logging
@@ -238,7 +245,7 @@ services:
     command: -config.file=/etc/loki/local-config.yaml
 
   promtail:
-    image: grafana/promtail:latest
+    image: grafana/promtail:3.6.11
     restart: unless-stopped
     profiles:
       - logging
@@ -263,7 +270,7 @@ services:
   # `[tracing] enabled = true` in config.ini (see docker/config.docker.ini)
   # to have the API actually emit spans to the collector below.
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    image: otel/opentelemetry-collector-contrib:0.157.0
     restart: unless-stopped
     profiles:
       - tracing
@@ -281,7 +288,7 @@ services:
         condition: service_healthy
 
   jaeger:
-    image: jaegertracing/all-in-one:latest
+    image: jaegertracing/all-in-one:1.76.0
     restart: unless-stopped
     profiles:
       - tracing
@@ -307,7 +314,7 @@ services:
   # config.ini (see docker/config.docker.ini) to have the API report
   # exceptions.
   glitchtip-postgres:
-    image: postgres:16
+    image: postgres:16.14
     restart: unless-stopped
     profiles:
       - errors
@@ -327,7 +334,7 @@ services:
       start_period: 20s
 
   glitchtip-redis:
-    image: redis:7-alpine
+    image: redis:7.4.9-alpine
     restart: unless-stopped
     profiles:
       - errors

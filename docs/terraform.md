@@ -168,3 +168,12 @@ destroy/apply cycle.
 
 Only run one of Compose or Terraform at a time against the same host ports —
 both default to `8000`/`3000`/`11434`/`9042`.
+
+## Image versions
+
+`docker_image.ollama` and `docker_image.cassandra` in `main.tf` are pinned to
+specific versions (no `:latest`), kept identical to the `ollama`/`cassandra`
+services in `docker-compose.yml` and (Cassandra only) `CASSANDRA_IMAGE` in
+`src/nyxgpt/ops.py` — see
+[docker-compose.md#image-pinning](docker-compose.md#image-pinning) for the
+full pinning policy and how to bump a version across all three definitions.
