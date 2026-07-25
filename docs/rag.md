@@ -570,11 +570,11 @@ See [`docs/configuration.md`](configuration.md#pdf-section) for the full
 
 ### Query Result Cache
 
-Monitor and manage the query result cache described in [Configuration](#configuration) above (see [`docs/performance.md`](performance.md#query-result-cache) for tuning guidance).
+Monitor and manage the query result cache described in [Configuration](#configuration) above (see [`docs/performance.md`](performance.md#query-result-cache) for tuning guidance). A **Query Cache** panel in the admin dashboard (`/admin/dashboard`) surfaces these stats and a Clear Cache action, so this is not API-only.
 
 #### `GET /api/v1/rag/cache/stats`
 
-Get hit rate and size statistics for the RAG query result cache.
+Get hit rate, size, and configuration details for the RAG query result cache.
 
 **Response:**
 ```json
@@ -582,11 +582,20 @@ Get hit rate and size statistics for the RAG query result cache.
   "hits": 42,
   "misses": 8,
   "hit_rate": 0.84,
-  "size": 5
+  "size": 5,
+  "enabled": true,
+  "backend": "memory",
+  "max_size": 500,
+  "ttl_seconds": 300
 }
 ```
 
-Returns zeroed stats (`hits=0, misses=0, hit_rate=0.0, size=0`) if `query_cache_enabled = false`.
+- `enabled` - whether query result caching is enabled (`[cache] query_cache_enabled`)
+- `backend` - `"memory"`, `"disk"`, or `"none"` if disabled
+- `max_size` - maximum cached entries (memory backend only, else `null`)
+- `ttl_seconds` - cache entry TTL in seconds, `null` if disabled
+
+Returns zeroed stats with `enabled=false, backend="none"` (not an error) if `query_cache_enabled = false`.
 
 #### `POST /api/v1/rag/cache/clear`
 
