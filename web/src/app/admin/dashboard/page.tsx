@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
+import QueryCacheStatsPanel from '../../../components/QueryCacheStatsPanel';
 
 type OverviewData = {
   info: {
@@ -514,6 +515,9 @@ export default function AdminDashboardPage() {
             <a href="/admin/logs" style={inlineLinkStyle}>View raw application logs →</a>
           </div>
         </section>
+
+        {/* Query Cache Statistics */}
+        <QueryCacheStatsPanel />
       </div>
     </main>
   );

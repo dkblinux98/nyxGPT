@@ -285,4 +285,23 @@ export const handlers = [
     }
     return HttpResponse.json(response);
   }),
+
+  // GET /api/v1/rag/cache/stats
+  http.get('/api/v1/rag/cache/stats', () => {
+    return HttpResponse.json({
+      hits: 8,
+      misses: 2,
+      hit_rate: 0.8,
+      size: 3,
+      enabled: true,
+      backend: 'memory',
+      max_size: 500,
+      ttl_seconds: 300,
+    });
+  }),
+
+  // POST /api/v1/rag/cache/clear
+  http.post('/api/v1/rag/cache/clear', () => {
+    return HttpResponse.json({ status: 'Query result cache cleared' });
+  }),
 ];
