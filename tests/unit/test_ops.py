@@ -5186,6 +5186,110 @@ def test_down_kubernetes_delete_failure(monkeypatch):
     assert rc == 2
 
 
+# --- Structured (non-printing) Terraform/Kubernetes functions for the SRE/admin dashboard API ---
+
+
+@pytest.mark.unit
+def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_ensure_terraform_binary", return_value=ok),
+        patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
+        patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
+        patch.object(ops, "_terraform_stack_health", return_value=ok),
+    ):
+        results = ops.install_terraform_local(api_key="k")
+    assert all(r.ok for r in results)
+    t.assert_called_once_with("k")
+
+
+@pytest.mark.unit
+def test_install_terraform_local_reports_port_collision(monkeypatch):
+    collision = ops.OpsResult(False, "Refusing to start: port collision")
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: collision)
+    results = ops.install_terraform_local()
+    assert results == [collision]
+
+
+@pytest.mark.unit
+def test_down_terraform_returns_results_without_printing(monkeypatch, capsys):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/terraform")
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="destroyed"))
+    results = ops.down_terraform()
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.unit
+def test_install_kubernetes_local_runs_steps_and_returns_results(monkeypatch):
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        patch.object(ops, "_ensure_k8s_secret", return_value=ok) as s,
+        patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
+        patch.object(ops, "_k8s_stack_health", return_value=ok),
+    ):
+        results = ops.install_kubernetes_local(api_key="k")
+    assert all(r.ok for r in results)
+    s.assert_called_once_with("k")
+
+
+@pytest.mark.unit
+def test_install_kubernetes_local_reports_port_collision(monkeypatch):
+    collision = ops.OpsResult(False, "Refusing to start: port collision")
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: collision)
+    results = ops.install_kubernetes_local()
+    assert results == [collision]
+
+
+@pytest.mark.unit
+def test_down_kubernetes_returns_results_without_printing(monkeypatch, capsys):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="deleted"))
+    results = ops.down_kubernetes()
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.unit
+def test_infra_status_reports_terraform_and_kubernetes(monkeypatch):
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "running", "web": "absent"})
+
+    def fake_which(prog):
+        return "/usr/local/bin/kubectl" if prog == "kubectl" else None
+
+    def fake_run(cmd, check=True):
+        return CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n")
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops.infra_status()
+    assert result["terraform"]["deployed"] is True
+    assert result["terraform"]["containers"] == {"api": "running", "web": "absent"}
+    assert result["kubernetes"]["available"] is True
+    assert result["kubernetes"]["deployed"] is True
+    assert result["kubernetes"]["namespace"] == "nyxgpt"
+    assert result["kubernetes"]["pods"] == ["nyxgpt-api-abc   1/1   Running"]
+
+
+@pytest.mark.unit
+def test_infra_status_reports_nothing_deployed(monkeypatch):
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+
+    result = ops.infra_status()
+    assert result["terraform"]["deployed"] is False
+    assert result["kubernetes"]["available"] is False
+    assert result["kubernetes"]["deployed"] is False
+    assert result["kubernetes"]["pods"] == []
+
+
 # --- install()/down() dispatch to the Terraform/Kubernetes paths ---
 
 

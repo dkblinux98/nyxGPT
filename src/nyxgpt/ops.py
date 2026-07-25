@@ -1369,8 +1369,8 @@ def _terraform_stack_health() -> list[OpsResult]:
     return results
 
 
-def _install_terraform(args) -> int:
-    """`nyxgpt ops install --terraform --local`: the full Terraform bring-up in one command.
+def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
+    """Run the Terraform bring-up steps and return structured results (no printing).
 
     Ensures terraform is present (installing via the hashicorp tap if
     missing), bootstraps terraform.tfvars from the example if absent, runs
@@ -1378,12 +1378,14 @@ def _install_terraform(args) -> int:
     the first failing step since each depends on the last (installing the
     binary before generating tfvars before running init, etc.) -- unlike
     `install()`'s native steps, which are independent and best-effort.
+
+    Shared by the `nyxgpt ops install --terraform --local` CLI entrypoint
+    (`_install_terraform`) and `install_terraform_local`, the SRE/admin
+    dashboard API's structured equivalent.
     """
-    if _resolve_locality(args) is None:
-        return 2
     collision = _refuse_port_collision(["api", "web", "ollama", "cassandra"])
     if collision is not None:
-        return 0 if _emit_results("install --terraform", [collision]) else 2
+        return [collision]
 
     logger.info(
         "ops: install --terraform --local starting",
@@ -1392,7 +1394,7 @@ def _install_terraform(args) -> int:
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
         ("terraform binary", _ensure_terraform_binary),
-        ("terraform tfvars", lambda: _ensure_terraform_tfvars(getattr(args, "api_key", None))),
+        ("terraform tfvars", lambda: _ensure_terraform_tfvars(api_key)),
         ("terraform init/plan/apply", _terraform_init_plan_apply),
     ]
     for step_name, fn in steps:
@@ -1409,24 +1411,52 @@ def _install_terraform(args) -> int:
     else:
         results += _terraform_stack_health()
 
+    return results
+
+
+def install_terraform_local(api_key: str | None = None) -> list[OpsResult]:
+    """Structured (non-printing) Terraform local bring-up, for the SRE/admin dashboard API.
+
+    Runs the same steps as `nyxgpt ops install --terraform --local` --
+    locality is implicitly "local" here since that's the only target this
+    endpoint offers (see `_resolve_locality`) -- and returns the OpsResult
+    list directly instead of routing it through `_emit_results`, so a
+    FastAPI endpoint can translate it straight to JSON.
+    """
+    return _install_terraform_steps(api_key)
+
+
+def _install_terraform(args) -> int:
+    """`nyxgpt ops install --terraform --local`: the full Terraform bring-up in one command."""
+    if _resolve_locality(args) is None:
+        return 2
+    results = _install_terraform_steps(getattr(args, "api_key", None))
     ok = _emit_results("install --terraform", results)
     return 0 if ok else 2
 
 
-def _down_terraform(_args) -> int:
-    """`nyxgpt ops down --terraform`: `terraform destroy` the Terraform-managed stack."""
+def _down_terraform_steps() -> list[OpsResult]:
+    """`terraform destroy` the Terraform-managed stack and return structured results."""
     if _which("terraform") is None:
-        results = [OpsResult(False, "terraform not found on PATH -- nothing to destroy")]
-        return 0 if _emit_results("down --terraform", results) else 2
+        return [OpsResult(False, "terraform not found on PATH -- nothing to destroy")]
 
     cp = _run(
         ["terraform", f"-chdir={TERRAFORM_DIR}", "destroy", "-input=false", "-auto-approve"],
         check=False,
     )
     if cp.returncode == 0:
-        results = [OpsResult(True, "terraform destroy", _cp_details(cp))]
-    else:
-        results = [OpsResult(False, "terraform destroy failed", _cp_details(cp))]
+        return [OpsResult(True, "terraform destroy", _cp_details(cp))]
+    return [OpsResult(False, "terraform destroy failed", _cp_details(cp))]
+
+
+def down_terraform() -> list[OpsResult]:
+    """Structured (non-printing) `terraform destroy`, for the SRE/admin dashboard API."""
+    return _down_terraform_steps()
+
+
+def _down_terraform(_args) -> int:
+    """`nyxgpt ops down --terraform`: `terraform destroy` the Terraform-managed stack."""
+    results = _down_terraform_steps()
     ok = _emit_results("down --terraform", results)
     return 0 if ok else 2
 
@@ -1580,20 +1610,22 @@ def _k8s_stack_health() -> list[OpsResult]:
     return results
 
 
-def _install_kubernetes(args) -> int:
-    """`nyxgpt ops install --kubernetes --local`: the full k8s bring-up in one command.
+def _install_kubernetes_steps(api_key: str | None) -> list[OpsResult]:
+    """Run the Kubernetes bring-up steps and return structured results (no printing).
 
     Prereq checks (cluster reachable, kubectl present), builds and loads
     `nyxgpt-api:local`, bootstraps k8s/secret.yaml (prompting for the API
     key, never committing it), applies the kustomization, and snapshots
     Pod/HPA/Service health. Stops at the first failing step, same rationale
-    as `_install_terraform`.
+    as `_install_terraform_steps`.
+
+    Shared by the `nyxgpt ops install --kubernetes --local` CLI entrypoint
+    (`_install_kubernetes`) and `install_kubernetes_local`, the SRE/admin
+    dashboard API's structured equivalent.
     """
-    if _resolve_locality(args) is None:
-        return 2
     collision = _refuse_port_collision(["api"])
     if collision is not None:
-        return 0 if _emit_results("install --kubernetes", [collision]) else 2
+        return [collision]
 
     logger.info(
         "ops: install --kubernetes --local starting",
@@ -1603,7 +1635,7 @@ def _install_kubernetes(args) -> int:
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
         ("cluster prerequisites", _ensure_kubectl_and_cluster),
         ("build/load image", _build_and_load_k8s_image),
-        ("secret bootstrap", lambda: _ensure_k8s_secret(getattr(args, "api_key", None))),
+        ("secret bootstrap", lambda: _ensure_k8s_secret(api_key)),
         ("apply kustomization", _kubectl_apply_kustomization),
     ]
     for step_name, fn in steps:
@@ -1620,25 +1652,81 @@ def _install_kubernetes(args) -> int:
     else:
         results += _k8s_stack_health()
 
+    return results
+
+
+def install_kubernetes_local(api_key: str | None = None) -> list[OpsResult]:
+    """Structured (non-printing) Kubernetes local bring-up, for the SRE/admin dashboard API.
+
+    Runs the same steps as `nyxgpt ops install --kubernetes --local` --
+    locality is implicitly "local" here since that's the only target this
+    endpoint offers (see `_resolve_locality`) -- and returns the OpsResult
+    list directly instead of routing it through `_emit_results`, so a
+    FastAPI endpoint can translate it straight to JSON.
+    """
+    return _install_kubernetes_steps(api_key)
+
+
+def _install_kubernetes(args) -> int:
+    """`nyxgpt ops install --kubernetes --local`: the full k8s bring-up in one command."""
+    if _resolve_locality(args) is None:
+        return 2
+    results = _install_kubernetes_steps(getattr(args, "api_key", None))
     ok = _emit_results("install --kubernetes", results)
     return 0 if ok else 2
 
 
-def _down_kubernetes(_args) -> int:
-    """`nyxgpt ops down --kubernetes`: remove the `nyxgpt` namespace's Kubernetes resources."""
+def _down_kubernetes_steps() -> list[OpsResult]:
+    """Remove the `nyxgpt` namespace's Kubernetes resources and return structured results."""
     if _which("kubectl") is None:
-        results = [OpsResult(False, "kubectl not found on PATH -- nothing to tear down")]
-        return 0 if _emit_results("down --kubernetes", results) else 2
+        return [OpsResult(False, "kubectl not found on PATH -- nothing to tear down")]
 
     cp = _run(["kubectl", "delete", "-k", str(K8S_DIR), "--ignore-not-found"], check=False)
     if cp.returncode == 0:
-        results = [
+        return [
             OpsResult(True, "kubectl delete -k k8s/ (namespace and all resources)", _cp_details(cp))
         ]
-    else:
-        results = [OpsResult(False, "kubectl delete -k k8s/ failed", _cp_details(cp))]
+    return [OpsResult(False, "kubectl delete -k k8s/ failed", _cp_details(cp))]
+
+
+def down_kubernetes() -> list[OpsResult]:
+    """Structured (non-printing) `kubectl delete -k k8s/`, for the SRE/admin dashboard API."""
+    return _down_kubernetes_steps()
+
+
+def _down_kubernetes(_args) -> int:
+    """`nyxgpt ops down --kubernetes`: remove the `nyxgpt` namespace's Kubernetes resources."""
+    results = _down_kubernetes_steps()
     ok = _emit_results("down --kubernetes", results)
     return 0 if ok else 2
+
+
+def infra_status() -> dict[str, Any]:
+    """Structured Terraform/Kubernetes deployment status, for the SRE/admin dashboard API.
+
+    Mirrors the Terraform/Kubernetes sections `nyxgpt ops status` prints
+    (see `status`), as JSON instead of stdout lines.
+    """
+    tf_state = terraform_stack_state()
+    terraform = {
+        "deployed": any(state != "absent" for state in tf_state.values()),
+        "containers": tf_state,
+    }
+
+    kubectl_available = _which("kubectl") is not None
+    pods: list[str] = []
+    if kubectl_available:
+        cp = _run(["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "--no-headers"], check=False)
+        if cp.returncode == 0:
+            pods = [line for line in (cp.stdout or "").splitlines() if line.strip()]
+    kubernetes = {
+        "available": kubectl_available,
+        "deployed": bool(pods),
+        "namespace": K8S_NAMESPACE,
+        "pods": pods,
+    }
+
+    return {"terraform": terraform, "kubernetes": kubernetes}
 
 
 def install(args) -> int:
