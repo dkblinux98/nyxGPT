@@ -351,6 +351,83 @@ describe('ResourceMetrics', () => {
     });
   });
 
+  it('shows an error message when the history response is not ok', async () => {
+    global.fetch = mockFetchRouting({
+      history: () => Promise.resolve(jsonResponse(null, { ok: false, status: 500 })),
+    }) as unknown as typeof fetch;
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load history: Failed to fetch metrics history: HTTP 500/)).toBeInTheDocument();
+    });
+  });
+
+  it('shows the full window duration in days when enough history exists (formatDuration days branch)', async () => {
+    global.fetch = mockFetchRouting({
+      history: () =>
+        Promise.resolve(
+          jsonResponse(
+            emptyHistoryResponse({
+              range: '7d',
+              requested_window_seconds: 604800,
+              history_available_seconds: 604800,
+            })
+          )
+        ),
+    }) as unknown as typeof fetch;
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Memory Usage')).toBeInTheDocument();
+    });
+
+    const weekButton = screen.getByRole('button', { name: /Last 7 Days/i });
+    fireEvent.click(weekButton);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Showing the full 7\.0d window/)).toBeInTheDocument();
+    });
+  });
+
+  it('reports a non-Error history failure with a stringified reason', async () => {
+    global.fetch = mockFetchRouting({
+      history: () => Promise.reject('plain string history failure'),
+    }) as unknown as typeof fetch;
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load history: plain string history failure/)).toBeInTheDocument();
+    });
+  });
+
+  it('exports history_available_seconds as 0 when history has not loaded yet', async () => {
+    global.fetch = mockFetchRouting({
+      history: () => new Promise(() => {}), // never resolves
+    }) as unknown as typeof fetch;
+
+    let capturedBlob: Blob | null = null;
+    global.URL.createObjectURL = vi.fn((blob: Blob) => {
+      capturedBlob = blob;
+      return 'blob:mock';
+    }) as unknown as typeof URL.createObjectURL;
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Memory Usage')).toBeInTheDocument();
+    });
+
+    const exportButton = screen.getByRole('button', { name: /Export JSON/i });
+    fireEvent.click(exportButton);
+
+    expect(capturedBlob).not.toBeNull();
+    const text = await capturedBlob!.text();
+    expect(JSON.parse(text).history_available_seconds).toBe(0);
+  });
+
   it('shows an empty-history message when no samples exist yet', async () => {
     global.fetch = mockFetchRouting({
       history: () => Promise.resolve(jsonResponse(emptyHistoryResponse())),
