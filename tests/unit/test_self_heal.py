@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import subprocess
 import time
+from configparser import ConfigParser
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -872,3 +873,254 @@ def test_watchdog_loop_survives_heal_now_exception(monkeypatch, caplog):
     # The exception is caught and logged, not left to kill the daemon thread.
     assert "error during automatic heal pass" in caplog.text
     assert not watchdog._thread
+
+
+# --- Desired-state reconciliation (#3356) ---
+
+
+def _cfg(**enabled_by_section):
+    """Build a ConfigParser with `[section] enabled = true/false` for each kwarg."""
+    parser = ConfigParser()
+    for section, enabled in enabled_by_section.items():
+        parser.add_section(section)
+        parser.set(section, "enabled", "true" if enabled else "false")
+    return parser
+
+
+@pytest.mark.unit
+def test_enabled_observability_profiles_maps_sections_to_compose_profiles(monkeypatch):
+    cfg = _cfg(monitoring=True, log_aggregation=False, tracing=True, error_tracking=False)
+    monkeypatch.setattr(self_heal, "load_config", lambda: cfg)
+
+    assert self_heal._enabled_observability_profiles() == {"monitoring", "tracing"}
+
+
+@pytest.mark.unit
+def test_enabled_observability_profiles_all_off_by_default(monkeypatch):
+    monkeypatch.setattr(self_heal, "load_config", lambda: ConfigParser())
+    assert self_heal._enabled_observability_profiles() == set()
+
+
+@pytest.mark.unit
+def test_enabled_observability_profiles_missing_config_returns_empty(monkeypatch):
+    def _boom():
+        raise FileNotFoundError("no config.ini")
+
+    monkeypatch.setattr(self_heal, "load_config", _boom)
+    assert self_heal._enabled_observability_profiles() == set()
+
+
+@pytest.mark.unit
+def test_enabled_observability_profiles_log_aggregation_maps_to_logging_profile(monkeypatch):
+    monkeypatch.setattr(self_heal, "load_config", lambda: _cfg(log_aggregation=True))
+    assert self_heal._enabled_observability_profiles() == {"logging"}
+
+
+@pytest.mark.unit
+def test_enabled_observability_profiles_error_tracking_maps_to_errors_profile(monkeypatch):
+    monkeypatch.setattr(self_heal, "load_config", lambda: _cfg(error_tracking=True))
+    assert self_heal._enabled_observability_profiles() == {"errors"}
+
+
+@pytest.mark.unit
+def test_desired_compose_services_no_profiles_skips_docker_call(monkeypatch):
+    run_mock = MagicMock()
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+    assert self_heal._desired_compose_services(set()) == set()
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+def test_desired_compose_services_no_docker(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    assert self_heal._desired_compose_services({"monitoring"}) == set()
+
+
+@pytest.mark.unit
+def test_desired_compose_services_resolves_and_excludes_core_services(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(stdout="grafana\nprometheus\napi\nweb\n"),
+    )
+    services = self_heal._desired_compose_services({"monitoring"})
+    assert services == {"grafana", "prometheus"}
+
+
+@pytest.mark.unit
+def test_desired_compose_services_command_failure_returns_empty(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1, stderr="boom")
+    )
+    assert self_heal._desired_compose_services({"monitoring"}) == set()
+
+
+@pytest.mark.unit
+def test_desired_compose_services_run_raises(monkeypatch, caplog):
+    def _boom(cmd, timeout=30.0):
+        raise OSError("docker daemon not reachable")
+
+    monkeypatch.setattr(self_heal, "_run", _boom)
+    with caplog.at_level("WARNING"):
+        assert self_heal._desired_compose_services({"monitoring"}) == set()
+    assert "failed to resolve desired compose services" in caplog.text
+
+
+@pytest.mark.unit
+def test_list_absent_desired_components_reports_missing_only(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "_enabled_observability_profiles", lambda: {"monitoring", "logging"}
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "_desired_compose_services",
+        lambda profiles: {"grafana", "loki", "prometheus"},
+    )
+
+    absent = self_heal._list_absent_desired_components(present_services={"prometheus"})
+
+    assert {s.service for s in absent} == {"grafana", "loki"}
+    for status in absent:
+        assert status.state == "absent"
+        assert status.healthy is False
+        assert status.source == "compose"
+
+
+@pytest.mark.unit
+def test_list_absent_desired_components_empty_when_nothing_desired(monkeypatch):
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
+    monkeypatch.setattr(self_heal, "_desired_compose_services", lambda profiles: set())
+    assert self_heal._list_absent_desired_components(present_services=set()) == []
+
+
+@pytest.mark.unit
+def test_list_absent_desired_components_empty_when_all_present(monkeypatch):
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: {"monitoring"})
+    monkeypatch.setattr(self_heal, "_desired_compose_services", lambda profiles: {"grafana"})
+    assert self_heal._list_absent_desired_components(present_services={"grafana"}) == []
+
+
+@pytest.mark.unit
+def test_list_component_status_reports_torn_down_monitoring_profile(monkeypatch):
+    # docker compose ps -a: the stack is fully down, nothing at all is reported
+    # -- this is the exact reported scenario (#3356): monitoring was enabled,
+    # then `nyxgpt ops down` removed every container.
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: {"monitoring"})
+    monkeypatch.setattr(self_heal, "_desired_compose_services", lambda profiles: {"grafana"})
+
+    statuses = self_heal.list_component_status()
+
+    assert len(statuses) == 1
+    assert statuses[0].service == "grafana"
+    assert statuses[0].state == "absent"
+    assert statuses[0].healthy is False
+
+
+@pytest.mark.unit
+def test_list_component_status_desired_service_already_present_not_duplicated(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(stdout=_ps_line("grafana", state="running")),
+    )
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: {"monitoring"})
+    monkeypatch.setattr(self_heal, "_desired_compose_services", lambda profiles: {"grafana"})
+
+    statuses = self_heal.list_component_status()
+
+    assert len(statuses) == 1
+    assert statuses[0].service == "grafana"
+    assert statuses[0].state == "running"
+
+
+@pytest.mark.unit
+def test_list_component_status_disabled_profile_reports_nothing(monkeypatch):
+    # monitoring disabled in config -- absence is expected, not a heal target.
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
+    monkeypatch.setattr(self_heal, "_desired_compose_services", lambda profiles: set())
+
+    assert self_heal.list_component_status() == []
+
+
+@pytest.mark.unit
+def test_bring_up_compose_service_success(monkeypatch):
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal._bring_up_compose_service("grafana")
+
+    assert result.ok
+    assert "Started grafana" in result.message
+    cmd = run_mock.call_args[0][0]
+    assert cmd[:3] == ["docker", "compose", "-f"]
+    assert cmd[-3:] == ["up", "-d", "grafana"]
+    for profile in self_heal.OBSERVABILITY_PROFILES:
+        assert profile in cmd
+
+
+@pytest.mark.unit
+def test_bring_up_compose_service_failure(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, timeout=120.0: CP(returncode=1, stderr="boom")
+    )
+    result = self_heal._bring_up_compose_service("grafana")
+    assert not result.ok
+    assert "boom" in result.details
+
+
+@pytest.mark.unit
+def test_bring_up_compose_service_run_raises(monkeypatch):
+    def _boom(cmd, timeout=120.0):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+    monkeypatch.setattr(self_heal, "_run", _boom)
+    result = self_heal._bring_up_compose_service("grafana")
+    assert not result.ok
+    assert "Failed to start grafana" in result.message
+    assert "TimeoutExpired" in result.details
+
+
+@pytest.mark.unit
+def test_bring_up_compose_service_no_docker(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    result = self_heal._bring_up_compose_service("grafana")
+    assert not result.ok
+    assert "docker not found" in result.message
+
+
+@pytest.mark.unit
+def test_heal_now_brings_up_absent_desired_component(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("grafana", "", "absent", "", False)],
+    )
+    bring_up_mock = MagicMock(return_value=self_heal.HealResult(True, "Started grafana"))
+    restart_mock = MagicMock()
+    monkeypatch.setattr(self_heal, "_bring_up_compose_service", bring_up_mock)
+    monkeypatch.setattr(self_heal, "restart_component", restart_mock)
+
+    result = self_heal.heal_now()
+
+    bring_up_mock.assert_called_once_with("grafana")
+    restart_mock.assert_not_called()
+    assert result["healed"][0]["service"] == "grafana"
+    assert result["healed"][0]["ok"] is True
+
+
+@pytest.mark.unit
+def test_heal_now_manual_brings_up_absent_desired_component(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("grafana", "", "absent", "", False)],
+    )
+    bring_up_mock = MagicMock(return_value=self_heal.HealResult(True, "Started grafana"))
+    monkeypatch.setattr(self_heal, "_bring_up_compose_service", bring_up_mock)
+
+    result = self_heal.heal_now(service="grafana")
+
+    bring_up_mock.assert_called_once_with("grafana")
+    assert result["healed"][0]["reason"] == "manual heal-now"

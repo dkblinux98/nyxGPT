@@ -25,6 +25,21 @@ intentionally only manages the core four services (see docs/terraform.md)
 and the Kubernetes path already has its own recovery mechanisms (deploy.py
 blue/green, canary.py auto-rollback).
 
+**Desired state for the observability profiles**: `docker compose ps`
+only reports containers that exist -- a profile that was torn down
+entirely (e.g. `nyxgpt ops down`) has no containers to be "unhealthy",
+so watching states alone can't recover it. For `monitoring`/
+`log_aggregation`/`tracing`/`error_tracking`, this module additionally
+checks config.ini directly (`_enabled_observability_profiles`): if a
+profile's flag is on, its Compose services are desired-running, and an
+absent one is healed the same as an unhealthy one (`docker compose up -d
+<service>` instead of `restart`, since there's no container to restart).
+Disabling the feature flag (not just tearing the containers down) is the
+supported way to keep a profile off with auto-heal enabled. This is out
+of scope for the core `api`/`web`/`ollama`/`cassandra` services, which are
+a deployment-mode choice rather than a feature flag -- see #3348 for
+native-mode coverage of those.
+
 State (whether the watchdog is enabled, per-service restart counts, and the
 recent event history shown on the SRE/admin dashboard) is persisted to
 `~/.nyxGPT/self_heal_state.json`, mirroring deploy.py/canary.py's
@@ -46,6 +61,13 @@ from pathlib import Path
 from typing import Any
 
 from nyxgpt import metrics as prom_metrics
+from nyxgpt.config import (
+    get_error_tracking_enabled,
+    get_log_aggregation_enabled,
+    get_monitoring_enabled,
+    get_tracing_enabled,
+    load_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +135,32 @@ NATIVE_BREW_SERVICES: dict[str, str] = {
 # Mirrors ops.CASSANDRA_CONTAINER_NAME -- the one Docker-managed piece of a
 # native/local-first install.
 NATIVE_CASSANDRA_CONTAINER = "nyxgpt-cassandra"
+
+# Docker Compose profiles that make up the opt-in observability suite.
+# Mirrors ops.OBSERVABILITY_PROFILES -- kept as a separate copy (rather than
+# importing ops.py) for the same reason as NATIVE_BREW_SERVICES above: ops.py
+# already imports this module.
+OBSERVABILITY_PROFILES: list[str] = ["monitoring", "logging", "tracing", "errors"]
+
+# Core app services in docker-compose.yml, excluded from the desired-state
+# check below -- whether the core stack itself should be running is a
+# deployment-mode question (native vs. Compose), not a config feature flag,
+# and is out of scope here (see #3348 for native core-component coverage).
+# Mirrors ops.CORE_APP_SERVICES.
+CORE_APP_SERVICES: frozenset[str] = frozenset({"nyxgpt", "ollama", "cassandra", "api", "web"})
+
+# Maps a config.ini section that gates an observability profile to the
+# Compose profile name it controls. Two of the four differ from their
+# section name (`log_aggregation` -> `logging`, `error_tracking` ->
+# `errors`) -- that split predates this module (see config.py's
+# get_log_aggregation_enabled/get_error_tracking_enabled) and is mirrored
+# here rather than changed.
+OBSERVABILITY_PROFILE_SECTIONS: dict[str, str] = {
+    "monitoring": "monitoring",
+    "log_aggregation": "logging",
+    "tracing": "tracing",
+    "error_tracking": "errors",
+}
 
 
 @dataclass(frozen=True)
@@ -362,18 +410,105 @@ def _list_native_component_status(compose_managed: set[str]) -> list[ComponentSt
     return statuses
 
 
+def _enabled_observability_profiles() -> set[str]:
+    """Compose profiles whose feature flag is enabled in config.ini right now.
+
+    This is the desired-state signal self-heal reconciles observability
+    containers against: if a profile is enabled here, its containers are
+    *expected* to be running regardless of whether `docker compose ps`
+    currently reports them at all (see `_list_absent_desired_components`) --
+    that's the difference between "watching states" and "watching intent".
+
+    Returns an empty set (never raises) if config.ini is missing or
+    unreadable -- an absent/broken config just means nothing is desired yet,
+    not an error self-heal should propagate.
+    """
+    try:
+        cfg = load_config()
+    except Exception as e:
+        logger.debug("self-heal: no config.ini for desired-state check: %s", e)
+        return set()
+
+    section_enabled = {
+        "monitoring": get_monitoring_enabled(cfg),
+        "log_aggregation": get_log_aggregation_enabled(cfg),
+        "tracing": get_tracing_enabled(cfg),
+        "error_tracking": get_error_tracking_enabled(cfg),
+    }
+    return {
+        OBSERVABILITY_PROFILE_SECTIONS[section]
+        for section, enabled in section_enabled.items()
+        if enabled
+    }
+
+
+def _desired_compose_services(profiles: set[str]) -> set[str]:
+    """Resolve the Compose service names gated by `profiles` (empty if none enabled).
+
+    Mirrors `ops._start_observability_stack`'s own resolution: `docker
+    compose --profile X ... config --services`, minus `CORE_APP_SERVICES`
+    (which this desired-state check doesn't cover -- see that constant's
+    docstring). Returns an empty set on any Docker/Compose failure, the same
+    "can't tell, so don't act" fallback the rest of this module uses.
+    """
+    if not profiles or _which("docker") is None:
+        return set()
+    cmd = ["docker", "compose", "-f", str(COMPOSE_FILE)]
+    for profile in sorted(profiles):
+        cmd += ["--profile", profile]
+    try:
+        cp = _run(cmd + ["config", "--services"])
+    except Exception as e:
+        logger.warning("self-heal: failed to resolve desired compose services: %s", e)
+        return set()
+    if cp.returncode != 0:
+        return set()
+    return {s.strip() for s in (cp.stdout or "").splitlines() if s.strip()} - CORE_APP_SERVICES
+
+
+def _list_absent_desired_components(present_services: set[str]) -> list[ComponentStatus]:
+    """Report a `ComponentStatus` for every enabled-but-absent observability service.
+
+    `present_services` is whatever `_list_compose_component_status()` already
+    found (containers that exist, healthy or not). Anything in the desired
+    set that ISN'T in `present_services` was torn down (e.g. `nyxgpt ops
+    down`) while its feature flag is still on in config.ini -- self-heal
+    treats that the same as "unhealthy" (`healthy=False`, `state="absent"`),
+    so both the automatic watchdog and "heal all unhealthy now" bring it
+    back via `_bring_up_compose_service` instead of silently reporting
+    nothing to check.
+    """
+    desired = _desired_compose_services(_enabled_observability_profiles())
+    return [
+        ComponentStatus(
+            service=service,
+            container="",
+            state="absent",
+            health="",
+            healthy=False,
+            source="compose",
+        )
+        for service in sorted(desired - present_services)
+    ]
+
+
 def list_component_status() -> list[ComponentStatus]:
     """Health-check every monitored component: Compose containers plus native components.
 
     Combines `_list_compose_component_status()` (whatever's currently up
-    under Docker Compose) with `_list_native_component_status()` (the core
-    native/local-first components not already covered by Compose), so the
+    under Docker Compose), `_list_native_component_status()` (the core
+    native/local-first components not already covered by Compose), and
+    `_list_absent_desired_components()` (enabled observability profiles with
+    no running containers at all -- see that function's docstring), so the
     same call surfaces the right set regardless of which deployment mode --
-    or mix of both -- is actually running.
+    or mix of both -- is actually running, and regardless of whether a
+    desired component currently exists at all.
     """
     compose_statuses = _list_compose_component_status()
     compose_managed = {s.service for s in compose_statuses}
-    return compose_statuses + _list_native_component_status(compose_managed)
+    native_statuses = _list_native_component_status(compose_managed)
+    absent_statuses = _list_absent_desired_components(compose_managed)
+    return compose_statuses + native_statuses + absent_statuses
 
 
 def _list_compose_component_status() -> list[ComponentStatus]:
@@ -465,6 +600,35 @@ def restart_component(service: str) -> HealResult:
         )
         return HealResult(False, f"Failed to restart {service}", details.strip())
     return HealResult(True, f"Restarted {service}")
+
+
+def _bring_up_compose_service(service: str) -> HealResult:
+    """Bring up a desired-but-absent Compose service: `docker compose ... up -d <service>`.
+
+    Used instead of `restart_component` for a component reported `state="absent"`
+    by `_list_absent_desired_components` -- `docker compose restart` is a
+    no-op (or an error) on a service with no container to restart, since a
+    torn-down profile (`nyxgpt ops down`) has no container at all, not just a
+    stopped one. Passes every observability profile flag (mirroring
+    `ops._start_observability_stack`), since Compose requires a service's
+    profile to be active for it to resolve even when named explicitly.
+    """
+    if _which("docker") is None:
+        return HealResult(False, f"docker not found; cannot start {service}")
+    cmd = ["docker", "compose", "-f", str(COMPOSE_FILE)]
+    for profile in OBSERVABILITY_PROFILES:
+        cmd += ["--profile", profile]
+    cmd += ["up", "-d", service]
+    try:
+        cp = _run(cmd, timeout=120.0)
+    except Exception as e:
+        return HealResult(False, f"Failed to start {service}", f"{type(e).__name__}: {e}")
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return HealResult(False, f"Failed to start {service}", details.strip())
+    return HealResult(True, f"Started {service}")
 
 
 def _restart_brew_service(name: str) -> HealResult:
@@ -666,11 +830,15 @@ def heal_now(
                     "manual": manual,
                 },
             )
-            result = (
-                restart_native_component(status.service)
-                if status.source == "native"
-                else restart_component(status.service)
-            )
+            if status.source == "native":
+                result = restart_native_component(status.service)
+            elif status.state == "absent":
+                # Enabled in config but no container at all (e.g. `nyxgpt ops
+                # down`) -- `docker compose restart` can't bring back what
+                # doesn't exist, so bring it up instead.
+                result = _bring_up_compose_service(status.service)
+            else:
+                result = restart_component(status.service)
 
             new_count = count + 1
             restart_counts[status.service] = new_count
