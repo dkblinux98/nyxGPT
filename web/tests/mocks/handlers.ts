@@ -111,6 +111,98 @@ export const handlers = [
     return HttpResponse.json(body);
   }),
 
+  // GET /api/v1/config/sections
+  http.get('/api/v1/config/sections', () => {
+    return HttpResponse.json({
+      sections: {
+        nyxgpt: {
+          default_model: '',
+          chat_timeout_seconds: '120',
+          sessions_dir: '~/.nyxGPT/sessions',
+          vectorstore_dir: '~/.nyxGPT/vectorstore',
+        },
+        logging: { level: 'INFO', dir: '~/.nyxGPT/logs' },
+        ollama: { base_url: 'http://127.0.0.1:11434' },
+        api: { host: '127.0.0.1', port: '8000' },
+        auth: { enabled: 'false', header: 'X-API-Key', api_key: { set: false, masked: null } },
+        rate_limit: { enabled: 'false' },
+        rag: {
+          enable_chat_context: 'false',
+          cassandra_hosts: '127.0.0.1',
+          cassandra_port: '9042',
+          cassandra_keyspace: 'nyxgpt',
+          cassandra_table: 'rag_chunks',
+          embedding_model: 'nomic-embed-text',
+        },
+        tracing: { enabled: 'false', service_name: 'nyxgpt-api', otlp_endpoint: 'http://localhost:4318/v1/traces' },
+        error_tracking: { enabled: 'false', dsn: { set: false, masked: null }, environment: 'development' },
+        monitoring: { enabled: 'false' },
+        log_aggregation: { enabled: 'false' },
+      },
+      schema: [],
+    });
+  }),
+
+  // POST /api/v1/config/sections
+  http.post('/api/v1/config/sections', async ({ request }) => {
+    const body = (await request.json()) as Record<string, Record<string, unknown>>;
+    return HttpResponse.json({
+      applied: body,
+      sections: {
+        nyxgpt: {
+          default_model: body.nyxgpt?.default_model ?? '',
+          chat_timeout_seconds: String(body.nyxgpt?.chat_timeout_seconds ?? '120'),
+          sessions_dir: body.nyxgpt?.sessions_dir ?? '~/.nyxGPT/sessions',
+          vectorstore_dir: body.nyxgpt?.vectorstore_dir ?? '~/.nyxGPT/vectorstore',
+        },
+        logging: {
+          level: body.logging?.level ?? 'INFO',
+          dir: body.logging?.dir ?? '~/.nyxGPT/logs',
+        },
+        ollama: { base_url: body.ollama?.base_url ?? 'http://127.0.0.1:11434' },
+        api: {
+          host: body.api?.host ?? '127.0.0.1',
+          port: String(body.api?.port ?? '8000'),
+        },
+        auth: {
+          enabled: String(body.auth?.enabled ?? false),
+          header: body.auth?.header ?? 'X-API-Key',
+          api_key: { set: false, masked: null },
+        },
+        rate_limit: { enabled: String(body.rate_limit?.enabled ?? false) },
+        rag: {
+          enable_chat_context: String(body.rag?.enable_chat_context ?? false),
+          cassandra_hosts: body.rag?.cassandra_hosts ?? '127.0.0.1',
+          cassandra_port: String(body.rag?.cassandra_port ?? '9042'),
+          cassandra_keyspace: body.rag?.cassandra_keyspace ?? 'nyxgpt',
+          cassandra_table: body.rag?.cassandra_table ?? 'rag_chunks',
+          embedding_model: body.rag?.embedding_model ?? 'nomic-embed-text',
+        },
+        tracing: {
+          enabled: String(body.tracing?.enabled ?? false),
+          service_name: body.tracing?.service_name ?? 'nyxgpt-api',
+          otlp_endpoint: body.tracing?.otlp_endpoint ?? 'http://localhost:4318/v1/traces',
+        },
+        error_tracking: {
+          enabled: String(body.error_tracking?.enabled ?? false),
+          dsn: { set: false, masked: null },
+          environment: body.error_tracking?.environment ?? 'development',
+        },
+        monitoring: { enabled: String(body.monitoring?.enabled ?? false) },
+        log_aggregation: { enabled: String(body.log_aggregation?.enabled ?? false) },
+      },
+      restart_required: [],
+      observability_reconciled: false,
+      observability_result: null,
+    });
+  }),
+
+  // POST /api/v1/config/restart
+  http.post('/api/v1/config/restart', async ({ request }) => {
+    const body = (await request.json()) as { target?: string };
+    return HttpResponse.json({ target: body.target || 'all', status: 'scheduled' });
+  }),
+
   // GET /api/info
   http.get('/api/info', () => {
     return HttpResponse.json({

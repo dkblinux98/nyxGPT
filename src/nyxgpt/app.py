@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import secrets
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -26,6 +27,7 @@ from configparser import ConfigParser
 from contextlib import asynccontextmanager, redirect_stderr, redirect_stdout, suppress
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 from fastapi import (
@@ -45,7 +47,7 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 
 import nyxgpt.config
 from nyxgpt import admin_activity as admin_activity_module
-from nyxgpt import api_models, models, sessions, tools_fs
+from nyxgpt import api_models, config_wizard, models, sessions, tools_fs
 from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
 from nyxgpt import deploy as deploy_module
@@ -1424,6 +1426,129 @@ def config_patch(request: Request, payload: dict[str, Any] = Body(...)) -> dict[
     """PATCH alias for `POST /config` (see `config_update`)."""
     result: dict[str, Any] = config_update(request, payload)
     return result
+
+
+# --- Full config wizard endpoints (#3354) ---
+
+
+def _reconcile_observability(cfg: ConfigParser) -> dict[str, Any]:
+    """Bring the observability Compose stack in line with config.ini's enabled flags.
+
+    Called after a wizard save touches any of the
+    monitoring/tracing/error_tracking/log_aggregation `enabled` fields, so
+    the wizard results in a working feature rather than a dangling flag.
+    Wraps `ops.reconcile_observability`, which itself mirrors `nyxgpt ops
+    observability` / `nyxgpt ops stop --target observability` -- this never
+    shells out to `docker compose` directly.
+    """
+    any_enabled = (
+        get_monitoring_config(cfg)["enabled"]
+        or get_tracing_config(cfg)["enabled"]
+        or get_error_tracking_config(cfg)["enabled"]
+        or get_log_aggregation_config(cfg)["enabled"]
+    )
+    try:
+        results = ops_module.reconcile_observability(any_enabled)
+        return {"ok": all(r.ok for r in results), "messages": [r.message for r in results]}
+    except Exception as e:
+        return {"ok": False, "messages": [str(e)]}
+
+
+@api.get("/config/sections")
+def config_sections_get(request: Request) -> dict[str, Any]:
+    """Return every wizard-editable config field, grouped by section.
+
+    Backs the full Configuration Wizard (#3354): current values (secrets
+    masked) plus schema metadata (which fields are secret, and which need a
+    service restart or observability reconciliation to take effect) so the
+    web UI can render every section without hardcoding that knowledge twice.
+    """
+    cfg = _req_cfg(request)
+    return {
+        "sections": config_wizard.read_sections(cfg),
+        "schema": config_wizard.schema_summary(),
+    }
+
+
+@api.post("/config/sections")
+def config_sections_update(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Validate, apply, and reload a full-config wizard payload (#3354).
+
+    Payload shape: `{section: {key: value}}`, validated against
+    `config_wizard.WIZARD_SCHEMA`. On success, writes config.ini (the single
+    source of truth, #3194), invalidates the config cache so hot-reloaded
+    settings apply immediately, re-applies the log level, and -- if any
+    observability `enabled` flag changed -- reconciles the Compose stack.
+    Returns which touched fields still need `POST /config/restart` (or
+    `nyxgpt ops restart`, offered by the same mechanism) to fully apply.
+    """
+    cfg = _req_cfg(request)
+    validated, errors = config_wizard.validate_updates(payload)
+    if errors:
+        raise HTTPException(status_code=422, detail={"errors": errors})
+    if not validated:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+
+    restart_needed = config_wizard.restart_components(validated, cfg)
+    needs_observability = config_wizard.observability_changed(validated, cfg)
+
+    applied = config_wizard.apply_updates(_config_file_path(), validated)
+
+    nyxgpt.config._CACHED_CFG = None
+    nyxgpt.config._CACHED_PATH = None
+    nyxgpt.config._CACHED_MTIME_NS = None
+
+    request.state.cfg = load_config(None)
+    cfg = _req_cfg(request)
+
+    with suppress(Exception):
+        configure_logging(cfg, console=False)
+
+    observability_result = _reconcile_observability(cfg) if needs_observability else None
+
+    changed_fields = [f"{section}.{key}" for section, fields in applied.items() for key in fields]
+    admin_activity_module.record(
+        "config.wizard_updated", ", ".join(changed_fields) or "config updated"
+    )
+
+    return {
+        "applied": config_wizard.mask_applied(applied),
+        "sections": config_wizard.read_sections(cfg),
+        "restart_required": restart_needed,
+        "observability_reconciled": needs_observability,
+        "observability_result": observability_result,
+    }
+
+
+_RESTART_TARGETS = {"api", "web", "ollama", "cassandra", "observability", "all"}
+
+
+@api.post("/config/restart")
+def config_restart(_request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Restart a service so wizard changes that need a process bounce take effect (#3354).
+
+    Wraps `nyxgpt ops restart` -- the wizard offers this after a save
+    instead of ever telling the user to run a raw restart command
+    themselves (the wrapper rule). The restart is scheduled a moment after
+    this response is sent, since the target may be this very API process.
+    """
+    target = payload.get("target") or "all"
+    if target not in _RESTART_TARGETS:
+        raise HTTPException(
+            status_code=400, detail=f"target must be one of {sorted(_RESTART_TARGETS)}"
+        )
+
+    admin_activity_module.record("config.restart_requested", f"target={target}")
+
+    def _do_restart() -> None:
+        try:
+            ops_module.restart(SimpleNamespace(target=target))
+        except Exception:
+            log.exception("ops restart failed (target=%s)", target)
+
+    threading.Timer(0.75, _do_restart).start()
+
+    return {"target": target, "status": "scheduled"}
 
 
 # --- Admin dashboard endpoints (system status overview, activity log, access) ---
