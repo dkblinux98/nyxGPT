@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
+import { exploreQueryUrl } from '../../../lib/grafanaExplore';
 
 type Color = 'blue' | 'green';
 
@@ -248,7 +249,7 @@ export default function DeployPage() {
             )}
             {logAggregation?.active && (
               <a
-                href={logAggregation.grafana_explore_url}
+                href={exploreQueryUrl(logAggregation.grafana_explore_url, DEPLOY_LOKI_QUERY)}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{ color: '#0066cc' }}
@@ -257,14 +258,6 @@ export default function DeployPage() {
               </a>
             )}
           </div>
-          {logAggregation?.active && (
-            <div style={{ color: 'var(--foreground-muted)' }}>
-              Saved query for deploy events, paste into Explore:{' '}
-              <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
-                {DEPLOY_LOKI_QUERY}
-              </code>
-            </div>
-          )}
         </div>
       )}
 

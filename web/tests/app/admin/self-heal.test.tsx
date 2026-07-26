@@ -4,6 +4,9 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
 import SelfHealPage from '../../../src/app/admin/self-heal/page';
+import { exploreQueryUrl } from '../../../src/lib/grafanaExplore';
+
+const SELF_HEAL_LOKI_QUERY = '{job="nyxgpt"} |= `self-heal:` |~ `restart|heal pass|giving up|recovered`';
 
 const pushMock = vi.fn();
 vi.mock('next/navigation', () => ({
@@ -171,7 +174,7 @@ describe('SelfHealPage', () => {
     expect(screen.queryByText(/Self-heal events/i)).not.toBeInTheDocument();
   });
 
-  it('links to the Self-Healing Grafana dashboard and the Loki saved query when active', async () => {
+  it('links to the Self-Healing Grafana dashboard and deep-links the Loki query into Explore', async () => {
     server.use(http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockStatus)));
     mockObservability(mockMonitoringActive, mockLogAggregationActive);
 
@@ -181,9 +184,10 @@ describe('SelfHealPage', () => {
     expect(grafanaLink).toHaveAttribute('href', 'http://localhost:3001/d/nyxgpt-self-healing');
 
     const lokiLink = screen.getByRole('link', { name: /Self-heal events/i });
-    expect(lokiLink).toHaveAttribute('href', 'http://localhost:3001/explore');
-
-    expect(screen.getByText(/self-heal:/)).toBeInTheDocument();
+    const expectedHref = exploreQueryUrl('http://localhost:3001/explore', SELF_HEAL_LOKI_QUERY);
+    expect(lokiLink).toHaveAttribute('href', expectedHref);
+    const panes = JSON.parse(new URL(expectedHref).searchParams.get('panes')!);
+    expect(panes.nyx.queries[0].expr).toBe(SELF_HEAL_LOKI_QUERY);
   });
 
   it('ignores non-ok and rejected observability responses without throwing', async () => {

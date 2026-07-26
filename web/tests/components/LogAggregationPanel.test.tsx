@@ -2,7 +2,8 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import '@testing-library/jest-dom';
-import LogAggregationPanel, { exploreQueryUrl } from '../../src/components/LogAggregationPanel';
+import LogAggregationPanel from '../../src/components/LogAggregationPanel';
+import { exploreQueryUrl } from '../../src/lib/grafanaExplore';
 import { server } from '../mocks/server';
 
 const inactiveStatus = {
@@ -90,39 +91,6 @@ describe('LogAggregationPanel', () => {
     await screen.findByRole('link', { name: /Open Grafana Explore/i });
 
     expect(screen.queryByText('Curated queries')).not.toBeInTheDocument();
-  });
-
-  describe('exploreQueryUrl', () => {
-    it('merges schemaVersion/orgId/panes into a base with no existing query string', () => {
-      const plain = new URL(exploreQueryUrl('http://localhost:3001/explore', '{job="nyxgpt"}'));
-      expect(plain.searchParams.get('schemaVersion')).toBe('1');
-      expect(plain.searchParams.get('orgId')).toBe('1');
-      expect(plain.searchParams.get('panes')).toBeTruthy();
-    });
-
-    it('merges into an existing query string without duplicating keys', () => {
-      const withQuery = new URL(
-        exploreQueryUrl('http://localhost:3001/explore?orgId=1', '{job="nyxgpt"}')
-      );
-      expect(withQuery.searchParams.getAll('orgId')).toEqual(['1']);
-      expect(withQuery.searchParams.get('schemaVersion')).toBe('1');
-    });
-
-    it('preserves a non-default orgId already present on the configured base', () => {
-      const withOrg = new URL(
-        exploreQueryUrl('http://localhost:3001/explore?orgId=7&kiosk=tv', '{job="nyxgpt"}')
-      );
-      expect(withOrg.searchParams.getAll('orgId')).toEqual(['7']);
-      expect(withOrg.searchParams.get('kiosk')).toBe('tv');
-    });
-
-    it('round-trips the query and time range through the encoded panes state', () => {
-      const url = exploreQueryUrl('http://localhost:3001/explore', '{job="nyxgpt"} |= `x`');
-      const panes = JSON.parse(new URL(url).searchParams.get('panes')!);
-      expect(panes.nyx.datasource).toBe('loki');
-      expect(panes.nyx.queries[0].expr).toBe('{job="nyxgpt"} |= `x`');
-      expect(panes.nyx.range).toEqual({ from: 'now-1h', to: 'now' });
-    });
   });
 
   it('surfaces an error when the status response is not ok', async () => {

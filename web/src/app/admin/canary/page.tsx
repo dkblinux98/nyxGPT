@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
+import { exploreQueryUrl } from '../../../lib/grafanaExplore';
 
 type TrackHealth = {
   healthy: boolean;
@@ -238,7 +239,7 @@ export default function CanaryPage() {
             )}
             {logAggregation?.active && (
               <a
-                href={logAggregation.grafana_explore_url}
+                href={exploreQueryUrl(logAggregation.grafana_explore_url, CANARY_LOKI_QUERY)}
                 target="_blank"
                 rel="noopener noreferrer"
                 style={{ color: '#0066cc' }}
@@ -247,14 +248,6 @@ export default function CanaryPage() {
               </a>
             )}
           </div>
-          {logAggregation?.active && (
-            <div style={{ color: 'var(--foreground-muted)' }}>
-              Saved query for canary events, paste into Explore:{' '}
-              <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
-                {CANARY_LOKI_QUERY}
-              </code>
-            </div>
-          )}
         </div>
       )}
 
