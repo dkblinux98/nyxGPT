@@ -68,4 +68,5 @@ jobs:
           # or https://code.claude.com/docs/en/cli-reference for available options
           claude_args: >-
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
+            --model claude-opus-5
             --mcp-config ${{ runner.temp }}/mcp-config.json
