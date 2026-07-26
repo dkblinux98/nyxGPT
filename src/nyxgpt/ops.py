@@ -31,11 +31,13 @@ from typing import Any
 
 import httpx
 
-from nyxgpt import self_heal
+from nyxgpt import self_heal, tracing
 from nyxgpt.config import (
     get_log_aggregation_enabled,
     get_monitoring_config,
     get_monitoring_grafana_admin_password,
+    get_tracing_config,
+    get_tracing_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -2259,6 +2261,48 @@ def _log_aggregation_wiring_issue(cfg_path: Path | None = None) -> str | None:
     )
 
 
+def _tracing_wiring_issue(cfg_path: Path | None = None) -> str | None:
+    """Detect the #3350 failure mode: native-mode spans never reaching the collector.
+
+    The api's OTLPSpanExporter is a fire-and-forget HTTP client: when nothing
+    listens on `[tracing] otlp_endpoint`, it silently drops every span after
+    retrying, rather than failing the request or raising anywhere visible.
+    That leaves the Distributed Tracing panel reporting "active" (it only
+    checks that `init_tracing` ran, not that the collector is reachable)
+    while Jaeger's store stays permanently empty. This does a real TCP
+    connect (via `tracing.otlp_endpoint_reachable`) to the endpoint's
+    host/port so `doctor` catches the gap, e.g. the otel-collector Compose
+    service missing its host `ports:` mapping in native mode.
+
+    Only reports an issue when tracing is actually enabled. Returns None
+    otherwise (nothing to check yet, or the collector is reachable).
+    """
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return None
+
+    parser = ConfigParser()
+    try:
+        parser.read(cfg_path)
+    except Exception:
+        return None
+    if not get_tracing_enabled(parser):
+        return None
+
+    tracing_config = get_tracing_config(parser)
+    endpoint = tracing_config["otlp_endpoint"]
+    if tracing.otlp_endpoint_reachable(endpoint):
+        return None
+
+    return (
+        f"Tracing is enabled ([tracing] otlp_endpoint={endpoint}) but nothing is "
+        "listening there -- spans are being silently dropped and Jaeger will stay "
+        "empty. Confirm the otel-collector Compose service (tracing profile) is "
+        "running and publishes that port to the host (nyxgpt ops observability). "
+        "See docs/docker-compose.md#distributed-tracing."
+    )
+
+
 # Curated per-component loggers surfaced in the Log Aggregation panel and
 # the "Operational Logs" Grafana dashboard (see app._loki_curated_queries).
 # `_loki_recent_volume_by_logger` reports each one's recent line count so
@@ -2309,10 +2353,12 @@ def doctor(_args) -> int:
 
     Checks for common misconfigurations: missing ~/.nyxGPT/config.ini,
     non-executable helper scripts, missing brew/docker/node/npm tools on
-    PATH, missing/incomplete web dependencies (node_modules, undici), and
+    PATH, missing/incomplete web dependencies (node_modules, undici),
     (when log aggregation is enabled and native logs exist) whether
-    promtail is actually wired to see native-mode host logs. Also prints a
-    per-logger recent log volume (last 24h, via Loki) when log aggregation
+    promtail is actually wired to see native-mode host logs, and (when
+    tracing is enabled) whether the configured OTLP endpoint actually has
+    something listening on it. Also prints a per-logger recent log volume
+    (last 24h, via Loki) when log aggregation
     and the monitoring stack are both up, so idle curated components aren't
     mistaken for a broken pipeline. Prints each issue found.
 
@@ -2392,6 +2438,10 @@ def doctor(_args) -> int:
     log_issue = _log_aggregation_wiring_issue()
     if log_issue:
         issues.append(log_issue)
+
+    tracing_issue = _tracing_wiring_issue()
+    if tracing_issue:
+        issues.append(tracing_issue)
 
     if TERRAFORM_DIR.joinpath("terraform.tfstate").exists() and all(
         state == "absent" for state in terraform_stack_state().values()

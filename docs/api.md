@@ -3247,6 +3247,7 @@ curl http://127.0.0.1:8000/api/v1/tracing
   "otlp_endpoint": "http://localhost:4318/v1/traces",
   "jaeger_ui_url": "http://localhost:16686",
   "active": true,
+  "reachable": true,
   "curated_views": [
     {
       "label": "Chat requests",
@@ -3278,6 +3279,7 @@ curl http://127.0.0.1:8000/api/v1/tracing
 - `otlp_endpoint` - OTLP/HTTP endpoint spans are exported to
 - `jaeger_ui_url` - URL of the local Jaeger UI for browsing traces
 - `active` - Whether tracing actually initialized for this running process (mirrors `enabled` unless startup failed)
+- `reachable` - Whether a live TCP connection to `otlp_endpoint`'s host/port succeeded, i.e. whether spans exported by this process actually have somewhere to land. `null` when `active` is `false` (nothing to probe). Distinguishes "active" (the SDK initialized) from "actually working" -- see [docker-compose.md#distributed-tracing](docker-compose.md#distributed-tracing) for the native-mode failure mode (#3350) this catches: the otel-collector container up but not publishing its port to the host, so every span is silently dropped and Jaeger stays empty despite `active: true`.
 - `curated_views` - Curated deep links into Jaeger's trace search for the main request flows (chat, RAG query/ingest, Ollama backend calls), each with a `hint` naming the operation(s) to pick from the dropdown. Surfaced by the `/admin/observability` ("SRE Overview") page.
 
 **How it works:**

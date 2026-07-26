@@ -261,9 +261,89 @@ def test_tracing_status_endpoint_reports_active_when_initialized(
     """Once init_tracing has actually run (_enabled == True), the status
     endpoint must reflect that as active, independent of raw config."""
     monkeypatch.setattr(tracing, "_enabled", True)
+    monkeypatch.setattr(tracing, "otlp_endpoint_reachable", lambda endpoint, **kw: True)
     client = TestClient(app)
 
     response = client.get("/api/v1/tracing")
 
     assert response.status_code == 200
     assert response.json()["active"] is True
+
+
+def test_tracing_status_endpoint_reports_unreachable_collector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The #3350 failure mode: tracing is active (init_tracing ran) but
+    nothing actually listens on the OTLP endpoint (e.g. otel-collector
+    publishes no host port in native mode). The status endpoint must surface
+    that distinction rather than just reporting "active"."""
+    monkeypatch.setattr(tracing, "_enabled", True)
+    monkeypatch.setattr(tracing, "otlp_endpoint_reachable", lambda endpoint, **kw: False)
+    client = TestClient(app)
+
+    response = client.get("/api/v1/tracing")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["active"] is True
+    assert data["reachable"] is False
+
+
+def test_tracing_status_endpoint_reachable_is_none_when_inactive() -> None:
+    """When tracing isn't active at all, there's nothing to probe -- the
+    reachability field must be None rather than implying a real check ran."""
+    client = TestClient(app)
+
+    response = client.get("/api/v1/tracing")
+
+    assert response.status_code == 200
+    assert response.json()["reachable"] is None
+
+
+def test_otlp_endpoint_reachable_true_when_something_listens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+    monkeypatch.setattr(tracing.socket, "create_connection", lambda addr, timeout: _FakeSocket())
+
+    assert tracing.otlp_endpoint_reachable("http://localhost:4318/v1/traces") is True
+
+
+def test_otlp_endpoint_reachable_false_when_connection_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _raise(addr, timeout):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(tracing.socket, "create_connection", _raise)
+
+    assert tracing.otlp_endpoint_reachable("http://localhost:4318/v1/traces") is False
+
+
+def test_otlp_endpoint_reachable_parses_host_and_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = []
+
+    class _FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+    def _create_connection(addr, timeout):
+        seen.append(addr)
+        return _FakeSocket()
+
+    monkeypatch.setattr(tracing.socket, "create_connection", _create_connection)
+
+    tracing.otlp_endpoint_reachable("http://collector.internal:9999/v1/traces")
+
+    assert seen == [("collector.internal", 9999)]

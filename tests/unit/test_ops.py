@@ -640,6 +640,68 @@ def test_promtail_native_mount_missing_true_when_inspect_fails(monkeypatch):
     assert ops._promtail_native_mount_missing("abc123") is True
 
 
+def _write_tracing_config(path, *, enabled=True, otlp_endpoint="http://localhost:4318/v1/traces"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"[tracing]\nenabled = {'true' if enabled else 'false'}\n"
+        f"otlp_endpoint = {otlp_endpoint}\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.unit
+def test_tracing_wiring_issue_none_when_no_config(tmp_path):
+    assert ops._tracing_wiring_issue(tmp_path / "missing.ini") is None
+
+
+@pytest.mark.unit
+def test_tracing_wiring_issue_none_when_disabled(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_tracing_config(cfg_path, enabled=False)
+    assert ops._tracing_wiring_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_tracing_wiring_issue_flags_unreachable_collector(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_tracing_config(cfg_path)
+    monkeypatch.setattr(ops.tracing, "otlp_endpoint_reachable", lambda endpoint, **kw: False)
+
+    issue = ops._tracing_wiring_issue(cfg_path)
+    assert issue is not None
+    assert "nothing is" in issue
+    assert "http://localhost:4318/v1/traces" in issue
+
+
+@pytest.mark.unit
+def test_tracing_wiring_issue_none_when_collector_reachable(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_tracing_config(cfg_path)
+    monkeypatch.setattr(ops.tracing, "otlp_endpoint_reachable", lambda endpoint, **kw: True)
+
+    assert ops._tracing_wiring_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_ops_doctor_flags_unreachable_otlp_collector(monkeypatch, capsys, tmp_path):
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    _write_tracing_config(cfg_dir / "config.ini")
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(ops.tracing, "otlp_endpoint_reachable", lambda endpoint, **kw: False)
+
+    rc = ops.doctor(MagicMock())
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "nothing is" in out
+    assert "otlp_endpoint=http://localhost:4318/v1/traces" in out
+
+
 @pytest.mark.unit
 def test_ops_doctor_flags_missing_promtail_native_mount(monkeypatch, capsys, tmp_path):
     cfg_dir = tmp_path / ".nyxGPT"

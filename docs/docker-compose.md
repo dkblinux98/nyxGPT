@@ -27,7 +27,7 @@ detects and stops any of those Compose containers it finds running.
 | `grafana` <sup>*</sup> | `grafana/grafana:13.1.1` | Pre-provisioned dashboards (system overview, RAG performance, API metrics, logs explorer) | `3001` |
 | `loki` <sup>§</sup> | `grafana/loki:3.6.13` | Log storage + search API, with retention | — |
 | `promtail` <sup>§</sup> | `grafana/promtail:3.6.11` | Tails logs from both deployment modes and ships to Loki | — |
-| `otel-collector` <sup>†</sup> | `otel/opentelemetry-collector-contrib:0.157.0` | Receives OTLP spans from the API, forwards to Jaeger | — |
+| `otel-collector` <sup>†</sup> | `otel/opentelemetry-collector-contrib:0.157.0` | Receives OTLP spans from the API, forwards to Jaeger | `4318` (HTTP), `4317` (gRPC) |
 | `jaeger` <sup>†</sup> | `jaegertracing/all-in-one:1.76.0` | Trace storage + UI      | `16686`              |
 | `glitchtip` <sup>‡</sup> | `glitchtip/glitchtip:6.2.0` | Self-hosted error tracker UI + ingest | `8080` |
 | `glitchtip-worker` <sup>‡</sup> | `glitchtip/glitchtip:6.2.0` | GlitchTip Celery worker/beat | —                    |
@@ -440,6 +440,18 @@ SRE/admin dashboard's Resource Usage step).
 the API actually emits spans as soon as the profile is up — see
 [configuration.md](configuration.md#tracing-section) and
 [api.md](api.md#distributed-tracing).
+
+`otel-collector`'s OTLP receivers (`4318` HTTP, `4317` gRPC) are published
+to the host, bound to `127.0.0.1` per [security.md](security.md#network-security)
+-- not just reachable over the internal Compose network. This matters even
+though the app tier's default deployment is native (see [ops.md](ops.md)):
+in native mode the api process runs on the host, not in this Compose
+network, so it can only reach the collector via the published host port
+(`http://localhost:4318/v1/traces`, the `[tracing] otlp_endpoint` default in
+`example.config.ini`). Without that host port, spans are silently dropped
+and Jaeger stays empty while the SRE dashboard's Distributed Tracing panel
+still reports "active" -- `nyxgpt ops doctor` checks that something is
+actually listening on the configured `otlp_endpoint` and flags the gap.
 
 ## Error Tracking
 

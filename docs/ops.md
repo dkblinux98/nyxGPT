@@ -378,6 +378,12 @@ Checks include:
   -- and, when Loki is reachable, a per-component log volume for the last
   24h so an idle curated component isn't mistaken for a broken pipeline
   (see [docker-compose.md#log-aggregation](docker-compose.md#log-aggregation))
+- (when tracing is enabled) whether something is actually listening on the
+  configured `[tracing] otlp_endpoint`, via a live TCP connect -- catches
+  the otel-collector container running but not publishing its port to the
+  host (the default native deployment's only path to it), which otherwise
+  silently drops every span while the panel still reports "active" (see
+  [docker-compose.md#distributed-tracing](docker-compose.md#distributed-tracing))
 
 Results are reported with clear PASS / FAIL indicators.
 
