@@ -70,7 +70,6 @@ export const ADMIN_NAV: Array<{ href: string; label: string; description: string
   { href: '/admin/self-heal', label: 'Self-heal', description: 'Watchdog that restarts unhealthy services' },
   { href: '/admin/observability', label: 'SRE Overview', description: 'Monitoring, logs, tracing, and error tracking' },
   { href: '/admin/analytics', label: 'Usage Analytics', description: 'Chat and RAG usage over time' },
-  { href: '/admin/workflow-analytics', label: 'CI Analytics', description: 'Agent workflow and CI performance' },
   { href: '/settings', label: 'Full Metrics', description: 'Resource metrics in Settings' },
 ];
 

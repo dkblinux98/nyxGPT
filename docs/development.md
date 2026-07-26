@@ -209,10 +209,11 @@ GitHub Actions workflow that invokes `collect_workflow_logs.sh collect`
 (this requires editing `.github/workflows/`, which Claude Code is not
 permitted to do — a human maintainer needs to add it).
 
-Once history has been collected, it's also visible in the admin dashboard at
-**`/admin/workflow-analytics`** (linked from `/admin/dashboard`) — summary
-stats, a per-workflow breakdown, top failing workflows, and a recent-runs
-table, backed by `GET /api/v1/admin/workflow-analytics`.
+There is no admin-dashboard surface for this history: an owner scope decision
+(2026-07-25, issue #3358) ruled the CI Workflow Analytics dashboard out of
+scope for nyxGPT — it's an agent-level display, a candidate for a future
+nyxAgent project rather than this app. Use the CLI (`query`/`stats` above) to
+inspect collected history.
 
 ---
 

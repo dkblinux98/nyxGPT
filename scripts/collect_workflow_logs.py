@@ -2,11 +2,11 @@
 """
 Collect and analyze GitHub Actions workflow run history for this repository.
 
-CLI for `nyxgpt.workflow_log_store`, the SQLite-backed history store also used
-by the admin dashboard (`nyxgpt.workflow_analytics`). This script is a
-maintainer/dev tool that only ever runs from a repo checkout (it isn't part of
-the installed `nyxgpt` package), so it falls back to importing the package
-from `src/` when it isn't already installed in the current environment.
+CLI for `nyxgpt.workflow_log_store`, the SQLite-backed history store. This
+script is a maintainer/dev tool that only ever runs from a repo checkout (it
+isn't part of the installed `nyxgpt` package), so it falls back to importing
+the package from `src/` when it isn't already installed in the current
+environment.
 
 Usage:
   collect_workflow_logs.py collect --repo OWNER/NAME [--limit N] [--db PATH]
