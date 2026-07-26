@@ -3415,13 +3415,18 @@ def _wait_for_glitchtip_healthy(timeout: float = 120.0, poll_interval: float = 3
 
     Returns False immediately (no polling) if the container isn't part of the
     currently running Compose stack at all -- e.g. `--skip-observability` was
-    used, or Docker isn't installed -- so a host with no GlitchTip never
-    stalls `nyxgpt ops install`. Otherwise waits out its health-check
-    `start_period` (see docker-compose.yml), since a container freshly
-    started by `_start_observability_stack` is not immediately reachable.
+    used, Docker isn't installed, or `error_tracking` is enabled in config but
+    the container was torn down (`state == "absent"`, reported by self_heal's
+    desired-state reconciliation) -- so a host with no GlitchTip never stalls
+    `nyxgpt ops install`, and a standalone `nyxgpt ops glitchtip-init` run
+    against a torn-down stack fails fast instead of polling out the full
+    `timeout` for a container nothing in this call path starts. Otherwise
+    waits out its health-check `start_period` (see docker-compose.yml), since
+    a container freshly started by `_start_observability_stack` is not
+    immediately reachable.
     """
     statuses = [s for s in self_heal.list_component_status() if s.service == "glitchtip"]
-    if not statuses:
+    if not statuses or statuses[0].state == "absent":
         return False
     if statuses[0].healthy:
         return True

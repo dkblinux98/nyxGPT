@@ -4365,6 +4365,40 @@ def test_wait_for_glitchtip_healthy_times_out(monkeypatch):
 
 
 @pytest.mark.unit
+def test_wait_for_glitchtip_healthy_absent_but_enabled_returns_false_without_sleeping(
+    monkeypatch,
+):
+    """Regression (#3356 review): error_tracking enabled + torn-down container.
+
+    Exercises the real `self_heal.list_component_status()` (only `_run`,
+    `_which`, and `load_config` are mocked) so this test observes the exact
+    seam that broke: after the desired-state PR, a torn-down `glitchtip`
+    container whose `[error_tracking]` flag is still enabled in config.ini is
+    reported as `state="absent"`, not omitted -- so `_wait_for_glitchtip_healthy`
+    must treat that the same as "not present" (fail fast) rather than polling
+    out the full timeout for a container nothing in this call path starts.
+    """
+    cfg = ConfigParser()
+    cfg.add_section("error_tracking")
+    cfg.set("error_tracking", "enabled", "true")
+    monkeypatch.setattr(ops.self_heal, "load_config", lambda: cfg)
+    monkeypatch.setattr(ops.self_heal, "_which", lambda prog: "/usr/bin/docker")
+
+    def fake_run(cmd, timeout=30.0):
+        if "config" in cmd and "--services" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="glitchtip\n")
+        return subprocess.CompletedProcess(cmd, 0, stdout="")  # `ps -a`: nothing running
+
+    monkeypatch.setattr(ops.self_heal, "_run", fake_run)
+
+    sleeps = []
+    monkeypatch.setattr(ops.time, "sleep", lambda s: sleeps.append(s))
+
+    assert ops._wait_for_glitchtip_healthy(timeout=5, poll_interval=0.01) is False
+    assert sleeps == []
+
+
+@pytest.mark.unit
 def test_resolve_admin_credentials_generates_when_missing(tmp_path):
     cfg_path = tmp_path / "config.ini"
     cfg_path.write_text("[nyxgpt]\n", encoding="utf-8")
