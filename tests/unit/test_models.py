@@ -46,13 +46,13 @@ def test_format_model_size_negative():
 
 
 @pytest.mark.unit
-@patch("nyxgpt.models.post_json")
+@patch("nyxgpt.models.get_json")
 @patch("nyxgpt.models.load_config")
 @patch("nyxgpt.models.get_ollama_base_url")
-def test_list_models(mock_get_url, mock_load_config, mock_post_json):
+def test_list_models(mock_get_url, mock_load_config, mock_get_json):
     """Test list_models function."""
     mock_get_url.return_value = "http://localhost:11434"
-    mock_post_json.return_value = {
+    mock_get_json.return_value = {
         "models": [
             {"name": "llama3.1:8b", "size": 4_700_000_000},
             {"name": "mistral:7b", "size": 4_100_000_000},
@@ -64,7 +64,7 @@ def test_list_models(mock_get_url, mock_load_config, mock_post_json):
     assert len(result) == 2
     assert result[0]["name"] == "llama3.1:8b"
     assert result[1]["name"] == "mistral:7b"
-    mock_post_json.assert_called_once()
+    mock_get_json.assert_called_once()
 
 
 @pytest.mark.unit

@@ -10,7 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 from nyxgpt.config import get_ollama_base_url, load_config
-from nyxgpt.ollama_client import delete_json, post_json, post_json_lines
+from nyxgpt.ollama_client import delete_json, get_json, post_json, post_json_lines
 
 
 def list_models(base_url: str | None = None) -> list[dict[str, Any]]:
@@ -36,7 +36,7 @@ def list_models(base_url: str | None = None) -> list[dict[str, Any]]:
         base_url = get_ollama_base_url(cfg)
 
     url = f"{base_url.rstrip('/')}/api/tags"
-    data = post_json(url, {}, timeout_s=10.0)
+    data = get_json(url, timeout_s=10.0)
     models: list[dict[str, Any]] = data.get("models", [])
     return models
 
