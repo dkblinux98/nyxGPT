@@ -324,6 +324,8 @@ Access settings at `http://127.0.0.1:3000/settings`, which has two tabs:
   - **Appearance** — a Light/Dark theme toggle backed by the existing `ThemeContext` (persisted to `localStorage`), the same theme state used elsewhere in the app.
   - **About** — read-only app info (version, default model, Ollama base URL, sessions directory) sourced from `/api/info`, plus a link to the [Configuration Wizard](#configuration-wizard) for changing model/RAG/logging configuration.
 
+Settings has a `← Back to Admin Dashboard` link to `/admin/dashboard`, the same anchor used by every other admin page (analytics, self-heal, logs, etc.). Settings is also reachable directly from the chat UI's [Settings Menu](#settings-menu-sidebar); users who enter that way and want to return to chat should use browser Back rather than the in-page link, which always goes to the admin dashboard.
+
 #### Settings Menu (Sidebar)
 
 Click **⚙️ Settings** at the bottom of the sidebar to open the navigation menu that gates every admin/ops destination:
