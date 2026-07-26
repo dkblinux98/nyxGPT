@@ -8,6 +8,7 @@ import { server } from '../mocks/server';
 const inactiveStatus = {
   enabled: false,
   active: false,
+  reachable: null,
   service_name: 'nyxgpt-api',
   otlp_endpoint: 'http://localhost:4318',
   jaeger_ui_url: 'http://localhost:16686',
@@ -17,6 +18,7 @@ const inactiveStatus = {
 const activeStatusWithViews = {
   enabled: true,
   active: true,
+  reachable: true,
   service_name: 'nyxgpt-api',
   otlp_endpoint: 'http://localhost:4318',
   jaeger_ui_url: 'http://localhost:16686',
@@ -28,6 +30,17 @@ const activeStatusWithViews = {
 const activeStatusNoViews = {
   enabled: true,
   active: true,
+  reachable: true,
+  service_name: 'nyxgpt-api',
+  otlp_endpoint: 'http://localhost:4318',
+  jaeger_ui_url: 'http://localhost:16686',
+  curated_views: [],
+};
+
+const activeStatusUnreachable = {
+  enabled: true,
+  active: true,
+  reachable: false,
   service_name: 'nyxgpt-api',
   otlp_endpoint: 'http://localhost:4318',
   jaeger_ui_url: 'http://localhost:16686',
@@ -69,6 +82,27 @@ describe('TracingPanel', () => {
     const viewLink = screen.getByRole('link', { name: /RAG retrieval/i });
     expect(viewLink).toHaveAttribute('href', 'http://localhost:16686/search?service=rag');
     expect(screen.getByText('Traces for RAG document retrieval')).toBeInTheDocument();
+  });
+
+  it('warns when active but the collector is unreachable (#3350)', async () => {
+    server.use(http.get('/api/v1/tracing', () => HttpResponse.json(activeStatusUnreachable)));
+
+    render(<TracingPanel />);
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/nothing is listening/i);
+    expect(alert).toHaveTextContent(/silently dropped/i);
+    // Still shows the regular active guidance (Jaeger link) alongside the warning.
+    expect(await screen.findByRole('link', { name: /Open Jaeger UI/i })).toBeInTheDocument();
+  });
+
+  it('does not warn when active and reachable', async () => {
+    server.use(http.get('/api/v1/tracing', () => HttpResponse.json(activeStatusWithViews)));
+
+    render(<TracingPanel />);
+
+    await screen.findByRole('link', { name: /Open Jaeger UI/i });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('omits the curated views section when active but none are configured', async () => {

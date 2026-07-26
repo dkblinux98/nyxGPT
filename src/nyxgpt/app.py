@@ -1179,9 +1179,21 @@ def tracing_status(request: Request) -> dict[str, Any]:
     """
     cfg = _req_cfg(request)
     tracing_config = get_tracing_config(cfg)
+    active = tracing_module.is_tracing_enabled()
     return {
         **tracing_config,
-        "active": tracing_module.is_tracing_enabled(),
+        "active": active,
+        # `active` only means init_tracing() ran -- it says nothing about
+        # whether the OTLP collector is actually reachable (see #3350, where
+        # otel-collector published no host port and every span was silently
+        # dropped while this still reported "active"). Only probed when
+        # active, and with a short timeout, so a healthy install's panel
+        # load isn't delayed and a disabled install never pays for a connect.
+        "reachable": (
+            tracing_module.otlp_endpoint_reachable(tracing_config["otlp_endpoint"], timeout=0.5)
+            if active
+            else None
+        ),
         "curated_views": _jaeger_curated_views(
             tracing_config["jaeger_ui_url"], tracing_config["service_name"]
         ),

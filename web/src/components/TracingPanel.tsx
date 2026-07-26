@@ -11,6 +11,7 @@ type CuratedView = {
 type TracingStatus = {
   enabled: boolean;
   active: boolean;
+  reachable: boolean | null;
   service_name: string;
   otlp_endpoint: string;
   jaeger_ui_url: string;
@@ -89,6 +90,15 @@ export default function TracingPanel() {
             -- no raw <code>docker</code> command needed.
           </p>
         </>
+      )}
+
+      {status && status.active && status.reachable === false && (
+        <p role="alert" style={{ margin: '0 0 0.75rem 0', color: 'var(--error-text)' }}>
+          Tracing is enabled, but nothing is listening at <code>{status.otlp_endpoint}</code> --
+          spans for service <code>{status.service_name}</code> are being silently dropped and
+          Jaeger will stay empty. Confirm the otel-collector container is running and publishes
+          that port to the host (<code>nyxgpt ops doctor</code> will also flag this).
+        </p>
       )}
 
       {status && status.active && (
