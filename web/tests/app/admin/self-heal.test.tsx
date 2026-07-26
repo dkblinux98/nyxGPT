@@ -449,4 +449,142 @@ describe('SelfHealPage', () => {
     });
     fetchSpy.mockRestore();
   });
+
+  it('shows Refresh feedback: an in-flight state and a last-updated timestamp that changes on each click', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockStatus)));
+
+    const times = [
+      new Date('2026-07-26T10:00:00Z').getTime(),
+      new Date('2026-07-26T14:30:00Z').getTime(),
+    ];
+    let callIndex = 0;
+    const dateNowSpy = vi
+      .spyOn(Date, 'now')
+      .mockImplementation(() => times[Math.min(callIndex, times.length - 1)]);
+
+    const user = userEvent.setup();
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Last updated/i)).toBeInTheDocument();
+    });
+    const firstStamp = screen.getByText(/Last updated/i).textContent;
+
+    callIndex = 1;
+    let resolveSecondFetch: (() => void) | undefined;
+    server.use(
+      http.get('/api/v1/self-heal/status', () => {
+        return new Promise((resolve) => {
+          resolveSecondFetch = () => resolve(HttpResponse.json(mockStatus));
+        });
+      })
+    );
+
+    await user.click(screen.getByRole('button', { name: /^Refresh$/i }));
+
+    await waitFor(() => {
+      expect(resolveSecondFetch).toBeDefined();
+    });
+    expect(screen.getByRole('button', { name: /Refreshing/i })).toBeDisabled();
+
+    resolveSecondFetch?.();
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^Refresh$/i })).not.toBeDisabled();
+    });
+
+    const secondStamp = screen.getByText(/Last updated/i).textContent;
+    expect(secondStamp).not.toBe(firstStamp);
+
+    dateNowSpy.mockRestore();
+  });
+
+  it('renders an absent-but-desired component distinctly from unhealthy, with no raw-command instruction', async () => {
+    server.use(
+      http.get('/api/v1/self-heal/status', () =>
+        HttpResponse.json({
+          enabled: true,
+          components: [
+            {
+              service: 'grafana',
+              container: '',
+              state: 'absent',
+              health: '',
+              healthy: false,
+              source: 'compose',
+            },
+          ],
+          unhealthy_count: 1,
+          events: [],
+        })
+      )
+    );
+    mockObservability(mockMonitoringActive, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('grafana')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Absent')).toBeInTheDocument();
+    expect(screen.queryByText('Unhealthy')).not.toBeInTheDocument();
+    expect(screen.getByText(/enabled in config, no container running/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^heal now$/i })).toBeInTheDocument();
+  });
+
+  it('brings an absent-but-desired component up via "Heal now"', async () => {
+    server.use(
+      http.get('/api/v1/self-heal/status', () =>
+        HttpResponse.json({
+          enabled: true,
+          components: [
+            {
+              service: 'grafana',
+              container: '',
+              state: 'absent',
+              health: '',
+              healthy: false,
+              source: 'compose',
+            },
+          ],
+          unhealthy_count: 1,
+          events: [],
+        })
+      )
+    );
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    const user = userEvent.setup();
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^heal now$/i })).toBeInTheDocument();
+    });
+
+    let capturedBody: unknown = null;
+    server.use(
+      http.post('/api/v1/self-heal/heal', async ({ request }) => {
+        capturedBody = await request.json();
+        return HttpResponse.json({
+          healed: [
+            {
+              service: 'grafana',
+              ok: true,
+              ts: 1768301000,
+              reason: 'manual heal-now',
+              action: 'restart',
+              restart_count: 1,
+              message: 'Started grafana',
+            },
+          ],
+        });
+      })
+    );
+    await user.click(screen.getByRole('button', { name: /^heal now$/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Restarted: grafana')).toBeInTheDocument();
+    });
+    expect(capturedBody).toEqual({ service: 'grafana' });
+  });
 });
