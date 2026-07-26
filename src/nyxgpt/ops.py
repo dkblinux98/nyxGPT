@@ -3250,6 +3250,21 @@ def observability(_args) -> int:
     return 0 if ok else 2
 
 
+def reconcile_observability(enable: bool) -> list[OpsResult]:
+    """Bring the observability Compose stack in line with a desired enabled state.
+
+    Used by the web config wizard (#3354) after config.ini's
+    monitoring/tracing/error_tracking/log_aggregation `enabled` flags change
+    via the API, so enabling one of those sections in the wizard results in
+    the Compose profile actually starting -- not just a flag flip -- and
+    disabling all of them tears the stack back down. Mirrors `nyxgpt ops
+    observability` / `nyxgpt ops stop --target observability` exactly, so
+    callers (the config API) never need to shell out to `docker compose`
+    themselves.
+    """
+    return _start_observability_stack() if enable else _stop_observability_stack()
+
+
 # --- Env sync public API ---
 
 # Maps a Docker Compose `.env` variable to the config.ini `[section] key` it's
