@@ -196,6 +196,42 @@ def post_json(url: str, payload: dict[str, Any], timeout_s: float = 120.0) -> di
             raise RuntimeError(f"Failed to reach Ollama at {url}: {e}") from e
 
 
+def get_json(url: str, timeout_s: float = 10.0) -> dict[str, Any]:
+    """Send a GET request and return the parsed JSON response.
+
+    Args:
+        url: Target URL for the GET request
+        timeout_s: Request timeout in seconds
+
+    Returns:
+        Parsed JSON response as a dictionary (empty dict if body is empty)
+
+    Raises:
+        ModelRuntimeError: If the request times out or the server returns a 5xx
+        RuntimeError: If the request otherwise fails or returns a non-5xx HTTP error
+    """
+    with traced_span("ollama.request", url=url):
+        req = urllib.request.Request(url, method="GET")
+
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                body = resp.read().decode("utf-8")
+                return json.loads(body) if body else {}
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            if e.code >= 500:
+                raise ModelRuntimeError(
+                    _model_runtime_message_generic(f"Ollama HTTP {e.code}: {body}")
+                ) from e
+            raise RuntimeError(f"Ollama HTTP {e.code}: {body}") from e
+        except urllib.error.URLError as e:
+            if _is_timeout_error(e):
+                raise ModelRuntimeError(
+                    _model_runtime_message(f"no response within {timeout_s:.0f}s")
+                ) from e
+            raise RuntimeError(f"Failed to reach Ollama at {url}: {e}") from e
+
+
 def post_json_lines(
     url: str,
     payload: dict[str, Any],
@@ -398,6 +434,7 @@ def delete_json(url: str, payload: dict[str, Any], timeout_s: float = 60.0) -> d
 
 __all__ = [
     "ModelRuntimeError",
+    "get_json",
     "post_json",
     "post_json_lines",
     "delete_json",

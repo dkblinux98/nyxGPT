@@ -12,7 +12,9 @@ Covers:
 - `add_request_id_and_limits`'s malformed Content-Length swallow branch.
 - `_req_cfg`'s fallback when `request.state.cfg` isn't already populated.
 - `_apply_hot_config_updates` / `_apply_auth_config_updates` / `_mask_api_key`.
-- `_ollama_url` / `_ollama_get_json` / `_ollama_post_json`.
+- `_ollama_url` (the shared `get_json`/`post_json` Ollama HTTP helpers it's
+  paired with now live in `nyxgpt.ollama_client` -- see
+  `test_ollama_client_completeness.py` / `test_ollama_http_methods.py`).
 - `_maybe_kw` / `_capture_stdout`.
 - `batch_metrics` / `resource_metrics` endpoints (processor/monitor unset vs set).
 - `config_update`'s `default_model` / `rag_enabled` field branches.
@@ -37,8 +39,6 @@ from nyxgpt.app import (
     _capture_stdout,
     _mask_api_key,
     _maybe_kw,
-    _ollama_get_json,
-    _ollama_post_json,
     _ollama_url,
     _parse_client_capabilities,
     _req_cfg,
@@ -526,7 +526,7 @@ def test_mask_api_key_long_key_shows_edges():
 
 
 # ----------------------------
-# _ollama_url / _ollama_get_json / _ollama_post_json
+# _ollama_url
 # ----------------------------
 
 
@@ -535,36 +535,6 @@ def test_ollama_url_joins_base_and_path():
     with patch("nyxgpt.app.get_ollama_base_url", return_value="http://localhost:11434/"):
         assert _ollama_url(cfg, "/api/tags") == "http://localhost:11434/api/tags"
         assert _ollama_url(cfg, "api/tags") == "http://localhost:11434/api/tags"
-
-
-def test_ollama_get_json_parses_response_body():
-    response_body = b'{"models": []}'
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = response_body
-    mock_ctx = MagicMock()
-    mock_ctx.__enter__.return_value = mock_resp
-    mock_ctx.__exit__.return_value = False
-
-    with patch("nyxgpt.app.urllib.request.urlopen", return_value=mock_ctx):
-        result = _ollama_get_json("http://localhost:11434/api/tags")
-
-    assert result == {"models": []}
-
-
-def test_ollama_post_json_sends_payload_and_parses_response():
-    response_body = b'{"status": "ok"}'
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = response_body
-    mock_ctx = MagicMock()
-    mock_ctx.__enter__.return_value = mock_resp
-    mock_ctx.__exit__.return_value = False
-
-    with patch("nyxgpt.app.urllib.request.urlopen", return_value=mock_ctx) as mock_urlopen:
-        result = _ollama_post_json("http://localhost:11434/api/pull", {"name": "llama3"})
-
-    assert result == {"status": "ok"}
-    sent_request = mock_urlopen.call_args.args[0]
-    assert sent_request.get_header("Content-type") == "application/json"
 
 
 # ----------------------------
