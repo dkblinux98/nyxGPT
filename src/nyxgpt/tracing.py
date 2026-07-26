@@ -10,10 +10,12 @@ function in this module is a no-op so the rest of the app pays no cost.
 from __future__ import annotations
 
 import logging
+import socket
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from functools import wraps
 from typing import Any, TypeVar
+from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from opentelemetry import trace
@@ -70,6 +72,26 @@ def init_tracing(app: FastAPI, tracing_config: dict[str, Any]) -> None:
 def is_tracing_enabled() -> bool:
     """Whether tracing was actually initialized for this process."""
     return _enabled
+
+
+def otlp_endpoint_reachable(otlp_endpoint: str, timeout: float = 2.0) -> bool:
+    """Whether something is actually listening on the OTLP endpoint's host/port.
+
+    ``OTLPSpanExporter`` is fire-and-forget: when nothing listens on
+    ``otlp_endpoint`` (e.g. the otel-collector Compose service isn't running,
+    or isn't publishing its port to the host in native mode -- see #3350),
+    it silently drops every span rather than raising anywhere visible. A
+    real TCP connect is the only way to tell "active and working" apart from
+    "active but exporting into the void" from outside the exporter itself.
+    """
+    parsed = urlparse(otlp_endpoint)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 4318
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 @contextmanager
