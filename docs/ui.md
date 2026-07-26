@@ -380,8 +380,8 @@ Keyboard shortcuts:
 
 **Configuration changes:** saving writes the full section to
 `~/.nyxGPT/config.ini` (still the single source of truth, #3194) and applies
-it immediately — hot-reloadable settings (model, RAG, logging, auth, rate
-limiting) take effect on the next request with no restart. Settings that
+it immediately — hot-reloadable settings (model, RAG, logging, auth)
+take effect on the next request with no restart. Settings that
 need a process bounce (API host/port, the RAG Cassandra connection/embedding
 model, tracing/error-tracking/rate-limit config read only at startup) are
 reported on the Summary step with a **Restart** button per affected

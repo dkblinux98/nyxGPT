@@ -60,7 +60,7 @@ Summary/save step.
 - **Save is apply-on-save, not just a file write.** Saving validates every
   changed field (ports, URLs, hosts), writes `config.ini` (still the single
   source of truth, #3194), and immediately invalidates the API's config
-  cache so hot-reloadable settings (model, RAG, logging, auth, rate limiting)
+  cache so hot-reloadable settings (model, RAG, logging, auth)
   take effect on the very next request — no restart needed for those.
 - **Settings that can't be hot-reloaded** — `[api] host`/`port`, the RAG
   Cassandra connection/embedding model, and anything read only at process
