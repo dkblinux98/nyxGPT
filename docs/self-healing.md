@@ -97,11 +97,24 @@ no separate code path, and the `/admin/self-heal` dashboard shows an
 config, no container running").
 
 **Turning a profile off on purpose**: disabling its feature flag in
-config.ini (via the [config wizard](configuration.md) or `nyxgpt ops
-observability`'s teardown) is the supported way to keep it down with
-auto-heal enabled — self-heal only reconciles against *enabled* flags. A
-plain `nyxgpt ops down` with the flag left on and auto-heal on means the
-profile comes back on the next heal pass; that's expected, not a bug.
+config.ini (via the [config wizard](configuration.md), which stops but
+doesn't remove that profile's containers) is the supported way to keep it
+down with auto-heal enabled — self-heal only reconciles against *enabled*
+flags. A plain `nyxgpt ops down` with the flag left on and auto-heal on
+means the profile comes back on the next heal pass; that's expected, not a
+bug.
+
+Because disabling a flag stops rather than removes containers, they still
+show up in `docker compose ps -a` as present-but-stopped -- without a
+separate check, the automatic heal pass would see that and restart them
+right back, undoing the disable. So each present Compose component also
+carries a `desired` flag (`true` unless it belongs to a currently-disabled
+observability profile): the automatic pass skips restarting a
+`desired: false` component entirely (a manual "Heal now" click can still
+force it, the same override backoff/max-restarts already get), it's
+excluded from the "N unhealthy" count, and the dashboard shows a
+**Disabled** badge with the reason ("profile disabled in config, not
+auto-healed") instead of a plain **Unhealthy**.
 
 ### Known limitation: the core stack
 

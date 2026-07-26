@@ -533,6 +533,39 @@ describe('SelfHealPage', () => {
     expect(screen.getByRole('button', { name: /^heal now$/i })).toBeInTheDocument();
   });
 
+  it('renders a present-but-disabled component distinctly, explaining why it is not auto-healed', async () => {
+    server.use(
+      http.get('/api/v1/self-heal/status', () =>
+        HttpResponse.json({
+          enabled: true,
+          components: [
+            {
+              service: 'grafana',
+              container: 'nyxgpt-grafana-1',
+              state: 'exited',
+              health: '',
+              healthy: false,
+              source: 'compose',
+              desired: false,
+            },
+          ],
+          unhealthy_count: 0,
+          events: [],
+        })
+      )
+    );
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('grafana')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Disabled')).toBeInTheDocument();
+    expect(screen.queryByText('Unhealthy')).not.toBeInTheDocument();
+    expect(screen.getByText(/profile disabled in config, not auto-healed/)).toBeInTheDocument();
+  });
+
   it('brings an absent-but-desired component up via "Heal now"', async () => {
     server.use(
       http.get('/api/v1/self-heal/status', () =>

@@ -56,7 +56,7 @@ import subprocess
 import threading
 import time
 from configparser import ConfigParser
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -170,6 +170,15 @@ class ComponentStatus:
     `source` is `"compose"` (the default, for `docker compose ps`-derived
     entries) or `"native"` (a Homebrew service or the native `nyxgpt-cassandra`
     container, checked directly rather than through Compose).
+
+    `desired` is `True` unless this is a *present* Compose container whose
+    observability profile is currently disabled in config.ini (e.g. someone
+    turned `monitoring` off via the config wizard, which stops but doesn't
+    remove its containers -- see `list_component_status`). It's `True` for
+    everything else, including a `state="absent"` entry (absent-but-desired
+    is exactly what makes it desired) -- `heal_now` skips automatic (not
+    manual) healing for `desired=False` components, so a deliberate
+    feature-flag disable isn't undone by the next auto-heal pass.
     """
 
     service: str
@@ -178,6 +187,7 @@ class ComponentStatus:
     health: str
     healthy: bool
     source: str = "compose"
+    desired: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict suitable for JSON responses."""
@@ -188,6 +198,7 @@ class ComponentStatus:
             "health": self.health,
             "healthy": self.healthy,
             "source": self.source,
+            "desired": self.desired,
         }
 
 
@@ -466,19 +477,21 @@ def _desired_compose_services(profiles: set[str]) -> set[str]:
     return {s.strip() for s in (cp.stdout or "").splitlines() if s.strip()} - CORE_APP_SERVICES
 
 
-def _list_absent_desired_components(present_services: set[str]) -> list[ComponentStatus]:
-    """Report a `ComponentStatus` for every enabled-but-absent observability service.
+def _absent_desired_statuses(
+    present_services: set[str], desired_services: set[str]
+) -> list[ComponentStatus]:
+    """Build a `ComponentStatus` for every desired observability service missing entirely.
 
     `present_services` is whatever `_list_compose_component_status()` already
-    found (containers that exist, healthy or not). Anything in the desired
-    set that ISN'T in `present_services` was torn down (e.g. `nyxgpt ops
-    down`) while its feature flag is still on in config.ini -- self-heal
-    treats that the same as "unhealthy" (`healthy=False`, `state="absent"`),
-    so both the automatic watchdog and "heal all unhealthy now" bring it
-    back via `_bring_up_compose_service` instead of silently reporting
-    nothing to check.
+    found (containers that exist, healthy or not); `desired_services` is
+    `_desired_compose_services(_enabled_observability_profiles())`. Anything
+    desired but not present was torn down (e.g. `nyxgpt ops down`) while its
+    feature flag is still on in config.ini -- self-heal treats that the same
+    as "unhealthy" (`healthy=False`, `state="absent"`), so both the automatic
+    watchdog and "heal all unhealthy now" bring it back via
+    `_bring_up_compose_service` instead of silently reporting nothing to
+    check.
     """
-    desired = _desired_compose_services(_enabled_observability_profiles())
     return [
         ComponentStatus(
             service=service,
@@ -487,8 +500,39 @@ def _list_absent_desired_components(present_services: set[str]) -> list[Componen
             health="",
             healthy=False,
             source="compose",
+            desired=True,
         )
-        for service in sorted(desired - present_services)
+        for service in sorted(desired_services - present_services)
+    ]
+
+
+def _mark_disabled_present_services(
+    compose_statuses: list[ComponentStatus], desired_services: set[str]
+) -> list[ComponentStatus]:
+    """Flag `desired=False` on present Compose statuses outside the enabled set.
+
+    Disabling an observability profile via the config wizard/API *stops* its
+    containers rather than removing them (`ops._stop_observability_stack`),
+    so they keep showing up here as "present, unhealthy" -- without this,
+    `heal_now`'s automatic pass would restart them right back, undoing a
+    deliberate disable. Only checks services already known to belong to
+    *some* observability profile (`compose_statuses` minus what's currently
+    desired minus the core app services) before making the one extra Docker
+    call this needs, so a normal healthy pass with nothing extra present
+    costs nothing beyond the existing `ps -a` call.
+    """
+    present_services = {s.service for s in compose_statuses}
+    maybe_disabled = present_services - desired_services - CORE_APP_SERVICES
+    if not maybe_disabled:
+        return compose_statuses
+
+    all_observability_services = _desired_compose_services(set(OBSERVABILITY_PROFILES))
+    disabled_services = maybe_disabled & all_observability_services
+    if not disabled_services:
+        return compose_statuses
+
+    return [
+        replace(s, desired=False) if s.service in disabled_services else s for s in compose_statuses
     ]
 
 
@@ -496,18 +540,24 @@ def list_component_status() -> list[ComponentStatus]:
     """Health-check every monitored component: Compose containers plus native components.
 
     Combines `_list_compose_component_status()` (whatever's currently up
-    under Docker Compose), `_list_native_component_status()` (the core
-    native/local-first components not already covered by Compose), and
-    `_list_absent_desired_components()` (enabled observability profiles with
-    no running containers at all -- see that function's docstring), so the
-    same call surfaces the right set regardless of which deployment mode --
-    or mix of both -- is actually running, and regardless of whether a
-    desired component currently exists at all.
+    under Docker Compose, with any component whose observability profile is
+    currently disabled flagged `desired=False` -- see
+    `_mark_disabled_present_services`), `_list_native_component_status()`
+    (the core native/local-first components not already covered by Compose),
+    and `_absent_desired_statuses()` (enabled observability profiles with no
+    running containers at all), so the same call surfaces the right set
+    regardless of which deployment mode -- or mix of both -- is actually
+    running, and regardless of whether a desired component currently exists
+    at all.
     """
     compose_statuses = _list_compose_component_status()
     compose_managed = {s.service for s in compose_statuses}
     native_statuses = _list_native_component_status(compose_managed)
-    absent_statuses = _list_absent_desired_components(compose_managed)
+
+    desired_services = _desired_compose_services(_enabled_observability_profiles())
+    compose_statuses = _mark_disabled_present_services(compose_statuses, desired_services)
+    absent_statuses = _absent_desired_statuses(compose_managed, desired_services)
+
     return compose_statuses + native_statuses + absent_statuses
 
 
@@ -562,11 +612,14 @@ def _record_health_check(statuses: list[ComponentStatus]) -> int:
     `[logging] level = DEBUG` in config.ini to see it) rather than INFO, so a
     healthy stack doesn't spam the log file every `check_interval_seconds`.
     Returns the number of unhealthy components, for callers that also need
-    the count (e.g. `heal_now`'s pass summary).
+    the count (e.g. `heal_now`'s pass summary). A stopped-but-`desired=False`
+    component (its observability profile is disabled -- see
+    `_mark_disabled_present_services`) isn't counted: it's intentionally
+    down, not something an operator needs to act on.
     """
     unhealthy = 0
     for s in statuses:
-        if not s.healthy:
+        if not s.healthy and s.desired:
             unhealthy += 1
         logger.debug(
             "self-heal: health check %s healthy=%s state=%s health=%s",
@@ -777,6 +830,21 @@ def heal_now(
                     )
                 restart_counts[status.service] = 0
                 prom_metrics.SELFHEAL_RESTART_COUNT.labels(service=status.service).set(0)
+                continue
+
+            if not manual and not status.desired:
+                # Its observability profile flag is off in config.ini --
+                # disabling the flag is a supported way to keep a component
+                # down (see docs/self-healing.md#desired-state-for-observability-profiles),
+                # so the automatic pass must not restart it back. A manual
+                # "Heal now" click (service explicitly requested) still can,
+                # same override as the backoff/max-restarts guards below.
+                logger.info(
+                    "self-heal: skipping restart of %s, its observability profile is disabled"
+                    " in config",
+                    status.service,
+                    extra={"component": "self_heal", "service": status.service},
+                )
                 continue
 
             count = restart_counts.get(status.service, 0)

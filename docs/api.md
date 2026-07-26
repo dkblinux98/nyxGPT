@@ -1057,7 +1057,10 @@ saved query, both linked directly from `/admin/self-heal`.
 ### `GET /api/v1/self-heal/status`
 
 Return whether the watchdog is enabled, live per-component health, and
-recent heal events.
+recent heal events. `components` also covers desired-but-absent and
+present-but-disabled observability profile services (`state: "absent"` /
+`desired: false` respectively) -- see
+[self-healing.md#desired-state-for-observability-profiles](self-healing.md#desired-state-for-observability-profiles).
 
 **Response:**
 
@@ -1065,10 +1068,12 @@ recent heal events.
 {
   "enabled": true,
   "components": [
-    { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native" },
-    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose" }
+    { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true },
+    { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true },
+    { "service": "grafana", "container": "", "state": "absent", "health": "", "healthy": false, "source": "compose", "desired": true },
+    { "service": "loki", "container": "nyxgpt-loki-1", "state": "exited", "health": "", "healthy": false, "source": "compose", "desired": false }
   ],
-  "unhealthy_count": 0,
+  "unhealthy_count": 1,
   "events": [
     { "ts": 1730000000.0, "service": "web", "reason": "state=exited health=n/a", "action": "restart", "ok": true, "restart_count": 1, "message": "Restarted web" }
   ]
@@ -1093,12 +1098,19 @@ Enable or disable the automatic heal loop.
 
 ### `POST /api/v1/self-heal/heal`
 
-Manually trigger a heal pass. With no body (or `{}`), checks every
-monitored component and restarts anything unhealthy/stopped, same as the
-automatic loop but on demand. With `{"service": "<name>"}`, restarts that
-one component immediately regardless of its current health — the
-dashboard's per-component "Heal now" button. Returns `404` if `service`
-isn't a currently-known container.
+Manually trigger a heal pass. With no body (or `{}`) -- the dashboard's
+"Heal all unhealthy now" button -- checks every monitored component and
+restarts anything unhealthy/stopped, same as the automatic loop (same
+backoff/`max_consecutive_restarts` guards apply): this includes bringing up
+an enabled-but-absent observability profile service (`docker compose up
+-d`, not `restart`) but skips a present component whose profile is
+currently *disabled* in config (`desired: false`) -- see
+[self-healing.md#desired-state-for-observability-profiles](self-healing.md#desired-state-for-observability-profiles).
+With `{"service": "<name>"}`, restarts that one component immediately
+regardless of its current health *or* its `desired` flag — the dashboard's
+per-component "Heal now" button, which can force a disabled component back
+up the same way it bypasses backoff. Returns `404` if `service` isn't a
+currently-known container.
 
 **Request:**
 

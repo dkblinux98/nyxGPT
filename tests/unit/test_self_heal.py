@@ -967,37 +967,127 @@ def test_desired_compose_services_run_raises(monkeypatch, caplog):
 
 
 @pytest.mark.unit
-def test_list_absent_desired_components_reports_missing_only(monkeypatch):
-    monkeypatch.setattr(
-        self_heal, "_enabled_observability_profiles", lambda: {"monitoring", "logging"}
+def test_absent_desired_statuses_reports_missing_only():
+    absent = self_heal._absent_desired_statuses(
+        present_services={"prometheus"}, desired_services={"grafana", "loki", "prometheus"}
     )
-    monkeypatch.setattr(
-        self_heal,
-        "_desired_compose_services",
-        lambda profiles: {"grafana", "loki", "prometheus"},
-    )
-
-    absent = self_heal._list_absent_desired_components(present_services={"prometheus"})
 
     assert {s.service for s in absent} == {"grafana", "loki"}
     for status in absent:
         assert status.state == "absent"
         assert status.healthy is False
         assert status.source == "compose"
+        assert status.desired is True
 
 
 @pytest.mark.unit
-def test_list_absent_desired_components_empty_when_nothing_desired(monkeypatch):
-    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
-    monkeypatch.setattr(self_heal, "_desired_compose_services", lambda profiles: set())
-    assert self_heal._list_absent_desired_components(present_services=set()) == []
+def test_absent_desired_statuses_empty_when_nothing_desired():
+    assert self_heal._absent_desired_statuses(present_services=set(), desired_services=set()) == []
 
 
 @pytest.mark.unit
-def test_list_absent_desired_components_empty_when_all_present(monkeypatch):
-    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: {"monitoring"})
+def test_absent_desired_statuses_empty_when_all_present():
+    assert (
+        self_heal._absent_desired_statuses(
+            present_services={"grafana"}, desired_services={"grafana"}
+        )
+        == []
+    )
+
+
+@pytest.mark.unit
+def test_mark_disabled_present_services_flags_present_but_disabled(monkeypatch):
+    statuses = [
+        self_heal.ComponentStatus("grafana", "nyxgpt-grafana-1", "exited", "", False),
+        self_heal.ComponentStatus("prometheus", "nyxgpt-prometheus-1", "running", "healthy", True),
+    ]
+    monkeypatch.setattr(
+        self_heal, "_desired_compose_services", lambda profiles: {"grafana", "prometheus"}
+    )
+
+    result = self_heal._mark_disabled_present_services(statuses, desired_services={"prometheus"})
+
+    by_service = {s.service: s for s in result}
+    assert by_service["grafana"].desired is False
+    assert by_service["prometheus"].desired is True
+
+
+@pytest.mark.unit
+def test_mark_disabled_present_services_short_circuits_when_nothing_extra(monkeypatch):
+    statuses = [self_heal.ComponentStatus("prometheus", "c", "running", "healthy", True)]
+    desired_services_mock = MagicMock()
+    monkeypatch.setattr(self_heal, "_desired_compose_services", desired_services_mock)
+
+    result = self_heal._mark_disabled_present_services(statuses, desired_services={"prometheus"})
+
+    assert result == statuses
+    desired_services_mock.assert_not_called()
+
+
+@pytest.mark.unit
+def test_mark_disabled_present_services_ignores_core_services(monkeypatch):
+    statuses = [self_heal.ComponentStatus("api", "c", "running", "healthy", True)]
+    desired_services_mock = MagicMock()
+    monkeypatch.setattr(self_heal, "_desired_compose_services", desired_services_mock)
+
+    result = self_heal._mark_disabled_present_services(statuses, desired_services=set())
+
+    assert result == statuses
+    desired_services_mock.assert_not_called()
+
+
+@pytest.mark.unit
+def test_mark_disabled_present_services_leaves_unknown_extra_service_alone(monkeypatch):
+    # Present, not currently desired, but also not part of ANY observability
+    # profile (e.g. a container from an unrelated Compose project) -- not
+    # something self-heal should second-guess as "disabled".
+    statuses = [self_heal.ComponentStatus("mystery-sidecar", "c", "running", "healthy", True)]
     monkeypatch.setattr(self_heal, "_desired_compose_services", lambda profiles: {"grafana"})
-    assert self_heal._list_absent_desired_components(present_services={"grafana"}) == []
+
+    result = self_heal._mark_disabled_present_services(statuses, desired_services=set())
+
+    assert result[0].desired is True
+
+
+@pytest.mark.unit
+def test_record_health_check_excludes_disabled_present_from_unhealthy_count():
+    statuses = [
+        self_heal.ComponentStatus("grafana", "c", "exited", "", False, desired=False),
+        self_heal.ComponentStatus("web", "c", "exited", "", False),
+    ]
+    assert self_heal._record_health_check(statuses) == 1
+
+
+@pytest.mark.unit
+def test_heal_now_skips_disabled_present_component(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("grafana", "c", "exited", "", False, desired=False)],
+    )
+    restart_mock = MagicMock()
+    monkeypatch.setattr(self_heal, "restart_component", restart_mock)
+
+    result = self_heal.heal_now()
+
+    assert result["healed"] == []
+    restart_mock.assert_not_called()
+
+
+@pytest.mark.unit
+def test_heal_now_manual_overrides_disabled_present_component(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("grafana", "c", "exited", "", False, desired=False)],
+    )
+    restart_mock = MagicMock(return_value=self_heal.HealResult(True, "Restarted grafana"))
+    monkeypatch.setattr(self_heal, "restart_component", restart_mock)
+
+    result = self_heal.heal_now(service="grafana")
+
+    restart_mock.assert_called_once_with("grafana")
+    assert result["healed"][0]["ok"] is True
 
 
 @pytest.mark.unit
@@ -1042,6 +1132,32 @@ def test_list_component_status_disabled_profile_reports_nothing(monkeypatch):
     monkeypatch.setattr(self_heal, "_desired_compose_services", lambda profiles: set())
 
     assert self_heal.list_component_status() == []
+
+
+@pytest.mark.unit
+def test_list_component_status_flags_present_but_disabled_profile(monkeypatch):
+    # grafana's container still exists (stopped) after `monitoring` was
+    # disabled via the config wizard, which stops rather than removes
+    # containers -- it must not be silently auto-restarted.
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(stdout=_ps_line("grafana", state="exited")),
+    )
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
+    monkeypatch.setattr(
+        self_heal,
+        "_desired_compose_services",
+        lambda profiles: (
+            {"grafana"} if profiles == set(self_heal.OBSERVABILITY_PROFILES) else set()
+        ),
+    )
+
+    statuses = self_heal.list_component_status()
+
+    assert len(statuses) == 1
+    assert statuses[0].service == "grafana"
+    assert statuses[0].desired is False
 
 
 @pytest.mark.unit

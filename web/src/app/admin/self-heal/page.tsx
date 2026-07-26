@@ -11,6 +11,7 @@ type Component = {
   health: string;
   healthy: boolean;
   source: string;
+  desired?: boolean;
 };
 
 type HealEvent = {
@@ -401,10 +402,23 @@ export default function SelfHealPage() {
                         style={{
                           marginLeft: '0.75rem',
                           fontSize: '0.8rem',
-                          color: c.state === 'absent' ? '#f59e0b' : c.healthy ? '#22c55e' : '#ef4444',
+                          color:
+                            c.desired === false
+                              ? 'var(--foreground-muted)'
+                              : c.state === 'absent'
+                                ? '#f59e0b'
+                                : c.healthy
+                                  ? '#22c55e'
+                                  : '#ef4444',
                         }}
                       >
-                        {c.state === 'absent' ? 'Absent' : c.healthy ? 'Healthy' : 'Unhealthy'}
+                        {c.desired === false
+                          ? 'Disabled'
+                          : c.state === 'absent'
+                            ? 'Absent'
+                            : c.healthy
+                              ? 'Healthy'
+                              : 'Unhealthy'}
                       </span>
                       <span
                         style={{
@@ -413,9 +427,11 @@ export default function SelfHealPage() {
                           color: 'var(--foreground-muted)',
                         }}
                       >
-                        {c.state === 'absent'
-                          ? 'enabled in config, no container running'
-                          : `state=${c.state}${c.health ? ` health=${c.health}` : ''}`}
+                        {c.desired === false
+                          ? 'profile disabled in config, not auto-healed'
+                          : c.state === 'absent'
+                            ? 'enabled in config, no container running'
+                            : `state=${c.state}${c.health ? ` health=${c.health}` : ''}`}
                       </span>
                     </div>
                     <button
