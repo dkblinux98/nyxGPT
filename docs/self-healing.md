@@ -226,8 +226,8 @@ consecutive-restart count per service (the "backoff state" view), restart
 rate by service/outcome, time since each service's last recovery, and a
 Loki-backed restart/recovery event timeline.
 
-**Loki saved query** for self-heal events (heal attempts/outcomes), used by
-that timeline panel and pasteable directly into Grafana Explore:
+**Loki query** for self-heal events (heal attempts/outcomes), used by that
+timeline panel:
 
 ```logql
 {job="nyxgpt"} |= `self-heal:` |~ `restart|heal pass|giving up|recovered`
@@ -237,10 +237,11 @@ Requires the `logging` Compose profile (see [Log
 Aggregation](docker-compose.md#log-aggregation)).
 
 The SRE/admin dashboard's `/admin/self-heal` page links directly to both
-the Grafana Self-Healing dashboard and Grafana Explore with this query
-(when the `monitoring`/`logging` profiles are active), so an operator can
-go from "what's unhealthy right now" straight to "why" without leaving the
-app.
+the Grafana Self-Healing dashboard and a Grafana Explore deep link with
+this query already loaded (when the `monitoring`/`logging` profiles are
+active) -- one click shows matching results, no copy/paste into Explore
+required -- so an operator can go from "what's unhealthy right now"
+straight to "why" without leaving the app.
 
 That query is scoped to self-heal's own decision log, not the underlying
 component's own output -- for a service's raw logs (e.g. Ollama's model
