@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import time
 from configparser import ConfigParser
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -273,6 +274,11 @@ def configure_logging(
         formatter = logging.Formatter(
             fmt=DEFAULT_FMT, datefmt=DEFAULT_DATEFMT, defaults={"request_id": "-"}
         )
+    # Timestamps are logged in UTC (not the host's local time) so promtail's
+    # `timestamp` pipeline stage -- which parses them as UTC -- doesn't shift
+    # every line hours into the past on a non-UTC host, pushing it outside the
+    # curated Explore links' now-1h window (see #3349).
+    formatter.converter = time.gmtime
 
     # Use get_log_dir for consistent log directory resolution
     log_dir = get_log_dir(cfg)

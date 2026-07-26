@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from configparser import ConfigParser
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -254,6 +255,48 @@ def test_refresh_logging_reapplies_configuration(tmp_path: Path) -> None:
     refresh_logging(cfg)
 
     assert _our_handler().level == logging.DEBUG
+
+
+def test_configure_logging_formats_timestamps_in_utc(tmp_path: Path) -> None:
+    """Promtail's `timestamp` pipeline stage parses log lines as UTC (#3349)
+    -- the formatter must actually emit UTC-zoned timestamps, not host-local
+    time, or every parsed line shifts by the host's UTC offset and lands
+    outside the curated Explore links' now-1h window."""
+    configure_logging(_make_cfg(tmp_path), logger_name="nyxgpt-test-utc")
+
+    root = logging.getLogger()
+    log_file = tmp_path / "nyxgpt.log"
+    fh = next(
+        h
+        for h in root.handlers
+        if isinstance(h, RotatingFileHandler) and Path(h.baseFilename) == log_file
+    )
+
+    record = _record()
+    record.created = 1700000000.0  # a fixed, known epoch
+
+    formatted_time = fh.formatter.formatTime(record, DEFAULT_DATEFMT)
+    expected = time.strftime(DEFAULT_DATEFMT, time.gmtime(1700000000.0))
+    assert formatted_time == expected
+
+
+def test_configure_logging_json_format_also_uses_utc(tmp_path: Path) -> None:
+    configure_logging(_make_cfg(tmp_path, log_format="json"), logger_name="nyxgpt-test-utc-json")
+
+    root = logging.getLogger()
+    log_file = tmp_path / "nyxgpt.log"
+    fh = next(
+        h
+        for h in root.handlers
+        if isinstance(h, RotatingFileHandler) and Path(h.baseFilename) == log_file
+    )
+
+    record = _record()
+    record.created = 1700000000.0
+
+    formatted_time = fh.formatter.formatTime(record, DEFAULT_DATEFMT)
+    expected = time.strftime(DEFAULT_DATEFMT, time.gmtime(1700000000.0))
+    assert formatted_time == expected
 
 
 def test_get_logger_defaults_to_app_logger_name() -> None:

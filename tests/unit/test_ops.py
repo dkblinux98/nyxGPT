@@ -534,6 +534,22 @@ def test_log_aggregation_wiring_issue_none_when_no_native_logs(monkeypatch, tmp_
 
 
 @pytest.mark.unit
+def test_log_aggregation_wiring_issue_none_when_container_absent(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    _write_log_aggregation_config(cfg_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    log_dir = tmp_path / ".nyxGPT" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "nyxgpt.log").write_text("2026-07-18 00:00:00 INFO [-] nyxgpt: hi\n")
+
+    monkeypatch.setattr(ops, "_promtail_container_id", lambda: None)
+
+    assert ops._log_aggregation_wiring_issue(cfg_path) is None
+
+
+@pytest.mark.unit
 def test_log_aggregation_wiring_issue_flags_missing_mount(monkeypatch, tmp_path):
     cfg_path = tmp_path / "config.ini"
     _write_log_aggregation_config(cfg_path)
@@ -544,8 +560,8 @@ def test_log_aggregation_wiring_issue_flags_missing_mount(monkeypatch, tmp_path)
     log_dir.mkdir(parents=True)
     (log_dir / "nyxgpt.log").write_text("2026-07-18 00:00:00 INFO [-] nyxgpt: hi\n")
 
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    (tmp_path / "docker-compose.yml").write_text("services:\n  promtail:\n    image: x\n")
+    monkeypatch.setattr(ops, "_promtail_container_id", lambda: "abc123")
+    monkeypatch.setattr(ops, "_promtail_native_mount_missing", lambda container_id: True)
 
     issue = ops._log_aggregation_wiring_issue(cfg_path)
     assert issue is not None
@@ -563,12 +579,65 @@ def test_log_aggregation_wiring_issue_none_when_mount_present(monkeypatch, tmp_p
     log_dir.mkdir(parents=True)
     (log_dir / "nyxgpt.log").write_text("2026-07-18 00:00:00 INFO [-] nyxgpt: hi\n")
 
-    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    (tmp_path / "docker-compose.yml").write_text(
-        f"services:\n  promtail:\n    volumes:\n      - x:{ops.PROMTAIL_NATIVE_LOG_MOUNT_MARKER}:ro\n"
-    )
+    monkeypatch.setattr(ops, "_promtail_container_id", lambda: "abc123")
+    monkeypatch.setattr(ops, "_promtail_native_mount_missing", lambda container_id: False)
 
     assert ops._log_aggregation_wiring_issue(cfg_path) is None
+
+
+@pytest.mark.unit
+def test_promtail_container_id_returns_none_when_not_running(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **kwargs: SimpleNamespace(stdout="", returncode=0),
+    )
+    assert ops._promtail_container_id() is None
+
+
+@pytest.mark.unit
+def test_promtail_container_id_returns_id_when_running(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **kwargs: SimpleNamespace(stdout="abc123\n", returncode=0),
+    )
+    assert ops._promtail_container_id() == "abc123"
+
+
+@pytest.mark.unit
+def test_promtail_native_mount_missing_true_when_destination_absent(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **kwargs: SimpleNamespace(
+            stdout='[{"Destination": "/etc/promtail/config.yml"}]', returncode=0
+        ),
+    )
+    assert ops._promtail_native_mount_missing("abc123") is True
+
+
+@pytest.mark.unit
+def test_promtail_native_mount_missing_false_when_destination_present(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **kwargs: SimpleNamespace(
+            stdout=f'[{{"Destination": "{ops.PROMTAIL_NATIVE_LOG_MOUNT_MARKER}"}}]',
+            returncode=0,
+        ),
+    )
+    assert ops._promtail_native_mount_missing("abc123") is False
+
+
+@pytest.mark.unit
+def test_promtail_native_mount_missing_true_when_inspect_fails(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **kwargs: SimpleNamespace(stdout="", returncode=1),
+    )
+    assert ops._promtail_native_mount_missing("abc123") is True
 
 
 @pytest.mark.unit
@@ -586,12 +655,102 @@ def test_ops_doctor_flags_missing_promtail_native_mount(monkeypatch, capsys, tmp
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
-    (tmp_path / "docker-compose.yml").write_text("services:\n  promtail:\n    image: x\n")
+    monkeypatch.setattr(ops, "_promtail_container_id", lambda: "abc123")
+    monkeypatch.setattr(ops, "_promtail_native_mount_missing", lambda container_id: True)
+    monkeypatch.setattr(ops, "_loki_recent_volume_by_logger", lambda *a, **kw: None)
 
     rc = ops.doctor(MagicMock())
     assert rc == 2
     out = capsys.readouterr().out
     assert "not reaching Loki" in out
+
+
+@pytest.mark.unit
+def test_ops_doctor_prints_loki_volume_by_logger_when_available(monkeypatch, capsys, tmp_path):
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    _write_log_aggregation_config(cfg_dir / "config.ini")
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+    monkeypatch.setattr(
+        ops,
+        "_loki_recent_volume_by_logger",
+        lambda *a, **kw: {"self_heal": 0, "deploy": 0, "canary": 0, "chat": 142, "rag": 8},
+    )
+
+    rc = ops.doctor(MagicMock())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Log volume (last 24h) by logger:" in out
+    assert "chat=142" in out
+    assert "self_heal=0" in out
+
+
+@pytest.mark.unit
+def test_ops_doctor_omits_loki_volume_when_unreachable(monkeypatch, capsys, tmp_path):
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    _write_log_aggregation_config(cfg_dir / "config.ini")
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+    monkeypatch.setattr(ops, "_loki_recent_volume_by_logger", lambda *a, **kw: None)
+
+    rc = ops.doctor(MagicMock())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Log volume" not in out
+
+
+@pytest.mark.unit
+def test_loki_recent_volume_by_logger_returns_counts(monkeypatch):
+    class _FakeResponse:
+        def __init__(self, value):
+            self._value = value
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": {"result": [{"value": [0, str(self._value)]}]}}
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, params=None):
+            return _FakeResponse(7 if "self_heal" in params["query"] else 0)
+
+    monkeypatch.setattr(ops.httpx, "Client", _FakeClient)
+
+    volumes = ops._loki_recent_volume_by_logger("http://localhost:3001", "secret")
+    assert volumes["self_heal"] == 7
+    assert volumes["chat"] == 0
+    assert set(volumes) == set(ops.LOKI_CURATED_LOGGERS)
+
+
+@pytest.mark.unit
+def test_loki_recent_volume_by_logger_returns_none_on_error(monkeypatch):
+    class _FailingClient:
+        def __init__(self, *a, **kw):
+            raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(ops.httpx, "Client", _FailingClient)
+
+    assert ops._loki_recent_volume_by_logger("http://localhost:3001", "secret") is None
 
 
 def _write_config(path, *, api_key="", grafana_password="", auth_enabled="false"):
