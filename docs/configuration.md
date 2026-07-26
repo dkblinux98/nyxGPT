@@ -47,6 +47,41 @@ chmod 600 ~/.nyxGPT/config.ini
 Edit `~/.nyxGPT/config.ini` to select models, logging options, RAG settings,
 and service paths — see the section reference below.
 
+### Option 3: Web Configuration Wizard (edit an existing install)
+
+Once nyxGPT is running, `/admin` in the web UI is a six-step **Configuration
+Wizard** that covers every section below without hand-editing `config.ini`:
+Core & Model (`[nyxgpt]`, `[logging]`, `[ollama]`), RAG Configuration
+(`[rag]`'s chat toggle and Cassandra connection), API & Auth (`[api]`,
+`[auth]`, `[rate_limit]`), Observability (`[tracing]`, `[error_tracking]`,
+`[monitoring]`, `[log_aggregation]`), Resource Usage (live metrics), and a
+Summary/save step.
+
+- **Save is apply-on-save, not just a file write.** Saving validates every
+  changed field (ports, URLs, hosts), writes `config.ini` (still the single
+  source of truth, #3194), and immediately invalidates the API's config
+  cache so hot-reloadable settings (model, RAG, logging, auth, rate limiting)
+  take effect on the very next request — no restart needed for those.
+- **Settings that can't be hot-reloaded** — `[api] host`/`port`, the RAG
+  Cassandra connection/embedding model, and anything read only at process
+  startup (tracing, error tracking, rate limiting) — are reported back as
+  `restart_required` in the save response. The wizard then offers a
+  **Restart** button per affected component, which wraps `nyxgpt ops
+  restart` (see [`docs/api.md`](api.md#config-wizard)) — you never need to
+  run a restart command yourself.
+- **Enabling an observability toggle actually starts it.** Flipping
+  `tracing`/`error_tracking`/`monitoring`/`log_aggregation` to enabled
+  reconciles the Compose observability stack the same way `nyxgpt ops
+  observability` does (and tears it down the same way `nyxgpt ops stop
+  --target observability` does when all four are disabled) — so enabling a
+  stack in the wizard results in a working dashboard, not a dangling flag.
+- **Secrets are never echoed back.** `[auth] api_key` and `[error_tracking]
+  dsn` are shown as "set" plus a masked preview (e.g. `abcd****wxyz`); the
+  wizard's input for these is always blank, and leaving it blank on save
+  keeps the existing value. Only typing a new value rotates it.
+- **Single-user scope.** The wizard edits one global `config.ini` — there is
+  no per-session configuration.
+
 ---
 
 ## Container data layout (`~/.nyxGPT/volumes/`)
@@ -238,7 +273,9 @@ Instead of editing `config.ini` by hand, you can view the enabled state and a
 masked key, toggle authentication, and rotate the key from the admin
 dashboard's Access Management panel (`/admin/dashboard`), backed by
 `GET`/`POST /api/v1/admin/access` — see
-[`docs/api.md`](api.md#admin-dashboard).
+[`docs/api.md`](api.md#admin-dashboard). The full Configuration Wizard
+(`/admin`, see above) also covers `enabled`/`header`/`api_key` on its API &
+Auth step, backed by `GET`/`POST /api/v1/config/sections`.
 
 For detailed usage, examples, and security recommendations, see [`docs/api.md`](api.md#authentication).
 

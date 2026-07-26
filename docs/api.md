@@ -561,6 +561,106 @@ Partial configuration update (same as POST, provided for semantic clarity).
 
 ---
 
+## Config Wizard
+
+These endpoints back the full Configuration Wizard at `/admin` (#3354),
+which covers every section below rather than the four hot fields
+`GET`/`POST /api/v1/config` expose. See
+[`docs/configuration.md`](configuration.md#option-3-web-configuration-wizard-edit-an-existing-install)
+for the wizard's step-by-step behavior.
+
+### `GET /api/v1/config/sections`
+
+Returns the current value of every wizard-editable field, grouped by
+section, plus schema metadata (which fields are secret, and which need a
+restart or observability reconciliation). Secret fields (`auth.api_key`,
+`error_tracking.dsn`) are never returned in cleartext.
+
+**Response (abbreviated):**
+
+```json
+{
+  "sections": {
+    "nyxgpt": { "default_model": "llama3.1:8b", "chat_timeout_seconds": "120", "sessions_dir": "~/.nyxGPT/sessions", "vectorstore_dir": "~/.nyxGPT/vectorstore" },
+    "logging": { "level": "INFO", "dir": "~/.nyxGPT/logs" },
+    "ollama": { "base_url": "http://127.0.0.1:11434" },
+    "api": { "host": "127.0.0.1", "port": "8000" },
+    "auth": { "enabled": "false", "header": "X-API-Key", "api_key": { "set": false, "masked": null } },
+    "rate_limit": { "enabled": "false" },
+    "rag": { "enable_chat_context": "false", "cassandra_hosts": "127.0.0.1", "cassandra_port": "9042", "cassandra_keyspace": "nyxgpt", "cassandra_table": "rag_chunks", "embedding_model": "nomic-embed-text" },
+    "tracing": { "enabled": "false", "service_name": "nyxgpt-api", "otlp_endpoint": "http://localhost:4318/v1/traces" },
+    "error_tracking": { "enabled": "false", "dsn": { "set": false, "masked": null }, "environment": "development" },
+    "monitoring": { "enabled": "false" },
+    "log_aggregation": { "enabled": "false" }
+  },
+  "schema": [
+    { "section": "api", "label": "API server", "fields": [
+      { "key": "host", "secret": false, "restart_component": "api", "observability": false },
+      { "key": "port", "secret": false, "restart_component": "api", "observability": false }
+    ] }
+  ]
+}
+```
+
+### `POST /api/v1/config/sections`
+
+Validates and applies a `{section: {key: value}}` payload, writes
+`config.ini`, invalidates the hot-reload cache, and — if any observability
+`enabled` flag changed — reconciles the Compose stack. An empty-string
+secret value means "leave unchanged"; anything else rotates it.
+
+**Request:**
+
+```json
+{
+  "api": { "host": "0.0.0.0", "port": 9000 },
+  "tracing": { "enabled": true }
+}
+```
+
+**Response:**
+
+```json
+{
+  "applied": {
+    "api": { "host": "0.0.0.0", "port": 9000 },
+    "tracing": { "enabled": true }
+  },
+  "sections": { "...": "full updated sections, same shape as GET" },
+  "restart_required": ["api"],
+  "observability_reconciled": true,
+  "observability_result": { "ok": true, "messages": ["Observability stack up: Grafana http://localhost:3001, ..."] }
+}
+```
+
+Returns `422` with `error.details.errors` (a list of `"section.key: reason"`
+strings) if any field fails validation, and `400` if the payload contains no
+valid fields.
+
+### `POST /api/v1/config/restart`
+
+Offers the wizard's "Restart" button a way to apply changes that
+`config/sections` reported in `restart_required`, without the user ever
+running a raw restart command. Wraps `nyxgpt ops restart`.
+
+**Request:**
+
+```json
+{ "target": "api" }
+```
+
+`target` is one of `api`, `web`, `ollama`, `cassandra`, `observability`,
+`all` (default `all`). The restart is scheduled a moment after the response
+is sent, since the target may be this very API process.
+
+**Response:**
+
+```json
+{ "target": "api", "status": "scheduled" }
+```
+
+---
+
 ## Admin Dashboard
 
 These endpoints back the unified admin dashboard at `/admin/dashboard`: a

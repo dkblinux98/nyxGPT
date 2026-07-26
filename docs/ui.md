@@ -216,7 +216,7 @@ The web UI includes:
 - **RAG Playground** (`/admin/playground`) for interactive query testing and A/B comparison (see [RAG — RAG Playground](rag.md#rag-playground))
 - **Usage analytics dashboard** (`/admin/analytics`) — total/per-model/per-day request and token breakdowns from recorded chat usage, with JSON/CSV report export (see [API — Usage Analytics](api.md#usage-analytics))
 - **Model management** page (`/models`) for pulling, deleting, and viewing Ollama models
-- **Configuration wizard** (`/admin`) for step-by-step system setup
+- **Configuration wizard** (`/admin`) covering every `config.ini` section (core/model, RAG, API & auth, observability) with apply-on-save reload and a restart offer for settings that need one
 - **Log viewer** (`/admin/logs`) for viewing and searching application logs
 - **Mobile-responsive layout** — the session sidebar collapses into a dismissible overlay below the `useIsMobile` breakpoint (768px), chat controls grow to touch-friendly tap targets, and inputs use a 16px minimum font size to prevent iOS Safari's auto-zoom-on-focus
 - **Keyboard shortcuts** for productivity:
@@ -346,13 +346,22 @@ Access the dashboard at `http://127.0.0.1:3000/admin/dashboard` for an at-a-glan
 
 #### Configuration Wizard
 
-Access the wizard at `http://127.0.0.1:3000/admin` to configure:
+Access the wizard at `http://127.0.0.1:3000/admin` (#3354) to configure
+every section of `config.ini` (see
+[`docs/configuration.md`](configuration.md#option-3-web-configuration-wizard-edit-an-existing-install)
+for the full field-by-field reference):
 
-1. **Model Selection** — Choose your default LLM model from available Ollama models
-2. **RAG Configuration** — Enable/disable retrieval-augmented generation
-3. **API Settings** — Configure log level and test API connectivity
-4. **Resource Usage** — Monitor system performance and resource metrics
-5. **Summary** — Review and save your configuration
+1. **Core & Model** — Default model, chat timeout, sessions/vectorstore
+   directories, log level/directory, and the Ollama backend URL
+2. **RAG Configuration** — Enable/disable retrieval-augmented generation and
+   configure its Cassandra connection (hosts, port, keyspace, table) and
+   embedding model
+3. **API & Auth** — API server host/port, API-key authentication
+   (enable/disable, header name, rotate the key), and rate limiting
+4. **Observability** — Tracing, error tracking, monitoring, and log
+   aggregation, each with its own enable toggle and connection settings
+5. **Resource Usage** — Monitor system performance and resource metrics
+6. **Summary** — Review every section and save
 
 **Features:**
 - Visual progress indicator showing current step
@@ -360,16 +369,28 @@ Access the wizard at `http://127.0.0.1:3000/admin` to configure:
 - Connection testing to verify API connectivity
 - Real-time resource monitoring dashboard
 - Metrics export (JSON/CSV)
-- Hot-reloadable settings (no service restart required)
+- Secrets (API key, error tracking DSN) are shown masked and never round-trip
+  in cleartext; leave the field blank to keep the current value, or type a
+  new one to rotate it
 - Clear navigation between steps
 
 Keyboard shortcuts:
 - `←` / `→` — Navigate between steps
 - `Enter` — Advance to next step or save configuration
 
-**Configuration changes:** the wizard updates `~/.nyxGPT/config.ini` with
-`default_model`, `rag_enabled`, and `log_level`. Changes take effect
-immediately without requiring a service restart.
+**Configuration changes:** saving writes the full section to
+`~/.nyxGPT/config.ini` (still the single source of truth, #3194) and applies
+it immediately — hot-reloadable settings (model, RAG, logging, auth, rate
+limiting) take effect on the next request with no restart. Settings that
+need a process bounce (API host/port, the RAG Cassandra connection/embedding
+model, tracing/error-tracking/rate-limit config read only at startup) are
+reported on the Summary step with a **Restart** button per affected
+component, wrapping `nyxgpt ops restart` (`GET`/`POST
+/api/v1/config/sections`, `POST /api/v1/config/restart` — see
+[`docs/api.md`](api.md#config-wizard)). Enabling an observability toggle
+also reconciles the matching Compose stack the same way `nyxgpt ops
+observability` does, so it results in a working dashboard rather than a
+dangling flag.
 
 **Resource Usage Monitoring:**
 
