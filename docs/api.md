@@ -35,7 +35,6 @@ Quick reference of all 85 available endpoints:
 | `/api/v1/admin/activity` | GET | Recent admin/operational activity feed |
 | `/api/v1/admin/access` | GET | Get API-key access configuration (masked) |
 | `/api/v1/admin/access` | POST | Update API-key access configuration / rotate key |
-| `/api/v1/admin/workflow-analytics` | GET | CI/CD workflow run history and analytics |
 | `/api/v1/analytics/usage` | GET | Aggregated chat usage analytics (tokens, sessions, by model/day) |
 | `/api/v1/analytics/export` | GET | Export recorded usage events (json/csv) |
 | `/api/v1/deploy/status` | GET | Blue/green deployment status (active color, health, history) |
@@ -783,22 +782,6 @@ again by `GET /admin/access`, which only shows the masked value.
   "api_key": "8f3a1b2c...e5f691c2"
 }
 ```
-
-### `GET /api/v1/admin/workflow-analytics`
-
-CI/CD workflow run history and analytics for the admin dashboard. Wraps
-the SQLite store built by `scripts/collect_workflow_logs.py collect`
-(success rate, average duration, per-workflow/day breakdowns, top failing
-workflows, and recent runs) so it's visible from the dashboard, not just
-the CLI.
-
-**Query Parameters:**
-- `days` (int, default: `30`) - How many days of history to summarize
-- `limit` (int, default: `50`) - Maximum number of recent runs to return
-
-**Response:** summary object produced by `workflow_analytics.summary()` —
-success rate, average duration, per-workflow/day breakdowns, top failing
-workflows, and a `recent_runs` list.
 
 ---
 

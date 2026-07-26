@@ -6,11 +6,15 @@ GitHub's log retention window and can be analyzed for trends (success rate,
 duration creep, recurring failures) after the fact.
 
 This module lives inside the installed ``nyxgpt`` package (rather than under the
-repo-only ``scripts/`` directory) so both the maintainer CLI
-(``scripts/collect_workflow_logs.py``) and the admin dashboard backend
-(``nyxgpt.workflow_analytics``) can reach it via a normal import in every
-deployment layout: source checkout, ``pip install``, the native Homebrew
-install, and the Docker image.
+repo-only ``scripts/`` directory) so the maintainer CLI
+(``scripts/collect_workflow_logs.py``) can reach it via a normal import in
+every deployment layout: source checkout, ``pip install``, the native
+Homebrew install, and the Docker image.
+
+The CI Workflow Analytics admin dashboard that used to read from this store
+was removed as out of scope for nyxGPT (agent-level display, candidate for a
+future nyxAgent project) — see issue #3358. The collector and this store
+remain so the CLI (`stats`/`query`) keeps working.
 """
 
 from __future__ import annotations

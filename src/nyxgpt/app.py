@@ -59,7 +59,6 @@ from nyxgpt import resource_metrics_store as resource_metrics_store_module
 from nyxgpt import self_heal as self_heal_module
 from nyxgpt import tracing as tracing_module
 from nyxgpt import usage_analytics as usage_analytics_module
-from nyxgpt import workflow_analytics as workflow_analytics_module
 from nyxgpt.api_models import (
     AttachDocumentRequest,
     ChatRequest,
@@ -1726,18 +1725,6 @@ def analytics_export(request: Request, format: str = "json") -> Response:
         media_type=content_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-
-
-@api.get("/admin/workflow-analytics")
-def admin_workflow_analytics(days: int = 30, limit: int = 50) -> dict[str, Any]:
-    """CI/CD workflow run history and analytics for the admin dashboard.
-
-    Wraps the SQLite store built by `scripts/collect_workflow_logs.py collect`
-    (success rate, avg duration, per-workflow/day breakdowns, top failing
-    workflows, and recent runs) so it's visible from the dashboard, not just
-    the CLI.
-    """
-    return workflow_analytics_module.summary(days=days, limit=limit)
 
 
 # --- Local blue/green deployment endpoints (SRE/admin dashboard) ---
