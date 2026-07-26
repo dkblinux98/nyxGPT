@@ -1431,6 +1431,7 @@ jobs:
           show_full_output: false
           claude_args: >-
             --allowed-tools "Bash,Read,Grep"
+            --model claude-opus-5
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
             The developer workflow failed for issue #${{ github.event.issue.number }}, and automatic
