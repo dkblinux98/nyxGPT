@@ -130,7 +130,7 @@ from nyxgpt.config import (
     load_config,
 )
 from nyxgpt.logging import configure_logging, get_log_dir, request_id_var
-from nyxgpt.ollama_client import ModelRuntimeError
+from nyxgpt.ollama_client import ModelRuntimeError, get_json, post_json
 from nyxgpt.rag.rag import (
     clear_query_cache,
     get_query_cache_stats,
@@ -952,38 +952,6 @@ def _ollama_url(cfg: ConfigParser, path: str) -> str:
     if not path.startswith("/"):
         path = "/" + path
     return base + path
-
-
-def _ollama_get_json(url: str, timeout_s: float = 10.0) -> Any:
-    """GET `url` and parse the response body as JSON.
-
-    Raises:
-        urllib.error.URLError / HTTPError: On connection failure or a
-            non-2xx status (callers wrap this and translate to a 502).
-    """
-    req = urllib.request.Request(url, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        data = resp.read()
-    import json
-
-    return json.loads(data.decode("utf-8"))
-
-
-def _ollama_post_json(url: str, payload: dict[str, Any], timeout_s: float = 60.0) -> Any:
-    """POST `payload` as JSON to `url` and parse the response body as JSON.
-
-    Raises:
-        urllib.error.URLError / HTTPError: On connection failure or a
-            non-2xx status (callers wrap this and translate to a 502).
-    """
-    import json
-
-    body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=body, method="POST")
-    req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        data = resp.read()
-    return json.loads(data.decode("utf-8"))
 
 
 def _cfg(cfg_path: Path | None = None):
@@ -2017,7 +1985,7 @@ def models_list(request: Request) -> dict[str, Any]:
     """
     cfg = _req_cfg(request)
     try:
-        data = _ollama_get_json(_ollama_url(cfg, "/api/tags"), timeout_s=10.0)
+        data = get_json(_ollama_url(cfg, "/api/tags"), timeout_s=10.0)
         models = data.get("models", []) if isinstance(data, dict) else []
         # Normalize to a list of model names
         names: list[str] = []
@@ -2085,7 +2053,7 @@ def models_pull(request: Request, payload: dict[str, Any] = Body(...)) -> Respon
 
     try:
         # Non-streaming pull; Ollama may take a while.
-        data = _ollama_post_json(
+        data = post_json(
             _ollama_url(cfg, "/api/pull"),
             {"name": model, "stream": False},
             timeout_s=600.0,

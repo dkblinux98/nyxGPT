@@ -34,7 +34,7 @@ def test_models_list_returns_names():
             {"size": 789},
         ]
     }
-    with patch("nyxgpt.app._ollama_get_json", return_value=ollama_response) as mock_get:
+    with patch("nyxgpt.app.get_json", return_value=ollama_response) as mock_get:
         client = TestClient(app)
         response = client.get("/api/v1/models")
 
@@ -45,7 +45,7 @@ def test_models_list_returns_names():
 
 def test_models_list_handles_non_dict_response():
     """When Ollama returns something unexpected (not a dict), models list is empty."""
-    with patch("nyxgpt.app._ollama_get_json", return_value=["unexpected"]):
+    with patch("nyxgpt.app.get_json", return_value=["unexpected"]):
         client = TestClient(app)
         response = client.get("/api/v1/models")
 
@@ -54,7 +54,7 @@ def test_models_list_handles_non_dict_response():
 
 
 def test_models_list_translates_ollama_failure_to_502():
-    with patch("nyxgpt.app._ollama_get_json", side_effect=RuntimeError("connection refused")):
+    with patch("nyxgpt.app.get_json", side_effect=RuntimeError("connection refused")):
         client = TestClient(app)
         response = client.get("/api/v1/models")
 
@@ -90,7 +90,7 @@ def test_models_pull_blank_model_returns_400():
 def test_models_pull_non_streaming_success():
     ollama_result = {"status": "success"}
     with (
-        patch("nyxgpt.app._ollama_post_json", return_value=ollama_result) as mock_post,
+        patch("nyxgpt.app.post_json", return_value=ollama_result) as mock_post,
         patch("nyxgpt.app.admin_activity_module.record") as mock_record,
     ):
         client = TestClient(app)
@@ -108,7 +108,7 @@ def test_models_pull_non_streaming_success():
 def test_models_pull_non_streaming_default_stream_is_false():
     """Omitting 'stream' entirely takes the non-streaming code path."""
     with (
-        patch("nyxgpt.app._ollama_post_json", return_value={"status": "ok"}),
+        patch("nyxgpt.app.post_json", return_value={"status": "ok"}),
         patch("nyxgpt.app.admin_activity_module.record"),
     ):
         client = TestClient(app)
@@ -118,7 +118,7 @@ def test_models_pull_non_streaming_default_stream_is_false():
 
 
 def test_models_pull_non_streaming_ollama_failure_returns_502():
-    with patch("nyxgpt.app._ollama_post_json", side_effect=RuntimeError("ollama down")):
+    with patch("nyxgpt.app.post_json", side_effect=RuntimeError("ollama down")):
         client = TestClient(app)
         response = client.post("/api/v1/models/pull", json={"model": "llama3.1:8b"})
 
