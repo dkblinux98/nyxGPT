@@ -283,6 +283,16 @@ services:
       - nyxgpt
     volumes:
       - ./docker/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    # Publish the OTLP receivers to the host: the default deployment is
+    # native (api runs on the host, not in this Compose network -- see
+    # docs/ops.md), so the api's OTLPSpanExporter talks to
+    # http://localhost:4318/v1/traces from outside Docker entirely. Without
+    # a ports mapping here, that traffic has nowhere to land and every span
+    # is silently dropped -- see #3350. Bound to 127.0.0.1 per #3195
+    # (workstation-only, never exposed on the LAN).
+    ports:
+      - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${OTEL_COLLECTOR_HTTP_PORT:-4318}:4318"
+      - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${OTEL_COLLECTOR_GRPC_PORT:-4317}:4317"
     # No healthcheck here: opentelemetry-collector-contrib ships FROM scratch
     # with no shell/wget/curl, so a CMD-SHELL probe isn't possible. Container
     # crash-restart (restart: unless-stopped) is the only signal available;
