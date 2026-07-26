@@ -1,15 +1,7 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import '@testing-library/jest-dom';
 import SettingsPage from '../../../src/app/settings/page';
-
-// Mock useRouter
-const mockPush = vi.fn();
-vi.mock('next/navigation', () => ({
-  useRouter: () => ({
-    push: mockPush,
-  }),
-}));
 
 // Mock ResourceMetrics component
 vi.mock('../../../src/app/settings/ResourceMetrics', () => ({
@@ -61,30 +53,11 @@ describe('SettingsPage', () => {
     expect(screen.getByTestId('resource-metrics')).toBeInTheDocument();
   });
 
-  it('has back button', () => {
+  it('has a standard back-to-admin-dashboard link, matching other admin pages', () => {
     render(<SettingsPage />);
 
-    expect(screen.getByRole('button', { name: /Back/i })).toBeInTheDocument();
-  });
-
-  it('navigates home when the back button is clicked', () => {
-    mockPush.mockClear();
-    render(<SettingsPage />);
-
-    const backButton = screen.getByRole('button', { name: /Back/i });
-    fireEvent.click(backButton);
-
-    expect(mockPush).toHaveBeenCalledWith('/');
-  });
-
-  it('changes the back button background on hover', () => {
-    render(<SettingsPage />);
-
-    const backButton = screen.getByRole('button', { name: /Back/i });
-    fireEvent.mouseEnter(backButton);
-    expect(backButton.style.background).toBe('var(--button-hover)');
-
-    fireEvent.mouseLeave(backButton);
-    expect(backButton.style.background).toBe('var(--button)');
+    const backLink = screen.getByRole('link', { name: /Back to Admin Dashboard/i });
+    expect(backLink).toBeInTheDocument();
+    expect(backLink).toHaveAttribute('href', '/admin/dashboard');
   });
 });

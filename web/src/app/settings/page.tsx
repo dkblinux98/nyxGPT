@@ -1,14 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState } from 'react';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
 import ResourceMetrics from './ResourceMetrics';
 import GeneralSettings from './GeneralSettings';
 
 export default function SettingsPage() {
-  const router = useRouter();
   const [activeTab, setActiveTab] = useState<'resources' | 'general'>('resources');
 
   return (
@@ -28,24 +26,11 @@ export default function SettingsPage() {
           marginBottom: 24,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16 }}>
-          <button
-            onClick={() => router.push('/')}
-            style={{
-              background: 'var(--button)',
-              color: 'var(--button-text)',
-              border: 'none',
-              borderRadius: 8,
-              padding: '8px 16px',
-              cursor: 'pointer',
-              fontSize: 14,
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--button)')}
-          >
-            ← Back
-          </button>
-          <h1 style={{ fontSize: 28, fontWeight: 600, margin: 0 }}>Settings</h1>
+        <div style={{ marginBottom: 16 }}>
+          <h1 style={{ fontSize: 28, fontWeight: 600, margin: 0, marginBottom: 8 }}>Settings</h1>
+          <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
+            ← Back to Admin Dashboard
+          </a>
         </div>
 
         {/* Tabs */}
