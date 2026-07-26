@@ -8,6 +8,11 @@
 
 # Python
 .venv/
+# Any other local virtualenv (e.g. .venv-agent, created inside agent runners).
+# Without this the developer workflow's snapshot step (`git add -A`) commits
+# the whole site-packages tree onto the feature branch, which then makes
+# verification crawl -- see the #3352 run that hung for 30+ minutes.
+.venv*/
 __pycache__/
 *.py[cod]
 *.egg-info/
