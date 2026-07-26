@@ -53,6 +53,7 @@ from nyxgpt import error_tracking as error_tracking_module
 from nyxgpt import health as health_module
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import ops as ops_module
+from nyxgpt import resource_metrics_store as resource_metrics_store_module
 from nyxgpt import self_heal as self_heal_module
 from nyxgpt import tracing as tracing_module
 from nyxgpt import usage_analytics as usage_analytics_module
@@ -381,6 +382,12 @@ async def lifespan(_app: FastAPI):
     global _resource_monitor
     _resource_monitor = init_resource_monitor(batch_processor=_batch_processor)
 
+    # Start the resource metrics history sampler. It's always running (like
+    # the self-heal watchdog below) so server-side history accumulates from
+    # process start, independent of whether the Settings page is ever open.
+    resource_metrics_store_module.get_sampler().start()
+    log.info("Resource metrics sampler initialized", extra={"component": "startup"})
+
     # Start the self-heal watchdog. It's always running so the SRE/admin
     # dashboard's toggle takes effect immediately without an API restart --
     # it only takes action when enabled (seeded from config.ini on a fresh
@@ -402,6 +409,9 @@ async def lifespan(_app: FastAPI):
 
     self_heal_module.get_watchdog().stop()
     log.info("Self-heal watchdog stopped", extra={"component": "shutdown"})
+
+    resource_metrics_store_module.get_sampler().stop()
+    log.info("Resource metrics sampler stopped", extra={"component": "shutdown"})
 
 
 # Versioned API router
@@ -1131,6 +1141,32 @@ def resource_metrics() -> ResourceMetricsResponse:
 
     metrics = monitor.get_metrics()
     return ResourceMetricsResponse(**metrics.to_dict())
+
+
+@api.get("/metrics/history")
+def resource_metrics_history(
+    range: str = Query(  # noqa: A002 - "range" is the public query param name
+        "1h", pattern="^(1h|24h|7d)$", description="Time window: 1h, 24h, or 7d"
+    ),
+) -> dict[str, Any]:
+    """Get server-side historical resource usage metrics for a time window.
+
+    Unlike `/api/v1/metrics` (a current-snapshot endpoint), this returns a
+    downsampled time series sampled server-side once a minute and persisted
+    to disk, so history exists independent of any open browser tab and
+    survives an API restart. `history_available_seconds` tells the caller
+    honestly how much of the requested window is actually backed by data,
+    so the UI can avoid rendering a misleadingly full-width chart on a
+    fresh install.
+
+    Args:
+        range: Requested window -- "1h", "24h", or "7d".
+
+    Returns:
+        Dict with the requested range, downsampled points, sample cadence,
+        and available-history accounting.
+    """
+    return resource_metrics_store_module.query_history(range)
 
 
 def _jaeger_curated_views(jaeger_ui_url: str, service_name: str) -> list[dict[str, str]]:
