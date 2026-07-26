@@ -3,6 +3,23 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from nyxgpt import resource_metrics_store
+
+
+@pytest.fixture(autouse=True)
+def _isolated_history_store():
+    """Ensure the module-level history buffer doesn't leak between tests.
+
+    `disk_loaded=True` also stops queries from falling through to whatever
+    the real on-disk history log (`~/.nyxGPT/logs/...`, since the endpoint
+    under test always uses the default path) happens to contain in the
+    ambient environment -- these tests only care about in-memory state
+    they record themselves via `record_sample`.
+    """
+    resource_metrics_store.reset_for_tests(disk_loaded=True)
+    yield
+    resource_metrics_store.reset_for_tests(disk_loaded=True)
+
 
 @pytest.mark.integration
 def test_metrics_endpoint_exists(client: TestClient):
@@ -116,3 +133,94 @@ def test_metrics_latency_tracking(client: TestClient):
     # Note: When using TestClient, the resource monitor may not be initialized
     # via the lifespan context, so we just verify the endpoint returns valid data
     assert data["queue"]["total_requests"] >= 0
+
+
+@pytest.mark.integration
+def test_metrics_history_endpoint_exists(client: TestClient):
+    """Test that /api/v1/metrics/history endpoint exists and returns 200."""
+    response = client.get("/api/v1/metrics/history")
+    assert response.status_code == 200
+
+
+@pytest.mark.integration
+def test_metrics_history_defaults_to_1h_range(client: TestClient):
+    """Test that the history endpoint defaults to the 1h range when unspecified."""
+    response = client.get("/api/v1/metrics/history")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["range"] == "1h"
+    assert data["requested_window_seconds"] == 3600
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("range_key", "window_seconds"),
+    [("1h", 3600), ("24h", 86400), ("7d", 604800)],
+)
+def test_metrics_history_accepts_each_supported_range(
+    client: TestClient, range_key: str, window_seconds: int
+):
+    """Test that each documented range value is accepted and echoed back."""
+    response = client.get(f"/api/v1/metrics/history?range={range_key}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["range"] == range_key
+    assert data["requested_window_seconds"] == window_seconds
+
+
+@pytest.mark.integration
+def test_metrics_history_rejects_invalid_range(client: TestClient):
+    """Test that an unsupported range value is rejected with a 422."""
+    response = client.get("/api/v1/metrics/history?range=1y")
+    assert response.status_code == 422
+
+
+@pytest.mark.integration
+def test_metrics_history_response_structure(client: TestClient):
+    """Test that the history endpoint returns the documented fields."""
+    response = client.get("/api/v1/metrics/history?range=1h")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert "range" in data
+    assert "points" in data
+    assert isinstance(data["points"], list)
+    assert "sample_interval_seconds" in data
+    assert "requested_window_seconds" in data
+    assert "earliest_available_ts" in data
+    assert "history_available_seconds" in data
+
+
+@pytest.mark.integration
+def test_metrics_history_honestly_reports_no_data_on_a_fresh_store(client: TestClient):
+    """Test that an empty history store reports zero availability rather than fabricating data."""
+    response = client.get("/api/v1/metrics/history?range=7d")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["points"] == []
+    assert data["earliest_available_ts"] is None
+    assert data["history_available_seconds"] == 0
+
+
+@pytest.mark.integration
+def test_metrics_history_reflects_recorded_samples(client: TestClient, tmp_path):
+    """Test that a sample recorded via the store is returned by the history endpoint."""
+    from configparser import ConfigParser
+
+    from nyxgpt.resource_monitor import ResourceMonitor
+
+    isolated_cfg = ConfigParser()
+    isolated_cfg.add_section("logging")
+    isolated_cfg.set("logging", "dir", str(tmp_path))
+
+    monitor = ResourceMonitor(max_samples=10)
+    resource_metrics_store.record_sample(monitor, cfg=isolated_cfg)
+
+    response = client.get("/api/v1/metrics/history?range=1h")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert len(data["points"]) == 1
+    assert data["earliest_available_ts"] is not None
+    assert data["history_available_seconds"] >= 0

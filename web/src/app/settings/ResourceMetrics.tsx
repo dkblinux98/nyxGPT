@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, type CSSProperties } from 'react';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
 
@@ -27,25 +27,62 @@ type MetricsData = {
   };
 };
 
-type HistoricalData = {
-  timestamp: number;
+// Mirrors the point shape returned by GET /api/v1/metrics/history -- server-side
+// samples taken once a minute and persisted, not client-accumulated snapshots.
+type HistoryPoint = {
+  ts: number; // seconds since epoch
   memory_rss_mb: number;
   memory_percent: number;
   cpu_process_percent: number;
   cpu_system_percent: number;
   avg_latency_ms: number;
+  p99_latency_ms: number;
   queue_depth: number;
+};
+
+type HistoryResponse = {
+  range: TimeRange;
+  points: HistoryPoint[];
+  sample_interval_seconds: number;
+  requested_window_seconds: number;
+  earliest_available_ts: number | null;
+  history_available_seconds: number;
 };
 
 type TimeRange = '1h' | '24h' | '7d';
 
+const RANGE_LABELS: Record<TimeRange, string> = {
+  '1h': 'Last Hour',
+  '24h': 'Last 24 Hours',
+  '7d': 'Last 7 Days',
+};
+
+// How often to re-fetch the server-side history series while auto-refresh is
+// on. The backend only samples once a minute, so there's no point polling
+// history faster than that -- the 5s /api/metrics poll still animates the
+// "current" tiles and the live head of the chart in between.
+const HISTORY_REFRESH_MS = 60000;
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${(seconds / 3600).toFixed(1)}h`;
+  return `${(seconds / 86400).toFixed(1)}d`;
+}
+
+function formatPointTime(ts: number, range: TimeRange): string {
+  const date = new Date(ts * 1000);
+  return range === '1h' ? date.toLocaleTimeString() : date.toLocaleString();
+}
+
 export default function ResourceMetrics() {
   const [metrics, setMetrics] = useState<MetricsData | null>(null);
-  const [historical, setHistorical] = useState<HistoricalData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [timeRange, setTimeRange] = useState<TimeRange>('1h');
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [history, setHistory] = useState<HistoryResponse | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchMetrics = async () => {
@@ -57,37 +94,26 @@ export default function ResourceMetrics() {
       const data = await res.json();
       setMetrics(data);
       setError(null);
-
-      if (data) {
-        // Add to historical data
-        setHistorical((prev) => {
-          const newEntry: HistoricalData = {
-            timestamp: Date.now(),
-            memory_rss_mb: data.memory.rss_mb,
-            memory_percent: data.memory.percent,
-            cpu_process_percent: data.cpu.process_percent,
-            cpu_system_percent: data.cpu.system_percent,
-            avg_latency_ms: data.latency.avg_ms,
-            queue_depth: data.queue.depth,
-          };
-
-          // Keep data based on time range
-          const maxAge = timeRange === '1h' ? 3600000 : timeRange === '24h' ? 86400000 : 604800000;
-          const cutoff = Date.now() - maxAge;
-          const filtered = [...prev, newEntry].filter((d) => d.timestamp > cutoff);
-
-          // Limit to 100 data points
-          if (filtered.length > 100) {
-            return filtered.slice(filtered.length - 100);
-          }
-          return filtered;
-        });
-      }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchHistory = async (range: TimeRange) => {
+    try {
+      const res = await fetch(`/api/v1/metrics/history?range=${range}`);
+      if (!res.ok) {
+        throw new Error(`Failed to fetch metrics history: HTTP ${res.status}`);
+      }
+      const data: HistoryResponse = await res.json();
+      setHistory(data);
+      setHistoryError(null);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setHistoryError(msg);
     }
   };
 
@@ -104,33 +130,69 @@ export default function ResourceMetrics() {
         intervalRef.current = null;
       }
     };
-  }, [autoRefresh, timeRange]);
+  }, [autoRefresh]);
+
+  useEffect(() => {
+    fetchHistory(timeRange);
+
+    let historyIntervalId: ReturnType<typeof setInterval> | null = null;
+    if (autoRefresh) {
+      historyIntervalId = setInterval(() => fetchHistory(timeRange), HISTORY_REFRESH_MS);
+    }
+
+    return () => {
+      if (historyIntervalId) {
+        clearInterval(historyIntervalId);
+      }
+    };
+  }, [timeRange, autoRefresh]);
+
+  // The displayed series is the persisted server-side history for the
+  // selected window, with the live 5s snapshot appended as a transient point
+  // so the chart's head keeps animating between minute-cadence history
+  // refreshes. This point is never itself persisted.
+  const displayedPoints: HistoryPoint[] = history ? [...history.points] : [];
+  if (autoRefresh && metrics) {
+    displayedPoints.push({
+      ts: Date.now() / 1000,
+      memory_rss_mb: metrics.memory.rss_mb,
+      memory_percent: metrics.memory.percent,
+      cpu_process_percent: metrics.cpu.process_percent,
+      cpu_system_percent: metrics.cpu.system_percent,
+      avg_latency_ms: metrics.latency.avg_ms,
+      p99_latency_ms: metrics.latency.p99_ms,
+      queue_depth: metrics.queue.depth,
+    });
+  }
 
   const exportData = (metrics: MetricsData, format: 'csv' | 'json') => {
     if (format === 'json') {
       const data = {
         current: metrics,
-        historical: historical,
+        range: timeRange,
+        history_available_seconds: history?.history_available_seconds ?? 0,
+        historical: displayedPoints,
         exported_at: new Date().toISOString(),
       };
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `metrics-${Date.now()}.json`;
+      a.download = `metrics-${timeRange}-${Date.now()}.json`;
       a.click();
       URL.revokeObjectURL(url);
     } else {
       // CSV format
-      let csv = 'timestamp,memory_rss_mb,memory_percent,cpu_process,cpu_system,avg_latency_ms,queue_depth\n';
-      historical.forEach((d) => {
-        csv += `${new Date(d.timestamp).toISOString()},${d.memory_rss_mb},${d.memory_percent},${d.cpu_process_percent},${d.cpu_system_percent},${d.avg_latency_ms},${d.queue_depth}\n`;
+      let csv =
+        'timestamp,memory_rss_mb,memory_percent,cpu_process,cpu_system,avg_latency_ms,p99_latency_ms,queue_depth\n';
+      displayedPoints.forEach((d) => {
+        csv += `${new Date(d.ts * 1000).toISOString()},${d.memory_rss_mb},${d.memory_percent},${d.cpu_process_percent},${d.cpu_system_percent},${d.avg_latency_ms},${d.p99_latency_ms},${d.queue_depth}\n`;
       });
       const blob = new Blob([csv], { type: 'text/csv' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `metrics-${Date.now()}.csv`;
+      a.download = `metrics-${timeRange}-${Date.now()}.csv`;
       a.click();
       URL.revokeObjectURL(url);
     }
@@ -179,6 +241,16 @@ export default function ResourceMetrics() {
     }
   };
 
+  const buttonStyle = (active: boolean): CSSProperties => ({
+    background: active ? 'var(--button)' : 'transparent',
+    color: active ? 'var(--button-text)' : 'var(--text)',
+    border: '1px solid var(--border)',
+    borderRadius: 6,
+    padding: '8px 16px',
+    cursor: 'pointer',
+    fontSize: 14,
+  });
+
   return (
     <div>
       {/* Controls */}
@@ -195,48 +267,11 @@ export default function ResourceMetrics() {
         }}
       >
         <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            onClick={() => setTimeRange('1h')}
-            style={{
-              background: timeRange === '1h' ? 'var(--button)' : 'transparent',
-              color: timeRange === '1h' ? 'var(--button-text)' : 'var(--text)',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              padding: '8px 16px',
-              cursor: 'pointer',
-              fontSize: 14,
-            }}
-          >
-            Last Hour
-          </button>
-          <button
-            onClick={() => setTimeRange('24h')}
-            style={{
-              background: timeRange === '24h' ? 'var(--button)' : 'transparent',
-              color: timeRange === '24h' ? 'var(--button-text)' : 'var(--text)',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              padding: '8px 16px',
-              cursor: 'pointer',
-              fontSize: 14,
-            }}
-          >
-            Last 24 Hours
-          </button>
-          <button
-            onClick={() => setTimeRange('7d')}
-            style={{
-              background: timeRange === '7d' ? 'var(--button)' : 'transparent',
-              color: timeRange === '7d' ? 'var(--button-text)' : 'var(--text)',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              padding: '8px 16px',
-              cursor: 'pointer',
-              fontSize: 14,
-            }}
-          >
-            Last 7 Days
-          </button>
+          {(Object.keys(RANGE_LABELS) as TimeRange[]).map((range) => (
+            <button key={range} onClick={() => setTimeRange(range)} style={buttonStyle(timeRange === range)}>
+              {RANGE_LABELS[range]}
+            </button>
+          ))}
         </div>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -441,25 +476,57 @@ export default function ResourceMetrics() {
       </div>
 
       {/* Historical Charts */}
-      {historical.length > 0 && (
+      <div
+        style={{
+          padding: 20,
+          background: 'var(--card-bg)',
+          borderRadius: 8,
+          border: '1px solid var(--border)',
+        }}
+      >
         <div
           style={{
-            padding: 20,
-            background: 'var(--card-bg)',
-            borderRadius: 8,
-            border: '1px solid var(--border)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'baseline',
+            marginBottom: 16,
+            flexWrap: 'wrap',
+            gap: 8,
           }}
         >
-          <h3 style={{ margin: 0, marginBottom: 16, fontSize: 18, fontWeight: 600 }}>Historical Trends</h3>
+          <h3 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>
+            Historical Trends -- {RANGE_LABELS[timeRange]}
+          </h3>
+          {history && (
+            <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+              {history.history_available_seconds < history.requested_window_seconds
+                ? `Only ${formatDuration(history.history_available_seconds)} of history available (server-side sampling just started collecting data)`
+                : `Showing the full ${formatDuration(history.requested_window_seconds)} window`}
+              , sampled every {formatDuration(history.sample_interval_seconds)}
+            </span>
+          )}
+        </div>
+
+        {historyError && (
+          <div style={{ marginBottom: 16 }}>
+            <ErrorMessage message={`Failed to load history: ${historyError}`} />
+          </div>
+        )}
+
+        {displayedPoints.length === 0 ? (
+          <div style={{ fontSize: 14, color: 'var(--text-secondary)' }}>
+            No history yet for this window. Server-side sampling records a new point once a minute --
+            check back shortly.
+          </div>
+        ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: 24 }}>
-            {/* Simple text-based charts for now */}
             <div>
               <h4 style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 8 }}>Memory Trend</h4>
               <div style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--text-secondary)' }}>
-                {historical.slice(-10).map((d, i) => (
+                {displayedPoints.slice(-20).map((d, i) => (
                   <div key={i}>
-                    {new Date(d.timestamp).toLocaleTimeString()}: {d.memory_rss_mb.toFixed(1)} MB (
-                    {d.memory_percent.toFixed(1)}%)
+                    {formatPointTime(d.ts, timeRange)}: {d.memory_rss_mb.toFixed(1)} MB ({d.memory_percent.toFixed(1)}
+                    %)
                   </div>
                 ))}
               </div>
@@ -468,17 +535,17 @@ export default function ResourceMetrics() {
             <div>
               <h4 style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 8 }}>CPU Trend</h4>
               <div style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--text-secondary)' }}>
-                {historical.slice(-10).map((d, i) => (
+                {displayedPoints.slice(-20).map((d, i) => (
                   <div key={i}>
-                    {new Date(d.timestamp).toLocaleTimeString()}: Process {d.cpu_process_percent.toFixed(1)}% /
-                    System {d.cpu_system_percent.toFixed(1)}%
+                    {formatPointTime(d.ts, timeRange)}: Process {d.cpu_process_percent.toFixed(1)}% / System{' '}
+                    {d.cpu_system_percent.toFixed(1)}%
                   </div>
                 ))}
               </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
