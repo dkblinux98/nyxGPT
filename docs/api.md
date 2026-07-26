@@ -21,6 +21,7 @@ Quick reference of all 85 available endpoints:
 | `/api/v1/info` | GET | Runtime configuration |
 | `/api/v1/batch/metrics` | GET | Request batching metrics |
 | `/api/v1/metrics` | GET | Resource usage monitoring (memory, CPU, latency, queue depth) |
+| `/api/v1/metrics/history` | GET | Server-side resource usage history (1h/24h/7d, persisted independent of any open browser tab) |
 | `/api/v1/tracing` | GET | Distributed tracing status (enabled/active, service name, OTLP endpoint, Jaeger UI URL) |
 | `/api/v1/error-tracking` | GET | Error tracking status (enabled/active, DSN, environment, GlitchTip UI URL) |
 | `/api/v1/monitoring` | GET | Monitoring stack status (enabled/active, Grafana UI URL) |
@@ -3176,6 +3177,63 @@ curl http://127.0.0.1:8000/api/v1/metrics
 - Tracking request latency over time
 - Monitoring system health during high load
 
+### `GET /api/v1/metrics/history`
+
+Server-side historical resource usage, independent of any open browser tab.
+Unlike `/api/v1/metrics` (a current-snapshot endpoint), the API process
+samples its own resource metrics once a minute in a background thread and
+persists each sample to `~/.nyxGPT/logs/resource_metrics_history.jsonl`, so
+history survives both a page reload and an API restart, with up to 7 days of
+retention.
+
+**Request:**
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/metrics/history?range=24h"
+```
+
+**Query Parameters:**
+- `range` - Time window to return: `1h` (default), `24h`, or `7d`
+
+**Response:**
+
+```json
+{
+  "range": "24h",
+  "points": [
+    {
+      "ts": 1721990400.0,
+      "memory_rss_mb": 245.32,
+      "memory_percent": 3.21,
+      "cpu_process_percent": 12.5,
+      "cpu_system_percent": 45.8,
+      "avg_latency_ms": 23.45,
+      "p99_latency_ms": 156.78,
+      "queue_depth": 3
+    }
+  ],
+  "sample_interval_seconds": 60,
+  "requested_window_seconds": 86400,
+  "earliest_available_ts": 1721990400.0,
+  "history_available_seconds": 3600.0
+}
+```
+
+**Response Fields:**
+- `range` - The requested window, echoed back
+- `points` - Time series samples covering the window, oldest first. Downsampled
+  (bucket-averaged) to at most 300 points, so longer ranges return coarser
+  resolution rather than an unbounded response
+- `sample_interval_seconds` - How often the server samples (currently 60s)
+- `requested_window_seconds` - The requested range expressed in seconds
+- `earliest_available_ts` - Unix timestamp of the oldest sample on record, or
+  `null` if none exist yet
+- `history_available_seconds` - How much of the requested window is actually
+  backed by data (capped at `requested_window_seconds`). On a fresh install
+  this starts near 0 and grows over time -- callers should treat a value
+  smaller than `requested_window_seconds` as a partial-history state rather
+  than assume the chart is fully populated
+
 ### Web UI Dashboard
 
 The web UI provides a visual dashboard for resource usage metrics accessible from the Settings menu:
@@ -3189,8 +3247,10 @@ The web UI provides a visual dashboard for resource usage metrics accessible fro
 - Real-time metric updates (auto-refresh every 5 seconds)
 - Visual display of memory, CPU, latency, and queue metrics
 - Color-coded warning indicators (normal/warning/critical thresholds)
-- Historical trends with configurable time ranges (1 hour, 24 hours, 7 days)
-- Export functionality (CSV and JSON formats)
+- Historical trends backed by server-side history (`GET /api/v1/metrics/history`),
+  with switchable time ranges (1 hour, 24 hours, 7 days) that each fetch and
+  render their own window -- including data from before the page was opened
+- Export functionality (CSV and JSON formats) for the currently selected window
 - Toggle auto-refresh on/off
 
 **Warning Thresholds:**
