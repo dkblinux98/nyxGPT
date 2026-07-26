@@ -7,6 +7,8 @@ config, and the Grafana Loki datasource + Logs Explorer dashboard.
 from __future__ import annotations
 
 import json
+import logging
+import re
 from configparser import ConfigParser
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from nyxgpt.app import app
 from nyxgpt.config import get_log_aggregation_config, get_log_aggregation_enabled
+from nyxgpt.logging import DEFAULT_DATEFMT, DEFAULT_FMT
 
 pytestmark = pytest.mark.unit
 
@@ -74,6 +77,69 @@ def test_promtail_extracts_logger_as_a_label() -> None:
     labels_stage = next(stage["labels"] for stage in pipeline_stages if "labels" in stage)
     assert "logger" in labels_stage
     assert "level" in labels_stage
+
+
+def _promtail_regex() -> str:
+    promtail_config = yaml.safe_load((REPO_ROOT / "docker" / "promtail-config.yml").read_text())
+    pipeline_stages = promtail_config["scrape_configs"][0]["pipeline_stages"]
+    return next(stage["regex"] for stage in pipeline_stages if "regex" in stage)["expression"]
+
+
+def test_promtail_timestamp_stage_uses_utc_location() -> None:
+    """nyxgpt.logging writes timestamps in UTC (`formatter.converter =
+    time.gmtime`); the timestamp stage must be told so explicitly, or a
+    non-UTC host's promtail parses them as UTC-when-they're-not and shifts
+    every line hours into the past -- outside the curated Explore links'
+    now-1h window (#3349)."""
+    promtail_config = yaml.safe_load((REPO_ROOT / "docker" / "promtail-config.yml").read_text())
+    pipeline_stages = promtail_config["scrape_configs"][0]["pipeline_stages"]
+    timestamp_stage = next(stage["timestamp"] for stage in pipeline_stages if "timestamp" in stage)
+    assert timestamp_stage["location"] == "UTC"
+
+
+def test_promtail_regex_matches_canonical_default_fmt_line() -> None:
+    """A real line produced by `nyxgpt.logging.DEFAULT_FMT` must match, with
+    the extracted `logger`/`level` matching what was actually logged --
+    format ↔ regex contract, so a future format change fails this test
+    instead of silently blanking every curated Grafana query (#3349)."""
+    expression = _promtail_regex()
+    formatter = logging.Formatter(
+        fmt=DEFAULT_FMT, datefmt=DEFAULT_DATEFMT, defaults={"request_id": "-"}
+    )
+    record = logging.LogRecord(
+        name="nyxgpt.self_heal",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="restart succeeded",
+        args=(),
+        exc_info=None,
+    )
+    record.request_id = "req-abc"
+    line = formatter.format(record)
+
+    match = re.match(expression, line)
+    assert match is not None
+    assert match.group("logger") == "nyxgpt.self_heal"
+    assert match.group("level") == "INFO"
+    assert match.group("request_id") == "req-abc"
+    assert match.group("message") == "restart succeeded"
+
+
+def test_promtail_regex_matches_millisecond_no_bracket_variant() -> None:
+    """Real native-install log files have been observed with a second line
+    shape: comma-millisecond timestamp, no `[request_id]` bracket. Lines in
+    this shape must still yield `logger`/`level` labels (#3349), or they're
+    invisible to every curated query, which filters on those labels."""
+    expression = _promtail_regex()
+    line = "2026-07-25 21:21:57,596 DEBUG nyxgpt.api: handling request"
+
+    match = re.match(expression, line)
+    assert match is not None
+    assert match.group("logger") == "nyxgpt.api"
+    assert match.group("level") == "DEBUG"
+    assert match.group("timestamp") == "2026-07-25 21:21:57"
+    assert match.group("message") == "handling request"
 
 
 def test_operational_logs_dashboard_is_provisioned() -> None:

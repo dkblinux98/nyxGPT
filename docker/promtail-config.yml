@@ -35,11 +35,25 @@ scrape_configs:
       # both are filterable in Grafana Explore and the curated per-component
       # dashboard queries -- the logger name is a bounded set of module
       # names, not per-request-unique, so it's safe label cardinality.
+      #
+      # The millisecond suffix and the `[request_id]` bracket are both
+      # optional so this same regex also matches lines that predate the
+      # request-id filter (#3181) or were emitted with comma-millisecond
+      # timestamps -- those lines still carry `level`/`logger` and would
+      # otherwise be invisible to every curated query, which filters on
+      # those labels (see #3349). Keep this expression's contract in sync
+      # with tests/unit/test_log_aggregation_stack.py.
       - regex:
-          expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (?P<level>\w+) \[(?P<request_id>[^\]]*)\] (?P<logger>\S+): (?P<message>.*)$'
+          expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:,\d{3})? (?P<level>\w+) (?:\[(?P<request_id>[^\]]*)\] )?(?P<logger>\S+): (?P<message>.*)$'
       - labels:
           level:
           logger:
       - timestamp:
           source: timestamp
           format: "2006-01-02 15:04:05"
+          # nyxgpt.logging writes log timestamps in UTC (see
+          # nyxgpt.logging.configure_logging's `formatter.converter =
+          # time.gmtime`), not host-local time -- this must stay UTC to
+          # match, or every parsed line shifts by the host's UTC offset and
+          # falls outside the curated Explore links' now-1h window (#3349).
+          location: UTC
