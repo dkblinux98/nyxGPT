@@ -32,7 +32,11 @@ from typing import Any
 import httpx
 
 from nyxgpt import self_heal
-from nyxgpt.config import get_log_aggregation_enabled
+from nyxgpt.config import (
+    get_log_aggregation_enabled,
+    get_monitoring_config,
+    get_monitoring_grafana_admin_password,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +79,10 @@ OLLAMA_CONTAINER_NAME = "nyxgpt-ollama"
 LAUNCHAGENT_HOME_PLACEHOLDER = "__NYXGPT_HOME__"
 
 # Container path promtail's docker-compose.yml service binds to native-mode
-# host logs (~/.nyxGPT/logs). `_log_aggregation_wiring_issue` greps for this
-# marker to catch a regression (see #3277) where that bind mount is dropped
-# and native-mode logs silently stop reaching Loki.
+# host logs (~/.nyxGPT/logs). `_log_aggregation_wiring_issue` checks the
+# running promtail container's actual mounts (via `docker inspect`) for this
+# destination to catch a regression (see #3277, #3349) where that bind mount
+# is dropped and native-mode logs silently stop reaching Loki.
 PROMTAIL_NATIVE_LOG_MOUNT_MARKER = "/var/log/nyxgpt-native/logs"
 
 # --- Container data layout (see docs/docker-compose.md#volumes, issue #3346) ---
@@ -2174,6 +2179,38 @@ def status(_args) -> int:
     return 0
 
 
+def _promtail_container_id() -> str | None:
+    """Return the running promtail container's ID, or None if it isn't up."""
+    cp = _run(
+        ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "ps", "-q", "promtail"],
+        check=False,
+    )
+    container_id = (cp.stdout or "").strip().splitlines()[0] if cp.stdout else ""
+    return container_id or None
+
+
+def _promtail_native_mount_missing(container_id: str) -> bool:
+    """Return True if the running promtail container has no native-logs bind mount.
+
+    Inspects the actual container's mounts via `docker inspect` rather than
+    grepping docker-compose.yml's text for the mount marker -- a promtail
+    container created before a compose-file edit (or otherwise missing the
+    bind for any reason) has a stale mount list that still passes a text-only
+    check, even though the running container can't see native-mode logs.
+    """
+    cp = _run(
+        ["docker", "inspect", "--format", "{{json .Mounts}}", container_id],
+        check=False,
+    )
+    if cp.returncode != 0:
+        return True
+    try:
+        mounts = json.loads(cp.stdout or "[]")
+    except Exception:
+        return True
+    return not any(m.get("Destination") == PROMTAIL_NATIVE_LOG_MOUNT_MARKER for m in mounts)
+
+
 def _log_aggregation_wiring_issue(cfg_path: Path | None = None) -> str | None:
     """Detect the #3277 failure mode: native-mode logs never reaching Loki.
 
@@ -2181,11 +2218,11 @@ def _log_aggregation_wiring_issue(cfg_path: Path | None = None) -> str | None:
     core app is deployed native or Compose (see `OBSERVABILITY_PROFILES`).
     In native mode, api/self-heal/ops write logs to the host `~/.nyxGPT/logs`
     directly -- a plain directory, not the `nyxgpt_data` Docker-managed
-    volume promtail otherwise mounts for Compose-mode logs. If
-    docker-compose.yml's promtail service ever loses its host bind mount for
-    that directory, native logs silently stop reaching Loki -- Grafana just
-    shows nothing rather than erroring, so this needs an explicit check
-    rather than relying on someone noticing an empty dashboard.
+    volume promtail otherwise mounts for Compose-mode logs. If the running
+    promtail container ever loses its host bind mount for that directory,
+    native logs silently stop reaching Loki -- Grafana just shows nothing
+    rather than erroring, so this needs an explicit check rather than
+    relying on someone noticing an empty dashboard.
 
     Only reports an issue when there's something to actually verify: log
     aggregation is enabled, promtail is confirmed running, and native-mode
@@ -2211,19 +2248,60 @@ def _log_aggregation_wiring_issue(cfg_path: Path | None = None) -> str | None:
     if not native_log_dir.exists() or not any(native_log_dir.glob("*.log*")):
         return None
 
-    compose_file = REPO_ROOT / "docker-compose.yml"
-    try:
-        compose_text = compose_file.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    if PROMTAIL_NATIVE_LOG_MOUNT_MARKER in compose_text:
+    container_id = _promtail_container_id()
+    if container_id is None or not _promtail_native_mount_missing(container_id):
         return None
 
     return (
         f"Log aggregation is enabled and native-mode logs exist under {native_log_dir}, "
-        "but promtail's docker-compose.yml service has no host bind mount for them -- "
+        "but the running promtail container has no bind mount for them -- "
         "native logs are not reaching Loki. See docs/docker-compose.md#log-aggregation."
     )
+
+
+# Curated per-component loggers surfaced in the Log Aggregation panel and
+# the "Operational Logs" Grafana dashboard (see app._loki_curated_queries).
+# `_loki_recent_volume_by_logger` reports each one's recent line count so
+# `doctor` output can distinguish "pipeline healthy, component just idle"
+# (e.g. deploy/canary legitimately silent on a native install that's never
+# run a k8s operation) from "no logs reaching Loki at all" (every logger at
+# zero, including ones that just definitely logged something) -- see #3349.
+LOKI_CURATED_LOGGERS: dict[str, str] = {
+    "self_heal": "nyxgpt.self_heal",
+    "deploy": "nyxgpt.deploy",
+    "canary": "nyxgpt.canary",
+    "chat": "nyxgpt.chat",
+    "rag": "nyxgpt.rag.rag",
+}
+
+
+def _loki_recent_volume_by_logger(
+    grafana_ui_url: str, grafana_admin_password: str, *, hours: int = 24
+) -> dict[str, int] | None:
+    """Query Loki (via Grafana's provisioned datasource proxy) for each curated
+    logger's line count over the last `hours`. Returns None if Grafana/Loki
+    can't be reached or queried at all -- that's not itself a failure here,
+    just nothing to report (other doctor checks cover stack reachability).
+    """
+    volumes: dict[str, int] = {}
+    try:
+        with httpx.Client(
+            base_url=grafana_ui_url,
+            auth=("admin", grafana_admin_password),
+            timeout=5.0,
+        ) as client:
+            for name, logger_name in LOKI_CURATED_LOGGERS.items():
+                query = f'sum(count_over_time({{job="nyxgpt", logger="{logger_name}"}}[{hours}h]))'
+                resp = client.get(
+                    "/api/datasources/proxy/uid/loki/loki/api/v1/query",
+                    params={"query": query},
+                )
+                resp.raise_for_status()
+                result = resp.json().get("data", {}).get("result", [])
+                volumes[name] = int(float(result[0]["value"][1])) if result else 0
+    except Exception:
+        return None
+    return volumes
 
 
 def doctor(_args) -> int:
@@ -2233,8 +2311,10 @@ def doctor(_args) -> int:
     non-executable helper scripts, missing brew/docker/node/npm tools on
     PATH, missing/incomplete web dependencies (node_modules, undici), and
     (when log aggregation is enabled and native logs exist) whether
-    promtail is actually wired to see native-mode host logs. Prints each
-    issue found.
+    promtail is actually wired to see native-mode host logs. Also prints a
+    per-logger recent log volume (last 24h, via Loki) when log aggregation
+    and the monitoring stack are both up, so idle curated components aren't
+    mistaken for a broken pipeline. Prints each issue found.
 
     Returns 0 if no issues were found, else 2.
     """
@@ -2244,6 +2324,28 @@ def doctor(_args) -> int:
     cfg = Path.home() / ".nyxGPT" / "config.ini"
     if not cfg.exists():
         issues.append(f"Missing config {cfg}")
+
+    volume_info: str | None = None
+    cfg_parser: ConfigParser | None = None
+    if cfg.exists():
+        try:
+            parsed = ConfigParser()
+            parsed.read(cfg)
+            cfg_parser = parsed
+        except Exception:
+            cfg_parser = None
+    if (
+        cfg_parser is not None
+        and get_log_aggregation_enabled(cfg_parser)
+        and _compose_stack_snapshot().get("promtail") == "running"
+    ):
+        monitoring_config = get_monitoring_config(cfg_parser)
+        volumes = _loki_recent_volume_by_logger(
+            monitoring_config["grafana_ui_url"],
+            get_monitoring_grafana_admin_password(cfg_parser),
+        )
+        if volumes is not None:
+            volume_info = ", ".join(f"{k}={v}" for k, v in volumes.items())
 
     for name in ("run-web.sh", "follow-cassandra-logs.sh", "follow-ollama-logs.sh"):
         p = Path.home() / ".nyxGPT" / "scripts" / name
@@ -2304,6 +2406,8 @@ def doctor(_args) -> int:
         print("nyxGPT ops doctor: FAIL")
         for i in issues:
             print(f"- {i}")
+        if volume_info is not None:
+            print(f"Log volume (last 24h) by logger: {volume_info}")
         logger.warning(
             "ops: doctor found %d issue(s): %s",
             len(issues),
@@ -2313,6 +2417,8 @@ def doctor(_args) -> int:
         return 2
 
     print("nyxGPT ops doctor: OK")
+    if volume_info is not None:
+        print(f"Log volume (last 24h) by logger: {volume_info}")
     logger.info(
         "ops: doctor found no issues",
         extra={"component": "ops", "action": "doctor", "ok": True, "issues": []},

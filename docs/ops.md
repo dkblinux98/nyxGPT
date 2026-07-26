@@ -373,6 +373,11 @@ Checks include:
 - Local Cassandra container presence (flags a missing `nyxgpt-cassandra`
   container and suggests `nyxgpt ops install` to create it)
 - Log directory writability
+- (when log aggregation is enabled) whether the *running* promtail
+  container actually has the native-logs bind mount, via `docker inspect`
+  -- and, when Loki is reachable, a per-component log volume for the last
+  24h so an idle curated component isn't mistaken for a broken pipeline
+  (see [docker-compose.md#log-aggregation](docker-compose.md#log-aggregation))
 
 Results are reported with clear PASS / FAIL indicators.
 

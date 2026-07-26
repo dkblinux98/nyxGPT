@@ -374,9 +374,24 @@ different places, so promtail is wired to tail both:
 `docker/promtail-config.yml` scrapes both paths under the same `job`
 label, so log streams from either mode are indistinguishable in Grafana.
 If you're running native mode and don't see logs in Grafana, run `nyxgpt
-ops doctor` first -- it flags a missing native-log bind mount (e.g. after
-a `docker-compose.yml` edit that dropped it) rather than leaving it to a
-silently-empty dashboard.
+ops doctor` first -- it flags a missing native-log bind mount by
+inspecting the *running* promtail container's mounts (`docker inspect`,
+not just the compose file's text), catching a container that was created
+before a `docker-compose.yml` edit rather than leaving it to a
+silently-empty dashboard. `nyxgpt ops doctor` also reports a per-component
+log volume for the last 24h (via Loki), so an idle curated component
+(e.g. deploy/canary on a native install that's never run a k8s operation)
+isn't mistaken for a broken pipeline.
+
+nyxgpt logs timestamps in UTC (see `nyxgpt.logging.configure_logging`) and
+`docker/promtail-config.yml`'s `timestamp` stage is told the same
+(`location: UTC`) -- both sides must agree, or a non-UTC host's promtail
+would parse a local timestamp as if it were already UTC and shift every
+line hours into the past, outside the curated Explore links' `now-1h`
+window. promtail's extraction regex also tolerates the log line's optional
+comma-millisecond suffix and `[request_id]` bracket, so both nyxgpt's
+canonical format and older/varying line shapes still yield `level`/`logger`
+labels.
 
 promtail extracts both `level` and `logger` (the Python module, e.g.
 `nyxgpt.self_heal`) as Loki labels from the API's log format, so log
