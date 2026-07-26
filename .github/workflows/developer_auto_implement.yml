@@ -327,7 +327,6 @@ jobs:
           show_full_output: true
           claude_args: >-
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
-            --model claude-fable-5
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
             Fix the acceptance failure for issue #${{ github.event.issue.number }}.
@@ -455,7 +454,6 @@ jobs:
           show_full_output: true
           claude_args: >-
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
-            --model claude-fable-5
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
             Fix the code review issues for issue #${{ github.event.issue.number }}.
@@ -582,7 +580,6 @@ jobs:
           show_full_output: true
           claude_args: >-
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
-            --model claude-fable-5
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
             Implement issue #${{ github.event.issue.number }}.
@@ -858,7 +855,6 @@ jobs:
           show_full_output: true
           claude_args: >-
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
-            --model claude-fable-5
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
             VERIFICATION FAILED - YOU MUST FIX THE ISSUES
@@ -960,7 +956,6 @@ jobs:
           show_full_output: true
           claude_args: >-
             --allowed-tools "Bash,Read,Write,Edit,Glob,Grep"
-            --model claude-fable-5
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
             VERIFICATION STILL FAILING - FINAL ATTEMPT TO FIX
@@ -1431,7 +1426,6 @@ jobs:
           show_full_output: false
           claude_args: >-
             --allowed-tools "Bash,Read,Grep"
-            --model claude-opus-5
             --mcp-config ${{ runner.temp }}/mcp-config.json
           prompt: |
             The developer workflow failed for issue #${{ github.event.issue.number }}, and automatic
