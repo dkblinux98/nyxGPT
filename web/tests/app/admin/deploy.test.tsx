@@ -4,6 +4,9 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
 import DeployPage from '../../../src/app/admin/deploy/page';
+import { exploreQueryUrl } from '../../../src/lib/grafanaExplore';
+
+const DEPLOY_LOKI_QUERY = '{job="nyxgpt"} |= `deploy:` |~ `switched|switching|rollback|refusing`';
 
 const mockStatus = {
   namespace: 'nyxgpt',
@@ -113,7 +116,7 @@ describe('DeployPage', () => {
     expect(screen.queryByText(/Deploy events/i)).not.toBeInTheDocument();
   });
 
-  it('links to the Deployment Grafana dashboard and the Loki saved query when active', async () => {
+  it('links to the Deployment Grafana dashboard and deep-links the Loki query into Explore', async () => {
     server.use(http.get('/api/v1/deploy/status', () => HttpResponse.json(mockStatus)));
     mockObservability(mockMonitoringActive, mockLogAggregationActive);
 
@@ -125,9 +128,10 @@ describe('DeployPage', () => {
     expect(grafanaLink).toHaveAttribute('href', 'http://localhost:3001/d/nyxgpt-deployment');
 
     const lokiLink = screen.getByRole('link', { name: /Deploy events/i });
-    expect(lokiLink).toHaveAttribute('href', 'http://localhost:3001/explore');
-
-    expect(screen.getByText(/deploy:/)).toBeInTheDocument();
+    const expectedHref = exploreQueryUrl('http://localhost:3001/explore', DEPLOY_LOKI_QUERY);
+    expect(lokiLink).toHaveAttribute('href', expectedHref);
+    const panes = JSON.parse(new URL(expectedHref).searchParams.get('panes')!);
+    expect(panes.nyx.queries[0].expr).toBe(DEPLOY_LOKI_QUERY);
   });
 
   it('ignores non-ok observability responses without throwing', async () => {

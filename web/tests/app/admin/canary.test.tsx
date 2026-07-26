@@ -4,6 +4,10 @@ import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
 import CanaryPage from '../../../src/app/admin/canary/page';
+import { exploreQueryUrl } from '../../../src/lib/grafanaExplore';
+
+const CANARY_LOKI_QUERY =
+  '{job="nyxgpt"} |= `canary:` |~ `starting|started|promoting|promoted|rolling back|rolled back|regression`';
 
 const mockStatus = {
   namespace: 'nyxgpt',
@@ -111,7 +115,7 @@ describe('CanaryPage', () => {
     expect(screen.queryByText(/Canary events/i)).not.toBeInTheDocument();
   });
 
-  it('links to the Canary Grafana dashboard and the Loki saved query when active', async () => {
+  it('links to the Canary Grafana dashboard and deep-links the Loki query into Explore', async () => {
     server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockStatus)));
     mockObservability(mockMonitoringActive, mockLogAggregationActive);
 
@@ -121,9 +125,10 @@ describe('CanaryPage', () => {
     expect(grafanaLink).toHaveAttribute('href', 'http://localhost:3001/d/nyxgpt-canary');
 
     const lokiLink = screen.getByRole('link', { name: /Canary events/i });
-    expect(lokiLink).toHaveAttribute('href', 'http://localhost:3001/explore');
-
-    expect(screen.getByText(/canary:/)).toBeInTheDocument();
+    const expectedHref = exploreQueryUrl('http://localhost:3001/explore', CANARY_LOKI_QUERY);
+    expect(lokiLink).toHaveAttribute('href', expectedHref);
+    const panes = JSON.parse(new URL(expectedHref).searchParams.get('panes')!);
+    expect(panes.nyx.queries[0].expr).toBe(CANARY_LOKI_QUERY);
   });
 
   it('swallows observability fetch failures silently', async () => {
