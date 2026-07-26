@@ -11,6 +11,7 @@ type Component = {
   health: string;
   healthy: boolean;
   source: string;
+  desired?: boolean;
 };
 
 type HealEvent = {
@@ -45,6 +46,8 @@ const SELF_HEAL_LOKI_QUERY = '{job="nyxgpt"} |= `self-heal:` |~ `restart|heal pa
 export default function SelfHealPage() {
   const [status, setStatus] = useState<SelfHealStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -54,6 +57,7 @@ export default function SelfHealPage() {
   const [logAggregation, setLogAggregation] = useState<LogAggregationStatus | null>(null);
 
   const loadStatus = useCallback(async () => {
+    setRefreshing(true);
     setError(null);
     try {
       const res = await fetch('/api/v1/self-heal/status', { cache: 'no-store' });
@@ -62,10 +66,12 @@ export default function SelfHealPage() {
         throw new Error(data.error || data.detail || `HTTP ${res.status}`);
       }
       setStatus(data);
+      setLastUpdated(Date.now());
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
@@ -333,17 +339,23 @@ export default function SelfHealPage() {
             </button>
             <button
               onClick={loadStatus}
+              disabled={refreshing}
               style={{
                 padding: '0.5rem 1rem',
                 backgroundColor: 'var(--background-secondary)',
                 border: '1px solid var(--border-color)',
                 borderRadius: '0.375rem',
-                cursor: 'pointer',
+                cursor: refreshing ? 'not-allowed' : 'pointer',
                 fontSize: '0.875rem',
               }}
             >
-              Refresh
+              {refreshing ? 'Refreshing...' : 'Refresh'}
             </button>
+            {lastUpdated && (
+              <span style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>
+                Last updated {new Date(lastUpdated).toLocaleTimeString()}
+              </span>
+            )}
           </div>
 
           <div style={{ marginBottom: '1.5rem' }}>
@@ -390,10 +402,23 @@ export default function SelfHealPage() {
                         style={{
                           marginLeft: '0.75rem',
                           fontSize: '0.8rem',
-                          color: c.healthy ? '#22c55e' : '#ef4444',
+                          color:
+                            c.desired === false
+                              ? 'var(--foreground-muted)'
+                              : c.state === 'absent'
+                                ? '#f59e0b'
+                                : c.healthy
+                                  ? '#22c55e'
+                                  : '#ef4444',
                         }}
                       >
-                        {c.healthy ? 'Healthy' : 'Unhealthy'}
+                        {c.desired === false
+                          ? 'Disabled'
+                          : c.state === 'absent'
+                            ? 'Absent'
+                            : c.healthy
+                              ? 'Healthy'
+                              : 'Unhealthy'}
                       </span>
                       <span
                         style={{
@@ -402,8 +427,11 @@ export default function SelfHealPage() {
                           color: 'var(--foreground-muted)',
                         }}
                       >
-                        state={c.state}
-                        {c.health ? ` health=${c.health}` : ''}
+                        {c.desired === false
+                          ? 'profile disabled in config, not auto-healed'
+                          : c.state === 'absent'
+                            ? 'enabled in config, no container running'
+                            : `state=${c.state}${c.health ? ` health=${c.health}` : ''}`}
                       </span>
                     </div>
                     <button

@@ -26,10 +26,15 @@ mode](#nativelocal-first-mode) below for how that's decided):
    list every container the Compose project has created — the core services
    (`ollama`, `cassandra`, `api`, `web`), if deployed via Compose, plus any
    of the opt-in `monitoring`/`logging`/`tracing`/`errors` profiles that
-   happen to be up. A profile/service that was never started simply doesn't
-   appear; it isn't treated as "down". See [Docker access from inside the
-   `api` container](#docker-access-from-inside-the-api-container) for how
-   it reaches the Docker daemon and resolves that compose file at all — it
+   happen to be up. A profile/service whose config.ini flag is off (never
+   enabled) simply doesn't appear; it isn't treated as "down". A profile
+   whose flag IS on but whose containers don't exist at all — e.g. after
+   `nyxgpt ops down` — is reported as **absent** and healed the same as an
+   unhealthy container; see [Desired state for observability
+   profiles](#desired-state-for-observability-profiles) below. See [Docker
+   access from inside the `api`
+   container](#docker-access-from-inside-the-api-container) for how it
+   reaches the Docker daemon and resolves that compose file at all — it
    runs inside one of the containers it's inspecting.
    - A component is **healthy** when its Compose `State` is `running` and
      its `Health` is either `healthy` or empty (no healthcheck configured —
@@ -57,6 +62,72 @@ Regardless of mode:
   0 the next time the component is observed healthy.
 - One-shot services (`glitchtip-migrate`, which runs a DB migration and is
   expected to exit 0 and stay exited) are never treated as "down".
+
+## Desired state for observability profiles
+
+`docker compose ps -a` only reports containers that exist. That's fine for
+detecting a crashed or stopped container, but it can't tell "never started"
+apart from "existed, then was torn down entirely" — and `nyxgpt ops down`
+does the latter (removes the containers, doesn't touch config.ini). Before
+this, tearing a profile's containers down was indistinguishable from never
+having enabled it at all: self-heal saw an empty world and had nothing to
+heal, even with auto-heal on and the feature flag still enabled (#3356).
+
+Self-heal now also checks config.ini directly for each observability
+profile's `enabled` flag:
+
+| config.ini section | Compose profile |
+|---|---|
+| `[monitoring] enabled` | `monitoring` |
+| `[log_aggregation] enabled` | `logging` |
+| `[tracing] enabled` | `tracing` |
+| `[error_tracking] enabled` | `errors` |
+
+If a section is enabled, its Compose services (resolved via `docker compose
+--profile <name> config --services`, the core `nyxgpt`/`api`/`web`/`ollama`/
+`cassandra` services excluded — see [Known limitation: the core
+stack](#known-limitation-the-core-stack) below) are **desired**. Any desired
+service missing from `docker compose ps -a`'s output is reported with
+`state: "absent"` (`healthy: false`) instead of not appearing at all, and is
+healed via `docker compose --profile ... up -d <service>` rather than
+`restart` — there's no container to restart. This is the same set of checks
+"Heal all unhealthy now" already runs, so it covers absent components with
+no separate code path, and the `/admin/self-heal` dashboard shows an
+**Absent** badge (distinct from **Unhealthy**) with the reason ("enabled in
+config, no container running").
+
+**Turning a profile off on purpose**: disabling its feature flag in
+config.ini (via the [config wizard](configuration.md), which stops but
+doesn't remove that profile's containers) is the supported way to keep it
+down with auto-heal enabled — self-heal only reconciles against *enabled*
+flags. A plain `nyxgpt ops down` with the flag left on and auto-heal on
+means the profile comes back on the next heal pass; that's expected, not a
+bug.
+
+Because disabling a flag stops rather than removes containers, they still
+show up in `docker compose ps -a` as present-but-stopped -- without a
+separate check, the automatic heal pass would see that and restart them
+right back, undoing the disable. So each present Compose component also
+carries a `desired` flag (`true` unless it belongs to a currently-disabled
+observability profile): the automatic pass skips restarting a
+`desired: false` component entirely (a manual "Heal now" click can still
+force it, the same override backoff/max-restarts already get), it's
+excluded from the "N unhealthy" count, and the dashboard shows a
+**Disabled** badge with the reason ("profile disabled in config, not
+auto-healed") instead of a plain **Unhealthy**.
+
+### Known limitation: the core stack
+
+This desired-state check only covers the four opt-in observability
+profiles. Whether `ollama`/`cassandra`/`api`/`web` *should* be running is a
+deployment-mode question (native/local-first vs. Compose), not a config.ini
+feature flag, so it isn't covered by this same mechanism yet — see #3348
+for native-mode coverage of those four (checked directly via `brew services
+list`/`docker ps`, which doesn't have this "torn down" blind spot in the
+first place, since a native install's brew services stay *installed*, just
+stopped). A core stack deployed via Compose and then fully torn down
+(`docker compose down` for the core services specifically, not just `nyxgpt
+ops down`) is not yet reconciled by either mechanism.
 
 ## Native/local-first mode
 
