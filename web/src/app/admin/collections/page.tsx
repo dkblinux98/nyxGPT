@@ -213,8 +213,8 @@ export default function CollectionsPage() {
           <p style={{ color: 'var(--foreground-muted)', marginBottom: 8 }}>
             Manage vector store collections and their settings
           </p>
-          <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
-            ← Back to Admin Dashboard
+          <a href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
+            ← Back to Chat
           </a>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>

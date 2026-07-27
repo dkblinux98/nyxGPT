@@ -123,7 +123,7 @@ describe('PlaygroundPage', () => {
     global.confirm = vi.fn().mockReturnValue(true);
   });
 
-  it('renders the standardized back-nav link and keeps the Show Comparison action', async () => {
+  it('renders the back to chat link and keeps the Show Comparison action', async () => {
     mockCollections([]);
 
     render(<PlaygroundPage />);
@@ -132,9 +132,8 @@ describe('PlaygroundPage', () => {
       expect(screen.getByRole('heading', { name: 'RAG Playground' })).toBeInTheDocument();
     });
 
-    const link = screen.getByRole('link', { name: /back to admin dashboard/i });
-    expect(link).toHaveAttribute('href', '/admin/dashboard');
-    expect(screen.queryByRole('button', { name: /back to chat/i })).not.toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /back to chat/i });
+    expect(link).toHaveAttribute('href', '/');
     const compareButton = screen.getByRole('button', { name: /show comparison/i });
     expect(compareButton).toBeInTheDocument();
     expect(compareButton).toBeDisabled();
