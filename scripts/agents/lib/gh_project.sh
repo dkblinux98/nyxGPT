@@ -541,6 +541,172 @@ assign_and_trigger_developer() {
 }
 
 # -------------------------
+# Branch hygiene helpers (shared by developer_create_branch.sh and
+# reconcile_dead_branches.sh, #3392)
+# -------------------------
+
+# Prints the headRefName of every OPEN pull request, one per line. These are
+# always protected from any branch-deletion sweep.
+open_pr_head_branches() {
+  gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --state open \
+    --json headRefName --limit 200 --jq '.[].headRefName'
+}
+
+# Best-effort remote branch delete: never fails the caller, since branch
+# cleanup is always a secondary/optional step relative to whatever primary
+# operation (branch creation, merge, sweep) triggered it.
+delete_remote_branch() {
+  local branch="$1"
+  git push origin --delete "$branch" >/dev/null 2>&1 \
+    || gh api -X DELETE "repos/${REPO_OWNER}/${REPO_NAME}/git/refs/heads/${branch}" >/dev/null 2>&1 \
+    || _warn "Could not delete remote branch ${branch} (may already be gone)."
+}
+
+# Parses the issue number out of an agent-managed branch name
+# (claude/issue-<n>-* or (feat|fix|chore)/<n>-*). Prints "" for anything
+# else (e.g. v2.0.0-pre-nyxAgent-implementation, master, main).
+extract_issue_number() {
+  local b="$1"
+  if [[ "$b" =~ ^claude/issue-([0-9]+)- ]]; then
+    echo "${BASH_REMATCH[1]}"; return 0
+  fi
+  if [[ "$b" =~ ^(feat|fix|chore)/([0-9]+)- ]]; then
+    echo "${BASH_REMATCH[2]}"; return 0
+  fi
+  echo ""
+}
+
+# True if `branch` is the head of a PR that was closed without merging into
+# `base_branch` — an explicit abandonment signal, safe to act on immediately.
+closed_unmerged_pr_exists() {
+  local branch="$1" base_branch="$2" count
+  count="$(gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --head "$branch" --state closed \
+      --json merged,baseRefName --limit 20 2>/dev/null \
+    | jq --arg base "$base_branch" '[.[] | select(.merged == false and .baseRefName == $base)] | length')"
+  [[ "${count:-0}" -gt 0 ]]
+}
+
+# Bounds how many base-branch commits since the divergence point
+# classify_mergeable will patch-id-hash for supersede comparison. Above this,
+# the branch predates too much history to check safely/quickly, so it's left
+# for manual review instead of guessed at.
+MAX_BASE_COMMITS_TO_SCAN="${MAX_BASE_COMMITS_TO_SCAN:-1000}"
+
+# Prints one of "merged", "superseded", or "" (keep — not confirmed safe) for
+# `branch` against `base_branch`. This is the ONLY safety gate agent scripts
+# may rely on before deleting a remote branch (#3392): a branch is deletable
+# solely because it is fully merged/contained in base_branch, or because its
+# linked issue is closed AND every commit unique to the branch has an
+# equivalent (same patch-id) commit already on base_branch (the same change
+# landed via a different branch/SHA). An unmerged branch whose issue is still
+# open, or whose content never landed anywhere, always yields "".
+classify_mergeable() {
+  local branch="$1" issue="$2" base_branch="$3"
+
+  git fetch origin "$branch" >/dev/null 2>&1 || { echo ""; return 0; }
+
+  if git merge-base --is-ancestor "origin/${branch}" "origin/${base_branch}" 2>/dev/null; then
+    echo "merged"
+    return 0
+  fi
+
+  # Unmerged from here on: only ever "superseded" (never "merged"), and only
+  # if the linked issue is closed and the diff content already landed.
+  [[ -n "$issue" ]] || { echo ""; return 0; }
+
+  local issue_state
+  issue_state="$(gh issue view "$issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json state --jq '.state' 2>/dev/null || echo "")"
+  [[ "$issue_state" == "CLOSED" ]] || { echo ""; return 0; }
+
+  local mb
+  mb="$(git merge-base "origin/${branch}" "origin/${base_branch}" 2>/dev/null || echo "")"
+  [[ -n "$mb" ]] || { echo ""; return 0; }
+
+  local base_commit_count
+  base_commit_count="$(git rev-list --count "${mb}..origin/${base_branch}" 2>/dev/null || echo 0)"
+  if (( base_commit_count > MAX_BASE_COMMITS_TO_SCAN )); then
+    echo ""
+    return 0
+  fi
+
+  local branch_ids base_ids id missing=0
+  branch_ids="$(git rev-list "${mb}..origin/${branch}" 2>/dev/null \
+    | while read -r c; do git show "$c" | git patch-id --stable 2>/dev/null | awk '{print $1}'; done | sort -u)"
+  [[ -n "$branch_ids" ]] || { echo ""; return 0; }
+
+  base_ids="$(git rev-list "${mb}..origin/${base_branch}" 2>/dev/null \
+    | while read -r c; do git show "$c" | git patch-id --stable 2>/dev/null | awk '{print $1}'; done | sort -u)"
+
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    echo "$base_ids" | grep -qx "$id" || { missing=1; break; }
+  done <<< "$branch_ids"
+
+  if [[ "$missing" == "0" ]]; then
+    echo "superseded"
+  else
+    echo ""
+  fi
+}
+
+# Deletes prior attempt branches for `issue` (every naming convention the
+# agent loop uses: (feat|fix|chore)/<issue>-* and claude/issue-<issue>-*),
+# leaving `keep_branch` alone. Without this, every retry branch created by
+# developer_create_branch.sh survives forever once the PR that actually
+# merges comes from a *later* branch (#3392).
+#
+# Two independent gates must both agree before a candidate is deleted:
+#   1. it is not the head of any currently OPEN pull request, and
+#   2. classify_mergeable/closed_unmerged_pr_exists positively confirms it is
+#      merged, superseded, or explicitly abandoned (closed without merge).
+# Gate 1 alone is not sufficient: if the `gh pr list` call behind it fails
+# transiently (rate limit, network blip, auth hiccup), it can silently
+# report zero open PRs, which previously left gate 2 blank and deleted every
+# sibling branch unconditionally — including the head of a live, unmerged PR
+# whose commits exist nowhere else. Gate 2 makes that impossible: a branch
+# that classify_mergeable can't positively confirm is always kept.
+cleanup_superseded_branches() {
+  local issue="$1" keep_branch="$2" base_branch="$3"
+  local protected candidates cand
+
+  protected="$(open_pr_head_branches 2>/dev/null || true)"
+  candidates="$(git ls-remote --heads origin 2>/dev/null \
+    | awk '{print $2}' | sed 's#^refs/heads/##' \
+    | grep -E "^(feat|fix|chore)/${issue}-|^claude/issue-${issue}-" || true)"
+
+  [[ -n "$candidates" ]] || return 0
+
+  while IFS= read -r cand; do
+    [[ -n "$cand" && "$cand" != "$keep_branch" ]] || continue
+    if echo "$protected" | grep -qx "$cand"; then
+      echo "[dev] Keeping prior branch $cand (head of an open PR)" >&2
+      continue
+    fi
+
+    local reason=""
+    if closed_unmerged_pr_exists "$cand" "$base_branch"; then
+      reason="closed PR without merge (explicit abandonment)"
+    else
+      local verdict
+      verdict="$(classify_mergeable "$cand" "$issue" "$base_branch")"
+      case "$verdict" in
+        merged) reason="fully merged/contained in ${base_branch}" ;;
+        superseded) reason="issue #${issue} closed + equivalent commits present on ${base_branch}" ;;
+        *) reason="" ;;
+      esac
+    fi
+
+    if [[ -z "$reason" ]]; then
+      echo "[dev] Keeping prior branch $cand (not confirmed merged/superseded)" >&2
+      continue
+    fi
+
+    echo "[dev] Deleting superseded branch: $cand (${reason})" >&2
+    delete_remote_branch "$cand"
+  done <<< "$candidates"
+}
+
+# -------------------------
 # PR Project Hygiene
 # -------------------------
 # Retry a field-set a few times before giving up; transient API failures and

@@ -61,6 +61,9 @@ This preserves your release-issue checklist signal: unchecked = planned, checked
 - `manually_trigger_pr_review.sh <PR_NUMBER>` — manually trigger review workflow (for re-reviews or if auto-trigger failed)
 - `review_accept_and_merge.sh <PR_NUMBER_OR_URL> <ISSUE_NUMBER>` — merge PR to release branch, delete branch, close issue, set status -> In Review, assign human owner for stakeholder acceptance
 
+### branch hygiene
+- `reconcile_dead_branches.sh [--dry-run] [base_branch]` — sweeps `claude/*`, `feat/*`, `fix/*`, `chore/*` branches and deletes ones that are merged/contained in `base_branch`, superseded (linked issue closed + equivalent commits already on `base_branch`), or the head of a PR closed without merging. `developer_create_branch.sh` also auto-deletes superseded prior-attempt branches for the same issue every time it creates/reuses a branch.
+
 ### validation
 - `validate-web-routes.sh` — validates that web proxy routes exist for all backend API endpoints
 

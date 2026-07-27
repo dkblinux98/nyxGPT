@@ -1,0 +1,90 @@
+name: Delete Branch on PR Close Without Merge
+
+# Event-driven half of the #3392 branch hygiene work. The repo's
+# "Automatically delete head branches" setting and the review agent's merge
+# path only clean up branches whose PR *merged*. A PR closed WITHOUT merging
+# is an explicit abandonment signal (the same signal
+# scripts/agents/reconcile_dead_branches.sh's closed_unmerged_pr_exists()
+# detects in its periodic sweep) — this workflow acts on it immediately at
+# close time instead of waiting for the weekly sweep.
+#
+# Guards mirror reconcile_dead_branches.sh:
+#   * merged PRs are ignored (their branches are handled by the repo setting),
+#   * only agent-pattern branches (claude/*, feat/*, fix/*, chore/*) are
+#     eligible — intentional branches like v2.0.0-pre-nyxAgent-implementation
+#     never match,
+#   * the base/release branch, master, and main are always protected,
+#   * fork heads are ignored (we only manage branches in this repo),
+#   * a head that is still the head of ANOTHER open PR is left alone.
+#
+# Note: this workflow file must be maintained by the human owner — the agent
+# GitHub App tokens cannot create or modify .github/workflows/* files.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write        # delete refs
+  pull-requests: read     # check for other open PRs on the same head
+
+concurrency:
+  group: delete-branch-on-pr-close-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  delete-abandoned-branch:
+    # Only closed-without-merge; merged PRs are auto-cleaned by the repo setting.
+    if: github.event.pull_request.merged == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete abandoned head branch
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const { owner, repo } = context.repo;
+            const head = pr.head.ref;
+            const base = pr.base.ref;
+
+            // Fork PRs: the head lives in another repo — nothing to delete here.
+            if (pr.head.repo && pr.head.repo.full_name !== `${owner}/${repo}`) {
+              core.info(`Skip: head ${head} lives in fork ${pr.head.repo.full_name}`);
+              return;
+            }
+
+            // Only agent-pattern branches are eligible (same candidate set as
+            // reconcile_dead_branches.sh). Anything else — release branches,
+            // master/main, intentional branches — is out of scope by pattern.
+            if (!/^(claude|feat|fix|chore)\//.test(head)) {
+              core.info(`Skip: ${head} does not match agent branch patterns`);
+              return;
+            }
+            const alwaysProtected = new Set([base, 'master', 'main', 'v2.0.0',
+              'v2.0.0-pre-nyxAgent-implementation']);
+            if (alwaysProtected.has(head)) {
+              core.info(`Skip: ${head} is protected`);
+              return;
+            }
+
+            // If any OTHER open PR still uses this head, it is not abandoned.
+            const openWithHead = await github.rest.pulls.list({
+              owner, repo, state: 'open', head: `${owner}:${head}`, per_page: 10,
+            });
+            if (openWithHead.data.length > 0) {
+              core.info(`Skip: ${head} is still the head of open PR(s): ` +
+                openWithHead.data.map(p => `#${p.number}`).join(', '));
+              return;
+            }
+
+            try {
+              await github.rest.git.deleteRef({ owner, repo, ref: `heads/${head}` });
+              core.info(`Deleted ${head} — PR #${pr.number} closed without merging`);
+            } catch (e) {
+              // 422 = ref already gone (raced with another cleanup). Fine.
+              if (e.status === 422) {
+                core.info(`Ref ${head} already gone: ${e.message}`);
+              } else {
+                throw e;
+              }
+            }

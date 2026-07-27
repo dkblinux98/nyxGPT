@@ -62,6 +62,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "[dry-run] would: git fetch origin $base_branch" >&2
   echo "[dry-run] would: git checkout -b $branch origin/$base_branch" >&2
   echo "[dry-run] would: git push -u origin $branch" >&2
+  echo "[dry-run] would: delete superseded feat|fix|chore/${ISSUE}-* and claude/issue-${ISSUE}-* branches (other than $branch)" >&2
   echo "$branch"
   exit 0
 fi
@@ -96,6 +97,9 @@ else
   git checkout -b "$branch" "origin/$base_branch" >&2
   git push -u origin "$branch" >&2
 fi
+
+# Delete superseded prior-attempt branches for this issue (non-fatal, #3392)
+cleanup_superseded_branches "$ISSUE" "$branch" "$base_branch" || _warn "Superseded-branch cleanup for issue #${ISSUE} failed; continuing."
 
 # Optional breadcrumb on the issue (non-fatal)
 if [[ "$BRANCH_ACTION" == "reused" ]]; then
