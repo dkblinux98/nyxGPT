@@ -527,8 +527,11 @@ Behavior:
   REST API -- the upgrade-stable path, not an ORM/`manage.py shell` seed.
 - Writes the resulting DSN and `enabled = true` into
   `~/.nyxGPT/config.ini` (native) and `docker/config.docker.ini` (Compose)
-  -- the DSN is a public key, safe to store in both, including the
-  git-tracked Compose template.
+  -- the DSN is a public key, safe to store in both. The live
+  `docker/config.docker.ini` is a git-ignored, per-machine artifact that
+  `nyxgpt ops install` seeds from the tracked `docker/config.docker.ini.example`
+  template (like `.env` from `.env.example`), so this runtime write never
+  dirties a tracked file.
 
 Exit codes:
 

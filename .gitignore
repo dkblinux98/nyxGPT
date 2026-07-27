@@ -35,6 +35,11 @@ coverage/
 # Docker Compose (real secrets - copy from .env.example)
 /.env
 
+# Live Compose api config: derived per-machine artifact seeded from
+# docker/config.docker.ini.example by `nyxgpt ops install`; its DSN is filled
+# in at runtime by `nyxgpt ops glitchtip-init`. The .example template stays tracked.
+/docker/config.docker.ini
+
 # Terraform (state, plugin cache, real vars - copy from terraform.tfvars.example)
 /terraform/.terraform/
 /terraform/.terraform.lock.hcl

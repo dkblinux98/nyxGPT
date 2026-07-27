@@ -154,10 +154,15 @@ for the torn-down services instead.
 truth for secrets like the API key and Grafana's admin password — `.env` is
 a generated artifact derived from it, not something you maintain by hand:
 
+`docker/config.docker.ini` (the api container's mounted config) is likewise a
+generated, per-machine artifact: it is git-ignored and seeded from the tracked
+`docker/config.docker.ini.example` template. `nyxgpt ops env-sync` creates it
+below (as does `nyxgpt ops install`), so you don't copy it by hand.
+
 ```bash
 cp .env.example .env
 nyxgpt wizard      # generates config.ini with a fresh api_key + Grafana password
-nyxgpt ops env-sync  # derives .env's secret lines from config.ini
+nyxgpt ops env-sync  # derives .env from config.ini + seeds docker/config.docker.ini
 
 # Upgrading from before #3346 (named Docker volumes)? Run this first -- see
 # "Migrating from before #3346" above for why order matters here.
@@ -167,9 +172,11 @@ docker compose up --build
 ```
 
 (For a quick one-off evaluation without installing the `nyxgpt` CLI locally,
-you can instead edit `.env` directly and set a real `NYXGPT_AUTH_API_KEY` —
-but then config.ini and `.env` are no longer in sync, so prefer the flow
-above for anything longer-lived.)
+you can instead `cp docker/config.docker.ini.example docker/config.docker.ini`
+and edit `.env` directly with a real `NYXGPT_AUTH_API_KEY` — the `cp` is
+required because this path skips `nyxgpt ops env-sync`, which is what otherwise
+seeds that git-ignored, bind-mounted file. Note config.ini and `.env` are then
+no longer in sync, so prefer the flow above for anything longer-lived.)
 
 First boot takes a few minutes: Cassandra needs time to become healthy and
 Ollama needs models. Once `ollama` is up, pull the default chat model and
