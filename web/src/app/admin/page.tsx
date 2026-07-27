@@ -115,8 +115,9 @@ const EXTRA_GROUPS: { title: string; sections: string[] }[] = [
 
 function extraFieldsFor(schemaSections: SchemaSection[], section: string): SchemaField[] {
   const known = new Set(KNOWN_FIELDS[section] || []);
-  const spec = schemaSections.find((s) => s.section === section);
-  if (!spec) return [];
+  // Every caller passes a `section` sourced from `schemaSections` itself, so
+  // the lookup below always finds a match.
+  const spec = schemaSections.find((s) => s.section === section)!;
   return spec.fields.filter((f) => !known.has(f.key));
 }
 
@@ -173,7 +174,9 @@ function buildExtraSavePayload(
   for (const spec of schemaSections) {
     const extras = extraFieldsFor(schemaSections, spec.section);
     for (const f of extras) {
-      const current = extraValues[spec.section]?.[f.key] ?? '';
+      // toExtraValues seeds an entry for every extra field on load using this
+      // same schemaSections/extraFieldsFor computation, so it's always present.
+      const current = extraValues[spec.section][f.key];
       if (f.secret) {
         if (current.trim()) {
           if (!payload[spec.section]) payload[spec.section] = {};
@@ -711,11 +714,13 @@ export default function AdminPage() {
       const data = await res.json();
       setSections(data.sections);
       setFieldDefaults(data.field_defaults || {});
+      // toFormValues above already requires data.sections to be a populated
+      // SectionsData object, so it's guaranteed non-null by this point.
       setFormValues(toFormValues(data.sections));
       const schema: SchemaSection[] = data.schema || [];
       setSchemaSections(schema);
-      setRawSections(data.sections || {});
-      setExtraValues(toExtraValues(data.sections || {}, schema));
+      setRawSections(data.sections);
+      setExtraValues(toExtraValues(data.sections, schema));
       setStaleKeys(data.stale_keys || {});
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -928,8 +933,9 @@ export default function AdminPage() {
         fieldDefaults,
         schemaSections
       );
+      // buildExtraSavePayload only ever adds a section entry alongside a
+      // field it's setting, so every value here already has >=1 key.
       for (const [section, fields] of Object.entries(extraPayload)) {
-        if (Object.keys(fields).length === 0) continue;
         payload[section] = { ...payload[section], ...fields };
       }
       const hasChanges = Object.values(payload).some((fields) => Object.keys(fields).length > 0);
@@ -1564,7 +1570,8 @@ export default function AdminPage() {
                       </div>
                       {extras.map((f) => {
                         const raw = rawSections[spec.section]?.[f.key];
-                        const value = extraValues[spec.section]?.[f.key] ?? '';
+                        // Seeded for every extra field by toExtraValues on load (see buildExtraSavePayload).
+                        const value = extraValues[spec.section][f.key];
                         const label = humanizeKey(f.key);
                         const isDefault = isDefaultField(fieldDefaults, spec.section, f.key);
                         const hintParts = [

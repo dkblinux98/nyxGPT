@@ -1697,5 +1697,305 @@ describe('AdminPage Component', () => {
       });
       expect(removeRequestBody).toEqual({ remove: { nyxgpt: ['retired_option'] } });
     });
+
+    it('leaves the stale-keys banner in place when removal fails', async () => {
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: SECTIONS_WITH_EXTRAS,
+            schema: SCHEMA_WITH_EXTRAS,
+            field_defaults: {},
+            stale_keys: { nyxgpt: ['retired_option'] },
+          })
+        ),
+        http.post('/api/v1/config/sections/stale-keys/remove', () =>
+          HttpResponse.json({ error: 'removal failed' }, { status: 500 })
+        )
+      );
+
+      await goToMoreStep();
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Remove' })).not.toBeDisabled();
+      });
+      expect(screen.getByText('Config.ini has options no longer recognized')).toBeInTheDocument();
+      expect(screen.getByText('[nyxgpt] retired_option')).toBeInTheDocument();
+    });
+
+    it('resets raw sections and stale keys safely when a removal response omits them', async () => {
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: SECTIONS_WITH_EXTRAS,
+            schema: SCHEMA_WITH_EXTRAS,
+            field_defaults: {},
+            stale_keys: { nyxgpt: ['retired_option'] },
+          })
+        ),
+        http.post('/api/v1/config/sections/stale-keys/remove', () => HttpResponse.json({}))
+      );
+
+      await goToMoreStep();
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+      await waitFor(() => {
+        expect(
+          screen.queryByText('Config.ini has options no longer recognized')
+        ).not.toBeInTheDocument();
+      });
+      expect(screen.getByLabelText('Embedding Cache Dir')).toHaveValue('');
+    });
+
+    it('falls back to no extra fields when the schema is omitted from the response', async () => {
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: SECTIONS_WITH_EXTRAS,
+            field_defaults: {},
+            stale_keys: {},
+          })
+        )
+      );
+
+      await goToMoreStep();
+
+      expect(screen.queryByLabelText('Embedding Cache Enabled')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Grafana Admin Password')).not.toBeInTheDocument();
+    });
+
+    it('treats a section fully covered by hand-built fields as having no extras', async () => {
+      const schemaWithFullyCoveredSection = [
+        ...SCHEMA_WITH_EXTRAS,
+        {
+          section: 'auth',
+          label: 'Auth',
+          fields: [
+            { key: 'enabled', secret: false, restart_component: 'api', observability: false },
+            { key: 'header', secret: false, restart_component: 'api', observability: false },
+            { key: 'api_key', secret: true, restart_component: 'api', observability: false },
+          ],
+        },
+      ];
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: SECTIONS_WITH_EXTRAS,
+            schema: schemaWithFullyCoveredSection,
+            field_defaults: {},
+            stale_keys: {},
+          })
+        )
+      );
+
+      await goToMoreStep();
+
+      // "auth" only declares fields already hand-coded in the API & Auth step
+      // -- the generic renderer must produce zero extra fields for it, not a
+      // duplicate "Enabled"/"Header"/"Api Key" group under Additional Settings.
+      expect(screen.queryByText('Auth')).not.toBeInTheDocument();
+    });
+
+    it('renders a non-string raw value as free text and humanizes an unusual key', async () => {
+      const schemaWithOddField = [
+        {
+          section: 'cache',
+          label: 'Caching',
+          fields: [
+            ...SCHEMA_WITH_EXTRAS[0].fields,
+            { key: 'embedding_cache_max_size', secret: false, restart_component: 'api', observability: false },
+            { key: 'example__setting', secret: false, restart_component: null, observability: false },
+          ],
+        },
+        SCHEMA_WITH_EXTRAS[1],
+      ];
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: {
+              ...SECTIONS_WITH_EXTRAS,
+              cache: {
+                ...SECTIONS_WITH_EXTRAS.cache,
+                embedding_cache_max_size: 1000,
+                example__setting: 'plain text',
+              },
+            },
+            schema: schemaWithOddField,
+            field_defaults: {},
+            stale_keys: {},
+          })
+        )
+      );
+
+      await goToMoreStep();
+
+      // A JSON number (not the usual config.ini string) must still render as
+      // plain text rather than crashing or being coerced into a number input.
+      const maxSizeInput = screen.getByLabelText('Embedding Cache Max Size') as HTMLInputElement;
+      expect(maxSizeInput).toHaveAttribute('type', 'text');
+      expect(maxSizeInput).toHaveValue('1000');
+
+      // Testing Library's default text matcher collapses whitespace, so the
+      // literal double space from splitting "example__setting" on "_" reads
+      // as a single space here even though humanizeKey emits two.
+      expect(screen.getByLabelText('Example Setting')).toHaveValue('plain text');
+    });
+
+    it('edits secret, numeric, and boolean generic fields, coercing each type in the save payload', async () => {
+      let capturedBody: Record<string, Record<string, unknown>> | undefined;
+      const schemaWithNumericField = [
+        {
+          section: 'cache',
+          label: 'Caching',
+          fields: [
+            ...SCHEMA_WITH_EXTRAS[0].fields,
+            { key: 'embedding_cache_ttl_seconds', secret: false, restart_component: 'api', observability: false },
+          ],
+        },
+        SCHEMA_WITH_EXTRAS[1],
+      ];
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: {
+              ...SECTIONS_WITH_EXTRAS,
+              cache: { ...SECTIONS_WITH_EXTRAS.cache, embedding_cache_ttl_seconds: '3600' },
+            },
+            schema: schemaWithNumericField,
+            field_defaults: {},
+            stale_keys: {},
+          })
+        ),
+        http.post('/api/v1/config/sections', async ({ request }) => {
+          capturedBody = (await request.json()) as Record<string, Record<string, unknown>>;
+          return HttpResponse.json({
+            applied: capturedBody,
+            sections: SECTIONS_WITH_EXTRAS,
+            field_defaults: {},
+            stale_keys: {},
+            restart_required: [],
+            observability_reconciled: false,
+            observability_result: null,
+          });
+        })
+      );
+
+      await goToMoreStep();
+
+      // Boolean field: toggle on, then back off, to exercise both outcomes.
+      const cacheToggle = screen.getByRole('checkbox', { name: /Embedding Cache Enabled/ });
+      fireEvent.click(cacheToggle);
+      fireEvent.click(cacheToggle);
+
+      // Text field.
+      fireEvent.change(screen.getByLabelText('Embedding Cache Dir'), {
+        target: { value: '/custom/cache/dir' },
+      });
+
+      // Numeric field (numeric string -> coerced to a JS number).
+      fireEvent.change(screen.getByLabelText('Embedding Cache Ttl Seconds'), {
+        target: { value: '7200' },
+      });
+
+      // Secret field.
+      fireEvent.change(screen.getByLabelText('Grafana Admin Password'), {
+        target: { value: 'new-secret' },
+      });
+
+      await clickNext(1);
+      await waitFor(() => {
+        fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+      });
+
+      await waitFor(() => {
+        expect(capturedBody?.cache).toEqual({
+          embedding_cache_enabled: false,
+          embedding_cache_dir: '/custom/cache/dir',
+          embedding_cache_ttl_seconds: 7200,
+        });
+      });
+      expect(capturedBody?.monitoring?.grafana_admin_password).toBe('new-secret');
+    });
+
+    it('renders a drift field missing from config.ini and an observability hint, and saves multiple secrets in one section', async () => {
+      let capturedBody: Record<string, Record<string, unknown>> | undefined;
+      const schemaEdgeCases = [
+        {
+          section: 'cache',
+          label: 'Caching',
+          fields: [
+            { key: 'embedding_cache_enabled', secret: false, restart_component: null, observability: false },
+            { key: 'missing_from_config', secret: false, restart_component: null, observability: true },
+          ],
+        },
+        {
+          section: 'monitoring',
+          label: 'Monitoring',
+          fields: [
+            { key: 'enabled', secret: false, restart_component: null, observability: true },
+            { key: 'grafana_admin_password', secret: true, restart_component: null, observability: false },
+            { key: 'admin_email_secret', secret: true, restart_component: null, observability: false },
+          ],
+        },
+      ];
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: {
+              ...SECTIONS_WITH_EXTRAS,
+              // "missing_from_config" is declared by the schema but absent
+              // here -- config.ini drift: the key hasn't been added yet.
+              cache: { embedding_cache_enabled: 'false' },
+              monitoring: {
+                enabled: 'false',
+                grafana_admin_password: { set: false, masked: null },
+                admin_email_secret: { set: false, masked: null },
+              },
+            },
+            schema: schemaEdgeCases,
+            field_defaults: {},
+            stale_keys: {},
+          })
+        ),
+        http.post('/api/v1/config/sections', async ({ request }) => {
+          capturedBody = (await request.json()) as Record<string, Record<string, unknown>>;
+          return HttpResponse.json({
+            applied: capturedBody,
+            sections: SECTIONS_WITH_EXTRAS,
+            field_defaults: {},
+            stale_keys: {},
+            restart_required: [],
+            observability_reconciled: false,
+            observability_result: null,
+          });
+        })
+      );
+
+      await goToMoreStep();
+
+      expect(screen.getByLabelText('Missing From Config')).toHaveValue('');
+      expect(
+        screen.getByText('Reconciles the observability stack on save.')
+      ).toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText('Grafana Admin Password'), {
+        target: { value: 'secret-one' },
+      });
+      fireEvent.change(screen.getByLabelText('Admin Email Secret'), {
+        target: { value: 'secret-two' },
+      });
+
+      await clickNext(1);
+      await waitFor(() => {
+        fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+      });
+
+      await waitFor(() => {
+        expect(capturedBody?.monitoring).toMatchObject({
+          grafana_admin_password: 'secret-one',
+          admin_email_secret: 'secret-two',
+        });
+      });
+    });
   });
 });
