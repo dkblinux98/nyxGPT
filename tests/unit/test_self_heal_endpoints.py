@@ -82,6 +82,35 @@ def test_self_heal_heal_endpoint_heals_everything():
     mock_heal.assert_called_once_with(service=None)
 
 
+def test_self_heal_heal_endpoint_records_ops_lifecycle_action():
+    # A manual "Heal Now" click is an operator-initiated restart (#3390) and must be
+    # recorded via ops.record_manual_restart alongside the existing self_heal.restart
+    # admin-activity entry -- not just folded into nyxgpt_selfheal_restarts_total.
+    result = {
+        "checked": [{"service": "web", "state": "exited", "health": "", "healthy": False}],
+        "healed": [
+            {
+                "service": "web",
+                "reason": "manual heal-now",
+                "action": "restart",
+                "ok": True,
+                "restart_count": 1,
+                "message": "Restarted web",
+                "ts": 1234.0,
+            }
+        ],
+    }
+    with (
+        patch("nyxgpt.app.self_heal_module.heal_now", return_value=result),
+        patch("nyxgpt.app.ops_module.record_manual_restart") as mock_record,
+    ):
+        client = TestClient(app)
+        response = client.post("/api/v1/self-heal/heal", json={"service": "web"})
+
+    assert response.status_code == 200
+    mock_record.assert_called_once_with("web", True, "Restarted web")
+
+
 def test_self_heal_heal_endpoint_targets_one_service():
     result = {"checked": [], "healed": []}
     with patch("nyxgpt.app.self_heal_module.heal_now", return_value=result) as mock_heal:
