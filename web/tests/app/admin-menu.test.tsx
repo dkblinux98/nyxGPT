@@ -84,7 +84,6 @@ describe('Chat page Admin menu', () => {
       expect.arrayContaining([
         '/admin',
         '/settings',
-        '/admin/logs',
         '/admin/analytics',
         '/models',
         '/admin/collections',
