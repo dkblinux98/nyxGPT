@@ -26,9 +26,15 @@ class CP:
         self.returncode = returncode
 
 
-def _ps_line(service, *, state="running", health=""):
+def _ps_line(service, *, state="running", health="", exit_code=0):
     return json.dumps(
-        {"Service": service, "Name": f"nyxgpt-{service}-1", "State": state, "Health": health}
+        {
+            "Service": service,
+            "Name": f"nyxgpt-{service}-1",
+            "State": state,
+            "Health": health,
+            "ExitCode": exit_code,
+        }
     )
 
 
@@ -129,6 +135,39 @@ def test_list_component_status_parses_ps_json(monkeypatch):
     assert by_service["api"].healthy is True
     assert by_service["web"].healthy is True  # no healthcheck -> running is enough
     assert by_service["cassandra"].healthy is False
+
+
+@pytest.mark.unit
+def test_list_compose_component_status_one_shot_exited_zero_is_skipped(monkeypatch):
+    # glitchtip-migrate's healthy end state -- exited 0, no running container --
+    # must never surface as a component to track at all (#3381).
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(
+            stdout=_ps_line("glitchtip-migrate", state="exited", exit_code=0)
+        ),
+    )
+    assert self_heal._list_compose_component_status() == []
+
+
+@pytest.mark.unit
+def test_list_compose_component_status_one_shot_exited_nonzero_reported_unhealthy(monkeypatch):
+    # A genuinely failed migration must still surface -- the one-shot
+    # exemption is for the "not a long-running service" shape, not for
+    # masking a real failure (#3381).
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(
+            stdout=_ps_line("glitchtip-migrate", state="exited", exit_code=1)
+        ),
+    )
+    statuses = self_heal._list_compose_component_status()
+    assert len(statuses) == 1
+    assert statuses[0].service == "glitchtip-migrate"
+    assert statuses[0].state == "exited"
+    assert statuses[0].healthy is False
 
 
 @pytest.mark.unit
@@ -948,6 +987,37 @@ def test_desired_compose_services_resolves_and_excludes_core_services(monkeypatc
 
 
 @pytest.mark.unit
+def test_desired_compose_services_excludes_one_shot_services(monkeypatch):
+    # glitchtip-migrate is resolved by `docker compose config --services`
+    # alongside the long-running glitchtip service, but it must never count
+    # as "desired" -- otherwise it's reported absent forever once it exits 0
+    # and is (correctly) never present (#3381).
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(stdout="glitchtip\nglitchtip-migrate\n"),
+    )
+    services = self_heal._desired_compose_services({"errors"})
+    assert services == {"glitchtip"}
+
+
+@pytest.mark.unit
+def test_desired_compose_services_exclude_one_shot_false_keeps_one_shot(monkeypatch):
+    # `_mark_disabled_present_services` needs `glitchtip-migrate` to still be
+    # recognized as belonging to the "errors" profile when it opts out of the
+    # one-shot exclusion -- otherwise a present-but-failed migration job never
+    # matches `all_observability_services` and is stuck `desired=True` forever
+    # even after the profile is disabled (#3381 review follow-up).
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(stdout="glitchtip\nglitchtip-migrate\n"),
+    )
+    services = self_heal._desired_compose_services({"errors"}, exclude_one_shot=False)
+    assert services == {"glitchtip", "glitchtip-migrate"}
+
+
+@pytest.mark.unit
 def test_desired_compose_services_command_failure_returns_empty(monkeypatch):
     monkeypatch.setattr(
         self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1, stderr="boom")
@@ -1002,7 +1072,9 @@ def test_mark_disabled_present_services_flags_present_but_disabled(monkeypatch):
         self_heal.ComponentStatus("prometheus", "nyxgpt-prometheus-1", "running", "healthy", True),
     ]
     monkeypatch.setattr(
-        self_heal, "_desired_compose_services", lambda profiles: {"grafana", "prometheus"}
+        self_heal,
+        "_desired_compose_services",
+        lambda profiles, **kwargs: {"grafana", "prometheus"},
     )
 
     result = self_heal._mark_disabled_present_services(statuses, desired_services={"prometheus"})
@@ -1042,11 +1114,35 @@ def test_mark_disabled_present_services_leaves_unknown_extra_service_alone(monke
     # profile (e.g. a container from an unrelated Compose project) -- not
     # something self-heal should second-guess as "disabled".
     statuses = [self_heal.ComponentStatus("mystery-sidecar", "c", "running", "healthy", True)]
-    monkeypatch.setattr(self_heal, "_desired_compose_services", lambda profiles: {"grafana"})
+    monkeypatch.setattr(
+        self_heal, "_desired_compose_services", lambda profiles, **kwargs: {"grafana"}
+    )
 
     result = self_heal._mark_disabled_present_services(statuses, desired_services=set())
 
     assert result[0].desired is True
+
+
+@pytest.mark.unit
+def test_mark_disabled_present_services_flags_failed_one_shot_service(monkeypatch):
+    # Real code review regression (#3381): a `glitchtip-migrate` run that
+    # actually failed (non-zero exit) stays present per
+    # `_list_compose_component_status`'s own exemption. Once the "errors"
+    # profile is disabled, `all_observability_services` must still recognize
+    # `glitchtip-migrate` as belonging to that profile (via
+    # `exclude_one_shot=False`) so it gets flagged `desired=False` instead of
+    # being stuck `desired=True` and endlessly restarted by the watchdog.
+    statuses = [self_heal.ComponentStatus("glitchtip-migrate", "c", "exited", "", False)]
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(stdout="glitchtip\nglitchtip-migrate\n"),
+    )
+
+    result = self_heal._mark_disabled_present_services(statuses, desired_services=set())
+
+    assert result[0].service == "glitchtip-migrate"
+    assert result[0].desired is False
 
 
 @pytest.mark.unit
@@ -1108,6 +1204,28 @@ def test_list_component_status_reports_torn_down_monitoring_profile(monkeypatch)
 
 
 @pytest.mark.unit
+def test_list_component_status_one_shot_service_not_reported_absent(monkeypatch):
+    # End-to-end reproduction of #3381: with the "errors" profile enabled,
+    # `docker compose config --services` lists both `glitchtip` and the
+    # one-shot `glitchtip-migrate` migration job; only `glitchtip` is
+    # actually running (the migration already exited 0 and is gone). The
+    # migration job must not show up as an absent/unhealthy component.
+    def _run_stub(cmd, timeout=30.0):
+        if "config" in cmd:
+            return CP(stdout="glitchtip\nglitchtip-migrate\n")
+        return CP(stdout=_ps_line("glitchtip", state="running", health="healthy"))
+
+    monkeypatch.setattr(self_heal, "_run", _run_stub)
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: {"errors"})
+
+    statuses = self_heal.list_component_status()
+
+    by_service = {s.service: s for s in statuses}
+    assert "glitchtip-migrate" not in by_service
+    assert by_service["glitchtip"].healthy is True
+
+
+@pytest.mark.unit
 def test_list_component_status_desired_service_already_present_not_duplicated(monkeypatch):
     monkeypatch.setattr(
         self_heal,
@@ -1148,7 +1266,7 @@ def test_list_component_status_flags_present_but_disabled_profile(monkeypatch):
     monkeypatch.setattr(
         self_heal,
         "_desired_compose_services",
-        lambda profiles: (
+        lambda profiles, **kwargs: (
             {"grafana"} if profiles == set(self_heal.OBSERVABILITY_PROFILES) else set()
         ),
     )
@@ -1158,6 +1276,30 @@ def test_list_component_status_flags_present_but_disabled_profile(monkeypatch):
     assert len(statuses) == 1
     assert statuses[0].service == "grafana"
     assert statuses[0].desired is False
+
+
+@pytest.mark.unit
+def test_list_component_status_flags_failed_one_shot_after_profile_disabled(monkeypatch):
+    # End-to-end reproduction of the code review follow-up on #3381: the
+    # "errors" profile was enabled, `glitchtip-migrate` failed (non-zero
+    # exit) and is therefore still present, and the user then disabled
+    # "errors". The failed migration container must be flagged
+    # `desired=False` -- not left `desired=True` forever -- so the automatic
+    # watchdog doesn't keep trying to restart a container the user
+    # deliberately walked away from.
+    def _run_stub(cmd, timeout=30.0):
+        if "config" in cmd:
+            return CP(stdout="glitchtip\nglitchtip-migrate\n")
+        return CP(stdout=_ps_line("glitchtip-migrate", state="exited", exit_code=1))
+
+    monkeypatch.setattr(self_heal, "_run", _run_stub)
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
+
+    statuses = self_heal.list_component_status()
+
+    by_service = {s.service: s for s in statuses}
+    assert by_service["glitchtip-migrate"].healthy is False
+    assert by_service["glitchtip-migrate"].desired is False
 
 
 @pytest.mark.unit

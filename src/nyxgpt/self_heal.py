@@ -453,14 +453,28 @@ def _enabled_observability_profiles() -> set[str]:
     }
 
 
-def _desired_compose_services(profiles: set[str]) -> set[str]:
+def _desired_compose_services(profiles: set[str], *, exclude_one_shot: bool = True) -> set[str]:
     """Resolve the Compose service names gated by `profiles` (empty if none enabled).
 
     Mirrors `ops._start_observability_stack`'s own resolution: `docker
     compose --profile X ... config --services`, minus `CORE_APP_SERVICES`
     (which this desired-state check doesn't cover -- see that constant's
-    docstring). Returns an empty set on any Docker/Compose failure, the same
-    "can't tell, so don't act" fallback the rest of this module uses.
+    docstring) and, when `exclude_one_shot` (the default), minus
+    `ONE_SHOT_SERVICES` (a run-to-completion job is never "desired but
+    absent" -- exiting 0 with no running container *is* its healthy end
+    state, mirroring the exemption `_list_compose_component_status` already
+    applies on the present side).
+
+    `_mark_disabled_present_services` calls this with `exclude_one_shot=False`
+    -- it uses the result to recognize which *present* services belong to
+    some observability profile at all, and a one-shot job that's present
+    (i.e. it failed, since a successful one is never present -- see
+    `_list_compose_component_status`) must stay recognized so a disabled
+    profile still clears its `desired` flag instead of leaving it stuck
+    `True` forever.
+
+    Returns an empty set on any Docker/Compose failure, the same "can't
+    tell, so don't act" fallback the rest of this module uses.
     """
     if not profiles or _which("docker") is None:
         return set()
@@ -474,7 +488,10 @@ def _desired_compose_services(profiles: set[str]) -> set[str]:
         return set()
     if cp.returncode != 0:
         return set()
-    return {s.strip() for s in (cp.stdout or "").splitlines() if s.strip()} - CORE_APP_SERVICES
+    services = {s.strip() for s in (cp.stdout or "").splitlines() if s.strip()} - CORE_APP_SERVICES
+    if exclude_one_shot:
+        services -= ONE_SHOT_SERVICES
+    return services
 
 
 def _absent_desired_statuses(
@@ -526,7 +543,9 @@ def _mark_disabled_present_services(
     if not maybe_disabled:
         return compose_statuses
 
-    all_observability_services = _desired_compose_services(set(OBSERVABILITY_PROFILES))
+    all_observability_services = _desired_compose_services(
+        set(OBSERVABILITY_PROFILES), exclude_one_shot=False
+    )
     disabled_services = maybe_disabled & all_observability_services
     if not disabled_services:
         return compose_statuses
@@ -567,6 +586,14 @@ def _list_compose_component_status() -> list[ComponentStatus]:
     Only reports containers that actually exist -- an opt-in profile
     (monitoring/logging/tracing/errors) that was never started isn't
     reported as "down", it's simply absent from the result.
+
+    A member of `ONE_SHOT_SERVICES` (e.g. `glitchtip-migrate`) is skipped
+    entirely once it has run to completion (`state="exited"`, `ExitCode ==
+    0`) -- that's its healthy end state, not a container self-heal should
+    track. But if it exited non-zero, the migration genuinely failed, so it's
+    still reported here (`healthy=False`) rather than silently swallowed --
+    the exemption is for the "not a long-running service" shape, not for
+    masking a real failure.
     """
     if _which("docker") is None:
         return []
@@ -588,9 +615,22 @@ def _list_compose_component_status() -> list[ComponentStatus]:
         except Exception:
             continue
         service = data.get("Service", "")
-        if not service or service in ONE_SHOT_SERVICES:
+        if not service:
             continue
         state = data.get("State", "")
+        if service in ONE_SHOT_SERVICES:
+            if state == "exited" and data.get("ExitCode", 0) == 0:
+                continue
+            statuses.append(
+                ComponentStatus(
+                    service=service,
+                    container=data.get("Name", ""),
+                    state=state,
+                    health=data.get("Health", ""),
+                    healthy=False,
+                )
+            )
+            continue
         health = data.get("Health", "")
         healthy = state == "running" and health in ("", "healthy")
         statuses.append(
