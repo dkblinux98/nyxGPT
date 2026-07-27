@@ -319,7 +319,16 @@ The search interface appears as a modal overlay. Press Escape to close. Selectin
 
 Access settings at `http://127.0.0.1:3000/settings`, which has two tabs:
 
-- **Resource Usage** — see the existing resource/usage metrics tab.
+- **Resource Usage** — a real-time system performance dashboard: memory
+  (RSS/VMS, percent, available), CPU (process/system), request latency
+  (avg, P50, P95, P99), and batch queue depth/total requests. Backed by
+  `GET /api/v1/metrics` for the live tiles (5-second auto-refresh,
+  toggleable) and `GET /api/v1/metrics/history` (#3352) for persisted,
+  server-side history charts over a selectable 1h/24h/7d range. Supports
+  manual refresh, JSON/CSV export, and color-coded thresholds (green
+  < 60%, yellow 60-80%, red > 80%). Observability dashboards (Grafana,
+  Jaeger, GlitchTip) live under their own [Observability](docker-compose.md#monitoring-dashboards)
+  page rather than this tab.
 - **General** — day-to-day preferences and app info:
   - **Appearance** — a Light/Dark theme toggle backed by the existing `ThemeContext` (persisted to `localStorage`), the same theme state used elsewhere in the app.
   - **About** — read-only app info (version, default model, Ollama base URL, sessions directory) sourced from `/api/info`, plus a link to the [Configuration Wizard](#configuration-wizard) for changing model/RAG/logging configuration.
@@ -360,15 +369,15 @@ for the full field-by-field reference):
    (enable/disable, header name, rotate the key), and rate limiting
 4. **Observability** — Tracing, error tracking, monitoring, and log
    aggregation, each with its own enable toggle and connection settings
-5. **Resource Usage** — Monitor system performance and resource metrics
-6. **Summary** — Review every section and save
+5. **Summary** — Review every section and save (with a link to
+   [Settings → Resource Usage](#settings) for live metrics; the wizard
+   itself configures nothing there and no longer interrupts the flow with
+   a monitoring step, #3384)
 
 **Features:**
 - Visual progress indicator showing current step
 - Form validation for required fields
 - Connection testing to verify API connectivity
-- Real-time resource monitoring dashboard
-- Metrics export (JSON/CSV)
 - Secrets (API key, error tracking DSN) are shown masked and never round-trip
   in cleartext; leave the field blank to keep the current value, or type a
   new one to rotate it
@@ -391,24 +400,6 @@ component, wrapping `nyxgpt ops restart` (`GET`/`POST
 also reconciles the matching Compose stack the same way `nyxgpt ops
 observability` does, so it results in a working dashboard rather than a
 dangling flag.
-
-**Resource Usage Monitoring:**
-
-The wizard's Resource Usage step provides a real-time system performance dashboard:
-
-- **Memory Usage** — Process memory consumption (RSS, VMS), percentage, and available memory
-- **CPU Usage** — Process and system-wide CPU utilization
-- **Request Latency** — Average, P50, P95, and P99 latency percentiles
-- **Queue Status** — Current batch processing queue depth and total requests
-- **Monitoring Dashboards** — Card describing the opt-in, local-only Grafana dashboards (system overview, RAG performance, API metrics, resource usage, self-healing) backed by Prometheus, with a link to the local Grafana UI plus a Dashboard Catalog linking directly into each one (see [`docs/docker-compose.md`](docker-compose.md#monitoring-dashboards))
-- **Log Aggregation** — Card describing the opt-in, local-only Loki/promtail log search stack, with a link to the Grafana Logs Explorer dashboard when active (see [`docs/api.md`](api.md#log-aggregation))
-- **Distributed Tracing** — Card showing whether OpenTelemetry tracing is enabled, with a link to the local Jaeger UI and curated trace views for the main request flows when active (see [`docs/api.md`](api.md#distributed-tracing))
-- **Error Tracking** — Card showing whether self-hosted error tracking is enabled, with a link to the local GlitchTip UI when active (see [`docs/api.md`](api.md#error-tracking))
-
-**Dashboard features:** real-time auto-refresh (5-second interval,
-toggleable), visual status indicators (normal/warning/critical thresholds),
-export to JSON/CSV, manual refresh, and color-coded alerts:
-**green** (< 60% utilization), **yellow** (60-80%), **red** (> 80%).
 
 **Prerequisites:**
 - FastAPI backend must be running (`nyxgpt ops install` or `nyxgpt ops restart api`)
