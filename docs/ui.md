@@ -382,6 +382,10 @@ for the full field-by-field reference):
   in cleartext; leave the field blank to keep the current value, or type a
   new one to rotate it
 - Clear navigation between steps
+- A **Cancel** link, next to **Previous** on every step, discards pending
+  edits and returns to the Admin Dashboard. It prompts for confirmation
+  only if something was changed since the wizard loaded; with no edits it
+  exits immediately (#3387).
 
 Keyboard shortcuts:
 - `←` / `→` — Navigate between steps

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type MouseEvent } from 'react';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
 
@@ -631,6 +631,7 @@ export default function AdminPage() {
 
   const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
   const canAdvanceFromCore = formValues.nyxgpt.default_model.trim() !== '';
+  const hasUnsavedChanges = JSON.stringify(formValues) !== JSON.stringify(toFormValues(sections));
 
   function goToNextStep() {
     setCurrentStep(steps[currentStepIndex + 1].id);
@@ -640,6 +641,22 @@ export default function AdminPage() {
     if (currentStepIndex > 0) {
       setCurrentStep(steps[currentStepIndex - 1].id);
     }
+  }
+
+  /**
+   * Cancel discards pending edits and returns to the Admin Dashboard (#3387).
+   * With no unsaved changes it exits immediately; otherwise it confirms
+   * first since Save applies changes live and can restart services (#3354).
+   */
+  function handleCancelClick(e: MouseEvent<HTMLAnchorElement>) {
+    if (
+      hasUnsavedChanges &&
+      !confirm('You have unsaved changes. Discard them and return to the Admin Dashboard?')
+    ) {
+      e.preventDefault();
+      return;
+    }
+    setFormValues(toFormValues(sections));
   }
 
   // Keyboard navigation
@@ -1468,23 +1485,45 @@ export default function AdminPage() {
           💡 Use arrow keys (← →) to navigate, Enter to advance or save
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <button
-            onClick={goToPreviousStep}
-            disabled={currentStepIndex === 0 || saving}
-            aria-label={`Go to previous step: ${currentStepIndex > 0 ? steps[currentStepIndex - 1].label : ''}`}
-            style={{
-              padding: '10px 20px',
-              background: currentStepIndex === 0 || saving ? '#ccc' : 'var(--muted)',
-              color: currentStepIndex === 0 || saving ? '#999' : 'var(--foreground)',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
-              cursor: currentStepIndex === 0 || saving ? 'not-allowed' : 'pointer',
-              fontSize: 14,
-              fontWeight: 600,
-            }}
-          >
-            ← Previous
-          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <a
+              href="/admin/dashboard"
+              onClick={saving ? (e) => e.preventDefault() : handleCancelClick}
+              aria-disabled={saving}
+              aria-label="Cancel and return to Admin Dashboard without saving"
+              style={{
+                padding: '10px 20px',
+                background: 'transparent',
+                color: saving ? '#999' : 'var(--foreground)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                cursor: saving ? 'not-allowed' : 'pointer',
+                fontSize: 14,
+                fontWeight: 600,
+                textDecoration: 'none',
+                display: 'inline-block',
+              }}
+            >
+              Cancel
+            </a>
+            <button
+              onClick={goToPreviousStep}
+              disabled={currentStepIndex === 0 || saving}
+              aria-label={`Go to previous step: ${currentStepIndex > 0 ? steps[currentStepIndex - 1].label : ''}`}
+              style={{
+                padding: '10px 20px',
+                background: currentStepIndex === 0 || saving ? '#ccc' : 'var(--muted)',
+                color: currentStepIndex === 0 || saving ? '#999' : 'var(--foreground)',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                cursor: currentStepIndex === 0 || saving ? 'not-allowed' : 'pointer',
+                fontSize: 14,
+                fontWeight: 600,
+              }}
+            >
+              ← Previous
+            </button>
+          </div>
           <button
             onClick={goToNextStep}
             disabled={
