@@ -1429,12 +1429,64 @@ def config_sections_get(request: Request) -> dict[str, Any]:
     masked) plus schema metadata (which fields are secret, and which need a
     service restart or observability reconciliation to take effect) so the
     web UI can render every section without hardcoding that knowledge twice.
+    `stale_keys` surfaces config.ini drift (#3388): keys present on disk but
+    no longer declared in `example.config.ini`, for the wizard to offer
+    removing -- never removed automatically.
     """
     cfg = _req_cfg(request)
     return {
         "sections": config_wizard.read_sections(cfg),
         "schema": config_wizard.schema_summary(),
         "field_defaults": config_wizard.field_defaults(cfg),
+        "stale_keys": config_wizard.find_stale_keys(cfg),
+    }
+
+
+@api.post("/config/sections/stale-keys/remove")
+def config_stale_keys_remove(
+    request: Request, payload: dict[str, Any] = Body(...)
+) -> dict[str, Any]:
+    """Delete specific stale keys the wizard reported, on explicit user confirmation (#3388).
+
+    Payload shape: `{"remove": {section: [key, ...]}}`. Only keys the caller
+    names are ever touched -- this is the sole path that can delete anything
+    from config.ini; a regular wizard save (`POST /config/sections`) never
+    does. Only keys `config_wizard.find_stale_keys` currently reports are
+    accepted, so this can't be used to delete an arbitrary managed field.
+    """
+    cfg = _req_cfg(request)
+    requested = payload.get("remove")
+    if not isinstance(requested, dict):
+        raise HTTPException(
+            status_code=400, detail="'remove' must be an object of {section: [keys]}"
+        )
+
+    stale = config_wizard.find_stale_keys(cfg)
+    to_remove: dict[str, list[str]] = {}
+    for section, keys in requested.items():
+        if not isinstance(keys, list):
+            raise HTTPException(status_code=400, detail=f"remove.{section} must be a list of keys")
+        allowed = set(stale.get(section, []))
+        matched = [k for k in keys if k in allowed]
+        if matched:
+            to_remove[section] = matched
+
+    removed = config_wizard.remove_keys(_config_file_path(), to_remove)
+
+    if removed:
+        nyxgpt.config._CACHED_CFG = None
+        nyxgpt.config._CACHED_PATH = None
+        nyxgpt.config._CACHED_MTIME_NS = None
+        request.state.cfg = load_config(None)
+        cfg = _req_cfg(request)
+
+        removed_fields = [f"{section}.{key}" for section, keys in removed.items() for key in keys]
+        admin_activity_module.record("config.stale_keys_removed", ", ".join(removed_fields))
+
+    return {
+        "removed": removed,
+        "sections": config_wizard.read_sections(cfg),
+        "stale_keys": config_wizard.find_stale_keys(cfg),
     }
 
 
