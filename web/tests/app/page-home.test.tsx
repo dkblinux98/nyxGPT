@@ -611,7 +611,6 @@ describe('Home page — settings menu and theme', () => {
       'Dashboard',
       'Configuration Wizard',
       'Resource Usage',
-      'Logs',
       'Usage Analytics',
       'Observability',
       'Manage Models',

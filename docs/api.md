@@ -98,9 +98,6 @@ Quick reference of all 85 available endpoints:
 | `/api/v1/rag/query` | POST | Query RAG vector store (supports metadata filters) |
 | `/api/v1/rag/metrics/query` | POST | Query RAG with evaluation metrics |
 | `/api/v1/rag/upload` | POST | Upload and ingest file |
-| `/api/v1/logs/files` | GET | List log files |
-| `/api/v1/logs/view/{filename}` | GET | View log file contents |
-| `/api/v1/logs/stream/{filename}` | GET | Stream log file |
 
 ---
 
@@ -2230,96 +2227,6 @@ Manually clear the RAG query result cache. Also triggered automatically on docum
   "status": "Query result cache cleared"
 }
 ```
-
----
-
-## Log viewing endpoints
-
-The API provides endpoints for viewing and streaming log files, useful for debugging and monitoring.
-
-### `GET /api/v1/logs/files`
-
-List available log files with metadata.
-
-**Response:**
-
-```json
-{
-  "files": [
-    {
-      "name": "nyxgpt.log",
-      "path": "/home/user/.nyxGPT/logs/nyxgpt.log",
-      "size": 1024000,
-      "modified": 1704067200.0
-    }
-  ],
-  "log_dir": "/home/user/.nyxGPT/logs"
-}
-```
-
-### `GET /api/v1/logs/view/{filename}`
-
-View log file contents with optional filtering.
-
-**Query Parameters:**
-
-- `tail` (optional): Number of lines to return from the end (default: all lines)
-- `level` (optional): Filter by log level (DEBUG, INFO, WARNING, ERROR)
-- `search` (optional): Search string to filter lines (case-insensitive)
-
-**Example:**
-
-```bash
-# Get last 100 lines
-curl "http://127.0.0.1:8000/api/v1/logs/view/nyxgpt.log?tail=100"
-
-# Filter by log level
-curl "http://127.0.0.1:8000/api/v1/logs/view/nyxgpt.log?level=ERROR"
-
-# Search for specific text
-curl "http://127.0.0.1:8000/api/v1/logs/view/nyxgpt.log?search=session"
-
-# Combine filters
-curl "http://127.0.0.1:8000/api/v1/logs/view/nyxgpt.log?tail=50&level=INFO&search=chat"
-```
-
-**Response:**
-
-```json
-{
-  "filename": "nyxgpt.log",
-  "lines": ["2024-01-01 12:00:00 INFO ...", "..."],
-  "total_lines": 1000,
-  "filtered_lines": 50
-}
-```
-
-### `GET /api/v1/logs/stream/{filename}`
-
-Stream log file contents with optional filtering. Useful for real-time log viewing.
-
-**Query Parameters:**
-
-- `level` (optional): Filter by log level (DEBUG, INFO, WARNING, ERROR)
-- `search` (optional): Search string to filter lines (case-insensitive)
-
-**Example:**
-
-```bash
-# Stream all logs
-curl "http://127.0.0.1:8000/api/v1/logs/stream/nyxgpt.log"
-
-# Stream only ERROR logs
-curl "http://127.0.0.1:8000/api/v1/logs/stream/nyxgpt.log?level=ERROR"
-```
-
-**Response:** Text stream (Content-Type: text/plain)
-
-**Security Notes:**
-
-- File paths are sanitized to prevent path traversal attacks
-- Access is restricted to files within the configured log directory
-- Attempting to access files outside the log directory returns 403 Forbidden
 
 ---
 

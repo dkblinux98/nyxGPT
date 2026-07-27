@@ -1346,26 +1346,6 @@ function Home() {
                     <span>Resource Usage</span>
                   </a>
 
-                  {/* View Logs */}
-                  <a
-                    href="/admin/logs"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      padding: '8px 16px 8px 32px',
-                      textDecoration: 'none',
-                      color: 'var(--foreground)',
-                      fontSize: 14,
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                    onClick={() => setShowSettingsMenu(false)}
-                  >
-                    <span>📋</span>
-                    <span>View Logs</span>
-                  </a>
-
                   {/* Usage Analytics */}
                   <a
                     href="/admin/analytics"

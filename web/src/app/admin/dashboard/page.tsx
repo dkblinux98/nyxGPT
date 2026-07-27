@@ -512,7 +512,7 @@ export default function AdminDashboardPage() {
             </div>
           )}
           <div style={{ marginTop: '1rem', fontSize: 13 }}>
-            <a href="/admin/logs" style={inlineLinkStyle}>View raw application logs →</a>
+            <a href="/admin/observability" style={inlineLinkStyle}>View logs in Log Aggregation →</a>
           </div>
         </section>
 
