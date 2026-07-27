@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
 import AdminDashboardPage, { ADMIN_NAV } from '../../../src/app/admin/dashboard/page';
@@ -32,7 +32,7 @@ describe('AdminDashboardPage', () => {
     await waitFor(() => {
       expect(screen.getAllByText('llama3.1:8b').length).toBeGreaterThan(0);
     });
-    const wizardLink = screen.getByRole('link', { name: /open configuration wizard/i });
+    const wizardLink = screen.getByRole('link', { name: /Configuration Wizard/ });
     expect(wizardLink).toHaveAttribute('href', '/admin');
   });
 
@@ -79,6 +79,44 @@ describe('AdminDashboardPage', () => {
       expect(tile).not.toHaveAttribute('target');
       expect(tile.textContent).not.toContain('→');
     }
+  });
+
+  it('groups observation tiles under System Status and operation tiles under Configuration', async () => {
+    render(<AdminDashboardPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Deploy: blue/)).toBeInTheDocument();
+    });
+
+    const systemStatus = screen.getByRole('region', { name: 'System status overview' });
+    const configuration = screen.getByRole('region', { name: 'Configuration management' });
+
+    const observationLabels = ['System Health', 'SRE Overview', 'Usage Analytics', 'Full Metrics'];
+    const operationLabels = [
+      'Deployment Operations',
+      'Infrastructure Operations',
+      'Canary Operations',
+      'Self-heal Operations',
+    ];
+
+    for (const label of observationLabels) {
+      expect(within(systemStatus).getByRole('link', { name: new RegExp(label) })).toBeInTheDocument();
+      expect(within(configuration).queryByRole('link', { name: new RegExp(label) })).not.toBeInTheDocument();
+    }
+
+    for (const label of operationLabels) {
+      expect(within(configuration).getByRole('link', { name: new RegExp(label) })).toBeInTheDocument();
+      expect(within(systemStatus).queryByRole('link', { name: new RegExp(label) })).not.toBeInTheDocument();
+    }
+
+    // The Configuration Wizard renders in the same tile grid as the moved
+    // operation tiles, not as a separately styled button.
+    expect(within(configuration).getByRole('link', { name: /Configuration Wizard/ })).toBeInTheDocument();
+
+    const observationCount = ADMIN_NAV.filter((dest) => dest.group === 'observation').length;
+    const operationCount = ADMIN_NAV.filter((dest) => dest.group === 'operation').length;
+    expect(within(systemStatus).getAllByRole('link')).toHaveLength(observationCount);
+    // +1 for the Configuration Wizard tile alongside the moved operation tiles.
+    expect(within(configuration).getAllByRole('link')).toHaveLength(operationCount + 1);
   });
 
   it('highlights a quick-nav tile on hover and restores it on leave', async () => {

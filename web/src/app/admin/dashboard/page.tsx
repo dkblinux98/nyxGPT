@@ -62,16 +62,36 @@ const sectionTitleStyle: React.CSSProperties = {
 // description is what tells an operator what each screen is for (a tooltip
 // alone only explains tiles the user already hovers), with the title
 // attribute echoing it for hover. All open in the same tab.
-export const ADMIN_NAV: Array<{ href: string; label: string; description: string }> = [
-  { href: '/admin/health', label: 'System Health', description: 'Live status of every nyxGPT service' },
-  { href: '/admin/deploy', label: 'Deployment', description: 'Blue/green switch and rollback' },
-  { href: '/admin/infrastructure', label: 'Infrastructure', description: 'Terraform and Kubernetes local deploys' },
-  { href: '/admin/canary', label: 'Canary', description: 'Gradual rollout with automatic rollback' },
-  { href: '/admin/self-heal', label: 'Self-heal', description: 'Watchdog that restarts unhealthy services' },
-  { href: '/admin/observability', label: 'SRE Overview', description: 'Monitoring, logs, tracing, and error tracking' },
-  { href: '/admin/analytics', label: 'Usage Analytics', description: 'Chat and RAG usage over time' },
-  { href: '/settings', label: 'Full Metrics', description: 'Resource metrics in Settings' },
+//
+// `group` separates screens that only observe system state (rendered under
+// System Status) from screens that configure or act on it (rendered under
+// Configuration, alongside the Configuration Wizard). Every destination must
+// declare a group explicitly -- there is no default -- so a future addition
+// can't silently land in the wrong section.
+export const ADMIN_NAV: Array<{
+  href: string;
+  label: string;
+  description: string;
+  group: 'observation' | 'operation';
+}> = [
+  { href: '/admin/health', label: 'System Health', description: 'Live status of every nyxGPT service', group: 'observation' },
+  { href: '/admin/deploy', label: 'Deployment Operations', description: 'Blue/green switch and rollback', group: 'operation' },
+  { href: '/admin/infrastructure', label: 'Infrastructure Operations', description: 'Terraform and Kubernetes local deploys', group: 'operation' },
+  { href: '/admin/canary', label: 'Canary Operations', description: 'Gradual rollout with automatic rollback', group: 'operation' },
+  { href: '/admin/self-heal', label: 'Self-heal Operations', description: 'Watchdog that restarts unhealthy services', group: 'operation' },
+  { href: '/admin/observability', label: 'SRE Overview', description: 'Monitoring, logs, tracing, and error tracking', group: 'observation' },
+  { href: '/admin/analytics', label: 'Usage Analytics', description: 'Chat and RAG usage over time', group: 'observation' },
+  { href: '/settings', label: 'Full Metrics', description: 'Resource metrics in Settings', group: 'observation' },
 ];
+
+// Rendered alongside the `operation` group in Configuration, in the same
+// tile grid, so the wizard isn't a visually distinct button next to a group
+// of tiles.
+const CONFIG_WIZARD_TILE = {
+  href: '/admin',
+  label: 'Configuration Wizard',
+  description: 'Edit every config.ini section, with apply-on-save reload',
+};
 
 const navTileStyle: React.CSSProperties = {
   display: 'flex',
@@ -90,6 +110,27 @@ const inlineLinkStyle: React.CSSProperties = {
   textDecoration: 'underline',
   whiteSpace: 'nowrap',
 };
+
+function NavTile({ dest }: { dest: { href: string; label: string; description: string } }) {
+  return (
+    <a
+      href={dest.href}
+      title={dest.description}
+      style={navTileStyle}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.borderColor = 'var(--link)';
+        e.currentTarget.style.background = 'var(--muted)';
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.borderColor = 'var(--border)';
+        e.currentTarget.style.background = 'var(--background)';
+      }}
+    >
+      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--foreground)' }}>{dest.label}</span>
+      <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>{dest.description}</span>
+    </a>
+  );
+}
 
 function StatusBadge({ ok, label }: { ok: boolean; label: string }) {
   return (
@@ -299,28 +340,8 @@ export default function AdminDashboardPage() {
                       marginTop: 4,
                     }}
                   >
-                    {ADMIN_NAV.map((dest) => (
-                      <a
-                        key={dest.href}
-                        href={dest.href}
-                        title={dest.description}
-                        style={navTileStyle}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.borderColor = 'var(--link)';
-                          e.currentTarget.style.background = 'var(--muted)';
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.borderColor = 'var(--border)';
-                          e.currentTarget.style.background = 'var(--background)';
-                        }}
-                      >
-                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--foreground)' }}>
-                          {dest.label}
-                        </span>
-                        <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>
-                          {dest.description}
-                        </span>
-                      </a>
+                    {ADMIN_NAV.filter((dest) => dest.group === 'observation').map((dest) => (
+                      <NavTile key={dest.href} dest={dest} />
                     ))}
                   </div>
                 </div>
@@ -347,22 +368,17 @@ export default function AdminDashboardPage() {
           ) : (
             <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>No configuration loaded yet.</p>
           )}
-          <div style={{ marginTop: '1rem' }}>
-            <a
-              href="/admin"
-              style={{
-                display: 'inline-block',
-                padding: '8px 16px',
-                background: '#0066cc',
-                color: 'white',
-                borderRadius: 6,
-                textDecoration: 'none',
-                fontSize: 14,
-                fontWeight: 600,
-              }}
-            >
-              Open Configuration Wizard
-            </a>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+              gap: 8,
+              marginTop: '1rem',
+            }}
+          >
+            {[...ADMIN_NAV.filter((dest) => dest.group === 'operation'), CONFIG_WIZARD_TILE].map((dest) => (
+              <NavTile key={dest.href} dest={dest} />
+            ))}
           </div>
         </section>
 
