@@ -26,6 +26,34 @@ fi
 DRY_RUN=0
 if [[ "${1:-}" == "--dry-run" ]]; then DRY_RUN=1; shift; fi
 
+# Deletes prior attempt branches for this issue once a new/reused branch is
+# checked out, across every naming convention the agent loop uses
+# (feat|fix|chore/<issue>-* and claude/issue-<issue>-*). Without this, every
+# retry branch created by developer_create_branch.sh survives forever once
+# the PR that actually merges comes from a *later* branch (#3392). Branches
+# that are the head of an open PR are always left alone.
+cleanup_superseded_branches() {
+  local issue="$1" keep_branch="$2"
+  local protected candidates cand
+
+  protected="$(open_pr_head_branches 2>/dev/null || true)"
+  candidates="$(git ls-remote --heads origin 2>/dev/null \
+    | awk '{print $2}' | sed 's#^refs/heads/##' \
+    | grep -E "^(feat|fix|chore)/${issue}-|^claude/issue-${issue}-" || true)"
+
+  [[ -n "$candidates" ]] || return 0
+
+  while IFS= read -r cand; do
+    [[ -n "$cand" && "$cand" != "$keep_branch" ]] || continue
+    if echo "$protected" | grep -qx "$cand"; then
+      echo "[dev] Keeping prior branch $cand (head of an open PR)" >&2
+      continue
+    fi
+    echo "[dev] Deleting superseded branch: $cand" >&2
+    delete_remote_branch "$cand"
+  done <<< "$candidates"
+}
+
 ISSUE="${1:-}"
 KIND="${2:-feat}"
 SLUG="${3:-issue-${ISSUE}}"
@@ -62,6 +90,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "[dry-run] would: git fetch origin $base_branch" >&2
   echo "[dry-run] would: git checkout -b $branch origin/$base_branch" >&2
   echo "[dry-run] would: git push -u origin $branch" >&2
+  echo "[dry-run] would: delete superseded feat|fix|chore/${ISSUE}-* and claude/issue-${ISSUE}-* branches (other than $branch)" >&2
   echo "$branch"
   exit 0
 fi
@@ -96,6 +125,9 @@ else
   git checkout -b "$branch" "origin/$base_branch" >&2
   git push -u origin "$branch" >&2
 fi
+
+# Delete superseded prior-attempt branches for this issue (non-fatal, #3392)
+cleanup_superseded_branches "$ISSUE" "$branch" || _warn "Superseded-branch cleanup for issue #${ISSUE} failed; continuing."
 
 # Optional breadcrumb on the issue (non-fatal)
 if [[ "$BRANCH_ACTION" == "reused" ]]; then

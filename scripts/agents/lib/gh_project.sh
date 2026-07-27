@@ -541,6 +541,28 @@ assign_and_trigger_developer() {
 }
 
 # -------------------------
+# Branch hygiene helpers (shared by developer_create_branch.sh and
+# reconcile_dead_branches.sh, #3392)
+# -------------------------
+
+# Prints the headRefName of every OPEN pull request, one per line. These are
+# always protected from any branch-deletion sweep.
+open_pr_head_branches() {
+  gh pr list --repo "${REPO_OWNER}/${REPO_NAME}" --state open \
+    --json headRefName --limit 200 --jq '.[].headRefName'
+}
+
+# Best-effort remote branch delete: never fails the caller, since branch
+# cleanup is always a secondary/optional step relative to whatever primary
+# operation (branch creation, merge, sweep) triggered it.
+delete_remote_branch() {
+  local branch="$1"
+  git push origin --delete "$branch" >/dev/null 2>&1 \
+    || gh api -X DELETE "repos/${REPO_OWNER}/${REPO_NAME}/git/refs/heads/${branch}" >/dev/null 2>&1 \
+    || _warn "Could not delete remote branch ${branch} (may already be gone)."
+}
+
+# -------------------------
 # PR Project Hygiene
 # -------------------------
 # Retry a field-set a few times before giving up; transient API failures and
