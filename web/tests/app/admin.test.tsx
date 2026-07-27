@@ -1252,6 +1252,54 @@ describe('AdminPage Component', () => {
     expect(postCalled).toBe(false);
   });
 
+  it('initializes the auth/error_tracking payload sections when only the secret field changes', async () => {
+    // auth.enabled/header and error_tracking.enabled/environment are all
+    // untouched inherited defaults here, so buildSavePayload's `include()`
+    // skips them -- payload.auth/error_tracking must not exist yet by the
+    // time api_key/dsn are handled, exercising their own initialization
+    // (`if (!payload.auth) payload.auth = {}`) rather than relying on
+    // another field in the section having already created it.
+    let capturedBody: Record<string, Record<string, unknown>> | undefined;
+    server.use(
+      http.get('/api/v1/config/sections', () =>
+        HttpResponse.json({
+          sections: SECTIONS_WITH_DEFAULTS,
+          schema: [],
+          field_defaults: FIELD_DEFAULTS_ALL_UNSET,
+        })
+      ),
+      http.post('/api/v1/config/sections', async ({ request }) => {
+        capturedBody = (await request.json()) as Record<string, Record<string, unknown>>;
+        return HttpResponse.json({
+          applied: capturedBody,
+          sections: SECTIONS_WITH_DEFAULTS,
+          field_defaults: FIELD_DEFAULTS_ALL_UNSET,
+          restart_required: [],
+          observability_reconciled: false,
+          observability_result: null,
+        });
+      })
+    );
+
+    render(<AdminPage />);
+    await selectModelAndClickNext(2);
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'brand-new-key' } });
+    await clickNext(1);
+    fireEvent.change(screen.getByLabelText('Error Tracking DSN'), {
+      target: { value: 'http://new@dsn/1' },
+    });
+    await clickNext(1);
+
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+    });
+
+    await waitFor(() => {
+      expect(capturedBody?.auth).toEqual({ api_key: 'brand-new-key' });
+    });
+    expect(capturedBody?.error_tracking).toEqual({ dsn: 'http://new@dsn/1' });
+  });
+
   it('does not navigate or re-trigger save via keyboard shortcuts while a save is in progress', async () => {
     server.use(
       http.post('/api/v1/config/sections', async () => {
