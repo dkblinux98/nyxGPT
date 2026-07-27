@@ -26,9 +26,15 @@ class CP:
         self.returncode = returncode
 
 
-def _ps_line(service, *, state="running", health=""):
+def _ps_line(service, *, state="running", health="", exit_code=0):
     return json.dumps(
-        {"Service": service, "Name": f"nyxgpt-{service}-1", "State": state, "Health": health}
+        {
+            "Service": service,
+            "Name": f"nyxgpt-{service}-1",
+            "State": state,
+            "Health": health,
+            "ExitCode": exit_code,
+        }
     )
 
 
@@ -129,6 +135,39 @@ def test_list_component_status_parses_ps_json(monkeypatch):
     assert by_service["api"].healthy is True
     assert by_service["web"].healthy is True  # no healthcheck -> running is enough
     assert by_service["cassandra"].healthy is False
+
+
+@pytest.mark.unit
+def test_list_compose_component_status_one_shot_exited_zero_is_skipped(monkeypatch):
+    # glitchtip-migrate's healthy end state -- exited 0, no running container --
+    # must never surface as a component to track at all (#3381).
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(
+            stdout=_ps_line("glitchtip-migrate", state="exited", exit_code=0)
+        ),
+    )
+    assert self_heal._list_compose_component_status() == []
+
+
+@pytest.mark.unit
+def test_list_compose_component_status_one_shot_exited_nonzero_reported_unhealthy(monkeypatch):
+    # A genuinely failed migration must still surface -- the one-shot
+    # exemption is for the "not a long-running service" shape, not for
+    # masking a real failure (#3381).
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(
+            stdout=_ps_line("glitchtip-migrate", state="exited", exit_code=1)
+        ),
+    )
+    statuses = self_heal._list_compose_component_status()
+    assert len(statuses) == 1
+    assert statuses[0].service == "glitchtip-migrate"
+    assert statuses[0].state == "exited"
+    assert statuses[0].healthy is False
 
 
 @pytest.mark.unit
@@ -948,6 +987,21 @@ def test_desired_compose_services_resolves_and_excludes_core_services(monkeypatc
 
 
 @pytest.mark.unit
+def test_desired_compose_services_excludes_one_shot_services(monkeypatch):
+    # glitchtip-migrate is resolved by `docker compose config --services`
+    # alongside the long-running glitchtip service, but it must never count
+    # as "desired" -- otherwise it's reported absent forever once it exits 0
+    # and is (correctly) never present (#3381).
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(stdout="glitchtip\nglitchtip-migrate\n"),
+    )
+    services = self_heal._desired_compose_services({"errors"})
+    assert services == {"glitchtip"}
+
+
+@pytest.mark.unit
 def test_desired_compose_services_command_failure_returns_empty(monkeypatch):
     monkeypatch.setattr(
         self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1, stderr="boom")
@@ -1105,6 +1159,28 @@ def test_list_component_status_reports_torn_down_monitoring_profile(monkeypatch)
     assert statuses[0].service == "grafana"
     assert statuses[0].state == "absent"
     assert statuses[0].healthy is False
+
+
+@pytest.mark.unit
+def test_list_component_status_one_shot_service_not_reported_absent(monkeypatch):
+    # End-to-end reproduction of #3381: with the "errors" profile enabled,
+    # `docker compose config --services` lists both `glitchtip` and the
+    # one-shot `glitchtip-migrate` migration job; only `glitchtip` is
+    # actually running (the migration already exited 0 and is gone). The
+    # migration job must not show up as an absent/unhealthy component.
+    def _run_stub(cmd, timeout=30.0):
+        if "config" in cmd:
+            return CP(stdout="glitchtip\nglitchtip-migrate\n")
+        return CP(stdout=_ps_line("glitchtip", state="running", health="healthy"))
+
+    monkeypatch.setattr(self_heal, "_run", _run_stub)
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: {"errors"})
+
+    statuses = self_heal.list_component_status()
+
+    by_service = {s.service: s for s in statuses}
+    assert "glitchtip-migrate" not in by_service
+    assert by_service["glitchtip"].healthy is True
 
 
 @pytest.mark.unit

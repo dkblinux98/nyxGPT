@@ -459,8 +459,12 @@ def _desired_compose_services(profiles: set[str]) -> set[str]:
     Mirrors `ops._start_observability_stack`'s own resolution: `docker
     compose --profile X ... config --services`, minus `CORE_APP_SERVICES`
     (which this desired-state check doesn't cover -- see that constant's
-    docstring). Returns an empty set on any Docker/Compose failure, the same
-    "can't tell, so don't act" fallback the rest of this module uses.
+    docstring) and minus `ONE_SHOT_SERVICES` (a run-to-completion job is never
+    "desired but absent" -- exiting 0 with no running container *is* its
+    healthy end state, mirroring the exemption `_list_compose_component_status`
+    already applies on the present side). Returns an empty set on any
+    Docker/Compose failure, the same "can't tell, so don't act" fallback the
+    rest of this module uses.
     """
     if not profiles or _which("docker") is None:
         return set()
@@ -474,7 +478,11 @@ def _desired_compose_services(profiles: set[str]) -> set[str]:
         return set()
     if cp.returncode != 0:
         return set()
-    return {s.strip() for s in (cp.stdout or "").splitlines() if s.strip()} - CORE_APP_SERVICES
+    return (
+        {s.strip() for s in (cp.stdout or "").splitlines() if s.strip()}
+        - CORE_APP_SERVICES
+        - ONE_SHOT_SERVICES
+    )
 
 
 def _absent_desired_statuses(
@@ -567,6 +575,14 @@ def _list_compose_component_status() -> list[ComponentStatus]:
     Only reports containers that actually exist -- an opt-in profile
     (monitoring/logging/tracing/errors) that was never started isn't
     reported as "down", it's simply absent from the result.
+
+    A member of `ONE_SHOT_SERVICES` (e.g. `glitchtip-migrate`) is skipped
+    entirely once it has run to completion (`state="exited"`, `ExitCode ==
+    0`) -- that's its healthy end state, not a container self-heal should
+    track. But if it exited non-zero, the migration genuinely failed, so it's
+    still reported here (`healthy=False`) rather than silently swallowed --
+    the exemption is for the "not a long-running service" shape, not for
+    masking a real failure.
     """
     if _which("docker") is None:
         return []
@@ -588,9 +604,22 @@ def _list_compose_component_status() -> list[ComponentStatus]:
         except Exception:
             continue
         service = data.get("Service", "")
-        if not service or service in ONE_SHOT_SERVICES:
+        if not service:
             continue
         state = data.get("State", "")
+        if service in ONE_SHOT_SERVICES:
+            if state == "exited" and data.get("ExitCode", 0) == 0:
+                continue
+            statuses.append(
+                ComponentStatus(
+                    service=service,
+                    container=data.get("Name", ""),
+                    state=state,
+                    health=data.get("Health", ""),
+                    healthy=False,
+                )
+            )
+            continue
         health = data.get("Health", "")
         healthy = state == "running" and health in ("", "healthy")
         statuses.append(
