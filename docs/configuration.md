@@ -49,14 +49,25 @@ and service paths — see the section reference below.
 
 ### Option 3: Web Configuration Wizard (edit an existing install)
 
-Once nyxGPT is running, `/admin` in the web UI is a six-step **Configuration
+Once nyxGPT is running, `/admin` in the web UI is a five-step **Configuration
 Wizard** that covers every section below without hand-editing `config.ini`:
 Core & Model (`[nyxgpt]`, `[logging]`, `[ollama]`), RAG Configuration
 (`[rag]`'s chat toggle and Cassandra connection), API & Auth (`[api]`,
 `[auth]`, `[rate_limit]`), Observability (`[tracing]`, `[error_tracking]`,
-`[monitoring]`, `[log_aggregation]`), Resource Usage (live metrics), and a
-Summary/save step.
+`[monitoring]`, `[log_aggregation]`), and a Summary/save step. (Live resource
+metrics moved to Settings → Resource Usage and the admin dashboard, #3384.)
 
+- **Every field shows its *effective* value, never a blank box.** A key
+  absent from `config.ini` renders the same fallback value its `config.py`
+  getter would use at runtime (e.g. `[tracing] service_name` shows
+  `nyxgpt-api` even with no `[tracing]` section at all) -- see the
+  per-section tables below for what each fallback is. A **"default"** badge
+  next to the field's label marks it as inherited rather than something you
+  explicitly set; a field whose fallback genuinely is blank (e.g.
+  `[error_tracking] dsn`) stays blank with no badge. Saving without touching
+  a badged field leaves it unset in `config.ini` -- it keeps tracking future
+  changes to that default instead of freezing today's value in as an
+  explicit setting (#3385).
 - **Save is apply-on-save, not just a file write.** Saving validates every
   changed field (ports, URLs, hosts), writes `config.ini` (still the single
   source of truth, #3194), and immediately invalidates the API's config
@@ -136,10 +147,10 @@ system_prompt_minimize = false
 
 | Key | Description |
 |---|---|
-| `default_model` | Ollama model name used when none is specified |
-| `sessions_dir` | Directory for chat session storage |
-| `vectorstore_dir` | Directory for vector embeddings and RAG data |
-| `chat_timeout_seconds` | Timeout for a single chat request |
+| `default_model` | Ollama model name used when none is specified (default: `llama3.1:8b`) |
+| `sessions_dir` | Directory for chat session storage (default: `~/.nyxGPT/sessions`) |
+| `vectorstore_dir` | Directory for vector embeddings and RAG data (default: `~/.nyxGPT/vectorstore`) |
+| `chat_timeout_seconds` | Timeout for a single chat request (default: `180`) |
 | `auto_summarize_enabled` | Automatically generate session title/summary/tags |
 | `auto_summarize_after_messages` | Trigger auto-summarization after N messages (0 to disable) |
 | `auto_sync_filename` | Automatically sync session filename with title |
@@ -161,7 +172,7 @@ default_model = qwen2.5:latest
 
 | Key | Description |
 |---|---|
-| `base_url` | Base URL of the Ollama HTTP API |
+| `base_url` | Base URL of the Ollama HTTP API (default: `http://127.0.0.1:11434`) |
 | `default_model` | Default model for Ollama (optional override of `nyxgpt.default_model`) |
 
 **Note:** If `default_model` is not set, nyxGPT uses `nyxgpt.default_model` instead.
@@ -181,8 +192,8 @@ tools_root = ~
 
 | Key | Description |
 |---|---|
-| `host` | Bind address for the API server |
-| `port` | Port for the API server |
+| `host` | Bind address for the API server (default: `127.0.0.1`) |
+| `port` | Port for the API server (default: `8000`) |
 | `tools_root` | Root directory `/api/v1/tools/{ls,cat,grep}` are confined to — defense in depth against arbitrary file reads (see [security.md](security.md#filesystem-tools-apiv1tools)). Defaults to your home directory if unset or blank. |
 
 ---
@@ -350,7 +361,7 @@ cassandra_table = rag_chunks
 |---|---|
 | `enable_chat_context` | Enable RAG context injection for chat (hot-reloadable) |
 | `enabled` | **Legacy alias** for `enable_chat_context` (deprecated, use `enable_chat_context` instead) |
-| `embedding_model` | Ollama embedding model |
+| `embedding_model` | Ollama embedding model. Blank has no fixed fallback of its own -- it falls back to whatever `nyxgpt.default_model` is at call time, so the Configuration Wizard shows it genuinely empty rather than badging a default here |
 | `embedding_dim` | Vector dimensionality (must match Cassandra VECTOR dimension) |
 | `embedding_batch_size` | Batch size for embedding requests (smaller = lower memory, slower) |
 | `embedding_timeout_seconds` | Timeout for each embedding batch request to Ollama |
@@ -375,10 +386,10 @@ cassandra_table = rag_chunks
 | `expansion_model` | Model for query expansion (optional, defaults to nyxgpt.default_model) |
 | `include_scores` | Include similarity scores in context headers (debugging only) |
 | `include_headers` | Include per-chunk headers like "[Context 1]" in injected context |
-| `cassandra_hosts` | Cassandra host(s) |
-| `cassandra_port` | Cassandra port |
-| `cassandra_keyspace` | Cassandra keyspace for RAG |
-| `cassandra_table` | Cassandra table name for RAG chunks |
+| `cassandra_hosts` | Cassandra host(s) (default: `127.0.0.1`) |
+| `cassandra_port` | Cassandra port (default: `9042`) |
+| `cassandra_keyspace` | Cassandra keyspace for RAG (default: `nyxgpt`) |
+| `cassandra_table` | Cassandra table name for RAG chunks (default: `rag_chunks`) |
 | `cassandra_pool_size` | Number of core connections per host in the driver-level pool (integer ≥ 1, default: `2`) |
 | `cassandra_health_check_interval` | Seconds between automatic health check queries; a check is run on the next `get_session()` call once this interval has elapsed (float > 0, default: `30.0`) |
 | `cassandra_reconnect_max_attempts` | Maximum number of reconnection attempts before giving up (integer ≥ 1, default: `3`) |
@@ -586,8 +597,8 @@ jaeger_ui_url = http://localhost:16686
 | Key | Description |
 |---|---|
 | `enabled` | Enable distributed tracing (default: `false`) |
-| `service_name` | Service name attached to every span |
-| `otlp_endpoint` | OTLP/HTTP endpoint of the local collector spans are exported to |
+| `service_name` | Service name attached to every span (default: `nyxgpt-api`) |
+| `otlp_endpoint` | OTLP/HTTP endpoint of the local collector spans are exported to (default: `http://localhost:4318/v1/traces`) |
 | `jaeger_ui_url` | URL of the local Jaeger UI, used for the "Distributed Tracing" link in the SRE/admin dashboard |
 
 When enabled, HTTP requests (chat/RAG paths), Ollama calls, and Cassandra
@@ -635,7 +646,7 @@ admin_password =
 |---|---|
 | `enabled` | Enable error tracking (default: `false`). Flipped to `true` automatically once `nyxgpt ops glitchtip-init` provisions a DSN |
 | `dsn` | DSN of your self-hosted GlitchTip project. Empty by default; filled in automatically by `nyxgpt ops glitchtip-init`, or paste one yourself exactly as GlitchTip's UI shows it (`localhost` host) -- a containerized API automatically rewrites that host to the `glitchtip` Compose service name at startup, so there's nothing to edit by hand for either deployment mode |
-| `environment` | Environment tag attached to every event (e.g. `development`, `production`) |
+| `environment` | Environment tag attached to every event (e.g. `development`, `production`; default: `development`) |
 | `release` | Release tag attached to every event, for release tracking. Blank omits it |
 | `traces_sample_rate` | Fraction of requests also sampled for performance monitoring, `0.0`-`1.0` (`0.0` disables performance monitoring; only exceptions are captured) |
 | `glitchtip_ui_url` | URL of the local GlitchTip UI, used for the "Error Tracking" link in the SRE/admin dashboard, and as the API base URL `nyxgpt ops glitchtip-init` provisions against |

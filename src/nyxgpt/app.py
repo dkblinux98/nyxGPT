@@ -1434,6 +1434,7 @@ def config_sections_get(request: Request) -> dict[str, Any]:
     return {
         "sections": config_wizard.read_sections(cfg),
         "schema": config_wizard.schema_summary(),
+        "field_defaults": config_wizard.field_defaults(cfg),
     }
 
 
@@ -1481,6 +1482,7 @@ def config_sections_update(request: Request, payload: dict[str, Any] = Body(...)
     return {
         "applied": config_wizard.mask_applied(applied),
         "sections": config_wizard.read_sections(cfg),
+        "field_defaults": config_wizard.field_defaults(cfg),
         "restart_required": restart_needed,
         "observability_reconciled": needs_observability,
         "observability_result": observability_result,

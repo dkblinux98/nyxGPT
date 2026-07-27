@@ -54,6 +54,19 @@ interface SaveResult {
   observability_result: { ok: boolean; messages: string[] } | null;
 }
 
+/**
+ * Per non-secret field, whether it's currently an inherited default (the key
+ * is absent from config.ini and the backend is showing its fallback value)
+ * rather than something the user explicitly configured (#3385). Missing
+ * section/key entries default to `false` via optional chaining, so mocks
+ * and older responses that omit this map behave exactly as before.
+ */
+type FieldDefaults = Record<string, Record<string, boolean>>;
+
+function isDefaultField(defaults: FieldDefaults, section: string, key: string): boolean {
+  return Boolean(defaults[section]?.[key]);
+}
+
 type WizardStep = 'core' | 'rag' | 'api' | 'observability' | 'summary';
 
 const EMPTY_SECRET: SecretField = { set: false, masked: null };
@@ -101,41 +114,180 @@ function toFormValues(sections: SectionsData): FormValues {
   };
 }
 
-function buildSavePayload(v: FormValues): Record<string, Record<string, unknown>> {
-  const payload: Record<string, Record<string, unknown>> = {
-    nyxgpt: {
-      default_model: v.nyxgpt.default_model.trim(),
-      chat_timeout_seconds: Number(v.nyxgpt.chat_timeout_seconds),
-      sessions_dir: v.nyxgpt.sessions_dir.trim(),
-      vectorstore_dir: v.nyxgpt.vectorstore_dir.trim(),
-    },
-    logging: { level: v.logging.level, dir: v.logging.dir.trim() },
-    ollama: { base_url: v.ollama.base_url.trim() },
-    api: { host: v.api.host.trim(), port: Number(v.api.port) },
-    auth: { enabled: v.auth.enabled === 'true', header: v.auth.header.trim() },
-    rate_limit: { enabled: v.rate_limit.enabled === 'true' },
-    rag: {
-      enable_chat_context: v.rag.enable_chat_context === 'true',
-      cassandra_hosts: v.rag.cassandra_hosts.trim(),
-      cassandra_port: Number(v.rag.cassandra_port),
-      cassandra_keyspace: v.rag.cassandra_keyspace.trim(),
-      cassandra_table: v.rag.cassandra_table.trim(),
-      embedding_model: v.rag.embedding_model.trim(),
-    },
-    tracing: {
-      enabled: v.tracing.enabled === 'true',
-      service_name: v.tracing.service_name.trim(),
-      otlp_endpoint: v.tracing.otlp_endpoint.trim(),
-    },
-    error_tracking: {
-      enabled: v.error_tracking.enabled === 'true',
-      environment: v.error_tracking.environment.trim(),
-    },
-    monitoring: { enabled: v.monitoring.enabled === 'true' },
-    log_aggregation: { enabled: v.log_aggregation.enabled === 'true' },
-  };
-  if (v.auth.api_key.trim()) payload.auth.api_key = v.auth.api_key.trim();
-  if (v.error_tracking.dsn.trim()) payload.error_tracking.dsn = v.error_tracking.dsn.trim();
+/**
+ * Builds the `POST /api/v1/config/sections` payload from the wizard's form state.
+ *
+ * A field left untouched while it was showing an inherited default (per
+ * `fieldDefaults`) is omitted rather than sent -- otherwise every save would
+ * freeze today's runtime fallback into config.ini as an explicit setting,
+ * silently overriding any future default change (#3385). A field the user
+ * actually edited is always included, even if the new value happens to
+ * match the default.
+ */
+function buildSavePayload(
+  v: FormValues,
+  sections: SectionsData,
+  fieldDefaults: FieldDefaults
+): Record<string, Record<string, unknown>> {
+  const payload: Record<string, Record<string, unknown>> = {};
+
+  function include(section: string, key: string, value: unknown, current: string, original: string) {
+    if (isDefaultField(fieldDefaults, section, key) && current === original) return;
+    if (!payload[section]) payload[section] = {};
+    payload[section][key] = value;
+  }
+
+  include(
+    'nyxgpt',
+    'default_model',
+    v.nyxgpt.default_model.trim(),
+    v.nyxgpt.default_model,
+    sections.nyxgpt.default_model
+  );
+  include(
+    'nyxgpt',
+    'chat_timeout_seconds',
+    Number(v.nyxgpt.chat_timeout_seconds),
+    v.nyxgpt.chat_timeout_seconds,
+    sections.nyxgpt.chat_timeout_seconds
+  );
+  include(
+    'nyxgpt',
+    'sessions_dir',
+    v.nyxgpt.sessions_dir.trim(),
+    v.nyxgpt.sessions_dir,
+    sections.nyxgpt.sessions_dir
+  );
+  include(
+    'nyxgpt',
+    'vectorstore_dir',
+    v.nyxgpt.vectorstore_dir.trim(),
+    v.nyxgpt.vectorstore_dir,
+    sections.nyxgpt.vectorstore_dir
+  );
+
+  include('logging', 'level', v.logging.level, v.logging.level, sections.logging.level);
+  include('logging', 'dir', v.logging.dir.trim(), v.logging.dir, sections.logging.dir);
+
+  include('ollama', 'base_url', v.ollama.base_url.trim(), v.ollama.base_url, sections.ollama.base_url);
+
+  include('api', 'host', v.api.host.trim(), v.api.host, sections.api.host);
+  include('api', 'port', Number(v.api.port), v.api.port, sections.api.port);
+
+  include('auth', 'enabled', v.auth.enabled === 'true', v.auth.enabled, sections.auth.enabled);
+  include('auth', 'header', v.auth.header.trim(), v.auth.header, sections.auth.header);
+
+  include(
+    'rate_limit',
+    'enabled',
+    v.rate_limit.enabled === 'true',
+    v.rate_limit.enabled,
+    sections.rate_limit.enabled
+  );
+
+  include(
+    'rag',
+    'enable_chat_context',
+    v.rag.enable_chat_context === 'true',
+    v.rag.enable_chat_context,
+    sections.rag.enable_chat_context
+  );
+  include(
+    'rag',
+    'cassandra_hosts',
+    v.rag.cassandra_hosts.trim(),
+    v.rag.cassandra_hosts,
+    sections.rag.cassandra_hosts
+  );
+  include(
+    'rag',
+    'cassandra_port',
+    Number(v.rag.cassandra_port),
+    v.rag.cassandra_port,
+    sections.rag.cassandra_port
+  );
+  include(
+    'rag',
+    'cassandra_keyspace',
+    v.rag.cassandra_keyspace.trim(),
+    v.rag.cassandra_keyspace,
+    sections.rag.cassandra_keyspace
+  );
+  include(
+    'rag',
+    'cassandra_table',
+    v.rag.cassandra_table.trim(),
+    v.rag.cassandra_table,
+    sections.rag.cassandra_table
+  );
+  include(
+    'rag',
+    'embedding_model',
+    v.rag.embedding_model.trim(),
+    v.rag.embedding_model,
+    sections.rag.embedding_model
+  );
+
+  include(
+    'tracing',
+    'enabled',
+    v.tracing.enabled === 'true',
+    v.tracing.enabled,
+    sections.tracing.enabled
+  );
+  include(
+    'tracing',
+    'service_name',
+    v.tracing.service_name.trim(),
+    v.tracing.service_name,
+    sections.tracing.service_name
+  );
+  include(
+    'tracing',
+    'otlp_endpoint',
+    v.tracing.otlp_endpoint.trim(),
+    v.tracing.otlp_endpoint,
+    sections.tracing.otlp_endpoint
+  );
+
+  include(
+    'error_tracking',
+    'enabled',
+    v.error_tracking.enabled === 'true',
+    v.error_tracking.enabled,
+    sections.error_tracking.enabled
+  );
+  include(
+    'error_tracking',
+    'environment',
+    v.error_tracking.environment.trim(),
+    v.error_tracking.environment,
+    sections.error_tracking.environment
+  );
+
+  include(
+    'monitoring',
+    'enabled',
+    v.monitoring.enabled === 'true',
+    v.monitoring.enabled,
+    sections.monitoring.enabled
+  );
+  include(
+    'log_aggregation',
+    'enabled',
+    v.log_aggregation.enabled === 'true',
+    v.log_aggregation.enabled,
+    sections.log_aggregation.enabled
+  );
+
+  if (v.auth.api_key.trim()) {
+    if (!payload.auth) payload.auth = {};
+    payload.auth.api_key = v.auth.api_key.trim();
+  }
+  if (v.error_tracking.dsn.trim()) {
+    if (!payload.error_tracking) payload.error_tracking = {};
+    payload.error_tracking.dsn = v.error_tracking.dsn.trim();
+  }
   return payload;
 }
 
@@ -163,6 +315,22 @@ const inputStyle = {
   color: 'var(--foreground)',
 } as const;
 
+const defaultBadgeStyle = {
+  marginLeft: 8,
+  fontSize: 11,
+  fontWeight: 600,
+  color: '#666',
+  border: '1px solid var(--border)',
+  borderRadius: 4,
+  padding: '1px 6px',
+  verticalAlign: 'middle',
+} as const;
+
+/** Labels a field's displayed value as an inherited default rather than something explicitly set (#3385). */
+function DefaultBadge() {
+  return <span style={defaultBadgeStyle}>default</span>;
+}
+
 function TextInput({
   id,
   label,
@@ -171,6 +339,7 @@ function TextInput({
   disabled,
   hint,
   type = 'text',
+  isDefault,
 }: {
   id: string;
   label: string;
@@ -179,19 +348,23 @@ function TextInput({
   disabled: boolean;
   hint?: string;
   type?: string;
+  isDefault?: boolean;
 }) {
   return (
     <div style={{ marginBottom: '1.25rem' }}>
-      <label htmlFor={id} style={fieldLabelStyle}>
-        {label}
-      </label>
+      <div style={{ display: 'flex', alignItems: 'center' }}>
+        <label htmlFor={id} style={{ ...fieldLabelStyle, marginBottom: 0 }}>
+          {label}
+        </label>
+        {isDefault && value.trim() !== '' && <DefaultBadge />}
+      </div>
       <input
         id={id}
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
-        style={inputStyle}
+        style={{ ...inputStyle, marginTop: 8 }}
       />
       {hint && <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>{hint}</div>}
     </div>
@@ -205,6 +378,7 @@ function CheckboxInput({
   checked,
   onChange,
   disabled,
+  isDefault,
 }: {
   id: string;
   label: string;
@@ -212,6 +386,7 @@ function CheckboxInput({
   checked: boolean;
   onChange: (v: boolean) => void;
   disabled: boolean;
+  isDefault?: boolean;
 }) {
   return (
     <div style={{ marginBottom: '1.25rem' }}>
@@ -237,7 +412,10 @@ function CheckboxInput({
           style={{ width: 18, height: 18, cursor: 'pointer' }}
         />
         <div>
-          <div style={{ fontWeight: 600, fontSize: 14 }}>{label}</div>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>
+            {label}
+            {isDefault && <DefaultBadge />}
+          </div>
           <div style={{ fontSize: 12, color: '#666', marginTop: 4 }}>{description}</div>
         </div>
       </label>
@@ -252,6 +430,7 @@ function SelectInput({
   onChange,
   disabled,
   options,
+  isDefault,
 }: {
   id: string;
   label: string;
@@ -259,18 +438,22 @@ function SelectInput({
   onChange: (v: string) => void;
   disabled: boolean;
   options: { value: string; label: string }[];
+  isDefault?: boolean;
 }) {
   return (
     <div style={{ marginBottom: '1.25rem' }}>
-      <label htmlFor={id} style={fieldLabelStyle}>
-        {label}
-      </label>
+      <div style={{ display: 'flex', alignItems: 'center' }}>
+        <label htmlFor={id} style={{ ...fieldLabelStyle, marginBottom: 0 }}>
+          {label}
+        </label>
+        {isDefault && value.trim() !== '' && <DefaultBadge />}
+      </div>
       <select
         id={id}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
-        style={inputStyle}
+        style={{ ...inputStyle, marginTop: 8 }}
       >
         {options.map((o) => (
           <option key={o.value} value={o.value}>
@@ -331,6 +514,7 @@ const LOG_LEVEL_OPTIONS = [
 
 export default function AdminPage() {
   const [sections, setSections] = useState<SectionsData>(emptySections());
+  const [fieldDefaults, setFieldDefaults] = useState<FieldDefaults>({});
   const [loading, setLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -370,6 +554,7 @@ export default function AdminPage() {
       if (!res.ok) throw new Error(`Failed to load configuration: HTTP ${res.status}`);
       const data = await res.json();
       setSections(data.sections);
+      setFieldDefaults(data.field_defaults || {});
       setFormValues(toFormValues(data.sections));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -530,7 +715,15 @@ export default function AdminPage() {
     setRestartError(null);
     setRestartedTargets([]);
     try {
-      const payload = buildSavePayload(formValues);
+      const payload = buildSavePayload(formValues, sections, fieldDefaults);
+      const hasChanges = Object.values(payload).some((fields) => Object.keys(fields).length > 0);
+      if (!hasChanges) {
+        // Nothing was touched away from its inherited default -- there's
+        // nothing to persist, and posting an empty payload would 400.
+        setSaveSuccess(true);
+        return;
+      }
+
       const res = await fetch('/api/v1/config/sections', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -544,6 +737,7 @@ export default function AdminPage() {
       setSaveSuccess(true);
       setSaveResult(data as SaveResult);
       setSections(data.sections);
+      setFieldDefaults(data.field_defaults || {});
       setFormValues(toFormValues(data.sections));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -658,9 +852,13 @@ export default function AdminPage() {
             </p>
 
             <div style={{ marginBottom: '1.5rem' }}>
-              <label htmlFor="default-model-select" style={fieldLabelStyle}>
-                Default Model
-              </label>
+              <div style={{ display: 'flex', alignItems: 'center' }}>
+                <label htmlFor="default-model-select" style={{ ...fieldLabelStyle, marginBottom: 0 }}>
+                  Default Model
+                </label>
+                {isDefaultField(fieldDefaults, 'nyxgpt', 'default_model') &&
+                  formValues.nyxgpt.default_model.trim() !== '' && <DefaultBadge />}
+              </div>
               <select
                 id="default-model-select"
                 value={formValues.nyxgpt.default_model}
@@ -671,7 +869,7 @@ export default function AdminPage() {
                 aria-describedby={
                   loadingModels ? 'models-loading' : modelsError ? 'models-error' : undefined
                 }
-                style={inputStyle}
+                style={{ ...inputStyle, marginTop: 8 }}
               >
                 <option value="">Select a model...</option>
                 {availableModels.map((model) => (
@@ -717,6 +915,7 @@ export default function AdminPage() {
               disabled={saving}
               type="number"
               hint="How long to wait for a model response before giving up."
+              isDefault={isDefaultField(fieldDefaults, 'nyxgpt', 'chat_timeout_seconds')}
             />
 
             <TextInput
@@ -725,6 +924,7 @@ export default function AdminPage() {
               value={formValues.nyxgpt.sessions_dir}
               onChange={(v) => updateSection('nyxgpt', 'sessions_dir', v)}
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'nyxgpt', 'sessions_dir')}
             />
 
             <TextInput
@@ -733,6 +933,7 @@ export default function AdminPage() {
               value={formValues.nyxgpt.vectorstore_dir}
               onChange={(v) => updateSection('nyxgpt', 'vectorstore_dir', v)}
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'nyxgpt', 'vectorstore_dir')}
             />
 
             <SelectInput
@@ -742,6 +943,7 @@ export default function AdminPage() {
               onChange={(v) => updateSection('logging', 'level', v)}
               disabled={saving}
               options={LOG_LEVEL_OPTIONS}
+              isDefault={isDefaultField(fieldDefaults, 'logging', 'level')}
             />
 
             <TextInput
@@ -750,6 +952,7 @@ export default function AdminPage() {
               value={formValues.logging.dir}
               onChange={(v) => updateSection('logging', 'dir', v)}
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'logging', 'dir')}
             />
 
             <TextInput
@@ -759,6 +962,7 @@ export default function AdminPage() {
               onChange={(v) => updateSection('ollama', 'base_url', v)}
               disabled={saving}
               hint="Must start with http:// or https://"
+              isDefault={isDefaultField(fieldDefaults, 'ollama', 'base_url')}
             />
 
             <div style={{ marginTop: '1.5rem' }}>
@@ -833,6 +1037,7 @@ export default function AdminPage() {
               checked={formValues.rag.enable_chat_context === 'true'}
               onChange={(v) => updateSection('rag', 'enable_chat_context', v ? 'true' : 'false')}
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'rag', 'enable_chat_context')}
             />
 
             <TextInput
@@ -842,6 +1047,7 @@ export default function AdminPage() {
               onChange={(v) => updateSection('rag', 'cassandra_hosts', v)}
               disabled={saving}
               hint="Comma-separated list of hosts, e.g. 127.0.0.1, 10.0.0.2"
+              isDefault={isDefaultField(fieldDefaults, 'rag', 'cassandra_hosts')}
             />
 
             <TextInput
@@ -851,6 +1057,7 @@ export default function AdminPage() {
               onChange={(v) => updateSection('rag', 'cassandra_port', v)}
               disabled={saving}
               type="number"
+              isDefault={isDefaultField(fieldDefaults, 'rag', 'cassandra_port')}
             />
 
             <TextInput
@@ -859,6 +1066,7 @@ export default function AdminPage() {
               value={formValues.rag.cassandra_keyspace}
               onChange={(v) => updateSection('rag', 'cassandra_keyspace', v)}
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'rag', 'cassandra_keyspace')}
             />
 
             <TextInput
@@ -867,6 +1075,7 @@ export default function AdminPage() {
               value={formValues.rag.cassandra_table}
               onChange={(v) => updateSection('rag', 'cassandra_table', v)}
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'rag', 'cassandra_table')}
             />
 
             <TextInput
@@ -875,6 +1084,8 @@ export default function AdminPage() {
               value={formValues.rag.embedding_model}
               onChange={/* v8 ignore next */ (v) => updateSection('rag', 'embedding_model', v)}
               disabled={saving}
+              hint="Optional -- leave blank to use the Default Model above for embeddings."
+              isDefault={isDefaultField(fieldDefaults, 'rag', 'embedding_model')}
             />
 
             <div
@@ -901,6 +1112,7 @@ export default function AdminPage() {
               onChange={(v) => updateSection('api', 'host', v)}
               disabled={saving}
               hint="Requires an API restart to take effect."
+              isDefault={isDefaultField(fieldDefaults, 'api', 'host')}
             />
 
             <TextInput
@@ -911,6 +1123,7 @@ export default function AdminPage() {
               disabled={saving}
               type="number"
               hint="Requires an API restart to take effect."
+              isDefault={isDefaultField(fieldDefaults, 'api', 'port')}
             />
 
             <CheckboxInput
@@ -920,6 +1133,7 @@ export default function AdminPage() {
               checked={formValues.auth.enabled === 'true'}
               onChange={(v) => updateSection('auth', 'enabled', v ? 'true' : 'false')}
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'auth', 'enabled')}
             />
 
             <TextInput
@@ -928,6 +1142,7 @@ export default function AdminPage() {
               value={formValues.auth.header}
               onChange={(v) => updateSection('auth', 'header', v)}
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'auth', 'header')}
             />
 
             <SecretInput
@@ -948,6 +1163,7 @@ export default function AdminPage() {
               checked={formValues.rate_limit.enabled === 'true'}
               onChange={(v) => updateSection('rate_limit', 'enabled', v ? 'true' : 'false')}
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'rate_limit', 'enabled')}
             />
           </div>
         )}
@@ -967,6 +1183,7 @@ export default function AdminPage() {
               checked={formValues.tracing.enabled === 'true'}
               onChange={(v) => updateSection('tracing', 'enabled', v ? 'true' : 'false')}
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'tracing', 'enabled')}
             />
             <TextInput
               id="tracing-service-name"
@@ -974,6 +1191,7 @@ export default function AdminPage() {
               value={formValues.tracing.service_name}
               onChange={(v) => updateSection('tracing', 'service_name', v)}
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'tracing', 'service_name')}
             />
             <TextInput
               id="tracing-otlp-endpoint"
@@ -982,6 +1200,7 @@ export default function AdminPage() {
               onChange={(v) => updateSection('tracing', 'otlp_endpoint', v)}
               disabled={saving}
               hint="Must start with http:// or https://"
+              isDefault={isDefaultField(fieldDefaults, 'tracing', 'otlp_endpoint')}
             />
 
             <CheckboxInput
@@ -991,6 +1210,7 @@ export default function AdminPage() {
               checked={formValues.error_tracking.enabled === 'true'}
               onChange={(v) => updateSection('error_tracking', 'enabled', v ? 'true' : 'false')}
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'error_tracking', 'enabled')}
             />
             <SecretInput
               id="error-tracking-dsn"
@@ -1000,6 +1220,7 @@ export default function AdminPage() {
               disabled={saving}
               set={sections.error_tracking.dsn.set}
               masked={sections.error_tracking.dsn.masked}
+              hint="Optional -- leave blank to keep error tracking events local-only."
             />
             <TextInput
               id="error-tracking-environment"
@@ -1007,6 +1228,7 @@ export default function AdminPage() {
               value={formValues.error_tracking.environment}
               onChange={(v) => updateSection('error_tracking', 'environment', v)}
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'error_tracking', 'environment')}
             />
 
             <CheckboxInput
@@ -1016,6 +1238,7 @@ export default function AdminPage() {
               checked={formValues.monitoring.enabled === 'true'}
               onChange={(v) => updateSection('monitoring', 'enabled', v ? 'true' : 'false')}
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'monitoring', 'enabled')}
             />
 
             <CheckboxInput
@@ -1027,6 +1250,7 @@ export default function AdminPage() {
                 updateSection('log_aggregation', 'enabled', v ? 'true' : 'false')
               }
               disabled={saving}
+              isDefault={isDefaultField(fieldDefaults, 'log_aggregation', 'enabled')}
             />
           </div>
         )}
