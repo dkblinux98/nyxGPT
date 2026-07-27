@@ -45,7 +45,7 @@ describe('CollectionsPage', () => {
     global.alert = vi.fn();
   });
 
-  it('renders the standardized back-nav link and keeps the Create Collection action', async () => {
+  it('renders the back to chat link and keeps the Create Collection action', async () => {
     mockCollections([]);
 
     render(<CollectionsPage />);
@@ -54,9 +54,8 @@ describe('CollectionsPage', () => {
       expect(screen.getByRole('heading', { name: 'RAG Collections' })).toBeInTheDocument();
     });
 
-    const link = screen.getByRole('link', { name: /back to admin dashboard/i });
-    expect(link).toHaveAttribute('href', '/admin/dashboard');
-    expect(screen.queryByRole('button', { name: /back to chat/i })).not.toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /back to chat/i });
+    expect(link).toHaveAttribute('href', '/');
     expect(screen.getByRole('button', { name: /create collection/i })).toBeInTheDocument();
   });
 
