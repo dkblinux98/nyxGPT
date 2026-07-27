@@ -1869,6 +1869,11 @@ def self_heal_heal(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]
             "self_heal.restart",
             f"{event['service']}: {event['message']} ({event['reason']})",
         )
+        # Recorded as an ops lifecycle action too (#3390) -- a dashboard-triggered
+        # heal is an operator-initiated restart, same as `nyxgpt ops restart`, distinct
+        # from nyxgpt_selfheal_restarts_total (which self_heal.heal_now() already
+        # incremented above for this same restart).
+        ops_module.record_manual_restart(event["service"], event["ok"], event["message"])
     return result
 
 

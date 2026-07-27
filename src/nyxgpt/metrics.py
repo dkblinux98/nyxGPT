@@ -81,6 +81,15 @@ SELFHEAL_LAST_RECOVERY_TIMESTAMP = Gauge(
     registry=REGISTRY,
 )
 
+OPS_ACTIONS_TOTAL = Counter(
+    "nyxgpt_ops_actions_total",
+    "Total operator-initiated lifecycle actions (nyxgpt ops CLI or admin dashboard), "
+    "by command, service, and result. Distinct from nyxgpt_selfheal_restarts_total, "
+    "which counts only the watchdog's own autonomous restarts.",
+    ["command", "service", "result"],
+    registry=REGISTRY,
+)
+
 DEPLOY_ACTIVE_COLOR = Gauge(
     "nyxgpt_deploy_active_color",
     "Whether a blue/green color is currently receiving traffic (1) or not (0)",

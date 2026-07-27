@@ -31,6 +31,7 @@ from typing import Any
 
 import httpx
 
+from nyxgpt import metrics as prom_metrics
 from nyxgpt import self_heal, tracing
 from nyxgpt.config import (
     get_log_aggregation_enabled,
@@ -185,6 +186,70 @@ def _emit_results(action: str, results: list[OpsResult]) -> bool:
         )
         ok = ok and r.ok
     return ok
+
+
+def _ops_action_outcome(results: list[OpsResult]) -> tuple[str, str]:
+    """Reduce a block of `OpsResult`s to a single (result, message) pair.
+
+    `result` is "success" if every result ok'd, "refused" if any failing
+    result's message starts with "Refusing" (the existing convention used by
+    `_compose_conflict_result`/`_ensure_cassandra_container`'s port-collision
+    refusals), else "failure".
+    """
+    if not results:
+        return "success", ""
+    failed = [r for r in results if not r.ok]
+    if not failed:
+        return "success", "; ".join(r.message for r in results)
+    if any(r.message.startswith("Refusing") for r in failed):
+        return "refused", "; ".join(r.message for r in failed)
+    return "failure", "; ".join(r.message for r in failed)
+
+
+def _record_ops_action(command: str, service: str, result: str, message: str = "") -> None:
+    """Record one operator-initiated lifecycle action: a `nyxgpt_ops_actions_total`
+    increment plus a structured log event.
+
+    Kept entirely separate from self-heal's own `nyxgpt_selfheal_restarts_total`
+    counter and heal-event log (see #3390 -- the self-heal counter answers "how
+    often did the system recover itself"; folding operator-driven `nyxgpt ops`
+    actions into it would make autonomous heals indistinguishable from manual
+    restarts). This is the one place both CLI (`nyxgpt ops ...`) and the
+    SRE/admin dashboard's equivalent API calls funnel through, so a metrics gap
+    can be attributed to a deliberate `ops down` rather than reading as an
+    unexplained outage.
+    """
+    prom_metrics.OPS_ACTIONS_TOTAL.labels(command=command, service=service, result=result).inc()
+    log = logger.info if result == "success" else logger.warning
+    log(
+        "ops: lifecycle action command=%s service=%s result=%s%s",
+        command,
+        service,
+        result,
+        f": {message}" if message else "",
+        extra={
+            "component": "ops",
+            "event": "ops_lifecycle_action",
+            "command": command,
+            "service": service,
+            "result": result,
+            "result_message": message,
+        },
+    )
+
+
+def record_manual_restart(service: str, ok: bool, message: str = "") -> None:
+    """Record a dashboard-triggered "Heal Now" restart as an ops lifecycle action.
+
+    Called by the `/api/v1/self-heal/heal` endpoint for each component it
+    restarts -- a manual heal-now click is an operator-initiated restart just
+    like `nyxgpt ops restart <service>`, so it's recorded the same way (see
+    #3390). This does not touch `nyxgpt_selfheal_restarts_total`, which
+    self_heal.heal_now() already increments for this same restart -- that
+    counter's accounting of "this component was restarted" is unaffected;
+    this only adds the separate operator-action signal.
+    """
+    _record_ops_action("restart", service, "success" if ok else "failure", message)
 
 
 def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -1701,6 +1766,7 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
     """
     collision = _refuse_port_collision(["api", "web", "ollama", "cassandra"])
     if collision is not None:
+        _record_ops_action("install", "terraform", "refused", collision.message)
         return [collision]
 
     logger.info(
@@ -1737,6 +1803,8 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
     else:
         results += _terraform_stack_health()
 
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("install", "terraform", result, message)
     return results
 
 
@@ -1764,15 +1832,20 @@ def _install_terraform(args) -> int:
 def _down_terraform_steps() -> list[OpsResult]:
     """`terraform destroy` the Terraform-managed stack and return structured results."""
     if _which("terraform") is None:
-        return [OpsResult(False, "terraform not found on PATH -- nothing to destroy")]
+        results = [OpsResult(False, "terraform not found on PATH -- nothing to destroy")]
+    else:
+        cp = _run(
+            ["terraform", f"-chdir={TERRAFORM_DIR}", "destroy", "-input=false", "-auto-approve"],
+            check=False,
+        )
+        if cp.returncode == 0:
+            results = [OpsResult(True, "terraform destroy", _cp_details(cp))]
+        else:
+            results = [OpsResult(False, "terraform destroy failed", _cp_details(cp))]
 
-    cp = _run(
-        ["terraform", f"-chdir={TERRAFORM_DIR}", "destroy", "-input=false", "-auto-approve"],
-        check=False,
-    )
-    if cp.returncode == 0:
-        return [OpsResult(True, "terraform destroy", _cp_details(cp))]
-    return [OpsResult(False, "terraform destroy failed", _cp_details(cp))]
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("down", "terraform", result, message)
+    return results
 
 
 def down_terraform() -> list[OpsResult]:
@@ -1951,6 +2024,7 @@ def _install_kubernetes_steps(api_key: str | None) -> list[OpsResult]:
     """
     collision = _refuse_port_collision(["api"])
     if collision is not None:
+        _record_ops_action("install", "kubernetes", "refused", collision.message)
         return [collision]
 
     logger.info(
@@ -1978,6 +2052,8 @@ def _install_kubernetes_steps(api_key: str | None) -> list[OpsResult]:
     else:
         results += _k8s_stack_health()
 
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("install", "kubernetes", result, message)
     return results
 
 
@@ -2005,14 +2081,21 @@ def _install_kubernetes(args) -> int:
 def _down_kubernetes_steps() -> list[OpsResult]:
     """Remove the `nyxgpt` namespace's Kubernetes resources and return structured results."""
     if _which("kubectl") is None:
-        return [OpsResult(False, "kubectl not found on PATH -- nothing to tear down")]
+        results = [OpsResult(False, "kubectl not found on PATH -- nothing to tear down")]
+    else:
+        cp = _run(["kubectl", "delete", "-k", str(K8S_DIR), "--ignore-not-found"], check=False)
+        if cp.returncode == 0:
+            results = [
+                OpsResult(
+                    True, "kubectl delete -k k8s/ (namespace and all resources)", _cp_details(cp)
+                )
+            ]
+        else:
+            results = [OpsResult(False, "kubectl delete -k k8s/ failed", _cp_details(cp))]
 
-    cp = _run(["kubectl", "delete", "-k", str(K8S_DIR), "--ignore-not-found"], check=False)
-    if cp.returncode == 0:
-        return [
-            OpsResult(True, "kubectl delete -k k8s/ (namespace and all resources)", _cp_details(cp))
-        ]
-    return [OpsResult(False, "kubectl delete -k k8s/ failed", _cp_details(cp))]
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("down", "kubernetes", result, message)
+    return results
 
 
 def down_kubernetes() -> list[OpsResult]:
@@ -2136,6 +2219,8 @@ def install(args) -> int:
         len(results),
         extra={"component": "ops", "action": "install", "ok": ok, "steps": len(results)},
     )
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("install", "all", result, message)
 
     return 0 if ok else 2
 
@@ -2623,6 +2708,8 @@ def restart(args) -> int:
         len(results),
         extra={"component": "ops", "action": "restart", "target": target, "ok": ok},
     )
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("restart", target, result, message)
 
     return 0 if ok else 2
 
@@ -2983,6 +3070,8 @@ def stop(args) -> int:
         len(results),
         extra={"component": "ops", "action": "stop", "target": target, "ok": ok},
     )
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("stop", target, result, message)
 
     return 0 if ok else 2
 
@@ -3073,6 +3162,8 @@ def down(args) -> int:
         len(results),
         extra={"component": "ops", "action": "down", "scope": scope, "ok": ok},
     )
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("down", scope, result, message)
 
     return 0 if ok else 2
 
@@ -3307,6 +3398,8 @@ def observability(_args) -> int:
         "succeeded" if ok else "failed",
         extra={"component": "ops", "action": "observability", "ok": ok},
     )
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("observability", "observability", result, message)
     return 0 if ok else 2
 
 
@@ -3320,9 +3413,14 @@ def reconcile_observability(enable: bool) -> list[OpsResult]:
     disabling all of them tears the stack back down. Mirrors `nyxgpt ops
     observability` / `nyxgpt ops stop --target observability` exactly, so
     callers (the config API) never need to shell out to `docker compose`
-    themselves.
+    themselves. Records its own ops lifecycle action/event (#3390) since,
+    unlike `restart()`/`stop()`, this is the entrypoint the dashboard calls
+    directly rather than going through the CLI-facing `observability()`.
     """
-    return _start_observability_stack() if enable else _stop_observability_stack()
+    results = _start_observability_stack() if enable else _stop_observability_stack()
+    result, message = _ops_action_outcome(results)
+    _record_ops_action("observability" if enable else "stop", "observability", result, message)
+    return results
 
 
 # --- Env sync public API ---
