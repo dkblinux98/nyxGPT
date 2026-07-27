@@ -275,13 +275,19 @@ def _compose_stack_snapshot() -> dict[str, str]:
     """Return {service: state} for the docker-compose.yml stack, if any is running.
 
     Reuses self_heal.list_component_status(), which already knows how to resolve
-    and query the project's docker-compose.yml via `docker compose ps -a`.
+    and query the project's docker-compose.yml via `docker compose ps -a`. That
+    call returns a combined view -- Compose services plus native components plus
+    absent-desired entries -- so this filters to `source == "compose"` only;
+    otherwise a native component (e.g. the native `nyxgpt-cassandra` container)
+    would fold into this "compose" snapshot and collide with the native reading
+    of the very same container in `detect_deployment_mode()`, producing a false
+    phantom-backend conflict.
     """
     try:
         statuses = self_heal.list_component_status()
     except Exception:
         return {}
-    return {s.service: s.state for s in statuses}
+    return {s.service: s.state for s in statuses if s.source == "compose"}
 
 
 def detect_deployment_mode() -> DeploymentMode:
