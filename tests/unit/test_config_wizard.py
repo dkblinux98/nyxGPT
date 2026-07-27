@@ -184,6 +184,57 @@ def test_read_sections_plain_field_passthrough():
     assert sections["nyxgpt"]["default_model"] == "llama3"
 
 
+def test_read_sections_returns_effective_default_when_section_absent():
+    """A config with no [tracing] section at all must show the runtime fallback (#3385)."""
+    cfg = _cfg(ollama={"base_url": "http://localhost:11434"})
+    sections = config_wizard.read_sections(cfg)
+    assert sections["tracing"]["service_name"] == "nyxgpt-api"
+    assert sections["tracing"]["otlp_endpoint"] == "http://localhost:4318/v1/traces"
+    assert sections["tracing"]["enabled"] == "false"
+
+
+def test_read_sections_returns_effective_default_for_error_tracking():
+    cfg = _cfg()
+    sections = config_wizard.read_sections(cfg)
+    assert sections["error_tracking"]["environment"] == "development"
+
+
+def test_read_sections_explicit_value_overrides_default():
+    cfg = _cfg(tracing={"service_name": "my-custom-service"})
+    sections = config_wizard.read_sections(cfg)
+    assert sections["tracing"]["service_name"] == "my-custom-service"
+
+
+def test_read_sections_field_with_no_fixed_default_is_genuinely_empty():
+    """rag.embedding_model has no fixed default (falls back to default_model dynamically)."""
+    cfg = _cfg()
+    sections = config_wizard.read_sections(cfg)
+    assert sections["rag"]["embedding_model"] == ""
+
+
+# --- field_defaults ---
+
+
+def test_field_defaults_true_when_key_absent():
+    cfg = _cfg()
+    defaults = config_wizard.field_defaults(cfg)
+    assert defaults["tracing"]["service_name"] is True
+    assert defaults["error_tracking"]["environment"] is True
+
+
+def test_field_defaults_false_when_key_explicit():
+    cfg = _cfg(tracing={"service_name": "my-service"})
+    defaults = config_wizard.field_defaults(cfg)
+    assert defaults["tracing"]["service_name"] is False
+
+
+def test_field_defaults_excludes_secret_fields():
+    cfg = _cfg()
+    defaults = config_wizard.field_defaults(cfg)
+    assert "api_key" not in defaults["auth"]
+    assert "dsn" not in defaults["error_tracking"]
+
+
 # --- apply_updates ---
 
 

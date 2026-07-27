@@ -1042,6 +1042,264 @@ describe('AdminPage Component', () => {
     expect(screen.getByRole('heading', { name: 'Core & Model' })).toBeInTheDocument();
   });
 
+  /**
+   * Default-value labelling and safe-save tests (#3385).
+   *
+   * Backed by `GET|POST /api/v1/config/sections` returning `field_defaults`
+   * (`{section: {key: is_default}}`) alongside `sections`. A field flagged
+   * `is_default: true` shows its effective value plus a "default" badge
+   * instead of an ambiguous blank box, and saving without touching it must
+   * not freeze that inherited default into config.ini as an explicit value.
+   */
+  const SECTIONS_WITH_DEFAULTS = {
+    nyxgpt: {
+      default_model: 'llama3.1:8b',
+      chat_timeout_seconds: '180',
+      sessions_dir: '~/.nyxGPT/sessions',
+      vectorstore_dir: '~/.nyxGPT/vectorstore',
+    },
+    logging: { level: 'INFO', dir: '~/.nyxGPT/logs' },
+    ollama: { base_url: 'http://127.0.0.1:11434' },
+    api: { host: '127.0.0.1', port: '8000' },
+    auth: { enabled: 'false', header: 'X-API-Key', api_key: { set: false, masked: null } },
+    rate_limit: { enabled: 'false' },
+    rag: {
+      enable_chat_context: 'false',
+      cassandra_hosts: '127.0.0.1',
+      cassandra_port: '9042',
+      cassandra_keyspace: 'nyxgpt',
+      cassandra_table: 'rag_chunks',
+      embedding_model: '',
+    },
+    tracing: {
+      enabled: 'false',
+      service_name: 'nyxgpt-api',
+      otlp_endpoint: 'http://localhost:4318/v1/traces',
+    },
+    error_tracking: {
+      enabled: 'false',
+      dsn: { set: false, masked: null },
+      environment: 'development',
+    },
+    monitoring: { enabled: 'false' },
+    log_aggregation: { enabled: 'false' },
+  };
+
+  const FIELD_DEFAULTS_ALL_UNSET = {
+    nyxgpt: {
+      default_model: true,
+      chat_timeout_seconds: true,
+      sessions_dir: true,
+      vectorstore_dir: true,
+    },
+    logging: { level: true, dir: true },
+    ollama: { base_url: true },
+    api: { host: true, port: true },
+    auth: { enabled: true, header: true },
+    rate_limit: { enabled: true },
+    rag: {
+      enable_chat_context: true,
+      cassandra_hosts: true,
+      cassandra_port: true,
+      cassandra_keyspace: true,
+      cassandra_table: true,
+      embedding_model: true,
+    },
+    tracing: { enabled: true, service_name: true, otlp_endpoint: true },
+    error_tracking: { enabled: true, environment: true },
+    monitoring: { enabled: true },
+    log_aggregation: { enabled: true },
+  };
+
+  it('labels an inherited default value instead of leaving it blank or unmarked', async () => {
+    server.use(
+      http.get('/api/v1/config/sections', () =>
+        HttpResponse.json({
+          sections: SECTIONS_WITH_DEFAULTS,
+          schema: [],
+          field_defaults: FIELD_DEFAULTS_ALL_UNSET,
+        })
+      )
+    );
+
+    render(<AdminPage />);
+    await selectModelAndClickNext(1);
+
+    await waitFor(() => {
+      // rag.embedding_model has no fixed default and is genuinely empty here;
+      // an empty inherited-default field must not show the "default" badge.
+      expect(screen.getByLabelText('Embedding Model')).toHaveValue('');
+    });
+
+    await clickNext(2);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Tracing Service Name')).toHaveValue('nyxgpt-api');
+      expect(screen.getByLabelText('OTLP Endpoint')).toHaveValue(
+        'http://localhost:4318/v1/traces'
+      );
+    });
+
+    // Every populated inherited-default field is labelled -- not just tracing.
+    expect(screen.getAllByText('default').length).toBeGreaterThan(1);
+  });
+
+  it('does not label a field the user explicitly configured', async () => {
+    server.use(
+      http.get('/api/v1/config/sections', () =>
+        HttpResponse.json({
+          sections: SECTIONS_WITH_DEFAULTS,
+          schema: [],
+          field_defaults: {
+            ...FIELD_DEFAULTS_ALL_UNSET,
+            tracing: { enabled: true, service_name: false, otlp_endpoint: true },
+          },
+        })
+      )
+    );
+
+    render(<AdminPage />);
+    await selectModelAndClickNext(3);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Tracing Service Name')).toHaveValue('nyxgpt-api');
+    });
+
+    const serviceNameRow = screen.getByText('Tracing Service Name').parentElement;
+    expect(serviceNameRow).not.toHaveTextContent('default');
+
+    const otlpRow = screen.getByText('OTLP Endpoint').parentElement;
+    expect(otlpRow).toHaveTextContent('default');
+  });
+
+  it('omits untouched inherited defaults from the save payload but includes edited fields', async () => {
+    let capturedBody: Record<string, Record<string, unknown>> | undefined;
+    server.use(
+      http.get('/api/v1/config/sections', () =>
+        HttpResponse.json({
+          sections: SECTIONS_WITH_DEFAULTS,
+          schema: [],
+          field_defaults: FIELD_DEFAULTS_ALL_UNSET,
+        })
+      ),
+      http.post('/api/v1/config/sections', async ({ request }) => {
+        capturedBody = (await request.json()) as Record<string, Record<string, unknown>>;
+        return HttpResponse.json({
+          applied: capturedBody,
+          sections: SECTIONS_WITH_DEFAULTS,
+          field_defaults: FIELD_DEFAULTS_ALL_UNSET,
+          restart_required: [],
+          observability_reconciled: false,
+          observability_result: null,
+        });
+      })
+    );
+
+    render(<AdminPage />);
+    await selectModelAndClickNext(3);
+
+    fireEvent.change(screen.getByLabelText('Tracing Service Name'), {
+      target: { value: 'my-custom-service' },
+    });
+
+    await clickNext(1);
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/configuration saved and applied/i)).toBeInTheDocument();
+    });
+
+    // Edited away from its default -> included.
+    expect(capturedBody?.tracing.service_name).toBe('my-custom-service');
+    // Never touched, still showing its inherited default -> omitted entirely,
+    // so saving can't freeze today's fallback into config.ini as explicit.
+    expect(capturedBody?.tracing).not.toHaveProperty('otlp_endpoint');
+    // Every field in these sections was an untouched default -> the whole
+    // section is left out of the payload rather than re-writing today's
+    // fallback values as explicit settings.
+    expect(capturedBody).not.toHaveProperty('error_tracking');
+    expect(capturedBody).not.toHaveProperty('logging');
+  });
+
+  it('saves without a network round trip when nothing was changed from its default', async () => {
+    let postCalled = false;
+    server.use(
+      http.get('/api/v1/config/sections', () =>
+        HttpResponse.json({
+          sections: SECTIONS_WITH_DEFAULTS,
+          schema: [],
+          field_defaults: FIELD_DEFAULTS_ALL_UNSET,
+        })
+      ),
+      http.post('/api/v1/config/sections', () => {
+        postCalled = true;
+        return HttpResponse.json({ applied: {}, sections: SECTIONS_WITH_DEFAULTS });
+      })
+    );
+
+    render(<AdminPage />);
+    await selectModelAndClickNext(4);
+
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/configuration saved and applied/i)).toBeInTheDocument();
+    });
+    expect(postCalled).toBe(false);
+  });
+
+  it('initializes the auth/error_tracking payload sections when only the secret field changes', async () => {
+    // auth.enabled/header and error_tracking.enabled/environment are all
+    // untouched inherited defaults here, so buildSavePayload's `include()`
+    // skips them -- payload.auth/error_tracking must not exist yet by the
+    // time api_key/dsn are handled, exercising their own initialization
+    // (`if (!payload.auth) payload.auth = {}`) rather than relying on
+    // another field in the section having already created it.
+    let capturedBody: Record<string, Record<string, unknown>> | undefined;
+    server.use(
+      http.get('/api/v1/config/sections', () =>
+        HttpResponse.json({
+          sections: SECTIONS_WITH_DEFAULTS,
+          schema: [],
+          field_defaults: FIELD_DEFAULTS_ALL_UNSET,
+        })
+      ),
+      http.post('/api/v1/config/sections', async ({ request }) => {
+        capturedBody = (await request.json()) as Record<string, Record<string, unknown>>;
+        return HttpResponse.json({
+          applied: capturedBody,
+          sections: SECTIONS_WITH_DEFAULTS,
+          field_defaults: FIELD_DEFAULTS_ALL_UNSET,
+          restart_required: [],
+          observability_reconciled: false,
+          observability_result: null,
+        });
+      })
+    );
+
+    render(<AdminPage />);
+    await selectModelAndClickNext(2);
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'brand-new-key' } });
+    await clickNext(1);
+    fireEvent.change(screen.getByLabelText('Error Tracking DSN'), {
+      target: { value: 'http://new@dsn/1' },
+    });
+    await clickNext(1);
+
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+    });
+
+    await waitFor(() => {
+      expect(capturedBody?.auth).toEqual({ api_key: 'brand-new-key' });
+    });
+    expect(capturedBody?.error_tracking).toEqual({ dsn: 'http://new@dsn/1' });
+  });
+
   it('does not navigate or re-trigger save via keyboard shortcuts while a save is in progress', async () => {
     server.use(
       http.post('/api/v1/config/sections', async () => {

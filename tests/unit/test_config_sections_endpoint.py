@@ -57,6 +57,30 @@ def test_get_sections_returns_schema_and_values(_isolated_config):
     assert "rag" in section_names
 
 
+def test_get_sections_returns_effective_values_and_field_defaults(_isolated_config):
+    """No [tracing]/[error_tracking] section in the fixture config -- must show
+    the runtime fallback values, flagged as defaults, not blanks (#3385)."""
+    client = TestClient(app)
+    resp = client.get("/api/v1/config/sections")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["sections"]["tracing"]["service_name"] == "nyxgpt-api"
+    assert data["sections"]["tracing"]["otlp_endpoint"] == "http://localhost:4318/v1/traces"
+    assert data["sections"]["error_tracking"]["environment"] == "development"
+    assert data["field_defaults"]["tracing"]["service_name"] is True
+    assert data["field_defaults"]["error_tracking"]["environment"] is True
+
+
+def test_post_sections_response_includes_field_defaults(_isolated_config):
+    client = TestClient(app)
+    resp = client.post("/api/v1/config/sections", json={"tracing": {"service_name": "svc"}})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["field_defaults"]["tracing"]["service_name"] is False
+    # Untouched fields in the same section remain flagged as defaults.
+    assert data["field_defaults"]["tracing"]["otlp_endpoint"] is True
+
+
 def test_post_sections_applies_and_returns_effective_values(_isolated_config):
     client = TestClient(app)
     resp = client.post(

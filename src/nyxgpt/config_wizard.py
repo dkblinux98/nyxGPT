@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+_HOME_NYXGPT = Path.home() / ".nyxGPT"
+
 LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
@@ -131,6 +133,14 @@ class FieldSpec:
             hot-reloaded per-request.
         observability: Whether changing this field should trigger a
             reconciliation of the observability Compose stack.
+        default: The effective fallback value the matching `config.py`
+            getter uses when the key is absent from `config.ini` (mirrored
+            here, not imported, since the getters read live config rather
+            than exposing their fallback as a constant). `None` for a field
+            whose "unset" state is a genuinely empty/contextual value (e.g.
+            `rag.embedding_model` falls back to `default_model` dynamically)
+            rather than a fixed non-empty default worth labelling. Unused
+            for `secret` fields -- those have no default concept here.
     """
 
     key: str
@@ -138,6 +148,7 @@ class FieldSpec:
     secret: bool = False
     restart_component: str | None = None
     observability: bool = False
+    default: str | None = None
 
 
 @dataclass(frozen=True)
@@ -154,86 +165,110 @@ WIZARD_SCHEMA: tuple[SectionSpec, ...] = (
         "nyxgpt",
         "Core & model",
         (
-            FieldSpec("default_model", _validate_str),
-            FieldSpec("chat_timeout_seconds", _validate_positive_int),
-            FieldSpec("sessions_dir", _validate_str),
-            FieldSpec("vectorstore_dir", _validate_str),
+            FieldSpec("default_model", _validate_str, default="llama3.1:8b"),
+            FieldSpec("chat_timeout_seconds", _validate_positive_int, default="180"),
+            FieldSpec("sessions_dir", _validate_str, default=str(_HOME_NYXGPT / "sessions")),
+            FieldSpec("vectorstore_dir", _validate_str, default=str(_HOME_NYXGPT / "vectorstore")),
         ),
     ),
     SectionSpec(
         "logging",
         "Logging",
         (
-            FieldSpec("level", _validate_log_level),
-            FieldSpec("dir", _validate_str),
+            FieldSpec("level", _validate_log_level, default="INFO"),
+            FieldSpec("dir", _validate_str, default=str(_HOME_NYXGPT / "logs")),
         ),
     ),
     SectionSpec(
         "ollama",
         "Model backend",
-        (FieldSpec("base_url", _validate_url),),
+        (FieldSpec("base_url", _validate_url, default="http://127.0.0.1:11434"),),
     ),
     SectionSpec(
         "api",
         "API server",
         (
-            FieldSpec("host", _validate_host, restart_component="api"),
-            FieldSpec("port", _validate_port, restart_component="api"),
+            FieldSpec("host", _validate_host, restart_component="api", default="127.0.0.1"),
+            FieldSpec("port", _validate_port, restart_component="api", default="8000"),
         ),
     ),
     SectionSpec(
         "auth",
         "Authentication",
         (
-            FieldSpec("enabled", _validate_bool),
-            FieldSpec("header", _validate_str),
+            FieldSpec("enabled", _validate_bool, default="false"),
+            FieldSpec("header", _validate_str, default="X-API-Key"),
             FieldSpec("api_key", _validate_optional_str, secret=True),
         ),
     ),
     SectionSpec(
         "rate_limit",
         "Rate limiting",
-        (FieldSpec("enabled", _validate_bool, restart_component="api"),),
+        (FieldSpec("enabled", _validate_bool, restart_component="api", default="false"),),
     ),
     SectionSpec(
         "rag",
         "RAG / retrieval",
         (
-            FieldSpec("enable_chat_context", _validate_bool),
-            FieldSpec("cassandra_hosts", _validate_host_list, restart_component="api"),
-            FieldSpec("cassandra_port", _validate_port, restart_component="api"),
-            FieldSpec("cassandra_keyspace", _validate_str, restart_component="api"),
-            FieldSpec("cassandra_table", _validate_str, restart_component="api"),
-            FieldSpec("embedding_model", _validate_str, restart_component="api"),
+            FieldSpec("enable_chat_context", _validate_bool, default="false"),
+            FieldSpec(
+                "cassandra_hosts",
+                _validate_host_list,
+                restart_component="api",
+                default="127.0.0.1",
+            ),
+            FieldSpec("cassandra_port", _validate_port, restart_component="api", default="9042"),
+            FieldSpec(
+                "cassandra_keyspace", _validate_str, restart_component="api", default="nyxgpt"
+            ),
+            FieldSpec(
+                "cassandra_table", _validate_str, restart_component="api", default="rag_chunks"
+            ),
+            # No fixed default: falls back to `default_model` dynamically
+            # (see `embeddings.py`'s `_embedding_cfg`), so unset is a
+            # genuinely context-dependent empty value, not a hidden default.
+            FieldSpec("embedding_model", _validate_str, restart_component="api", default=None),
         ),
     ),
     SectionSpec(
         "tracing",
         "Tracing",
         (
-            FieldSpec("enabled", _validate_bool, restart_component="api", observability=True),
-            FieldSpec("service_name", _validate_str),
-            FieldSpec("otlp_endpoint", _validate_url),
+            FieldSpec(
+                "enabled",
+                _validate_bool,
+                restart_component="api",
+                observability=True,
+                default="false",
+            ),
+            FieldSpec("service_name", _validate_str, default="nyxgpt-api"),
+            FieldSpec("otlp_endpoint", _validate_url, default="http://localhost:4318/v1/traces"),
         ),
     ),
     SectionSpec(
         "error_tracking",
         "Error tracking",
         (
-            FieldSpec("enabled", _validate_bool, restart_component="api", observability=True),
+            FieldSpec(
+                "enabled",
+                _validate_bool,
+                restart_component="api",
+                observability=True,
+                default="false",
+            ),
             FieldSpec("dsn", _validate_optional_str, secret=True),
-            FieldSpec("environment", _validate_str),
+            FieldSpec("environment", _validate_str, default="development"),
         ),
     ),
     SectionSpec(
         "monitoring",
         "Monitoring",
-        (FieldSpec("enabled", _validate_bool, observability=True),),
+        (FieldSpec("enabled", _validate_bool, observability=True, default="false"),),
     ),
     SectionSpec(
         "log_aggregation",
         "Log aggregation",
-        (FieldSpec("enabled", _validate_bool, observability=True),),
+        (FieldSpec("enabled", _validate_bool, observability=True, default="false"),),
     ),
 )
 
@@ -270,7 +305,13 @@ def schema_summary() -> list[dict[str, Any]]:
 
 
 def read_sections(cfg: ConfigParser) -> dict[str, dict[str, Any]]:
-    """Return the current value of every wizard-editable field, grouped by section.
+    """Return the *effective* value of every wizard-editable field, grouped by section.
+
+    "Effective" means fallback-applied: a field absent from `config.ini`
+    renders as the same default value the matching `config.py` getter (e.g.
+    `get_tracing_config`) would actually use at runtime, not a blank string.
+    Use `field_defaults` alongside this to tell an inherited default apart
+    from an explicit setting that merely matches it.
 
     Secret fields are never returned in cleartext -- only whether one is set
     plus a masked preview (mirrors `_mask_api_key`/`GET /admin/access`).
@@ -279,15 +320,35 @@ def read_sections(cfg: ConfigParser) -> dict[str, dict[str, Any]]:
     for section_spec in WIZARD_SCHEMA:
         section_out: dict[str, Any] = {}
         for f in section_spec.fields:
-            raw = cfg.get(section_spec.section, f.key, fallback="")
             if f.secret:
+                raw = cfg.get(section_spec.section, f.key, fallback="")
                 section_out[f.key] = {
                     "set": bool(raw.strip()),
                     "masked": _mask(raw) if raw.strip() else None,
                 }
+            elif cfg.has_option(section_spec.section, f.key):
+                section_out[f.key] = cfg.get(section_spec.section, f.key)
             else:
-                section_out[f.key] = raw
+                section_out[f.key] = f.default if f.default is not None else ""
         out[section_spec.section] = section_out
+    return out
+
+
+def field_defaults(cfg: ConfigParser) -> dict[str, dict[str, bool]]:
+    """Return, per non-secret field, whether it's currently an inherited default.
+
+    `True` means the key is absent from `config.ini` and `read_sections` is
+    showing `FieldSpec.default` rather than something the user configured.
+    Secret fields are omitted -- `read_sections`'s `set`/`masked` pair already
+    conveys "not set" for those.
+    """
+    out: dict[str, dict[str, bool]] = {}
+    for section_spec in WIZARD_SCHEMA:
+        out[section_spec.section] = {
+            f.key: not cfg.has_option(section_spec.section, f.key)
+            for f in section_spec.fields
+            if not f.secret
+        }
     return out
 
 
