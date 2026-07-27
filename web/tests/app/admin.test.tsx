@@ -321,7 +321,7 @@ describe('AdminPage Component', () => {
 
   it('navigates to the Summary step and reviews every section', async () => {
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Review Configuration' })).toBeInTheDocument();
@@ -346,7 +346,7 @@ describe('AdminPage Component', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: /enable monitoring/i }));
     fireEvent.click(screen.getByRole('checkbox', { name: /enable log aggregation/i }));
 
-    await clickNext(1);
+    await clickNext(2);
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Review Configuration' })).toBeInTheDocument();
@@ -358,7 +358,7 @@ describe('AdminPage Component', () => {
 
   it('renders save configuration button on summary step', async () => {
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
     await waitFor(() => {
       const saveButton = screen.getByRole('button', { name: /save configuration/i });
       expect(saveButton).toBeInTheDocument();
@@ -406,7 +406,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
 
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
@@ -464,7 +464,7 @@ describe('AdminPage Component', () => {
     fireEvent.change(screen.getByLabelText('Error Tracking DSN'), {
       target: { value: 'http://new@dsn/1' },
     });
-    await clickNext(1);
+    await clickNext(2);
 
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
@@ -516,7 +516,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
 
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
@@ -570,7 +570,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     });
@@ -616,7 +616,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     });
@@ -662,7 +662,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     });
@@ -703,7 +703,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     });
@@ -731,7 +731,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     });
@@ -745,7 +745,7 @@ describe('AdminPage Component', () => {
     server.use(http.post('/api/v1/config/sections', () => HttpResponse.json({}, { status: 503 })));
 
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     });
@@ -757,7 +757,7 @@ describe('AdminPage Component', () => {
 
   it('shows a string error message when saving throws a non-Error value', async () => {
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
 
     const realFetch = global.fetch;
     const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation((input, init) => {
@@ -801,7 +801,7 @@ describe('AdminPage Component', () => {
 
   it('disables Next button on the last step', async () => {
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /next/i })).toBeDisabled();
     });
@@ -1022,7 +1022,7 @@ describe('AdminPage Component', () => {
 
   it('triggers save on a real Enter keydown while on the summary step', async () => {
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Review Configuration' })).toBeInTheDocument();
     });
@@ -1202,7 +1202,7 @@ describe('AdminPage Component', () => {
       target: { value: 'my-custom-service' },
     });
 
-    await clickNext(1);
+    await clickNext(2);
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     });
@@ -1240,7 +1240,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
 
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
@@ -1288,7 +1288,7 @@ describe('AdminPage Component', () => {
     fireEvent.change(screen.getByLabelText('Error Tracking DSN'), {
       target: { value: 'http://new@dsn/1' },
     });
-    await clickNext(1);
+    await clickNext(2);
 
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
@@ -1334,7 +1334,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(4);
+    await selectModelAndClickNext(5);
 
     fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     await waitFor(() => {
@@ -1394,6 +1394,10 @@ describe('AdminPage Component', () => {
 
       await clickNext(1);
       expect(screen.getByRole('heading', { name: 'Observability' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /cancel/i })).toBeInTheDocument();
+
+      await clickNext(1);
+      expect(screen.getByRole('heading', { name: 'Additional Settings' })).toBeInTheDocument();
       expect(screen.getByRole('link', { name: /cancel/i })).toBeInTheDocument();
 
       await clickNext(1);
@@ -1490,7 +1494,7 @@ describe('AdminPage Component', () => {
       );
 
       render(<AdminPage />);
-      await selectModelAndClickNext(4);
+      await selectModelAndClickNext(5);
 
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
       await waitFor(() => {
@@ -1510,6 +1514,188 @@ describe('AdminPage Component', () => {
         },
         { timeout: 3000 }
       );
+    });
+  });
+
+  /**
+   * Additional Settings step (#3388): every config.ini field the backend's
+   * derived schema declares but this file doesn't hand-code a widget for
+   * (see `KNOWN_FIELDS` in page.tsx) renders generically here, grouped by
+   * topic. Also covers the drift-reconciliation stale-key banner.
+   */
+  describe('Additional Settings step (#3388)', () => {
+    const SCHEMA_WITH_EXTRAS = [
+      {
+        section: 'cache',
+        label: 'Caching',
+        fields: [
+          { key: 'embedding_cache_enabled', secret: false, restart_component: 'api', observability: false },
+          { key: 'embedding_cache_dir', secret: false, restart_component: 'api', observability: false },
+        ],
+      },
+      {
+        section: 'monitoring',
+        label: 'Monitoring',
+        fields: [
+          { key: 'enabled', secret: false, restart_component: null, observability: true },
+          { key: 'grafana_admin_password', secret: true, restart_component: null, observability: false },
+        ],
+      },
+    ];
+
+    const SECTIONS_WITH_EXTRAS = {
+      nyxgpt: { default_model: 'llama3.1:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
+      logging: { level: 'INFO', dir: '' },
+      ollama: { base_url: 'http://127.0.0.1:11434' },
+      api: { host: '127.0.0.1', port: '8000' },
+      auth: { enabled: 'false', header: 'X-API-Key', api_key: { set: false, masked: null } },
+      rate_limit: { enabled: 'false' },
+      rag: {
+        enable_chat_context: 'false',
+        cassandra_hosts: '127.0.0.1',
+        cassandra_port: '9042',
+        cassandra_keyspace: 'nyxgpt',
+        cassandra_table: 'rag_chunks',
+        embedding_model: 'nomic-embed-text',
+      },
+      tracing: { enabled: 'false', service_name: '', otlp_endpoint: '' },
+      error_tracking: { enabled: 'false', dsn: { set: false, masked: null }, environment: '' },
+      monitoring: {
+        enabled: 'false',
+        grafana_admin_password: { set: true, masked: 'sekr****xxxx' },
+      },
+      log_aggregation: { enabled: 'false' },
+      cache: { embedding_cache_enabled: 'false', embedding_cache_dir: '~/.nyxGPT/cache/embeddings' },
+    };
+
+    async function goToMoreStep() {
+      render(<AdminPage />);
+      await selectModelAndClickNext(4);
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: 'Additional Settings' })).toBeInTheDocument();
+      });
+    }
+
+    it('renders a generic field for every schema field not hand-coded elsewhere', async () => {
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: SECTIONS_WITH_EXTRAS,
+            schema: SCHEMA_WITH_EXTRAS,
+            field_defaults: {},
+            stale_keys: {},
+          })
+        )
+      );
+
+      await goToMoreStep();
+
+      const cacheToggle = screen.getByRole('checkbox', { name: /Embedding Cache Enabled/ });
+      expect(cacheToggle).not.toBeChecked();
+      expect(screen.getByLabelText('Embedding Cache Dir')).toHaveValue('~/.nyxGPT/cache/embeddings');
+
+      const secretInput = screen.getByLabelText('Grafana Admin Password') as HTMLInputElement;
+      expect(secretInput).toHaveAttribute('type', 'password');
+      expect(secretInput).toHaveAttribute(
+        'placeholder',
+        'Set (sekr****xxxx) -- leave blank to keep'
+      );
+    });
+
+    it('does not re-render fields the hand-typed sections already cover', async () => {
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: SECTIONS_WITH_EXTRAS,
+            schema: SCHEMA_WITH_EXTRAS,
+            field_defaults: {},
+            stale_keys: {},
+          })
+        )
+      );
+
+      await goToMoreStep();
+
+      // "enabled" for monitoring is already a hand-coded checkbox in the
+      // Observability step -- the generic renderer must not duplicate it.
+      expect(screen.queryAllByRole('checkbox', { name: /^Enabled$/ })).toHaveLength(0);
+    });
+
+    it('includes an edited generic field in the save payload, type-coerced', async () => {
+      let capturedBody: Record<string, Record<string, unknown>> | undefined;
+      // embedding_cache_dir is flagged as an inherited default here so the
+      // "skip untouched defaults" rule (mirrors buildSavePayload's `include()`,
+      // #3385) omits it -- only the field the user actually toggled should
+      // appear in the payload.
+      const fieldDefaults = { cache: { embedding_cache_enabled: false, embedding_cache_dir: true } };
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: SECTIONS_WITH_EXTRAS,
+            schema: SCHEMA_WITH_EXTRAS,
+            field_defaults: fieldDefaults,
+            stale_keys: {},
+          })
+        ),
+        http.post('/api/v1/config/sections', async ({ request }) => {
+          capturedBody = (await request.json()) as Record<string, Record<string, unknown>>;
+          return HttpResponse.json({
+            applied: capturedBody,
+            sections: SECTIONS_WITH_EXTRAS,
+            field_defaults: fieldDefaults,
+            stale_keys: {},
+            restart_required: [],
+            observability_reconciled: false,
+            observability_result: null,
+          });
+        })
+      );
+
+      await goToMoreStep();
+      fireEvent.click(screen.getByRole('checkbox', { name: /Embedding Cache Enabled/ }));
+
+      await clickNext(1);
+      await waitFor(() => {
+        fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+      });
+
+      await waitFor(() => {
+        expect(capturedBody?.cache).toEqual({ embedding_cache_enabled: true });
+      });
+    });
+
+    it('shows a stale-keys banner and removes a key on confirmation', async () => {
+      let removeRequestBody: unknown;
+      server.use(
+        http.get('/api/v1/config/sections', () =>
+          HttpResponse.json({
+            sections: SECTIONS_WITH_EXTRAS,
+            schema: SCHEMA_WITH_EXTRAS,
+            field_defaults: {},
+            stale_keys: { nyxgpt: ['retired_option'] },
+          })
+        ),
+        http.post('/api/v1/config/sections/stale-keys/remove', async ({ request }) => {
+          removeRequestBody = await request.json();
+          return HttpResponse.json({
+            removed: { nyxgpt: ['retired_option'] },
+            sections: SECTIONS_WITH_EXTRAS,
+            stale_keys: {},
+          });
+        })
+      );
+
+      await goToMoreStep();
+
+      expect(screen.getByText('Config.ini has options no longer recognized')).toBeInTheDocument();
+      expect(screen.getByText('[nyxgpt] retired_option')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+      await waitFor(() => {
+        expect(screen.queryByText('Config.ini has options no longer recognized')).not.toBeInTheDocument();
+      });
+      expect(removeRequestBody).toEqual({ remove: { nyxgpt: ['retired_option'] } });
     });
   });
 });

@@ -55,6 +55,147 @@ interface SaveResult {
 }
 
 /**
+ * One `config.ini` field as declared by the backend's derived schema
+ * (`config_wizard.schema_summary()`, #3388). Used to render every option the
+ * hand-typed `SectionsData`/`FormValues` shapes above don't yet cover --
+ * this is what keeps the wizard from silently truncating `example.config.ini`
+ * again the way #3354's original hand-maintained schema did.
+ */
+interface SchemaField {
+  key: string;
+  secret: boolean;
+  restart_component: string | null;
+  observability: boolean;
+}
+
+interface SchemaSection {
+  section: string;
+  label: string;
+  fields: SchemaField[];
+}
+
+/**
+ * Fields already given first-class, hand-built UI elsewhere in this file.
+ * Anything in a schema section that ISN'T listed here is rendered generically
+ * in the "Additional Settings" step instead -- see `extraFieldsFor`.
+ */
+const KNOWN_FIELDS: Record<string, string[]> = {
+  nyxgpt: ['default_model', 'chat_timeout_seconds', 'sessions_dir', 'vectorstore_dir'],
+  logging: ['level', 'dir'],
+  ollama: ['base_url'],
+  api: ['host', 'port'],
+  auth: ['enabled', 'header', 'api_key'],
+  rate_limit: ['enabled'],
+  rag: [
+    'enable_chat_context',
+    'cassandra_hosts',
+    'cassandra_port',
+    'cassandra_keyspace',
+    'cassandra_table',
+    'embedding_model',
+  ],
+  tracing: ['enabled', 'service_name', 'otlp_endpoint'],
+  error_tracking: ['enabled', 'dsn', 'environment'],
+  monitoring: ['enabled'],
+  log_aggregation: ['enabled'],
+};
+
+/** Groups the generic "Additional Settings" step by topic (owner request, #3388: keep
+ * context/pdf/cache grouped with RAG rather than one step per section). */
+const EXTRA_GROUPS: { title: string; sections: string[] }[] = [
+  { title: 'Core behavior', sections: ['nyxgpt', 'logging', 'ollama', 'prompt', 'batch'] },
+  { title: 'API & network', sections: ['api', 'auth', 'rate_limit', 'web'] },
+  { title: 'RAG, retrieval & caching', sections: ['rag', 'context', 'pdf', 'cache'] },
+  {
+    title: 'Observability & self-heal',
+    sections: ['tracing', 'error_tracking', 'monitoring', 'log_aggregation', 'self_heal'],
+  },
+  { title: 'Deployment (Kubernetes)', sections: ['deploy', 'canary'] },
+];
+
+function extraFieldsFor(schemaSections: SchemaSection[], section: string): SchemaField[] {
+  const known = new Set(KNOWN_FIELDS[section] || []);
+  const spec = schemaSections.find((s) => s.section === section);
+  if (!spec) return [];
+  return spec.fields.filter((f) => !known.has(f.key));
+}
+
+function isSecretValue(v: unknown): v is SecretField {
+  return typeof v === 'object' && v !== null && 'set' in v;
+}
+
+function humanizeKey(key: string): string {
+  return key
+    .split('_')
+    .map((w) => (w.length ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(' ');
+}
+
+/** Infers a widget kind from a field's pristine loaded value (bool/number literals vs. text). */
+function inferFieldKind(raw: unknown): 'bool' | 'number' | 'text' {
+  if (typeof raw !== 'string') return 'text';
+  const v = raw.trim().toLowerCase();
+  if (v === 'true' || v === 'false') return 'bool';
+  if (v !== '' && !Number.isNaN(Number(v))) return 'number';
+  return 'text';
+}
+
+/** Recomputes the generic form state's initial values from the raw API response. */
+function toExtraValues(
+  rawSections: Record<string, Record<string, unknown>>,
+  schemaSections: SchemaSection[]
+): Record<string, Record<string, string>> {
+  const out: Record<string, Record<string, string>> = {};
+  for (const spec of schemaSections) {
+    const extras = extraFieldsFor(schemaSections, spec.section);
+    if (extras.length === 0) continue;
+    const values: Record<string, string> = {};
+    for (const f of extras) {
+      const raw = rawSections[spec.section]?.[f.key];
+      values[f.key] = f.secret ? '' : raw != null ? String(raw) : '';
+    }
+    out[spec.section] = values;
+  }
+  return out;
+}
+
+/**
+ * Builds the generic-section portion of the `POST /api/v1/config/sections`
+ * payload, mirroring `buildSavePayload`'s "skip untouched defaults" rule.
+ */
+function buildExtraSavePayload(
+  extraValues: Record<string, Record<string, string>>,
+  rawSections: Record<string, Record<string, unknown>>,
+  fieldDefaults: FieldDefaults,
+  schemaSections: SchemaSection[]
+): Record<string, Record<string, unknown>> {
+  const payload: Record<string, Record<string, unknown>> = {};
+  for (const spec of schemaSections) {
+    const extras = extraFieldsFor(schemaSections, spec.section);
+    for (const f of extras) {
+      const current = extraValues[spec.section]?.[f.key] ?? '';
+      if (f.secret) {
+        if (current.trim()) {
+          if (!payload[spec.section]) payload[spec.section] = {};
+          payload[spec.section][f.key] = current.trim();
+        }
+        continue;
+      }
+      const raw = rawSections[spec.section]?.[f.key];
+      const original = raw != null ? String(raw) : '';
+      if (isDefaultField(fieldDefaults, spec.section, f.key) && current === original) continue;
+      const kind = inferFieldKind(raw);
+      let value: unknown = current.trim();
+      if (kind === 'bool') value = current === 'true';
+      else if (kind === 'number') value = Number(current);
+      if (!payload[spec.section]) payload[spec.section] = {};
+      payload[spec.section][f.key] = value;
+    }
+  }
+  return payload;
+}
+
+/**
  * Per non-secret field, whether it's currently an inherited default (the key
  * is absent from config.ini and the backend is showing its fallback value)
  * rather than something the user explicitly configured (#3385). Missing
@@ -67,7 +208,7 @@ function isDefaultField(defaults: FieldDefaults, section: string, key: string): 
   return Boolean(defaults[section]?.[key]);
 }
 
-type WizardStep = 'core' | 'rag' | 'api' | 'observability' | 'summary';
+type WizardStep = 'core' | 'rag' | 'api' | 'observability' | 'more' | 'summary';
 
 const EMPTY_SECRET: SecretField = { set: false, masked: null };
 
@@ -531,6 +672,14 @@ export default function AdminPage() {
 
   const [formValues, setFormValues] = useState<FormValues>(toFormValues(emptySections()));
 
+  // Generic, schema-driven state for every field not covered by the
+  // hand-typed shapes above (#3388) -- see `EXTRA_GROUPS`/`extraFieldsFor`.
+  const [schemaSections, setSchemaSections] = useState<SchemaSection[]>([]);
+  const [rawSections, setRawSections] = useState<Record<string, Record<string, unknown>>>({});
+  const [extraValues, setExtraValues] = useState<Record<string, Record<string, string>>>({});
+  const [staleKeys, setStaleKeys] = useState<Record<string, string[]>>({});
+  const [removingStaleKey, setRemovingStaleKey] = useState<string | null>(null);
+
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -546,6 +695,13 @@ export default function AdminPage() {
     }));
   }
 
+  function updateExtra(section: string, key: string, value: string) {
+    setExtraValues((prev) => ({
+      ...prev,
+      [section]: { ...prev[section], [key]: value },
+    }));
+  }
+
   async function loadSections() {
     setLoading(true);
     setConfigError(null);
@@ -556,11 +712,36 @@ export default function AdminPage() {
       setSections(data.sections);
       setFieldDefaults(data.field_defaults || {});
       setFormValues(toFormValues(data.sections));
+      const schema: SchemaSection[] = data.schema || [];
+      setSchemaSections(schema);
+      setRawSections(data.sections || {});
+      setExtraValues(toExtraValues(data.sections || {}, schema));
+      setStaleKeys(data.stale_keys || {});
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setConfigError(msg);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleRemoveStaleKey(section: string, key: string) {
+    setRemovingStaleKey(`${section}.${key}`);
+    try {
+      const res = await fetch('/api/v1/config/sections/stale-keys/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ remove: { [section]: [key] } }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setRawSections(data.sections || {});
+      setStaleKeys(data.stale_keys || {});
+      setExtraValues(toExtraValues(data.sections || {}, schemaSections));
+    } catch {
+      // Left in staleKeys -- the user can retry the removal.
+    } finally {
+      setRemovingStaleKey(null);
     }
   }
 
@@ -626,12 +807,19 @@ export default function AdminPage() {
       label: 'Observability',
       description: 'Tracing, error tracking, monitoring, and log aggregation',
     },
+    {
+      id: 'more',
+      label: 'Additional Settings',
+      description: 'Every other config.ini option, derived directly from example.config.ini',
+    },
     { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
   ];
 
   const currentStepIndex = steps.findIndex((s) => s.id === currentStep);
   const canAdvanceFromCore = formValues.nyxgpt.default_model.trim() !== '';
-  const hasUnsavedChanges = JSON.stringify(formValues) !== JSON.stringify(toFormValues(sections));
+  const hasUnsavedChanges =
+    JSON.stringify(formValues) !== JSON.stringify(toFormValues(sections)) ||
+    JSON.stringify(extraValues) !== JSON.stringify(toExtraValues(rawSections, schemaSections));
 
   function goToNextStep() {
     setCurrentStep(steps[currentStepIndex + 1].id);
@@ -657,6 +845,7 @@ export default function AdminPage() {
       return;
     }
     setFormValues(toFormValues(sections));
+    setExtraValues(toExtraValues(rawSections, schemaSections));
   }
 
   // Keyboard navigation
@@ -733,6 +922,16 @@ export default function AdminPage() {
     setRestartedTargets([]);
     try {
       const payload = buildSavePayload(formValues, sections, fieldDefaults);
+      const extraPayload = buildExtraSavePayload(
+        extraValues,
+        rawSections,
+        fieldDefaults,
+        schemaSections
+      );
+      for (const [section, fields] of Object.entries(extraPayload)) {
+        if (Object.keys(fields).length === 0) continue;
+        payload[section] = { ...payload[section], ...fields };
+      }
       const hasChanges = Object.values(payload).some((fields) => Object.keys(fields).length > 0);
       if (!hasChanges) {
         // Nothing was touched away from its inherited default -- there's
@@ -756,6 +955,8 @@ export default function AdminPage() {
       setSections(data.sections);
       setFieldDefaults(data.field_defaults || {});
       setFormValues(toFormValues(data.sections));
+      setRawSections(data.sections);
+      setExtraValues(toExtraValues(data.sections, schemaSections));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setSaveError(msg);
@@ -1269,6 +1470,164 @@ export default function AdminPage() {
               disabled={saving}
               isDefault={isDefaultField(fieldDefaults, 'log_aggregation', 'enabled')}
             />
+          </div>
+        )}
+
+        {currentStep === 'more' && (
+          <div>
+            <h2 style={{ marginTop: 0, fontSize: '1.2rem' }}>Additional Settings</h2>
+            <p style={{ color: '#666', fontSize: 14, marginBottom: '1.5rem' }}>
+              Every other option declared in example.config.ini, grouped by topic and generated
+              directly from that file (#3388) -- a new option never goes missing from the wizard.
+            </p>
+
+            {Object.keys(staleKeys).length > 0 && (
+              <div
+                role="alert"
+                style={{
+                  marginBottom: '1.5rem',
+                  padding: '1rem',
+                  background: 'var(--error-bg)',
+                  color: 'var(--error-text)',
+                  border: '1px solid #ffcccc',
+                  borderRadius: 6,
+                  fontSize: 14,
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>
+                  Config.ini has options no longer recognized
+                </div>
+                {Object.entries(staleKeys).map(([section, keys]) =>
+                  keys.map((key) => {
+                    const id = `${section}.${key}`;
+                    return (
+                      <div
+                        key={id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          marginBottom: 6,
+                        }}
+                      >
+                        <code style={{ fontSize: 13 }}>
+                          [{section}] {key}
+                        </code>
+                        <button
+                          onClick={() => handleRemoveStaleKey(section, key)}
+                          disabled={removingStaleKey !== null}
+                          style={{
+                            padding: '4px 10px',
+                            background: 'transparent',
+                            color: 'inherit',
+                            border: '1px solid currentColor',
+                            borderRadius: 6,
+                            cursor: removingStaleKey !== null ? 'not-allowed' : 'pointer',
+                            fontSize: 12,
+                            fontWeight: 600,
+                          }}
+                        >
+                          {removingStaleKey === id ? 'Removing...' : 'Remove'}
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+
+            {EXTRA_GROUPS.map((group) => {
+              const groupSections = group.sections
+                .map((section) => schemaSections.find((s) => s.section === section))
+                .filter((s): s is SchemaSection => Boolean(s))
+                .map((spec) => ({ spec, extras: extraFieldsFor(schemaSections, spec.section) }))
+                .filter(({ extras }) => extras.length > 0);
+
+              if (groupSections.length === 0) return null;
+
+              return (
+                <div key={group.title} style={{ marginBottom: '2rem' }}>
+                  <h3 style={{ fontSize: '1rem', marginBottom: '0.75rem' }}>{group.title}</h3>
+                  {groupSections.map(({ spec, extras }) => (
+                    <div key={spec.section} style={{ marginBottom: '1.5rem' }}>
+                      <div
+                        style={{
+                          fontWeight: 600,
+                          fontSize: 12,
+                          color: '#666',
+                          marginBottom: 8,
+                          textTransform: 'uppercase',
+                          letterSpacing: 0.5,
+                        }}
+                      >
+                        {spec.label}
+                      </div>
+                      {extras.map((f) => {
+                        const raw = rawSections[spec.section]?.[f.key];
+                        const value = extraValues[spec.section]?.[f.key] ?? '';
+                        const label = humanizeKey(f.key);
+                        const isDefault = isDefaultField(fieldDefaults, spec.section, f.key);
+                        const hintParts = [
+                          f.restart_component
+                            ? `Requires a ${f.restart_component} restart to take effect.`
+                            : null,
+                          f.observability ? 'Reconciles the observability stack on save.' : null,
+                        ].filter(Boolean);
+                        const hint = hintParts.length ? hintParts.join(' ') : undefined;
+                        const id = `extra-${spec.section}-${f.key}`;
+
+                        if (f.secret) {
+                          const secretMeta = isSecretValue(raw) ? raw : EMPTY_SECRET;
+                          return (
+                            <SecretInput
+                              key={f.key}
+                              id={id}
+                              label={label}
+                              value={value}
+                              onChange={(v) => updateExtra(spec.section, f.key, v)}
+                              disabled={saving}
+                              set={secretMeta.set}
+                              masked={secretMeta.masked}
+                              hint={hint}
+                            />
+                          );
+                        }
+
+                        const kind = inferFieldKind(raw);
+                        if (kind === 'bool') {
+                          return (
+                            <CheckboxInput
+                              key={f.key}
+                              id={id}
+                              label={label}
+                              description={hint || ''}
+                              checked={value === 'true'}
+                              onChange={(v) => updateExtra(spec.section, f.key, v ? 'true' : 'false')}
+                              disabled={saving}
+                              isDefault={isDefault}
+                            />
+                          );
+                        }
+
+                        return (
+                          <TextInput
+                            key={f.key}
+                            id={id}
+                            label={label}
+                            value={value}
+                            onChange={(v) => updateExtra(spec.section, f.key, v)}
+                            disabled={saving}
+                            type={kind === 'number' ? 'number' : 'text'}
+                            hint={hint}
+                            isDefault={isDefault}
+                          />
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         )}
 
