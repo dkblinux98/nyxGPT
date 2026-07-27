@@ -2,7 +2,7 @@
  * Tests for the /api/v1/metrics Next.js proxy route.
  *
  * Regression test for acceptance failure on issue #3122:
- * - web/src/components/ResourceMetrics.tsx calls /api/v1/metrics (frontend path)
+ * - web/src/app/settings/ResourceMetrics.tsx calls /api/v1/metrics (frontend path)
  * - The proxy at web/src/app/api/v1/metrics/route.ts was missing, causing 404.
  * - The proxy must forward requests to the backend at /api/v1/metrics.
  */

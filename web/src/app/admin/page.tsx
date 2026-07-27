@@ -3,7 +3,6 @@
 import { useEffect, useState } from 'react';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorMessage from '../../components/ErrorMessage';
-import ResourceMetrics from '../../components/ResourceMetrics';
 
 type SecretField = { set: boolean; masked: string | null };
 
@@ -55,7 +54,7 @@ interface SaveResult {
   observability_result: { ok: boolean; messages: string[] } | null;
 }
 
-type WizardStep = 'core' | 'rag' | 'api' | 'observability' | 'metrics' | 'summary';
+type WizardStep = 'core' | 'rag' | 'api' | 'observability' | 'summary';
 
 const EMPTY_SECRET: SecretField = { set: false, masked: null };
 
@@ -442,7 +441,6 @@ export default function AdminPage() {
       label: 'Observability',
       description: 'Tracing, error tracking, monitoring, and log aggregation',
     },
-    { id: 'metrics', label: 'Resource Usage', description: 'Monitor system performance and metrics' },
     { id: 'summary', label: 'Summary', description: 'Review and save your configuration' },
   ];
 
@@ -1033,12 +1031,6 @@ export default function AdminPage() {
           </div>
         )}
 
-        {currentStep === 'metrics' && (
-          <div>
-            <ResourceMetrics />
-          </div>
-        )}
-
         {currentStep === 'summary' && (
           <div>
             <h2 style={{ marginTop: 0, fontSize: '1.2rem' }}>Review Configuration</h2>
@@ -1119,6 +1111,14 @@ export default function AdminPage() {
                   <strong>{formValues.log_aggregation.enabled === 'true' ? 'On' : 'Off'}</strong>
                 </div>
               </div>
+            </div>
+
+            <div style={{ fontSize: 13, color: '#666', marginTop: '1rem' }}>
+              Looking for live resource metrics? See{' '}
+              <a href="/settings" style={{ color: '#0066cc' }}>
+                Settings &rarr; Resource Usage
+              </a>
+              .
             </div>
 
             <div style={{ marginTop: '2rem' }}>

@@ -23,11 +23,13 @@ async function selectModelAndClickNext(times: number) {
 }
 
 /**
- * Configuration Wizard Tests (#3354)
+ * Configuration Wizard Tests (#3354, #3384)
  *
  * The wizard now covers every config.ini section the issue lists (core,
- * RAG, API & auth, observability), grouped into six steps: Core & Model,
- * RAG Configuration, API & Auth, Observability, Resource Usage, Summary.
+ * RAG, API & auth, observability), grouped into five steps: Core & Model,
+ * RAG Configuration, API & Auth, Observability, Summary. The read-only
+ * Resource Usage step was removed (#3384) -- live metrics live in
+ * Settings -> Resource Usage and the admin dashboard instead.
  * Saving posts to /api/v1/config/sections and offers a restart/observability
  * reconciliation banner driven by the response.
  */
@@ -317,17 +319,9 @@ describe('AdminPage Component', () => {
     expect(screen.getByLabelText('Environment')).toHaveValue('staging');
   });
 
-  it('navigates to the Resource Usage (metrics) step', async () => {
-    render(<AdminPage />);
-    await selectModelAndClickNext(4);
-    await waitFor(() => {
-      expect(screen.getByText('Resource Usage')).toBeInTheDocument();
-    });
-  });
-
   it('navigates to the Summary step and reviews every section', async () => {
     render(<AdminPage />);
-    await selectModelAndClickNext(5);
+    await selectModelAndClickNext(4);
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Review Configuration' })).toBeInTheDocument();
@@ -352,7 +346,7 @@ describe('AdminPage Component', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: /enable monitoring/i }));
     fireEvent.click(screen.getByRole('checkbox', { name: /enable log aggregation/i }));
 
-    await clickNext(2);
+    await clickNext(1);
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Review Configuration' })).toBeInTheDocument();
@@ -364,7 +358,7 @@ describe('AdminPage Component', () => {
 
   it('renders save configuration button on summary step', async () => {
     render(<AdminPage />);
-    await selectModelAndClickNext(5);
+    await selectModelAndClickNext(4);
     await waitFor(() => {
       const saveButton = screen.getByRole('button', { name: /save configuration/i });
       expect(saveButton).toBeInTheDocument();
@@ -412,7 +406,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(5);
+    await selectModelAndClickNext(4);
 
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
@@ -470,7 +464,7 @@ describe('AdminPage Component', () => {
     fireEvent.change(screen.getByLabelText('Error Tracking DSN'), {
       target: { value: 'http://new@dsn/1' },
     });
-    await clickNext(2);
+    await clickNext(1);
 
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
@@ -522,7 +516,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(5);
+    await selectModelAndClickNext(4);
 
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
@@ -576,7 +570,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(5);
+    await selectModelAndClickNext(4);
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     });
@@ -622,7 +616,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(5);
+    await selectModelAndClickNext(4);
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     });
@@ -668,7 +662,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(5);
+    await selectModelAndClickNext(4);
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     });
@@ -709,7 +703,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(5);
+    await selectModelAndClickNext(4);
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     });
@@ -737,7 +731,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(5);
+    await selectModelAndClickNext(4);
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     });
@@ -751,7 +745,7 @@ describe('AdminPage Component', () => {
     server.use(http.post('/api/v1/config/sections', () => HttpResponse.json({}, { status: 503 })));
 
     render(<AdminPage />);
-    await selectModelAndClickNext(5);
+    await selectModelAndClickNext(4);
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     });
@@ -763,7 +757,7 @@ describe('AdminPage Component', () => {
 
   it('shows a string error message when saving throws a non-Error value', async () => {
     render(<AdminPage />);
-    await selectModelAndClickNext(5);
+    await selectModelAndClickNext(4);
 
     const realFetch = global.fetch;
     const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation((input, init) => {
@@ -807,7 +801,7 @@ describe('AdminPage Component', () => {
 
   it('disables Next button on the last step', async () => {
     render(<AdminPage />);
-    await selectModelAndClickNext(5);
+    await selectModelAndClickNext(4);
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /next/i })).toBeDisabled();
     });
@@ -1028,7 +1022,7 @@ describe('AdminPage Component', () => {
 
   it('triggers save on a real Enter keydown while on the summary step', async () => {
     render(<AdminPage />);
-    await selectModelAndClickNext(5);
+    await selectModelAndClickNext(4);
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Review Configuration' })).toBeInTheDocument();
     });
@@ -1082,7 +1076,7 @@ describe('AdminPage Component', () => {
     );
 
     render(<AdminPage />);
-    await selectModelAndClickNext(5);
+    await selectModelAndClickNext(4);
 
     fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     await waitFor(() => {
