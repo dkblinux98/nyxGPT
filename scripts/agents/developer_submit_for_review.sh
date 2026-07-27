@@ -14,6 +14,9 @@ Behavior:
   - If pr_title is omitted, it is generated from issue label/title:
       "<SingleLabel>: <Issue Title> (#<N>)"
     The issue MUST have exactly one label, otherwise the script fails.
+    Workflow-control labels (e.g. "usage-limit-retry", added by self-heal
+    automation) are ignored for this check — they never count toward or
+    against the one-label invariant.
   - If pr_body_file is omitted, a deterministic PR body is generated from issue data.
 
 Then:
@@ -75,14 +78,16 @@ if [[ "$issue_state" != "OPEN" ]]; then
   _die "Issue #$ISSUE is not OPEN (state=$issue_state). Refusing to submit for review."
 fi
 
-# ---- Enforce exactly one label (portable; no mapfile) ----
-label_count="$(echo "$issue_json" | jq -r '.labels | length')"
+# ---- Enforce exactly one label, ignoring workflow-control labels (portable; no mapfile) ----
+labels_json="$(echo "$issue_json" | jq -c '.labels')"
+real_labels="$(real_label_names "$labels_json")"
+label_count="$(printf '%s\n' "$real_labels" | grep -c . || true)"
 if [[ "$label_count" != "1" ]]; then
-  echo "[error] Issue #$ISSUE must have exactly one label; found ${label_count}:" >&2
-  echo "$issue_json" | jq -r '.labels[].name' 2>/dev/null | sed 's/^/[error] - /' >&2 || true
+  echo "[error] Issue #$ISSUE must have exactly one label (excluding workflow-control labels); found ${label_count}:" >&2
+  [[ -n "$real_labels" ]] && printf '%s\n' "$real_labels" | sed 's/^/[error] - /' >&2
   _die "Fix the issue labels and retry."
 fi
-PREFIX_LABEL="$(echo "$issue_json" | jq -r '.labels[0].name')"
+PREFIX_LABEL="$real_labels"
 
 # ---- Optional overrides (args) ----
 PR_TITLE="${2:-}"

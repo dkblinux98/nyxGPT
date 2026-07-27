@@ -101,6 +101,63 @@ is_fatal_error() {
 }
 
 # -------------------------
+# Usage-limit signature detection (self-heal)
+# -------------------------
+# Shared by developer_auto_implement.yml (Phase 0 + early-cutoff) and
+# claude-code-review.yml. Counts Claude action steps from a
+# `gh api .../actions/runs/<id>/jobs` payload that finished suspiciously
+# fast (the "every model call failed instantly" usage-limit signature).
+#
+# Skipped steps (never actually ran) and the auto-generated "Post <name>"
+# cleanup steps both report near-zero durations and must never be counted —
+# doing so made the detector fire on every failure, not just genuine
+# usage-limit hits (#3360).
+#
+# Args:
+#   $1 jobs_json       - JSON from `gh api .../actions/runs/<id>/jobs`
+#   $2 name_pattern     - case-insensitive regex matching the Claude step name(s)
+#   $3 require_failure  - "true": only count steps whose conclusion is
+#                         "failure" (use on failure()-gated paths, so a
+#                         non-Claude step failing elsewhere in the job is
+#                         never miscounted as a Claude usage-limit hit);
+#                         "false": count any non-skipped match (use on the
+#                         early-cutoff path, which runs after overall job
+#                         success)
+count_fast_claude_steps() {
+  local jobs_json="$1"
+  local name_pattern="$2"
+  local require_failure="${3:-false}"
+  echo "$jobs_json" | jq -r --arg pat "$name_pattern" --arg rf "$require_failure" '
+    [.jobs[].steps[]?
+     | select(.name | test($pat; "i"))
+     | select(.name | test("^Post "; "i") | not)
+     | select(if $rf == "true" then .conclusion == "failure" else .conclusion != "skipped" end)
+     | select(.started_at != null and .completed_at != null)
+     | ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601))
+     | select(. >= 0 and . < 90)
+    ] | length' 2>/dev/null || echo 0
+}
+
+# -------------------------
+# Workflow-control labels
+# -------------------------
+# Labels the self-heal automation adds/removes to track its own retry state
+# (e.g. "usage-limit-retry"). These are not "the issue's label" and must
+# never count toward one-label-invariant checks like PR title/prefix
+# generation — doing so let a stray usage-limit-retry label permanently
+# deadlock PR submission (#3360).
+WORKFLOW_CONTROL_LABELS_JSON='["usage-limit-retry"]'
+
+# Given a `gh issue/pr view --json labels` `.labels` array (as compact JSON),
+# prints the names of the "real" (non-workflow-control) labels, one per line.
+real_label_names() {
+  local labels_json="$1"
+  echo "$labels_json" | jq -r --argjson ctrl "$WORKFLOW_CONTROL_LABELS_JSON" '
+    .[].name | select(. as $n | ($ctrl | index($n)) | not)
+  '
+}
+
+# -------------------------
 # Config (from ~/.nyxGPT/config.ini)
 # -------------------------
 CONFIG_FILE="${NYXGPT_CONFIG_FILE:-$HOME/.nyxGPT/config.ini}"

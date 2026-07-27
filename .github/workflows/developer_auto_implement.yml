@@ -1150,16 +1150,15 @@ jobs:
             # otherwise stall silently on "awaiting human decision". Detect the
             # early-cutoff signature here (a sub-90s Claude step) and auto-retry;
             # only genuine blocks (or an exhausted retry budget) await a human.
+            #
+            # count_fast_claude_steps (scripts/agents/lib/gh_project.sh) excludes
+            # skipped steps and "Post *" cleanup steps, both of which report
+            # near-zero durations and would otherwise always match here (#3360).
+            source scripts/agents/lib/gh_project.sh
             JOBS_JSON=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" 2>/dev/null || echo '')
             FAST_CLAUDE_STEPS=0
             if [ -n "$JOBS_JSON" ]; then
-              FAST_CLAUDE_STEPS=$(echo "$JOBS_JSON" | jq -r '
-                [.jobs[].steps[]?
-                 | select(.name | test("Run Claude Code|Claude Fix Issues|Claude review fix"; "i"))
-                 | select(.started_at != null and .completed_at != null)
-                 | ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601))
-                 | select(. >= 0 and . < 90)
-                ] | length' 2>/dev/null || echo 0)
+              FAST_CLAUDE_STEPS=$(count_fast_claude_steps "$JOBS_JSON" "Run Claude Code|Claude Fix Issues|Claude review fix" false)
               [ -z "$FAST_CLAUDE_STEPS" ] && FAST_CLAUDE_STEPS=0
             fi
 
@@ -1231,6 +1230,19 @@ jobs:
                     `[View PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${pr_number})`
             });
 
+      - name: Clear stale usage-limit-retry label
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
+        run: |
+          # Once a run gets all the way past PR submission / review request,
+          # any leftover usage-limit-retry label (from an earlier misfire, or
+          # a manual re-assign that raced the retry cron's removal) no longer
+          # reflects reality and must not linger to trip the one-label
+          # invariant on a future run (#3360). Idempotent no-op if absent.
+          gh issue edit "${{ github.event.issue.number }}" --remove-label "usage-limit-retry" 2>/dev/null || true
+
       - name: Detect usage-limit signature (Phase 0 - self-heal)
         if: failure()
         id: usage_limit
@@ -1246,18 +1258,20 @@ jobs:
           # 28909002900, 29220860744). When detected, schedule a delayed
           # retry via the usage-limit-retry label + cron workflow instead of
           # escalating "unknown fatal - manual intervention".
+          #
+          # count_fast_claude_steps requires the matching Claude step's own
+          # conclusion to be "failure" (require_failure=true) and excludes
+          # skipped/"Post *" steps. Without that corroboration this fired on
+          # *any* job failure — including e.g. the PR-submission label check —
+          # because the other, non-executed Claude steps in this job are
+          # always "skipped" with a near-zero reported duration (#3360).
+          source scripts/agents/lib/gh_project.sh
           echo "handled=false" >> "$GITHUB_OUTPUT"
 
           JOBS_JSON=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" 2>/dev/null)
           [ -z "$JOBS_JSON" ] && exit 0
 
-          FAST_CLAUDE_STEPS=$(echo "$JOBS_JSON" | jq -r '
-            [.jobs[].steps[]?
-             | select(.name | test("Run Claude Code|Claude Fix Issues|Claude review fix"; "i"))
-             | select(.started_at != null and .completed_at != null)
-             | ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601))
-             | select(. >= 0 and . < 90)
-            ] | length' 2>/dev/null)
+          FAST_CLAUDE_STEPS=$(count_fast_claude_steps "$JOBS_JSON" "Run Claude Code|Claude Fix Issues|Claude review fix" true)
           [ -z "$FAST_CLAUDE_STEPS" ] && FAST_CLAUDE_STEPS=0
 
           if [ "$FAST_CLAUDE_STEPS" -lt 1 ]; then
@@ -1332,6 +1346,31 @@ jobs:
           echo "Error messages found:"
           echo "$ERROR_LOG"
           echo "::endgroup::"
+
+          # Persist the concrete failing step + error excerpt to a file so
+          # downstream comment steps can surface the real error instead of a
+          # generic classification (#3360 — a misdiagnosed run previously
+          # posted a misleading usage-limit retry notice with no trace of
+          # the actual "[error] Issue #N must have exactly one label" text).
+          {
+            echo "**Failed step(s):**"
+            if [[ -n "$FAILED_STEPS" ]]; then
+              echo '```'
+              echo "$FAILED_STEPS"
+              echo '```'
+            else
+              echo "(unknown — could not determine from the jobs API)"
+            fi
+            echo
+            echo "**Error output (excerpt):**"
+            echo '```'
+            if [[ -n "$ERROR_LOG" ]]; then
+              echo "$ERROR_LOG" | head -10
+            else
+              echo "(no matching error lines found in logs)"
+            fi
+            echo '```'
+          } > /tmp/failure_detail.txt
 
           # Source the library to get classification functions
           source scripts/agents/lib/gh_project.sh
@@ -1732,6 +1771,14 @@ jobs:
               if (match) phase2Diagnosis = match[1];
             } catch (e) {}
 
+            // Read the concrete failing step + error excerpt captured by
+            // Phase 1 (read from a file, not a GitHub Actions expression,
+            // so arbitrary log content can never break out of this script).
+            let failureDetail = '';
+            try {
+              failureDetail = fs.readFileSync('/tmp/failure_detail.txt', 'utf8').trim();
+            } catch (e) {}
+
             // Use Phase 3 diagnosis if available, otherwise Phase 2
             let diagnosis = phase3Diagnosis || phase2Diagnosis;
 
@@ -1757,6 +1804,7 @@ jobs:
                     `**Error type:** ${errorClass}\n` +
                     `**Analysis:** ${analysisPhase}\n` +
                     `**Diagnosis:** ${explanation}\n\n` +
+                    (failureDetail ? `${failureDetail}\n\n` : '') +
                     (phase3Status === 'FATAL' || phase2Status === 'FATAL' ?
                       'Intelligent analysis attempted auto-fix but determined error is fatal.\n\n' :
                       '') +
