@@ -363,6 +363,66 @@ def test_detect_deployment_mode_flags_conflict(monkeypatch):
 
 
 @pytest.mark.unit
+def test_detect_deployment_mode_native_only_cassandra_reports_no_conflict(monkeypatch):
+    """Regression for #3383: a native-only stack (one nyxgpt-cassandra Docker
+    container, no Compose app tier) must report zero conflicts. Exercises the
+    real _compose_stack_snapshot() (not a stub) against self_heal's combined
+    compose+native view, since that's exactly where the phantom-backend bug
+    lived.
+    """
+    monkeypatch.setattr(
+        ops,
+        "_brew_services_snapshot",
+        lambda: {"nyxgpt-api": "stopped", "nyxgpt-web": "stopped", "ollama": "stopped"},
+    )
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+
+    native_cassandra = self_heal.ComponentStatus(
+        service="cassandra",
+        container="nyxgpt-cassandra",
+        state="running",
+        health="",
+        healthy=True,
+        source="native",
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [native_cassandra])
+
+    mode = ops.detect_deployment_mode()
+    assert mode.native["cassandra"] == "running"
+    assert mode.compose == {}
+    assert mode.conflicts == []
+
+
+@pytest.mark.unit
+def test_detect_deployment_mode_true_dual_backend_conflict_still_reported(monkeypatch):
+    """A genuine native-vs-Compose collision -- a real Compose-managed
+    cassandra container AND the native one on the same port -- must still be
+    detected and warned about.
+    """
+    monkeypatch.setattr(
+        ops,
+        "_brew_services_snapshot",
+        lambda: {"nyxgpt-api": "stopped", "nyxgpt-web": "stopped", "ollama": "stopped"},
+    )
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+
+    compose_cassandra = self_heal.ComponentStatus(
+        service="cassandra",
+        container="nyxgpt_cassandra_1",
+        state="running",
+        health="healthy",
+        healthy=True,
+        source="compose",
+    )
+    monkeypatch.setattr(ops.self_heal, "list_component_status", lambda: [compose_cassandra])
+
+    mode = ops.detect_deployment_mode()
+    assert mode.native["cassandra"] == "running"
+    assert mode.compose["cassandra"] == "running"
+    assert mode.conflicts == ["cassandra"]
+
+
+@pytest.mark.unit
 def test_ops_status_smoke(monkeypatch, capsys):
     # Make status deterministic by stubbing _which and _run outputs
     class CP:
@@ -1193,6 +1253,31 @@ def test_compose_stack_snapshot_returns_empty_on_exception():
         ops.self_heal, "list_component_status", side_effect=RuntimeError("no compose")
     ):
         assert ops._compose_stack_snapshot() == {}
+
+
+@pytest.mark.unit
+def test_compose_stack_snapshot_excludes_native_sourced_statuses():
+    """Regression for #3383: list_component_status() returns a combined
+    compose+native+absent view; the snapshot must filter to source=="compose"
+    only, or a native component (e.g. the native nyxgpt-cassandra container)
+    folds into the "compose" dict and collides with detect_deployment_mode()'s
+    native reading of that same container.
+    """
+    native_cassandra = self_heal.ComponentStatus(
+        service="cassandra",
+        container="nyxgpt-cassandra",
+        state="running",
+        health="",
+        healthy=True,
+        source="native",
+    )
+    compose_api = self_heal.ComponentStatus(
+        service="api", container="nyxgpt-api", state="running", health="healthy", healthy=True
+    )
+    with patch.object(
+        ops.self_heal, "list_component_status", return_value=[native_cassandra, compose_api]
+    ):
+        assert ops._compose_stack_snapshot() == {"api": "running"}
 
 
 # --- _restart_brew_service ---
