@@ -116,7 +116,7 @@
     },
     {
       "id": 6,
-      "title": "Restart / recovery timeline (self-heal log events)",
+      "title": "Restart / recovery timeline (self-heal + ops lifecycle events)",
       "type": "logs",
       "datasource": { "type": "loki", "uid": "loki" },
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 14 },
@@ -129,7 +129,39 @@
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{job=\"nyxgpt\"} |= `self-heal:` |~ `restart|heal pass|giving up|recovered`",
+          "expr": "{job=\"nyxgpt\"} |~ `self-heal: .*(restart|heal pass|giving up|recovered)|ops: lifecycle action`",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Operator ops actions (24h)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(nyxgpt_ops_actions_total[24h]))",
+          "legendFormat": "ops actions",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Ops lifecycle actions by command/service/result",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(nyxgpt_ops_actions_total[5m])) by (command, service, result)",
+          "legendFormat": "{{command}} {{service}} ({{result}})",
           "refId": "A"
         }
       ]

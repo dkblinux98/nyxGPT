@@ -887,7 +887,12 @@ min_requests_for_evaluation = 20
 ## `[self_heal]` section
 
 Watchdog that restarts unhealthy Docker Compose components (see `docs/self-healing.md`,
-`/admin/self-heal`).
+`/admin/self-heal`). Its own restart metric (`nyxgpt_selfheal_restarts_total`) counts only
+these autonomous restarts -- operator-initiated `nyxgpt ops` actions (install/down/restart/
+stop/observability, from the CLI or the admin dashboard) are recorded separately as
+`nyxgpt_ops_actions_total`; see [self-healing.md's "Self-heal restarts vs. operator (`nyxgpt
+ops`) actions"](self-healing.md#self-heal-restarts-vs-operator-nyxgpt-ops-actions) for why
+the two must never be conflated when reading a dashboard.
 
 ```ini
 [self_heal]

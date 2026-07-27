@@ -230,6 +230,7 @@ when `[logging] format = json` -- see
 | `nyxgpt_selfheal_restarts_total` | Counter | `service`, `result` | Restart attempts, by service and outcome |
 | `nyxgpt_selfheal_restart_count` | Gauge | `service` | Current consecutive-restart count per service |
 | `nyxgpt_selfheal_last_recovery_timestamp` | Gauge | `service` | Unix timestamp of the last successful restart |
+| `nyxgpt_ops_actions_total` | Counter | `command`, `service`, `result` | Operator `nyxgpt ops`/dashboard lifecycle actions -- see [below](#self-heal-restarts-vs-operator-nyxgpt-ops-actions) |
 
 **Grafana dashboard**: `docker/grafana/dashboards/self-healing.json` is
 auto-provisioned exactly like the other three dashboards (System Overview,
@@ -240,15 +241,47 @@ consecutive-restart count per service (the "backoff state" view), restart
 rate by service/outcome, time since each service's last recovery, and a
 Loki-backed restart/recovery event timeline.
 
-**Loki query** for self-heal events (heal attempts/outcomes), used by that
-timeline panel:
+**Loki query** for self-heal events (heal attempts/outcomes) plus operator
+`nyxgpt ops` lifecycle events (see below), used by that timeline panel:
 
 ```logql
-{job="nyxgpt"} |= `self-heal:` |~ `restart|heal pass|giving up|recovered`
+{job="nyxgpt"} |~ `self-heal: .*(restart|heal pass|giving up|recovered)|ops: lifecycle action`
 ```
 
 Requires the `logging` Compose profile (see [Log
 Aggregation](docker-compose.md#log-aggregation)).
+
+### Self-heal restarts vs. operator (`nyxgpt ops`) actions
+
+`nyxgpt_selfheal_restarts_total` counts only the watchdog's own autonomous
+restarts -- it answers "how often did the system recover itself." Every
+other way a component's lifecycle changes -- `nyxgpt ops install`, `nyxgpt
+ops down`, `nyxgpt ops restart`/`stop`, `nyxgpt ops observability`, the
+Terraform/Kubernetes install/down paths, and the admin dashboard's
+equivalents (the `/api/v1/infra/*` endpoints and the self-heal page's manual
+"Heal Now" button) -- is recorded as a separate **ops lifecycle action**
+instead, via `src/nyxgpt/ops.py`'s `_record_ops_action`:
+
+- **Metric**: `nyxgpt_ops_actions_total{command, service, result}` (Counter).
+  `command` is one of `install`/`down`/`restart`/`stop`/`observability`;
+  `service` is the target component (`api`/`web`/`ollama`/`cassandra`/`all`/
+  `terraform`/`kubernetes`/`observability`/...); `result` is
+  `success`/`failure`/`refused` (e.g. the port-collision refusal from #3193).
+- **Log event**: `ops: lifecycle action command=... service=... result=...`,
+  structured the same way as self-heal's own log lines (`extra={"component":
+  "ops", "event": "ops_lifecycle_action", ...}`), consumed by the same
+  restart/recovery timeline panel and Loki query above.
+
+A manual "Heal Now" click on the self-heal page still increments
+`nyxgpt_selfheal_restarts_total` too (self-heal's own restart accounting is
+unaffected either way), but it *also* records a `nyxgpt_ops_actions_total`
+point -- from an incident-review standpoint it was an operator action, not
+the watchdog deciding on its own to restart something.
+
+Keeping these separate means a gap in `nyxgpt_selfheal_restarts_total`/the
+unhealthy-components gauge can be read correctly: check
+`nyxgpt_ops_actions_total` for a `command="down"` or `command="stop"` around
+the same time before assuming an unexplained outage.
 
 The SRE/admin dashboard's `/admin/self-heal` page links directly to both
 the Grafana Self-Healing dashboard and a Grafana Explore deep link with
