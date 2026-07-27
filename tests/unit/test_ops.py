@@ -5083,6 +5083,7 @@ def test_provision_glitchtip_full_happy_path(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", compose_cfg)
     monkeypatch.setattr(ops, "_compose_available", lambda: True)
     monkeypatch.setattr(ops, "_wait_for_glitchtip_healthy", lambda: True)
     monkeypatch.setattr(
@@ -5376,7 +5377,7 @@ def test_ensure_terraform_tfvars_bootstraps_from_example(monkeypatch, tmp_path):
     tf_dir.mkdir()
     (tf_dir / "terraform.tfvars.example").write_text(
         'repo_path    = "/absolute/path/to/nyxGPT"\n'
-        'auth_api_key = "REPLACE_WITH_A_REAL_KEY"\n'
+        'auth_api_key = "REPLACE_WITH_A_REAL_KEY"\n'  # pragma: allowlist secret
         'cors_origins = "http://localhost:3000"\n',
         encoding="utf-8",
     )
@@ -5389,7 +5390,7 @@ def test_ensure_terraform_tfvars_bootstraps_from_example(monkeypatch, tmp_path):
     tfvars = tf_dir / "terraform.tfvars"
     content = tfvars.read_text(encoding="utf-8")
     assert str(repo_root) in content
-    assert 'auth_api_key = "my-key"' in content
+    assert 'auth_api_key = "my-key"' in content  # pragma: allowlist secret
 
 
 # --- Terraform: _terraform_init_plan_apply ---
@@ -6035,3 +6036,52 @@ def test_doctor_flags_stale_terraform_state(monkeypatch, tmp_path, capsys):
     assert rc == 2
     out = capsys.readouterr().out
     assert "Terraform state exists but no nyxgpt-tf-* containers are running" in out
+
+
+@pytest.mark.unit
+def test_ensure_compose_config_file_seeds_from_example(tmp_path, monkeypatch):
+    """A fresh checkout (no live file, template present) gets the live file
+    created from the .example template."""
+    example = tmp_path / "config.docker.ini.example"
+    live = tmp_path / "config.docker.ini"
+    example.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_EXAMPLE", example)
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", live)
+
+    results = ops._ensure_compose_config_file()
+
+    assert all(r.ok for r in results)
+    assert live.exists()
+    assert live.read_text(encoding="utf-8") == example.read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_ensure_compose_config_file_does_not_overwrite_existing(tmp_path, monkeypatch):
+    """An existing live file (with its runtime DSN) is left untouched."""
+    example = tmp_path / "config.docker.ini.example"
+    live = tmp_path / "config.docker.ini"
+    example.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
+    live.write_text(
+        "[error_tracking]\nenabled = true\ndsn = http://key@localhost:8080/2\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_EXAMPLE", example)
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", live)
+
+    results = ops._ensure_compose_config_file()
+
+    assert all(r.ok for r in results)
+    assert "http://key@localhost:8080/2" in live.read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
+def test_ensure_compose_config_file_noop_without_template(tmp_path, monkeypatch):
+    """Outside a repo checkout (no template, no live file) it no-ops cleanly."""
+    example = tmp_path / "config.docker.ini.example"
+    live = tmp_path / "config.docker.ini"
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_EXAMPLE", example)
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", live)
+
+    results = ops._ensure_compose_config_file()
+
+    assert all(r.ok for r in results)
+    assert not live.exists()

@@ -67,6 +67,15 @@ COMPOSE_COMPONENT_PORTS: dict[str, int] = {
 NATIVE_CONFIG_HINT = "~/.nyxGPT/config.ini"
 COMPOSE_CONFIG_HINT = "docker/config.docker.ini (mounted into the Compose 'api' container)"
 
+# The Compose api container's config is a derived, per-machine artifact (like
+# .env): it's bind-mounted into the container and gets its DSN filled in at
+# runtime by `nyxgpt ops glitchtip-init`, so the live file is git-ignored.
+# `config.docker.ini.example` is the tracked, inert template; `nyxgpt ops
+# install` seeds the live file from it on a fresh checkout (see
+# `_ensure_compose_config_file`).
+COMPOSE_CONFIG_FILE = REPO_ROOT / "docker" / "config.docker.ini"
+COMPOSE_CONFIG_EXAMPLE = REPO_ROOT / "docker" / "config.docker.ini.example"
+
 # Referenced by `_ensure_log_symlinks` to detect Compose mode and avoid
 # clobbering the file `follow-ollama-logs.sh`/its LaunchAgent is actively
 # writing to (see #3276 review).
@@ -771,6 +780,45 @@ def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     results.append(OpsResult(True, "Requested brew install/start nyxgpt-web", ""))
 
     return results
+
+
+def _ensure_compose_config_file() -> list[OpsResult]:
+    """Seed the git-ignored live `docker/config.docker.ini` from its tracked
+    `.example` template when it doesn't exist yet.
+
+    The live file is a derived, per-machine artifact (like `.env`): it's
+    bind-mounted read-only into the Compose `api` container as its
+    `config.ini`, and `nyxgpt ops glitchtip-init` fills its DSN in at runtime,
+    so it is git-ignored rather than committed. `docker/config.docker.ini.example`
+    is the tracked, inert template. This step recreates the live file on a fresh
+    checkout so the bind-mount always has a real file to mount -- a missing
+    bind-mount source makes Docker silently create an empty *directory* in its
+    place, which breaks the api container's config load.
+
+    No-ops (successfully) when run outside a repo checkout that lacks the
+    template.
+    """
+    if COMPOSE_CONFIG_FILE.exists():
+        return [OpsResult(True, f"Compose config already present: {COMPOSE_CONFIG_FILE}")]
+    if not COMPOSE_CONFIG_EXAMPLE.exists():
+        return [
+            OpsResult(
+                True,
+                "Skipped compose config seed (no template found)",
+                f"{COMPOSE_CONFIG_EXAMPLE} is absent -- not running from a repo checkout.",
+            )
+        ]
+    try:
+        shutil.copyfile(COMPOSE_CONFIG_EXAMPLE, COMPOSE_CONFIG_FILE)
+    except OSError as e:
+        return [
+            OpsResult(
+                False,
+                f"Failed to create {COMPOSE_CONFIG_FILE}",
+                f"{type(e).__name__}: {e}",
+            )
+        ]
+    return [OpsResult(True, f"Created {COMPOSE_CONFIG_FILE} from {COMPOSE_CONFIG_EXAMPLE.name}")]
 
 
 def _persist_compose_file_path() -> list[OpsResult]:
@@ -2049,6 +2097,7 @@ def install(args) -> int:
         ("ollama service", _ensure_ollama_service),
         ("log symlinks", _ensure_log_symlinks),
         ("env sync", sync_env_from_config),
+        ("compose config file", _ensure_compose_config_file),
         ("compose file path", _persist_compose_file_path),
     ]
     if not getattr(args, "skip_observability", False):
@@ -3820,9 +3869,9 @@ def _patch_ini_value(text: str, section: str, key: str, value: str) -> str:
     Unlike a `ConfigParser` read/write round-trip (which drops comments),
     this only ever rewrites the single matching `key = ...` line, or
     appends one if the key/section isn't present yet. Used for
-    `docker/config.docker.ini`, a git-tracked file whose `[error_tracking]`
-    section carries hand-written documentation comments that must survive
-    `nyxgpt ops glitchtip-init` re-runs.
+    `docker/config.docker.ini`, whose `[error_tracking]` section carries
+    hand-written documentation comments (seeded from its tracked `.example`
+    template) that must survive `nyxgpt ops glitchtip-init` re-runs.
     """
     lines = text.splitlines(keepends=True)
     section_header_re = re.compile(r"^\s*\[([^\]]+)\]\s*$")
@@ -3863,13 +3912,14 @@ def _write_error_tracking_dsn(cfg_path: Path, dsn: str, *, chmod_600: bool) -> O
     No-ops (reports ok) if `cfg_path` doesn't exist -- not every host has
     both `~/.nyxGPT/config.ini` (native) and `docker/config.docker.ini`
     (Compose) in play. `chmod_600` should only be set for the native path:
-    `docker/config.docker.ini` is a git-tracked template, not a secrets
-    file -- the DSN is a public key, safe to store there (see
-    docs/self-healing.md) -- so its permissions are left untouched.
+    the live `docker/config.docker.ini` is a derived, git-ignored artifact
+    seeded from a tracked template, not a secrets file -- the DSN is a public
+    key, safe to store there (see docs/self-healing.md) -- so its permissions
+    are left untouched.
 
     Patches only the `dsn`/`enabled` lines in place (via `_patch_ini_value`)
     rather than round-tripping through `ConfigParser`, so any comments in
-    `cfg_path` -- notably the documentation comments in the git-tracked
+    `cfg_path` -- notably the documentation comments in
     `docker/config.docker.ini` -- survive untouched.
     """
     if not cfg_path.exists():
@@ -3977,9 +4027,8 @@ def _provision_glitchtip() -> list[OpsResult]:
     finally:
         api_client.close()
 
-    compose_cfg_path = REPO_ROOT / "docker" / "config.docker.ini"
     results.append(_write_error_tracking_dsn(native_cfg_path, dsn, chmod_600=True))
-    results.append(_write_error_tracking_dsn(compose_cfg_path, dsn, chmod_600=False))
+    results.append(_write_error_tracking_dsn(COMPOSE_CONFIG_FILE, dsn, chmod_600=False))
 
     return results
 
