@@ -358,7 +358,10 @@ Access the dashboard at `http://127.0.0.1:3000/admin/dashboard` for an at-a-glan
 Access the wizard at `http://127.0.0.1:3000/admin` (#3354) to configure
 every section of `config.ini` (see
 [`docs/configuration.md`](configuration.md#option-3-web-configuration-wizard-edit-an-existing-install)
-for the full field-by-field reference):
+for the full field-by-field reference). Its field list is **derived from
+`example.config.ini`** (#3388) rather than hand-maintained, so a new config
+option appears in the wizard automatically instead of the two silently
+drifting apart:
 
 1. **Core & Model** — Default model, chat timeout, sessions/vectorstore
    directories, log level/directory, and the Ollama backend URL
@@ -369,7 +372,14 @@ for the full field-by-field reference):
    (enable/disable, header name, rotate the key), and rate limiting
 4. **Observability** — Tracing, error tracking, monitoring, and log
    aggregation, each with its own enable toggle and connection settings
-5. **Summary** — Review every section and save (with a link to
+5. **Additional Settings** — every other `example.config.ini` option not
+   already covered by a step above, generated directly from the schema and
+   grouped by topic (core behavior; API & network; RAG/context/pdf/caching;
+   observability & self-heal; Kubernetes deployment). `[paths]`, `[openai]`,
+   and `[github]` are excluded (agent-level concerns, not nyxGPT options).
+   This step also shows a drift banner if `config.ini` has a key no longer
+   declared in `example.config.ini`, with a **Remove** button per key.
+6. **Summary** — Review every section and save (with a link to
    [Settings → Resource Usage](#settings) for live metrics; the wizard
    itself configures nothing there and no longer interrupts the flow with
    a monitoring step, #3384)
@@ -378,9 +388,9 @@ for the full field-by-field reference):
 - Visual progress indicator showing current step
 - Form validation for required fields
 - Connection testing to verify API connectivity
-- Secrets (API key, error tracking DSN) are shown masked and never round-trip
-  in cleartext; leave the field blank to keep the current value, or type a
-  new one to rotate it
+- Secrets (API key, error tracking DSN/admin password, Grafana admin
+  password) are shown masked and never round-trip in cleartext; leave the
+  field blank to keep the current value, or type a new one to rotate it
 - Clear navigation between steps
 - A **Cancel** link, next to **Previous** on every step, discards pending
   edits and returns to the Admin Dashboard. It prompts for confirmation
@@ -391,19 +401,21 @@ Keyboard shortcuts:
 - `←` / `→` — Navigate between steps
 - `Enter` — Advance to next step or save configuration
 
-**Configuration changes:** saving writes the full section to
-`~/.nyxGPT/config.ini` (still the single source of truth, #3194) and applies
-it immediately — hot-reloadable settings (model, RAG, logging, auth)
-take effect on the next request with no restart. Settings that
-need a process bounce (API host/port, the RAG Cassandra connection/embedding
-model, tracing/error-tracking/rate-limit config read only at startup) are
-reported on the Summary step with a **Restart** button per affected
-component, wrapping `nyxgpt ops restart` (`GET`/`POST
-/api/v1/config/sections`, `POST /api/v1/config/restart` — see
-[`docs/api.md`](api.md#config-wizard)). Enabling an observability toggle
-also reconciles the matching Compose stack the same way `nyxgpt ops
-observability` does, so it results in a working dashboard rather than a
-dangling flag.
+**Configuration changes:** saving **merges** into `~/.nyxGPT/config.ini`
+(still the single source of truth, #3194) rather than rewriting it — only
+the keys you changed are updated or added at the line level, so comments,
+key order, and anything the wizard doesn't manage (the excluded sections,
+hand-added keys) survive untouched (#3388). The save applies immediately —
+hot-reloadable settings (model, RAG, logging, auth) take effect on the next
+request with no restart. Settings that need a process bounce (API
+host/port, the RAG Cassandra connection/embedding model, cache backends,
+tracing/error-tracking/rate-limit config read only at startup) are reported
+on the Summary step with a **Restart** button per affected component,
+wrapping `nyxgpt ops restart` (`GET`/`POST /api/v1/config/sections`, `POST
+/api/v1/config/restart` — see [`docs/api.md`](api.md#config-wizard)).
+Enabling an observability toggle also reconciles the matching Compose stack
+the same way `nyxgpt ops observability` does, so it results in a working
+dashboard rather than a dangling flag.
 
 **Prerequisites:**
 - FastAPI backend must be running (`nyxgpt ops install` or `nyxgpt ops restart api`)
