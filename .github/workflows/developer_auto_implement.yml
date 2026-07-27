@@ -744,6 +744,7 @@ jobs:
             });
 
       - name: Snapshot uncommitted implementation work
+        id: snapshot
         if: success()
         shell: bash
         run: |
@@ -754,25 +755,57 @@ jobs:
           # uncommitted work so verification, PR submission, and the review
           # cycle proceed on it — partial work then converges via review-fix
           # cycles instead of evaporating with the runner.
+          #
+          # This must NOT be a blanket `git add -A`: on #3352 that swept in
+          # the runner's own .venv-agent/ (uncovered by .gitignore at the
+          # time), committing 7,032 files / ~1.8M lines to the feature
+          # branch and making the next step (verification) crawl for 30+
+          # minutes against a ~75s baseline. snapshot_safe_add.sh stages
+          # tracked modifications plus an explicit allowlist of
+          # source/test/doc paths, defensively excludes venv/node_modules/
+          # cache-style junk even if .gitignore misses it, and fails loudly
+          # (see #3370) instead of silently committing an oversized tree.
           BRANCH="$(git branch --show-current || true)"
           [ -z "$BRANCH" ] && { echo "Detached HEAD; nothing to snapshot."; exit 0; }
           [ "$BRANCH" = "${{ vars.RELEASE_BRANCH }}" ] && { echo "On release branch; nothing to snapshot."; exit 0; }
 
+          SNAPSHOT_FAILED=0
           if [ -n "$(git status --porcelain)" ]; then
-            git add -A
-            git commit -m "wip: snapshot uncommitted implementation work (#${{ github.event.issue.number }})" \
-              -m "Auto-committed by the workflow: the implementation step ended with uncommitted changes (e.g. the Claude step hit its turn/time limit before committing). Verification and review proceed on this snapshot; gaps are completed in review-fix cycles."
-            echo "::warning::Snapshot-committed uncommitted implementation work on $BRANCH"
+            if ./scripts/agents/snapshot_safe_add.sh; then
+              if [ -n "$(git diff --cached --name-only)" ]; then
+                git commit -m "wip: snapshot uncommitted implementation work (#${{ github.event.issue.number }})" \
+                  -m "Auto-committed by the workflow: the implementation step ended with uncommitted changes (e.g. the Claude step hit its turn/time limit before committing). Verification and review proceed on this snapshot; gaps are completed in review-fix cycles."
+                echo "::warning::Snapshot-committed uncommitted implementation work on $BRANCH"
+              else
+                echo "No changes matched the snapshot allowlist; nothing committed."
+              fi
+            else
+              # The size guard tripped: snapshot_safe_add.sh already unstaged
+              # everything and printed the offending paths. Don't let `set -e`
+              # abort the step here -- fall through to the push below first,
+              # so any commits already made during implementation still reach
+              # origin. Only the oversized uncommitted delta is discarded;
+              # nothing that was already committed is lost.
+              SNAPSHOT_FAILED=1
+              echo "::error::Snapshot size guard tripped on $BRANCH; the oversized uncommitted delta was NOT committed (see errors above for offending paths)."
+            fi
           fi
 
           # Make sure the branch (and any local-only commits) reach origin so
-          # PR submission has a ref to target.
+          # PR submission has a ref to target. This must run even if the
+          # snapshot guard tripped above, or already-committed implementation
+          # work would be stranded on the runner and lost when it's torn down.
           if ! git ls-remote --exit-code origin "refs/heads/$BRANCH" >/dev/null 2>&1; then
             git push -u origin "$BRANCH"
             echo "::notice::Pushed new branch $BRANCH to origin"
           elif [ -n "$(git rev-list "origin/$BRANCH..HEAD" 2>/dev/null)" ]; then
             git push origin "$BRANCH"
             echo "::notice::Pushed local-only commits on $BRANCH to origin"
+          fi
+
+          if [ "$SNAPSHOT_FAILED" -eq 1 ]; then
+            echo "::error::Failing this step after pushing: the uncommitted implementation delta exceeded the snapshot size guard on $BRANCH."
+            exit 1
           fi
 
       - name: Set up Python
@@ -797,6 +830,10 @@ jobs:
       - name: Run Verification (Attempt 1)
         id: verify1
         continue-on-error: true
+        # Comparable runs finish in ~75s; a pathological tree (e.g. #3370,
+        # where an untracked venv got committed) ran 30+ minutes and was on
+        # track to burn the 6-hour job timeout silently. Fail fast instead.
+        timeout-minutes: 15
         run: |
           set +e  # Don't exit immediately on error - we want to capture all failures
           FAILED=0
@@ -899,6 +936,7 @@ jobs:
         if: steps.claude_fix2.conclusion == 'success'
         id: verify2
         continue-on-error: true
+        timeout-minutes: 15
         run: |
           set +e
           FAILED=0
@@ -996,6 +1034,7 @@ jobs:
 
       - name: Final Verification (Must Pass)
         id: verify_final
+        timeout-minutes: 15
         run: |
           # Run ALL checks unconditionally on the entire codebase
           # This is the final gate - no regressions allowed
@@ -1034,11 +1073,27 @@ jobs:
           github-token: ${{ secrets.DEVELOPER_AGENT_TOKEN }}
           script: |
             const issue_number = context.payload.issue.number;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number,
-              body: `❌ **Developer Agent**: Failed after 3 attempts
+            const snapshotFailed = '${{ steps.snapshot.conclusion }}' === 'failure';
+            const body = snapshotFailed
+              ? `❌ **Developer Agent**: Snapshot size guard tripped
+
+            The "Snapshot uncommitted implementation work" step found an uncommitted
+            delta too large to be a plausible agent-authored change (see the
+            [workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            for the offending paths) and refused to commit it. Verification never ran.
+
+            Any work already committed before this step was still pushed to the branch.
+
+            **Next steps:**
+            1. Review the workflow logs above to see which paths tripped the guard
+            2. If they're legitimate (a large but intentional change), adjust the
+               allowlist in \`scripts/agents/snapshot_safe_add.sh\` or commit the work
+               manually on the branch
+            3. If they're untracked junk (a venv, build cache, etc.), extend
+               \`.gitignore\` and/or the guard's junk patterns
+
+            **Note:** No PR was created because verification never ran.`
+              : `❌ **Developer Agent**: Failed after 3 attempts
 
             The implementation failed verification even after 3 fix attempts.
             This indicates a more complex issue that requires manual intervention.
@@ -1054,7 +1109,12 @@ jobs:
             2. Check the commit history on the branch to see what the agent tried
             3. Manual debugging may be required - the agent may not have enough context
 
-            **Note:** No PR was created because verification never passed.`
+            **Note:** No PR was created because verification never passed.`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              body
             });
 
       - name: Request review for existing PR
