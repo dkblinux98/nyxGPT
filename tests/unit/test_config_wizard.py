@@ -1,6 +1,7 @@
-"""Unit tests for src/nyxgpt/config_wizard.py (#3354).
+"""Unit tests for src/nyxgpt/config_wizard.py (#3354, #3388).
 
-Covers schema validation, restart/observability change detection, and the
+Covers schema derivation from `example.config.ini`, schema validation,
+restart/observability change detection, and the comment-preserving
 read/apply file round-trip -- the pure logic backing the full Configuration
 Wizard's `GET|POST /api/v1/config/sections` endpoints.
 """
@@ -8,12 +9,15 @@ Wizard's `GET|POST /api/v1/config/sections` endpoints.
 from __future__ import annotations
 
 from configparser import ConfigParser
+from pathlib import Path
 
 import pytest
 
 from nyxgpt import config_wizard
 
 pytestmark = pytest.mark.unit
+
+_EXAMPLE_CONFIG_PATH = Path(__file__).resolve().parents[2] / "example.config.ini"
 
 
 def _cfg(**sections: dict[str, str]) -> ConfigParser:
@@ -269,19 +273,254 @@ def test_apply_updates_creates_file_when_missing(tmp_path):
     assert cfg_path.exists()
 
 
-def test_schema_summary_covers_every_section():
+def test_schema_summary_covers_every_non_excluded_section():
+    """Guards against #3388's original bug: the wizard silently only covering a subset."""
+    parser = ConfigParser()
+    parser.optionxform = str
+    parser.read(_EXAMPLE_CONFIG_PATH, encoding="utf-8")
+
     summary = config_wizard.schema_summary()
     sections = {s["section"] for s in summary}
-    assert sections == {
-        "nyxgpt",
-        "logging",
-        "ollama",
-        "api",
-        "auth",
-        "rate_limit",
-        "rag",
-        "tracing",
-        "error_tracking",
-        "monitoring",
-        "log_aggregation",
-    }
+    assert sections == set(parser.sections()) - config_wizard.EXCLUDED_SECTIONS
+
+
+def test_wizard_schema_never_silently_diverges_from_example_config():
+    """A section added to example.config.ini must be rendered or explicitly excluded (#3388).
+
+    This is the regression test the issue asked for: it re-parses
+    example.config.ini directly (independent of `_build_schema`'s own
+    parsing) so a bug in derivation itself can't hide a genuine gap.
+    """
+    parser = ConfigParser()
+    parser.optionxform = str
+    parser.read(_EXAMPLE_CONFIG_PATH, encoding="utf-8")
+
+    example_sections = set(parser.sections())
+    wizard_sections = {s.section for s in config_wizard.WIZARD_SCHEMA}
+
+    accounted_for = wizard_sections | config_wizard.EXCLUDED_SECTIONS
+    missing = example_sections - accounted_for
+    assert not missing, (
+        f"example.config.ini has section(s) {sorted(missing)} that the wizard neither "
+        "renders nor explicitly excludes -- add them to WIZARD_SCHEMA (automatic, just "
+        "re-run) or to config_wizard.EXCLUDED_SECTIONS with a documented reason."
+    )
+
+
+def test_wizard_schema_covers_every_active_key_in_example_config():
+    """Every uncommented key in example.config.ini's included sections is wizard-editable."""
+    parser = ConfigParser()
+    parser.optionxform = str
+    parser.read(_EXAMPLE_CONFIG_PATH, encoding="utf-8")
+
+    for section in parser.sections():
+        if section in config_wizard.EXCLUDED_SECTIONS:
+            continue
+        spec = next(s for s in config_wizard.WIZARD_SCHEMA if s.section == section)
+        known_keys = {f.key for f in spec.fields}
+        assert known_keys == set(parser.options(section)), section
+
+
+def test_excluded_sections_are_the_documented_three():
+    assert frozenset({"paths", "openai", "github"}) == config_wizard.EXCLUDED_SECTIONS
+
+
+def test_rag_gains_full_tuning_surface_not_just_original_six_fields():
+    """The original #3354 schema only exposed 6 of [rag]'s ~45 keys (#3388's reported gap)."""
+    spec = next(s for s in config_wizard.WIZARD_SCHEMA if s.section == "rag")
+    keys = {f.key for f in spec.fields}
+    for key in ("chunk_size", "chunk_overlap", "bm25_k1", "enable_reranking", "rerank_top_n"):
+        assert key in keys
+
+
+def test_previously_absent_sections_are_now_covered():
+    covered = {s.section for s in config_wizard.WIZARD_SCHEMA}
+    for section in (
+        "cache",
+        "web",
+        "deploy",
+        "canary",
+        "batch",
+        "self_heal",
+        "context",
+        "prompt",
+        "pdf",
+    ):
+        assert section in covered
+
+
+# --- apply_updates: non-destructive, comment-preserving merge (#3388) ---
+
+_SAMPLE_USER_CONFIG = """\
+# My personal notes on this file
+[nyxgpt]
+# do not change this, it took forever to tune
+default_model = my-favorite-model
+chat_timeout_seconds = 999
+
+[paths]
+repo_dir = /Users/me/nyxGPT
+
+[openai]
+api_key = sk-hand-added-secret
+
+[github]
+pat = ghp_hand-added-token
+agents_enabled = true
+
+[mycustomsection]
+custom_key = custom_value
+
+[rag]
+enable_chat_context = true
+# a hand-added key that isn't part of any schema
+my_extra_note = keep me
+"""
+
+
+def test_apply_updates_preserves_comments_and_key_order(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text(_SAMPLE_USER_CONFIG)
+
+    config_wizard.apply_updates(cfg_path, {"nyxgpt": {"chat_timeout_seconds": 120}})
+
+    written = cfg_path.read_text()
+    assert "# My personal notes on this file" in written
+    assert "# do not change this, it took forever to tune" in written
+    assert "chat_timeout_seconds = 120" in written
+    # The untouched key stays exactly where it was, above the changed one.
+    assert written.index("default_model") < written.index("chat_timeout_seconds")
+
+
+def test_apply_updates_never_touches_excluded_sections(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text(_SAMPLE_USER_CONFIG)
+
+    config_wizard.apply_updates(cfg_path, {"nyxgpt": {"default_model": "new-model"}})
+
+    written = cfg_path.read_text()
+    parser = ConfigParser()
+    parser.read_string(written)
+    assert parser.get("paths", "repo_dir") == "/Users/me/nyxGPT"
+    assert parser.get("openai", "api_key") == "sk-hand-added-secret"
+    assert parser.get("github", "pat") == "ghp_hand-added-token"
+    assert parser.getboolean("github", "agents_enabled") is True
+
+
+def test_apply_updates_preserves_hand_added_section_and_keys(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text(_SAMPLE_USER_CONFIG)
+
+    config_wizard.apply_updates(cfg_path, {"rag": {"enable_chat_context": False}})
+
+    written = cfg_path.read_text()
+    parser = ConfigParser()
+    parser.read_string(written)
+    assert parser.get("mycustomsection", "custom_key") == "custom_value"
+    assert parser.get("rag", "my_extra_note") == "keep me"
+    assert parser.getboolean("rag", "enable_chat_context") is False
+
+
+def test_apply_updates_appends_new_key_to_existing_section(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[nyxgpt]\ndefault_model = keep-me\n")
+
+    config_wizard.apply_updates(cfg_path, {"nyxgpt": {"chat_timeout_seconds": 42}})
+
+    written = cfg_path.read_text()
+    parser = ConfigParser()
+    parser.read_string(written)
+    assert parser.get("nyxgpt", "default_model") == "keep-me"
+    assert parser.getint("nyxgpt", "chat_timeout_seconds") == 42
+
+
+def test_apply_updates_full_regression_survives_intact(tmp_path):
+    """Regression test required by #3388: excluded sections, hand-added keys, and comments
+    all survive a wizard save untouched, only the touched fields change."""
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text(_SAMPLE_USER_CONFIG)
+
+    config_wizard.apply_updates(
+        cfg_path,
+        {"nyxgpt": {"default_model": "updated-model"}, "rag": {"enable_chat_context": False}},
+    )
+
+    written = cfg_path.read_text()
+    assert "# My personal notes on this file" in written
+    assert "# do not change this, it took forever to tune" in written
+    assert "my_extra_note = keep me" in written
+
+    parser = ConfigParser()
+    parser.read_string(written)
+    assert parser.get("nyxgpt", "default_model") == "updated-model"
+    assert parser.getboolean("rag", "enable_chat_context") is False
+    assert parser.get("paths", "repo_dir") == "/Users/me/nyxGPT"
+    assert parser.get("openai", "api_key") == "sk-hand-added-secret"
+    assert parser.get("github", "pat") == "ghp_hand-added-token"
+    assert parser.get("mycustomsection", "custom_key") == "custom_value"
+
+
+# --- find_stale_keys / remove_keys (drift reconciliation, #3388) ---
+
+
+def test_find_stale_keys_reports_unknown_key_in_managed_section():
+    cfg = _cfg(nyxgpt={"default_model": "a", "totally_made_up_key": "x"})
+    stale = config_wizard.find_stale_keys(cfg)
+    assert stale["nyxgpt"] == ["totally_made_up_key"]
+
+
+def test_find_stale_keys_ignores_known_fields():
+    cfg = _cfg(nyxgpt={"default_model": "a"})
+    stale = config_wizard.find_stale_keys(cfg)
+    assert "nyxgpt" not in stale
+
+
+def test_find_stale_keys_ignores_excluded_sections():
+    cfg = _cfg(paths={"repo_dir": "/x"}, openai={"api_key": "y"})
+    stale = config_wizard.find_stale_keys(cfg)
+    assert stale == {}
+
+
+def test_find_stale_keys_ignores_sections_absent_entirely():
+    cfg = _cfg()
+    assert config_wizard.find_stale_keys(cfg) == {}
+
+
+def test_remove_keys_deletes_only_the_named_stale_key(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text(
+        "[nyxgpt]\ndefault_model = keep-me\nretired_option = old\n\n[paths]\nrepo_dir = /x\n"
+    )
+
+    removed = config_wizard.remove_keys(cfg_path, {"nyxgpt": ["retired_option"]})
+
+    assert removed == {"nyxgpt": ["retired_option"]}
+    parser = ConfigParser()
+    parser.read(cfg_path)
+    assert parser.get("nyxgpt", "default_model") == "keep-me"
+    assert not parser.has_option("nyxgpt", "retired_option")
+    assert parser.get("paths", "repo_dir") == "/x"
+
+
+def test_remove_keys_is_noop_for_key_that_does_not_exist(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    cfg_path.write_text("[nyxgpt]\ndefault_model = keep-me\n")
+
+    removed = config_wizard.remove_keys(cfg_path, {"nyxgpt": ["does_not_exist"]})
+
+    assert removed == {}
+    assert cfg_path.read_text() == "[nyxgpt]\ndefault_model = keep-me\n"
+
+
+def test_remove_keys_noop_when_file_missing(tmp_path):
+    cfg_path = tmp_path / "config.ini"
+    assert config_wizard.remove_keys(cfg_path, {"nyxgpt": ["x"]}) == {}
+    assert not cfg_path.exists()
+
+
+def test_apply_updates_never_deletes_anything():
+    """`apply_updates` has no `remove` parameter at all -- a save can only add/update."""
+    import inspect
+
+    sig = inspect.signature(config_wizard.apply_updates)
+    assert "remove" not in sig.parameters

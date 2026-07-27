@@ -49,14 +49,33 @@ and service paths — see the section reference below.
 
 ### Option 3: Web Configuration Wizard (edit an existing install)
 
-Once nyxGPT is running, `/admin` in the web UI is a five-step **Configuration
-Wizard** that covers every section below without hand-editing `config.ini`:
-Core & Model (`[nyxgpt]`, `[logging]`, `[ollama]`), RAG Configuration
-(`[rag]`'s chat toggle and Cassandra connection), API & Auth (`[api]`,
-`[auth]`, `[rate_limit]`), Observability (`[tracing]`, `[error_tracking]`,
-`[monitoring]`, `[log_aggregation]`), and a Summary/save step. (Live resource
-metrics moved to Settings → Resource Usage and the admin dashboard, #3384.)
+Once nyxGPT is running, `/admin` in the web UI is a six-step **Configuration
+Wizard**: Core & Model (`[nyxgpt]`, `[logging]`, `[ollama]`), RAG
+Configuration (`[rag]`'s chat toggle and Cassandra connection), API & Auth
+(`[api]`, `[auth]`, `[rate_limit]`), Observability (`[tracing]`,
+`[error_tracking]`, `[monitoring]`, `[log_aggregation]`), **Additional
+Settings**, and a Summary/save step. (Live resource metrics moved to
+Settings → Resource Usage and the admin dashboard, #3384.)
 
+- **The wizard's field list is *derived* from `example.config.ini`, not
+  hand-maintained (#3388).** `src/nyxgpt/config_wizard.py` parses
+  `example.config.ini` at startup and builds its schema from every section
+  and key it declares, so a new config option automatically appears in the
+  wizard the moment it's added to the example file -- the two can never
+  silently drift apart the way the original hand-maintained schema did.
+  Fields with an established, purpose-built widget elsewhere in the wizard
+  (e.g. the RAG step's Cassandra fields) keep that widget; everything else
+  renders generically on the **Additional Settings** step, grouped by topic
+  (core behavior; API & network; RAG, retrieval & caching -- `[rag]`,
+  `[context]`, `[pdf]`, `[cache]` together; observability & self-heal;
+  Kubernetes deployment), with its type (checkbox/number/text/secret)
+  inferred from the value declared in `example.config.ini`.
+- **Three sections are deliberately excluded:** `[paths]`, `[openai]`, and
+  `[github]` are agent-level concerns, not nyxGPT user options -- edit those
+  by hand in `config.ini` if you need them. (`[openai]` will return to the
+  wizard once external commercial LLM support ships.) Every other section is
+  in scope; when in doubt the wizard covers a section rather than excluding
+  it.
 - **Every field shows its *effective* value, never a blank box.** A key
   absent from `config.ini` renders the same fallback value its `config.py`
   getter would use at runtime (e.g. `[tracing] service_name` shows
@@ -68,15 +87,27 @@ metrics moved to Settings → Resource Usage and the admin dashboard, #3384.)
   a badged field leaves it unset in `config.ini` -- it keeps tracking future
   changes to that default instead of freezing today's value in as an
   explicit setting (#3385).
+- **Save merges into `config.ini`; it never rewrites the whole file
+  (#3388).** Saving updates or adds only the specific keys you changed at
+  the line level, so comments, key order, and any section or key the wizard
+  doesn't manage -- including the excluded `[paths]`/`[openai]`/`[github]`
+  and anything you hand-added -- survive a save byte-for-byte. A key is
+  never deleted by a regular save.
+- **Drift reconciliation.** If `config.ini` has a key inside a wizard-managed
+  section that's no longer declared in `example.config.ini` (a retired
+  option, or something added outside the wizard), the Additional Settings
+  step shows it in a "no longer recognized" banner with a **Remove** button
+  per key -- nothing is ever deleted automatically, only on your
+  confirmation.
 - **Save is apply-on-save, not just a file write.** Saving validates every
   changed field (ports, URLs, hosts), writes `config.ini` (still the single
   source of truth, #3194), and immediately invalidates the API's config
   cache so hot-reloadable settings (model, RAG, logging, auth)
   take effect on the very next request — no restart needed for those.
 - **Settings that can't be hot-reloaded** — `[api] host`/`port`, the RAG
-  Cassandra connection/embedding model, and anything read only at process
-  startup (tracing, error tracking, rate limiting) — are reported back as
-  `restart_required` in the save response. The wizard then offers a
+  Cassandra connection/embedding model, embedding/response/query cache
+  backends, and anything else read only at process startup — are reported
+  back as `restart_required` in the save response. The wizard then offers a
   **Restart** button per affected component, which wraps `nyxgpt ops
   restart` (see [`docs/api.md`](api.md#config-wizard)) — you never need to
   run a restart command yourself.
@@ -86,10 +117,11 @@ metrics moved to Settings → Resource Usage and the admin dashboard, #3384.)
   observability` does (and tears it down the same way `nyxgpt ops stop
   --target observability` does when all four are disabled) — so enabling a
   stack in the wizard results in a working dashboard, not a dangling flag.
-- **Secrets are never echoed back.** `[auth] api_key` and `[error_tracking]
-  dsn` are shown as "set" plus a masked preview (e.g. `abcd****wxyz`); the
-  wizard's input for these is always blank, and leaving it blank on save
-  keeps the existing value. Only typing a new value rotates it.
+- **Secrets are never echoed back.** `[auth] api_key`, `[error_tracking]
+  dsn`/`admin_password`, and `[monitoring] grafana_admin_password` are shown
+  as "set" plus a masked preview (e.g. `abcd****wxyz`); the wizard's input
+  for these is always blank, and leaving it blank on save keeps the existing
+  value. Only typing a new value rotates it.
 - **Single-user scope.** The wizard edits one global `config.ini` — there is
   no per-session configuration.
 

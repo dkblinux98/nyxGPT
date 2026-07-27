@@ -180,3 +180,74 @@ def test_restart_endpoint_defaults_to_all(_isolated_config):
         resp = client.post("/api/v1/config/restart", json={})
     assert resp.status_code == 200
     assert resp.json()["target"] == "all"
+
+
+# --- Drift reconciliation: stale_keys + POST /config/sections/stale-keys/remove (#3388) ---
+
+
+def test_get_sections_reports_no_stale_keys_for_clean_config(_isolated_config):
+    client = TestClient(app)
+    resp = client.get("/api/v1/config/sections")
+    assert resp.status_code == 200
+    assert resp.json()["stale_keys"] == {}
+
+
+def test_get_sections_reports_stale_key(_isolated_config):
+    _isolated_config.write_text(
+        "[ollama]\nbase_url = http://localhost:11434\n\n"
+        "[nyxgpt]\ndefault_model = a\nretired_option = old\n"
+    )
+    client = TestClient(app)
+    resp = client.get("/api/v1/config/sections")
+    assert resp.status_code == 200
+    assert resp.json()["stale_keys"] == {"nyxgpt": ["retired_option"]}
+
+
+def test_get_sections_never_reports_excluded_section_keys_as_stale(_isolated_config):
+    _isolated_config.write_text(
+        "[ollama]\nbase_url = http://localhost:11434\n\n[openai]\napi_key = sk-whatever\n"
+    )
+    client = TestClient(app)
+    resp = client.get("/api/v1/config/sections")
+    assert resp.status_code == 200
+    assert resp.json()["stale_keys"] == {}
+
+
+def test_stale_keys_remove_deletes_confirmed_key(_isolated_config):
+    _isolated_config.write_text(
+        "[ollama]\nbase_url = http://localhost:11434\n\n"
+        "[nyxgpt]\ndefault_model = a\nretired_option = old\n"
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/config/sections/stale-keys/remove",
+        json={"remove": {"nyxgpt": ["retired_option"]}},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["removed"] == {"nyxgpt": ["retired_option"]}
+    assert data["stale_keys"] == {}
+
+    written = _isolated_config.read_text()
+    assert "retired_option" not in written
+    assert "default_model = a" in written
+
+
+def test_stale_keys_remove_ignores_keys_not_actually_stale(_isolated_config):
+    """Can't be used to delete a real managed field -- only what find_stale_keys reports."""
+    client = TestClient(app)
+    resp = client.post(
+        "/api/v1/config/sections/stale-keys/remove",
+        json={"remove": {"nyxgpt": ["default_model"]}},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["removed"] == {}
+    written = _isolated_config.read_text()
+    assert "[ollama]" in written
+
+
+def test_stale_keys_remove_rejects_non_object_payload(_isolated_config):
+    client = TestClient(app)
+    resp = client.post("/api/v1/config/sections/stale-keys/remove", json={"remove": "nope"})
+    assert resp.status_code == 400

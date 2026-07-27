@@ -561,7 +561,10 @@ Partial configuration update (same as POST, provided for semantic clarity).
 
 These endpoints back the full Configuration Wizard at `/admin` (#3354),
 which covers every section below rather than the four hot fields
-`GET`/`POST /api/v1/config` expose. See
+`GET`/`POST /api/v1/config` expose. The schema itself is *derived* from
+`example.config.ini` (#3388, `src/nyxgpt/config_wizard.py`) rather than
+hand-maintained here, so it always covers every section except the
+deliberately excluded `paths`/`openai`/`github` (agent-level concerns). See
 [`docs/configuration.md`](configuration.md#option-3-web-configuration-wizard-edit-an-existing-install)
 for the wizard's step-by-step behavior.
 
@@ -569,10 +572,13 @@ for the wizard's step-by-step behavior.
 
 Returns the current value of every wizard-editable field, grouped by
 section, plus schema metadata (which fields are secret, and which need a
-restart or observability reconciliation). Secret fields (`auth.api_key`,
-`error_tracking.dsn`) are never returned in cleartext.
+restart or observability reconciliation) and `stale_keys` (config.ini drift
+-- keys present on disk but no longer declared in `example.config.ini`).
+Secret fields (`auth.api_key`, `error_tracking.dsn`, `error_tracking.
+admin_password`, `monitoring.grafana_admin_password`, ...) are never
+returned in cleartext.
 
-**Response (abbreviated):**
+**Response (abbreviated -- the real response covers all ~20 sections):**
 
 ```json
 {
@@ -583,27 +589,33 @@ restart or observability reconciliation). Secret fields (`auth.api_key`,
     "api": { "host": "127.0.0.1", "port": "8000" },
     "auth": { "enabled": "false", "header": "X-API-Key", "api_key": { "set": false, "masked": null } },
     "rate_limit": { "enabled": "false" },
-    "rag": { "enable_chat_context": "false", "cassandra_hosts": "127.0.0.1", "cassandra_port": "9042", "cassandra_keyspace": "nyxgpt", "cassandra_table": "rag_chunks", "embedding_model": "nomic-embed-text" },
+    "rag": { "enable_chat_context": "false", "cassandra_hosts": "127.0.0.1", "cassandra_port": "9042", "cassandra_keyspace": "nyxgpt", "cassandra_table": "rag_chunks", "embedding_model": "nomic-embed-text", "...": "and ~40 more chunking/retrieval/reranking fields" },
     "tracing": { "enabled": "false", "service_name": "nyxgpt-api", "otlp_endpoint": "http://localhost:4318/v1/traces" },
     "error_tracking": { "enabled": "false", "dsn": { "set": false, "masked": null }, "environment": "development" },
     "monitoring": { "enabled": "false" },
-    "log_aggregation": { "enabled": "false" }
+    "log_aggregation": { "enabled": "false" },
+    "cache": { "embedding_cache_enabled": "false", "...": "and 14 more cache fields" }
   },
   "schema": [
     { "section": "api", "label": "API server", "fields": [
       { "key": "host", "secret": false, "restart_component": "api", "observability": false },
       { "key": "port", "secret": false, "restart_component": "api", "observability": false }
     ] }
-  ]
+  ],
+  "stale_keys": {}
 }
 ```
 
 ### `POST /api/v1/config/sections`
 
-Validates and applies a `{section: {key: value}}` payload, writes
-`config.ini`, invalidates the hot-reload cache, and — if any observability
-`enabled` flag changed — reconciles the Compose stack. An empty-string
-secret value means "leave unchanged"; anything else rotates it.
+Validates and applies a `{section: {key: value}}` payload, then **merges**
+it into `config.ini` at the line level (`config_wizard.apply_updates`) --
+only the touched keys are updated or added; comments, key order, and any
+key the payload doesn't mention are left exactly as they were (#3388). Also
+invalidates the hot-reload cache, and — if any observability `enabled` flag
+changed — reconciles the Compose stack. An empty-string secret value means
+"leave unchanged"; anything else rotates it. This endpoint never deletes a
+key -- see `POST /api/v1/config/sections/stale-keys/remove` below.
 
 **Request:**
 
@@ -632,6 +644,30 @@ secret value means "leave unchanged"; anything else rotates it.
 Returns `422` with `error.details.errors` (a list of `"section.key: reason"`
 strings) if any field fails validation, and `400` if the payload contains no
 valid fields.
+
+### `POST /api/v1/config/sections/stale-keys/remove`
+
+Deletes specific keys the `GET` endpoint's `stale_keys` reported -- the
+only path that can ever remove anything from `config.ini` (#3388). Keys not
+currently reported as stale are silently ignored, so this can't be used to
+delete a real managed field. Removal is a targeted line deletion, same as
+the save merge -- everything else in the file is untouched.
+
+**Request:**
+
+```json
+{ "remove": { "nyxgpt": ["retired_option"] } }
+```
+
+**Response:**
+
+```json
+{
+  "removed": { "nyxgpt": ["retired_option"] },
+  "sections": { "...": "full updated sections, same shape as GET" },
+  "stale_keys": {}
+}
+```
 
 ### `POST /api/v1/config/restart`
 
