@@ -531,18 +531,19 @@ jobs:
           # limit. Label the PR usage-limit-retry with a retry-after marker;
           # the usage_limit_retry.yml cron re-requests the review agent once
           # the ~5h window has reset.
+          #
+          # count_fast_claude_steps requires the matching step's own
+          # conclusion to be "failure" and excludes skipped/"Post *" steps —
+          # without that, the auto-generated "Post Run Claude Code Review"
+          # cleanup step (near-zero duration, name matches "claude") made
+          # this fire on every failure regardless of cause (#3360).
+          source scripts/agents/lib/gh_project.sh
           [ -z "$PR" ] && exit 0
 
           JOBS_JSON=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" 2>/dev/null)
           [ -z "$JOBS_JSON" ] && exit 0
 
-          FAST_CLAUDE_STEPS=$(echo "$JOBS_JSON" | jq -r '
-            [.jobs[].steps[]?
-             | select(.name | test("claude"; "i"))
-             | select(.started_at != null and .completed_at != null)
-             | ((.completed_at | fromdateiso8601) - (.started_at | fromdateiso8601))
-             | select(. >= 0 and . < 90)
-            ] | length' 2>/dev/null)
+          FAST_CLAUDE_STEPS=$(count_fast_claude_steps "$JOBS_JSON" "Run Claude Code Review" true)
           [ -z "$FAST_CLAUDE_STEPS" ] && FAST_CLAUDE_STEPS=0
 
           if [ "$FAST_CLAUDE_STEPS" -lt 1 ]; then
