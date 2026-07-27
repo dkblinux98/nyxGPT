@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
@@ -1352,5 +1352,164 @@ describe('AdminPage Component', () => {
       },
       { timeout: 3000 }
     );
+  });
+
+  describe('Cancel action (#3387)', () => {
+    beforeEach(() => {
+      global.confirm = vi.fn();
+    });
+
+    afterEach(() => {
+      // Cancel is a real <a href> so an un-prevented click actually
+      // navigates in happy-dom; restore the URL so it can't leak into
+      // later tests in this file.
+      window.history.replaceState(null, '', '/');
+    });
+
+    it('links to the Admin Dashboard and exits without prompting when there are no unsaved changes', async () => {
+      render(<AdminPage />);
+      await waitFor(() => screen.getByLabelText('Default Model'));
+
+      const cancelLink = screen.getByRole('link', { name: /cancel/i });
+      expect(cancelLink).toHaveAttribute('href', '/admin/dashboard');
+
+      const notPrevented = fireEvent.click(cancelLink);
+
+      expect(global.confirm).not.toHaveBeenCalled();
+      expect(notPrevented).toBe(true);
+    });
+
+    it('is reachable from every step of the wizard', async () => {
+      render(<AdminPage />);
+      await waitFor(() => screen.getByLabelText('Default Model'));
+      expect(screen.getByRole('link', { name: /cancel/i })).toBeInTheDocument();
+
+      await selectModelAndClickNext(1);
+      expect(screen.getByRole('heading', { name: 'RAG Configuration' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /cancel/i })).toBeInTheDocument();
+
+      await clickNext(1);
+      expect(screen.getByRole('heading', { name: 'API & Auth' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /cancel/i })).toBeInTheDocument();
+
+      await clickNext(1);
+      expect(screen.getByRole('heading', { name: 'Observability' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /cancel/i })).toBeInTheDocument();
+
+      await clickNext(1);
+      expect(screen.getByRole('heading', { name: 'Review Configuration' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: /cancel/i })).toBeInTheDocument();
+    });
+
+    it('prompts before discarding unsaved changes and writes nothing on confirm', async () => {
+      let saveCalled = false;
+      server.use(
+        http.post('/api/v1/config/sections', async () => {
+          saveCalled = true;
+          return HttpResponse.json({});
+        })
+      );
+      global.confirm = vi.fn().mockReturnValue(true);
+
+      render(<AdminPage />);
+      await waitFor(() => screen.getByLabelText('Default Model'));
+      fireEvent.change(screen.getByLabelText('Default Model'), {
+        target: { value: 'llama3.1:8b' },
+      });
+      await waitFor(() => {
+        expect(screen.getByLabelText('Default Model')).toHaveValue('llama3.1:8b');
+      });
+
+      const cancelLink = screen.getByRole('link', { name: /cancel/i });
+      const notPrevented = fireEvent.click(cancelLink);
+
+      expect(global.confirm).toHaveBeenCalledWith(
+        expect.stringContaining('unsaved changes')
+      );
+      expect(notPrevented).toBe(true);
+      expect(saveCalled).toBe(false);
+    });
+
+    it('stays on the wizard with edits intact when the confirmation is dismissed', async () => {
+      global.confirm = vi.fn().mockReturnValue(false);
+
+      render(<AdminPage />);
+      await waitFor(() => screen.getByLabelText('Default Model'));
+      fireEvent.change(screen.getByLabelText('Default Model'), {
+        target: { value: 'llama3.1:8b' },
+      });
+      await waitFor(() => {
+        expect(screen.getByLabelText('Default Model')).toHaveValue('llama3.1:8b');
+      });
+
+      const cancelLink = screen.getByRole('link', { name: /cancel/i });
+      const notPrevented = fireEvent.click(cancelLink);
+
+      expect(global.confirm).toHaveBeenCalled();
+      expect(notPrevented).toBe(false);
+      expect(screen.getByRole('heading', { name: 'Core & Model' })).toBeInTheDocument();
+      expect(screen.getByLabelText('Default Model')).toHaveValue('llama3.1:8b');
+    });
+
+    it('disables Cancel while a save is in progress', async () => {
+      server.use(
+        http.post('/api/v1/config/sections', async () => {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          return HttpResponse.json({
+            applied: {},
+            sections: {
+              nyxgpt: {
+                default_model: 'llama3.1:8b',
+                chat_timeout_seconds: '120',
+                sessions_dir: '',
+                vectorstore_dir: '',
+              },
+              logging: { level: 'INFO', dir: '' },
+              ollama: { base_url: 'http://127.0.0.1:11434' },
+              api: { host: '127.0.0.1', port: '8000' },
+              auth: { enabled: 'false', header: 'X-API-Key', api_key: { set: false, masked: null } },
+              rate_limit: { enabled: 'false' },
+              rag: {
+                enable_chat_context: 'false',
+                cassandra_hosts: '127.0.0.1',
+                cassandra_port: '9042',
+                cassandra_keyspace: 'nyxgpt',
+                cassandra_table: 'rag_chunks',
+                embedding_model: 'nomic-embed-text',
+              },
+              tracing: { enabled: 'false', service_name: '', otlp_endpoint: '' },
+              error_tracking: { enabled: 'false', dsn: { set: false, masked: null }, environment: '' },
+              monitoring: { enabled: 'false' },
+              log_aggregation: { enabled: 'false' },
+            },
+            restart_required: [],
+            observability_reconciled: false,
+            observability_result: null,
+          });
+        })
+      );
+
+      render(<AdminPage />);
+      await selectModelAndClickNext(4);
+
+      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /saving/i })).toBeInTheDocument();
+      });
+
+      const cancelLink = screen.getByRole('link', { name: /cancel/i });
+      expect(cancelLink).toHaveAttribute('aria-disabled', 'true');
+      const notPrevented = fireEvent.click(cancelLink);
+
+      expect(global.confirm).not.toHaveBeenCalled();
+      expect(notPrevented).toBe(false);
+
+      await waitFor(
+        () => {
+          expect(screen.getByText(/configuration saved and applied/i)).toBeInTheDocument();
+        },
+        { timeout: 3000 }
+      );
+    });
   });
 });
