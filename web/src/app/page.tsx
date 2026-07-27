@@ -1306,86 +1306,6 @@ function Home() {
                     <span>Dashboard</span>
                   </a>
 
-                  {/* Configuration Wizard */}
-                  <a
-                    href="/admin"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      padding: '8px 16px 8px 32px',
-                      textDecoration: 'none',
-                      color: 'var(--foreground)',
-                      fontSize: 14,
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                    onClick={() => setShowSettingsMenu(false)}
-                  >
-                    <span>🧙</span>
-                    <span>Configuration Wizard</span>
-                  </a>
-
-                  {/* Resource Usage */}
-                  <a
-                    href="/settings"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      padding: '8px 16px 8px 32px',
-                      textDecoration: 'none',
-                      color: 'var(--foreground)',
-                      fontSize: 14,
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                    onClick={() => setShowSettingsMenu(false)}
-                  >
-                    <span>📊</span>
-                    <span>Resource Usage</span>
-                  </a>
-
-                  {/* Usage Analytics */}
-                  <a
-                    href="/admin/analytics"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      padding: '8px 16px 8px 32px',
-                      textDecoration: 'none',
-                      color: 'var(--foreground)',
-                      fontSize: 14,
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                    onClick={() => setShowSettingsMenu(false)}
-                  >
-                    <span>📈</span>
-                    <span>Usage Analytics</span>
-                  </a>
-
-                  {/* Observability */}
-                  <a
-                    href="/admin/observability"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      padding: '8px 16px 8px 32px',
-                      textDecoration: 'none',
-                      color: 'var(--foreground)',
-                      fontSize: 14,
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                    onClick={() => setShowSettingsMenu(false)}
-                  >
-                    <span>👁️</span>
-                    <span>Observability</span>
-                  </a>
-
                   {/* Manage Models */}
                   <a
                     href="/models"
@@ -1444,46 +1364,6 @@ function Home() {
                   >
                     <span>🧪</span>
                     <span>RAG Playground</span>
-                  </a>
-
-                  {/* Blue/Green Deployment */}
-                  <a
-                    href="/admin/deploy"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      padding: '8px 16px 8px 32px',
-                      textDecoration: 'none',
-                      color: 'var(--foreground)',
-                      fontSize: 14,
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                    onClick={() => setShowSettingsMenu(false)}
-                  >
-                    <span>🚀</span>
-                    <span>Deployment</span>
-                  </a>
-
-                  {/* Canary Deployment */}
-                  <a
-                    href="/admin/canary"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      padding: '8px 16px 8px 32px',
-                      textDecoration: 'none',
-                      color: 'var(--foreground)',
-                      fontSize: 14,
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--button-hover)')}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                    onClick={() => setShowSettingsMenu(false)}
-                  >
-                    <span>🐤</span>
-                    <span>Canary Rollout</span>
                   </a>
                 </div>
               )}

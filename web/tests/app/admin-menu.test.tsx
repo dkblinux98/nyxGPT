@@ -63,7 +63,7 @@ describe('Chat page Admin menu', () => {
 
     // Nested items aren't in the document until the group is expanded.
     expect(screen.queryByRole('link', { name: /dashboard/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /observability/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /manage models/i })).not.toBeInTheDocument();
 
     await user.click(adminToggle);
     expect(adminToggle).toHaveAttribute('aria-expanded', 'true');
@@ -75,23 +75,22 @@ describe('Chat page Admin menu', () => {
     const dashboardLink = screen.getByRole('link', { name: /dashboard/i });
     expect(dashboardLink).toHaveAttribute('href', '/admin/dashboard');
 
-    // Observability links to the new submenu page.
-    const observabilityLink = screen.getByRole('link', { name: /observability/i });
-    expect(observabilityLink).toHaveAttribute('href', '/admin/observability');
-
-    // The rest of the admin/ops surface is still reachable, nested under Admin.
+    // The submenu is slimmed to the dashboard plus the three day-to-day
+    // user tools; the wizard/analytics/observability/deploy/canary shortcuts
+    // are reachable via the Admin Dashboard instead (issue #3396).
     expect(hrefs).toEqual(
-      expect.arrayContaining([
-        '/admin',
-        '/settings',
-        '/admin/analytics',
-        '/models',
-        '/admin/collections',
-        '/admin/playground',
-        '/admin/deploy',
-        '/admin/canary',
-      ])
+      expect.arrayContaining(['/admin/dashboard', '/models', '/admin/collections', '/admin/playground'])
     );
+    for (const removedHref of [
+      '/admin',
+      '/settings',
+      '/admin/analytics',
+      '/admin/observability',
+      '/admin/deploy',
+      '/admin/canary',
+    ]) {
+      expect(hrefs).not.toContain(removedHref);
+    }
   });
 
   it('keeps Theme as its own separate section outside the Admin group', async () => {

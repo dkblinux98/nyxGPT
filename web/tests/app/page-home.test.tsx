@@ -607,18 +607,7 @@ describe('Home page — settings menu and theme', () => {
     await screen.findByText('Second Chat');
     const user = userEvent.setup();
 
-    const labels = [
-      'Dashboard',
-      'Configuration Wizard',
-      'Resource Usage',
-      'Usage Analytics',
-      'Observability',
-      'Manage Models',
-      'RAG Collections',
-      'RAG Playground',
-      'Deployment',
-      'Canary',
-    ];
+    const labels = ['Dashboard', 'Manage Models', 'RAG Collections', 'RAG Playground'];
     for (const label of labels) {
       await user.click(screen.getByRole('button', { name: /settings/i }));
       const adminToggle = await screen.findByRole('button', { name: /admin/i });
