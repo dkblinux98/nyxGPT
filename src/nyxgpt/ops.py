@@ -1716,6 +1716,11 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
         ("migrate legacy volumes", migrate_legacy_volumes),
         ("terraform binary", _ensure_terraform_binary),
         ("terraform tfvars", lambda: _ensure_terraform_tfvars(api_key)),
+        # Must run before apply: terraform/main.tf bind-mounts
+        # docker/config.docker.ini into the api container (same pattern as
+        # docker-compose.yml), so the derived file has to exist first or
+        # Docker creates an empty directory in its place.
+        ("compose config file", _ensure_compose_config_file),
         ("terraform init/plan/apply", _terraform_init_plan_apply),
     ]
     for step_name, fn in steps:

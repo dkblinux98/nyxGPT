@@ -5509,6 +5509,7 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok) as b,
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
+        patch.object(ops, "_ensure_compose_config_file", return_value=ok) as c,
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok) as a,
         patch.object(ops, "_terraform_stack_health", return_value=ok) as h,
     ):
@@ -5516,6 +5517,9 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
     assert rc == 0
     b.assert_called_once()
     t.assert_called_once_with("k")
+    # The Terraform path must seed docker/config.docker.ini before apply --
+    # main.tf bind-mounts it, same as docker-compose.yml (regression: #3398).
+    c.assert_called_once()
     a.assert_called_once()
     h.assert_called_once()
     assert "[OK]" in capsys.readouterr().out

@@ -172,9 +172,11 @@ docker compose up --build
 ```
 
 (For a quick one-off evaluation without installing the `nyxgpt` CLI locally,
-you can instead edit `.env` directly and set a real `NYXGPT_AUTH_API_KEY` —
-but then config.ini and `.env` are no longer in sync, so prefer the flow
-above for anything longer-lived.)
+you can instead `cp docker/config.docker.ini.example docker/config.docker.ini`
+and edit `.env` directly with a real `NYXGPT_AUTH_API_KEY` — the `cp` is
+required because this path skips `nyxgpt ops env-sync`, which is what otherwise
+seeds that git-ignored, bind-mounted file. Note config.ini and `.env` are then
+no longer in sync, so prefer the flow above for anything longer-lived.)
 
 First boot takes a few minutes: Cassandra needs time to become healthy and
 Ollama needs models. Once `ollama` is up, pull the default chat model and
