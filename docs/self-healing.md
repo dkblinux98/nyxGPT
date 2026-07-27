@@ -91,8 +91,8 @@ If a section is enabled, its Compose services (resolved via `docker compose
 `cassandra` services excluded — see [Known limitation: the core
 stack](#known-limitation-the-core-stack) below — and one-shot services like
 `glitchtip-migrate` excluded too, since they're never "desired but absent")
-are **desired**. Any desired
-service missing from `docker compose ps -a`'s output is reported with
+are **desired**. Any desired service missing from `docker compose ps -a`'s
+output is reported with
 `state: "absent"` (`healthy: false`) instead of not appearing at all, and is
 healed via `docker compose --profile ... up -d <service>` rather than
 `restart` — there's no container to restart. This is the same set of checks
@@ -120,6 +120,15 @@ force it, the same override backoff/max-restarts already get), it's
 excluded from the "N unhealthy" count, and the dashboard shows a
 **Disabled** badge with the reason ("profile disabled in config, not
 auto-healed") instead of a plain **Unhealthy**.
+
+This `desired: false` reconciliation also applies to a one-shot service that
+genuinely failed (non-zero exit, so it's still present): disabling its
+profile still flags it `desired: false` rather than leaving it stuck
+`desired: true` and repeatedly restarted, because the internal check for
+"does this present-but-undesired service belong to *some* observability
+profile" resolves the full one-shot-inclusive service set for that lookup
+specifically, even though one-shot services are excluded everywhere else
+(#3381).
 
 ### Known limitation: the core stack
 
