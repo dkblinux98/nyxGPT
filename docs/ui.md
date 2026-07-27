@@ -217,7 +217,7 @@ The web UI includes:
 - **Usage analytics dashboard** (`/admin/analytics`) — total/per-model/per-day request and token breakdowns from recorded chat usage, with JSON/CSV report export (see [API — Usage Analytics](api.md#usage-analytics))
 - **Model management** page (`/models`) for pulling, deleting, and viewing Ollama models
 - **Configuration wizard** (`/admin`) covering every `config.ini` section (core/model, RAG, API & auth, observability) with apply-on-save reload and a restart offer for settings that need one
-- **Log viewer** (`/admin/logs`) for viewing and searching application logs
+- **Log Aggregation** (`/admin/observability`) — curated Grafana/Loki queries and Explore links for searching application logs (see [Log Aggregation](docker-compose.md#log-aggregation))
 - **Mobile-responsive layout** — the session sidebar collapses into a dismissible overlay below the `useIsMobile` breakpoint (768px), chat controls grow to touch-friendly tap targets, and inputs use a 16px minimum font size to prevent iOS Safari's auto-zoom-on-focus
 - **Keyboard shortcuts** for productivity:
   - `Cmd/Ctrl+K` — Create new chat
@@ -339,7 +339,7 @@ Settings has a `← Back to Admin Dashboard` link to `/admin/dashboard`, the sam
 
 Click **⚙️ Settings** at the bottom of the sidebar to open the navigation menu that gates every admin/ops destination:
 
-- **Admin** — a collapsible group. Clicking it expands in place (chevron rotates) to reveal: Dashboard, Configuration Wizard, Resource Usage, View Logs, Usage Analytics, [Observability](docker-compose.md#monitoring-dashboards) (SRE overview), Manage Models, RAG Collections, RAG Playground, Deployment, and Canary Rollout. The group stays open until you click a link, click outside the menu, or press `Escape` — clicking **Admin** itself only toggles the submenu and never closes the menu.
+- **Admin** — a collapsible group. Clicking it expands in place (chevron rotates) to reveal: Dashboard, Configuration Wizard, Resource Usage, Usage Analytics, [Observability](docker-compose.md#monitoring-dashboards) (SRE overview, including log aggregation), Manage Models, RAG Collections, RAG Playground, Deployment, and Canary Rollout. The group stays open until you click a link, click outside the menu, or press `Escape` — clicking **Admin** itself only toggles the submenu and never closes the menu.
 - **Theme** — Light/Dark toggle, same state as the [Settings page](#settings) appearance setting.
 
 Clicking any link navigates and closes the menu. Clicking anywhere outside the menu (tracked via a ref on the menu container, not `stopPropagation`) or pressing `Escape` closes it without navigating.
@@ -351,7 +351,7 @@ Access the dashboard at `http://127.0.0.1:3000/admin/dashboard` for an at-a-glan
 - **Status badges** — Deploy, canary, self-heal, observability, and auth status render as pill badges with a colored dot and label. The "on"/healthy state uses green; the "off"/idle state uses a gray dot and text (`var(--muted-foreground)`) that meets WCAG AA contrast against the pill background.
 - **Quick-nav tiles** — System Health, Deployment, Canary, Self-heal, SRE Overview, Usage Analytics, and Full Metrics render as a responsive card grid (driven by the exported `ADMIN_NAV` list in `web/src/app/admin/dashboard/page.tsx`). Each tile shows the destination name plus a one-line description of what that screen is for, with the same description as a hover tooltip. Tiles navigate in the same tab, carry no arrow decoration, and hover/highlight using the theme CSS variables so light and dark modes both work.
 - **Access Management** — Masked API keys wrap within their pane instead of overflowing it; revealing a key shows the full value, also wrapped.
-- **Back to Chat / raw logs links** — "← Back to Chat" and "View raw application logs →" use an underlined inline-link style (`inlineLinkStyle`) for clear affordance.
+- **Back to Chat / logs links** — "← Back to Chat" and "View logs in Log Aggregation →" use an underlined inline-link style (`inlineLinkStyle`) for clear affordance.
 
 #### Configuration Wizard
 
@@ -406,27 +406,15 @@ dangling flag.
 - If configuration fails to load, verify the API is accessible at `http://127.0.0.1:8000/health`
 - See [Troubleshooting](troubleshooting.md) for common issues
 
-#### Log Viewer
+#### Log Viewer (removed)
 
-Access the log viewer at `http://127.0.0.1:3000/admin/logs` to:
-
-- **View log files** — Browse all available log files (main log and rotated backups)
-- **Real-time filtering** — Filter by log level (DEBUG, INFO, WARNING, ERROR)
-- **Search** — Search for specific text across log entries (case-insensitive)
-- **Tail mode** — View the last N lines of a log file
-- **Auto-refresh** — Automatically reload logs at configurable intervals (1-60 seconds)
-- **Download** — Download log files for offline analysis
-- **Auto-scroll** — Automatically scroll to the newest log entries
-
-The log viewer provides a dark-themed, monospaced display optimized for reading structured log files.
-
-This page only shows nyxGPT's own log files under `~/.nyxGPT/logs` (e.g. `nyxgpt.log`) — it does
-not include logs from Ollama or other components running as separate services. To diagnose a
-model-runtime failure (e.g. a chat request that 500'd because the upstream model crashed), the
-page also links to the aggregated Grafana/Loki logs view when log aggregation is enabled (see
+The standalone raw-file log viewer (`/admin/logs`) has been removed now that the log aggregation
+stack is fixed (#3349) — it duplicated what the curated Grafana/Loki views already provide. Read
+application logs from the **Log Aggregation** panel at `/admin/observability` instead, which
+offers curated Loki queries and Explore links across all services (see
 [Log Aggregation](docker-compose.md#log-aggregation)). The chat/streaming endpoints log upstream
-Ollama errors (status, model, message) to `nyxgpt.log` before they reach the client, so
-`nyxgpt.log` is still the first place to check.
+Ollama errors (status, model, message) to `nyxgpt.log` before they reach the client, so that file
+under `~/.nyxGPT/logs` is still the first place to check if the aggregation stack itself is down.
 
 #### Virtual Scrolling (Performance Optimization)
 
