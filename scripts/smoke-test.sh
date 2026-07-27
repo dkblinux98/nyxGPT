@@ -44,6 +44,16 @@ require docker
 require curl
 require python3
 
+# docker/config.docker.ini is a git-ignored, per-machine artifact seeded from
+# its tracked .example template (see .gitignore / docs/docker-compose.md). This
+# script drives Compose directly without going through `nyxgpt ops install`, so
+# seed it here if a fresh checkout hasn't yet -- the bind mount at
+# docker-compose.yml:108 needs a real file, or Docker creates an empty dir.
+if [[ ! -f docker/config.docker.ini ]]; then
+  cp docker/config.docker.ini.example docker/config.docker.ini
+  log "Seeded docker/config.docker.ini from its .example template"
+fi
+
 NYXGPT_AUTH_API_KEY="${NYXGPT_AUTH_API_KEY:-}"
 if [[ -z "$NYXGPT_AUTH_API_KEY" && -f .env ]]; then
   NYXGPT_AUTH_API_KEY="$(sed -n 's/^NYXGPT_AUTH_API_KEY=//p' .env | tail -n1)"

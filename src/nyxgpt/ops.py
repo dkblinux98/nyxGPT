@@ -3416,8 +3416,14 @@ def env_sync(args) -> int:
     """CLI entrypoint for `nyxgpt ops env-sync`.
 
     Reads `--config`/`--env-file` overrides (if given) from `args`, then
-    derives Docker Compose's `.env` secrets from config.ini via
+    seeds the live `docker/config.docker.ini` from its template (if missing)
+    and derives Docker Compose's `.env` secrets from config.ini via
     `sync_env_from_config`, printing an OK/FAIL line per result.
+
+    Seeding the Compose config here (not just in `nyxgpt ops install`) covers
+    the Compose-only Quickstart, which runs `nyxgpt ops env-sync` before
+    `docker compose up` without going through the native install flow -- so a
+    fresh checkout gets the bind-mounted file created before Compose needs it.
 
     Returns 0 on success, else 2.
     """
@@ -3431,7 +3437,8 @@ def env_sync(args) -> int:
         extra={"component": "ops", "action": "env-sync"},
     )
 
-    results = sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
+    results = _ensure_compose_config_file()
+    results += sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
 
     ok = _emit_results("env-sync", results)
     logger.info(
@@ -3520,7 +3527,7 @@ def _persist_admin_credentials(cfg_path: Path, email: str, password: str) -> Non
     Same trust model as `[auth] api_key`: GlitchTip is loopback-only, so this
     is acceptable to store in config.ini chmod 600 -- see docs/self-healing.md.
     Only ever called with the native `~/.nyxGPT/config.ini` path, never the
-    git-tracked `docker/config.docker.ini` template.
+    derived `docker/config.docker.ini`.
     """
     parser = ConfigParser()
     parser.optionxform = str  # type: ignore[assignment]

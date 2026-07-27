@@ -1006,10 +1006,13 @@ def test_sync_env_from_config_syncs_only_the_secret_that_is_set(tmp_path, monkey
 
 
 @pytest.mark.unit
-def test_env_sync_cli_wrapper_prints_result(tmp_path, capsys):
+def test_env_sync_cli_wrapper_prints_result(tmp_path, capsys, monkeypatch):
     cfg_path = tmp_path / "config.ini"
     _write_config(cfg_path, api_key="cli-api-key", grafana_password="cli-grafana-pw")
     env_path = tmp_path / ".env"
+    compose_cfg = tmp_path / "config.docker.ini"
+    compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", compose_cfg)
 
     args = MagicMock()
     args.config = str(cfg_path)
@@ -3145,9 +3148,12 @@ def test_ops_restart_ollama_refuses_when_compose_ollama_conflicts(capsys):
 
 
 @pytest.mark.unit
-def test_env_sync_cli_wrapper_prints_details_on_failure(tmp_path, capsys):
+def test_env_sync_cli_wrapper_prints_details_on_failure(tmp_path, capsys, monkeypatch):
     cfg_path = tmp_path / "missing-config.ini"
     env_path = tmp_path / ".env"
+    compose_cfg = tmp_path / "config.docker.ini"
+    compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", compose_cfg)
 
     args = MagicMock()
     args.config = str(cfg_path)
@@ -3353,10 +3359,13 @@ def test_detect_deployment_mode_logs_conflict_at_warning(caplog, monkeypatch):
 
 
 @pytest.mark.unit
-def test_env_sync_logs_summary(caplog, tmp_path):
+def test_env_sync_logs_summary(caplog, tmp_path, monkeypatch):
     cfg_path = tmp_path / "config.ini"
     _write_config(cfg_path, api_key="cli-api-key")
     env_path = tmp_path / ".env"
+    compose_cfg = tmp_path / "config.docker.ini"
+    compose_cfg.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", compose_cfg)
 
     args = MagicMock()
     args.config = str(cfg_path)
@@ -6085,3 +6094,29 @@ def test_ensure_compose_config_file_noop_without_template(tmp_path, monkeypatch)
 
     assert all(r.ok for r in results)
     assert not live.exists()
+
+
+@pytest.mark.unit
+def test_env_sync_seeds_missing_compose_config(tmp_path, monkeypatch):
+    """`nyxgpt ops env-sync` seeds a missing docker/config.docker.ini from its
+    template -- covers the Compose-only Quickstart path (which runs env-sync
+    but not the native `nyxgpt ops install` flow)."""
+    cfg_path = tmp_path / "config.ini"
+    _write_config(cfg_path, api_key="cli-api-key")
+    env_path = tmp_path / ".env"
+    example = tmp_path / "config.docker.ini.example"
+    live = tmp_path / "config.docker.ini"
+    example.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_EXAMPLE", example)
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", live)
+
+    args = MagicMock()
+    args.config = str(cfg_path)
+    args.env_file = str(env_path)
+
+    assert not live.exists()
+    rc = ops.env_sync(args)
+
+    assert rc == 0
+    assert live.exists()
+    assert live.read_text(encoding="utf-8") == example.read_text(encoding="utf-8")

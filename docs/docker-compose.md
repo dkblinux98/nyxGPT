@@ -154,10 +154,15 @@ for the torn-down services instead.
 truth for secrets like the API key and Grafana's admin password — `.env` is
 a generated artifact derived from it, not something you maintain by hand:
 
+`docker/config.docker.ini` (the api container's mounted config) is likewise a
+generated, per-machine artifact: it is git-ignored and seeded from the tracked
+`docker/config.docker.ini.example` template. `nyxgpt ops env-sync` creates it
+below (as does `nyxgpt ops install`), so you don't copy it by hand.
+
 ```bash
 cp .env.example .env
 nyxgpt wizard      # generates config.ini with a fresh api_key + Grafana password
-nyxgpt ops env-sync  # derives .env's secret lines from config.ini
+nyxgpt ops env-sync  # derives .env from config.ini + seeds docker/config.docker.ini
 
 # Upgrading from before #3346 (named Docker volumes)? Run this first -- see
 # "Migrating from before #3346" above for why order matters here.
