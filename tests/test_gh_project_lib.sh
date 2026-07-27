@@ -185,6 +185,49 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# --- Test 7: count_fast_claude_steps ignores skipped steps and the ---
+# --- auto-generated "Post *" cleanup steps (#3360). Both report near-zero ---
+# --- durations; before this fix they always matched, so the usage-limit ---
+# --- self-heal detector misdiagnosed *every* failure as a usage-limit hit ---
+CLAUDE_STEP_PATTERN="Run Claude Code|Claude Fix Issues|Claude review fix"
+
+JOBS_ALL_SKIPPED='{"jobs":[{"steps":[
+  {"name":"Run Claude Code to implement issue (Initial)","conclusion":"skipped","started_at":"2026-07-27T00:00:00Z","completed_at":"2026-07-27T00:00:00Z"},
+  {"name":"Claude Fix Issues (Attempt 2)","conclusion":"skipped","started_at":"2026-07-27T00:00:00Z","completed_at":"2026-07-27T00:00:00Z"},
+  {"name":"Post Run Claude Code to implement issue (Initial)","conclusion":"success","started_at":"2026-07-27T00:00:01Z","completed_at":"2026-07-27T00:00:01Z"},
+  {"name":"Submit PR for review","conclusion":"failure","started_at":"2026-07-27T00:05:00Z","completed_at":"2026-07-27T00:05:01Z"}
+]}]}'
+_assert_eq "skipped/Post Claude steps never count toward the usage-limit signature" \
+  "0" "$(count_fast_claude_steps "$JOBS_ALL_SKIPPED" "$CLAUDE_STEP_PATTERN" true)"
+_assert_eq "skipped/Post Claude steps never count toward the early-cutoff signature either" \
+  "0" "$(count_fast_claude_steps "$JOBS_ALL_SKIPPED" "$CLAUDE_STEP_PATTERN" false)"
+
+JOBS_GENUINE_FAILURE='{"jobs":[{"steps":[
+  {"name":"Run Claude Code to implement issue (Initial)","conclusion":"failure","started_at":"2026-07-27T00:00:00Z","completed_at":"2026-07-27T00:00:05Z"}
+]}]}'
+_assert_eq "a genuinely fast-failing Claude step is still detected" \
+  "1" "$(count_fast_claude_steps "$JOBS_GENUINE_FAILURE" "$CLAUDE_STEP_PATTERN" true)"
+
+JOBS_LONG_RUNNING='{"jobs":[{"steps":[
+  {"name":"Run Claude Code to implement issue (Initial)","conclusion":"success","started_at":"2026-07-27T00:00:00Z","completed_at":"2026-07-27T00:05:34Z"}
+]}]}'
+_assert_eq "a genuinely long-running successful Claude step is not flagged" \
+  "0" "$(count_fast_claude_steps "$JOBS_LONG_RUNNING" "$CLAUDE_STEP_PATTERN" false)"
+
+# --- Test 8: real_label_names filters workflow-control labels so an issue ---
+# --- carrying "usage-limit-retry" can still pass the one-label invariant ---
+# --- enforced before PR submission (the #3360 deadlock) ---
+LABELS_WITH_RETRY_MARKER='[{"name":"Acceptance Failure"},{"name":"usage-limit-retry"}]'
+REAL_LABELS="$(real_label_names "$LABELS_WITH_RETRY_MARKER")"
+_assert_eq "usage-limit-retry is filtered out of the real label list" \
+  "Acceptance Failure" "$REAL_LABELS"
+_assert_eq "exactly one real label remains, satisfying the one-label invariant" \
+  "1" "$(printf '%s\n' "$REAL_LABELS" | grep -c . || true)"
+
+LABELS_NORMAL='[{"name":"Feature"}]'
+_assert_eq "a normal single-label issue is unaffected" \
+  "Feature" "$(real_label_names "$LABELS_NORMAL")"
+
 if [[ "$FAILURES" -eq 0 ]]; then
   echo "All tests passed."
   exit 0
