@@ -2,9 +2,12 @@ class NyxgptApi < Formula
   desc "nyxGPT FastAPI backend (uvicorn)"
   homepage "http://127.0.0.1:8000/docs"
   tap = Tap.fetch("dkblinux98", "nyxgpt-local")
-  url "file://#{tap.path}/dist/nyxgpt-api-1.0.0.tar.gz"
-  sha256 "5707eb01d3cf3206df71d6d829fe6c86f2cffb59f3c75648f407a6875e8a7823"
-  version "1.0.0"
+  # This file is the *source template*; url, sha256, and version are stamped
+  # with real values by `nyxgpt ops install` when it copies the formula into
+  # the local tap (see _install_homebrew_api in src/nyxgpt/ops.py).
+  url "file://#{tap.path}/dist/nyxgpt-api-__VERSION__.tar.gz"
+  sha256 "__SHA256__"
+  version "__VERSION__"
   license "MIT"
 
   def install

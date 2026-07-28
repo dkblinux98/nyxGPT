@@ -17,6 +17,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
     # Mock internal steps to all succeed
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_install_config", return_value=ok_results),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
         patch.object(ops, "_install_scripts", return_value=ok_results),
@@ -45,6 +46,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
 def test_ops_install_returns_nonzero_when_any_fail(capsys):
     mixed = [ops.OpsResult(True, "ok"), ops.OpsResult(False, "bad", "details")]
     with (
+        patch.object(ops, "_install_config", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "migrate_legacy_volumes", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(
             ops,
@@ -77,6 +79,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
 def test_ops_install_skip_observability_flag_skips_the_step(capsys):
     ok_results = [ops.OpsResult(True, "ok")]
     with (
+        patch.object(ops, "_install_config", return_value=ok_results),
         patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
         patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
         patch.object(ops, "_install_scripts", return_value=ok_results),
@@ -115,6 +118,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         return _fn
 
     with (
+        patch.object(ops, "_install_config", side_effect=_record("config")),
         patch.object(ops, "migrate_legacy_volumes", side_effect=_record("migrate volumes")),
         patch.object(
             ops, "_reconcile_phantom_compose_app_containers", side_effect=_record("reconcile")
@@ -137,8 +141,11 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
         assert rc == 0
 
-    assert call_order[0] == "migrate volumes"
-    assert call_order[1] == "reconcile"
+    # Config must come first (a fresh machine needs config.ini before any
+    # other step can act on it), then reconciliation before anything creates.
+    assert call_order[0] == "config"
+    assert call_order[1] == "migrate volumes"
+    assert call_order[2] == "reconcile"
     assert "cassandra container" in call_order
     assert "ollama service" in call_order
     assert "env sync" in call_order
@@ -1118,8 +1125,11 @@ def test_which_finds_and_misses():
 
 @pytest.mark.unit
 def test_read_project_version_missing_pyproject_returns_default(monkeypatch, tmp_path):
+    # "0.0.0" is a deliberately implausible sentinel -- an installed formula
+    # carrying it signals "version undetermined", unlike the old "1.0.0.md"
+    # typo it replaces, which looked like (and shipped as) a real version.
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
-    assert ops._read_project_version() == "1.0.0.md"
+    assert ops._read_project_version() == "0.0.0"
 
 
 @pytest.mark.unit
@@ -1129,6 +1139,66 @@ def test_read_project_version_reads_from_pyproject(monkeypatch, tmp_path):
         '[project]\nname = "nyxGPT"\nversion = "9.9.9"\n', encoding="utf-8"
     )
     assert ops._read_project_version() == "9.9.9"
+
+
+# --- _install_config (first-run wizard on `nyxgpt ops install`, #3388) ---
+
+
+@pytest.mark.unit
+def test_install_config_existing_config_is_ok_without_wizard(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    cfg = tmp_path / ".nyxGPT" / "config.ini"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("[nyxgpt]\n", encoding="utf-8")
+
+    results = ops._install_config()
+    assert results[0].ok is True
+    assert "already exists" in results[0].message
+
+
+@pytest.mark.unit
+def test_install_config_missing_without_tty_fails_with_instructions(monkeypatch, tmp_path):
+    # CI/scripted installs must not hang on an interactive prompt: no config
+    # plus no TTY is an honest failure pointing at `nyxgpt wizard`.
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops.sys.stdin, "isatty", lambda: False)
+
+    results = ops._install_config()
+    assert results[0].ok is False
+    assert "nyxgpt wizard" in results[0].message
+
+
+@pytest.mark.unit
+def test_install_config_missing_with_tty_runs_wizard(monkeypatch, tmp_path):
+    import nyxgpt.wizard as wizard_mod
+
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops.sys.stdin, "isatty", lambda: True)
+    calls: dict[str, object] = {}
+
+    def fake_run_wizard(output_path):
+        calls["output_path"] = output_path
+        return 0
+
+    monkeypatch.setattr(wizard_mod, "run_wizard", fake_run_wizard)
+
+    results = ops._install_config()
+    assert results[0].ok is True
+    assert "via wizard" in results[0].message
+    assert calls["output_path"] == tmp_path / ".nyxGPT" / "config.ini"
+
+
+@pytest.mark.unit
+def test_install_config_wizard_failure_is_reported(monkeypatch, tmp_path):
+    import nyxgpt.wizard as wizard_mod
+
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(wizard_mod, "run_wizard", lambda output_path: 1)
+
+    results = ops._install_config()
+    assert results[0].ok is False
+    assert "did not complete" in results[0].message
 
 
 @pytest.mark.unit
@@ -2432,7 +2502,9 @@ def test_install_homebrew_api_success(monkeypatch, tmp_path):
     repo_root = tmp_path / "repo"
     (repo_root / "homebrew").mkdir(parents=True)
     (repo_root / "homebrew" / "nyxgpt-api.rb").write_text(
-        'sha256 "0000000000000000000000000000000000000000000000000000000000000000"\n',
+        'url "file://tap/dist/nyxgpt-api-__VERSION__.tar.gz"\n'
+        'sha256 "__SHA256__"\n'
+        'version "__VERSION__"\n',
         encoding="utf-8",
     )
     tap_dir = tmp_path / "tap"
@@ -2452,9 +2524,43 @@ def test_install_homebrew_api_success(monkeypatch, tmp_path):
     assert all(r.ok for r in results)
     formula = tap_dir / "Formula" / "nyxgpt-api.rb"
     assert formula.exists()
-    assert "sha256" in formula.read_text(encoding="utf-8")
+    content = formula.read_text(encoding="utf-8")
+    assert "__VERSION__" not in content
+    assert "__SHA256__" not in content
+    assert 'version "2.0.0"' in content
+    assert "nyxgpt-api-2.0.0.tar.gz" in content
     assert any(cmd[:2] in (["brew", "install"], ["brew", "reinstall"]) for cmd in run_calls)
     assert any(cmd[:3] == ["brew", "services", "start"] for cmd in run_calls)
+
+
+@pytest.mark.unit
+def test_install_homebrew_api_stamps_stale_concrete_values(monkeypatch, tmp_path):
+    # Regex safety net: a formula copy still carrying concrete (stale) values
+    # from before the placeholder templates -- e.g. a hardcoded 1.0.0 -- is
+    # rewritten to the current version/sha, not installed as-is.
+    repo_root = tmp_path / "repo"
+    (repo_root / "homebrew").mkdir(parents=True)
+    (repo_root / "homebrew" / "nyxgpt-api.rb").write_text(
+        'url "file://tap/dist/nyxgpt-api-1.0.0.tar.gz"\n'
+        'sha256 "0000000000000000000000000000000000000000000000000000000000000000"\n'
+        'version "1.0.0"\n',
+        encoding="utf-8",
+    )
+    tap_dir = tmp_path / "tap"
+
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/brew")
+    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
+    monkeypatch.setattr(ops, "_tap_repo", lambda tap: tap_dir)
+    monkeypatch.setattr(ops, "_read_project_version", lambda: "2.0.0")
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+
+    results = ops._install_homebrew_api()
+    assert all(r.ok for r in results)
+    content = (tap_dir / "Formula" / "nyxgpt-api.rb").read_text(encoding="utf-8")
+    assert 'version "2.0.0"' in content
+    assert "nyxgpt-api-2.0.0.tar.gz" in content
+    assert "1.0.0" not in content.replace("2.0.0", "")
+    assert 'sha256 "0000' not in content
 
 
 @pytest.mark.unit
@@ -2479,7 +2585,7 @@ def test_install_homebrew_web_success(monkeypatch, tmp_path):
     repo_root = tmp_path / "repo"
     (repo_root / "homebrew").mkdir(parents=True)
     (repo_root / "homebrew" / "nyxgpt-web.rb").write_text(
-        'url "__NYXGPT_WEB_URL__"\nsha256 "__NYXGPT_WEB_SHA256__"\n',
+        'url "__NYXGPT_WEB_URL__"\nsha256 "__NYXGPT_WEB_SHA256__"\nversion "__VERSION__"\n',
         encoding="utf-8",
     )
     tap_dir = tmp_path / "tap"
@@ -2501,6 +2607,7 @@ def test_install_homebrew_web_success(monkeypatch, tmp_path):
     content = formula.read_text(encoding="utf-8")
     assert "__NYXGPT_WEB_URL__" not in content
     assert "__NYXGPT_WEB_SHA256__" not in content
+    assert "__VERSION__" not in content
     assert any(cmd[:2] in (["brew", "install"], ["brew", "reinstall"]) for cmd in run_calls)
     assert any(cmd[:3] == ["brew", "services", "start"] for cmd in run_calls)
 

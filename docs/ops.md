@@ -59,6 +59,10 @@ starts it.)
 
 This command:
 
+- Ensures `~/.nyxGPT/config.ini` exists — on a fresh machine it launches the
+  interactive setup wizard (the same one behind `nyxgpt wizard`) to create it
+  before anything else runs. In a non-interactive shell (no TTY) this step
+  fails with instructions to run `nyxgpt wizard` first instead of hanging.
 - Migrates any pre-#3346 named-volume container data into
   `~/.nyxGPT/volumes/` (see [`nyxgpt ops migrate-volumes`](#nyxgpt-ops-migrate-volumes)
   below; a no-op if you have none)

@@ -266,12 +266,17 @@ def _which(prog: str) -> str | None:
 
 
 def _read_project_version() -> str:
-    """Return the project version from pyproject.toml, or a fallback if unreadable."""
+    """Return the project version from pyproject.toml, or "0.0.0" if unreadable.
+
+    The "0.0.0" fallback is deliberately implausible: a brew formula stamped
+    with it signals "version could not be determined" instead of silently
+    masquerading as a real release.
+    """
     pyproject = REPO_ROOT / "pyproject.toml"
     if not pyproject.exists():
-        return "1.0.0.md"
+        return "0.0.0"
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    return str(data.get("project", {}).get("version", "1.0.0.md"))
+    return str(data.get("project", {}).get("version", "0.0.0"))
 
 
 def _ensure_dir(p: Path) -> None:
@@ -780,12 +785,12 @@ def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     sha = _sha256_file(tar)
 
     content = template.read_text(encoding="utf-8")
-    # Update sha256, version, and tarball filename to match the generated
-    # tarball -- the template's hardcoded values go stale when the project
-    # version changes, leaving brew fetching an old tarball whose checksum
-    # can never match the freshly computed one.
-    import re
-
+    # Stamp the template's __VERSION__/__SHA256__ placeholders with the real
+    # values for the tarball just generated. The regex substitutions remain as
+    # a safety net for any formula copy that still carries concrete (stale)
+    # values instead of placeholders.
+    content = content.replace("__VERSION__", version)
+    content = content.replace("__SHA256__", sha)
     content = re.sub(r'sha256 "[a-f0-9]+"', f'sha256 "{sha}"', content)
     content = re.sub(r'version "[^"]+"', f'version "{version}"', content)
     content = re.sub(r"nyxgpt-api-[^\"/]+\.tar\.gz", f"nyxgpt-api-{version}.tar.gz", content)
@@ -827,11 +832,10 @@ def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     sha = _sha256_file(tar)
     url = f"file://{tar}"
 
-    import re
-
     content = template.read_text(encoding="utf-8")
     content = content.replace("__NYXGPT_WEB_URL__", url)
     content = content.replace("__NYXGPT_WEB_SHA256__", sha)
+    content = content.replace("__VERSION__", version)
     content = re.sub(r'version "[^"]+"', f'version "{version}"', content)
 
     formula_dir = tap_dir / "Formula"
@@ -2138,11 +2142,43 @@ def infra_status() -> dict[str, Any]:
     return {"terraform": terraform, "kubernetes": kubernetes}
 
 
+def _install_config() -> list[OpsResult]:
+    """Ensure ``~/.nyxGPT/config.ini`` exists, running the setup wizard if missing.
+
+    First-run experience: on a fresh machine `nyxgpt ops install` has no
+    config to install services against, so this step launches the interactive
+    wizard (the same one behind `nyxgpt wizard`) to create it before any other
+    step runs. When stdin is not a TTY (CI, scripted installs) the wizard
+    cannot prompt, so the step fails with instructions instead of hanging.
+    """
+    dst = Path.home() / ".nyxGPT" / "config.ini"
+    if dst.exists():
+        return [OpsResult(True, "Config already exists", str(dst))]
+
+    if not sys.stdin.isatty():
+        return [
+            OpsResult(
+                False,
+                "No config.ini found and stdin is not a TTY -- run `nyxgpt wizard` first",
+                str(dst),
+            )
+        ]
+
+    from nyxgpt.wizard import run_wizard
+
+    print("\nNo config.ini found. Launching setup wizard...\n")
+    if run_wizard(output_path=dst) != 0:
+        return [OpsResult(False, "Wizard did not complete", str(dst))]
+    return [OpsResult(True, "Created config.ini via wizard", str(dst))]
+
+
 def install(args) -> int:
     """CLI entrypoint for `nyxgpt ops install`.
 
     Reconciles the local machine to the intended native-mode topology (see
-    docs/ops.md): first migrating any pre-#3346 named-volume data into
+    docs/ops.md): first ensuring ~/.nyxGPT/config.ini exists (launching the
+    interactive setup wizard on a fresh machine -- see `_install_config`),
+    then migrating any pre-#3346 named-volume data into
     ~/.nyxGPT/volumes/ (see `migrate_legacy_volumes`), then stopping any
     phantom Docker Compose app-tier containers leaked from an earlier run or
     a raw `docker compose up`, then ensuring the
@@ -2172,6 +2208,7 @@ def install(args) -> int:
 
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        ("config", _install_config),
         ("migrate legacy volumes", migrate_legacy_volumes),
         ("phantom compose reconciliation", _reconcile_phantom_compose_app_containers),
         ("scripts", _install_scripts),

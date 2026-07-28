@@ -8,6 +8,7 @@ and config.ini generation.
 from __future__ import annotations
 
 import secrets
+import shutil
 import sys
 from configparser import ConfigParser
 from pathlib import Path
@@ -259,12 +260,19 @@ def _generate_config_ini(
         config.set("rag", "include_scores", "false")
         config.set("rag", "include_headers", "true")
 
-    # [paths] section
+    # [paths] section -- auto-detected from the running environment so the
+    # generated config points at this checkout and interpreter instead of
+    # "/path/to/nyxGPT" placeholder text the user must remember to edit.
+    repo_dir = str(Path(__file__).resolve().parents[2])
+    venv_python = str(Path(sys.executable).resolve())
+    node_bin = shutil.which("node") or "/opt/homebrew/bin/node"
+    npm_bin = shutil.which("npm") or "/opt/homebrew/bin/npm"
+
     config.add_section("paths")
-    config.set("paths", "repo_dir", "/path/to/nyxGPT")
-    config.set("paths", "venv_python", "/path/to/nyxGPT/.venv/bin/python")
-    config.set("paths", "node_bin", "/opt/homebrew/bin/node")
-    config.set("paths", "npm_bin", "/opt/homebrew/bin/npm")
+    config.set("paths", "repo_dir", repo_dir)
+    config.set("paths", "venv_python", venv_python)
+    config.set("paths", "node_bin", node_bin)
+    config.set("paths", "npm_bin", npm_bin)
 
     # Write to file
     output_path.parent.mkdir(parents=True, exist_ok=True)

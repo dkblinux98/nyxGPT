@@ -480,7 +480,12 @@ Configurable templates control how retrieved context is presented to the LLM. Us
 
 ## `[paths]` section
 
-Absolute paths for operational components.
+Absolute paths for operational components. The setup wizard (`nyxgpt wizard`,
+also run automatically by `nyxgpt ops install` on a fresh machine) fills these
+in automatically from the running environment — the repository checkout it
+runs from, the active Python interpreter, and `node`/`npm` found on `PATH`
+(falling back to the standard Homebrew locations). The values below are
+illustrative.
 
 ```ini
 [paths]

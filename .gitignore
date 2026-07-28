@@ -35,6 +35,11 @@ coverage/
 # Docker Compose (real secrets - copy from .env.example)
 /.env
 
+# Live config (contains secrets; the tracked declaration is example.config.ini).
+# The real file lives at ~/.nyxGPT/config.ini -- this guards against a copy
+# accidentally dropped into the repo.
+config.ini
+
 # Live Compose api config: derived per-machine artifact seeded from
 # docker/config.docker.ini.example by `nyxgpt ops install`; its DSN is filled
 # in at runtime by `nyxgpt ops glitchtip-init`. The .example template stays tracked.
