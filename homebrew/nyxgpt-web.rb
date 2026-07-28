@@ -84,7 +84,10 @@ PY
       cd "#{libexec}"
       exec npm run start
     SH
-    chmod 0755, bin/"nyxgpt-web"
+    # Use the shell `chmod` (as nyxgpt-api.rb does) rather than Ruby's
+    # `chmod 0755, ...`, which left the wrapper non-executable (0444) -- an
+    # unrunnable launcher makes the launchd service fail to exec (error 78).
+    system "chmod", "0755", bin/"nyxgpt-web"
   end
 
   service do

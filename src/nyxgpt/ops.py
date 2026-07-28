@@ -830,11 +830,20 @@ def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir:
 
     _run(["brew", "fetch", "--force", spec], check=False)
     if installed:
-        _run(["brew", "reinstall", spec], check=False)
-        decision = "reinstalled (source changed since last install)"
+        cp = _run(["brew", "reinstall", spec], check=False)
+        action, decision = "reinstall", "reinstalled (source changed since last install)"
     else:
-        _run(["brew", "install", "--overwrite", spec], check=False)
-        decision = "installed"
+        cp = _run(["brew", "install", "--overwrite", spec], check=False)
+        action, decision = "install", "installed"
+
+    if cp.returncode != 0:
+        # Surface the failure instead of reporting a false success, and do NOT
+        # record the checksum: writing the marker on a failed build would make
+        # the next run see a matching checksum and skip, so the broken install
+        # would never be retried (the bug that let a failed api keg rebuild
+        # report "reinstalled" and then stick as a stale wrapper).
+        detail = (cp.stderr or cp.stdout or "").strip()
+        raise RuntimeError(f"brew {action} {name} failed: {detail[-800:]}")
 
     _ensure_dir(marker_dir)
     marker.write_text(sha256, encoding="utf-8")

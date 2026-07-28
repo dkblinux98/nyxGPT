@@ -2886,6 +2886,29 @@ def test_brew_install_or_reinstall_skips_when_unchanged(monkeypatch, tmp_path):
     assert (tmp_path / ".nyxgpt-api.sha256").read_text(encoding="utf-8") == "same-sha"
 
 
+@pytest.mark.unit
+def test_brew_install_or_reinstall_raises_and_keeps_no_marker_on_failure(monkeypatch, tmp_path):
+    """A failed `brew reinstall` must raise (not report a false success) and
+    must NOT record the checksum -- otherwise the next run sees a matching
+    marker and skips, so the broken install never retries (the bug that let a
+    failed api keg rebuild report 'reinstalled' and stick as a stale wrapper)."""
+
+    def fake_run(cmd, **k):
+        if cmd[:3] == ["brew", "list", "--versions"]:
+            return subprocess.CompletedProcess(cmd, 0)  # already installed
+        if cmd[:2] == ["brew", "reinstall"]:
+            return subprocess.CompletedProcess(cmd, 1, stderr="ensurepip failed")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    with pytest.raises(RuntimeError, match="brew reinstall nyxgpt-api failed"):
+        ops._brew_install_or_reinstall(
+            "tap/nyxgpt-api", "nyxgpt-api", sha256="newsha", marker_dir=tmp_path
+        )
+    assert not (tmp_path / ".nyxgpt-api.sha256").exists()
+
+
 # --- _vendor_tree ---
 
 
