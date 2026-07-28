@@ -1814,6 +1814,10 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
     )
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        (
+            "clear intentional-stop markers",
+            lambda: _clear_intentional_stops(["api", "web", "ollama", "cassandra"]),
+        ),
         # Must run before terraform apply: main.tf no longer declares the
         # `nyxgpt_tf_*` docker_volume resources (#3346), so apply would
         # otherwise destroy them -- along with any not-yet-migrated data --
@@ -2077,6 +2081,7 @@ def _install_kubernetes_steps(api_key: str | None) -> list[OpsResult]:
     )
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        ("clear intentional-stop markers", lambda: _clear_intentional_stops(["api"])),
         ("cluster prerequisites", _ensure_kubectl_and_cluster),
         ("build/load image", _build_and_load_k8s_image),
         ("secret bootstrap", lambda: _ensure_k8s_secret(api_key)),
@@ -2248,6 +2253,10 @@ def install(args) -> int:
 
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
+        (
+            "clear intentional-stop markers",
+            lambda: _clear_intentional_stops(["api", "web", "ollama", "cassandra"]),
+        ),
         ("config", _install_config),
         ("migrate legacy volumes", migrate_legacy_volumes),
         ("phantom compose reconciliation", _reconcile_phantom_compose_app_containers),
@@ -2698,6 +2707,20 @@ def doctor(_args) -> int:
     return 0
 
 
+def _clear_intentional_stops(components: list[str]) -> list[OpsResult]:
+    """Clear the intentional-stop marker for `components` (they're being brought back up).
+
+    Called from `install`/`restart` for whatever they bring up -- doing so is
+    itself the "this is desired again" signal, so self-heal resumes guarding
+    the component against future crashes (see self_heal.py's intentional-stop
+    registry and its module docstring, #3406). A component never marked
+    stopped is a no-op, so this is safe to call unconditionally.
+    """
+    for component in components:
+        self_heal.clear_intentionally_stopped(component)
+    return [OpsResult(True, f"Cleared intentional-stop marker(s): {', '.join(components)}")]
+
+
 # --- Restart public API ---
 
 
@@ -2747,6 +2770,7 @@ def restart(args) -> int:
         if conflict:
             results.append(conflict)
         else:
+            self_heal.clear_intentionally_stopped("api")
             results.extend(_restart_brew_service("nyxgpt-api"))
 
     if target in ("all", "web"):
@@ -2754,6 +2778,7 @@ def restart(args) -> int:
         if conflict:
             results.append(conflict)
         else:
+            self_heal.clear_intentionally_stopped("web")
             results.extend(_restart_brew_service("nyxgpt-web"))
 
     if target in ("all", "ollama"):
@@ -2761,6 +2786,7 @@ def restart(args) -> int:
         if conflict:
             results.append(conflict)
         else:
+            self_heal.clear_intentionally_stopped("ollama")
             results.extend(_restart_brew_service("ollama"))
 
     if target in ("all", "cassandra"):
@@ -2768,6 +2794,7 @@ def restart(args) -> int:
         if conflict:
             results.append(conflict)
         else:
+            self_heal.clear_intentionally_stopped("cassandra")
             results.extend(_restart_docker_container("nyxgpt-cassandra"))
 
     if target in ("all", "cassandra-logs"):
@@ -3099,6 +3126,16 @@ def stop(args) -> int:
     def _stop_dual_mode(
         component: str, native_stop: Callable[[str], list[OpsResult]], native_arg: str
     ) -> None:
+        try:
+            self_heal.mark_intentionally_stopped(component)
+        except Exception as e:  # never let self-heal bookkeeping block a stop
+            results.append(
+                OpsResult(
+                    True,
+                    f"Could not mark {component} as intentionally stopped "
+                    f"({type(e).__name__}: {e})",
+                )
+            )
         native_running = mode.native.get(component) in ("started", "running")
         compose_running = mode.compose.get(component) == "running"
         if not native_running and not compose_running:
@@ -3199,22 +3236,34 @@ def down(args) -> int:
     results: list[OpsResult] = []
 
     if scope in ("all", "app"):
-        # Disarm the self-heal watchdog BEFORE stopping anything. Otherwise its
-        # next pass sees the just-stopped api/web/ollama/cassandra as unhealthy
-        # and restarts them (`brew services restart` / `docker restart`),
-        # fighting the teardown -- the ports get re-occupied within seconds,
-        # which then blocks `nyxgpt ops install --terraform --local` with a
-        # spurious port collision. Self-heal had no way to tell an intentional
-        # `ops down` apart from a crash; disabling it here is that signal.
-        # Re-arm it from the SRE dashboard toggle after bringing a stack back up.
+        # Mark api/web/ollama/cassandra as intentionally stopped BEFORE
+        # stopping anything. Otherwise the next heal pass sees them as
+        # unhealthy and restarts them (`brew services restart` / `docker
+        # restart`), fighting the teardown -- the ports get re-occupied
+        # within seconds, which then blocks `nyxgpt ops install --terraform
+        # --local` with a spurious port collision. This is per-component
+        # (self_heal.py's intentional-stop registry, #3406), not a global
+        # watchdog disable: an armed watchdog keeps healing genuine crashes
+        # of every other component the whole time. `nyxgpt ops install`/
+        # `restart`/`up` of a component clears its marker automatically.
         try:
-            if self_heal.is_enabled():
-                self_heal.set_enabled(False)
-                results.append(
-                    OpsResult(True, "Disarmed self-heal watchdog so it won't undo the teardown")
+            for component in ("api", "web", "ollama", "cassandra"):
+                self_heal.mark_intentionally_stopped(component)
+            results.append(
+                OpsResult(
+                    True,
+                    "Marked api/web/ollama/cassandra as intentionally stopped "
+                    "(self-heal will leave them alone until brought back up)",
                 )
+            )
         except Exception as e:  # never let self-heal bookkeeping block a teardown
-            results.append(OpsResult(True, f"Could not disarm self-heal ({type(e).__name__}: {e})"))
+            results.append(
+                OpsResult(
+                    True,
+                    "Could not mark components as intentionally stopped "
+                    f"({type(e).__name__}: {e})",
+                )
+            )
 
         results.extend(_stop_brew_service("nyxgpt-api"))
         results.extend(_stop_brew_service("nyxgpt-web"))

@@ -140,6 +140,19 @@ resource "docker_container" "api" {
     container_path = "/root/.nyxGPT"
   }
 
+  # Lets the self-heal watchdog (src/nyxgpt/self_heal.py), which runs inside
+  # this container, drive the host's Docker daemon to health-check/restart
+  # its sibling nyxgpt-tf-* containers (ollama/cassandra/web) -- the same
+  # mechanism docker-compose.yml's `api` service already uses for Compose
+  # deployments. The Docker CLI is already baked into this image (see
+  # Dockerfile); this is what lets it actually reach the daemon. See
+  # docs/self-healing.md#docker-access-from-inside-the-api-container for the
+  # security tradeoffs of exposing this socket.
+  volumes {
+    host_path      = "/var/run/docker.sock"
+    container_path = "/var/run/docker.sock"
+  }
+
   healthcheck {
     test         = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)\" || exit 1"]
     interval     = "10s"

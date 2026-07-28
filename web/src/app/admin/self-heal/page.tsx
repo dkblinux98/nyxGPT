@@ -184,8 +184,9 @@ export default function SelfHealPage() {
           </h1>
           <p style={{ color: 'var(--foreground-muted)', marginBottom: 8 }}>
             Watches the core app components (API, web UI, Ollama, Cassandra) -- whether they run
-            natively (the default local-first setup) or under Docker Compose -- plus any running
-            observability containers, and automatically restarts anything unhealthy or stopped.
+            natively (the default local-first setup), under Docker Compose, via Terraform, or as
+            Kubernetes Pods -- plus any running observability containers, and automatically
+            restarts anything unhealthy or stopped.
           </p>
           <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
             ← Back to Admin Dashboard
@@ -389,7 +390,7 @@ export default function SelfHealPage() {
                           color: 'var(--foreground-muted)',
                         }}
                       >
-                        {c.source === 'native' ? 'native' : 'compose'}
+                        {c.source}
                       </span>
                       <span
                         style={{
