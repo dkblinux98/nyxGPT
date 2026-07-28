@@ -4,12 +4,31 @@ import tarfile
 from configparser import ConfigParser
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import httpx
 import pytest
 
 from nyxgpt import ops, self_heal
+
+# Captured before the autouse fixture below can ever monkeypatch it, so tests
+# that exercise this function's real logic can restore it for their duration.
+_real_terraform_or_kubernetes_managed_components = ops._terraform_or_kubernetes_managed_components
+
+
+@pytest.fixture(autouse=True)
+def _no_terraform_or_kubernetes_managed_components(monkeypatch):
+    """Default `ops._terraform_or_kubernetes_managed_components()` to empty.
+
+    `down()`/`stop()` call it (via `self_heal.list_component_status()`,
+    which shells out to docker/kubectl) to decide which core components to
+    mark intentionally stopped. Individual tests that care about
+    Terraform/Kubernetes-managed components override this within their own
+    `with patch.object(...)` block; everyone else gets a fast, deterministic
+    empty set instead of hitting whatever docker/kubectl happen to be on the
+    test host.
+    """
+    monkeypatch.setattr(ops, "_terraform_or_kubernetes_managed_components", lambda: set())
 
 
 @pytest.mark.unit
@@ -118,6 +137,9 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         return _fn
 
     with (
+        patch.object(
+            ops, "_clear_intentional_stops", side_effect=_record("clear intentional stops")
+        ),
         patch.object(ops, "_install_config", side_effect=_record("config")),
         patch.object(ops, "migrate_legacy_volumes", side_effect=_record("migrate volumes")),
         patch.object(
@@ -141,15 +163,49 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
         assert rc == 0
 
-    # Config must come first (a fresh machine needs config.ini before any
-    # other step can act on it), then reconciliation before anything creates.
-    assert call_order[0] == "config"
-    assert call_order[1] == "migrate volumes"
-    assert call_order[2] == "reconcile"
+    # Clearing intentional-stop markers comes first, then config (a fresh
+    # machine needs config.ini before any other step can act on it), then
+    # reconciliation before anything creates.
+    assert call_order[0] == "clear intentional stops"
+    assert call_order[1] == "config"
+    assert call_order[2] == "migrate volumes"
+    assert call_order[3] == "reconcile"
     assert "cassandra container" in call_order
     assert "ollama service" in call_order
     assert "env sync" in call_order
     assert "compose file path" in call_order
+
+
+@pytest.mark.unit
+def test_ops_install_clears_intentional_stop_markers_for_core_components():
+    ok_results = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_install_config", return_value=ok_results),
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok_results),
+        patch.object(ops, "_reconcile_phantom_compose_app_containers", return_value=ok_results),
+        patch.object(ops, "_install_scripts", return_value=ok_results),
+        patch.object(ops, "_ensure_web_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_mcp_deps", return_value=ok_results),
+        patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
+        patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_homebrew_api", return_value=ok_results),
+        patch.object(ops, "_install_homebrew_web", return_value=ok_results),
+        patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
+        patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "sync_env_from_config", return_value=ok_results),
+        patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
+        patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
+    ):
+        rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
+        assert rc == 0
+
+    assert clear_stopped.call_args_list == [
+        call("api"),
+        call("web"),
+        call("ollama"),
+        call("cassandra"),
+    ]
 
 
 @pytest.mark.unit
@@ -175,6 +231,61 @@ def test_ops_restart_all_ok(capsys):
 
         out = capsys.readouterr().out
         assert "[OK]" in out
+
+
+@pytest.mark.unit
+def test_clear_intentional_stops_calls_self_heal_for_each_component():
+    with patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped:
+        results = ops._clear_intentional_stops(["api", "cassandra"])
+
+    assert clear_stopped.call_args_list == [call("api"), call("cassandra")]
+    assert len(results) == 1
+    assert results[0].ok
+    assert "api" in results[0].message and "cassandra" in results[0].message
+
+
+@pytest.mark.unit
+def test_ops_restart_all_clears_intentional_stop_markers(capsys):
+    """Restarting a component is the "this is desired again" signal (#3406) --
+    it clears self-heal's intentional-stop marker so an armed watchdog
+    resumes guarding it against future crashes."""
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_compose_stack_snapshot", return_value={}),
+        patch.object(ops, "_restart_brew_service", return_value=ok),
+        patch.object(ops, "_restart_docker_container", return_value=ok),
+        patch.object(ops, "_restart_launchagent", return_value=ok),
+        patch.object(ops, "_restart_observability_stack", return_value=ok),
+        patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
+    ):
+        args = MagicMock()
+        args.target = "all"
+        rc = ops.restart(args)
+        assert rc == 0
+
+    assert clear_stopped.call_args_list == [
+        call("api"),
+        call("web"),
+        call("ollama"),
+        call("cassandra"),
+    ]
+
+
+@pytest.mark.unit
+def test_ops_restart_conflict_refused_does_not_clear_intentional_stop(capsys):
+    """A restart refused by the Compose port-collision guard never actually
+    starts the native component, so it must not clear its marker either."""
+    with (
+        patch.object(ops, "_compose_stack_snapshot", return_value={"api": "running"}),
+        patch.object(ops, "_restart_brew_service"),
+        patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
+    ):
+        args = MagicMock()
+        args.target = "api"
+        rc = ops.restart(args)
+        assert rc == 2
+
+    clear_stopped.assert_not_called()
 
 
 @pytest.mark.unit
@@ -1353,6 +1464,59 @@ def test_compose_stack_snapshot_excludes_native_sourced_statuses():
         assert ops._compose_stack_snapshot() == {"api": "running"}
 
 
+@pytest.mark.unit
+def test_terraform_or_kubernetes_managed_components_filters_by_source(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_terraform_or_kubernetes_managed_components",
+        _real_terraform_or_kubernetes_managed_components,
+    )
+    native_api = self_heal.ComponentStatus(
+        service="api",
+        container="nyxgpt-api",
+        state="started",
+        health="",
+        healthy=True,
+        source="native",
+    )
+    terraform_web = self_heal.ComponentStatus(
+        service="web",
+        container="nyxgpt-tf-web",
+        state="running",
+        health="healthy",
+        healthy=True,
+        source="terraform",
+    )
+    k8s_pod = self_heal.ComponentStatus(
+        service="nyxgpt-api-stable-abc123",
+        container="nyxgpt-api-stable-abc123",
+        state="Running",
+        health="ready",
+        healthy=True,
+        source="kubernetes",
+    )
+    with patch.object(
+        ops.self_heal,
+        "list_component_status",
+        return_value=[native_api, terraform_web, k8s_pod],
+    ):
+        assert ops._terraform_or_kubernetes_managed_components() == {
+            "web",
+            "nyxgpt-api-stable-abc123",
+        }
+
+
+@pytest.mark.unit
+def test_terraform_or_kubernetes_managed_components_returns_empty_on_exception(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_terraform_or_kubernetes_managed_components",
+        _real_terraform_or_kubernetes_managed_components,
+    )
+    with patch.object(ops.self_heal, "list_component_status", side_effect=RuntimeError("boom")):
+        assert ops._terraform_or_kubernetes_managed_components() == set()
+
+
 # --- _restart_brew_service ---
 
 
@@ -2448,20 +2612,71 @@ def test_install_step_order_does_not_clobber_compose_ollama_log(monkeypatch, tmp
 # --- _create_dist_tarball ---
 
 
+def _make_fake_api_repo_root(tmp_path):
+    """A fake REPO_ROOT with just enough of a real nyxgpt package to vendor."""
+    repo_root = tmp_path / "repo"
+    (repo_root / "src" / "nyxgpt").mkdir(parents=True)
+    (repo_root / "src" / "nyxgpt" / "__init__.py").write_text("", encoding="utf-8")
+    (repo_root / "src" / "nyxgpt" / "app.py").write_text("# fake app module\n", encoding="utf-8")
+    (repo_root / "pyproject.toml").write_text(
+        '[project]\nname = "nyxGPT"\nversion = "1.2.3"\n', encoding="utf-8"
+    )
+    return repo_root
+
+
+def _make_fake_web_repo_root(tmp_path):
+    """A fake REPO_ROOT with a web/ tree including gitignored build artifacts."""
+    repo_root = tmp_path / "repo"
+    web_dir = repo_root / "web"
+    web_dir.mkdir(parents=True)
+    (web_dir / "package.json").write_text('{"name": "web"}\n', encoding="utf-8")
+    (web_dir / "node_modules" / "somepkg").mkdir(parents=True)
+    (web_dir / "node_modules" / "somepkg" / "index.js").write_text("", encoding="utf-8")
+    (web_dir / ".next" / "cache").mkdir(parents=True)
+    (web_dir / ".next" / "cache" / "x").write_text("", encoding="utf-8")
+    return repo_root
+
+
 @pytest.mark.unit
-def test_create_dist_tarball_creates_gzip_archive(tmp_path):
+def test_create_dist_tarball_vendors_real_api_source(monkeypatch, tmp_path):
+    """The api tarball vendors pyproject.toml + src/nyxgpt/ -- not a placeholder
+    README -- so the formula can `pip install` a self-contained app (#3406)."""
+    repo_root = _make_fake_api_repo_root(tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
+
     tar_path = ops._create_dist_tarball(tmp_path, "nyxgpt-api", "1.2.3")
     assert tar_path == tmp_path / "dist" / "nyxgpt-api-1.2.3.tar.gz"
     assert tar_path.exists()
     with tarfile.open(tar_path, "r:gz") as tf:
         names = tf.getnames()
-    assert any("README.txt" in n for n in names)
+    assert "nyxgpt-api-1.2.3/pyproject.toml" in names
+    assert "nyxgpt-api-1.2.3/src/nyxgpt/app.py" in names
+    assert not any("README.txt" in n for n in names)
     # Temp staging dir must be cleaned up.
     assert not (tmp_path / "dist" / ".tmp-nyxgpt-api-1.2.3").exists()
 
 
 @pytest.mark.unit
-def test_create_dist_tarball_overwrites_existing_tarball_and_tmp(tmp_path):
+def test_create_dist_tarball_vendors_web_source_excluding_build_artifacts(monkeypatch, tmp_path):
+    """The web tarball vendors web/ source, but never the gitignored
+    node_modules/.next build output -- the formula rebuilds those fresh
+    inside the Cellar keg (#3406)."""
+    repo_root = _make_fake_web_repo_root(tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
+
+    tar_path = ops._create_dist_tarball(tmp_path, "nyxgpt-web", "1.2.3")
+    with tarfile.open(tar_path, "r:gz") as tf:
+        names = tf.getnames()
+    assert "nyxgpt-web-1.2.3/package.json" in names
+    assert not any("node_modules" in n for n in names)
+    assert not any(".next" in n for n in names)
+
+
+@pytest.mark.unit
+def test_create_dist_tarball_overwrites_existing_tarball_and_tmp(monkeypatch, tmp_path):
+    repo_root = _make_fake_api_repo_root(tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
+
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()
     existing = dist_dir / "nyxgpt-api-1.2.3.tar.gz"
@@ -2473,8 +2688,9 @@ def test_create_dist_tarball_overwrites_existing_tarball_and_tmp(tmp_path):
     tar_path = ops._create_dist_tarball(tmp_path, "nyxgpt-api", "1.2.3")
     assert tar_path.exists()
     # No longer the stale plaintext content.
-    with tarfile.open(tar_path, "r:gz"):
-        pass
+    with tarfile.open(tar_path, "r:gz") as tf:
+        names = tf.getnames()
+    assert "nyxgpt-api-1.2.3/pyproject.toml" in names
 
 
 # --- _install_homebrew_api / _install_homebrew_web ---
@@ -2499,7 +2715,7 @@ def test_install_homebrew_api_missing_template(monkeypatch, tmp_path):
 
 @pytest.mark.unit
 def test_install_homebrew_api_success(monkeypatch, tmp_path):
-    repo_root = tmp_path / "repo"
+    repo_root = _make_fake_api_repo_root(tmp_path)
     (repo_root / "homebrew").mkdir(parents=True)
     (repo_root / "homebrew" / "nyxgpt-api.rb").write_text(
         'url "file://tap/dist/nyxgpt-api-__VERSION__.tar.gz"\n'
@@ -2538,7 +2754,7 @@ def test_install_homebrew_api_stamps_stale_concrete_values(monkeypatch, tmp_path
     # Regex safety net: a formula copy still carrying concrete (stale) values
     # from before the placeholder templates -- e.g. a hardcoded 1.0.0 -- is
     # rewritten to the current version/sha, not installed as-is.
-    repo_root = tmp_path / "repo"
+    repo_root = _make_fake_api_repo_root(tmp_path)
     (repo_root / "homebrew").mkdir(parents=True)
     (repo_root / "homebrew" / "nyxgpt-api.rb").write_text(
         'url "file://tap/dist/nyxgpt-api-1.0.0.tar.gz"\n'
@@ -2582,7 +2798,7 @@ def test_install_homebrew_web_missing_template(monkeypatch, tmp_path):
 
 @pytest.mark.unit
 def test_install_homebrew_web_success(monkeypatch, tmp_path):
-    repo_root = tmp_path / "repo"
+    repo_root = _make_fake_web_repo_root(tmp_path)
     (repo_root / "homebrew").mkdir(parents=True)
     (repo_root / "homebrew" / "nyxgpt-web.rb").write_text(
         'url "__NYXGPT_WEB_URL__"\nsha256 "__NYXGPT_WEB_SHA256__"\nversion "__VERSION__"\n',
@@ -2610,6 +2826,81 @@ def test_install_homebrew_web_success(monkeypatch, tmp_path):
     assert "__VERSION__" not in content
     assert any(cmd[:2] in (["brew", "install"], ["brew", "reinstall"]) for cmd in run_calls)
     assert any(cmd[:3] == ["brew", "services", "start"] for cmd in run_calls)
+
+
+# --- _brew_install_or_reinstall ---
+
+
+@pytest.mark.unit
+def test_brew_install_or_reinstall_installs_when_not_present(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: (
+            calls.append(cmd) or subprocess.CompletedProcess(cmd, 1)
+            if cmd[:3] == ["brew", "list", "--versions"]
+            else calls.append(cmd) or subprocess.CompletedProcess(cmd, 0)
+        ),
+    )
+    decision = ops._brew_install_or_reinstall(
+        "tap/nyxgpt-api", "nyxgpt-api", sha256="abc123", marker_dir=tmp_path
+    )
+    assert decision == "installed"
+    assert ["brew", "fetch", "--force", "tap/nyxgpt-api"] in calls
+    assert ["brew", "install", "--overwrite", "tap/nyxgpt-api"] in calls
+    assert (tmp_path / ".nyxgpt-api.sha256").read_text(encoding="utf-8") == "abc123"
+
+
+@pytest.mark.unit
+def test_brew_install_or_reinstall_reinstalls_when_source_changed(monkeypatch, tmp_path):
+    (tmp_path / ".nyxgpt-api.sha256").write_text("old-sha", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+    decision = ops._brew_install_or_reinstall(
+        "tap/nyxgpt-api", "nyxgpt-api", sha256="new-sha", marker_dir=tmp_path
+    )
+    assert "reinstalled" in decision
+    assert ["brew", "reinstall", "tap/nyxgpt-api"] in calls
+    assert (tmp_path / ".nyxgpt-api.sha256").read_text(encoding="utf-8") == "new-sha"
+
+
+@pytest.mark.unit
+def test_brew_install_or_reinstall_skips_when_unchanged(monkeypatch, tmp_path):
+    (tmp_path / ".nyxgpt-api.sha256").write_text("same-sha", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+    decision = ops._brew_install_or_reinstall(
+        "tap/nyxgpt-api", "nyxgpt-api", sha256="same-sha", marker_dir=tmp_path
+    )
+    assert "skipped" in decision
+    assert calls == [["brew", "list", "--versions", "nyxgpt-api"]]
+    assert (tmp_path / ".nyxgpt-api.sha256").read_text(encoding="utf-8") == "same-sha"
+
+
+# --- _vendor_tree ---
+
+
+@pytest.mark.unit
+def test_vendor_tree_excludes_named_directories(tmp_path):
+    src = tmp_path / "src"
+    (src / "node_modules" / "pkg").mkdir(parents=True)
+    (src / "node_modules" / "pkg" / "index.js").write_text("", encoding="utf-8")
+    (src / "keep.txt").write_text("keep", encoding="utf-8")
+
+    dst = tmp_path / "dst"
+    ops._vendor_tree(src, dst, excludes=frozenset({"node_modules"}))
+
+    assert (dst / "keep.txt").exists()
+    assert not (dst / "node_modules").exists()
 
 
 # --- _ensure_web_deps ---
@@ -4256,6 +4547,104 @@ def test_stop_already_stopped_component_does_nothing(capsys):
 
 
 @pytest.mark.unit
+def test_stop_marks_component_intentionally_stopped(capsys):
+    mode = _mode(native={"api": "started"}, compose={})
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=mode),
+        patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops.self_heal, "mark_intentionally_stopped") as mark_stopped,
+    ):
+        args = MagicMock()
+        args.target = "api"
+        rc = ops.stop(args)
+        assert rc == 0
+
+    mark_stopped.assert_called_once_with("api")
+
+
+@pytest.mark.unit
+def test_stop_marks_already_stopped_component_too(capsys):
+    """Marking happens even when nothing was actually running -- idempotent,
+    and it correctly reflects operator intent regardless of prior state."""
+    mode = _mode(native={"api": "none"}, compose={})
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=mode),
+        patch.object(ops.self_heal, "mark_intentionally_stopped") as mark_stopped,
+    ):
+        args = MagicMock()
+        args.target = "api"
+        ops.stop(args)
+
+    mark_stopped.assert_called_once_with("api")
+
+
+@pytest.mark.unit
+def test_stop_all_marks_every_core_component(capsys):
+    mode = _mode(
+        native={"api": "started", "web": "started", "ollama": "started", "cassandra": "running"},
+        compose={},
+    )
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=mode),
+        patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_launchagent", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops.self_heal, "mark_intentionally_stopped") as mark_stopped,
+    ):
+        args = MagicMock()
+        args.target = "all"
+        ops.stop(args)
+
+    assert mark_stopped.call_args_list == [
+        call("api"),
+        call("web"),
+        call("ollama"),
+        call("cassandra"),
+    ]
+
+
+@pytest.mark.unit
+def test_stop_mark_intentional_stop_failure_does_not_block_stop(capsys):
+    mode = _mode(native={"api": "started"}, compose={})
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=mode),
+        patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops.self_heal, "mark_intentionally_stopped", side_effect=RuntimeError("boom")),
+    ):
+        args = MagicMock()
+        args.target = "api"
+        rc = ops.stop(args)
+
+    assert rc == 0
+    assert "Could not mark api as intentionally stopped" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_stop_leaves_terraform_or_kubernetes_managed_component_unmarked(capsys):
+    """`nyxgpt ops stop` (no --terraform/--kubernetes) never stops a
+    Terraform/Kubernetes-managed container, so it must not mark that
+    component intentionally stopped either -- doing so would blind
+    self-heal to a component this call never touched (#3406)."""
+    mode = _mode(native={"api": "none"}, compose={})
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=mode),
+        patch.object(ops, "_terraform_or_kubernetes_managed_components", return_value={"api"}),
+        patch.object(ops.self_heal, "mark_intentionally_stopped") as mark_stopped,
+        patch.object(ops, "_stop_brew_service") as sb,
+        patch.object(ops, "_compose_stop_service") as cs,
+    ):
+        args = MagicMock()
+        args.target = "api"
+        rc = ops.stop(args)
+
+    assert rc == 0
+    mark_stopped.assert_not_called()
+    sb.assert_not_called()
+    cs.assert_not_called()
+    assert "Terraform/Kubernetes" in capsys.readouterr().out
+
+
+@pytest.mark.unit
 def test_stop_observability_target_calls_stop_observability_stack():
     mode = _mode()
     with (
@@ -4362,10 +4751,12 @@ def test_down_all_scope_stops_native_and_composes_down(capsys):
 
 
 @pytest.mark.unit
-def test_down_disarms_self_heal_before_teardown():
-    """`ops down` disables the self-heal watchdog when tearing down the app
-    tier, so it can't restart the api/web/ollama/cassandra the teardown just
-    stopped (acceptance failure: self-heal must honor an intentional down)."""
+def test_down_marks_core_components_intentionally_stopped_before_teardown():
+    """`ops down` marks api/web/ollama/cassandra as intentionally stopped when
+    tearing down the app tier, so self-heal leaves them alone instead of
+    restarting what the teardown just stopped (acceptance failure: self-heal
+    must honor an intentional down). This replaces the old global watchdog
+    disable (commit f9967a72, #3406) -- the watchdog itself is untouched."""
     args = MagicMock(
         app_only=False,
         observability_only=False,
@@ -4375,7 +4766,7 @@ def test_down_disarms_self_heal_before_teardown():
         kubernetes=False,
     )
     with (
-        patch.object(ops.self_heal, "is_enabled", return_value=True),
+        patch.object(ops.self_heal, "mark_intentionally_stopped") as mark_stopped,
         patch.object(ops.self_heal, "set_enabled") as set_enabled,
         patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
@@ -4385,13 +4776,54 @@ def test_down_disarms_self_heal_before_teardown():
         rc = ops.down(args)
 
     assert rc == 0
-    set_enabled.assert_called_once_with(False)
+    assert mark_stopped.call_args_list == [
+        call("api"),
+        call("web"),
+        call("ollama"),
+        call("cassandra"),
+    ]
+    # The watchdog's enabled/disabled state is never touched by `down` --
+    # the SRE dashboard toggle is the only arm/disarm path (#3406).
+    set_enabled.assert_not_called()
+
+
+@pytest.mark.unit
+def test_down_leaves_terraform_or_kubernetes_managed_components_unmarked():
+    """A plain `nyxgpt ops down` (no --terraform/--kubernetes) only ever
+    stops the native/Compose form of api/web/ollama/cassandra. If one of
+    those service names is actually running under Terraform or Kubernetes,
+    this call never touches it, so it must not mark it intentionally
+    stopped either -- otherwise self-heal would stop guarding a component
+    that never went down (#3406)."""
+    args = MagicMock(
+        app_only=False,
+        observability_only=False,
+        volumes=False,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
+    with (
+        patch.object(
+            ops, "_terraform_or_kubernetes_managed_components", return_value={"api", "web"}
+        ),
+        patch.object(ops.self_heal, "mark_intentionally_stopped") as mark_stopped,
+        patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_launchagent", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_compose_available", return_value=False),
+    ):
+        rc = ops.down(args)
+
+    assert rc == 0
+    assert mark_stopped.call_args_list == [call("ollama"), call("cassandra")]
 
 
 @pytest.mark.unit
 def test_down_observability_only_does_not_touch_self_heal():
-    """Tearing down only the observability tier must not disarm self-heal --
-    the core app stack it guards is still meant to be running."""
+    """Tearing down only the observability tier must not mark any core
+    component intentionally stopped -- the core app stack it guards is still
+    meant to be running."""
     args = MagicMock(
         app_only=False,
         observability_only=True,
@@ -4401,11 +4833,13 @@ def test_down_observability_only_does_not_touch_self_heal():
         kubernetes=False,
     )
     with (
+        patch.object(ops.self_heal, "mark_intentionally_stopped") as mark_stopped,
         patch.object(ops.self_heal, "set_enabled") as set_enabled,
         patch.object(ops, "_compose_available", return_value=False),
     ):
         ops.down(args)
 
+    mark_stopped.assert_not_called()
     set_enabled.assert_not_called()
 
 
@@ -5706,6 +6140,35 @@ def test_install_terraform_stops_pipeline_on_step_failure(monkeypatch):
 
 
 @pytest.mark.unit
+def test_install_terraform_clears_intentional_stop_markers(monkeypatch, capsys):
+    """Terraform install brings all four core components up under
+    `nyxgpt-tf-*` -- their intentional-stop markers (from a prior `ops down`)
+    must be cleared so self-heal resumes guarding them (#3406)."""
+    args = SimpleNamespace(local=True, cloud=False, api_key="k")
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "migrate_legacy_volumes", return_value=ok),
+        patch.object(ops, "_ensure_terraform_binary", return_value=ok),
+        patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
+        patch.object(ops, "_generate_compose_config", return_value=ok),
+        patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
+        patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
+        patch.object(ops, "_provision_glitchtip", return_value=ok),
+        patch.object(ops, "_terraform_stack_health", return_value=ok),
+        patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
+    ):
+        rc = ops._install_terraform(args)
+    assert rc == 0
+    assert clear_stopped.call_args_list == [
+        call("api"),
+        call("web"),
+        call("ollama"),
+        call("cassandra"),
+    ]
+
+
+@pytest.mark.unit
 def test_down_terraform_no_binary(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_which", lambda prog: None)
     rc = ops._down_terraform(SimpleNamespace())
@@ -5949,6 +6412,26 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
     a.assert_called_once()
     h.assert_called_once()
     assert "[OK]" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_install_kubernetes_clears_intentional_stop_marker_for_api(monkeypatch, capsys):
+    """Kubernetes only manages `api` (no k8s manifest for web/ollama/cassandra)
+    -- its intentional-stop marker must be cleared, and only that one (#3406)."""
+    args = SimpleNamespace(local=True, cloud=False, api_key="k")
+    monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
+    ok = [ops.OpsResult(True, "ok")]
+    with (
+        patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        patch.object(ops, "_ensure_k8s_secret", return_value=ok),
+        patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
+        patch.object(ops, "_k8s_stack_health", return_value=ok),
+        patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
+    ):
+        rc = ops._install_kubernetes(args)
+    assert rc == 0
+    clear_stopped.assert_called_once_with("api")
 
 
 @pytest.mark.unit

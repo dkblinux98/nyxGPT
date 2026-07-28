@@ -131,6 +131,15 @@ kubectl -n nyxgpt port-forward svc/nyxgpt-api 8000:8000
 curl -H "X-API-Key: <your api-key>" http://127.0.0.1:8000/health
 ```
 
+The `nyxgpt-api` Pods deployed here are also watched by the same
+[self-heal watchdog](self-healing.md) as every other deployment path -- see
+[self-healing.md#kubernetes-mode](self-healing.md#kubernetes-mode) for how it
+checks Pod readiness via `kubectl get pods` and heals via `kubectl delete
+pod`, on top of (not instead of) the liveness probes and blue/green/canary
+mechanisms described below. `k8s/rbac.yaml`'s `nyxgpt-api` Role grants the
+`get`/`list`/`delete` on `pods` this needs, alongside what blue/green/canary
+already used.
+
 ## Reaching Ollama (and Cassandra) from inside the cluster
 
 `k8s/configmap.yaml` defaults `ollama.base_url` to

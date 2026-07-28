@@ -1073,10 +1073,15 @@ saved query, both linked directly from `/admin/self-heal`.
 ### `GET /api/v1/self-heal/status`
 
 Return whether the watchdog is enabled, live per-component health, and
-recent heal events. `components` also covers desired-but-absent and
-present-but-disabled observability profile services (`state: "absent"` /
-`desired: false` respectively) -- see
-[self-healing.md#desired-state-for-observability-profiles](self-healing.md#desired-state-for-observability-profiles).
+recent heal events. `source` is one of `"native"`, `"compose"`,
+`"terraform"`, or `"kubernetes"` depending on which mode is running that
+component -- see [self-healing.md](self-healing.md#how-it-works). `desired:
+false` covers both a present-but-disabled observability profile service and
+a core component an operator deliberately stopped via `nyxgpt ops down`/
+`stop` (`state: "absent"` for the former, see
+[self-healing.md#desired-state-for-observability-profiles](self-healing.md#desired-state-for-observability-profiles);
+[self-healing.md#intentional-stops-nyxgpt-ops-downstop-vs-self-heal](self-healing.md#intentional-stops-nyxgpt-ops-downstop-vs-self-heal)
+for the latter).
 
 **Response:**
 
@@ -1086,6 +1091,8 @@ present-but-disabled observability profile services (`state: "absent"` /
   "components": [
     { "service": "api", "container": "nyxgpt-api", "state": "started", "health": "", "healthy": true, "source": "native", "desired": true },
     { "service": "web", "container": "nyxgpt-web-1", "state": "running", "health": "healthy", "healthy": true, "source": "compose", "desired": true },
+    { "service": "cassandra", "container": "nyxgpt-tf-cassandra", "state": "running", "health": "healthy", "healthy": true, "source": "terraform", "desired": true },
+    { "service": "nyxgpt-api-stable-7f8b9c-abcde", "container": "nyxgpt-api-stable-7f8b9c-abcde", "state": "Running", "health": "ready", "healthy": true, "source": "kubernetes", "desired": true },
     { "service": "grafana", "container": "", "state": "absent", "health": "", "healthy": false, "source": "compose", "desired": true },
     { "service": "loki", "container": "nyxgpt-loki-1", "state": "exited", "health": "", "healthy": false, "source": "compose", "desired": false }
   ],
@@ -2957,9 +2964,13 @@ api_base_url =
 - `port` — port the web UI listens on
 - `api_base_url` — optional override of FastAPI base URL; if unset, `[api] host/port` is used
 
-The web UI is launched using a small wrapper script that reads this configuration.
+The web UI is launched using a small wrapper script that reads `host`/`port`/`api_base_url`
+from this configuration; the app itself is a self-contained build inside the
+Homebrew Cellar keg (see [homebrew.md](homebrew.md)), not the repo checkout.
 
-Note: Homebrew/launchd services run with a minimal `PATH`. The web wrapper (`nyxgpt-web`) and `~/.nyxGPT/scripts/run-web.sh` ensure `node` is discoverable (via `[paths] node_bin` / `npm_bin`) so `npm` can run reliably in the background.
+Note: Homebrew/launchd services run with a minimal `PATH`. The web wrapper (`nyxgpt-web`)
+resolves `node`/`npm` via the Homebrew `node` formula it depends on, so `npm` can run
+reliably in the background regardless of the interactive shell's `PATH`.
 
 ---
 

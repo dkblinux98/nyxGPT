@@ -183,6 +183,11 @@ design. To actually delete it, remove the host directories yourself or use
 | **Terraform** (this doc) | You want plan/apply/destroy semantics and drift detection for the core stack |
 | [Kubernetes](kubernetes.md) | Local cluster (kind/minikube/k3s), blue/green and canary rollout of the API |
 
+This deployment is watched by the same [self-heal watchdog](self-healing.md)
+as every other deployment path -- see [self-healing.md#terraform-mode](self-healing.md#terraform-mode)
+for how it checks/heals the `nyxgpt-tf-*` containers and the Docker socket
+mount that makes that possible.
+
 Only run one of Compose or Terraform at a time against the same host ports —
 both default to `8000`/`3000`/`11434`/`9042`. This also matters for data
 integrity now, not just ports: `ollama`/`cassandra`/`api` bind-mount the same

@@ -1,4 +1,4 @@
-"""Self-heal watchdog for the local deployed stack (native/local-first and Docker Compose).
+"""Self-heal watchdog for the local deployed stack (native, Compose, Terraform, Kubernetes).
 
 Periodically checks the health of every core app component -- `api`, `web`,
 `ollama`, `cassandra` -- plus any Compose container that's currently up
@@ -7,23 +7,32 @@ monitoring/logging/tracing/errors) and restarts anything unhealthy or
 stopped, with capped consecutive-restart backoff so a genuinely broken
 component doesn't get restart-looped forever.
 
-Two deployment modes are covered:
+Four deployment modes are covered:
 - **Docker Compose**: containers listed via `docker compose ps`, healed via
   `docker compose restart <service>`.
 - **Native/local-first** (the default local deployment -- see
   `nyxgpt ops install`): `api`/`web`/`ollama` run as Homebrew services and
   `cassandra` runs as the plain (non-Compose) `nyxgpt-cassandra` Docker
   container. Healed via `brew services restart <name>`/`docker restart
-  <container>` -- the same mechanisms `nyxgpt ops restart` uses. A component
-  already reported by Compose is presumed to be that component's active
-  deployment and is not also monitored natively, so the two modes never
-  double-heal (or collide on) the same component.
+  <container>` -- the same mechanisms `nyxgpt ops restart` uses.
+- **Terraform** (`nyxgpt ops install --terraform --local`): `ollama`/
+  `cassandra`/`api`/`web` run as the plain (non-Compose) `nyxgpt-tf-*`
+  Docker containers defined in `terraform/main.tf`. Checked/healed directly
+  via `docker ps`/`docker restart <container>`, the same way native mode's
+  `nyxgpt-cassandra` is -- see `_list_terraform_component_status`.
+- **Kubernetes** (`nyxgpt ops install --kubernetes --local`): the `nyxgpt-api`
+  Deployments' Pods (blue/green/stable/canary, see `k8s/`), checked via
+  `kubectl get pods` and healed via `kubectl delete pod` (the Deployment's
+  controller recreates it) -- see `_list_kubernetes_component_status`. This
+  is on top of, not instead of, Kubernetes' own kubelet liveness-probe
+  restarts and `deploy.py`/`canary.py`'s blue/green + auto-rollback; it adds
+  the same "torn-down/stuck" recovery + unified dashboard visibility the
+  other three modes get.
 
-This targets Compose and the native/local-first path, the two documented
-local "full stack" deploy paths (see docs/deployment.md) -- Terraform
-intentionally only manages the core four services (see docs/terraform.md)
-and the Kubernetes path already has its own recovery mechanisms (deploy.py
-blue/green, canary.py auto-rollback).
+A component already reported by one mode is presumed to be that component's
+active deployment and is not also monitored by another, so no two modes
+double-heal (or collide on) the same component -- see the `already_managed`
+exclusion threaded through `list_component_status`.
 
 **Desired state for the observability profiles**: `docker compose ps`
 only reports containers that exist -- a profile that was torn down
@@ -35,15 +44,27 @@ profile's flag is on, its Compose services are desired-running, and an
 absent one is healed the same as an unhealthy one (`docker compose up -d
 <service>` instead of `restart`, since there's no container to restart).
 Disabling the feature flag (not just tearing the containers down) is the
-supported way to keep a profile off with auto-heal enabled. This is out
-of scope for the core `api`/`web`/`ollama`/`cassandra` services, which are
-a deployment-mode choice rather than a feature flag -- see #3348 for
-native-mode coverage of those.
+supported way to keep a profile off with auto-heal enabled.
 
-State (whether the watchdog is enabled, per-service restart counts, and the
-recent event history shown on the SRE/admin dashboard) is persisted to
-`~/.nyxGPT/self_heal_state.json`, mirroring deploy.py/canary.py's
-`deploy_state.json`/`canary_state.json`.
+**Desired state for the core components**: whether `api`/`web`/`ollama`/
+`cassandra` should be running is an operator decision (`nyxgpt ops down`/
+`stop`), not a config.ini feature flag, so it's tracked separately: an
+*intentional-stop registry* (`mark_intentionally_stopped`/
+`clear_intentionally_stopped`, persisted alongside `enabled`) records which
+core components an operator deliberately stopped. `list_component_status`
+flags those `desired=False` the same way a disabled observability profile
+is, so the automatic heal pass leaves them alone regardless of which
+deployment mode stopped them (native `brew services`/`docker stop`, or a
+Compose `docker compose stop`) -- this is what lets `nyxgpt ops down`/`stop`
+avoid fighting with an *enabled* watchdog instead of needing to disable it
+globally (see #3406). `nyxgpt ops install`/`restart`/`up` of a component
+clears its marker, since bringing it back up is itself the "this is desired
+again" signal.
+
+State (whether the watchdog is enabled, per-service restart counts, the
+intentional-stop registry, and the recent event history shown on the
+SRE/admin dashboard) is persisted to `~/.nyxGPT/self_heal_state.json`,
+mirroring deploy.py/canary.py's `deploy_state.json`/`canary_state.json`.
 """
 
 from __future__ import annotations
@@ -136,6 +157,23 @@ NATIVE_BREW_SERVICES: dict[str, str] = {
 # native/local-first install.
 NATIVE_CASSANDRA_CONTAINER = "nyxgpt-cassandra"
 
+# Maps a core component to its Terraform-managed container name (see
+# terraform/main.tf). Mirrors ops.TERRAFORM_CONTAINERS -- kept as a separate
+# copy here for the same reason as NATIVE_BREW_SERVICES above.
+TERRAFORM_CONTAINERS: dict[str, str] = {
+    "ollama": "nyxgpt-tf-ollama",
+    "cassandra": "nyxgpt-tf-cassandra",
+    "api": "nyxgpt-tf-api",
+    "web": "nyxgpt-tf-web",
+}
+
+# Namespace and label selector for the Kubernetes-managed `nyxgpt-api` Pods
+# (blue/green deployments use `app=nyxgpt-api`, stable/canary use
+# `app=nyxgpt-api-canary-pool` -- see k8s/deployment-*.yaml). Mirrors
+# ops.K8S_NAMESPACE.
+K8S_NAMESPACE = "nyxgpt"
+K8S_POD_LABEL_SELECTOR = "app in (nyxgpt-api,nyxgpt-api-canary-pool)"
+
 # Docker Compose profiles that make up the opt-in observability suite.
 # Mirrors ops.OBSERVABILITY_PROFILES -- kept as a separate copy (rather than
 # importing ops.py) for the same reason as NATIVE_BREW_SERVICES above: ops.py
@@ -165,11 +203,13 @@ OBSERVABILITY_PROFILE_SECTIONS: dict[str, str] = {
 
 @dataclass(frozen=True)
 class ComponentStatus:
-    """A single component's status, from either `docker compose ps` or a native check.
+    """A single component's status, from a Compose, native, Terraform, or Kubernetes check.
 
     `source` is `"compose"` (the default, for `docker compose ps`-derived
-    entries) or `"native"` (a Homebrew service or the native `nyxgpt-cassandra`
-    container, checked directly rather than through Compose).
+    entries), `"native"` (a Homebrew service or the native `nyxgpt-cassandra`
+    container, checked directly rather than through Compose), `"terraform"`
+    (a `nyxgpt-tf-*` container, checked directly via `docker ps`), or
+    `"kubernetes"` (a `nyxgpt-api` Pod, checked via `kubectl get pods`).
 
     `desired` is `True` unless this is a *present* Compose container whose
     observability profile is currently disabled in config.ini (e.g. someone
@@ -256,7 +296,13 @@ _state_lock = threading.Lock()
 
 def _default_state() -> dict[str, Any]:
     """Build the default (disabled, empty history) self-heal state dict."""
-    return {"enabled": False, "events": [], "restart_counts": {}, "last_restart_ts": {}}
+    return {
+        "enabled": False,
+        "events": [],
+        "restart_counts": {},
+        "last_restart_ts": {},
+        "intentionally_stopped": [],
+    }
 
 
 def _load_state() -> dict[str, Any]:
@@ -315,6 +361,57 @@ def set_enabled(enabled: bool) -> bool:
         return enabled
 
 
+def is_intentionally_stopped(component: str) -> bool:
+    """Whether `component` was deliberately stopped by an operator (`nyxgpt ops down`/`stop`).
+
+    This is separate from `enabled` -- it's per-component, not a global
+    kill switch -- so an armed watchdog can keep healing genuine crashes of
+    every *other* component while leaving this one alone. See the module
+    docstring's "Desired state for the core components" section.
+    """
+    with _state_lock:
+        return component in set(_load_state().get("intentionally_stopped", []))
+
+
+def mark_intentionally_stopped(component: str) -> None:
+    """Record that `component` was deliberately stopped by an operator.
+
+    Called by `nyxgpt ops down`/`stop` instead of disabling the watchdog
+    globally (the old, now-removed behavior -- see #3406): the next heal
+    pass sees this component `desired=False` (via `list_component_status`)
+    and leaves it alone, while every other component stays protected by an
+    enabled watchdog.
+    """
+    with _state_lock:
+        state = _load_state()
+        stopped = set(state.get("intentionally_stopped", []))
+        stopped.add(component)
+        state["intentionally_stopped"] = sorted(stopped)
+        _save_state(state)
+
+
+def clear_intentionally_stopped(component: str) -> None:
+    """Clear `component`'s intentional-stop marker (it's being brought back up).
+
+    Called by `nyxgpt ops install`/`restart`/`up` for the component(s) they
+    bring up -- bringing a component back up is itself the "this is desired
+    again" signal, so self-heal resumes guarding it against future crashes.
+    A component never marked stopped is a no-op.
+    """
+    with _state_lock:
+        state = _load_state()
+        stopped = set(state.get("intentionally_stopped", []))
+        stopped.discard(component)
+        state["intentionally_stopped"] = sorted(stopped)
+        _save_state(state)
+
+
+def list_intentionally_stopped() -> list[str]:
+    """Return every component currently marked as deliberately stopped."""
+    with _state_lock:
+        return list(_load_state().get("intentionally_stopped", []))
+
+
 def recent_events(limit: int = 50) -> list[dict[str, Any]]:
     """Return up to `limit` most recent heal events, newest last.
 
@@ -364,6 +461,135 @@ def _native_container_state(name: str) -> str:
         return "absent"
     out = (cp.stdout or "").strip()
     return out.splitlines()[0].strip() if out else "absent"
+
+
+def _native_container_health(name: str) -> str:
+    """Return the Docker `HEALTHCHECK` status for container `name` (``''`` if none/unavailable)."""
+    if _which("docker") is None:
+        return ""
+    try:
+        cp = _run(
+            [
+                "docker",
+                "inspect",
+                "-f",
+                "{{if .State.Health}}{{.State.Health.Status}}{{end}}",
+                name,
+            ]
+        )
+    except Exception as e:
+        logger.warning("self-heal: failed to query docker health for %s: %s", name, e)
+        return ""
+    if cp.returncode != 0:
+        return ""
+    return (cp.stdout or "").strip()
+
+
+def _list_terraform_component_status(already_managed: set[str]) -> list[ComponentStatus]:
+    """Health-check the Terraform-managed core containers (`nyxgpt-tf-*`) directly via Docker.
+
+    Mirrors `_list_native_component_status`'s native-Cassandra check, applied
+    to all four core components: Terraform (`nyxgpt ops install --terraform
+    --local`) runs `ollama`/`cassandra`/`api`/`web` as plain (non-Compose)
+    Docker containers (see `terraform/main.tf`), invisible to both `docker
+    compose ps` and `brew services list`. `already_managed` excludes any
+    component already reported by Compose or native/local-first, so the same
+    component is never checked/healed by two modes at once.
+
+    Only reports a component whose container actually exists -- before
+    `terraform apply` (or after `terraform destroy`), there's nothing to
+    report, not a "down" component.
+    """
+    statuses: list[ComponentStatus] = []
+    for component, container in TERRAFORM_CONTAINERS.items():
+        if component in already_managed:
+            continue
+        state = _native_container_state(container)
+        if state == "absent":
+            continue
+        health = _native_container_health(container)
+        healthy = state == "running" and health in ("", "healthy", "starting")
+        statuses.append(
+            ComponentStatus(
+                service=component,
+                container=container,
+                state=state,
+                health=health,
+                healthy=healthy,
+                source="terraform",
+            )
+        )
+    return statuses
+
+
+def _list_kubernetes_component_status(already_managed: set[str]) -> list[ComponentStatus]:
+    """Health-check the Kubernetes-managed `nyxgpt-api` Pods via `kubectl get pods`.
+
+    Covers `nyxgpt ops install --kubernetes --local` (see `k8s/`): the
+    blue/green/stable/canary Deployments' Pods, one `ComponentStatus` per
+    Pod (not per Deployment -- `stable` alone can run several replicas, and
+    each needs its own backoff/restart-count bookkeeping in `heal_now`).
+    Healed via `kubectl delete pod`, which the Pod's Deployment/ReplicaSet
+    then recreates -- on top of, not instead of, kubelet's own liveness-probe
+    restarts and `deploy.py`/`canary.py`'s blue/green + auto-rollback (see
+    the module docstring).
+
+    Returns an empty list (never raises) if `kubectl` isn't on PATH, there's
+    no reachable cluster, or the namespace/Pods don't exist yet -- the same
+    "can't tell, so report nothing" fallback the rest of this module uses.
+    `already_managed` is accepted for symmetry with
+    `_list_terraform_component_status`, though Pod names never collide with
+    the native/Compose/Terraform component names it carries.
+    """
+    if _which("kubectl") is None:
+        return []
+    try:
+        cp = _run(
+            [
+                "kubectl",
+                "get",
+                "pods",
+                "-n",
+                K8S_NAMESPACE,
+                "-l",
+                K8S_POD_LABEL_SELECTOR,
+                "-o",
+                "json",
+            ],
+            timeout=15.0,
+        )
+    except Exception as e:
+        logger.warning("self-heal: failed to query kubernetes pods: %s", e)
+        return []
+    if cp.returncode != 0:
+        return []
+    try:
+        data = json.loads(cp.stdout or "{}")
+    except Exception as e:
+        logger.warning("self-heal: failed to parse kubectl get pods output: %s", e)
+        return []
+
+    statuses: list[ComponentStatus] = []
+    for pod in data.get("items", []):
+        name = pod.get("metadata", {}).get("name", "")
+        if not name or name in already_managed:
+            continue
+        status = pod.get("status", {})
+        phase = status.get("phase", "")
+        conditions = status.get("conditions", [])
+        ready = any(c.get("type") == "Ready" and c.get("status") == "True" for c in conditions)
+        healthy = phase == "Running" and ready
+        statuses.append(
+            ComponentStatus(
+                service=name,
+                container=name,
+                state=phase,
+                health="ready" if ready else "not-ready",
+                healthy=healthy,
+                source="kubernetes",
+            )
+        )
+    return statuses
 
 
 def _list_native_component_status(compose_managed: set[str]) -> list[ComponentStatus]:
@@ -556,28 +782,55 @@ def _mark_disabled_present_services(
 
 
 def list_component_status() -> list[ComponentStatus]:
-    """Health-check every monitored component: Compose containers plus native components.
+    """Health-check every monitored component across every deployment mode.
 
     Combines `_list_compose_component_status()` (whatever's currently up
     under Docker Compose, with any component whose observability profile is
     currently disabled flagged `desired=False` -- see
     `_mark_disabled_present_services`), `_list_native_component_status()`
     (the core native/local-first components not already covered by Compose),
-    and `_absent_desired_statuses()` (enabled observability profiles with no
-    running containers at all), so the same call surfaces the right set
-    regardless of which deployment mode -- or mix of both -- is actually
-    running, and regardless of whether a desired component currently exists
-    at all.
+    `_list_terraform_component_status()`/`_list_kubernetes_component_status()`
+    (the Terraform-/Kubernetes-managed core components not already covered by
+    an earlier mode), and `_absent_desired_statuses()` (enabled observability
+    profiles with no running containers at all), so the same call surfaces
+    the right set regardless of which deployment mode -- or mix of modes --
+    is actually running, and regardless of whether a desired component
+    currently exists at all.
+
+    Finally, any component an operator deliberately stopped (`nyxgpt ops
+    down`/`stop` -- see `list_intentionally_stopped`) is flagged
+    `desired=False` too, the same mechanism used for a disabled observability
+    profile: `heal_now`'s automatic pass leaves it alone, regardless of which
+    mode stopped it, until `nyxgpt ops install`/`restart`/`up` clears the
+    marker.
     """
     compose_statuses = _list_compose_component_status()
     compose_managed = {s.service for s in compose_statuses}
     native_statuses = _list_native_component_status(compose_managed)
+    native_managed = compose_managed | {s.service for s in native_statuses}
+    terraform_statuses = _list_terraform_component_status(native_managed)
+    terraform_managed = native_managed | {s.service for s in terraform_statuses}
+    kubernetes_statuses = _list_kubernetes_component_status(terraform_managed)
 
     desired_services = _desired_compose_services(_enabled_observability_profiles())
     compose_statuses = _mark_disabled_present_services(compose_statuses, desired_services)
     absent_statuses = _absent_desired_statuses(compose_managed, desired_services)
 
-    return compose_statuses + native_statuses + absent_statuses
+    all_statuses = (
+        compose_statuses
+        + native_statuses
+        + terraform_statuses
+        + kubernetes_statuses
+        + absent_statuses
+    )
+
+    stopped = set(list_intentionally_stopped())
+    if stopped:
+        all_statuses = [
+            replace(s, desired=False) if s.desired and s.service in stopped else s
+            for s in all_statuses
+        ]
+    return all_statuses
 
 
 def _list_compose_component_status() -> list[ComponentStatus]:
@@ -780,6 +1033,40 @@ def restart_native_component(component: str) -> HealResult:
     return _restart_brew_service(brew_name)
 
 
+def restart_terraform_component(component: str) -> HealResult:
+    """Restart a Terraform-managed core component: `docker restart nyxgpt-tf-<component>`.
+
+    The same primitive `nyxgpt ops restart` would use for a Terraform
+    deployment, so the user never needs a raw `docker` command.
+    """
+    container = TERRAFORM_CONTAINERS.get(component)
+    if container is None:
+        return HealResult(False, f"Unknown terraform component: {component}")
+    return _restart_native_container(container)
+
+
+def heal_kubernetes_pod(pod_name: str) -> HealResult:
+    """Heal a Kubernetes-managed Pod by deleting it: `kubectl delete pod <name>`.
+
+    The owning Deployment's ReplicaSet recreates the Pod -- this is a
+    stronger recovery action than kubelet's own in-place container restart
+    on a failed liveness probe, useful for a Pod that's stuck rather than
+    cleanly crash-looping.
+    """
+    if _which("kubectl") is None:
+        return HealResult(False, f"kubectl not found; cannot heal pod {pod_name}")
+    try:
+        cp = _run(["kubectl", "delete", "pod", pod_name, "-n", K8S_NAMESPACE], timeout=60.0)
+    except Exception as e:
+        return HealResult(False, f"Failed to delete pod {pod_name}", f"{type(e).__name__}: {e}")
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return HealResult(False, f"Failed to delete pod {pod_name}", details.strip())
+    return HealResult(True, f"Deleted pod {pod_name} for recreation")
+
+
 def component_logs(service: str, *, tail: int = 200) -> HealResult:
     """Fetch recent logs for a single Compose service: `docker compose logs <service>`.
 
@@ -948,6 +1235,10 @@ def heal_now(
             )
             if status.source == "native":
                 result = restart_native_component(status.service)
+            elif status.source == "terraform":
+                result = restart_terraform_component(status.service)
+            elif status.source == "kubernetes":
+                result = heal_kubernetes_pod(status.container)
             elif status.state == "absent":
                 # Enabled in config but no container at all (e.g. `nyxgpt ops
                 # down`) -- `docker compose restart` can't bring back what
@@ -1112,10 +1403,16 @@ __all__ = [
     "is_enabled",
     "seed_enabled_default",
     "set_enabled",
+    "is_intentionally_stopped",
+    "mark_intentionally_stopped",
+    "clear_intentionally_stopped",
+    "list_intentionally_stopped",
     "recent_events",
     "list_component_status",
     "restart_component",
     "restart_native_component",
+    "restart_terraform_component",
+    "heal_kubernetes_pod",
     "component_logs",
     "heal_now",
     "get_watchdog",

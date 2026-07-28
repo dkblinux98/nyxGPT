@@ -1569,9 +1569,10 @@ def cmd_self_heal_status(_cfg_path: Path | None) -> int:
         print("No Docker Compose containers found (is the stack up? `docker compose up -d`)")
         return 0
     for c in data["components"]:
-        marker = "OK" if c["healthy"] else "!!"
+        marker = "OK" if c["healthy"] or not c["desired"] else "!!"
         health = c["health"] or "n/a"
-        print(f" [{marker}] {c['service']}: state={c['state']} health={health}")
+        suffix = " (disabled -- not auto-healed)" if not c["desired"] else ""
+        print(f" [{marker}] {c['service']}: state={c['state']} health={health}{suffix}")
     if data["events"]:
         print("\nRecent heal events:")
         for e in data["events"][-10:]:
