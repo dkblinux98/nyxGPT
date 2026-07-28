@@ -33,6 +33,7 @@ resource "docker_container" "ollama" {
 
   networks_advanced {
     name = docker_network.nyxgpt.name
+    aliases = ["ollama"]
   }
 
   ports {
@@ -67,8 +68,15 @@ resource "docker_container" "cassandra" {
   image   = docker_image.cassandra.image_id
   restart = "unless-stopped"
 
+  # Must match the cluster name stamped into the shared cassandra_data volume
+  # (docker-compose.yml sets the same, and ops.py's CASSANDRA_CLUSTER_NAME) --
+  # Cassandra refuses to start against data saved under a different cluster
+  # name, so without this it crash-loops as the image default "Test Cluster".
+  env = ["CASSANDRA_CLUSTER_NAME=nyxgpt"]
+
   networks_advanced {
     name = docker_network.nyxgpt.name
+    aliases = ["cassandra"]
   }
 
   ports {
@@ -108,6 +116,7 @@ resource "docker_container" "api" {
 
   networks_advanced {
     name = docker_network.nyxgpt.name
+    aliases = ["api"]
   }
 
   ports {
@@ -159,8 +168,19 @@ resource "docker_container" "web" {
 
   depends_on = [docker_container.api]
 
+  # The Next.js server-side proxy routes reach the API over the docker network
+  # (not localhost, which inside this container is the web itself). Mirrors the
+  # `web` service env in docker-compose.yml. `api` resolves via that container's
+  # network alias. NYXGPT_AUTH_API_KEY is forwarded for parity; it's only used
+  # when the derived config has auth enabled.
+  env = [
+    "NYXGPT_API_BASE_URL=http://api:8000",
+    "NYXGPT_AUTH_API_KEY=${var.auth_api_key}",
+  ]
+
   networks_advanced {
     name = docker_network.nyxgpt.name
+    aliases = ["web"]
   }
 
   ports {

@@ -4362,6 +4362,54 @@ def test_down_all_scope_stops_native_and_composes_down(capsys):
 
 
 @pytest.mark.unit
+def test_down_disarms_self_heal_before_teardown():
+    """`ops down` disables the self-heal watchdog when tearing down the app
+    tier, so it can't restart the api/web/ollama/cassandra the teardown just
+    stopped (acceptance failure: self-heal must honor an intentional down)."""
+    args = MagicMock(
+        app_only=False,
+        observability_only=False,
+        volumes=False,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
+    with (
+        patch.object(ops.self_heal, "is_enabled", return_value=True),
+        patch.object(ops.self_heal, "set_enabled") as set_enabled,
+        patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_launchagent", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_compose_available", return_value=False),
+    ):
+        rc = ops.down(args)
+
+    assert rc == 0
+    set_enabled.assert_called_once_with(False)
+
+
+@pytest.mark.unit
+def test_down_observability_only_does_not_touch_self_heal():
+    """Tearing down only the observability tier must not disarm self-heal --
+    the core app stack it guards is still meant to be running."""
+    args = MagicMock(
+        app_only=False,
+        observability_only=True,
+        volumes=False,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
+    with (
+        patch.object(ops.self_heal, "set_enabled") as set_enabled,
+        patch.object(ops, "_compose_available", return_value=False),
+    ):
+        ops.down(args)
+
+    set_enabled.assert_not_called()
+
+
+@pytest.mark.unit
 def test_down_app_only_scope_skips_observability(capsys):
     args = MagicMock(
         app_only=True,
@@ -5616,18 +5664,23 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok) as b,
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
-        patch.object(ops, "_ensure_compose_config_file", return_value=ok) as c,
+        patch.object(ops, "_generate_compose_config", return_value=ok) as c,
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok) as a,
+        patch.object(ops, "_start_observability_stack_terraform", return_value=ok) as o,
+        patch.object(ops, "_provision_glitchtip", return_value=ok) as g,
         patch.object(ops, "_terraform_stack_health", return_value=ok) as h,
     ):
         rc = ops._install_terraform(args)
     assert rc == 0
     b.assert_called_once()
     t.assert_called_once_with("k")
-    # The Terraform path must seed docker/config.docker.ini before apply --
+    # The Terraform path must derive docker/config.docker.ini before apply --
     # main.tf bind-mounts it, same as docker-compose.yml (regression: #3398).
     c.assert_called_once()
     a.assert_called_once()
+    # ...and bring observability up on the terraform network + provision GlitchTip.
+    o.assert_called_once()
+    g.assert_called_once()
     h.assert_called_once()
     assert "[OK]" in capsys.readouterr().out
 
@@ -5956,7 +6009,10 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
+        patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
+        patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
+        patch.object(ops, "_provision_glitchtip", return_value=ok),
         patch.object(ops, "_terraform_stack_health", return_value=ok),
     ):
         results = ops.install_terraform_local(api_key="k")
@@ -6159,75 +6215,99 @@ def test_doctor_flags_stale_terraform_state(monkeypatch, tmp_path, capsys):
 
 
 @pytest.mark.unit
-def test_ensure_compose_config_file_seeds_from_example(tmp_path, monkeypatch):
-    """A fresh checkout (no live file, template present) gets the live file
-    created from the .example template."""
-    example = tmp_path / "config.docker.ini.example"
-    live = tmp_path / "config.docker.ini"
-    example.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
-    monkeypatch.setattr(ops, "COMPOSE_CONFIG_EXAMPLE", example)
-    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", live)
-
-    results = ops._ensure_compose_config_file()
-
-    assert all(r.ok for r in results)
-    assert live.exists()
-    assert live.read_text(encoding="utf-8") == example.read_text(encoding="utf-8")
-
-
-@pytest.mark.unit
-def test_ensure_compose_config_file_does_not_overwrite_existing(tmp_path, monkeypatch):
-    """An existing live file (with its runtime DSN) is left untouched."""
-    example = tmp_path / "config.docker.ini.example"
-    live = tmp_path / "config.docker.ini"
-    example.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
-    live.write_text(
-        "[error_tracking]\nenabled = true\ndsn = http://key@localhost:8080/2\n", encoding="utf-8"
+def test_generate_compose_config_derives_from_native(tmp_path, monkeypatch):
+    """docker/config.docker.ini is derived from the native config: service
+    endpoints are rewritten for the container network, auth is forced on, and
+    browser-facing UI URLs plus user settings are preserved verbatim."""
+    home = tmp_path / "home"
+    (home / ".nyxGPT").mkdir(parents=True)
+    native = home / ".nyxGPT" / "config.ini"
+    native.write_text(
+        "[nyxgpt]\n"
+        "default_model = llama3.1:8b\n"
+        "sessions_dir = ~/.nyxGPT/sessions\n"
+        "vectorstore_dir = ~/.nyxGPT/vectorstore\n"
+        "[logging]\n"
+        "dir = ~/.nyxGPT/logs\n"
+        "[ollama]\n"
+        "base_url = http://127.0.0.1:11434\n"
+        "[api]\n"
+        "host = 127.0.0.1\n"
+        "[auth]\n"
+        "enabled = false\n"
+        "[rag]\n"
+        "cassandra_hosts = 127.0.0.1\n"
+        "[tracing]\n"
+        "otlp_endpoint = http://127.0.0.1:4318/v1/traces\n"
+        "jaeger_ui_url = http://localhost:16686\n",
+        encoding="utf-8",
     )
-    monkeypatch.setattr(ops, "COMPOSE_CONFIG_EXAMPLE", example)
-    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", live)
+    out = tmp_path / "config.docker.ini"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", out)
 
-    results = ops._ensure_compose_config_file()
-
+    results = ops._generate_compose_config()
     assert all(r.ok for r in results)
-    assert "http://key@localhost:8080/2" in live.read_text(encoding="utf-8")
+
+    text = out.read_text(encoding="utf-8")
+    # service endpoints rewritten for the container network
+    assert "base_url = http://ollama:11434" in text
+    assert "cassandra_hosts = cassandra" in text
+    assert "otlp_endpoint = http://otel-collector:4318/v1/traces" in text
+    assert "host = 0.0.0.0" in text
+    assert "sessions_dir = /root/.nyxGPT/sessions" in text
+    assert "vectorstore_dir = /root/.nyxGPT/vectorstore" in text
+    assert "dir = /root/.nyxGPT/logs" in text
+    # no duplicated keys from a mis-targeted section rewrite
+    assert text.count("sessions_dir =") == 1
+
+    parser = ConfigParser()
+    parser.read(out)
+    # auth follows the native config (NOT forced on): the --local deploy is
+    # loopback-only, so a native `enabled = false` carries over -- forcing it
+    # true would reject the web's own keyless requests.
+    assert parser.get("auth", "enabled") == "false"
+    # preserved: user setting + browser-facing UI URL stays localhost
+    assert parser.get("nyxgpt", "default_model") == "llama3.1:8b"
+    assert "jaeger_ui_url = http://localhost:16686" in text
 
 
 @pytest.mark.unit
-def test_ensure_compose_config_file_noop_without_template(tmp_path, monkeypatch):
-    """Outside a repo checkout (no template, no live file) it no-ops cleanly."""
-    example = tmp_path / "config.docker.ini.example"
-    live = tmp_path / "config.docker.ini"
-    monkeypatch.setattr(ops, "COMPOSE_CONFIG_EXAMPLE", example)
-    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", live)
+def test_generate_compose_config_noop_without_native(tmp_path, monkeypatch):
+    """Before `nyxgpt wizard` has created the native config, it no-ops cleanly."""
+    home = tmp_path / "empty-home"
+    home.mkdir()
+    out = tmp_path / "config.docker.ini"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", out)
 
-    results = ops._ensure_compose_config_file()
+    results = ops._generate_compose_config()
 
     assert all(r.ok for r in results)
-    assert not live.exists()
+    assert not out.exists()
 
 
 @pytest.mark.unit
-def test_env_sync_seeds_missing_compose_config(tmp_path, monkeypatch):
-    """`nyxgpt ops env-sync` seeds a missing docker/config.docker.ini from its
-    template -- covers the Compose-only Quickstart path (which runs env-sync
-    but not the native `nyxgpt ops install` flow)."""
-    cfg_path = tmp_path / "config.ini"
+def test_env_sync_generates_compose_config(tmp_path, monkeypatch):
+    """`nyxgpt ops env-sync` regenerates docker/config.docker.ini from the
+    native config -- the deploy paths that run env-sync get a fresh derived
+    container config."""
+    home = tmp_path / "home"
+    (home / ".nyxGPT").mkdir(parents=True)
+    cfg_path = home / ".nyxGPT" / "config.ini"
     _write_config(cfg_path, api_key="cli-api-key")
     env_path = tmp_path / ".env"
-    example = tmp_path / "config.docker.ini.example"
-    live = tmp_path / "config.docker.ini"
-    example.write_text("[error_tracking]\nenabled = false\ndsn =\n", encoding="utf-8")
-    monkeypatch.setattr(ops, "COMPOSE_CONFIG_EXAMPLE", example)
-    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", live)
+    out = tmp_path / "config.docker.ini"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "COMPOSE_CONFIG_FILE", out)
 
     args = MagicMock()
     args.config = str(cfg_path)
     args.env_file = str(env_path)
 
-    assert not live.exists()
+    assert not out.exists()
     rc = ops.env_sync(args)
 
     assert rc == 0
-    assert live.exists()
-    assert live.read_text(encoding="utf-8") == example.read_text(encoding="utf-8")
+    assert out.exists()
+    assert "host = 0.0.0.0" in out.read_text(encoding="utf-8")

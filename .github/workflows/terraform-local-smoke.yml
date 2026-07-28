@@ -1,0 +1,101 @@
+name: Terraform Local Smoke
+
+# The full-stack `--local` deploy is `nyxgpt ops install --terraform --local`
+# (there is no raw `docker compose up` full-stack path). This gate exercises
+# that command end-to-end so the defects that broke it but passed unit-test /
+# type-check CI are caught: the web page-type build errors, the api's missing
+# example.config.ini / httpx, the terraform network aliases + cassandra
+# cluster name, the derived-config transforms, and the observability stack
+# working on the terraform network (Prometheus scraping the api).
+
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile'
+      - 'web/Dockerfile'
+      - 'docker-compose.yml'
+      - 'docker/**'
+      - 'terraform/**'
+      - 'src/**'
+      - 'web/**'
+      - 'pyproject.toml'
+      - 'example.config.ini'
+      - '.github/workflows/terraform-local-smoke.yml'
+  push:
+    paths:
+      - 'Dockerfile'
+      - 'web/Dockerfile'
+      - 'docker-compose.yml'
+      - 'docker/**'
+      - 'terraform/**'
+      - 'src/**'
+      - 'web/**'
+      - 'pyproject.toml'
+      - 'example.config.ini'
+      - '.github/workflows/terraform-local-smoke.yml'
+
+jobs:
+  terraform-local-smoke:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.5'
+
+      - name: Install nyxgpt (editable)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Seed a native config from the tracked example
+        run: |
+          mkdir -p "$HOME/.nyxGPT"
+          # example.config.ini is the human template / schema source of truth;
+          # it's a valid native config for a from-scratch bring-up.
+          cp example.config.ini "$HOME/.nyxGPT/config.ini"
+
+      - name: nyxgpt ops install --terraform --local
+        run: nyxgpt ops install --terraform --local
+
+      - name: Verify core + observability are actually serving
+        run: |
+          set -uo pipefail
+          fail=0
+          check() { # <label> <url> <expected>
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$2" || echo 000)
+            echo "  $1 -> $code (expect $3)"
+            [ "$code" = "$3" ] || { echo "::error::$1 expected $3, got $code"; fail=1; }
+          }
+          check "api  /api/v1/models" http://localhost:8000/api/v1/models 200
+          check "web  /"              http://localhost:3000/ 200
+          check "web  /api/models"    http://localhost:3000/api/models 200
+          check "grafana health"      http://localhost:3001/api/health 200
+          check "jaeger UI"           http://localhost:16686/ 200
+          check "glitchtip UI"        http://localhost:8080/ 200
+          # Prometheus must be scraping the terraform api over the shared network.
+          api_target=$(curl -s --max-time 20 "http://localhost:9090/api/v1/targets?state=active" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); ts=d.get('data',{}).get('activeTargets',[]); print(next((t['health'] for t in ts if 'api' in t.get('labels',{}).get('job','')+t.get('scrapeUrl','')),'MISSING'))" 2>/dev/null || echo ERR)
+          echo "  prometheus api target -> $api_target (expect up)"
+          [ "$api_target" = "up" ] || { echo "::error::prometheus is not scraping the api (got $api_target)"; fail=1; }
+          exit $fail
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          docker ps -a
+          for c in nyxgpt-tf-api nyxgpt-tf-web nyxgpt-tf-cassandra nyxgpt-glitchtip-migrate-1; do
+            echo "::group::logs $c"; docker logs "$c" --tail 80 2>&1 || true; echo "::endgroup::"
+          done
+
+      - name: Tear down
+        if: always()
+        run: nyxgpt ops down --terraform || true

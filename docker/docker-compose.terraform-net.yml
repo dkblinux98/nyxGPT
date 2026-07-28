@@ -1,0 +1,15 @@
+# Compose override used by `nyxgpt ops install --terraform --local`.
+#
+# The core stack (api/web/ollama/cassandra) is managed by terraform on the
+# `nyxgpt-terraform` network; the observability stack stays in Compose. This
+# override points the Compose `nyxgpt` network at that existing terraform
+# network (external) so the observability containers share it -- Prometheus
+# can scrape the tf-api, the api reaches otel-collector/glitchtip, promtail
+# sees the shared logs volume, and Grafana/Jaeger work end-to-end.
+#
+# terraform apply must have created the network first; the install flow starts
+# observability only after that step.
+networks:
+  nyxgpt:
+    external: true
+    name: nyxgpt-terraform

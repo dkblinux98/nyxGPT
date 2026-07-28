@@ -44,14 +44,15 @@ require docker
 require curl
 require python3
 
-# docker/config.docker.ini is a git-ignored, per-machine artifact seeded from
-# its tracked .example template (see .gitignore / docs/docker-compose.md). This
-# script drives Compose directly without going through `nyxgpt ops install`, so
-# seed it here if a fresh checkout hasn't yet -- the bind mount at
-# docker-compose.yml:108 needs a real file, or Docker creates an empty dir.
+# docker/config.docker.ini is a git-ignored, per-machine artifact derived from
+# the native ~/.nyxGPT/config.ini by `nyxgpt ops env-sync`/install (never
+# hand-maintained). This script drives Compose directly, so generate it here if
+# a fresh checkout hasn't yet -- the bind mount needs a real file, or Docker
+# creates an empty dir in its place.
 if [[ ! -f docker/config.docker.ini ]]; then
-  cp docker/config.docker.ini.example docker/config.docker.ini
-  log "Seeded docker/config.docker.ini from its .example template"
+  nyxgpt ops env-sync >/dev/null 2>&1 \
+    && log "Generated docker/config.docker.ini from ~/.nyxGPT/config.ini (nyxgpt ops env-sync)" \
+    || fail "docker/config.docker.ini missing and 'nyxgpt ops env-sync' failed -- run 'nyxgpt wizard' then 'nyxgpt ops env-sync' first"
 fi
 
 NYXGPT_AUTH_API_KEY="${NYXGPT_AUTH_API_KEY:-}"

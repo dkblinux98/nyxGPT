@@ -68,14 +68,17 @@ COMPOSE_COMPONENT_PORTS: dict[str, int] = {
 NATIVE_CONFIG_HINT = "~/.nyxGPT/config.ini"
 COMPOSE_CONFIG_HINT = "docker/config.docker.ini (mounted into the Compose 'api' container)"
 
-# The Compose api container's config is a derived, per-machine artifact (like
-# .env): it's bind-mounted into the container and gets its DSN filled in at
-# runtime by `nyxgpt ops glitchtip-init`, so the live file is git-ignored.
-# `config.docker.ini.example` is the tracked, inert template; `nyxgpt ops
-# install` seeds the live file from it on a fresh checkout (see
-# `_ensure_compose_config_file`).
+# The container api-config is a derived, per-machine artifact (like .env):
+# it's bind-mounted into the containerized api and gets its DSN filled in at
+# runtime by `nyxgpt ops glitchtip-init`, so it is git-ignored. `nyxgpt ops
+# install`/`env-sync` regenerates it from the native `~/.nyxGPT/config.ini`
+# (the single source of truth) via `_generate_compose_config`.
 COMPOSE_CONFIG_FILE = REPO_ROOT / "docker" / "config.docker.ini"
-COMPOSE_CONFIG_EXAMPLE = REPO_ROOT / "docker" / "config.docker.ini.example"
+
+# Compose override that attaches the observability profiles to the
+# terraform-managed network (`nyxgpt-terraform`) so they interoperate with the
+# terraform-managed core containers -- used by `install --terraform --local`.
+TERRAFORM_NET_OVERRIDE = REPO_ROOT / "docker" / "docker-compose.terraform-net.yml"
 
 # Referenced by `_ensure_log_symlinks` to detect Compose mode and avoid
 # clobbering the file `follow-ollama-logs.sh`/its LaunchAgent is actively
@@ -851,43 +854,75 @@ def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     return results
 
 
-def _ensure_compose_config_file() -> list[OpsResult]:
-    """Seed the git-ignored live `docker/config.docker.ini` from its tracked
-    `.example` template when it doesn't exist yet.
+# Keys in the derived container api-config that must be rewritten from their
+# native (localhost) values to container-network values. Everything else --
+# models, RAG tuning, secrets, and the browser-facing *_ui_url values -- is
+# copied verbatim from ~/.nyxGPT/config.ini (the single source of truth); only
+# service-to-service endpoints change inside the container network. Terraform
+# gives its containers matching network aliases (cassandra/ollama/...) so these
+# same hostnames resolve under `nyxgpt ops install --terraform --local`.
+_COMPOSE_CONFIG_OVERRIDES: tuple[tuple[str, str, str], ...] = (
+    ("nyxgpt", "sessions_dir", "/root/.nyxGPT/sessions"),
+    ("nyxgpt", "vectorstore_dir", "/root/.nyxGPT/vectorstore"),
+    ("logging", "dir", "/root/.nyxGPT/logs"),
+    ("ollama", "base_url", "http://ollama:11434"),
+    ("rag", "cassandra_hosts", "cassandra"),
+    ("tracing", "otlp_endpoint", "http://otel-collector:4318/v1/traces"),
+    ("api", "host", "0.0.0.0"),
+    # NOTE: auth is intentionally NOT overridden. The `--local` deploy is
+    # loopback-only (NYXGPT_BIND_ADDR defaults to 127.0.0.1) and container
+    # traffic stays on the private docker network, so it mirrors the native
+    # local-first setup -- auth follows the real config. If the user has
+    # `[auth] enabled = true` + an api_key natively, that carries over; if it's
+    # disabled (the local default), forcing it on would just reject the web's
+    # own requests (it has no matching key), which is the 401/500 we hit.
+)
 
-    The live file is a derived, per-machine artifact (like `.env`): it's
-    bind-mounted read-only into the Compose `api` container as its
-    `config.ini`, and `nyxgpt ops glitchtip-init` fills its DSN in at runtime,
-    so it is git-ignored rather than committed. `docker/config.docker.ini.example`
-    is the tracked, inert template. This step recreates the live file on a fresh
-    checkout so the bind-mount always has a real file to mount -- a missing
-    bind-mount source makes Docker silently create an empty *directory* in its
-    place, which breaks the api container's config load.
 
-    No-ops (successfully) when run outside a repo checkout that lacks the
-    template.
+def _generate_compose_config() -> list[OpsResult]:
+    """Generate the git-ignored `docker/config.docker.ini` from the native
+    `~/.nyxGPT/config.ini` (the single source of truth).
+
+    The containerized deploys -- the observability Compose profiles and the
+    terraform/kubernetes `--local` core stack -- bind-mount this file as the
+    api container's `config.ini`. Rather than maintain a separate hand-edited
+    file, derive it from the real local config so the container runs the
+    user's actual settings, rewriting only the service-network endpoints that
+    must differ inside the container network (`_COMPOSE_CONFIG_OVERRIDES`). The
+    browser-facing `*_ui_url` values stay `localhost` -- they're opened from
+    the host, not container-internal.
+
+    Regenerated on every `nyxgpt ops install`/`env-sync` so native edits
+    propagate. Comments and unlisted keys survive verbatim (the rewrite is
+    line-based via `_patch_ini_value`), and the DSN `nyxgpt ops glitchtip-init`
+    writes into the native config carries over so error tracking stays wired.
+
+    No-ops (successfully) before `nyxgpt wizard` has created the native config.
     """
-    if COMPOSE_CONFIG_FILE.exists():
-        return [OpsResult(True, f"Compose config already present: {COMPOSE_CONFIG_FILE}")]
-    if not COMPOSE_CONFIG_EXAMPLE.exists():
+    native = Path.home() / ".nyxGPT" / "config.ini"
+    if not native.exists():
         return [
             OpsResult(
                 True,
-                "Skipped compose config seed (no template found)",
-                f"{COMPOSE_CONFIG_EXAMPLE} is absent -- not running from a repo checkout.",
+                f"Skipped compose config (no {native})",
+                "Run `nyxgpt wizard` to create config.ini, then re-run `nyxgpt ops install`.",
             )
         ]
     try:
-        shutil.copyfile(COMPOSE_CONFIG_EXAMPLE, COMPOSE_CONFIG_FILE)
+        text = native.read_text(encoding="utf-8")
+        for section, key, value in _COMPOSE_CONFIG_OVERRIDES:
+            text = _patch_ini_value(text, section, key, value)
+        COMPOSE_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        COMPOSE_CONFIG_FILE.write_text(text, encoding="utf-8")
     except OSError as e:
         return [
             OpsResult(
                 False,
-                f"Failed to create {COMPOSE_CONFIG_FILE}",
+                f"Failed to generate {COMPOSE_CONFIG_FILE}",
                 f"{type(e).__name__}: {e}",
             )
         ]
-    return [OpsResult(True, f"Created {COMPOSE_CONFIG_FILE} from {COMPOSE_CONFIG_EXAMPLE.name}")]
+    return [OpsResult(True, f"Generated {COMPOSE_CONFIG_FILE} from {native}")]
 
 
 def _persist_compose_file_path() -> list[OpsResult]:
@@ -1790,8 +1825,13 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
         # docker/config.docker.ini into the api container (same pattern as
         # docker-compose.yml), so the derived file has to exist first or
         # Docker creates an empty directory in its place.
-        ("compose config file", _ensure_compose_config_file),
+        ("compose config (derive from native)", _generate_compose_config),
         ("terraform init/plan/apply", _terraform_init_plan_apply),
+        # After apply (network + core containers exist): bring the observability
+        # stack up on the terraform network and auto-provision GlitchTip, so the
+        # terraform deploy has the same full SRE view as the native install.
+        ("observability stack (terraform network)", _start_observability_stack_terraform),
+        ("glitchtip auto-provisioning", _provision_glitchtip),
     ]
     for step_name, fn in steps:
         try:
@@ -2222,7 +2262,7 @@ def install(args) -> int:
         ("ollama service", _ensure_ollama_service),
         ("log symlinks", _ensure_log_symlinks),
         ("env sync", sync_env_from_config),
-        ("compose config file", _ensure_compose_config_file),
+        ("compose config (derive from native)", _generate_compose_config),
         ("compose file path", _persist_compose_file_path),
     ]
     if not getattr(args, "skip_observability", False):
@@ -3159,6 +3199,23 @@ def down(args) -> int:
     results: list[OpsResult] = []
 
     if scope in ("all", "app"):
+        # Disarm the self-heal watchdog BEFORE stopping anything. Otherwise its
+        # next pass sees the just-stopped api/web/ollama/cassandra as unhealthy
+        # and restarts them (`brew services restart` / `docker restart`),
+        # fighting the teardown -- the ports get re-occupied within seconds,
+        # which then blocks `nyxgpt ops install --terraform --local` with a
+        # spurious port collision. Self-heal had no way to tell an intentional
+        # `ops down` apart from a crash; disabling it here is that signal.
+        # Re-arm it from the SRE dashboard toggle after bringing a stack back up.
+        try:
+            if self_heal.is_enabled():
+                self_heal.set_enabled(False)
+                results.append(
+                    OpsResult(True, "Disarmed self-heal watchdog so it won't undo the teardown")
+                )
+        except Exception as e:  # never let self-heal bookkeeping block a teardown
+            results.append(OpsResult(True, f"Could not disarm self-heal ({type(e).__name__}: {e})"))
+
         results.extend(_stop_brew_service("nyxgpt-api"))
         results.extend(_stop_brew_service("nyxgpt-web"))
         results.extend(_stop_brew_service("ollama"))
@@ -3325,7 +3382,9 @@ def _enable_observability_config(cfg_path: Path | None = None) -> None:
     os.chmod(cfg_path, 0o600)
 
 
-def _start_observability_stack() -> list[OpsResult]:
+def _start_observability_stack(
+    extra_compose_files: list[Path] | None = None, force_recreate: bool = False
+) -> list[OpsResult]:
     """Start the Grafana/Loki/Jaeger/GlitchTip Compose profiles (idempotent).
 
     Wraps `docker compose --profile monitoring --profile logging --profile
@@ -3360,6 +3419,8 @@ def _start_observability_stack() -> list[OpsResult]:
         ]
 
     base_cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE)]
+    for extra in extra_compose_files or []:
+        base_cmd += ["-f", str(extra)]
     for profile in OBSERVABILITY_PROFILES:
         base_cmd += ["--profile", profile]
 
@@ -3387,7 +3448,14 @@ def _start_observability_stack() -> list[OpsResult]:
             )
         ]
 
-    cmd = base_cmd + ["up", "-d"] + observability_services
+    cmd = base_cmd + ["up", "-d"]
+    if force_recreate:
+        # Ensure containers attach to the current network even if ones from an
+        # earlier bring-up linger on a different network (e.g. switching to the
+        # terraform-net override) -- otherwise glitchtip-migrate et al. can't
+        # resolve their peers and the stack silently half-starts.
+        cmd += ["--force-recreate"]
+    cmd += observability_services
 
     cp = _run(cmd, check=False)
     if cp.returncode != 0:
@@ -3413,6 +3481,29 @@ def _start_observability_stack() -> list[OpsResult]:
             "install`) once its container passes its health check.",
         )
     ]
+
+
+def _start_observability_stack_terraform() -> list[OpsResult]:
+    """Start the observability Compose profiles on the terraform network.
+
+    A step in `nyxgpt ops install --terraform --local`, run after `terraform
+    apply` has created the `nyxgpt-terraform` network and the core containers.
+    Reuses `_start_observability_stack` with the terraform-net override so the
+    observability containers join that network and interoperate with the
+    terraform-managed core (Prometheus scrapes the tf-api, the api reaches
+    otel-collector/glitchtip, etc.).
+    """
+    if not TERRAFORM_NET_OVERRIDE.exists():
+        return [
+            OpsResult(
+                False,
+                f"Missing {TERRAFORM_NET_OVERRIDE}",
+                "Cannot attach observability to the terraform network without the override.",
+            )
+        ]
+    return _start_observability_stack(
+        extra_compose_files=[TERRAFORM_NET_OVERRIDE], force_recreate=True
+    )
 
 
 def observability(_args) -> int:
@@ -3577,7 +3668,7 @@ def env_sync(args) -> int:
         extra={"component": "ops", "action": "env-sync"},
     )
 
-    results = _ensure_compose_config_file()
+    results = _generate_compose_config()
     results += sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
 
     ok = _emit_results("env-sync", results)

@@ -280,8 +280,10 @@ def test_install_terraform_steps_records_success():
         patch.object(ops, "migrate_legacy_volumes", return_value=ok),
         patch.object(ops, "_ensure_terraform_binary", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
-        patch.object(ops, "_ensure_compose_config_file", return_value=ok),
+        patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
+        patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
+        patch.object(ops, "_provision_glitchtip", return_value=ok),
         patch.object(ops, "_terraform_stack_health", return_value=ok),
     ):
         results = ops.install_terraform_local(api_key="k")

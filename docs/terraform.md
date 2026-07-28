@@ -83,14 +83,15 @@ not something you're expected to type by hand.
 
 ## 1. Configure variables
 
-`nyxgpt ops install --terraform --local` seeds `docker/config.docker.ini` for
-you. If you drive Terraform by hand instead (below), seed it first from its
-tracked template — it's a git-ignored, per-machine file that `main.tf`
-bind-mounts into the `api` container, and a missing source would make Docker
-create an empty directory in its place:
+`nyxgpt ops install --terraform --local` generates `docker/config.docker.ini`
+for you (deriving it from your native `~/.nyxGPT/config.ini`). If you drive
+Terraform by hand instead (below), generate it first with `nyxgpt ops env-sync`
+— it's a git-ignored, per-machine file that `main.tf` bind-mounts into the `api`
+container, and a missing source would make Docker create an empty directory in
+its place:
 
 ```bash
-cp docker/config.docker.ini.example docker/config.docker.ini   # from repo root
+nyxgpt ops env-sync   # derives docker/config.docker.ini from ~/.nyxGPT/config.ini
 
 cd terraform
 cp terraform.tfvars.example terraform.tfvars

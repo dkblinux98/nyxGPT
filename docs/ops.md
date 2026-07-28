@@ -533,8 +533,8 @@ Behavior:
   `~/.nyxGPT/config.ini` (native) and `docker/config.docker.ini` (Compose)
   -- the DSN is a public key, safe to store in both. The live
   `docker/config.docker.ini` is a git-ignored, per-machine artifact that
-  `nyxgpt ops install` seeds from the tracked `docker/config.docker.ini.example`
-  template (like `.env` from `.env.example`), so this runtime write never
+  `nyxgpt ops install`/`env-sync` derive from the native `~/.nyxGPT/config.ini`
+  (rewriting only container-network endpoints), so this runtime write never
   dirties a tracked file.
 
 Exit codes:
