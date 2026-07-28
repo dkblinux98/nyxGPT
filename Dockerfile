@@ -57,6 +57,14 @@ COPY src ./src
 
 RUN pip install --no-cache-dir .
 
+# config_wizard._build_schema() (#3388) derives the wizard schema from
+# example.config.ini. In an installed layout (site-packages) the repo-root
+# file isn't on config_wizard's source-relative search path, so ship it to a
+# stable location and point NYXGPT_EXAMPLE_CONFIG at it -- config_wizard reads
+# that env var first (see _resolve_example_config_path).
+COPY example.config.ini /etc/nyxgpt/example.config.ini
+ENV NYXGPT_EXAMPLE_CONFIG=/etc/nyxgpt/example.config.ini
+
 COPY docker/entrypoint.sh /usr/local/bin/nyxgpt-entrypoint.sh
 RUN chmod +x /usr/local/bin/nyxgpt-entrypoint.sh
 

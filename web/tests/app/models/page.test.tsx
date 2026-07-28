@@ -1,7 +1,8 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import '@testing-library/jest-dom';
-import ModelsPage, { estimateModelResourceHint } from '../../../src/app/models/page';
+import ModelsPage from '../../../src/app/models/page';
+import { estimateModelResourceHint } from '../../../src/app/models/model-hints';
 
 vi.mock('../../../src/contexts/ToastContext', () => ({
   useToast: () => ({

@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
-import AdminDashboardPage, { ADMIN_NAV } from '../../../src/app/admin/dashboard/page';
+import AdminDashboardPage from '../../../src/app/admin/dashboard/page';
+import { ADMIN_NAV } from '../../../src/app/admin/dashboard/nav';
 
 describe('AdminDashboardPage', () => {
   beforeEach(() => {

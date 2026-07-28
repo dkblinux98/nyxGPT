@@ -20,6 +20,7 @@ silently -- `apply_updates` itself never deletes anything.
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable
 from configparser import ConfigParser
@@ -31,9 +32,29 @@ LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
+
 # `example.config.ini` lives at the repo root; this module is
 # `src/nyxgpt/config_wizard.py`, so two `.parent`s up is the repo root.
-_EXAMPLE_CONFIG_PATH = Path(__file__).resolve().parents[2] / "example.config.ini"
+def _resolve_example_config_path() -> Path:
+    """Locate example.config.ini, the wizard schema's source of truth (#3388).
+
+    Resolution order:
+      1. ``$NYXGPT_EXAMPLE_CONFIG`` -- explicit override. The Docker/Terraform/
+         Kubernetes images install nyxgpt into site-packages, where the
+         source-relative path below doesn't reach the repo-root file, so the
+         image ships example.config.ini and points this env var at it (see
+         Dockerfile).
+      2. ``<repo root>/example.config.ini`` -- the source-checkout / local-first
+         layout, where this module is at ``src/nyxgpt/config_wizard.py`` so
+         ``parents[2]`` is the repo root.
+    """
+    override = os.environ.get("NYXGPT_EXAMPLE_CONFIG")
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parents[2] / "example.config.ini"
+
+
+_EXAMPLE_CONFIG_PATH = _resolve_example_config_path()
 
 # Sections deliberately excluded from the wizard (owner decision, #3388):
 # these are becoming *agent-level* concerns rather than nyxGPT options, not

@@ -28,6 +28,9 @@ dependencies = [
   "opentelemetry-instrumentation-fastapi>=0.45b0",
   "opentelemetry-instrumentation-cassandra>=0.45b0",
   "sentry-sdk>=2.0",
+  # ops.py imports httpx unconditionally (GlitchTip HTTP client) and the api
+  # imports ops.py, so httpx is a core runtime dep -- not just a ui/dev extra.
+  "httpx>=0.27",
 ]
 
 [project.optional-dependencies]

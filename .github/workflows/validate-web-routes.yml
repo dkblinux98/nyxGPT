@@ -32,8 +32,14 @@ jobs:
       - name: TypeScript type check
         run: cd web && npm run type-check
 
-      - name: Run web test suite (vitest)
-        run: cd web && npx vitest run --coverage
+      # `tsc --noEmit` (type-check above) does NOT run Next.js's page-type
+      # validation -- that only happens during `next build`, via the generated
+      # .next/types checks. A production build is the only thing that catches,
+      # e.g., an illegal non-component named export from a page.tsx. Without
+      # this step those errors reach the Docker image build and break the
+      # Compose deploy (regression: the ADMIN_NAV/highlightText page exports).
+      - name: Production build (next build)
+        run: cd web && npm run build
 
       - name: Validate web proxy routes exist
         run: |

@@ -10,6 +10,7 @@ import { SessionListSkeleton } from '../components/SkeletonLoader';
 import { SessionListErrorBoundary } from '../components/SessionListErrorBoundary';
 import { SessionCacheErrorBoundary } from '../components/SessionCacheErrorBoundary';
 import { UnifiedSearch, UnifiedSearchRef } from '../components/UnifiedSearch';
+import { highlightText } from './highlight-text';
 import { useToast } from '../contexts/ToastContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { useSessionCache } from '../hooks/useSessionCache';
@@ -64,20 +65,6 @@ type SessionsResponse = {
 
 // Highlight search matches in text (module-scope: pure, and exported so it
 // is directly testable; passed to VirtualizedSessionList as its highlighter).
-export function highlightText(text: string, search: string) {
-  if (!search) return text;
-  const parts = text.split(new RegExp(`(${search})`, 'gi'));
-  return parts.map((part, i) =>
-    part.toLowerCase() === search.toLowerCase() ? (
-      <mark key={i} style={{ background: 'var(--highlight)', padding: '0 2px' }}>
-        {part}
-      </mark>
-    ) : (
-      part
-    )
-  );
-}
-
 function Home() {
   const toast = useToast();
   const { theme, setTheme } = useTheme();

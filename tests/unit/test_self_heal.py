@@ -185,6 +185,24 @@ def test_list_component_status_unhealthy_container(monkeypatch):
 
 
 @pytest.mark.unit
+def test_list_component_status_starting_container_is_not_unhealthy(monkeypatch):
+    """A container inside its Docker start_period ("starting") must NOT be
+    reported unhealthy, or the watchdog restarts it before it can finish
+    starting -- and for the api container (which runs the watchdog itself)
+    that is a permanent crash loop. Regression guard for the Compose
+    self-heal loop.
+    """
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(stdout=_ps_line("api", state="running", health="starting")),
+    )
+    statuses = self_heal.list_component_status()
+    assert statuses[0].health == "starting"
+    assert statuses[0].healthy is True
+
+
+@pytest.mark.unit
 def test_list_component_status_run_raises(monkeypatch, caplog):
     def _boom(cmd, timeout=30.0):
         raise OSError("docker daemon not reachable")

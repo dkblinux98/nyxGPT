@@ -3,7 +3,8 @@ import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import React from 'react';
-import Home, { highlightText } from '@/app/page';
+import Home from '@/app/page';
+import { highlightText } from '@/app/highlight-text';
 import { ThemeProvider } from '@/contexts/ThemeContext';
 import { highlightMatches } from '@/components/UnifiedSearch';
 

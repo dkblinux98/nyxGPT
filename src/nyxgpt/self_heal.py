@@ -632,7 +632,15 @@ def _list_compose_component_status() -> list[ComponentStatus]:
             )
             continue
         health = data.get("Health", "")
-        healthy = state == "running" and health in ("", "healthy")
+        # A container still inside its Docker start_period reports "starting":
+        # it hasn't failed its health check yet, so treat it as healthy here.
+        # Restarting a "starting" container is premature, and for the api
+        # container -- whose self-heal watchdog issues the restart from inside
+        # itself -- it produces a permanent crash loop: the restart kills the
+        # api before it can finish starting, so it never becomes healthy and
+        # the next watchdog pass restarts it again. Self-heal still acts on an
+        # explicit "unhealthy" (or a non-running state), just not on "starting".
+        healthy = state == "running" and health in ("", "healthy", "starting")
         statuses.append(
             ComponentStatus(
                 service=service,
