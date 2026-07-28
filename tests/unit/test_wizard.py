@@ -211,6 +211,58 @@ def test_generate_config_ini_basic(tmp_path: Path):
     assert "enable_chat_context = false" in content
 
 
+def test_generate_config_ini_autodetects_paths(tmp_path: Path, monkeypatch):
+    """[paths] is auto-detected from the running environment (#3388 rescue):
+    the generated config must point at this checkout and interpreter, never
+    at "/path/to/nyxGPT" placeholder text the user has to remember to edit."""
+    import sys
+
+    import nyxgpt.wizard as wizard_mod
+
+    monkeypatch.setattr(
+        wizard_mod.shutil, "which", lambda prog: f"/fake/bin/{prog}"
+    )
+
+    output_path = tmp_path / "config.ini"
+    _generate_config_ini(
+        output_path=output_path,
+        model="qwen2.5:0.5b",
+        ollama_base_url="http://127.0.0.1:11434",
+        rag_config={"enable_chat_context": False},
+    )
+
+    parser = ConfigParser()
+    parser.read(output_path)
+
+    expected_repo = str(Path(wizard_mod.__file__).resolve().parents[2])
+    assert parser.get("paths", "repo_dir") == expected_repo
+    assert parser.get("paths", "venv_python") == str(Path(sys.executable).resolve())
+    assert parser.get("paths", "node_bin") == "/fake/bin/node"
+    assert parser.get("paths", "npm_bin") == "/fake/bin/npm"
+    assert "/path/to/nyxGPT" not in output_path.read_text()
+
+
+def test_generate_config_ini_paths_fall_back_when_tools_missing(tmp_path: Path, monkeypatch):
+    """When node/npm aren't on PATH, fall back to the standard Homebrew
+    locations rather than writing empty values."""
+    import nyxgpt.wizard as wizard_mod
+
+    monkeypatch.setattr(wizard_mod.shutil, "which", lambda prog: None)
+
+    output_path = tmp_path / "config.ini"
+    _generate_config_ini(
+        output_path=output_path,
+        model="qwen2.5:0.5b",
+        ollama_base_url="http://127.0.0.1:11434",
+        rag_config={"enable_chat_context": False},
+    )
+
+    parser = ConfigParser()
+    parser.read(output_path)
+    assert parser.get("paths", "node_bin") == "/opt/homebrew/bin/node"
+    assert parser.get("paths", "npm_bin") == "/opt/homebrew/bin/npm"
+
+
 def test_generate_config_ini_generates_secrets(tmp_path: Path):
     """config.ini's auth.api_key and monitoring.grafana_admin_password are
     generated automatically, so config.ini is a ready-to-use single source

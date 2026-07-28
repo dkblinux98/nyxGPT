@@ -7,11 +7,12 @@ class NyxgptWeb < Formula
   # The `nyxgpt ops install` command will copy it into your Homebrew tap at:
   #   $(brew --repo dkblinux98/nyxgpt-local)/Formula/nyxgpt-web.rb
   #
-  # During that install step, ops should also replace the placeholders below
-  # with a real URL + sha256 for a tarball (typically the tap's dist artifact).
+  # During that install step, ops replaces the placeholders below with the
+  # real URL + sha256 of the generated tarball and the project version
+  # (see _install_homebrew_web in src/nyxgpt/ops.py).
   url "__NYXGPT_WEB_URL__"
   sha256 "__NYXGPT_WEB_SHA256__"
-  version "1.0.0.md"
+  version "__VERSION__"
   depends_on "node"
 
   def install
