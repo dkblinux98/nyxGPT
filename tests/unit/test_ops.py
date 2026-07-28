@@ -2552,9 +2552,7 @@ def test_install_homebrew_api_stamps_stale_concrete_values(monkeypatch, tmp_path
     monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
     monkeypatch.setattr(ops, "_tap_repo", lambda tap: tap_dir)
     monkeypatch.setattr(ops, "_read_project_version", lambda: "2.0.0")
-    monkeypatch.setattr(
-        ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0)
-    )
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
 
     results = ops._install_homebrew_api()
     assert all(r.ok for r in results)

@@ -219,9 +219,7 @@ def test_generate_config_ini_autodetects_paths(tmp_path: Path, monkeypatch):
 
     import nyxgpt.wizard as wizard_mod
 
-    monkeypatch.setattr(
-        wizard_mod.shutil, "which", lambda prog: f"/fake/bin/{prog}"
-    )
+    monkeypatch.setattr(wizard_mod.shutil, "which", lambda prog: f"/fake/bin/{prog}")
 
     output_path = tmp_path / "config.ini"
     _generate_config_ini(
