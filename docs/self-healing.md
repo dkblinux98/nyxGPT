@@ -1,23 +1,26 @@
-# Self-Healing (core app components + Docker Compose stack)
+# Self-Healing (core app components across every deployment mode)
 
 The self-heal watchdog is the "self-heal" pillar of the local DevOps/SRE
 capstone (#3160): it watches the core app components -- `api`, `web`,
-`ollama`, `cassandra` -- plus any running [Docker Compose
-stack](docker-compose.md) containers, and automatically restarts anything
-unhealthy or stopped, so a killed or crashed component recovers without an
-operator running `docker restart`/`brew services restart` by hand.
+`ollama`, `cassandra` -- however they're deployed (native/local-first,
+[Docker Compose](docker-compose.md), [Terraform](terraform.md), or
+[Kubernetes](kubernetes.md)) -- plus any running Compose observability
+containers, and automatically restarts anything unhealthy or stopped, so a
+killed or crashed component recovers without an operator running `docker
+restart`/`brew services restart`/`kubectl delete pod` by hand.
 
 It's implemented in `src/nyxgpt/self_heal.py` and runs as a background
 thread inside the `api` process -- the same process that already hosts the
 [blue/green](api.md#deployment-bluegreen) and
 [canary](api.md#canary-deployment) deployment logic. In native/local-first
 mode (the default local deployment, `nyxgpt ops install`) that's the
-Homebrew-managed `nyxgpt-api` service; in a Compose deployment it's the
-`api` container.
+Homebrew-managed `nyxgpt-api` service; in a Compose or Terraform deployment
+it's the `api`/`nyxgpt-tf-api` container; in a Kubernetes deployment it's
+whichever `nyxgpt-api` Pod happens to be running it.
 
 ## How it works
 
-Two deployment modes are covered, and a given component is only ever
+Four deployment modes are covered, and a given component is only ever
 monitored/healed by one of them at a time (see [Native/local-first
 mode](#nativelocal-first-mode) below for how that's decided):
 
@@ -49,6 +52,22 @@ mode](#nativelocal-first-mode) below for how that's decided):
    mechanisms `nyxgpt ops restart` uses, so the user never needs a raw
    `brew`/`docker` command. See [Native/local-first
    mode](#nativelocal-first-mode) below for details.
+3. **Terraform** (`nyxgpt ops install --terraform --local`): `ollama`/
+   `cassandra`/`api`/`web` run as the plain (non-Compose) `nyxgpt-tf-*`
+   Docker containers `terraform/main.tf` defines. Checked directly via
+   `docker ps`/`docker inspect` (**healthy** when `running` and, for the
+   three with a Docker `HEALTHCHECK` — `ollama`, `cassandra`, `api` — also
+   `healthy`/empty/`starting`) and healed via `docker restart
+   nyxgpt-tf-<component>`, the same primitive as native/local-first mode's
+   Cassandra container. See [Terraform mode](#terraform-mode) below.
+4. **Kubernetes** (`nyxgpt ops install --kubernetes --local`): every
+   `nyxgpt-api` Pod (blue/green/stable/canary — see `k8s/`) is checked via
+   `kubectl get pods -n nyxgpt` (**healthy** when `phase=Running` and its
+   `Ready` condition is `True`) and healed via `kubectl delete pod`, which
+   the owning Deployment's ReplicaSet then recreates. This is on top of, not
+   instead of, kubelet's own liveness-probe restarts and
+   `deploy.py`/`canary.py`'s blue/green + auto-rollback — see [Kubernetes
+   mode](#kubernetes-mode) below.
 
 Regardless of mode:
 
@@ -132,16 +151,53 @@ specifically, even though one-shot services are excluded everywhere else
 
 ### Known limitation: the core stack
 
-This desired-state check only covers the four opt-in observability
-profiles. Whether `ollama`/`cassandra`/`api`/`web` *should* be running is a
-deployment-mode question (native/local-first vs. Compose), not a config.ini
-feature flag, so it isn't covered by this same mechanism yet — see #3348
-for native-mode coverage of those four (checked directly via `brew services
-list`/`docker ps`, which doesn't have this "torn down" blind spot in the
-first place, since a native install's brew services stay *installed*, just
-stopped). A core stack deployed via Compose and then fully torn down
-(`docker compose down` for the core services specifically, not just `nyxgpt
-ops down`) is not yet reconciled by either mechanism.
+This desired-state check (config.ini feature flags) only covers the four
+opt-in observability profiles. Whether `ollama`/`cassandra`/`api`/`web`
+*should* be running is instead an operator decision, not a config.ini flag
+— see [Intentional stops](#intentional-stops-nyxgpt-ops-downstop-vs-self-heal)
+below for how that's tracked. A core component stopped by something other
+than `nyxgpt ops down`/`stop` (a raw `docker compose down`/`docker stop`/
+`brew services stop` run directly — which the wrapped-command policy in
+[configuration.md](configuration.md) says not to do anyway) isn't
+reconciled by either mechanism, since nothing told self-heal it was
+intentional.
+
+## Intentional stops: `nyxgpt ops down`/`stop` vs. self-heal
+
+`nyxgpt ops down`/`stop` (and the SRE dashboard's equivalents) are how an
+operator deliberately takes a core component down. Before #3406, self-heal
+had no way to tell that apart from a crash: a plain `ops down` stopped
+`nyxgpt-api`/`nyxgpt-web`/`ollama` (`brew services stop`) and
+`nyxgpt-cassandra` (`docker stop`), all of which stay *installed*, just
+stopped — exactly what a crash looks like from the outside. The very next
+heal pass would see them unhealthy and restart them right back
+(`brew services restart`/`docker restart`), undoing the teardown; worse,
+the re-occupied ports then made a subsequent `nyxgpt ops install --terraform
+--local` fail with a spurious port collision.
+
+The fix is an **intentional-stop registry**, separate from the `enabled`
+flag, persisted in the same `~/.nyxGPT/self_heal_state.json`:
+
+- `nyxgpt ops down`/`stop` mark whichever of `api`/`web`/`ollama`/`cassandra`
+  they actually stop (regardless of whether that component was running
+  natively or under Compose) as intentionally stopped.
+- `list_component_status()` flags a marked component `desired: false` — the
+  exact same mechanism (and dashboard **Disabled** badge) already used for a
+  disabled observability profile (see above) — so the automatic heal pass
+  leaves it alone. A manual "Heal now" click still overrides it, same as
+  everywhere else `desired: false` appears.
+- `nyxgpt ops install`/`restart` (native, `--terraform --local`, or
+  `--kubernetes --local`) clear the marker for whatever they bring up:
+  bringing a component back up is itself the "this is desired again" signal.
+
+Critically, this is **per-component**, not a global kill switch: an intentional
+`ops down --app-only` (which only stops `api`/`web`/`ollama`/`cassandra`)
+leaves the watchdog fully armed to keep healing, say, a crashed `grafana`
+container the whole time. The **only** way to arm/disarm the watchdog itself
+(the `enabled` flag) is still the `/admin/self-heal` dashboard toggle (or the
+equivalent CLI/API) — no `nyxgpt ops` command touches it, before or after
+#3406. (Before #3406, `ops down` briefly *did* flip `enabled` off as a
+stopgap for the same port-collision bug; that's what this registry replaces.)
 
 ## Native/local-first mode
 
@@ -169,9 +225,77 @@ This mirrors `nyxgpt ops`'s own native/Compose conflict detection (`nyxgpt
 ops status`) and means self-heal never starts a competing native service or
 restarts a container that isn't actually serving traffic.
 
-Each component's status carries a `source` field (`"native"` or
-`"compose"`) through `GET /api/v1/self-heal/status` and the `/admin/self-heal`
-dashboard, so it's clear which mechanism is monitoring/healing it.
+Each component's status carries a `source` field (`"native"`, `"compose"`,
+`"terraform"`, or `"kubernetes"`) through `GET /api/v1/self-heal/status` and
+the `/admin/self-heal` dashboard, so it's clear which mechanism is
+monitoring/healing it.
+
+## Terraform mode
+
+`nyxgpt ops install --terraform --local` (see [terraform.md](terraform.md))
+runs `ollama`/`cassandra`/`api`/`web` as the plain (non-Compose)
+`nyxgpt-tf-ollama`/`nyxgpt-tf-cassandra`/`nyxgpt-tf-api`/`nyxgpt-tf-web`
+Docker containers `terraform/main.tf` defines. Like native/local-first
+mode's Cassandra container, none of that is visible to `docker compose ps`,
+so `src/nyxgpt/self_heal.py` checks these directly via `docker ps`/`docker
+inspect` and heals via `docker restart nyxgpt-tf-<component>`:
+
+- `ollama`/`cassandra`/`api` each have a Docker `HEALTHCHECK` (see
+  `terraform/main.tf`) — **healthy** when `running` and `Health` is
+  `healthy`/empty/`starting` (mirroring the Compose case's health handling).
+- `web` has no healthcheck — **healthy** when simply `running`.
+
+**Docker access**: the watchdog runs inside the `nyxgpt-tf-api` container --
+the same image (and baked-in Docker CLI) as the Compose `api` service, built
+from the repo's root `Dockerfile` — so it needs the same `/var/run/docker.sock`
+bind mount to reach the daemon and its sibling `nyxgpt-tf-*` containers;
+`terraform/main.tf`'s `docker_container.api` resource mounts it. See [Docker
+access from inside the `api`
+container](#docker-access-from-inside-the-api-container) for the security
+tradeoffs, which apply identically here.
+
+**Mode awareness**: same rule as native mode -- a component already reported
+by Compose or native/local-first is not also checked here, so the three
+modes never double-heal (or collide on) the same component.
+
+## Kubernetes mode
+
+`nyxgpt ops install --kubernetes --local` (see [kubernetes.md](kubernetes.md))
+deploys `nyxgpt-api` as one or more Deployments (blue/green/stable/canary --
+see `k8s/`); there's no Kubernetes manifest for `web`/`ollama`/`cassandra`,
+so this mode only covers `api`. `src/nyxgpt/self_heal.py` lists every Pod
+matching `app in (nyxgpt-api,nyxgpt-api-canary-pool)` in the `nyxgpt`
+namespace via `kubectl get pods` (the watchdog runs inside one of those Pods
+itself, using the same `nyxgpt-api` ServiceAccount `deploy.py`/`canary.py`
+already use -- see `k8s/rbac.yaml`, which now also grants `get`/`list`/
+`delete` on `pods`) and reports **one `ComponentStatus` per Pod** (not per
+Deployment: `stable` alone can run several replicas, each needing its own
+backoff/restart-count bookkeeping) -- **healthy** when `phase: Running` and
+its `Ready` condition is `True`.
+
+Healing deletes the Pod (`kubectl delete pod`); its Deployment's
+ReplicaSet then recreates it. This is **on top of, not instead of**:
+
+- **kubelet's own liveness-probe restarts** (every `deployment-*.yaml`
+  already has one -- see [Container healthchecks](#container-healthchecks)),
+  which handle an in-place crash without self-heal's help at all.
+- **`deploy.py`'s blue/green switch and `canary.py`'s auto-rollback** (see
+  [api.md](api.md#deployment-bluegreen) and
+  [api.md#canary-deployment](api.md#canary-deployment)), which handle a
+  systematically-broken *version* by cutting traffic away from it, not an
+  individual Pod misbehaving.
+
+`kubectl delete pod` is useful for the gap between those two: a Pod that's
+"stuck" (e.g. passing its liveness probe but otherwise wedged) rather than
+cleanly crash-looping, where nothing else would touch it.
+
+**A caveat on restart-count bookkeeping**: since a healed Pod is deleted and
+recreated under a *new* name, its `restart_counts`/`last_restart_ts` entry in
+`~/.nyxGPT/self_heal_state.json` becomes orphaned (the new Pod starts a
+fresh entry under its own name) rather than being reused — harmless (state
+just grows slightly over time, the same way the bounded `events` log already
+does), but worth knowing if you're reading that file directly rather than
+through the dashboard/API.
 
 ## Turning it on
 
@@ -329,6 +453,13 @@ to fix that:
    host checked the repo out into (Compose otherwise derives the project
    name from the checkout directory's basename, which the watchdog has no
    way to know from inside a container).
+
+The Terraform deployment's `nyxgpt-tf-api` container is built from the same
+`Dockerfile` (so it already has the Docker CLI) and needs only #2, the
+socket mount (`terraform/main.tf`'s `docker_container.api` resource) -- it
+has no compose file to resolve since Terraform doesn't use Compose at all;
+see [Terraform mode](#terraform-mode) above. The security tradeoffs below
+apply identically to that container.
 
 ### Security tradeoffs of mounting the Docker socket
 
