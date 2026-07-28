@@ -3152,8 +3152,20 @@ def test_self_heal_status_with_components(
         lambda: {
             "enabled": True,
             "components": [
-                {"service": "api", "healthy": True, "state": "running", "health": "healthy"},
-                {"service": "ollama", "healthy": False, "state": "running", "health": "unhealthy"},
+                {
+                    "service": "api",
+                    "healthy": True,
+                    "state": "running",
+                    "health": "healthy",
+                    "desired": True,
+                },
+                {
+                    "service": "ollama",
+                    "healthy": False,
+                    "state": "running",
+                    "health": "unhealthy",
+                    "desired": True,
+                },
             ],
             "events": [
                 {"service": "ollama", "action": "restart", "ok": True, "reason": "unhealthy"},
@@ -3169,6 +3181,39 @@ def test_self_heal_status_with_components(
     assert "api: state=running health=healthy" in out
     assert "ollama: state=running health=unhealthy" in out
     assert "Recent heal events:" in out
+
+
+def test_self_heal_status_marks_intentionally_stopped_component_as_disabled(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod.self_heal_mod,
+        "status",
+        lambda: {
+            "enabled": True,
+            "components": [
+                {
+                    "service": "api",
+                    "healthy": False,
+                    "state": "stopped",
+                    "health": "",
+                    "desired": False,
+                },
+            ],
+            "events": [],
+        },
+    )
+
+    exit_code = cli(["self-heal", "status"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    # An intentionally-stopped component isn't actionable, so it shouldn't
+    # be flagged the same way as a genuine unhealthy component (#3406).
+    assert "[OK] api" in out
+    assert "(disabled -- not auto-healed)" in out
 
 
 def test_self_heal_status_no_components(

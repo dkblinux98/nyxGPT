@@ -43,6 +43,8 @@ def _ps_line(service, *, state="running", health="", exit_code=0):
 # own logic call these plain function objects directly, bypassing the stub.
 _real_brew_services_snapshot = self_heal._brew_services_snapshot
 _real_native_container_state = self_heal._native_container_state
+_real_list_terraform_component_status = self_heal._list_terraform_component_status
+_real_list_kubernetes_component_status = self_heal._list_kubernetes_component_status
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +56,17 @@ def _isolated_state(tmp_path, monkeypatch):
     # it -- tests that actually exercise native detection override these two.
     monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {})
     monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "absent")
+    # Same neutralization for Terraform and Kubernetes: several existing
+    # tests stub `_native_container_state`/`_run` with name-agnostic lambdas
+    # (e.g. "return running for any container") to exercise the native
+    # Cassandra check specifically -- left live, `_list_terraform_component_status`
+    # (which also calls `_native_container_state`, just for `nyxgpt-tf-*`
+    # names) and `_list_kubernetes_component_status` (its own `kubectl get
+    # pods` call) would pick those up too and report spurious extra
+    # components. Tests exercising either override the relevant stub
+    # themselves (see e.g. test_list_terraform_component_status_* below).
+    monkeypatch.setattr(self_heal, "_list_terraform_component_status", lambda already_managed: [])
+    monkeypatch.setattr(self_heal, "_list_kubernetes_component_status", lambda already_managed: [])
 
 
 @pytest.mark.unit
@@ -1400,3 +1413,366 @@ def test_heal_now_manual_brings_up_absent_desired_component(monkeypatch):
 
     bring_up_mock.assert_called_once_with("grafana")
     assert result["healed"][0]["reason"] == "manual heal-now"
+
+
+# --- Intentional-stop registry (#3406) ---
+
+
+@pytest.mark.unit
+def test_is_intentionally_stopped_defaults_false():
+    assert self_heal.is_intentionally_stopped("api") is False
+    assert self_heal.list_intentionally_stopped() == []
+
+
+@pytest.mark.unit
+def test_mark_and_clear_intentionally_stopped_roundtrip():
+    self_heal.mark_intentionally_stopped("api")
+    assert self_heal.is_intentionally_stopped("api") is True
+    assert self_heal.list_intentionally_stopped() == ["api"]
+
+    self_heal.clear_intentionally_stopped("api")
+    assert self_heal.is_intentionally_stopped("api") is False
+    assert self_heal.list_intentionally_stopped() == []
+
+
+@pytest.mark.unit
+def test_mark_intentionally_stopped_is_idempotent_and_tracks_multiple():
+    self_heal.mark_intentionally_stopped("api")
+    self_heal.mark_intentionally_stopped("api")
+    self_heal.mark_intentionally_stopped("web")
+
+    assert self_heal.list_intentionally_stopped() == ["api", "web"]
+
+
+@pytest.mark.unit
+def test_clear_intentionally_stopped_never_marked_is_noop():
+    self_heal.clear_intentionally_stopped("api")
+    assert self_heal.list_intentionally_stopped() == []
+
+
+@pytest.mark.unit
+def test_list_component_status_marks_intentionally_stopped_component_desired_false(monkeypatch):
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {"nyxgpt-api": "stopped"})
+    self_heal.mark_intentionally_stopped("api")
+
+    statuses = self_heal.list_component_status()
+    by_service = {s.service: s for s in statuses}
+
+    assert by_service["api"].desired is False
+    assert by_service["api"].healthy is False
+
+
+@pytest.mark.unit
+def test_list_component_status_leaves_other_components_desired_true(monkeypatch):
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(
+        self_heal,
+        "_brew_services_snapshot",
+        lambda: {"nyxgpt-api": "stopped", "nyxgpt-web": "started"},
+    )
+    self_heal.mark_intentionally_stopped("api")
+
+    statuses = self_heal.list_component_status()
+    by_service = {s.service: s for s in statuses}
+
+    assert by_service["api"].desired is False
+    assert by_service["web"].desired is True
+
+
+@pytest.mark.unit
+def test_heal_now_skips_intentionally_stopped_component_automatically(monkeypatch):
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {"nyxgpt-api": "stopped"})
+    self_heal.mark_intentionally_stopped("api")
+    restart_mock = MagicMock()
+    monkeypatch.setattr(self_heal, "restart_native_component", restart_mock)
+
+    result = self_heal.heal_now()
+
+    restart_mock.assert_not_called()
+    assert result["healed"] == []
+
+
+@pytest.mark.unit
+def test_heal_now_manual_heal_overrides_intentional_stop(monkeypatch):
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {"nyxgpt-api": "stopped"})
+    self_heal.mark_intentionally_stopped("api")
+    restart_mock = MagicMock(return_value=self_heal.HealResult(True, "Restarted api"))
+    monkeypatch.setattr(self_heal, "restart_native_component", restart_mock)
+
+    result = self_heal.heal_now(service="api")
+
+    restart_mock.assert_called_once_with("api")
+    assert result["healed"][0]["service"] == "api"
+
+
+# --- Terraform mode (#3406) ---
+
+
+@pytest.mark.unit
+def test_native_container_health_reports_status(monkeypatch):
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout="healthy\n"))
+    assert self_heal._native_container_health("nyxgpt-tf-api") == "healthy"
+
+
+@pytest.mark.unit
+def test_native_container_health_no_healthcheck_is_blank(monkeypatch):
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    assert self_heal._native_container_health("nyxgpt-tf-web") == ""
+
+
+@pytest.mark.unit
+def test_native_container_health_no_docker(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    assert self_heal._native_container_health("nyxgpt-tf-api") == ""
+
+
+@pytest.mark.unit
+def test_native_container_health_run_failure(monkeypatch):
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1))
+    assert self_heal._native_container_health("nyxgpt-tf-api") == ""
+
+
+@pytest.mark.unit
+def test_native_container_health_run_raises(monkeypatch, caplog):
+    def _boom(cmd, timeout=30.0):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+    monkeypatch.setattr(self_heal, "_run", _boom)
+    with caplog.at_level("WARNING"):
+        assert self_heal._native_container_health("nyxgpt-tf-api") == ""
+    assert "failed to query docker health" in caplog.text
+
+
+@pytest.mark.unit
+def test_list_terraform_component_status_reports_running_and_healthy(monkeypatch):
+    states = {
+        "nyxgpt-tf-ollama": "running",
+        "nyxgpt-tf-cassandra": "running",
+        "nyxgpt-tf-api": "running",
+        "nyxgpt-tf-web": "running",
+    }
+    healths = {"nyxgpt-tf-ollama": "healthy", "nyxgpt-tf-cassandra": "unhealthy"}
+    monkeypatch.setattr(self_heal, "_native_container_state", lambda name: states[name])
+    monkeypatch.setattr(self_heal, "_native_container_health", lambda name: healths.get(name, ""))
+
+    statuses = _real_list_terraform_component_status(set())
+    by_service = {s.service: s for s in statuses}
+
+    assert by_service["ollama"].source == "terraform"
+    assert by_service["ollama"].healthy is True
+    assert by_service["cassandra"].healthy is False
+    assert by_service["cassandra"].health == "unhealthy"
+    # web has no Docker HEALTHCHECK in terraform/main.tf -- running is enough.
+    assert by_service["web"].healthy is True
+    assert by_service["web"].container == "nyxgpt-tf-web"
+
+
+@pytest.mark.unit
+def test_list_terraform_component_status_skips_absent_containers(monkeypatch):
+    monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "absent")
+
+    assert _real_list_terraform_component_status(set()) == []
+
+
+@pytest.mark.unit
+def test_list_terraform_component_status_skips_already_managed(monkeypatch):
+    monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "running")
+    monkeypatch.setattr(self_heal, "_native_container_health", lambda name: "")
+
+    statuses = _real_list_terraform_component_status({"api", "web", "ollama", "cassandra"})
+
+    assert statuses == []
+
+
+@pytest.mark.unit
+def test_restart_terraform_component_known(monkeypatch):
+    restart_mock = MagicMock(return_value=self_heal.HealResult(True, "Restarted nyxgpt-tf-api"))
+    monkeypatch.setattr(self_heal, "_restart_native_container", restart_mock)
+
+    result = self_heal.restart_terraform_component("api")
+
+    restart_mock.assert_called_once_with("nyxgpt-tf-api")
+    assert result.ok
+
+
+@pytest.mark.unit
+def test_restart_terraform_component_unknown():
+    result = self_heal.restart_terraform_component("bogus")
+    assert not result.ok
+    assert "Unknown terraform component" in result.message
+
+
+@pytest.mark.unit
+def test_heal_now_dispatches_terraform_restart_for_terraform_source(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [
+            self_heal.ComponentStatus(
+                "api", "nyxgpt-tf-api", "exited", "", False, source="terraform"
+            )
+        ],
+    )
+    restart_mock = MagicMock(return_value=self_heal.HealResult(True, "Restarted nyxgpt-tf-api"))
+    monkeypatch.setattr(self_heal, "restart_terraform_component", restart_mock)
+
+    result = self_heal.heal_now()
+
+    restart_mock.assert_called_once_with("api")
+    assert result["healed"][0]["service"] == "api"
+
+
+# --- Kubernetes mode (#3406) ---
+
+
+def _k8s_pods_json(*pods):
+    return json.dumps({"items": list(pods)})
+
+
+def _k8s_pod(name, *, phase="Running", ready=True):
+    return {
+        "metadata": {"name": name},
+        "status": {
+            "phase": phase,
+            "conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
+        },
+    }
+
+
+@pytest.mark.unit
+def test_list_kubernetes_component_status_parses_pods(monkeypatch):
+    stdout = _k8s_pods_json(
+        _k8s_pod("nyxgpt-api-blue-abc"),
+        _k8s_pod("nyxgpt-api-stable-def", ready=False),
+    )
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0: CP(stdout=stdout))
+
+    statuses = _real_list_kubernetes_component_status(set())
+    by_service = {s.service: s for s in statuses}
+
+    assert by_service["nyxgpt-api-blue-abc"].source == "kubernetes"
+    assert by_service["nyxgpt-api-blue-abc"].healthy is True
+    assert by_service["nyxgpt-api-stable-def"].healthy is False
+    assert by_service["nyxgpt-api-stable-def"].health == "not-ready"
+
+
+@pytest.mark.unit
+def test_list_kubernetes_component_status_not_running_phase_is_unhealthy(monkeypatch):
+    stdout = _k8s_pods_json(_k8s_pod("nyxgpt-api-canary-xyz", phase="Pending", ready=False))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0: CP(stdout=stdout))
+
+    statuses = _real_list_kubernetes_component_status(set())
+
+    assert statuses[0].healthy is False
+    assert statuses[0].state == "Pending"
+
+
+@pytest.mark.unit
+def test_list_kubernetes_component_status_skips_already_managed(monkeypatch):
+    stdout = _k8s_pods_json(_k8s_pod("nyxgpt-api-blue-abc"))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0: CP(stdout=stdout))
+
+    statuses = _real_list_kubernetes_component_status({"nyxgpt-api-blue-abc"})
+
+    assert statuses == []
+
+
+@pytest.mark.unit
+def test_list_kubernetes_component_status_no_kubectl(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    assert _real_list_kubernetes_component_status(set()) == []
+
+
+@pytest.mark.unit
+def test_list_kubernetes_component_status_run_failure(monkeypatch):
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0: CP(returncode=1))
+    assert _real_list_kubernetes_component_status(set()) == []
+
+
+@pytest.mark.unit
+def test_list_kubernetes_component_status_run_raises(monkeypatch, caplog):
+    def _boom(cmd, timeout=15.0):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+    monkeypatch.setattr(self_heal, "_run", _boom)
+    with caplog.at_level("WARNING"):
+        assert _real_list_kubernetes_component_status(set()) == []
+    assert "failed to query kubernetes pods" in caplog.text
+
+
+@pytest.mark.unit
+def test_list_kubernetes_component_status_invalid_json(monkeypatch, caplog):
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0: CP(stdout="not json"))
+    with caplog.at_level("WARNING"):
+        assert _real_list_kubernetes_component_status(set()) == []
+    assert "failed to parse kubectl get pods output" in caplog.text
+
+
+@pytest.mark.unit
+def test_heal_kubernetes_pod_success(monkeypatch):
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.heal_kubernetes_pod("nyxgpt-api-blue-abc")
+
+    assert result.ok
+    assert "Deleted pod nyxgpt-api-blue-abc" in result.message
+    cmd = run_mock.call_args[0][0]
+    assert cmd == ["kubectl", "delete", "pod", "nyxgpt-api-blue-abc", "-n", "nyxgpt"]
+
+
+@pytest.mark.unit
+def test_heal_kubernetes_pod_failure(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "_run", lambda cmd, timeout=60.0: CP(returncode=1, stderr="boom")
+    )
+    result = self_heal.heal_kubernetes_pod("nyxgpt-api-blue-abc")
+    assert not result.ok
+    assert "boom" in result.details
+
+
+@pytest.mark.unit
+def test_heal_kubernetes_pod_run_raises(monkeypatch):
+    def _boom(cmd, timeout=60.0):
+        raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+
+    monkeypatch.setattr(self_heal, "_run", _boom)
+    result = self_heal.heal_kubernetes_pod("nyxgpt-api-blue-abc")
+    assert not result.ok
+    assert "TimeoutExpired" in result.details
+
+
+@pytest.mark.unit
+def test_heal_kubernetes_pod_no_kubectl(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    result = self_heal.heal_kubernetes_pod("nyxgpt-api-blue-abc")
+    assert not result.ok
+    assert "kubectl not found" in result.message
+
+
+@pytest.mark.unit
+def test_heal_now_dispatches_kubernetes_heal_for_kubernetes_source(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [
+            self_heal.ComponentStatus(
+                "nyxgpt-api-blue-abc",
+                "nyxgpt-api-blue-abc",
+                "Running",
+                "not-ready",
+                False,
+                source="kubernetes",
+            )
+        ],
+    )
+    heal_mock = MagicMock(return_value=self_heal.HealResult(True, "Deleted pod"))
+    monkeypatch.setattr(self_heal, "heal_kubernetes_pod", heal_mock)
+
+    result = self_heal.heal_now()
+
+    heal_mock.assert_called_once_with("nyxgpt-api-blue-abc")
+    assert result["healed"][0]["service"] == "nyxgpt-api-blue-abc"
