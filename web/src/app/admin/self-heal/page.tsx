@@ -390,7 +390,7 @@ export default function SelfHealPage() {
                           color: 'var(--foreground-muted)',
                         }}
                       >
-                        {c.source}
+                        {c.source ?? 'compose'}
                       </span>
                       <span
                         style={{

@@ -2964,9 +2964,13 @@ api_base_url =
 - `port` — port the web UI listens on
 - `api_base_url` — optional override of FastAPI base URL; if unset, `[api] host/port` is used
 
-The web UI is launched using a small wrapper script that reads this configuration.
+The web UI is launched using a small wrapper script that reads `host`/`port`/`api_base_url`
+from this configuration; the app itself is a self-contained build inside the
+Homebrew Cellar keg (see [homebrew.md](homebrew.md)), not the repo checkout.
 
-Note: Homebrew/launchd services run with a minimal `PATH`. The web wrapper (`nyxgpt-web`) and `~/.nyxGPT/scripts/run-web.sh` ensure `node` is discoverable (via `[paths] node_bin` / `npm_bin`) so `npm` can run reliably in the background.
+Note: Homebrew/launchd services run with a minimal `PATH`. The web wrapper (`nyxgpt-web`)
+resolves `node`/`npm` via the Homebrew `node` formula it depends on, so `npm` can run
+reliably in the background regardless of the interactive shell's `PATH`.
 
 ---
 

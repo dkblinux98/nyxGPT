@@ -48,9 +48,18 @@ brew install nyxgpt-api
 brew install nyxgpt-web
 ```
 
-Each service installs:
+Each service installs a self-contained app into its own Cellar keg --
+`nyxgpt-api` gets its own Python venv (`pip install`ed from the vendored
+source, not the repo checkout's editable `.venv`), and `nyxgpt-web` gets its
+own `npm ci && npm run build` output. Neither depends on the repo checkout
+existing or staying in place afterwards. Each install also gets:
 - A small wrapper script
 - A Homebrew launch agent plist
+
+`nyxgpt ops install` only re-runs `brew install`/`reinstall` when the
+vendored source actually changed since the last install (checksum-compared);
+otherwise it reports the existing install is already up to date and just
+(re)starts the service.
 
 ---
 
@@ -330,17 +339,17 @@ After starting both services:
 
 **Solutions**:
 
-1. Verify Node.js is installed:
+1. Verify Node.js is installed via Homebrew (the `nyxgpt-web` formula
+   `depends_on "node"` and finds it via `Formula["node"]`, not `[paths]` in
+   config.ini):
    ```bash
-   which node
-   which npm
+   brew list node
    ```
 
-2. Update `[paths]` in config:
-   ```ini
-   [paths]
-   node_bin = /opt/homebrew/bin/node
-   npm_bin = /opt/homebrew/bin/npm
+2. Reinstall the `node` formula if it's missing, then reinstall `nyxgpt-web`:
+   ```bash
+   brew install node
+   nyxgpt ops install
    ```
 
 3. Restart web service:

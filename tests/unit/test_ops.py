@@ -11,6 +11,25 @@ import pytest
 
 from nyxgpt import ops, self_heal
 
+# Captured before the autouse fixture below can ever monkeypatch it, so tests
+# that exercise this function's real logic can restore it for their duration.
+_real_terraform_or_kubernetes_managed_components = ops._terraform_or_kubernetes_managed_components
+
+
+@pytest.fixture(autouse=True)
+def _no_terraform_or_kubernetes_managed_components(monkeypatch):
+    """Default `ops._terraform_or_kubernetes_managed_components()` to empty.
+
+    `down()`/`stop()` call it (via `self_heal.list_component_status()`,
+    which shells out to docker/kubectl) to decide which core components to
+    mark intentionally stopped. Individual tests that care about
+    Terraform/Kubernetes-managed components override this within their own
+    `with patch.object(...)` block; everyone else gets a fast, deterministic
+    empty set instead of hitting whatever docker/kubectl happen to be on the
+    test host.
+    """
+    monkeypatch.setattr(ops, "_terraform_or_kubernetes_managed_components", lambda: set())
+
 
 @pytest.mark.unit
 def test_ops_install_returns_zero_when_all_ok(capsys):
@@ -1445,6 +1464,59 @@ def test_compose_stack_snapshot_excludes_native_sourced_statuses():
         assert ops._compose_stack_snapshot() == {"api": "running"}
 
 
+@pytest.mark.unit
+def test_terraform_or_kubernetes_managed_components_filters_by_source(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_terraform_or_kubernetes_managed_components",
+        _real_terraform_or_kubernetes_managed_components,
+    )
+    native_api = self_heal.ComponentStatus(
+        service="api",
+        container="nyxgpt-api",
+        state="started",
+        health="",
+        healthy=True,
+        source="native",
+    )
+    terraform_web = self_heal.ComponentStatus(
+        service="web",
+        container="nyxgpt-tf-web",
+        state="running",
+        health="healthy",
+        healthy=True,
+        source="terraform",
+    )
+    k8s_pod = self_heal.ComponentStatus(
+        service="nyxgpt-api-stable-abc123",
+        container="nyxgpt-api-stable-abc123",
+        state="Running",
+        health="ready",
+        healthy=True,
+        source="kubernetes",
+    )
+    with patch.object(
+        ops.self_heal,
+        "list_component_status",
+        return_value=[native_api, terraform_web, k8s_pod],
+    ):
+        assert ops._terraform_or_kubernetes_managed_components() == {
+            "web",
+            "nyxgpt-api-stable-abc123",
+        }
+
+
+@pytest.mark.unit
+def test_terraform_or_kubernetes_managed_components_returns_empty_on_exception(monkeypatch):
+    monkeypatch.setattr(
+        ops,
+        "_terraform_or_kubernetes_managed_components",
+        _real_terraform_or_kubernetes_managed_components,
+    )
+    with patch.object(ops.self_heal, "list_component_status", side_effect=RuntimeError("boom")):
+        assert ops._terraform_or_kubernetes_managed_components() == set()
+
+
 # --- _restart_brew_service ---
 
 
@@ -2540,20 +2612,71 @@ def test_install_step_order_does_not_clobber_compose_ollama_log(monkeypatch, tmp
 # --- _create_dist_tarball ---
 
 
+def _make_fake_api_repo_root(tmp_path):
+    """A fake REPO_ROOT with just enough of a real nyxgpt package to vendor."""
+    repo_root = tmp_path / "repo"
+    (repo_root / "src" / "nyxgpt").mkdir(parents=True)
+    (repo_root / "src" / "nyxgpt" / "__init__.py").write_text("", encoding="utf-8")
+    (repo_root / "src" / "nyxgpt" / "app.py").write_text("# fake app module\n", encoding="utf-8")
+    (repo_root / "pyproject.toml").write_text(
+        '[project]\nname = "nyxGPT"\nversion = "1.2.3"\n', encoding="utf-8"
+    )
+    return repo_root
+
+
+def _make_fake_web_repo_root(tmp_path):
+    """A fake REPO_ROOT with a web/ tree including gitignored build artifacts."""
+    repo_root = tmp_path / "repo"
+    web_dir = repo_root / "web"
+    web_dir.mkdir(parents=True)
+    (web_dir / "package.json").write_text('{"name": "web"}\n', encoding="utf-8")
+    (web_dir / "node_modules" / "somepkg").mkdir(parents=True)
+    (web_dir / "node_modules" / "somepkg" / "index.js").write_text("", encoding="utf-8")
+    (web_dir / ".next" / "cache").mkdir(parents=True)
+    (web_dir / ".next" / "cache" / "x").write_text("", encoding="utf-8")
+    return repo_root
+
+
 @pytest.mark.unit
-def test_create_dist_tarball_creates_gzip_archive(tmp_path):
+def test_create_dist_tarball_vendors_real_api_source(monkeypatch, tmp_path):
+    """The api tarball vendors pyproject.toml + src/nyxgpt/ -- not a placeholder
+    README -- so the formula can `pip install` a self-contained app (#3406)."""
+    repo_root = _make_fake_api_repo_root(tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
+
     tar_path = ops._create_dist_tarball(tmp_path, "nyxgpt-api", "1.2.3")
     assert tar_path == tmp_path / "dist" / "nyxgpt-api-1.2.3.tar.gz"
     assert tar_path.exists()
     with tarfile.open(tar_path, "r:gz") as tf:
         names = tf.getnames()
-    assert any("README.txt" in n for n in names)
+    assert "nyxgpt-api-1.2.3/pyproject.toml" in names
+    assert "nyxgpt-api-1.2.3/src/nyxgpt/app.py" in names
+    assert not any("README.txt" in n for n in names)
     # Temp staging dir must be cleaned up.
     assert not (tmp_path / "dist" / ".tmp-nyxgpt-api-1.2.3").exists()
 
 
 @pytest.mark.unit
-def test_create_dist_tarball_overwrites_existing_tarball_and_tmp(tmp_path):
+def test_create_dist_tarball_vendors_web_source_excluding_build_artifacts(monkeypatch, tmp_path):
+    """The web tarball vendors web/ source, but never the gitignored
+    node_modules/.next build output -- the formula rebuilds those fresh
+    inside the Cellar keg (#3406)."""
+    repo_root = _make_fake_web_repo_root(tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
+
+    tar_path = ops._create_dist_tarball(tmp_path, "nyxgpt-web", "1.2.3")
+    with tarfile.open(tar_path, "r:gz") as tf:
+        names = tf.getnames()
+    assert "nyxgpt-web-1.2.3/package.json" in names
+    assert not any("node_modules" in n for n in names)
+    assert not any(".next" in n for n in names)
+
+
+@pytest.mark.unit
+def test_create_dist_tarball_overwrites_existing_tarball_and_tmp(monkeypatch, tmp_path):
+    repo_root = _make_fake_api_repo_root(tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
+
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()
     existing = dist_dir / "nyxgpt-api-1.2.3.tar.gz"
@@ -2565,8 +2688,9 @@ def test_create_dist_tarball_overwrites_existing_tarball_and_tmp(tmp_path):
     tar_path = ops._create_dist_tarball(tmp_path, "nyxgpt-api", "1.2.3")
     assert tar_path.exists()
     # No longer the stale plaintext content.
-    with tarfile.open(tar_path, "r:gz"):
-        pass
+    with tarfile.open(tar_path, "r:gz") as tf:
+        names = tf.getnames()
+    assert "nyxgpt-api-1.2.3/pyproject.toml" in names
 
 
 # --- _install_homebrew_api / _install_homebrew_web ---
@@ -2591,7 +2715,7 @@ def test_install_homebrew_api_missing_template(monkeypatch, tmp_path):
 
 @pytest.mark.unit
 def test_install_homebrew_api_success(monkeypatch, tmp_path):
-    repo_root = tmp_path / "repo"
+    repo_root = _make_fake_api_repo_root(tmp_path)
     (repo_root / "homebrew").mkdir(parents=True)
     (repo_root / "homebrew" / "nyxgpt-api.rb").write_text(
         'url "file://tap/dist/nyxgpt-api-__VERSION__.tar.gz"\n'
@@ -2630,7 +2754,7 @@ def test_install_homebrew_api_stamps_stale_concrete_values(monkeypatch, tmp_path
     # Regex safety net: a formula copy still carrying concrete (stale) values
     # from before the placeholder templates -- e.g. a hardcoded 1.0.0 -- is
     # rewritten to the current version/sha, not installed as-is.
-    repo_root = tmp_path / "repo"
+    repo_root = _make_fake_api_repo_root(tmp_path)
     (repo_root / "homebrew").mkdir(parents=True)
     (repo_root / "homebrew" / "nyxgpt-api.rb").write_text(
         'url "file://tap/dist/nyxgpt-api-1.0.0.tar.gz"\n'
@@ -2674,7 +2798,7 @@ def test_install_homebrew_web_missing_template(monkeypatch, tmp_path):
 
 @pytest.mark.unit
 def test_install_homebrew_web_success(monkeypatch, tmp_path):
-    repo_root = tmp_path / "repo"
+    repo_root = _make_fake_web_repo_root(tmp_path)
     (repo_root / "homebrew").mkdir(parents=True)
     (repo_root / "homebrew" / "nyxgpt-web.rb").write_text(
         'url "__NYXGPT_WEB_URL__"\nsha256 "__NYXGPT_WEB_SHA256__"\nversion "__VERSION__"\n',
@@ -2702,6 +2826,81 @@ def test_install_homebrew_web_success(monkeypatch, tmp_path):
     assert "__VERSION__" not in content
     assert any(cmd[:2] in (["brew", "install"], ["brew", "reinstall"]) for cmd in run_calls)
     assert any(cmd[:3] == ["brew", "services", "start"] for cmd in run_calls)
+
+
+# --- _brew_install_or_reinstall ---
+
+
+@pytest.mark.unit
+def test_brew_install_or_reinstall_installs_when_not_present(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: (
+            calls.append(cmd) or subprocess.CompletedProcess(cmd, 1)
+            if cmd[:3] == ["brew", "list", "--versions"]
+            else calls.append(cmd) or subprocess.CompletedProcess(cmd, 0)
+        ),
+    )
+    decision = ops._brew_install_or_reinstall(
+        "tap/nyxgpt-api", "nyxgpt-api", sha256="abc123", marker_dir=tmp_path
+    )
+    assert decision == "installed"
+    assert ["brew", "fetch", "--force", "tap/nyxgpt-api"] in calls
+    assert ["brew", "install", "--overwrite", "tap/nyxgpt-api"] in calls
+    assert (tmp_path / ".nyxgpt-api.sha256").read_text(encoding="utf-8") == "abc123"
+
+
+@pytest.mark.unit
+def test_brew_install_or_reinstall_reinstalls_when_source_changed(monkeypatch, tmp_path):
+    (tmp_path / ".nyxgpt-api.sha256").write_text("old-sha", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+    decision = ops._brew_install_or_reinstall(
+        "tap/nyxgpt-api", "nyxgpt-api", sha256="new-sha", marker_dir=tmp_path
+    )
+    assert "reinstalled" in decision
+    assert ["brew", "reinstall", "tap/nyxgpt-api"] in calls
+    assert (tmp_path / ".nyxgpt-api.sha256").read_text(encoding="utf-8") == "new-sha"
+
+
+@pytest.mark.unit
+def test_brew_install_or_reinstall_skips_when_unchanged(monkeypatch, tmp_path):
+    (tmp_path / ".nyxgpt-api.sha256").write_text("same-sha", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+    decision = ops._brew_install_or_reinstall(
+        "tap/nyxgpt-api", "nyxgpt-api", sha256="same-sha", marker_dir=tmp_path
+    )
+    assert "skipped" in decision
+    assert calls == [["brew", "list", "--versions", "nyxgpt-api"]]
+    assert (tmp_path / ".nyxgpt-api.sha256").read_text(encoding="utf-8") == "same-sha"
+
+
+# --- _vendor_tree ---
+
+
+@pytest.mark.unit
+def test_vendor_tree_excludes_named_directories(tmp_path):
+    src = tmp_path / "src"
+    (src / "node_modules" / "pkg").mkdir(parents=True)
+    (src / "node_modules" / "pkg" / "index.js").write_text("", encoding="utf-8")
+    (src / "keep.txt").write_text("keep", encoding="utf-8")
+
+    dst = tmp_path / "dst"
+    ops._vendor_tree(src, dst, excludes=frozenset({"node_modules"}))
+
+    assert (dst / "keep.txt").exists()
+    assert not (dst / "node_modules").exists()
 
 
 # --- _ensure_web_deps ---
@@ -4421,6 +4620,31 @@ def test_stop_mark_intentional_stop_failure_does_not_block_stop(capsys):
 
 
 @pytest.mark.unit
+def test_stop_leaves_terraform_or_kubernetes_managed_component_unmarked(capsys):
+    """`nyxgpt ops stop` (no --terraform/--kubernetes) never stops a
+    Terraform/Kubernetes-managed container, so it must not mark that
+    component intentionally stopped either -- doing so would blind
+    self-heal to a component this call never touched (#3406)."""
+    mode = _mode(native={"api": "none"}, compose={})
+    with (
+        patch.object(ops, "detect_deployment_mode", return_value=mode),
+        patch.object(ops, "_terraform_or_kubernetes_managed_components", return_value={"api"}),
+        patch.object(ops.self_heal, "mark_intentionally_stopped") as mark_stopped,
+        patch.object(ops, "_stop_brew_service") as sb,
+        patch.object(ops, "_compose_stop_service") as cs,
+    ):
+        args = MagicMock()
+        args.target = "api"
+        rc = ops.stop(args)
+
+    assert rc == 0
+    mark_stopped.assert_not_called()
+    sb.assert_not_called()
+    cs.assert_not_called()
+    assert "Terraform/Kubernetes" in capsys.readouterr().out
+
+
+@pytest.mark.unit
 def test_stop_observability_target_calls_stop_observability_stack():
     mode = _mode()
     with (
@@ -4561,6 +4785,38 @@ def test_down_marks_core_components_intentionally_stopped_before_teardown():
     # The watchdog's enabled/disabled state is never touched by `down` --
     # the SRE dashboard toggle is the only arm/disarm path (#3406).
     set_enabled.assert_not_called()
+
+
+@pytest.mark.unit
+def test_down_leaves_terraform_or_kubernetes_managed_components_unmarked():
+    """A plain `nyxgpt ops down` (no --terraform/--kubernetes) only ever
+    stops the native/Compose form of api/web/ollama/cassandra. If one of
+    those service names is actually running under Terraform or Kubernetes,
+    this call never touches it, so it must not mark it intentionally
+    stopped either -- otherwise self-heal would stop guarding a component
+    that never went down (#3406)."""
+    args = MagicMock(
+        app_only=False,
+        observability_only=False,
+        volumes=False,
+        yes_really=False,
+        terraform=False,
+        kubernetes=False,
+    )
+    with (
+        patch.object(
+            ops, "_terraform_or_kubernetes_managed_components", return_value={"api", "web"}
+        ),
+        patch.object(ops.self_heal, "mark_intentionally_stopped") as mark_stopped,
+        patch.object(ops, "_stop_brew_service", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_docker_container", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_stop_launchagent", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_compose_available", return_value=False),
+    ):
+        rc = ops.down(args)
+
+    assert rc == 0
+    assert mark_stopped.call_args_list == [call("ollama"), call("cassandra")]
 
 
 @pytest.mark.unit
