@@ -2759,7 +2759,7 @@ def test_cli_wizard_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
 
 
 def test_cli_tui_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
-    import nyxgpt.cli as cli_mod
+    import nyxgpt.tui as tui_mod
 
     calls: list[dict] = []
 
@@ -2770,7 +2770,9 @@ def test_cli_tui_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
         def run(self) -> None:
             calls.append({"ran": True})
 
-    monkeypatch.setattr(cli_mod, "NyxGPTTUI", FakeTUI)
+    # NyxGPTTUI is imported lazily inside the `tui` command now, so patch it on
+    # its source module rather than on nyxgpt.cli.
+    monkeypatch.setattr(tui_mod, "NyxGPTTUI", FakeTUI)
 
     exit_code = cli(["tui", "--session", "my-session"])
 
