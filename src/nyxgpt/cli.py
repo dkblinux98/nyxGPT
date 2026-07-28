@@ -38,7 +38,12 @@ from nyxgpt.config import (
 from nyxgpt.logging import configure_logging
 from nyxgpt.rag.rag import ingest_document, retrieve_context
 from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
-from nyxgpt.tui import NyxGPTTUI
+
+# NOTE: nyxgpt.tui is imported lazily inside the `tui` command (below), not at
+# module top -- it pulls in `textual` (a `ui` extra), and importing it here
+# made the ENTIRE CLI, incl. `nyxgpt ops`, fail with ModuleNotFoundError on an
+# install without the extra (e.g. the Docker/terraform smoke). Only `nyxgpt
+# tui` actually needs it.
 from nyxgpt.wizard import run_wizard
 
 
@@ -2191,6 +2196,15 @@ def cli(argv: list[str] | None = None) -> int:
         return cmd_info(args.config)
 
     if cmd == "tui":
+        try:
+            from nyxgpt.tui import NyxGPTTUI
+        except ModuleNotFoundError as e:
+            print(
+                f"The terminal UI needs the 'ui' extra ({e.name} missing). "
+                "Install it with: pip install 'nyxgpt[ui]'",
+                file=sys.stderr,
+            )
+            return 1
         app = NyxGPTTUI(session=args.session, api_base_url=args.api_url)
         app.run()
         return 0
