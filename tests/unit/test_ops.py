@@ -6515,10 +6515,38 @@ def test_install_terraform_local_reports_port_collision(monkeypatch):
 def test_down_terraform_returns_results_without_printing(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/terraform")
     monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="destroyed"))
+    # Observability teardown runs before the destroy; stub it so this test
+    # exercises only the terraform-destroy result shape.
+    monkeypatch.setattr(
+        ops, "_stop_observability_stack_terraform", lambda: [ops.OpsResult(True, "obs down")]
+    )
     results = ops.down_terraform()
-    assert len(results) == 1
-    assert results[0].ok is True
+    assert all(r.ok for r in results)
+    assert any("terraform destroy" in r.message for r in results)
     assert capsys.readouterr().out == ""
+
+
+@pytest.mark.unit
+def test_down_terraform_tears_down_observability_before_destroy(monkeypatch):
+    """`ops down --terraform` must bring the observability stack down before
+    `terraform destroy`, or the destroy can't remove the shared network
+    (regression: containers left attached time out the network delete)."""
+    order: list[str] = []
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/terraform")
+    monkeypatch.setattr(
+        ops,
+        "_stop_observability_stack_terraform",
+        lambda: (order.append("obs-down"), [ops.OpsResult(True, "obs down")])[1],
+    )
+
+    def fake_run(cmd, check=True):
+        if "destroy" in cmd:
+            order.append("destroy")
+        return CP(returncode=0, stdout="ok")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    ops.down_terraform()
+    assert order == ["obs-down", "destroy"]
 
 
 @pytest.mark.unit

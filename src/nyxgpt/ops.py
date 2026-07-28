@@ -1968,18 +1968,26 @@ def _install_terraform(args) -> int:
 
 
 def _down_terraform_steps() -> list[OpsResult]:
-    """`terraform destroy` the Terraform-managed stack and return structured results."""
+    """Tear down the Terraform-managed stack and return structured results.
+
+    Brings the observability Compose stack down FIRST: `install --terraform
+    --local` starts it on the `nyxgpt-terraform` network, and `terraform
+    destroy` can't remove that network while those containers are still
+    attached (it times out on the network delete). Then runs `terraform
+    destroy` for the core stack.
+    """
     if _which("terraform") is None:
         results = [OpsResult(False, "terraform not found on PATH -- nothing to destroy")]
     else:
+        results = _stop_observability_stack_terraform()
         cp = _run(
             ["terraform", f"-chdir={TERRAFORM_DIR}", "destroy", "-input=false", "-auto-approve"],
             check=False,
         )
         if cp.returncode == 0:
-            results = [OpsResult(True, "terraform destroy", _cp_details(cp))]
+            results.append(OpsResult(True, "terraform destroy", _cp_details(cp)))
         else:
-            results = [OpsResult(False, "terraform destroy failed", _cp_details(cp))]
+            results.append(OpsResult(False, "terraform destroy failed", _cp_details(cp)))
 
     result, message = _ops_action_outcome(results)
     _record_ops_action("down", "terraform", result, message)
@@ -3671,6 +3679,41 @@ def _start_observability_stack_terraform() -> list[OpsResult]:
     return _start_observability_stack(
         extra_compose_files=[TERRAFORM_NET_OVERRIDE], force_recreate=True
     )
+
+
+def _stop_observability_stack_terraform() -> list[OpsResult]:
+    """Tear down the observability Compose stack attached to the terraform network.
+
+    The mirror of `_start_observability_stack_terraform`, run BEFORE `terraform
+    destroy`. `install --terraform --local` brings observability up on the
+    `nyxgpt-terraform` network; `terraform destroy` then can't remove that
+    network while those containers are still attached (it times out on the
+    network delete). This `docker compose down` (with the terraform-net
+    override) removes the observability containers and detaches them from the
+    network -- the external network itself is left for terraform to destroy.
+    Best-effort: a Docker-less host or a missing override just skips it.
+    """
+    if not _compose_available():
+        return [OpsResult(True, "Skipped observability teardown (Docker not found)")]
+    if not TERRAFORM_NET_OVERRIDE.exists():
+        return [
+            OpsResult(True, f"Skipped observability teardown (no {TERRAFORM_NET_OVERRIDE.name})")
+        ]
+    cmd = [
+        "docker",
+        "compose",
+        "-f",
+        str(self_heal.COMPOSE_FILE),
+        "-f",
+        str(TERRAFORM_NET_OVERRIDE),
+    ]
+    for profile in OBSERVABILITY_PROFILES:
+        cmd += ["--profile", profile]
+    cmd += ["down"]
+    cp = _run(cmd, check=False)
+    if cp.returncode != 0:
+        return [OpsResult(False, "Failed to tear down observability stack", _cp_details(cp))]
+    return [OpsResult(True, "Observability stack torn down (detached from terraform network)")]
 
 
 def observability(_args) -> int:
