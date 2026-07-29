@@ -40,7 +40,7 @@ const MODE_LABELS: Record<DetectedMode, string> = {
   compose: 'Docker Compose',
   terraform: 'Terraform',
   kubernetes: 'Kubernetes',
-  none: 'none detected',
+  none: 'Nothing detected running',
 };
 
 type MonitoringStatus = {

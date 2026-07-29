@@ -22,6 +22,10 @@ const mockStatusTerraform = {
     namespace: 'nyxgpt',
     pods: ['pod/nyxgpt-api-abc123   1/1   Running'],
   },
+  serving: {
+    supported: false,
+    message: 'Single instance serving 100% of traffic -- traffic splitting is a Kubernetes-mode feature (see the Canary page).',
+  },
 };
 
 const mockStatusEmpty = {
@@ -41,6 +45,10 @@ const mockStatusEmpty = {
     namespace: 'nyxgpt',
     pods: [],
   },
+  serving: {
+    supported: false,
+    message: 'Single instance serving 100% of traffic -- traffic splitting is a Kubernetes-mode feature (see the Canary page).',
+  },
 };
 
 const mockStatusCannotDetermine = {
@@ -59,6 +67,32 @@ const mockStatusCannotDetermine = {
     deployed: false,
     namespace: 'nyxgpt',
     pods: [],
+  },
+  serving: {
+    supported: false,
+    message: 'Single instance serving 100% of traffic -- traffic splitting is a Kubernetes-mode feature (see the Canary page).',
+  },
+};
+
+const mockStatusKubernetesServing = {
+  mode: 'kubernetes',
+  native: {},
+  compose: {},
+  conflicts: [],
+  terraform: { probe_available: true, deployed: false, containers: {} },
+  kubernetes: {
+    available: true,
+    probe_available: true,
+    deployed: true,
+    namespace: 'nyxgpt',
+    pods: ['pod/nyxgpt-api-stable-abc   1/1   Running'],
+  },
+  serving: {
+    supported: true,
+    active: true,
+    weight_percent: 20,
+    stable: { state: 'healthy', message: 'nyxgpt-api-stable healthy (4/4 ready)', version: '2.0.0-abc123' },
+    canary: { state: 'healthy', message: 'nyxgpt-api-canary healthy (1/1 ready)', version: '2.0.1-def456' },
   },
 };
 
@@ -126,6 +160,24 @@ describe('InfrastructurePage', () => {
 
     const canaryLink = await screen.findByRole('link', { name: /canary page/i });
     expect(canaryLink).toHaveAttribute('href', '/admin/canary');
+  });
+
+  it('states single-instance serving when traffic splitting is unsupported (non-kubernetes mode)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusTerraform)));
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText(/Single instance serving 100% of traffic/)).toBeInTheDocument();
+  });
+
+  it('shows stable/canary weight and health when serving is supported (kubernetes mode)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusKubernetesServing)));
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText(/Canary rollout active -- 20% of traffic to canary/)).toBeInTheDocument();
+    expect(screen.getByText(/nyxgpt-api-stable healthy/)).toBeInTheDocument();
+    expect(screen.getByText(/nyxgpt-api-canary healthy/)).toBeInTheDocument();
   });
 
   it('surfaces a port conflict warning when native and compose collide', async () => {

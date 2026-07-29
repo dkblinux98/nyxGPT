@@ -2316,7 +2316,9 @@ def infra_status() -> dict[str, Any]:
     a caller (the web UI) can render "cannot determine from this deployment
     mode" instead of a false "NOT DEPLOYED" when e.g. the API process has no
     docker socket. This page has no install/destroy actions: those are
-    `nyxgpt ops` CLI-only (see docs/terraform.md / docs/kubernetes.md).
+    `nyxgpt ops` CLI-only (see docs/terraform.md / docs/kubernetes.md). Also
+    reports `serving`, which instance/service is currently handling traffic
+    (see `_serving_status`) -- traffic *control* stays on the canary page.
     """
     mode_info = detect_deployment_mode()
 
@@ -2363,6 +2365,39 @@ def infra_status() -> dict[str, Any]:
         "conflicts": sorted(mode_info.conflicts),
         "terraform": terraform,
         "kubernetes": kubernetes,
+        "serving": _serving_status(running_mode),
+    }
+
+
+def _serving_status(running_mode: str) -> dict[str, Any]:
+    """Which instance/service is currently serving traffic (#3410's third duty for this page).
+
+    Traffic splitting only exists in Kubernetes mode -- native/Compose/
+    Terraform each run exactly one instance of every component, so it
+    serves 100% of traffic by construction. Only Kubernetes mode delegates
+    to `canary.status()` for the stable/canary weight and per-track health;
+    everywhere else this reports the single-instance fact directly rather
+    than duplicating canary's Kubernetes-only probing. Traffic *control*
+    stays on the canary page (#3409) -- this only reports the current split.
+    """
+    if running_mode != "kubernetes":
+        return {
+            "supported": False,
+            "message": (
+                "Single instance serving 100% of traffic -- traffic splitting is a "
+                "Kubernetes-mode feature (see the Canary page)."
+            ),
+        }
+
+    from nyxgpt import canary as canary_module
+
+    canary_status = canary_module.status()
+    return {
+        "supported": True,
+        "active": canary_status["active"],
+        "weight_percent": canary_status["weight_percent"],
+        "stable": canary_status["stable"],
+        "canary": canary_status["canary"],
     }
 
 

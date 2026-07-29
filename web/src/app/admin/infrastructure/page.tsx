@@ -23,6 +23,15 @@ type InfraStatus = {
     namespace: string;
     pods: string[];
   };
+  serving:
+    | { supported: false; message: string }
+    | {
+        supported: true;
+        active: boolean;
+        weight_percent: number;
+        stable: { state: string; message: string; version: string | null };
+        canary: { state: string; message: string; version: string | null };
+      };
 };
 
 const boxStyle: React.CSSProperties = {
@@ -179,6 +188,34 @@ export default function InfrastructurePage() {
                 Port conflict: {status.conflicts.join(', ')} reported running in both native and
                 Compose form. Run <code>nyxgpt ops doctor</code> for details.
               </p>
+            )}
+          </div>
+
+          {/* --- Serving --- */}
+          <div style={boxStyle}>
+            <h2 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginBottom: '0.75rem' }}>
+              Serving traffic
+            </h2>
+            {!status.serving.supported ? (
+              <p style={{ fontSize: '0.875rem' }}>{status.serving.message}</p>
+            ) : (
+              <div style={{ fontSize: '0.875rem', display: 'grid', gap: '0.4rem' }}>
+                <p>
+                  {status.serving.active
+                    ? `Canary rollout active -- ${status.serving.weight_percent}% of traffic to canary.`
+                    : 'No canary rollout active -- stable serves 100% of traffic.'}
+                </p>
+                <p>
+                  Stable: <strong>{status.serving.stable.state}</strong>
+                  {status.serving.stable.version ? ` (${status.serving.stable.version})` : ''} —{' '}
+                  {status.serving.stable.message}
+                </p>
+                <p>
+                  Canary: <strong>{status.serving.canary.state}</strong>
+                  {status.serving.canary.version ? ` (${status.serving.canary.version})` : ''} —{' '}
+                  {status.serving.canary.message}
+                </p>
+              </div>
             )}
             <p style={{ fontSize: '0.85rem', color: 'var(--foreground-muted)', marginTop: '0.75rem' }}>
               To control which instance serves traffic (stable vs. canary), see the{' '}

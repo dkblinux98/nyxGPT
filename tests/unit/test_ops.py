@@ -6757,6 +6757,65 @@ def test_infra_status_detects_native_and_compose_modes(monkeypatch):
     assert ops.infra_status()["mode"] == "compose"
 
 
+@pytest.mark.unit
+def test_infra_status_serving_reports_single_instance_outside_kubernetes(monkeypatch):
+    """Native/Compose/Terraform run one instance each -- serving must say so, not defer to canary."""
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "running"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/docker" if prog == "docker" else None
+    )
+
+    result = ops.infra_status()
+    assert result["mode"] == "terraform"
+    assert result["serving"] == {
+        "supported": False,
+        "message": (
+            "Single instance serving 100% of traffic -- traffic splitting is a "
+            "Kubernetes-mode feature (see the Canary page)."
+        ),
+    }
+
+
+@pytest.mark.unit
+def test_infra_status_serving_delegates_to_canary_status_in_kubernetes_mode(monkeypatch):
+    """In kubernetes mode, serving must surface canary.status()'s weight/health -- see #3410."""
+    from nyxgpt import canary
+
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+
+    def fake_which(prog):
+        return "/usr/local/bin/kubectl" if prog == "kubectl" else None
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, check=True: CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n"),
+    )
+
+    fake_status = {
+        "active": True,
+        "weight_percent": 25,
+        "stable": {"state": "healthy", "message": "stable healthy", "version": "1.0.0-aaa"},
+        "canary": {"state": "healthy", "message": "canary healthy", "version": "1.0.1-bbb"},
+    }
+    monkeypatch.setattr(canary, "status", lambda: fake_status)
+
+    result = ops.infra_status()
+    assert result["mode"] == "kubernetes"
+    assert result["serving"] == {"supported": True, **fake_status}
+
+
 # --- install()/down() dispatch to the Terraform/Kubernetes paths ---
 
 
