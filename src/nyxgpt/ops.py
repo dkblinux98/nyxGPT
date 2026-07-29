@@ -2689,6 +2689,11 @@ def _serving_status(running_mode: str) -> dict[str, Any]:
     everywhere else this reports the single-instance fact directly rather
     than duplicating canary's Kubernetes-only probing. Traffic *control*
     stays on the canary page (#3409) -- this only reports the current split.
+
+    Reports every canary-capable component (api, web -- see #3419) under
+    `components`, plus the `api` fields spread at the top level unchanged
+    for backward compatibility with existing callers/tests that only knew
+    about a single component.
     """
     if running_mode != "kubernetes":
         return {
@@ -2701,13 +2706,20 @@ def _serving_status(running_mode: str) -> dict[str, Any]:
 
     from nyxgpt import canary as canary_module
 
-    canary_status = canary_module.status()
+    components: dict[str, Any] = {}
+    for key in ("api", "web"):
+        component_status = canary_module.status(component=key)
+        components[key] = {
+            "active": component_status["active"],
+            "weight_percent": component_status["weight_percent"],
+            "stable": component_status["stable"],
+            "canary": component_status["canary"],
+        }
+
     return {
         "supported": True,
-        "active": canary_status["active"],
-        "weight_percent": canary_status["weight_percent"],
-        "stable": canary_status["stable"],
-        "canary": canary_status["canary"],
+        "components": components,
+        **components["api"],
     }
 
 
@@ -2840,8 +2852,10 @@ def status(_args) -> int:
 
     Prints the detected deployment mode (native vs. Compose per component),
     a native/Compose port-conflict warning if both are live, Homebrew
-    service states, the Cassandra log-follower LaunchAgent's load state, and
-    whether the ops-managed Cassandra Docker container is running.
+    service states, the Cassandra log-follower LaunchAgent's load state,
+    whether the ops-managed Cassandra Docker container is running, and (in
+    Kubernetes mode, when pods are present) each canary-capable component's
+    stable/canary rollout state via `_serving_status` (see #3419).
 
     Always returns 0.
     """
@@ -2913,6 +2927,17 @@ def status(_args) -> int:
             )
             for line in pod_lines:
                 print(f"  {line}")
+
+            serving = _serving_status("kubernetes")
+            if serving["supported"]:
+                print("\nCanary (per component -- see the Canary page in the web admin):")
+                for component, c in serving["components"].items():
+                    rollout = f"active -- {c['weight_percent']}%" if c["active"] else "idle"
+                    print(
+                        f"  {component}: rollout {rollout} | "
+                        f"stable={c['stable']['state']} ({c['stable']['version'] or 'n/a'}) | "
+                        f"canary={c['canary']['state']} ({c['canary']['version'] or 'n/a'})"
+                    )
 
     print(
         "\nCleanup: `nyxgpt ops stop <target>` stops one component (native and/or Compose), "

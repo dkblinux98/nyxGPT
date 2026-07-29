@@ -66,7 +66,10 @@ message rather than silently doing the wrong thing.
 The command refuses to start if the native/Compose stack already owns the
 `api` port — run `nyxgpt ops down` (or stop the conflicting components)
 first. `nyxgpt ops status`/`doctor` show this namespace's Pod states
-alongside native/Compose.
+alongside native/Compose, plus a per-component (`api`, `web`) canary rollout
+line (stable/canary state and version) once pods are present -- see the
+Canary Operations page (`/admin/canary`) for the equivalent web view and
+traffic control.
 
 Tear down (removes the `nyxgpt` namespace and everything in it) with:
 

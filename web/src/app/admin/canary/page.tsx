@@ -138,7 +138,7 @@ export default function CanaryPage() {
 
   async function runAction(
     path: string,
-    body: Record<string, unknown> | undefined,
+    body: Record<string, unknown>,
     setBusy: (v: boolean) => void,
     fallbackMessage: string
   ) {
@@ -149,7 +149,7 @@ export default function CanaryPage() {
       const res = await fetch(path, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: body ? JSON.stringify(body) : undefined,
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) {

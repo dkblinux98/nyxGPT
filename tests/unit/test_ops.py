@@ -7377,17 +7377,32 @@ def test_infra_status_serving_delegates_to_canary_status_in_kubernetes_mode(monk
         lambda cmd, check=True: CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n"),
     )
 
-    fake_status = {
-        "active": True,
-        "weight_percent": 25,
-        "stable": {"state": "healthy", "message": "stable healthy", "version": "1.0.0-aaa"},
-        "canary": {"state": "healthy", "message": "canary healthy", "version": "1.0.1-bbb"},
+    fake_statuses = {
+        "api": {
+            "active": True,
+            "weight_percent": 25,
+            "stable": {"state": "healthy", "message": "stable healthy", "version": "1.0.0-aaa"},
+            "canary": {"state": "healthy", "message": "canary healthy", "version": "1.0.1-bbb"},
+        },
+        "web": {
+            "active": False,
+            "weight_percent": 0,
+            "stable": {"state": "healthy", "message": "web stable healthy", "version": "1.0.0-aaa"},
+            "canary": {"state": "not_deployed", "message": "web canary idle", "version": ""},
+        },
     }
-    monkeypatch.setattr(canary, "status", lambda: fake_status)
+    monkeypatch.setattr(canary, "status", lambda component="api": fake_statuses[component])
 
     result = ops.infra_status()
     assert result["mode"] == "kubernetes"
-    assert result["serving"] == {"supported": True, **fake_status}
+    # Per-component (#3419): every canary-capable component is broken out.
+    assert result["serving"]["components"] == fake_statuses
+    # Backward compatible: api's fields are still spread at the top level.
+    assert result["serving"] == {
+        "supported": True,
+        "components": fake_statuses,
+        **fake_statuses["api"],
+    }
 
 
 # --- install()/down() dispatch to the Terraform/Kubernetes paths ---
@@ -7473,12 +7488,63 @@ def test_status_shows_kubernetes_pods_when_present(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    # Isolate from real kubectl/canary probing -- this test only cares about the pod listing.
+    monkeypatch.setattr(
+        ops, "_serving_status", lambda running_mode: {"supported": False, "message": "n/a"}
+    )
 
     rc = ops.status(MagicMock())
     assert rc == 0
     out = capsys.readouterr().out
     assert "Kubernetes (nyxgpt namespace" in out
     assert "nyxgpt-api-stable-abc" in out
+
+
+@pytest.mark.unit
+def test_status_shows_per_component_canary_when_kubernetes_pods_present(monkeypatch, capsys):
+    """`nyxgpt ops status` surfaces every canary-capable component's rollout state (#3419)."""
+
+    def fake_which(prog):
+        return "/usr/local/bin/kubectl" if prog == "kubectl" else None
+
+    def fake_run(cmd, check=True):
+        if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
+            return CP(returncode=0, stdout="nyxgpt-api-stable-abc   1/1   Running\n")
+        return CP(stdout="")
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(ops, "_run", fake_run)
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(
+        ops,
+        "_serving_status",
+        lambda running_mode: {
+            "supported": True,
+            "components": {
+                "api": {
+                    "active": True,
+                    "weight_percent": 25,
+                    "stable": {"state": "healthy", "message": "ok", "version": "1.0.0-aaa"},
+                    "canary": {"state": "healthy", "message": "ok", "version": "1.0.1-bbb"},
+                },
+                "web": {
+                    "active": False,
+                    "weight_percent": 0,
+                    "stable": {"state": "healthy", "message": "ok", "version": "1.0.0-aaa"},
+                    "canary": {"state": "not_deployed", "message": "idle", "version": ""},
+                },
+            },
+        },
+    )
+
+    rc = ops.status(MagicMock())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Canary (per component" in out
+    assert "api: rollout active -- 25%" in out
+    assert "web: rollout idle" in out
 
 
 @pytest.mark.unit

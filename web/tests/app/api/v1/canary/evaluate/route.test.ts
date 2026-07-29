@@ -66,6 +66,20 @@ describe('/api/v1/canary/evaluate POST route', () => {
     expect(body).toEqual({ evaluation: 'pass', score: 0.98 });
   });
 
+  it('falls back to an empty body when request JSON is invalid', async () => {
+    mockFetch({ ok: true, status: 200, json: { evaluation: 'pass' } });
+
+    const { POST } = await import('../../../../../../src/app/api/v1/canary/evaluate/route');
+    const badReq = new Request('http://localhost/api/v1/canary/evaluate', {
+      method: 'POST',
+      body: 'not json',
+    });
+    await POST(badReq);
+
+    const calledOptions = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(JSON.parse(calledOptions.body)).toEqual({});
+  });
+
   it('passes through a non-2xx backend response status', async () => {
     mockFetch({ ok: false, status: 409, json: { error: 'no active rollout' } });
 
