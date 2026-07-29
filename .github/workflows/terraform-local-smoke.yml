@@ -71,6 +71,22 @@ jobs:
           # it's a valid native config for a from-scratch bring-up.
           cp example.config.ini "$HOME/.nyxGPT/config.ini"
 
+      - name: Pre-create Docker bind-mount volume dirs (Linux runner perms)
+        run: |
+          # On the Linux runner, Docker creates missing bind-mount source dirs
+          # as root, so the non-root users inside the observability containers
+          # (prometheus=nobody, grafana=472, loki=10001, postgres=999) can't
+          # write their data dir and the container crash-loops -> unhealthy ->
+          # the whole `--terraform --local` deploy fails. Docker Desktop on
+          # macOS maps these to the invoking user, so this only bites CI. Pre-
+          # create them world-writable before bring-up so every container's
+          # user can write regardless of its uid.
+          for d in prometheus grafana loki glitchtip-postgres glitchtip-uploads \
+                   cassandra ollama nyxgpt-data; do
+            mkdir -p "$HOME/.nyxGPT/volumes/$d"
+            chmod 777 "$HOME/.nyxGPT/volumes/$d"
+          done
+
       - name: nyxgpt ops install --terraform --local
         run: nyxgpt ops install --terraform --local
 
@@ -90,8 +106,11 @@ jobs:
           check "jaeger UI"           http://localhost:16686/ 200
           check "glitchtip UI"        http://localhost:8080/ 200
           # Prometheus must be scraping the terraform api over the shared network.
-          api_target=$(curl -s --max-time 20 "http://localhost:9090/api/v1/targets?state=active" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); ts=d.get('data',{}).get('activeTargets',[]); print(next((t['health'] for t in ts if 'api' in t.get('labels',{}).get('job','')+t.get('scrapeUrl','')),'MISSING'))" 2>/dev/null || echo ERR)
+          prom_targets="http://localhost:9090/api/v1/targets?state=active"
+          api_target=$(curl -s --max-time 20 "$prom_targets" | jq -r '
+            first(.data.activeTargets[]
+                  | select(((.labels.job // "") + .scrapeUrl) | test("api"))
+                  | .health) // "MISSING"' 2>/dev/null || echo ERR)
           echo "  prometheus api target -> $api_target (expect up)"
           [ "$api_target" = "up" ] || { echo "::error::prometheus is not scraping the api (got $api_target)"; fail=1; }
           exit $fail
@@ -100,7 +119,9 @@ jobs:
         if: failure()
         run: |
           docker ps -a
-          for c in nyxgpt-tf-api nyxgpt-tf-web nyxgpt-tf-cassandra nyxgpt-glitchtip-migrate-1; do
+          for c in nyxgpt-tf-api nyxgpt-tf-web nyxgpt-tf-cassandra \
+                   nyxgpt-prometheus-1 nyxgpt-grafana-1 nyxgpt-loki-1 \
+                   nyxgpt-otel-collector-1 nyxgpt-glitchtip-migrate-1; do
             echo "::group::logs $c"; docker logs "$c" --tail 80 2>&1 || true; echo "::endgroup::"
           done
 
