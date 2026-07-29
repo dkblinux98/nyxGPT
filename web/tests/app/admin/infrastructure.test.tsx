@@ -1,54 +1,150 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
 import InfrastructurePage from '../../../src/app/admin/infrastructure/page';
 
-const mockStatusFull = {
+const mockStatusTerraform = {
+  mode: 'terraform',
+  native: {},
+  compose: {},
+  conflicts: [],
   terraform: {
+    probe_available: true,
     deployed: true,
     containers: { api: 'running', web: 'running', cassandra: 'exited' },
   },
   kubernetes: {
     available: true,
+    probe_available: true,
     deployed: true,
     namespace: 'nyxgpt',
     pods: ['pod/nyxgpt-api-abc123   1/1   Running'],
   },
+  serving: {
+    supported: false,
+    message: 'Single instance serving 100% of traffic -- traffic splitting is a Kubernetes-mode feature (see the Canary page).',
+  },
 };
 
 const mockStatusEmpty = {
+  mode: 'none',
+  native: {},
+  compose: {},
+  conflicts: [],
   terraform: {
+    probe_available: true,
     deployed: false,
     containers: {},
   },
   kubernetes: {
     available: false,
+    probe_available: false,
     deployed: false,
     namespace: 'nyxgpt',
     pods: [],
   },
+  serving: {
+    supported: false,
+    message: 'Single instance serving 100% of traffic -- traffic splitting is a Kubernetes-mode feature (see the Canary page).',
+  },
+};
+
+const mockStatusCannotDetermine = {
+  mode: 'none',
+  native: {},
+  compose: {},
+  conflicts: [],
+  terraform: {
+    probe_available: false,
+    deployed: false,
+    containers: { api: 'absent', web: 'absent' },
+  },
+  kubernetes: {
+    available: true,
+    probe_available: false,
+    deployed: false,
+    namespace: 'nyxgpt',
+    pods: [],
+  },
+  serving: {
+    supported: false,
+    message: 'Single instance serving 100% of traffic -- traffic splitting is a Kubernetes-mode feature (see the Canary page).',
+  },
+};
+
+const mockStatusKubernetesServing = {
+  mode: 'kubernetes',
+  native: {},
+  compose: {},
+  conflicts: [],
+  terraform: { probe_available: true, deployed: false, containers: {} },
+  kubernetes: {
+    available: true,
+    probe_available: true,
+    deployed: true,
+    namespace: 'nyxgpt',
+    pods: ['pod/nyxgpt-api-stable-abc   1/1   Running'],
+  },
+  serving: {
+    supported: true,
+    active: true,
+    weight_percent: 20,
+    stable: { state: 'healthy', message: 'nyxgpt-api-stable healthy (4/4 ready)', version: '2.0.0-abc123' },
+    canary: { state: 'healthy', message: 'nyxgpt-api-canary healthy (1/1 ready)', version: '2.0.1-def456' },
+  },
 };
 
 describe('InfrastructurePage', () => {
-  beforeEach(() => {
-    global.confirm = vi.fn().mockReturnValue(true);
+  it('renders an inactive rollout with version-less tracks and an empty reachable cluster', async () => {
+    // Covers the serving box's no-active-rollout branch, the version-less
+    // track rendering, and the reachable-but-not-deployed kubernetes card
+    // (NOT DEPLOYED badge + empty-pods message).
+    const inactiveServing = {
+      ...mockStatusKubernetesServing,
+      kubernetes: {
+        available: true,
+        probe_available: true,
+        deployed: false,
+        namespace: 'nyxgpt',
+        pods: [],
+      },
+      serving: {
+        supported: true,
+        active: false,
+        weight_percent: 0,
+        stable: { state: 'healthy', message: 'nyxgpt-api-stable healthy (4/4 ready)', version: '' },
+        canary: { state: 'not_deployed', message: 'nyxgpt-api-canary not deployed', version: '' },
+      },
+    };
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(inactiveServing)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/No canary rollout active -- stable serves 100% of traffic\./)).toBeInTheDocument();
+    });
+    // Both the terraform card (undeployed in this fixture) and the kubernetes
+    // card carry the badge.
+    expect(screen.getAllByText('NOT DEPLOYED')).toHaveLength(2);
+    expect(screen.getByText(/No pods in the/)).toBeInTheDocument();
+    expect(screen.getByText(/nyxgpt-api-canary not deployed/)).toBeInTheDocument();
   });
 
-  it('renders terraform and kubernetes status when both are deployed and populated', async () => {
-    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusFull)));
+  it('renders the detected mode and terraform/kubernetes status when deployed', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusTerraform)));
 
     render(<InfrastructurePage />);
 
     await waitFor(() => {
       expect(screen.getAllByText('DEPLOYED')).toHaveLength(2);
     });
+    expect(screen.getByRole('heading', { name: 'Terraform' })).toBeInTheDocument();
     expect(screen.getByText('api')).toBeInTheDocument();
     expect(screen.getAllByText('running')).toHaveLength(2);
     expect(screen.getByText('exited')).toBeInTheDocument();
     expect(screen.getByText(/pod\/nyxgpt-api-abc123/)).toBeInTheDocument();
-    expect(screen.queryByText(/kubectl not found/)).not.toBeInTheDocument();
   });
 
   it('renders empty/not-deployed state and the kubectl-missing hint', async () => {
@@ -57,18 +153,80 @@ describe('InfrastructurePage', () => {
     render(<InfrastructurePage />);
 
     await waitFor(() => {
-      expect(screen.getAllByText('NOT DEPLOYED')).toHaveLength(2);
+      expect(screen.getAllByText('NOT DEPLOYED')).toHaveLength(1);
     });
     expect(screen.getByText(/kubectl not found/)).toBeInTheDocument();
+    expect(screen.getByText('Nothing detected running')).toBeInTheDocument();
   });
 
-  it('links back to the admin dashboard', async () => {
+  it('renders "cannot determine" instead of a false NOT DEPLOYED when probes fail', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusCannotDetermine)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('CANNOT DETERMINE')).toHaveLength(2);
+    });
+    expect(screen.queryByText('NOT DEPLOYED')).not.toBeInTheDocument();
+    expect(screen.getAllByText(/Cannot determine from this deployment mode/)).toHaveLength(2);
+  });
+
+  it('never renders install/destroy controls or api key inputs', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusTerraform)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Terraform' })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('button', { name: /^install$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^destroy$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^remove$/i })).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/Auth API key/i)).not.toBeInTheDocument();
+  });
+
+  it('links back to the admin dashboard and out to the canary page', async () => {
     server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
 
     render(<InfrastructurePage />);
 
     const backLink = await screen.findByRole('link', { name: /back to admin dashboard/i });
     expect(backLink).toHaveAttribute('href', '/admin/dashboard');
+
+    const canaryLink = await screen.findByRole('link', { name: /canary page/i });
+    expect(canaryLink).toHaveAttribute('href', '/admin/canary');
+  });
+
+  it('states single-instance serving when traffic splitting is unsupported (non-kubernetes mode)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusTerraform)));
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText(/Single instance serving 100% of traffic/)).toBeInTheDocument();
+  });
+
+  it('shows stable/canary weight and health when serving is supported (kubernetes mode)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusKubernetesServing)));
+
+    render(<InfrastructurePage />);
+
+    expect(await screen.findByText(/Canary rollout active -- 20% of traffic to canary/)).toBeInTheDocument();
+    expect(screen.getByText(/nyxgpt-api-stable healthy/)).toBeInTheDocument();
+    expect(screen.getByText(/nyxgpt-api-canary healthy/)).toBeInTheDocument();
+  });
+
+  it('surfaces a port conflict warning when native and compose collide', async () => {
+    server.use(
+      http.get('/api/v1/infra/status', () =>
+        HttpResponse.json({ ...mockStatusEmpty, mode: 'native', conflicts: ['api'] })
+      )
+    );
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Port conflict: api/)).toBeInTheDocument();
+    });
   });
 
   it('walks every load-status error branch, then falls back to String(e) on a non-Error rejection', async () => {
@@ -100,315 +258,17 @@ describe('InfrastructurePage', () => {
     fetchSpy.mockRestore();
   });
 
-  it('honors a declined confirmation for terraform install', async () => {
+  it('re-polls status via the Refresh status button', async () => {
     server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
     const user = userEvent.setup();
     render(<InfrastructurePage />);
 
     await waitFor(() => {
-      expect(screen.getAllByRole('button', { name: /^install$/i })[0]).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /refresh status/i })).toBeInTheDocument();
     });
 
-    global.confirm = vi.fn().mockReturnValue(false);
-    await user.click(screen.getAllByRole('button', { name: /^install$/i })[0]);
-    expect(screen.queryByText(/OK|FAIL/)).not.toBeInTheDocument();
-  });
-
-  it('installs the terraform stack with a supplied api key and shows mixed step results', async () => {
-    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
-    const user = userEvent.setup();
-    render(<InfrastructurePage />);
-
-    await waitFor(() => {
-      expect(screen.getAllByRole('button', { name: /^install$/i })[0]).toBeInTheDocument();
-    });
-
-    const apiKeyInputs = screen.getAllByPlaceholderText(/Auth API key/i);
-    await user.type(apiKeyInputs[0], 'my-secret-key');
-
-    let capturedBody: unknown = null;
-    server.use(
-      http.post('/api/v1/infra/terraform/install', async ({ request }) => {
-        capturedBody = await request.json();
-        return HttpResponse.json({
-          ok: false,
-          results: [
-            { ok: true, message: 'terraform applied', details: '' },
-            { ok: false, message: 'health check failed', details: 'api container exited with code 1' },
-          ],
-        });
-      }),
-      http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusFull))
-    );
-    await user.click(screen.getAllByRole('button', { name: /^install$/i })[0]);
-
-    await waitFor(() => {
-      expect(screen.getByText('terraform applied')).toBeInTheDocument();
-    });
-    expect(screen.getByText('health check failed')).toBeInTheDocument();
-    expect(screen.getByText('api container exited with code 1')).toBeInTheDocument();
-    expect(capturedBody).toEqual({ api_key: 'my-secret-key' });
-  });
-
-  it('installs the terraform stack with a blank api key (sent as undefined)', async () => {
-    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
-    const user = userEvent.setup();
-    render(<InfrastructurePage />);
-
-    await waitFor(() => {
-      expect(screen.getAllByRole('button', { name: /^install$/i })[0]).toBeInTheDocument();
-    });
-
-    let capturedBody: unknown = null;
-    server.use(
-      http.post('/api/v1/infra/terraform/install', async ({ request }) => {
-        capturedBody = await request.json();
-        return HttpResponse.json({ ok: true, results: [{ ok: true, message: 'applied', details: '' }] });
-      })
-    );
-    await user.click(screen.getAllByRole('button', { name: /^install$/i })[0]);
-
-    await waitFor(() => {
-      expect(screen.getByText('applied')).toBeInTheDocument();
-    });
-    expect(capturedBody).toEqual({ api_key: undefined });
-  });
-
-  it('walks every terraform-install error fallback branch and a non-Error rejection', async () => {
-    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
-    const user = userEvent.setup();
-    render(<InfrastructurePage />);
-
-    await waitFor(() => {
-      expect(screen.getAllByRole('button', { name: /^install$/i })[0]).toBeInTheDocument();
-    });
-
-    server.use(http.post('/api/v1/infra/terraform/install', () => HttpResponse.json({ error: 'install failed' }, { status: 500 })));
-    await user.click(screen.getAllByRole('button', { name: /^install$/i })[0]);
-    await waitFor(() => {
-      expect(screen.getByText('install failed')).toBeInTheDocument();
-    });
-
-    server.use(http.post('/api/v1/infra/terraform/install', () => HttpResponse.json({ detail: 'terraform busy' }, { status: 500 })));
-    await user.click(screen.getAllByRole('button', { name: /^install$/i })[0]);
-    await waitFor(() => {
-      expect(screen.getByText('terraform busy')).toBeInTheDocument();
-    });
-
-    server.use(http.post('/api/v1/infra/terraform/install', () => HttpResponse.json({}, { status: 502 })));
-    await user.click(screen.getAllByRole('button', { name: /^install$/i })[0]);
-    await waitFor(() => {
-      expect(screen.getByText('HTTP 502')).toBeInTheDocument();
-    });
-
-    const fetchSpy = vi.spyOn(global, 'fetch');
-    fetchSpy.mockImplementationOnce(() => Promise.reject('terraform gremlin'));
-    await user.click(screen.getAllByRole('button', { name: /^install$/i })[0]);
-    await waitFor(() => {
-      expect(screen.getByText('terraform gremlin')).toBeInTheDocument();
-    });
-    fetchSpy.mockRestore();
-  });
-
-  it('honors a declined confirmation for terraform destroy, then destroys it when confirmed', async () => {
-    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusFull)));
-    const user = userEvent.setup();
-    render(<InfrastructurePage />);
-
-    await waitFor(() => {
-      expect(screen.getAllByRole('button', { name: /^destroy$/i })[0]).toBeInTheDocument();
-    });
-
-    global.confirm = vi.fn().mockReturnValue(false);
-    await user.click(screen.getAllByRole('button', { name: /^destroy$/i })[0]);
-    expect(screen.queryByText(/destroyed/)).not.toBeInTheDocument();
-
-    global.confirm = vi.fn().mockReturnValue(true);
-    server.use(
-      http.post('/api/v1/infra/terraform/down', () => HttpResponse.json({ ok: true, results: [{ ok: true, message: 'destroyed', details: '' }] })),
-      http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty))
-    );
-    await user.click(screen.getAllByRole('button', { name: /^destroy$/i })[0]);
-    await waitFor(() => {
-      expect(screen.getByText('destroyed')).toBeInTheDocument();
-    });
-  });
-
-  it('walks every terraform-down error fallback branch and a non-Error rejection', async () => {
-    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusFull)));
-    const user = userEvent.setup();
-    render(<InfrastructurePage />);
-
-    await waitFor(() => {
-      expect(screen.getAllByRole('button', { name: /^destroy$/i })[0]).toBeInTheDocument();
-    });
-
-    server.use(http.post('/api/v1/infra/terraform/down', () => HttpResponse.json({ error: 'destroy failed' }, { status: 500 })));
-    await user.click(screen.getAllByRole('button', { name: /^destroy$/i })[0]);
-    await waitFor(() => {
-      expect(screen.getByText('destroy failed')).toBeInTheDocument();
-    });
-
-    server.use(http.post('/api/v1/infra/terraform/down', () => HttpResponse.json({ detail: 'terraform locked' }, { status: 500 })));
-    await user.click(screen.getAllByRole('button', { name: /^destroy$/i })[0]);
-    await waitFor(() => {
-      expect(screen.getByText('terraform locked')).toBeInTheDocument();
-    });
-
-    server.use(http.post('/api/v1/infra/terraform/down', () => HttpResponse.json({}, { status: 502 })));
-    await user.click(screen.getAllByRole('button', { name: /^destroy$/i })[0]);
-    await waitFor(() => {
-      expect(screen.getByText('HTTP 502')).toBeInTheDocument();
-    });
-
-    const fetchSpy = vi.spyOn(global, 'fetch');
-    fetchSpy.mockImplementationOnce(() => Promise.reject('destroy gremlin'));
-    await user.click(screen.getAllByRole('button', { name: /^destroy$/i })[0]);
-    await waitFor(() => {
-      expect(screen.getByText('destroy gremlin')).toBeInTheDocument();
-    });
-    fetchSpy.mockRestore();
-  });
-
-  it('honors a declined confirmation for kubernetes install, then installs with a supplied api key', async () => {
-    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
-    const user = userEvent.setup();
-    render(<InfrastructurePage />);
-
-    await waitFor(() => {
-      expect(screen.getAllByRole('button', { name: /^install$/i })[1]).toBeInTheDocument();
-    });
-
-    global.confirm = vi.fn().mockReturnValue(false);
-    await user.click(screen.getAllByRole('button', { name: /^install$/i })[1]);
-    expect(screen.queryByText(/deployed/)).not.toBeInTheDocument();
-
-    global.confirm = vi.fn().mockReturnValue(true);
-    const apiKeyInputs = screen.getAllByPlaceholderText(/Auth API key/i);
-    await user.type(apiKeyInputs[1], 'k8s-secret-key');
-
-    let capturedBody: unknown = null;
-    server.use(
-      http.post('/api/v1/infra/kubernetes/install', async ({ request }) => {
-        capturedBody = await request.json();
-        return HttpResponse.json({ ok: true, results: [{ ok: true, message: 'deployed', details: '' }] });
-      }),
-      http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusFull))
-    );
-    await user.click(screen.getAllByRole('button', { name: /^install$/i })[1]);
-    await waitFor(() => {
-      expect(screen.getByText('deployed')).toBeInTheDocument();
-    });
-    expect(capturedBody).toEqual({ api_key: 'k8s-secret-key' });
-  });
-
-  it('walks every kubernetes-install error fallback branch and a non-Error rejection', async () => {
-    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
-    const user = userEvent.setup();
-    render(<InfrastructurePage />);
-
-    await waitFor(() => {
-      expect(screen.getAllByRole('button', { name: /^install$/i })[1]).toBeInTheDocument();
-    });
-
-    server.use(http.post('/api/v1/infra/kubernetes/install', () => HttpResponse.json({ error: 'k8s install failed' }, { status: 500 })));
-    await user.click(screen.getAllByRole('button', { name: /^install$/i })[1]);
-    await waitFor(() => {
-      expect(screen.getByText('k8s install failed')).toBeInTheDocument();
-    });
-
-    server.use(http.post('/api/v1/infra/kubernetes/install', () => HttpResponse.json({ detail: 'cluster unreachable' }, { status: 500 })));
-    await user.click(screen.getAllByRole('button', { name: /^install$/i })[1]);
-    await waitFor(() => {
-      expect(screen.getByText('cluster unreachable')).toBeInTheDocument();
-    });
-
-    server.use(http.post('/api/v1/infra/kubernetes/install', () => HttpResponse.json({}, { status: 502 })));
-    await user.click(screen.getAllByRole('button', { name: /^install$/i })[1]);
-    await waitFor(() => {
-      expect(screen.getByText('HTTP 502')).toBeInTheDocument();
-    });
-
-    const fetchSpy = vi.spyOn(global, 'fetch');
-    fetchSpy.mockImplementationOnce(() => Promise.reject('kubernetes gremlin'));
-    await user.click(screen.getAllByRole('button', { name: /^install$/i })[1]);
-    await waitFor(() => {
-      expect(screen.getByText('kubernetes gremlin')).toBeInTheDocument();
-    });
-    fetchSpy.mockRestore();
-  });
-
-  it('honors a declined confirmation for kubernetes remove, then removes it when confirmed', async () => {
-    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusFull)));
-    const user = userEvent.setup();
-    render(<InfrastructurePage />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /^remove$/i })).toBeInTheDocument();
-    });
-
-    global.confirm = vi.fn().mockReturnValue(false);
-    await user.click(screen.getByRole('button', { name: /^remove$/i }));
-    expect(screen.queryByText(/removed/)).not.toBeInTheDocument();
-
-    global.confirm = vi.fn().mockReturnValue(true);
-    server.use(
-      http.post('/api/v1/infra/kubernetes/down', () => HttpResponse.json({ ok: true, results: [{ ok: true, message: 'removed', details: '' }] })),
-      http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty))
-    );
-    await user.click(screen.getByRole('button', { name: /^remove$/i }));
-    await waitFor(() => {
-      expect(screen.getByText('removed')).toBeInTheDocument();
-    });
-  });
-
-  it('walks every kubernetes-down error fallback branch and a non-Error rejection', async () => {
-    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusFull)));
-    const user = userEvent.setup();
-    render(<InfrastructurePage />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /^remove$/i })).toBeInTheDocument();
-    });
-
-    server.use(http.post('/api/v1/infra/kubernetes/down', () => HttpResponse.json({ error: 'remove failed' }, { status: 500 })));
-    await user.click(screen.getByRole('button', { name: /^remove$/i }));
-    await waitFor(() => {
-      expect(screen.getByText('remove failed')).toBeInTheDocument();
-    });
-
-    server.use(http.post('/api/v1/infra/kubernetes/down', () => HttpResponse.json({ detail: 'namespace stuck terminating' }, { status: 500 })));
-    await user.click(screen.getByRole('button', { name: /^remove$/i }));
-    await waitFor(() => {
-      expect(screen.getByText('namespace stuck terminating')).toBeInTheDocument();
-    });
-
-    server.use(http.post('/api/v1/infra/kubernetes/down', () => HttpResponse.json({}, { status: 502 })));
-    await user.click(screen.getByRole('button', { name: /^remove$/i }));
-    await waitFor(() => {
-      expect(screen.getByText('HTTP 502')).toBeInTheDocument();
-    });
-
-    const fetchSpy = vi.spyOn(global, 'fetch');
-    fetchSpy.mockImplementationOnce(() => Promise.reject('kubernetes down gremlin'));
-    await user.click(screen.getByRole('button', { name: /^remove$/i }));
-    await waitFor(() => {
-      expect(screen.getByText('kubernetes down gremlin')).toBeInTheDocument();
-    });
-    fetchSpy.mockRestore();
-  });
-
-  it('refreshes status via the Refresh buttons', async () => {
-    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusEmpty)));
-    const user = userEvent.setup();
-    render(<InfrastructurePage />);
-
-    await waitFor(() => {
-      expect(screen.getAllByRole('button', { name: /^refresh$/i })[0]).toBeInTheDocument();
-    });
-
-    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusFull)));
-    await user.click(screen.getAllByRole('button', { name: /^refresh$/i })[0]);
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusTerraform)));
+    await user.click(screen.getByRole('button', { name: /refresh status/i }));
     await waitFor(() => {
       expect(screen.getAllByText('DEPLOYED')).toHaveLength(2);
     });

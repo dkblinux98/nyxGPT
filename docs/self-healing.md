@@ -287,6 +287,14 @@ ReplicaSet then recreates it. This is **on top of, not instead of**:
 "stuck" (e.g. passing its liveness probe but otherwise wedged) rather than
 cleanly crash-looping, where nothing else would touch it.
 
+**Detected mode on the dashboard** (#3410): `self_heal.detected_mode()`
+reports which of native/compose/terraform/kubernetes the core components
+are currently reporting from, and `/admin/self-heal` shows it plus, in
+kubernetes mode specifically, an explicit one-line statement of self-heal's
+role above (Pod-level watch on top of kubelet/canary) — so kubernetes mode
+reads as "designed and covered" rather than looking indistinguishable from
+"no components found."
+
 **A caveat on restart-count bookkeeping**: since a healed Pod is deleted and
 recreated under a *new* name, its `restart_counts`/`last_restart_ts` entry in
 `~/.nyxGPT/self_heal_state.json` becomes orphaned (the new Pod starts a
@@ -379,10 +387,11 @@ Aggregation](docker-compose.md#log-aggregation)).
 restarts -- it answers "how often did the system recover itself." Every
 other way a component's lifecycle changes -- `nyxgpt ops install`, `nyxgpt
 ops down`, `nyxgpt ops restart`/`stop`, `nyxgpt ops observability`, the
-Terraform/Kubernetes install/down paths, and the admin dashboard's
-equivalents (the `/api/v1/infra/*` endpoints and the self-heal page's manual
-"Heal Now" button) -- is recorded as a separate **ops lifecycle action**
-instead, via `src/nyxgpt/ops.py`'s `_record_ops_action`:
+`nyxgpt ops install|down --terraform|--kubernetes --local` paths (CLI-only
+since #3410 -- the Infrastructure admin page is status-only and has no
+install/destroy controls), and the self-heal page's manual "Heal Now"
+button -- is recorded as a separate **ops lifecycle action** instead, via
+`src/nyxgpt/ops.py`'s `_record_ops_action`:
 
 - **Metric**: `nyxgpt_ops_actions_total{command, service, result}` (Counter).
   `command` is one of `install`/`down`/`restart`/`stop`/`observability`;

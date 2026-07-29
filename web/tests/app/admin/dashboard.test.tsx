@@ -90,12 +90,14 @@ describe('AdminDashboardPage', () => {
     const systemStatus = screen.getByRole('region', { name: 'System status overview' });
     const configuration = screen.getByRole('region', { name: 'Configuration management' });
 
-    const observationLabels = ['System Health', 'SRE Overview', 'Usage Analytics', 'Full Metrics'];
-    const operationLabels = [
-      'Infrastructure Operations',
-      'Canary Operations',
-      'Self-heal Operations',
+    const observationLabels = [
+      'System Health',
+      'Infrastructure Status',
+      'SRE Overview',
+      'Usage Analytics',
+      'Full Metrics',
     ];
+    const operationLabels = ['Canary Operations', 'Self-heal Operations'];
 
     for (const label of observationLabels) {
       expect(within(systemStatus).getByRole('link', { name: new RegExp(label) })).toBeInTheDocument();

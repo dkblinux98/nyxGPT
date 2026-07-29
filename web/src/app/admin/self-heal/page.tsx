@@ -25,11 +25,22 @@ type HealEvent = {
   message: string;
 };
 
+type DetectedMode = 'native' | 'compose' | 'terraform' | 'kubernetes' | 'none';
+
 type SelfHealStatus = {
   enabled: boolean;
+  mode: DetectedMode;
   components: Component[];
   unhealthy_count: number;
   events: HealEvent[];
+};
+
+const MODE_LABELS: Record<DetectedMode, string> = {
+  native: 'Native (Homebrew services + Cassandra container)',
+  compose: 'Docker Compose',
+  terraform: 'Terraform',
+  kubernetes: 'Kubernetes',
+  none: 'Nothing detected running',
 };
 
 type MonitoringStatus = {
@@ -260,6 +271,14 @@ export default function SelfHealPage() {
 
       {status && (
         <>
+          <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)', marginBottom: '1rem' }}>
+            Detected mode: <strong>{MODE_LABELS[status.mode]}</strong>
+            {status.mode === 'kubernetes' &&
+              " -- self-heal watches the Deployments' Pods and deletes a stuck/unhealthy one " +
+                "(the Deployment's controller recreates it), on top of -- not instead of -- " +
+                "kubelet's own liveness-probe restarts and the canary rollout's auto-rollback."}
+          </p>
+
           <div
             style={{
               display: 'flex',

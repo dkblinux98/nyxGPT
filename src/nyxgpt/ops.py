@@ -2306,31 +2306,99 @@ def _down_kubernetes(_args) -> int:
 
 
 def infra_status() -> dict[str, Any]:
-    """Structured Terraform/Kubernetes deployment status, for the SRE/admin dashboard API.
+    """Honest, status-only deployment status for the Infrastructure admin page (see #3410).
 
-    Mirrors the Terraform/Kubernetes sections `nyxgpt ops status` prints
-    (see `status`), as JSON instead of stdout lines.
+    Reports which mode is actually running (native/compose/terraform/
+    kubernetes/none) and each mode's component state, mirroring the
+    sections `nyxgpt ops status` prints (see `status`) as JSON. Distinguishes
+    a probe that couldn't be run at all from this vantage point --
+    `probe_available: False` -- from a probe that ran and found nothing, so
+    a caller (the web UI) can render "cannot determine from this deployment
+    mode" instead of a false "NOT DEPLOYED" when e.g. the API process has no
+    docker socket. This page has no install/destroy actions: those are
+    `nyxgpt ops` CLI-only (see docs/terraform.md / docs/kubernetes.md). Also
+    reports `serving`, which instance/service is currently handling traffic
+    (see `_serving_status`) -- traffic *control* stays on the canary page.
     """
+    mode_info = detect_deployment_mode()
+
+    docker_available = _which("docker") is not None
     tf_state = terraform_stack_state()
     terraform = {
-        "deployed": any(state != "absent" for state in tf_state.values()),
+        "probe_available": docker_available,
+        "deployed": docker_available and any(state != "absent" for state in tf_state.values()),
         "containers": tf_state,
     }
 
     kubectl_available = _which("kubectl") is not None
     pods: list[str] = []
+    kubernetes_probe_available = False
     if kubectl_available:
         cp = _run(["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "--no-headers"], check=False)
-        if cp.returncode == 0:
+        kubernetes_probe_available = cp.returncode == 0
+        if kubernetes_probe_available:
             pods = [line for line in (cp.stdout or "").splitlines() if line.strip()]
     kubernetes = {
         "available": kubectl_available,
+        "probe_available": kubernetes_probe_available,
         "deployed": bool(pods),
         "namespace": K8S_NAMESPACE,
         "pods": pods,
     }
 
-    return {"terraform": terraform, "kubernetes": kubernetes}
+    native_running = any(state in ("started", "running") for state in mode_info.native.values())
+    if terraform["deployed"]:
+        running_mode = "terraform"
+    elif kubernetes["deployed"]:
+        running_mode = "kubernetes"
+    elif mode_info.compose:
+        running_mode = "compose"
+    elif native_running:
+        running_mode = "native"
+    else:
+        running_mode = "none"
+
+    return {
+        "mode": running_mode,
+        "native": mode_info.native,
+        "compose": mode_info.compose,
+        "conflicts": sorted(mode_info.conflicts),
+        "terraform": terraform,
+        "kubernetes": kubernetes,
+        "serving": _serving_status(running_mode),
+    }
+
+
+def _serving_status(running_mode: str) -> dict[str, Any]:
+    """Which instance/service is currently serving traffic (#3410's third duty for this page).
+
+    Traffic splitting only exists in Kubernetes mode -- native/Compose/
+    Terraform each run exactly one instance of every component, so it
+    serves 100% of traffic by construction. Only Kubernetes mode delegates
+    to `canary.status()` for the stable/canary weight and per-track health;
+    everywhere else this reports the single-instance fact directly rather
+    than duplicating canary's Kubernetes-only probing. Traffic *control*
+    stays on the canary page (#3409) -- this only reports the current split.
+    """
+    if running_mode != "kubernetes":
+        return {
+            "supported": False,
+            "message": (
+                "Single instance serving 100% of traffic -- traffic splitting is a "
+                "Kubernetes-mode feature (see the Canary page)."
+            ),
+        }
+
+    from nyxgpt import canary as canary_module
+
+    canary_status = canary_module.status()
+    return {
+        "supported": True,
+        "active": canary_status["active"],
+        "weight_percent": canary_status["weight_percent"],
+        "stable": canary_status["stable"],
+        "canary": canary_status["canary"],
+    }
 
 
 def _install_config() -> list[OpsResult]:

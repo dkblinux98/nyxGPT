@@ -21,7 +21,7 @@ export type AdminNavDest = {
 
 export const ADMIN_NAV: AdminNavDest[] = [
   { href: '/admin/health', label: 'System Health', description: 'Live status of every nyxGPT service', group: 'observation' },
-  { href: '/admin/infrastructure', label: 'Infrastructure Operations', description: 'Terraform and Kubernetes local deploys', group: 'operation' },
+  { href: '/admin/infrastructure', label: 'Infrastructure Status', description: 'Detected deployment mode and per-component status', group: 'observation' },
   { href: '/admin/canary', label: 'Canary Operations', description: 'Deploy, gradual rollout, and promotion with automatic rollback', group: 'operation' },
   { href: '/admin/self-heal', label: 'Self-heal Operations', description: 'Watchdog that restarts unhealthy services', group: 'operation' },
   { href: '/admin/observability', label: 'SRE Overview', description: 'Monitoring, logs, tracing, and error tracking', group: 'observation' },
