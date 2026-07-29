@@ -74,6 +74,7 @@ def test_cache_stats_endpoint_disabled_returns_zeros(monkeypatch: pytest.MonkeyP
         "backend": "none",
         "max_size": None,
         "ttl_seconds": None,
+        "rag_enabled": False,
     }
 
 
@@ -106,6 +107,29 @@ def test_cache_stats_endpoint_reports_hits_and_misses(monkeypatch: pytest.Monkey
     assert data["enabled"] is True
     assert data["backend"] == "memory"
     assert data["ttl_seconds"] == 3600
+    assert data["rag_enabled"] is False
+
+
+@pytest.mark.unit
+def test_cache_stats_endpoint_reports_rag_enabled_when_rag_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cache enabled + global RAG enabled: the endpoint reports rag_enabled=True."""
+    from fastapi.testclient import TestClient
+
+    from nyxgpt.app import app
+
+    cfg = _cache_cfg()
+    cfg["rag"]["enable_chat_context"] = "true"
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    with TestClient(app) as client:
+        resp = client.get("/api/v1/rag/cache/stats")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["enabled"] is True
+    assert data["rag_enabled"] is True
 
 
 @pytest.mark.unit

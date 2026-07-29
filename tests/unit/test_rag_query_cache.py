@@ -218,7 +218,42 @@ def test_query_cache_stats_disabled_returns_zeros(monkeypatch: pytest.MonkeyPatc
         "backend": "none",
         "max_size": None,
         "ttl_seconds": None,
+        "rag_enabled": False,
     }
+
+
+@pytest.mark.unit
+def test_query_cache_stats_reports_rag_enabled_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the cache and RAG are both enabled, stats should report rag_enabled=True."""
+    cfg = _base_cfg()
+    cfg["rag"]["enable_chat_context"] = "true"
+
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.rag import get_query_cache_stats
+
+    stats = get_query_cache_stats()
+    assert stats["enabled"] is True
+    assert stats["rag_enabled"] is True
+
+
+@pytest.mark.unit
+def test_query_cache_stats_reports_rag_enabled_false_when_rag_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cache enabled + RAG globally disabled is a valid state: stats should surface
+    rag_enabled=False alongside the (zeroed, since RAG is never exercised) hit/miss
+    counts, so callers can distinguish this from a broken cache."""
+    cfg = _base_cfg()
+    cfg["rag"]["enable_chat_context"] = "false"
+
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.rag import get_query_cache_stats
+
+    stats = get_query_cache_stats()
+    assert stats["enabled"] is True
+    assert stats["rag_enabled"] is False
 
 
 @pytest.mark.unit
