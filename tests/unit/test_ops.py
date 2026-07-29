@@ -2975,6 +2975,253 @@ def test_brew_install_or_reinstall_raises_and_keeps_no_marker_on_failure(monkeyp
     assert not (tmp_path / ".nyxgpt-api.sha256").exists()
 
 
+# --- _hash_paths ---
+
+
+@pytest.mark.unit
+def test_hash_paths_stable_for_unchanged_content(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hello", encoding="utf-8")
+    assert ops._hash_paths([src]) == ops._hash_paths([src])
+
+
+@pytest.mark.unit
+def test_hash_paths_changes_when_file_content_changes(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    f = src / "a.txt"
+    f.write_text("hello", encoding="utf-8")
+    before = ops._hash_paths([src])
+    f.write_text("goodbye", encoding="utf-8")
+    after = ops._hash_paths([src])
+    assert before != after
+
+
+@pytest.mark.unit
+def test_hash_paths_changes_when_file_added(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hello", encoding="utf-8")
+    before = ops._hash_paths([src])
+    (src / "b.txt").write_text("new", encoding="utf-8")
+    after = ops._hash_paths([src])
+    assert before != after
+
+
+@pytest.mark.unit
+def test_hash_paths_skips_excluded_dirs(tmp_path):
+    src = tmp_path / "src"
+    (src / "node_modules").mkdir(parents=True)
+    (src / "node_modules" / "pkg.js").write_text("ignored", encoding="utf-8")
+    (src / "keep.txt").write_text("keep", encoding="utf-8")
+
+    before = ops._hash_paths([src], excludes=frozenset({"node_modules"}))
+    (src / "node_modules" / "pkg.js").write_text("changed", encoding="utf-8")
+    after = ops._hash_paths([src], excludes=frozenset({"node_modules"}))
+    assert before == after
+
+
+@pytest.mark.unit
+def test_hash_paths_includes_standalone_files(tmp_path):
+    f = tmp_path / "pyproject.toml"
+    f.write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    before = ops._hash_paths([f])
+    f.write_text("[project]\nname = 'y'\n", encoding="utf-8")
+    after = ops._hash_paths([f])
+    assert before != after
+
+
+# --- _docker_build_if_needed ---
+
+
+@pytest.mark.unit
+def test_docker_build_if_needed_builds_when_image_missing(monkeypatch, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hello", encoding="utf-8")
+    marker_dir = tmp_path / "markers"
+
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return subprocess.CompletedProcess(cmd, 1)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    decision = ops._docker_build_if_needed(
+        "nyxgpt-api:local", src, fingerprint_paths=[src], marker_dir=marker_dir
+    )
+    assert decision == "built"
+    assert ["docker", "build", "-t", "nyxgpt-api:local", str(src)] in calls
+    assert (marker_dir / ".nyxgpt-api_local.sha256").exists()
+
+
+@pytest.mark.unit
+def test_docker_build_if_needed_rebuilds_when_source_changed(monkeypatch, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hello", encoding="utf-8")
+    marker_dir = tmp_path / "markers"
+    marker_dir.mkdir()
+    (marker_dir / ".nyxgpt-api_local.sha256").write_text("stale-fingerprint", encoding="utf-8")
+
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return subprocess.CompletedProcess(cmd, 0)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    decision = ops._docker_build_if_needed(
+        "nyxgpt-api:local", src, fingerprint_paths=[src], marker_dir=marker_dir
+    )
+    assert "rebuilt" in decision
+    assert ["docker", "build", "-t", "nyxgpt-api:local", str(src)] in calls
+    new_fingerprint = (marker_dir / ".nyxgpt-api_local.sha256").read_text(encoding="utf-8")
+    assert new_fingerprint != "stale-fingerprint"
+
+
+@pytest.mark.unit
+def test_docker_build_if_needed_skips_when_unchanged(monkeypatch, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hello", encoding="utf-8")
+    marker_dir = tmp_path / "markers"
+    marker_dir.mkdir()
+    fingerprint = ops._hash_paths([src])
+    (marker_dir / ".nyxgpt-api_local.sha256").write_text(fingerprint, encoding="utf-8")
+
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    decision = ops._docker_build_if_needed(
+        "nyxgpt-api:local", src, fingerprint_paths=[src], marker_dir=marker_dir
+    )
+    assert "skipped" in decision
+    assert calls == [["docker", "image", "inspect", "nyxgpt-api:local"]]
+
+
+@pytest.mark.unit
+def test_docker_build_if_needed_raises_and_keeps_no_marker_on_failure(monkeypatch, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hello", encoding="utf-8")
+    marker_dir = tmp_path / "markers"
+
+    def fake_run(cmd, **k):
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return subprocess.CompletedProcess(cmd, 1)
+        if cmd[:2] == ["docker", "build"]:
+            return subprocess.CompletedProcess(cmd, 1, stderr="build boom")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="docker build nyxgpt-api:local failed"):
+        ops._docker_build_if_needed(
+            "nyxgpt-api:local", src, fingerprint_paths=[src], marker_dir=marker_dir
+        )
+    assert not (marker_dir / ".nyxgpt-api_local.sha256").exists()
+
+
+@pytest.mark.unit
+def test_docker_build_if_needed_passes_build_args(monkeypatch, tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.txt").write_text("hello", encoding="utf-8")
+    marker_dir = tmp_path / "markers"
+
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return subprocess.CompletedProcess(cmd, 1)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    ops._docker_build_if_needed(
+        "nyxgpt-web:local",
+        src,
+        fingerprint_paths=[src],
+        marker_dir=marker_dir,
+        build_args={"NEXT_PUBLIC_API_BASE_URL": "http://localhost:8000"},
+    )
+    assert [
+        "docker",
+        "build",
+        "-t",
+        "nyxgpt-web:local",
+        "--build-arg",
+        "NEXT_PUBLIC_API_BASE_URL=http://localhost:8000",
+        str(src),
+    ] in calls
+
+
+# --- _build_terraform_docker_images ---
+
+
+@pytest.mark.unit
+def test_build_terraform_docker_images_no_docker(monkeypatch):
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    results = ops._build_terraform_docker_images()
+    assert results[0].ok is False
+    assert "docker not found" in results[0].message
+
+
+@pytest.mark.unit
+def test_build_terraform_docker_images_builds_api_and_web(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/docker")
+    monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
+
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return subprocess.CompletedProcess(cmd, 1)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._build_terraform_docker_images()
+    assert all(r.ok for r in results)
+    assert any(ops.TF_API_IMAGE in r.message and "built" in r.message for r in results)
+    assert any(ops.TF_WEB_IMAGE in r.message and "built" in r.message for r in results)
+    assert any(c[:4] == ["docker", "build", "-t", ops.TF_API_IMAGE] for c in calls)
+    assert any(c[:4] == ["docker", "build", "-t", ops.TF_WEB_IMAGE] for c in calls)
+
+
+@pytest.mark.unit
+def test_build_terraform_docker_images_skips_both_when_unchanged(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/docker")
+    monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
+
+    api_fingerprint = ops._hash_paths(ops._API_IMAGE_FINGERPRINT_PATHS)
+    web_fingerprint = ops._hash_paths([ops.REPO_ROOT / "web"], excludes=ops._WEB_VENDOR_EXCLUDES)
+    (tmp_path / ".nyxgpt-api_local.sha256").write_text(api_fingerprint, encoding="utf-8")
+    (tmp_path / ".nyxgpt-web_local.sha256").write_text(web_fingerprint, encoding="utf-8")
+
+    calls = []
+
+    def fake_run(cmd, **k):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)  # docker image inspect: found
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._build_terraform_docker_images()
+    assert all(r.ok for r in results)
+    assert all("skipped rebuild" in r.message for r in results)
+    assert not any(c[:2] == ["docker", "build"] for c in calls)
+
+
 # --- _vendor_tree ---
 
 
@@ -6282,6 +6529,7 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "_ensure_terraform_binary", return_value=ok) as b,
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
         patch.object(ops, "_generate_compose_config", return_value=ok) as c,
+        patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok) as a,
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok) as o,
         patch.object(ops, "_provision_glitchtip", return_value=ok) as g,
@@ -6335,6 +6583,7 @@ def test_install_terraform_clears_intentional_stop_markers(monkeypatch, capsys):
         patch.object(ops, "_ensure_terraform_binary", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
         patch.object(ops, "_generate_compose_config", return_value=ok),
+        patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
@@ -6417,19 +6666,31 @@ def test_build_and_load_k8s_image_no_docker(monkeypatch):
 
 
 @pytest.mark.unit
-def test_build_and_load_k8s_image_build_fails(monkeypatch):
+def test_build_and_load_k8s_image_build_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/docker")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="build boom"))
+    monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
+
+    def fake_run(cmd, check=True):
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return CP(returncode=1)
+        if cmd[:2] == ["docker", "build"]:
+            return CP(returncode=1, stderr="build boom")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
     results = ops._build_and_load_k8s_image()
     assert results[0].ok is False
     assert "docker build failed" in results[0].message
 
 
 @pytest.mark.unit
-def test_build_and_load_k8s_image_skips_load_on_docker_desktop(monkeypatch):
+def test_build_and_load_k8s_image_skips_load_on_docker_desktop(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/docker")
+    monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
 
     def fake_run(cmd, check=True):
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return CP(returncode=1)
         if cmd[:2] == ["docker", "build"]:
             return CP(returncode=0)
         if cmd[:2] == ["kubectl", "config"]:
@@ -6443,14 +6704,17 @@ def test_build_and_load_k8s_image_skips_load_on_docker_desktop(monkeypatch):
 
 
 @pytest.mark.unit
-def test_build_and_load_k8s_image_loads_into_kind(monkeypatch):
+def test_build_and_load_k8s_image_loads_into_kind(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ops, "_which", lambda prog: "/usr/local/bin/" + prog if prog in ("docker", "kind") else None
     )
+    monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
     run_calls = []
 
     def fake_run(cmd, check=True):
         run_calls.append(cmd)
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return CP(returncode=1)
         if cmd[:2] == ["docker", "build"]:
             return CP(returncode=0)
         if cmd[:2] == ["kubectl", "config"]:
@@ -6466,12 +6730,15 @@ def test_build_and_load_k8s_image_loads_into_kind(monkeypatch):
 
 
 @pytest.mark.unit
-def test_build_and_load_k8s_image_unrecognized_context(monkeypatch):
+def test_build_and_load_k8s_image_unrecognized_context(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ops, "_which", lambda prog: "/usr/local/bin/docker" if prog == "docker" else None
     )
+    monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
 
     def fake_run(cmd, check=True):
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return CP(returncode=1)
         if cmd[:2] == ["docker", "build"]:
             return CP(returncode=0)
         if cmd[:2] == ["kubectl", "config"]:
@@ -6482,6 +6749,33 @@ def test_build_and_load_k8s_image_unrecognized_context(monkeypatch):
     results = ops._build_and_load_k8s_image()
     assert all(r.ok for r in results)
     assert any("Unrecognized cluster context" in r.message for r in results)
+
+
+@pytest.mark.unit
+def test_build_and_load_k8s_image_skips_rebuild_when_source_unchanged(monkeypatch, tmp_path):
+    """Repeated `nyxgpt ops install --kubernetes --local` runs against
+    unchanged source should skip `docker build` entirely (#3414), mirroring
+    the Homebrew reinstall-if-needed behavior from #3406."""
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/docker")
+    monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
+    fingerprint = ops._hash_paths(ops._API_IMAGE_FINGERPRINT_PATHS)
+    (tmp_path / ".nyxgpt-api_local.sha256").write_text(fingerprint, encoding="utf-8")
+
+    run_calls = []
+
+    def fake_run(cmd, check=True):
+        run_calls.append(cmd)
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return CP(returncode=0)
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(stdout="docker-desktop")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._build_and_load_k8s_image()
+    assert all(r.ok for r in results)
+    assert "skipped rebuild" in results[0].message
+    assert not any(c[:2] == ["docker", "build"] for c in run_calls)
 
 
 # --- Kubernetes: _ensure_k8s_secret ---
@@ -6674,6 +6968,7 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_ensure_terraform_binary", return_value=ok),
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok) as t,
         patch.object(ops, "_generate_compose_config", return_value=ok),
+        patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),

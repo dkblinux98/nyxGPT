@@ -40,6 +40,13 @@ the host cache already), bootstraps `k8s/secret.yaml` from the example
 never committed), applies the kustomization, and snapshots Pod/Service
 health.
 
+The image build mirrors the Homebrew reinstall-if-needed behavior (see
+[ops.md](ops.md)): it fingerprints the app source (`src/nyxgpt/` +
+`pyproject.toml`) and only re-runs `docker build` when that source changed
+since the image was last built, reporting `nyxgpt-api:local: built` /
+`rebuilt (source changed since last build)` / `already up to date (skipped
+rebuild)` instead of always rebuilding.
+
 `--local` is required and explicit — it's the only locality implemented
 today, and is the precursor to a future cloud deployment target. `--cloud`
 is accepted by the CLI surface but rejected with a "not yet implemented"
