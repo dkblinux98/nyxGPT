@@ -286,7 +286,18 @@ This is applied via `launchctl setenv OLLAMA_MODELS ...`, plus a
 `launchctl setenv` only lasts for the current session). If you ever pulled
 models natively before upgrading, `nyxgpt ops install` merges anything found
 in the old `~/.ollama/models` into the shared store automatically, the first
-time it runs, without overwriting anything already there.
+time it runs, without overwriting anything already there (via a hardlink
+when possible, so multi-GB blobs merge instantly with no extra disk use).
+
+Because `com.nyxgpt.ollama-env` and Homebrew's own `ollama` LaunchAgent are
+both `RunAtLoad`, launchd does not guarantee which runs first on a given
+login. So the env-setting script also force-restarts the `ollama` brew
+service every time it runs, closing the race regardless of ordering: if
+Homebrew's agent already started `ollama serve` with the wrong env, this
+restarts it with the right one; if it hasn't started yet, this just starts
+it. `nyxgpt ops doctor` also compares the live `launchctl getenv
+OLLAMA_MODELS` against the expected shared path, in case something else
+(e.g. a manual `launchctl unsetenv`) causes drift between logins.
 
 Kubernetes is out of scope for this unification (its own PVC, no bind-mount
 to the host's home directory possible) -- tracked separately.

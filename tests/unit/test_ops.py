@@ -2216,6 +2216,31 @@ def test_migrate_native_ollama_models_merges_missing_files_without_overwriting(
     marker = home / ".nyxGPT" / ".migration-state" / "ollama-native-models.migrated"
     assert marker.exists()
 
+    # Merged files are hardlinked (same inode), not copied, so multi-GB blobs
+    # merge instantly with no extra disk use.
+    assert (dest / "blobs" / "sha256-only-in-native").stat().st_ino == (
+        src / "blobs" / "sha256-only-in-native"
+    ).stat().st_ino
+
+
+@pytest.mark.unit
+def test_migrate_native_ollama_models_falls_back_to_copy_across_devices(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+
+    src = home / ".ollama" / "models" / "blobs"
+    src.mkdir(parents=True)
+    (src / "sha256-cross-device").write_text("native blob data")
+
+    dest = home / ".nyxGPT" / "volumes" / "ollama" / "models"
+    dest.mkdir(parents=True)
+
+    with patch.object(ops.os, "link", side_effect=OSError("cross-device link")):
+        results = ops._migrate_native_ollama_models(dest)
+
+    assert results[0].ok is True
+    assert (dest / "blobs" / "sha256-cross-device").read_text() == "native blob data"
+
 
 @pytest.mark.unit
 def test_migrate_native_ollama_models_marker_skips_rescan_on_later_runs(monkeypatch, tmp_path):
@@ -2261,6 +2286,74 @@ def test_set_native_ollama_models_env_failure_reports_details(tmp_path):
     assert result.ok is False
     assert "Failed to set OLLAMA_MODELS via launchctl setenv" in result.message
     assert "no launchd" in result.details
+
+
+# --- _ollama_env_drift_issue ---
+
+
+@pytest.mark.unit
+def test_ollama_env_drift_issue_none_without_launchctl(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    assert ops._ollama_env_drift_issue() is None
+
+
+@pytest.mark.unit
+def test_ollama_env_drift_issue_none_when_never_configured(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/bin/launchctl")
+    assert ops._ollama_env_drift_issue() is None
+
+
+@pytest.mark.unit
+def test_ollama_env_drift_issue_none_when_env_matches(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/bin/launchctl")
+    marker = home / ".nyxGPT" / ".migration-state" / "ollama-native-env.configured"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+    expected = home / ".nyxGPT" / "volumes" / "ollama" / "models"
+    with patch.object(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout=f"{expected}\n"),
+    ):
+        assert ops._ollama_env_drift_issue() is None
+
+
+@pytest.mark.unit
+def test_ollama_env_drift_issue_flags_unset_env(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/bin/launchctl")
+    marker = home / ".nyxGPT" / ".migration-state" / "ollama-native-env.configured"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+    with patch.object(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="")):
+        issue = ops._ollama_env_drift_issue()
+    assert issue is not None
+    assert "not set for this login session" in issue
+
+
+@pytest.mark.unit
+def test_ollama_env_drift_issue_flags_mismatched_env(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/bin/launchctl")
+    marker = home / ".nyxGPT" / ".migration-state" / "ollama-native-env.configured"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+    stale = home / ".ollama" / "models"
+    with patch.object(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout=f"{stale}\n"),
+    ):
+        issue = ops._ollama_env_drift_issue()
+    assert issue is not None
+    assert "not the shared store" in issue
+    assert str(stale) in issue
 
 
 # --- _install_ollama_env_launchagent ---

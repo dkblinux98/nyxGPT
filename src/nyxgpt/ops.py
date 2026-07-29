@@ -1328,7 +1328,9 @@ def _migrate_native_ollama_models(dest_models_dir: Path) -> list[OpsResult]:
     the source one) and manifests take the destination's copy as
     authoritative on conflict -- the shared store is what Compose/Terraform
     already use, so it wins. Idempotent via a marker file, mirroring
-    `migrate_legacy_volumes`.
+    `migrate_legacy_volumes`. Merges via hardlink (falling back to a real
+    copy if source and dest are on different filesystems), since blobs can
+    be multi-GB and both paths are normally under the same `$HOME`.
     """
     marker = _ollama_migration_state_path("ollama-native-models.migrated")
     if marker.exists():
@@ -1346,7 +1348,15 @@ def _migrate_native_ollama_models(dest_models_dir: Path) -> list[OpsResult]:
         dst_file = dest_models_dir / src_file.relative_to(src_dir)
         if dst_file.exists():
             continue
-        _copy_file(src_file, dst_file)
+        _ensure_dir(dst_file.parent)
+        try:
+            # Source and dest are normally both under $HOME on the same
+            # filesystem, so a hardlink is instant and uses no extra disk
+            # for what can be multi-GB blobs -- falls back to a real copy
+            # for the (e.g. custom OLLAMA volume elsewhere) cross-device case.
+            os.link(src_file, dst_file)
+        except OSError:
+            _copy_file(src_file, dst_file)
         copied += 1
 
     marker.touch()
@@ -3193,6 +3203,50 @@ def _tracing_wiring_issue(cfg_path: Path | None = None) -> str | None:
     )
 
 
+def _ollama_env_drift_issue() -> str | None:
+    """Detect the #3431 boot-race failure mode: native Ollama's OLLAMA_MODELS
+    env drifting back to Ollama's default `~/.ollama/models` store.
+
+    `launchctl setenv` only applies to the launchd GUI session it's run in,
+    and the `com.nyxgpt.ollama-env` LaunchAgent that reapplies it is a
+    *separate* RunAtLoad agent from Homebrew's own `ollama` one -- launchd
+    doesn't guarantee their relative ordering. If Homebrew's agent wins that
+    race on a given login, `ollama serve` starts before OLLAMA_MODELS is set
+    and silently falls back to the default store for the rest of the
+    session, reproducing the split-library bug this issue exists to fix.
+    `set-ollama-models-env.sh` now force-restarts the brew service every
+    login to close that race, but this check surfaces drift here too in case
+    something else (a manual `launchctl unsetenv`, a non-nyxgpt Ollama
+    install) undoes it between doctor runs.
+
+    Only reports an issue once the shared store has actually been configured
+    (`nyxgpt ops install` has run at least once) and there's a `launchctl` to
+    check (macOS). Returns None otherwise.
+    """
+    if _which("launchctl") is None:
+        return None
+    marker = _ollama_migration_state_path("ollama-native-env.configured")
+    if not marker.exists():
+        return None
+
+    expected = _shared_ollama_models_dir()
+    cp = _run(["launchctl", "getenv", "OLLAMA_MODELS"], check=False)
+    actual = (cp.stdout or "").strip()
+    if cp.returncode != 0 or not actual:
+        return (
+            f"Native Ollama's OLLAMA_MODELS env is not set for this login session "
+            f"(expected {expected}) -- models pulled/read natively may split from the "
+            "shared store again (run: nyxgpt ops install)"
+        )
+    if Path(actual) != expected:
+        return (
+            f"Native Ollama's OLLAMA_MODELS is set to {actual}, not the shared store "
+            f"{expected} -- models pulled/read natively may split from the shared store "
+            "again (run: nyxgpt ops install)"
+        )
+    return None
+
+
 # Curated per-component loggers surfaced in the Log Aggregation panel and
 # the "Operational Logs" Grafana dashboard (see app._loki_curated_queries).
 # `_loki_recent_volume_by_logger` reports each one's recent line count so
@@ -3251,9 +3305,11 @@ def doctor(_args) -> int:
     non-executable helper scripts, missing brew/docker/node/npm tools on
     PATH, missing/incomplete web dependencies (node_modules, undici),
     (when log aggregation is enabled and native logs exist) whether
-    promtail is actually wired to see native-mode host logs, and (when
-    tracing is enabled) whether the configured OTLP endpoint actually has
-    something listening on it. Also prints a per-logger recent log volume
+    promtail is actually wired to see native-mode host logs, (when tracing
+    is enabled) whether the configured OTLP endpoint actually has something
+    listening on it, and (once the shared Ollama store has been configured)
+    whether native Ollama's OLLAMA_MODELS env has drifted from it (#3431).
+    Also prints a per-logger recent log volume
     (last 24h, via Loki) when log aggregation
     and the monitoring stack are both up, so idle curated components aren't
     mistaken for a broken pipeline. Prints each issue found.
@@ -3355,6 +3411,10 @@ def doctor(_args) -> int:
     tracing_issue = _tracing_wiring_issue()
     if tracing_issue:
         issues.append(tracing_issue)
+
+    ollama_env_issue = _ollama_env_drift_issue()
+    if ollama_env_issue:
+        issues.append(ollama_env_issue)
 
     if TERRAFORM_DIR.joinpath("terraform.tfstate").exists() and all(
         state == "absent" for state in terraform_stack_state().values()

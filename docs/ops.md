@@ -395,6 +395,11 @@ Checks include:
   host (the default native deployment's only path to it), which otherwise
   silently drops every span while the panel still reports "active" (see
   [docker-compose.md#distributed-tracing](docker-compose.md#distributed-tracing))
+- (once the shared Ollama store has been configured) whether native
+  Ollama's live `launchctl getenv OLLAMA_MODELS` still matches the expected
+  shared `~/.nyxGPT/volumes/ollama/models` path -- catches drift back to
+  Ollama's own default store (see
+  [homebrew.md#ollama-model-store](homebrew.md#ollama-model-store))
 
 Results are reported with clear PASS / FAIL indicators.
 
