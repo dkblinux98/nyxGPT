@@ -676,20 +676,34 @@ def _current_value(cfg: ConfigParser, section: str, key: str, new_value: Any) ->
     return cfg.get(section, key, fallback="")
 
 
+def restart_required_detail(
+    validated: dict[str, dict[str, Any]], cfg: ConfigParser
+) -> dict[str, list[str]]:
+    """Return, per `nyxgpt ops restart` target, the `section.key` fields that changed.
+
+    Only fields whose value actually *changed* from what's on disk count --
+    resubmitting the same host/port shouldn't claim a restart is needed. Used
+    both to compute `restart_components`'s target list and, by the caller in
+    `app.py`, to record *why* a restart is pending for the Admin Dashboard's
+    restart-required button (#3407).
+    """
+    detail: dict[str, list[str]] = {}
+    for section, fields in validated.items():
+        field_specs = {f.key: f for f in _SCHEMA_BY_SECTION[section].fields}
+        for key, value in fields.items():
+            f = field_specs[key]
+            if f.restart_component and _current_value(cfg, section, key, value) != value:
+                detail.setdefault(f.restart_component, []).append(f"{section}.{key}")
+    return detail
+
+
 def restart_components(validated: dict[str, dict[str, Any]], cfg: ConfigParser) -> list[str]:
     """Return the sorted `nyxgpt ops restart` targets touched by `validated`.
 
     Only fields whose value actually *changed* from what's on disk count --
     resubmitting the same host/port shouldn't claim a restart is needed.
     """
-    components: set[str] = set()
-    for section, fields in validated.items():
-        field_specs = {f.key: f for f in _SCHEMA_BY_SECTION[section].fields}
-        for key, value in fields.items():
-            f = field_specs[key]
-            if f.restart_component and _current_value(cfg, section, key, value) != value:
-                components.add(f.restart_component)
-    return sorted(components)
+    return sorted(restart_required_detail(validated, cfg))
 
 
 def observability_changed(validated: dict[str, dict[str, Any]], cfg: ConfigParser) -> bool:

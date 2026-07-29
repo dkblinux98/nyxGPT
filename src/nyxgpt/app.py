@@ -56,6 +56,7 @@ from nyxgpt import health as health_module
 from nyxgpt import metrics as prom_metrics
 from nyxgpt import ops as ops_module
 from nyxgpt import resource_metrics_store as resource_metrics_store_module
+from nyxgpt import restart_state as restart_state_module
 from nyxgpt import self_heal as self_heal_module
 from nyxgpt import tracing as tracing_module
 from nyxgpt import usage_analytics as usage_analytics_module
@@ -1509,10 +1510,14 @@ def config_sections_update(request: Request, payload: dict[str, Any] = Body(...)
     if not validated:
         raise HTTPException(status_code=400, detail="No valid fields to update")
 
-    restart_needed = config_wizard.restart_components(validated, cfg)
+    restart_detail = config_wizard.restart_required_detail(validated, cfg)
+    restart_needed = sorted(restart_detail)
     needs_observability = config_wizard.observability_changed(validated, cfg)
 
     applied = config_wizard.apply_updates(_config_file_path(), validated)
+
+    for component, keys in restart_detail.items():
+        restart_state_module.mark_pending(component, keys)
 
     nyxgpt.config._CACHED_CFG = None
     nyxgpt.config._CACHED_PATH = None
@@ -1570,6 +1575,78 @@ def config_restart(_request: Request, payload: dict[str, Any] = Body(default={})
     threading.Timer(0.75, _do_restart).start()
 
     return {"target": target, "status": "scheduled"}
+
+
+@api.get("/infra/restart-status")
+def infra_restart_status() -> dict[str, Any]:
+    """Components a wizard save flagged as needing a restart, and why (#3407).
+
+    Backs the Admin Dashboard's restart-required button: `pending` maps each
+    `nyxgpt ops restart` target to the `section.key` fields that triggered
+    it and when. Empty once every flagged component has actually been
+    restarted via `POST /infra/restart-required`.
+    """
+    return {"pending": restart_state_module.snapshot()}
+
+
+def _do_restart_required(targets: list[str]) -> None:
+    """Mode-aware restart of each of `targets`, run off the request thread (#3407).
+
+    Reuses `self_heal.heal_now(service=...)`, the same dispatcher the
+    dashboard's manual "Heal Now" button already uses (#3193/#3344): it picks
+    native/Compose/Terraform/Kubernetes restart behavior to match whatever's
+    actually running, bypassing the health check so a healthy-but-stale
+    component still restarts. Restarting `api` kills this very process once
+    the underlying `brew services restart`/`docker restart`/`kubectl delete
+    pod` command lands -- deferred a moment so the triggering HTTP response
+    can be sent first, same as `config_restart` above.
+    """
+    for component in targets:
+        try:
+            result = self_heal_module.heal_now(service=component)
+        except Exception:
+            log.exception("mode-aware restart-required failed (component=%s)", component)
+            continue
+        healed = result.get("healed", [])
+        for event in healed:
+            admin_activity_module.record(
+                "infra.restart_required", f"{event['service']}: {event['message']}"
+            )
+            # Recorded as an ops lifecycle action too (#3390), same as a manual
+            # Heal Now click -- this is equally an operator-initiated restart.
+            ops_module.record_manual_restart(event["service"], event["ok"], event["message"])
+        if healed and all(e["ok"] for e in healed):
+            restart_state_module.clear_pending(component)
+
+
+@api.post("/infra/restart-required")
+def infra_restart_required(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Restart whichever component(s) a wizard save flagged as pending (#3407).
+
+    With no `target`, restarts every currently pending component. Mode-aware
+    (native/Compose/Terraform/Kubernetes) via `_do_restart_required` -- the
+    caller never needs to know or type which raw command applies. Runs
+    off-thread, so the response reports "running"; the caller (the Admin
+    Dashboard restart button) polls `GET /infra/restart-status` to learn
+    when the pending flag clears.
+    """
+    pending = restart_state_module.snapshot()
+    target = payload.get("target")
+    if target is not None:
+        if target not in pending:
+            raise HTTPException(
+                status_code=400, detail=f"No restart is currently pending for '{target}'"
+            )
+        targets = [target]
+    else:
+        targets = sorted(pending)
+        if not targets:
+            raise HTTPException(status_code=400, detail="No restart is currently pending")
+
+    admin_activity_module.record("infra.restart_required_requested", ", ".join(targets))
+    threading.Timer(0.5, _do_restart_required, args=(targets,)).start()
+
+    return {"targets": targets, "status": "running"}
 
 
 # --- Admin dashboard endpoints (system status overview, activity log, access) ---
