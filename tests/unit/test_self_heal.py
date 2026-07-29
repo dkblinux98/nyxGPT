@@ -717,9 +717,41 @@ def test_status_aggregates_enabled_components_and_events(monkeypatch):
     data = self_heal.status()
 
     assert data["enabled"] is True
+    assert data["mode"] == "compose"
     assert data["unhealthy_count"] == 1
     assert len(data["components"]) == 2
     assert data["events"] == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "sources,expected",
+    [
+        ([], "none"),
+        (["compose"], "compose"),
+        (["native"], "native"),
+        (["terraform"], "terraform"),
+        (["kubernetes"], "kubernetes"),
+        (["compose", "terraform"], "terraform"),
+        (["native", "kubernetes"], "kubernetes"),
+    ],
+)
+def test_detected_mode_prefers_terraform_then_kubernetes_then_compose_then_native(
+    sources, expected
+):
+    components = [
+        self_heal.ComponentStatus("api", "c", "running", "healthy", True, source=source)
+        for source in sources
+    ]
+    assert self_heal.detected_mode(components) == expected
+
+
+@pytest.mark.unit
+def test_detected_mode_ignores_non_core_components():
+    components = [
+        self_heal.ComponentStatus("grafana", "c", "running", "healthy", True, source="compose"),
+    ]
+    assert self_heal.detected_mode(components) == "none"
 
 
 @pytest.mark.unit

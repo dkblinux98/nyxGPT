@@ -17,6 +17,7 @@ vi.mock('next/navigation', () => ({
 
 const mockStatus = {
   enabled: false,
+  mode: 'native',
   components: [
     {
       service: 'api',
@@ -60,7 +61,25 @@ const mockStatus = {
 
 const mockEmptyStatus = {
   enabled: true,
+  mode: 'none',
   components: [],
+  unhealthy_count: 0,
+  events: [],
+};
+
+const mockKubernetesStatus = {
+  enabled: true,
+  mode: 'kubernetes',
+  components: [
+    {
+      service: 'nyxgpt-api-stable-abc123',
+      container: 'nyxgpt-api-stable-abc123',
+      state: 'Running',
+      health: 'ready',
+      healthy: true,
+      source: 'kubernetes',
+    },
+  ],
   unhealthy_count: 0,
   events: [],
 };
@@ -623,5 +642,32 @@ describe('SelfHealPage', () => {
       expect(screen.getByText('Restarted: grafana')).toBeInTheDocument();
     });
     expect(capturedBody).toEqual({ service: 'grafana' });
+  });
+
+  it('shows the detected mode, with an explicit role statement in kubernetes mode', async () => {
+    server.use(http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockKubernetesStatus)));
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Detected mode:/)).toBeInTheDocument();
+    });
+    expect(screen.getByText('Kubernetes')).toBeInTheDocument();
+    expect(screen.getByText(/kubelet's own liveness-probe restarts/)).toBeInTheDocument();
+    expect(screen.getByText('nyxgpt-api-stable-abc123')).toBeInTheDocument();
+  });
+
+  it('shows the detected mode for non-kubernetes modes without the kubernetes role statement', async () => {
+    server.use(http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockStatus)));
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Detected mode:/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Native/)).toBeInTheDocument();
+    expect(screen.queryByText(/kubelet's own liveness-probe restarts/)).not.toBeInTheDocument();
   });
 });

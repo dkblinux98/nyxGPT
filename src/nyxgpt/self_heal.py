@@ -1381,12 +1381,32 @@ def get_watchdog() -> Watchdog:
     return _watchdog
 
 
+def detected_mode(components: list[ComponentStatus]) -> str:
+    """Best-guess deployment mode from which source the core app components report from.
+
+    Mirrors `ops.detect_deployment_mode()`'s native-vs-Compose distinction,
+    extended to terraform/kubernetes -- lets the Self-Heal page state its
+    detected mode explicitly instead of leaving Kubernetes mode looking
+    like "no components found" (#3410). Core components are normally all
+    reported by a single mode at once (mixing modes for the same
+    component is exactly what `list_component_status`'s `already_managed`
+    exclusion prevents), so the first source found among the core services
+    below is reported.
+    """
+    core_sources = {c.source for c in components if c.service in CORE_APP_SERVICES}
+    for source in ("terraform", "kubernetes", "compose", "native"):
+        if source in core_sources:
+            return source
+    return "none"
+
+
 def status() -> dict[str, Any]:
     """Aggregate status for `GET /api/v1/self-heal/status`."""
     components = list_component_status()
     unhealthy_count = _record_health_check(components)
     return {
         "enabled": is_enabled(),
+        "mode": detected_mode(components),
         "components": [c.to_dict() for c in components],
         "unhealthy_count": unhealthy_count,
         "events": recent_events(20),
@@ -1407,6 +1427,7 @@ __all__ = [
     "clear_intentionally_stopped",
     "list_intentionally_stopped",
     "recent_events",
+    "detected_mode",
     "list_component_status",
     "restart_component",
     "restart_native_component",
