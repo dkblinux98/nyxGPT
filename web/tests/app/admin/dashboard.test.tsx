@@ -110,6 +110,38 @@ describe('AdminDashboardPage', () => {
     expect(tile).toHaveAttribute('href', grafanaSreHomeUrl('http://localhost:3001'));
   });
 
+  it('falls back to the default Grafana URL for the SRE Overview tile when /api/v1/monitoring throws', async () => {
+    const realFetch = global.fetch;
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation((input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/api/v1/monitoring')) {
+        return Promise.reject(new Error('network error'));
+      }
+      return realFetch(input, init);
+    });
+
+    render(<AdminDashboardPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Canary: idle/)).toBeInTheDocument();
+    });
+
+    const tile = screen.getByRole('link', { name: /SRE Overview/ });
+    expect(tile).toHaveAttribute('href', grafanaSreHomeUrl('http://localhost:3001'));
+
+    fetchSpy.mockRestore();
+  });
+
+  it('falls back to the default Grafana URL for the SRE Overview tile when /api/v1/monitoring omits grafana_ui_url', async () => {
+    server.use(http.get('/api/v1/monitoring', () => HttpResponse.json({ enabled: false, active: false })));
+    render(<AdminDashboardPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Canary: idle/)).toBeInTheDocument();
+    });
+
+    const tile = screen.getByRole('link', { name: /SRE Overview/ });
+    expect(tile).toHaveAttribute('href', grafanaSreHomeUrl('http://localhost:3001'));
+  });
+
   it('groups observation tiles under System Status and operation tiles under Configuration', async () => {
     render(<AdminDashboardPage />);
     await waitFor(() => {

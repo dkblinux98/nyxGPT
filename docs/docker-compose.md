@@ -544,11 +544,10 @@ Infinity datasource (never a hand-pasted token) and writes it to
 `~/.nyxGPT/secrets/glitchtip-grafana-token` (0600, git-ignored), which the
 `grafana` service mounts read-only and the Infinity datasource reads via
 Grafana's `$__file{}` provisioning expansion. Grafana only reads that file
-at startup, so on a fresh install run `nyxgpt ops glitchtip-init` (it
-restarts the `monitoring`/`logging`/`tracing`/`errors` profiles it
-provisioned into via `nyxgpt ops restart observability` once the token is
-written) if the GlitchTip panels in the SRE Home dashboard show an auth
-error.
+at startup, so `glitchtip-init` restarts the `grafana` container directly
+once the token is written (if it's already running); re-run
+`nyxgpt ops glitchtip-init` if the GlitchTip panels in the SRE Home
+dashboard show an auth error.
 
 ## Self-Healing
 
