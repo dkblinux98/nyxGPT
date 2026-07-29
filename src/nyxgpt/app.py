@@ -1987,94 +1987,21 @@ def self_heal_logs(service: str, tail: int = Query(default=200, ge=1, le=2000)) 
     return {"service": service, "tail": tail, "logs": result.details}
 
 
-# --- Terraform/Kubernetes local deployment endpoints (SRE/admin dashboard) ---
+# --- Infrastructure status (SRE/admin dashboard) ---
 #
-# Wraps `nyxgpt ops install/down --terraform/--kubernetes --local` (see
-# ops.py and docs/terraform.md / docs/kubernetes.md) so these deploys are
-# reachable from the dashboard too, per the Definition of Done -- not just
-# the CLI. Only --local is implemented; there is no locality parameter here
-# since the dashboard has nothing else to offer yet (see `_resolve_locality`).
-
-
-def _ops_results_body(results: list[ops_module.OpsResult]) -> dict[str, Any]:
-    """Translate a list of `ops.OpsResult` into the JSON body these endpoints share."""
-    return {
-        "ok": all(r.ok for r in results),
-        "results": [{"ok": r.ok, "message": r.message, "details": r.details} for r in results],
-    }
+# Read-only: which deployment mode is actually running (native/compose/
+# terraform/kubernetes) and each mode's component state -- see
+# ops.infra_status() and #3410. Terraform/Kubernetes install/destroy are
+# `nyxgpt ops install|down --terraform|--kubernetes --local` CLI-only (see
+# docs/terraform.md / docs/kubernetes.md); this page never mutates
+# infrastructure, so there is no install/down endpoint here for the web UI
+# to reach.
 
 
 @api.get("/infra/status")
 def infra_status(_request: Request) -> dict[str, Any]:
-    """Terraform/Kubernetes deployment status: managed container/pod state."""
+    """Deployment status: detected mode plus per-mode component/pod state."""
     return ops_module.infra_status()
-
-
-@api.post("/infra/terraform/install")
-def infra_terraform_install(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Bring up the Terraform-managed local stack in one call.
-
-    Equivalent to `nyxgpt ops install --terraform --local`: ensures
-    terraform is installed (via the hashicorp tap), bootstraps
-    terraform.tfvars, runs init/plan/apply, and reports stack health. Body:
-    `{"api_key": str}` (optional -- auto-generated if omitted). Always
-    returns `200` with a per-step `ok`/`message` breakdown (mirroring the
-    CLI's `[OK]`/`[FAIL]` lines) rather than raising on a step failure, so
-    the dashboard can show the operator exactly which step failed. Records
-    an `infra.terraform_install` admin activity event.
-    """
-    results = ops_module.install_terraform_local(api_key=payload.get("api_key"))
-    body = _ops_results_body(results)
-    admin_activity_module.record(
-        "infra.terraform_install",
-        "Terraform stack installed" if body["ok"] else "Terraform install failed",
-    )
-    return body
-
-
-@api.post("/infra/terraform/down")
-def infra_terraform_down() -> dict[str, Any]:
-    """Tear down the Terraform-managed stack: `terraform destroy` via `nyxgpt ops down --terraform`."""
-    results = ops_module.down_terraform()
-    body = _ops_results_body(results)
-    admin_activity_module.record(
-        "infra.terraform_down",
-        "Terraform stack destroyed" if body["ok"] else "Terraform destroy failed",
-    )
-    return body
-
-
-@api.post("/infra/kubernetes/install")
-def infra_kubernetes_install(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Bring up the Kubernetes-managed local stack in one call.
-
-    Equivalent to `nyxgpt ops install --kubernetes --local`: checks
-    kubectl/cluster prerequisites, builds and loads `nyxgpt-api:local`,
-    bootstraps k8s/secret.yaml, applies the kustomization, and snapshots
-    Pod/HPA/Service health. Body: `{"api_key": str}` (optional --
-    auto-generated if omitted). Always returns `200` with a per-step
-    breakdown, same rationale as `infra_terraform_install`. Records an
-    `infra.kubernetes_install` admin activity event.
-    """
-    results = ops_module.install_kubernetes_local(api_key=payload.get("api_key"))
-    body = _ops_results_body(results)
-    admin_activity_module.record(
-        "infra.kubernetes_install",
-        "Kubernetes stack installed" if body["ok"] else "Kubernetes install failed",
-    )
-    return body
-
-
-@api.post("/infra/kubernetes/down")
-def infra_kubernetes_down() -> dict[str, Any]:
-    """Remove the `nyxgpt` namespace's Kubernetes resources via `nyxgpt ops down --kubernetes`."""
-    results = ops_module.down_kubernetes()
-    body = _ops_results_body(results)
-    admin_activity_module.record(
-        "infra.kubernetes_down",
-        "Kubernetes stack removed" if body["ok"] else "Kubernetes teardown failed",
-    )
-    return body
 
 
 # --- Model management endpoints ---
