@@ -1,14 +1,12 @@
 'use client';
 
-import { useState } from 'react';
-import LoadingSpinner from '../../components/LoadingSpinner';
-import ErrorMessage from '../../components/ErrorMessage';
-import ResourceMetrics from './ResourceMetrics';
 import GeneralSettings from './GeneralSettings';
 
+// The Resource Usage tab (and its ResourceMetrics component) was removed
+// and relocated to the System Health screen (#3413) -- that page is now the
+// only home for resource metrics. With a single remaining section, this
+// page no longer needs tab-switching UI.
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'resources' | 'general'>('resources');
-
   return (
     <div
       style={{
@@ -32,42 +30,6 @@ export default function SettingsPage() {
             ← Back to Admin Dashboard
           </a>
         </div>
-
-        {/* Tabs */}
-        <div style={{ display: 'flex', gap: 8, borderBottom: '2px solid var(--border)' }}>
-          <button
-            onClick={() => setActiveTab('resources')}
-            style={{
-              background: activeTab === 'resources' ? 'var(--button)' : 'transparent',
-              color: activeTab === 'resources' ? 'var(--button-text)' : 'var(--text)',
-              border: 'none',
-              borderRadius: '8px 8px 0 0',
-              padding: '12px 24px',
-              cursor: 'pointer',
-              fontSize: 14,
-              fontWeight: 500,
-              borderBottom: activeTab === 'resources' ? '2px solid var(--primary)' : 'none',
-            }}
-          >
-            Resource Usage
-          </button>
-          <button
-            onClick={() => setActiveTab('general')}
-            style={{
-              background: activeTab === 'general' ? 'var(--button)' : 'transparent',
-              color: activeTab === 'general' ? 'var(--button-text)' : 'var(--text)',
-              border: 'none',
-              borderRadius: '8px 8px 0 0',
-              padding: '12px 24px',
-              cursor: 'pointer',
-              fontSize: 14,
-              fontWeight: 500,
-              borderBottom: activeTab === 'general' ? '2px solid var(--primary)' : 'none',
-            }}
-          >
-            General
-          </button>
-        </div>
       </div>
 
       {/* Content */}
@@ -77,8 +39,7 @@ export default function SettingsPage() {
           margin: '0 auto',
         }}
       >
-        {activeTab === 'resources' && <ResourceMetrics />}
-        {activeTab === 'general' && <GeneralSettings />}
+        <GeneralSettings />
       </div>
     </div>
   );

@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
+import UsageAnalyticsSection from './UsageAnalyticsSection';
+import ResourceMetrics from './ResourceMetrics';
 
 type ServiceStatus = {
   status: string;
@@ -16,7 +18,7 @@ type DependencyCheck = {
   applicable: boolean;
 };
 
-type ResourceMetrics = {
+type ResourceMetricsSummary = {
   memory: { rss_mb: number; percent: number };
   cpu: { process_percent: number };
   queue: { depth: number };
@@ -31,7 +33,7 @@ type Alert = {
 type HealthData = {
   service: ServiceStatus;
   dependencies: DependencyCheck[];
-  resource_metrics: ResourceMetrics;
+  resource_metrics: ResourceMetricsSummary;
   alerts: Alert[];
 };
 
@@ -125,22 +127,42 @@ export default function AdminHealthPage() {
         </a>
       </div>
 
-      {loading && !health ? (
-        <LoadingSpinner label="Loading system health..." />
-      ) : error ? (
-        <ErrorMessage title="Failed to load system health" message={error} onRetry={loadHealth} retrying={loading} />
-      ) : (
-        // `health` is guaranteed non-null here: loadHealth's try/catch always
-        // sets either `health` or `error` before `finally` clears `loading`,
-        // so `!loading && !error && !health` can never occur. The assertion
-        // below documents that invariant instead of adding an unreachable
-        // `: null` fallback branch.
-        (() => {
-          const h = health as HealthData;
-          return (
-            <div style={{ display: 'grid', gap: '1.5rem', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))' }}>
-              {/* Service Health Status */}
-              <section style={cardStyle} aria-label="Service health status">
+      {/* Section anchors -- the consolidated screen (#3413) folds Service
+          Health, Usage Analytics, and Resource Metrics onto one page, so
+          these jump links stand in for the three destinations that used to
+          be separate pages/tabs. */}
+      <nav
+        aria-label="System Health sections"
+        style={{ display: 'flex', gap: 16, marginBottom: '1.5rem', fontSize: 13 }}
+      >
+        <a href="#service-health" style={{ color: '#0066cc' }}>
+          Service Health
+        </a>
+        <a href="#usage-analytics" style={{ color: '#0066cc' }}>
+          Usage Analytics
+        </a>
+        <a href="#resource-metrics" style={{ color: '#0066cc' }}>
+          Resource Metrics
+        </a>
+      </nav>
+
+      <section id="service-health" aria-label="Service health" style={{ marginBottom: '2rem' }}>
+        {loading && !health ? (
+          <LoadingSpinner label="Loading system health..." />
+        ) : error ? (
+          <ErrorMessage title="Failed to load system health" message={error} onRetry={loadHealth} retrying={loading} />
+        ) : (
+          // `health` is guaranteed non-null here: loadHealth's try/catch always
+          // sets either `health` or `error` before `finally` clears `loading`,
+          // so `!loading && !error && !health` can never occur. The assertion
+          // below documents that invariant instead of adding an unreachable
+          // `: null` fallback branch.
+          (() => {
+            const h = health as HealthData;
+            return (
+              <div style={{ display: 'grid', gap: '1.5rem', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))' }}>
+                {/* Service Health Status */}
+                <section style={cardStyle} aria-label="Service health status">
                 <h2 style={sectionTitleStyle}>Service Status</h2>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <StatusBadge
@@ -192,7 +214,7 @@ export default function AdminHealthPage() {
                   <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>Resource metrics unavailable.</p>
                 )}
                 <div style={{ marginTop: '1rem', fontSize: 13 }}>
-                  <a href="/settings" style={{ color: '#0066cc' }}>Full metrics →</a>
+                  <a href="#resource-metrics" style={{ color: '#0066cc' }}>Full metrics →</a>
                 </div>
               </section>
 
@@ -224,10 +246,27 @@ export default function AdminHealthPage() {
                   </div>
                 )}
               </section>
-            </div>
-          );
-        })()
-      )}
+              </div>
+            );
+          })()
+        )}
+      </section>
+
+      {/* Usage Analytics -- relocated from the retired /admin/analytics
+          route (#3413), which was the last remaining entry point after
+          #3396 removed it from the chat menu. */}
+      <section id="usage-analytics" aria-label="Usage analytics" style={{ marginBottom: '2rem' }}>
+        <h2 style={sectionTitleStyle}>Usage Analytics</h2>
+        <UsageAnalyticsSection />
+      </section>
+
+      {/* Resource Metrics -- the history-backed component from #3352,
+          relocated from Settings' Resource Usage tab (#3413), whose only
+          home is now this screen. */}
+      <section id="resource-metrics" aria-label="Resource metrics">
+        <h2 style={sectionTitleStyle}>Resource Metrics</h2>
+        <ResourceMetrics />
+      </section>
     </main>
   );
 }

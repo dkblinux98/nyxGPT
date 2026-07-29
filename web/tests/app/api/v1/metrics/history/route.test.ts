@@ -1,7 +1,7 @@
 /**
  * Tests for the /api/v1/metrics/history Next.js proxy route.
  *
- * Regression test for #3352: the Settings -> Resource Usage timeframe
+ * Regression test for #3352: the System Health screen's Resource Metrics timeframe
  * buttons need a real server-side history endpoint. This proxy forwards
  * the `range` query param to the backend at /api/v1/metrics/history.
  */

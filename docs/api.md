@@ -868,8 +868,10 @@ again by `GET /admin/access`, which only shows the masked value.
 
 ## Usage Analytics
 
-These endpoints back the usage analytics dashboard at `/admin/analytics`.
-Every completed `/api/v1/chat` and `/api/v1/chat/stream` request records a
+These endpoints back the Usage Analytics section of the
+[System Health screen](ui.md#web-ui-features) at `/admin/health` (#3413;
+formerly the standalone `/admin/analytics` route). Every completed
+`/api/v1/chat` and `/api/v1/chat/stream` request records a
 usage event (session, model, prompt/completion token estimates, request
 duration) that feeds these endpoints.
 
@@ -3297,12 +3299,15 @@ curl "http://127.0.0.1:8000/api/v1/metrics/history?range=24h"
 
 ### Web UI Dashboard
 
-The web UI provides a visual dashboard for resource usage metrics accessible from the Settings menu:
+The web UI provides a visual dashboard for resource usage metrics as the
+Resource Metrics section of the [System Health screen](ui.md#web-ui-features)
+(#3413; formerly the Settings page's Resource Usage tab):
 
 **Accessing the Dashboard:**
 1. Open the web UI at `http://localhost:3000`
-2. Click the Settings menu (⚙️ icon)
-3. Select "Resource Usage"
+2. Open the Admin Dashboard and click the **System Health** tile (or go
+   directly to `/admin/health`)
+3. Jump to the "Resource Metrics" section (anchor link at the top of the page)
 
 **Dashboard Features:**
 - Real-time metric updates (auto-refresh every 5 seconds)

@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import '@testing-library/jest-dom';
-import ResourceMetrics from '../../../src/app/settings/ResourceMetrics';
+import ResourceMetrics from '../../../../src/app/admin/health/ResourceMetrics';
 
 const mockMetricsData = {
   memory: {

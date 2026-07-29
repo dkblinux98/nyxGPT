@@ -37,7 +37,12 @@ export function grafanaSreHomeUrl(grafanaUiUrl: string): string {
 }
 
 export const ADMIN_NAV: AdminNavDest[] = [
-  { href: '/admin/health', label: 'System Health', description: 'Live status of every nyxGPT service', group: 'observation' },
+  {
+    href: '/admin/health',
+    label: 'System Health',
+    description: 'Live service status, usage analytics, and resource metrics',
+    group: 'observation',
+  },
   { href: '/admin/infrastructure', label: 'Infrastructure Status', description: 'Detected deployment mode and per-component status', group: 'observation' },
   { href: '/admin/canary', label: 'Canary Operations', description: 'Deploy, gradual rollout, and promotion with automatic rollback', group: 'operation' },
   { href: '/admin/self-heal', label: 'Self-heal Operations', description: 'Watchdog that restarts unhealthy services', group: 'operation' },
@@ -48,6 +53,4 @@ export const ADMIN_NAV: AdminNavDest[] = [
     group: 'observation',
     external: true,
   },
-  { href: '/admin/analytics', label: 'Usage Analytics', description: 'Chat and RAG usage over time', group: 'observation' },
-  { href: '/settings', label: 'Full Metrics', description: 'Resource metrics in Settings', group: 'observation' },
 ];

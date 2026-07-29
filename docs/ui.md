@@ -211,10 +211,9 @@ The web UI includes:
 - **Message editing and regeneration** — edit any message and fork the conversation from that point, or regenerate assistant responses (see [Message Editing](api.md#message-editing))
 - **RAG document upload and toggle** in the chat interface, plus per-message RAG citations (see [RAG](rag.md))
 - **Admin dashboard** (`/admin/dashboard`) — a unified hub with a system status overview (canary state, resource metrics, opt-in observability stacks), a configuration summary, access/API-key management (view masked key, enable/disable auth, rotate), and an activity log (audit trail of admin actions)
-- **System health dashboard** (`/admin/health`) — service uptime, dependency reachability checks (Ollama, and Cassandra when RAG is enabled), resource utilization, and threshold-based alert indicators
+- **System Health screen** (`/admin/health`) — the single consolidated destination (#3413) for "how is the system doing," with three sections on one page: service health (service uptime, dependency reachability checks for Ollama and Cassandra when RAG is enabled, and threshold-based alert indicators), usage analytics (total/per-model/per-day request and token breakdowns from recorded chat usage, with JSON/CSV report export — see [API — Usage Analytics](api.md#usage-analytics)), and resource metrics (the history-backed live performance dashboard from #3352). Section anchor links at the top jump between them. The former standalone `/admin/analytics` route and the Settings page's Resource Usage tab were retired into this screen — it is now their only home.
 - **RAG Collections management** (`/admin/collections`) for multi-model embedding support (see [RAG — Collections Management UI](rag.md#collections-management-ui))
 - **RAG Playground** (`/admin/playground`) for interactive query testing and A/B comparison (see [RAG — RAG Playground](rag.md#rag-playground))
-- **Usage analytics dashboard** (`/admin/analytics`) — total/per-model/per-day request and token breakdowns from recorded chat usage, with JSON/CSV report export (see [API — Usage Analytics](api.md#usage-analytics))
 - **Model management** page (`/models`) for pulling, deleting, and viewing Ollama models
 - **Configuration wizard** (`/admin`) covering every `config.ini` section (core/model, RAG, API & auth, observability) with apply-on-save reload and a restart offer for settings that need one
 - **SRE Overview** tile (Admin Dashboard) — launches Grafana, the single pane of glass for every SRE signal (dashboards, logs, traces, errors), in a new browser tab; there is no in-app SRE Overview page (#3411, see [Observability — Grafana Single Pane of Glass](docker-compose.md#grafana-single-pane-of-glass))
@@ -317,25 +316,21 @@ The search interface appears as a modal overlay. Press Escape to close. Selectin
 
 #### Settings
 
-Access settings at `http://127.0.0.1:3000/settings`, which has two tabs:
+Access settings at `http://127.0.0.1:3000/settings` for day-to-day preferences and app info:
 
-- **Resource Usage** — a real-time system performance dashboard: memory
-  (RSS/VMS, percent, available), CPU (process/system), request latency
-  (avg, P50, P95, P99), and batch queue depth/total requests. Backed by
-  `GET /api/v1/metrics` for the live tiles (5-second auto-refresh,
-  toggleable) and `GET /api/v1/metrics/history` (#3352) for persisted,
-  server-side history charts over a selectable 1h/24h/7d range. Supports
-  manual refresh, JSON/CSV export, and color-coded thresholds (green
-  < 60%, yellow 60-80%, red > 80%). Observability dashboards (Grafana,
-  Jaeger, GlitchTip) live under their own [Observability](docker-compose.md#monitoring-dashboards)
-  page rather than this tab.
-- **General** — day-to-day preferences and app info:
-  - **Appearance** — a Light/Dark theme toggle backed by the existing `ThemeContext` (persisted to `localStorage`), the same theme state used elsewhere in the app.
-  - **About** — read-only app info (version, default model, Ollama base URL, sessions directory) sourced from `/api/info`, plus a link to the [Configuration Wizard](#configuration-wizard) for changing model/RAG/logging configuration.
+- **Appearance** — a Light/Dark theme toggle backed by the existing `ThemeContext` (persisted to `localStorage`), the same theme state used elsewhere in the app.
+- **About** — read-only app info (version, default model, Ollama base URL, sessions directory) sourced from `/api/info`, plus a link to the [Configuration Wizard](#configuration-wizard) for changing model/RAG/logging configuration.
 
-Settings has a `← Back to Admin Dashboard` link to `/admin/dashboard`, the same anchor used by every other admin/SRE page reached via the dashboard (analytics, self-heal, logs, etc.). Settings is also reachable directly from the chat UI's [Settings Menu](#settings-menu-sidebar); users who enter that way and want to return to chat should use browser Back rather than the in-page link, which always goes to the admin dashboard.
+The Resource Usage tab (real-time memory/CPU/latency/queue metrics with
+history charts) was removed from this page and relocated to the
+[System Health screen](#admin-dashboard)'s Resource Metrics section (#3413),
+which is now its only home. Observability dashboards (Grafana, Jaeger,
+GlitchTip) live under their own [Observability](docker-compose.md#monitoring-dashboards)
+page.
 
-Back-nav follows two conventions depending on how a page is reached, not on its route path: admin/SRE pages reached via the admin dashboard (analytics, self-heal, canary, deploy, health, infrastructure, observability, settings, and — since #3396 removed it from the chat Settings menu — the [Configuration Wizard](#configuration-wizard), #3407) use `← Back to Admin Dashboard` targeting `/admin/dashboard`. Day-to-day user tools reached from the chat UI's Settings menu — Manage Models (`/models`), RAG Collections (`/admin/collections`), and RAG Playground (`/admin/playground`) — use `← Back to Chat` targeting `/`, even though the latter two live under the `/admin/` route path for historical reasons.
+Settings has a `← Back to Admin Dashboard` link to `/admin/dashboard`, the same anchor used by every other admin/SRE page reached via the dashboard (health, self-heal, logs, etc.). Settings is also reachable directly from the chat UI's [Settings Menu](#settings-menu-sidebar); users who enter that way and want to return to chat should use browser Back rather than the in-page link, which always goes to the admin dashboard.
+
+Back-nav follows two conventions depending on how a page is reached, not on its route path: admin/SRE pages reached via the admin dashboard (health, self-heal, canary, deploy, infrastructure, observability, settings, and — since #3396 removed it from the chat Settings menu — the [Configuration Wizard](#configuration-wizard), #3407) use `← Back to Admin Dashboard` targeting `/admin/dashboard`. Day-to-day user tools reached from the chat UI's Settings menu — Manage Models (`/models`), RAG Collections (`/admin/collections`), and RAG Playground (`/admin/playground`) — use `← Back to Chat` targeting `/`, even though the latter two live under the `/admin/` route path for historical reasons.
 
 #### Settings Menu (Sidebar)
 
@@ -352,7 +347,7 @@ Access the dashboard at `http://127.0.0.1:3000/admin/dashboard` for an at-a-glan
 
 - **Status badges** — Canary, self-heal, observability, and auth status render as pill badges with a colored dot and label. The "on"/healthy state uses green; the "off"/idle state uses a gray dot and text (`var(--muted-foreground)`) that meets WCAG AA contrast against the pill background. (The Deploy badge was removed along with blue/green -- see #3409.)
 - **Quick-nav tiles, split by observe vs operate** — the exported `ADMIN_NAV` list in `web/src/app/admin/dashboard/page.tsx` tags every destination with a `group` of `observation` or `operation`, and each section renders only its group:
-  - **System Status** shows the observation tiles: System Health, **Infrastructure Status**, SRE Overview, Usage Analytics, and Full Metrics — screens that only report state. Infrastructure moved here from Configuration when #3410 removed its Install/Destroy controls: `nyxgpt ops install|down --terraform|--kubernetes --local` are CLI-only now, so the page only reports the detected deployment mode, per-component status, and which instance is serving traffic (a single instance in native/Compose/Terraform mode, or the stable/canary weight and per-track health in kubernetes mode, sourced from `canary.status()`) — it doesn't change anything. Traffic *control* still lives on the Canary Operations page, linked from here. **SRE Overview** is the sanctioned exception to same-tab, in-app navigation (#3411): its tile opens the Grafana single pane of glass (the "SRE Home" dashboard, built from `grafana_ui_url`) in a new browser tab, marked with a `↗` decoration and `target="_blank"` — there is no in-app SRE Overview page.
+  - **System Status** shows the observation tiles: **System Health**, **Infrastructure Status**, and **SRE Overview** — screens that only report state. System Health is the single consolidated destination (#3413) for service health, usage analytics, and resource metrics; the former separate Usage Analytics and Full Metrics tiles were removed once their content moved onto that screen. Infrastructure moved here from Configuration when #3410 removed its Install/Destroy controls: `nyxgpt ops install|down --terraform|--kubernetes --local` are CLI-only now, so the page only reports the detected deployment mode, per-component status, and which instance is serving traffic (a single instance in native/Compose/Terraform mode, or the stable/canary weight and per-track health in kubernetes mode, sourced from `canary.status()`) — it doesn't change anything. Traffic *control* still lives on the Canary Operations page, linked from here. **SRE Overview** is the sanctioned exception to same-tab, in-app navigation (#3411): its tile opens the Grafana single pane of glass (the "SRE Home" dashboard, built from `grafana_ui_url`) in a new browser tab, marked with a `↗` decoration and `target="_blank"` — there is no in-app SRE Overview page.
   - **Configuration** shows the operation tiles — **Canary Operations** and **Self-heal Operations** — alongside the **Configuration Wizard**, all in the same tile grid. These screens change something (deploy/gate/promote/roll back a canary, toggle or trigger self-heal), so they live under Configuration rather than System Status. (The **Deployment Operations** blue/green tile was retired -- canary is the sole deployment model, see #3409.) The "Operations" suffix on these tiles disambiguates them from the same-named Grafana dashboard links reachable from the SRE Home dashboard, which observe the same subsystems rather than act on them.
 
   Every tile shows the destination name plus a one-line description of what that screen is for, with the same description as a hover tooltip. Tiles navigate in the same tab, carry no arrow decoration, and hover/highlight using the theme CSS variables so light and dark modes both work -- except the SRE Overview tile, described above.
@@ -397,8 +392,8 @@ admin pages (#3407).
    changed this session show a "changed" badge; unchanged inherited defaults
    show a "default" badge (#3385); secret fields never render in cleartext,
    only their masked preview plus a "will be updated" badge if a new value
-   was typed. Includes a link to [Settings → Resource Usage](#settings) for
-   live metrics — the wizard itself configures nothing there.
+   was typed. Includes a link to the [System Health](#admin-dashboard) screen
+   for live metrics — the wizard itself configures nothing there.
 
 **Save changes / Cancel (#3407):** every step shows **Save changes** on the
 left of the configuration box and **Cancel** on the right — not just the

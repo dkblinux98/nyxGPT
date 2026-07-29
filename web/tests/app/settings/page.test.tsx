@@ -1,14 +1,7 @@
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 import '@testing-library/jest-dom';
 import SettingsPage from '../../../src/app/settings/page';
-
-// Mock ResourceMetrics component
-vi.mock('../../../src/app/settings/ResourceMetrics', () => ({
-  default: function MockResourceMetrics() {
-    return <div data-testid="resource-metrics">Resource Metrics Component</div>;
-  },
-}));
 
 // Mock GeneralSettings component
 vi.mock('../../../src/app/settings/GeneralSettings', () => ({
@@ -18,39 +11,13 @@ vi.mock('../../../src/app/settings/GeneralSettings', () => ({
 }));
 
 describe('SettingsPage', () => {
-  it('renders settings page with tabs', () => {
+  it('renders the settings heading and General settings directly, with no tabs', () => {
     render(<SettingsPage />);
 
     expect(screen.getByText('Settings')).toBeInTheDocument();
-    expect(screen.getByText('Resource Usage')).toBeInTheDocument();
-    expect(screen.getByText('General')).toBeInTheDocument();
-  });
-
-  it('shows resource usage tab by default', () => {
-    render(<SettingsPage />);
-
-    expect(screen.getByTestId('resource-metrics')).toBeInTheDocument();
-  });
-
-  it('switches to general tab when clicked', () => {
-    render(<SettingsPage />);
-
-    const generalTab = screen.getByRole('button', { name: /General/i });
-    fireEvent.click(generalTab);
-
     expect(screen.getByTestId('general-settings')).toBeInTheDocument();
-  });
-
-  it('switches back to resource usage tab', () => {
-    render(<SettingsPage />);
-
-    const generalTab = screen.getByRole('button', { name: /General/i });
-    fireEvent.click(generalTab);
-
-    const resourceTab = screen.getByRole('button', { name: /Resource Usage/i });
-    fireEvent.click(resourceTab);
-
-    expect(screen.getByTestId('resource-metrics')).toBeInTheDocument();
+    expect(screen.queryByText('Resource Usage')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /General/i })).not.toBeInTheDocument();
   });
 
   it('has a standard back-to-admin-dashboard link, matching other admin pages', () => {

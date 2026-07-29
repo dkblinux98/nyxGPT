@@ -52,8 +52,8 @@ function stubLocationHref() {
  * The wizard now covers every config.ini section the issue lists (core,
  * RAG, API & auth, observability), grouped into five steps: Core & Model,
  * RAG Configuration, API & Auth, Observability, Summary. The read-only
- * Resource Usage step was removed (#3384) -- live metrics live in
- * Settings -> Resource Usage and the admin dashboard instead.
+ * Resource Usage step was removed (#3384) -- live metrics live in the
+ * System Health screen (#3413) and the admin dashboard instead.
  * Saving posts to /api/v1/config/sections and offers a restart/observability
  * reconciliation banner driven by the response.
  */
