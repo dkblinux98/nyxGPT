@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
+import { FULL_WIZARD_SCHEMA } from '../mocks/handlers';
 import AdminPage from '../../src/app/admin/page';
 
 /** Clicks Next `times` times to advance through the wizard from wherever it currently is. */
@@ -390,6 +391,58 @@ describe('AdminPage Component', () => {
     // Six values were switched on above, so at least six "changed" badges show.
     expect(screen.getAllByText('changed').length).toBeGreaterThanOrEqual(6);
     expect(screen.getAllByText('On').length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('never renders a secret in cleartext on the Summary step, only its masked preview (#3407)', async () => {
+    server.use(
+      http.get('/api/v1/config/sections', () =>
+        HttpResponse.json({
+          sections: {
+            nyxgpt: { default_model: 'llama3.1:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
+            logging: { level: 'INFO', dir: '' },
+            ollama: { base_url: 'http://127.0.0.1:11434' },
+            api: { host: '127.0.0.1', port: '8000' },
+            auth: { enabled: 'false', header: 'X-API-Key', api_key: { set: true, masked: 'abcd****wxyz' } },
+            rate_limit: { enabled: 'false' },
+            rag: {
+              enable_chat_context: 'false',
+              cassandra_hosts: '127.0.0.1',
+              cassandra_port: '9042',
+              cassandra_keyspace: 'nyxgpt',
+              cassandra_table: 'rag_chunks',
+              embedding_model: 'nomic-embed-text',
+            },
+            tracing: { enabled: 'false', service_name: '', otlp_endpoint: '' },
+            error_tracking: { enabled: 'false', dsn: { set: false, masked: null }, environment: '' },
+            monitoring: { enabled: 'false' },
+            log_aggregation: { enabled: 'false' },
+          },
+          schema: FULL_WIZARD_SCHEMA,
+          field_defaults: {},
+        })
+      )
+    );
+
+    render(<AdminPage />);
+    await selectModelAndClickNext(2);
+    // Rotate the already-set API key, and set the never-before-set DSN, so
+    // both the "already masked" and "newly typed" secret paths render.
+    fireEvent.change(screen.getByLabelText('API Key'), { target: { value: 'brand-new-secret-key' } });
+    await clickNext(1);
+    fireEvent.change(screen.getByLabelText('Error Tracking DSN'), {
+      target: { value: 'http://newly-typed-dsn-value@glitchtip/1' },
+    });
+    await clickNext(2);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Review Configuration' })).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('abcd****wxyz')).toBeInTheDocument();
+    expect(screen.getByText('Not set')).toBeInTheDocument();
+    expect(screen.queryByText(/brand-new-secret-key/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/newly-typed-dsn-value/)).not.toBeInTheDocument();
+    expect(screen.getAllByText('will be updated')).toHaveLength(2);
   });
 
   it('renders save configuration button on summary step', async () => {
