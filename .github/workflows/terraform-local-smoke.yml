@@ -37,14 +37,6 @@ on:
 jobs:
   terraform-local-smoke:
     runs-on: ubuntu-latest
-    # TEMPORARILY NON-BLOCKING (CI fix in progress): this full-stack gate has
-    # never passed in GitHub Actions -- Prometheus fails its container
-    # healthcheck in the Linux runner (it works on local Docker Desktop), which
-    # fails the observability tier and the whole `--terraform --local` deploy.
-    # `continue-on-error` keeps the gate running and visible in PR checks but
-    # stops it from blocking unrelated PRs (e.g. #3417) while the runner fix
-    # lands. REMOVE this line once the gate goes green in CI.
-    continue-on-error: true
     if: github.event_name == 'pull_request' || github.ref == format('refs/heads/{0}', vars.RELEASE_BRANCH)
     steps:
       - uses: actions/checkout@v4
