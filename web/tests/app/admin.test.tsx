@@ -23,6 +23,29 @@ async function selectModelAndClickNext(times: number) {
 }
 
 /**
+ * Stubs `window.location.href`'s setter so a test can assert the wizard's
+ * final-page-Save redirect (#3407) without letting happy-dom attempt a real
+ * navigation -- replacing `window.location` wholesale breaks relative
+ * `fetch()` URL resolution for the rest of the suite, so this patches only
+ * the `href` accessor and restores the original descriptor afterward.
+ */
+function stubLocationHref() {
+  const setter = vi.fn();
+  const original = Object.getOwnPropertyDescriptor(window.location, 'href');
+  Object.defineProperty(window.location, 'href', {
+    configurable: true,
+    set: setter,
+    get: () => 'http://localhost:3000/admin',
+  });
+  return {
+    setter,
+    restore: () => {
+      if (original) Object.defineProperty(window.location, 'href', original);
+    },
+  };
+}
+
+/**
  * Configuration Wizard Tests (#3354, #3384)
  *
  * The wizard now covers every config.ini section the issue lists (core,
@@ -47,12 +70,12 @@ describe('AdminPage Component', () => {
     });
   });
 
-  it('renders back to chat link', async () => {
+  it('renders back to admin dashboard link (#3407)', async () => {
     render(<AdminPage />);
     await waitFor(() => {
-      const link = screen.getByRole('link', { name: /back to chat/i });
+      const link = screen.getByRole('link', { name: /back to admin dashboard/i });
       expect(link).toBeInTheDocument();
-      expect(link).toHaveAttribute('href', '/');
+      expect(link).toHaveAttribute('href', '/admin/dashboard');
     });
   });
 
@@ -319,20 +342,33 @@ describe('AdminPage Component', () => {
     expect(screen.getByLabelText('Environment')).toHaveValue('staging');
   });
 
-  it('navigates to the Summary step and reviews every section', async () => {
+  it('navigates to the Summary step and reviews every schema section (#3407)', async () => {
     render(<AdminPage />);
     await selectModelAndClickNext(5);
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Review Configuration' })).toBeInTheDocument();
     });
-    expect(screen.getByText('Core & Model')).toBeInTheDocument();
-    expect(screen.getByText('RAG Configuration')).toBeInTheDocument();
-    expect(screen.getByText('API & Auth')).toBeInTheDocument();
-    expect(screen.getByText('Observability')).toBeInTheDocument();
+    // Every section in the derived schema (FULL_WIZARD_SCHEMA) renders, not just
+    // the four legacy hand-built groups -- the bug this issue exists to fix.
+    for (const label of [
+      'Core & model',
+      'Logging',
+      'Model backend',
+      'API server',
+      'Authentication',
+      'Rate limiting',
+      'RAG / retrieval',
+      'Tracing',
+      'Error tracking',
+      'Monitoring',
+      'Log aggregation',
+    ]) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
   });
 
-  it('shows Enabled/Required/On for every toggle on the summary step once switched on', async () => {
+  it('marks changed fields on the Summary step, distinct from unchanged defaults (#3407)', async () => {
     render(<AdminPage />);
     await selectModelAndClickNext(1);
     fireEvent.click(screen.getByRole('checkbox', { name: /enable rag/i }));
@@ -351,9 +387,9 @@ describe('AdminPage Component', () => {
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'Review Configuration' })).toBeInTheDocument();
     });
-    expect(screen.getByText('Enabled')).toBeInTheDocument();
-    expect(screen.getByText('Required')).toBeInTheDocument();
-    expect(screen.getAllByText('On')).toHaveLength(4);
+    // Six values were switched on above, so at least six "changed" badges show.
+    expect(screen.getAllByText('changed').length).toBeGreaterThanOrEqual(6);
+    expect(screen.getAllByText('On').length).toBeGreaterThanOrEqual(4);
   });
 
   it('renders save configuration button on summary step', async () => {
@@ -366,7 +402,7 @@ describe('AdminPage Component', () => {
     });
   });
 
-  it('shows success message and posts every section after saving', async () => {
+  it('posts every section then redirects to the Admin Dashboard on the final Save (#3407)', async () => {
     let capturedBody: Record<string, Record<string, unknown>> | undefined;
     server.use(
       http.post('/api/v1/config/sections', async ({ request }) => {
@@ -405,6 +441,7 @@ describe('AdminPage Component', () => {
       })
     );
 
+    const location = stubLocationHref();
     render(<AdminPage />);
     await selectModelAndClickNext(5);
 
@@ -413,14 +450,15 @@ describe('AdminPage Component', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(/configuration saved and applied/i)).toBeInTheDocument();
+      expect(location.setter).toHaveBeenCalledWith('/admin/dashboard');
     });
 
     expect(capturedBody?.nyxgpt.default_model).toBe('llama3.1:8b');
     expect(capturedBody?.api.port).toBe(8000);
     expect(capturedBody?.auth).not.toHaveProperty('api_key');
     expect(capturedBody?.error_tracking).not.toHaveProperty('dsn');
-    expect(screen.getByText('Return to chat')).toHaveAttribute('href', '/');
+
+    location.restore();
   });
 
   it('includes the api_key and dsn in the payload when the user types new values', async () => {
@@ -476,160 +514,12 @@ describe('AdminPage Component', () => {
     expect(capturedBody?.error_tracking.dsn).toBe('http://new@dsn/1');
   });
 
-  it('shows a restart banner and schedules a restart when required', async () => {
-    server.use(
-      http.post('/api/v1/config/sections', () =>
-        HttpResponse.json({
-          applied: {},
-          sections: {
-            nyxgpt: { default_model: 'llama3.1:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
-            logging: { level: 'INFO', dir: '' },
-            ollama: { base_url: 'http://127.0.0.1:11434' },
-            api: { host: '127.0.0.1', port: '9000' },
-            auth: { enabled: 'false', header: 'X-API-Key', api_key: { set: false, masked: null } },
-            rate_limit: { enabled: 'false' },
-            rag: {
-              enable_chat_context: 'false',
-              cassandra_hosts: '127.0.0.1',
-              cassandra_port: '9042',
-              cassandra_keyspace: 'nyxgpt',
-              cassandra_table: 'rag_chunks',
-              embedding_model: 'nomic-embed-text',
-            },
-            tracing: { enabled: 'false', service_name: '', otlp_endpoint: '' },
-            error_tracking: { enabled: 'false', dsn: { set: false, masked: null }, environment: '' },
-            monitoring: { enabled: 'false' },
-            log_aggregation: { enabled: 'false' },
-          },
-          restart_required: ['api'],
-          observability_reconciled: true,
-          observability_result: { ok: true, messages: ['Observability stack up'] },
-        })
-      )
-    );
-    let restartRequestBody: unknown;
-    server.use(
-      http.post('/api/v1/config/restart', async ({ request }) => {
-        restartRequestBody = await request.json();
-        return HttpResponse.json({ target: 'api', status: 'scheduled' });
-      })
-    );
-
-    render(<AdminPage />);
-    await selectModelAndClickNext(5);
-
-    await waitFor(() => {
-      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText(/observability stack reconciled/i)).toBeInTheDocument();
-      expect(screen.getByText(/observability stack up/i)).toBeInTheDocument();
-      expect(screen.getByText(/need a restart to fully apply/i)).toBeInTheDocument();
-    });
-
-    const restartButton = screen.getByRole('button', { name: 'Restart api' });
-    fireEvent.click(restartButton);
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /restart scheduled/i })).toBeInTheDocument();
-    });
-    expect(restartRequestBody).toEqual({ target: 'api' });
-  });
-
-  it('shows an observability reconciled message with no detail messages', async () => {
-    server.use(
-      http.post('/api/v1/config/sections', () =>
-        HttpResponse.json({
-          applied: {},
-          sections: {
-            nyxgpt: { default_model: 'llama3.1:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
-            logging: { level: 'INFO', dir: '' },
-            ollama: { base_url: 'http://127.0.0.1:11434' },
-            api: { host: '127.0.0.1', port: '8000' },
-            auth: { enabled: 'false', header: 'X-API-Key', api_key: { set: false, masked: null } },
-            rate_limit: { enabled: 'false' },
-            rag: {
-              enable_chat_context: 'false',
-              cassandra_hosts: '127.0.0.1',
-              cassandra_port: '9042',
-              cassandra_keyspace: 'nyxgpt',
-              cassandra_table: 'rag_chunks',
-              embedding_model: 'nomic-embed-text',
-            },
-            tracing: { enabled: 'false', service_name: '', otlp_endpoint: '' },
-            error_tracking: { enabled: 'false', dsn: { set: false, masked: null }, environment: '' },
-            monitoring: { enabled: 'false' },
-            log_aggregation: { enabled: 'false' },
-          },
-          restart_required: [],
-          observability_reconciled: true,
-          observability_result: null,
-        })
-      )
-    );
-
-    render(<AdminPage />);
-    await selectModelAndClickNext(5);
-    await waitFor(() => {
-      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText('Observability stack reconciled.')).toBeInTheDocument();
-    });
-  });
-
-  it('shows an error message when scheduling a restart fails', async () => {
-    server.use(
-      http.post('/api/v1/config/sections', () =>
-        HttpResponse.json({
-          applied: {},
-          sections: {
-            nyxgpt: { default_model: 'llama3.1:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
-            logging: { level: 'INFO', dir: '' },
-            ollama: { base_url: 'http://127.0.0.1:11434' },
-            api: { host: '127.0.0.1', port: '9000' },
-            auth: { enabled: 'false', header: 'X-API-Key', api_key: { set: false, masked: null } },
-            rate_limit: { enabled: 'false' },
-            rag: {
-              enable_chat_context: 'false',
-              cassandra_hosts: '127.0.0.1',
-              cassandra_port: '9042',
-              cassandra_keyspace: 'nyxgpt',
-              cassandra_table: 'rag_chunks',
-              embedding_model: 'nomic-embed-text',
-            },
-            tracing: { enabled: 'false', service_name: '', otlp_endpoint: '' },
-            error_tracking: { enabled: 'false', dsn: { set: false, masked: null }, environment: '' },
-            monitoring: { enabled: 'false' },
-            log_aggregation: { enabled: 'false' },
-          },
-          restart_required: ['api'],
-          observability_reconciled: false,
-          observability_result: null,
-        })
-      )
-    );
-    server.use(
-      http.post('/api/v1/config/restart', () => new HttpResponse(null, { status: 500 }))
-    );
-
-    render(<AdminPage />);
-    await selectModelAndClickNext(5);
-    await waitFor(() => {
-      fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
-    });
-    await waitFor(() => {
-      fireEvent.click(screen.getByRole('button', { name: 'Restart api' }));
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText(/Failed to schedule restart: HTTP 500/)).toBeInTheDocument();
-    });
-  });
-
-  it('shows a string error message when scheduling a restart throws a non-Error value', async () => {
+  // The wizard no longer offers a per-target Restart button inline (#3407)
+  // -- a save that needs a restart is tracked server-side and surfaced by
+  // the Admin Dashboard's restart-required button instead (see
+  // dashboard.test.tsx). This test only checks the wizard still redirects
+  // cleanly on success when the response reports `restart_required`.
+  it('redirects to the Admin Dashboard even when the save response reports restart_required', async () => {
     server.use(
       http.post('/api/v1/config/sections', () =>
         HttpResponse.json({
@@ -661,28 +551,19 @@ describe('AdminPage Component', () => {
       )
     );
 
+    const location = stubLocationHref();
     render(<AdminPage />);
     await selectModelAndClickNext(5);
     await waitFor(() => {
       fireEvent.click(screen.getByRole('button', { name: /save configuration/i }));
     });
-    await waitFor(() => screen.getByRole('button', { name: 'Restart api' }));
-
-    const realFetch = global.fetch;
-    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation((input, init) => {
-      const url = typeof input === 'string' ? input : (input as Request).url;
-      if (url.includes('/api/v1/config/restart')) {
-        return Promise.reject('restart-boom');
-      }
-      return realFetch(input, init);
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Restart api' }));
 
     await waitFor(() => {
-      expect(screen.getByText(/Failed to schedule restart: restart-boom/)).toBeInTheDocument();
+      expect(location.setter).toHaveBeenCalledWith('/admin/dashboard');
     });
-    fetchSpy.mockRestore();
+    expect(screen.queryByRole('button', { name: /restart api/i })).not.toBeInTheDocument();
+
+    location.restore();
   });
 
   it('shows a validation error message from the 422 error envelope', async () => {
@@ -1021,6 +902,39 @@ describe('AdminPage Component', () => {
   });
 
   it('triggers save on a real Enter keydown while on the summary step', async () => {
+    let capturedBody: Record<string, Record<string, unknown>> | undefined;
+    server.use(
+      http.post('/api/v1/config/sections', async ({ request }) => {
+        capturedBody = (await request.json()) as Record<string, Record<string, unknown>>;
+        return HttpResponse.json({
+          applied: capturedBody,
+          sections: {
+            nyxgpt: { default_model: 'llama3.1:8b', chat_timeout_seconds: '120', sessions_dir: '', vectorstore_dir: '' },
+            logging: { level: 'INFO', dir: '' },
+            ollama: { base_url: 'http://127.0.0.1:11434' },
+            api: { host: '127.0.0.1', port: '8000' },
+            auth: { enabled: 'false', header: 'X-API-Key', api_key: { set: false, masked: null } },
+            rate_limit: { enabled: 'false' },
+            rag: {
+              enable_chat_context: 'false',
+              cassandra_hosts: '127.0.0.1',
+              cassandra_port: '9042',
+              cassandra_keyspace: 'nyxgpt',
+              cassandra_table: 'rag_chunks',
+              embedding_model: 'nomic-embed-text',
+            },
+            tracing: { enabled: 'false', service_name: '', otlp_endpoint: '' },
+            error_tracking: { enabled: 'false', dsn: { set: false, masked: null }, environment: '' },
+            monitoring: { enabled: 'false' },
+            log_aggregation: { enabled: 'false' },
+          },
+          restart_required: [],
+          observability_reconciled: false,
+          observability_result: null,
+        });
+      })
+    );
+
     render(<AdminPage />);
     await selectModelAndClickNext(5);
     await waitFor(() => {
@@ -1028,7 +942,7 @@ describe('AdminPage Component', () => {
     });
     fireEvent.keyDown(window, { key: 'Enter' });
     await waitFor(() => {
-      expect(screen.getByText(/configuration saved and applied/i)).toBeInTheDocument();
+      expect(capturedBody?.nyxgpt.default_model).toBe('llama3.1:8b');
     });
   });
 
@@ -1208,7 +1122,7 @@ describe('AdminPage Component', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(/configuration saved and applied/i)).toBeInTheDocument();
+      expect(capturedBody).toBeDefined();
     });
 
     // Edited away from its default -> included.
@@ -1239,6 +1153,7 @@ describe('AdminPage Component', () => {
       })
     );
 
+    const location = stubLocationHref();
     render(<AdminPage />);
     await selectModelAndClickNext(5);
 
@@ -1247,9 +1162,11 @@ describe('AdminPage Component', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(/configuration saved and applied/i)).toBeInTheDocument();
+      expect(location.setter).toHaveBeenCalledWith('/admin/dashboard');
     });
     expect(postCalled).toBe(false);
+
+    location.restore();
   });
 
   it('initializes the auth/error_tracking payload sections when only the secret field changes', async () => {
@@ -1333,6 +1250,7 @@ describe('AdminPage Component', () => {
       })
     );
 
+    const location = stubLocationHref();
     render(<AdminPage />);
     await selectModelAndClickNext(5);
 
@@ -1348,10 +1266,12 @@ describe('AdminPage Component', () => {
 
     await waitFor(
       () => {
-        expect(screen.getByText(/configuration saved and applied/i)).toBeInTheDocument();
+        expect(location.setter).toHaveBeenCalledWith('/admin/dashboard');
       },
       { timeout: 3000 }
     );
+
+    location.restore();
   });
 
   describe('Cancel action (#3387)', () => {
@@ -1493,6 +1413,7 @@ describe('AdminPage Component', () => {
         })
       );
 
+      const location = stubLocationHref();
       render(<AdminPage />);
       await selectModelAndClickNext(5);
 
@@ -1510,10 +1431,12 @@ describe('AdminPage Component', () => {
 
       await waitFor(
         () => {
-          expect(screen.getByText(/configuration saved and applied/i)).toBeInTheDocument();
+          expect(location.setter).toHaveBeenCalledWith('/admin/dashboard');
         },
         { timeout: 3000 }
       );
+
+      location.restore();
     });
   });
 

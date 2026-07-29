@@ -46,14 +46,6 @@ interface FormValues {
   log_aggregation: SectionsData['log_aggregation'];
 }
 
-interface SaveResult {
-  applied: Record<string, Record<string, unknown>>;
-  sections: SectionsData;
-  restart_required: string[];
-  observability_reconciled: boolean;
-  observability_result: { ok: boolean; messages: string[] } | null;
-}
-
 /**
  * One `config.ini` field as declared by the backend's derived schema
  * (`config_wizard.schema_summary()`, #3388). Used to render every option the
@@ -435,6 +427,62 @@ function buildSavePayload(
   return payload;
 }
 
+/**
+ * Merges every non-secret field's current value -- both the hand-built steps'
+ * `FormValues` and the schema-derived "Additional Settings" fields -- into one
+ * `section.key` map, for the Summary step (#3407). Secret fields are handled
+ * separately (`pendingSecretValue`): their cleartext never round-trips into
+ * this map, matching the rest of the wizard's masked-secret handling.
+ */
+function mergedNonSecretValues(
+  v: FormValues,
+  extra: Record<string, Record<string, string>>
+): Record<string, Record<string, unknown>> {
+  const out: Record<string, Record<string, unknown>> = {
+    nyxgpt: { ...v.nyxgpt },
+    logging: { ...v.logging },
+    ollama: { ...v.ollama },
+    api: { ...v.api },
+    auth: { enabled: v.auth.enabled, header: v.auth.header },
+    rate_limit: { ...v.rate_limit },
+    rag: { ...v.rag },
+    tracing: { ...v.tracing },
+    error_tracking: { enabled: v.error_tracking.enabled, environment: v.error_tracking.environment },
+    monitoring: { ...v.monitoring },
+    log_aggregation: { ...v.log_aggregation },
+  };
+  for (const [section, fields] of Object.entries(extra)) {
+    out[section] = { ...out[section], ...fields };
+  }
+  return out;
+}
+
+/**
+ * The not-yet-saved value typed into a secret field, whether it's one of the
+ * two hand-built secret fields (`auth.api_key`, `error_tracking.dsn`) or a
+ * schema-derived "Additional Settings" secret. A non-empty result means
+ * saving now would rotate that secret (#3407).
+ */
+function pendingSecretValue(
+  section: string,
+  key: string,
+  v: FormValues,
+  extra: Record<string, Record<string, string>>
+): string {
+  if (section === 'auth' && key === 'api_key') return v.auth.api_key;
+  if (section === 'error_tracking' && key === 'dsn') return v.error_tracking.dsn;
+  return extra[section]?.[key] ?? '';
+}
+
+/** Formats a Summary-step field value for display: booleans as On/Off, blanks called out. */
+function formatSummaryValue(raw: unknown): string {
+  if (raw == null) return '(empty)';
+  const s = String(raw);
+  if (s === 'true') return 'On';
+  if (s === 'false') return 'Off';
+  return s === '' ? '(empty)' : s;
+}
+
 /** Extracts a human-readable message from the API's `{error: {message, details}}` envelope. */
 function extractErrorMessage(data: unknown, status: number): string {
   const err = (data as { error?: { message?: string; details?: { errors?: string[] } } } | null)
@@ -469,6 +517,22 @@ const defaultBadgeStyle = {
   padding: '1px 6px',
   verticalAlign: 'middle',
 } as const;
+
+const changedBadgeStyle = {
+  marginLeft: 8,
+  fontSize: 11,
+  fontWeight: 600,
+  color: 'var(--link)',
+  border: '1px solid var(--link)',
+  borderRadius: 4,
+  padding: '1px 6px',
+  verticalAlign: 'middle',
+} as const;
+
+/** Labels a Summary-step value changed this wizard session, vs. what's currently saved (#3407). */
+function ChangedBadge({ label = 'changed' }: { label?: string }) {
+  return <span style={changedBadgeStyle}>{label}</span>;
+}
 
 /** Labels a field's displayed value as an inherited default rather than something explicitly set (#3385). */
 function DefaultBadge() {
@@ -663,11 +727,6 @@ export default function AdminPage() {
   const [configError, setConfigError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [saveSuccess, setSaveSuccess] = useState(false);
-  const [saveResult, setSaveResult] = useState<SaveResult | null>(null);
-  const [restarting, setRestarting] = useState<string | null>(null);
-  const [restartError, setRestartError] = useState<string | null>(null);
-  const [restartedTargets, setRestartedTargets] = useState<string[]>([]);
 
   const [currentStep, setCurrentStep] = useState<WizardStep>('core');
   const [testingConnection, setTestingConnection] = useState(false);
@@ -918,13 +977,25 @@ export default function AdminPage() {
     }
   }
 
+  /** Advances past a successful save: next step, or the Admin Dashboard from the last step (#3407). */
+  function advanceAfterSave() {
+    if (currentStepIndex === steps.length - 1) {
+      window.location.href = '/admin/dashboard';
+    } else {
+      goToNextStep();
+    }
+  }
+
+  /**
+   * Save persists every pending edit (across all steps, not just the
+   * current page) and, on success, advances -- to the next step, or to the
+   * Admin Dashboard from the last step (#3407). On failure it stays put
+   * with the edits intact so the user can fix and retry; it never
+   * navigates on error.
+   */
   async function handleSave() {
     setSaving(true);
     setSaveError(null);
-    setSaveSuccess(false);
-    setSaveResult(null);
-    setRestartError(null);
-    setRestartedTargets([]);
     try {
       const payload = buildSavePayload(formValues, sections, fieldDefaults);
       const extraPayload = buildExtraSavePayload(
@@ -942,7 +1013,7 @@ export default function AdminPage() {
       if (!hasChanges) {
         // Nothing was touched away from its inherited default -- there's
         // nothing to persist, and posting an empty payload would 400.
-        setSaveSuccess(true);
+        advanceAfterSave();
         return;
       }
 
@@ -956,37 +1027,17 @@ export default function AdminPage() {
         throw new Error(extractErrorMessage(data, res.status));
       }
 
-      setSaveSuccess(true);
-      setSaveResult(data as SaveResult);
       setSections(data.sections);
       setFieldDefaults(data.field_defaults || {});
       setFormValues(toFormValues(data.sections));
       setRawSections(data.sections);
       setExtraValues(toExtraValues(data.sections, schemaSections));
+      advanceAfterSave();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setSaveError(msg);
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function handleRestart(targetToRestart: string) {
-    setRestarting(targetToRestart);
-    setRestartError(null);
-    try {
-      const res = await fetch('/api/v1/config/restart', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target: targetToRestart }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setRestartedTargets((prev) => [...prev, targetToRestart]);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setRestartError(msg);
-    } finally {
-      setRestarting(null);
     }
   }
 
@@ -1020,8 +1071,8 @@ export default function AdminPage() {
     <main style={{ padding: '2rem', maxWidth: 900, margin: '0 auto' }}>
       <div style={{ marginBottom: '2rem' }}>
         <h1 style={{ margin: 0, marginBottom: 8 }}>Configuration Wizard</h1>
-        <a href="/" style={{ color: '#0066cc', textDecoration: 'none' }}>
-          ← Back to Chat
+        <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
+          ← Back to Admin Dashboard
         </a>
       </div>
 
@@ -1638,220 +1689,151 @@ export default function AdminPage() {
           </div>
         )}
 
-        {currentStep === 'summary' && (
-          <div>
-            <h2 style={{ marginTop: 0, fontSize: '1.2rem' }}>Review Configuration</h2>
-            <p style={{ color: '#666', fontSize: 14, marginBottom: '1.5rem' }}>
-              Review your settings below and click &quot;Save Configuration&quot; to apply changes.
-            </p>
+        {currentStep === 'summary' &&
+          (() => {
+            const currentValues = mergedNonSecretValues(formValues, extraValues);
+            const baselineValues = mergedNonSecretValues(
+              toFormValues(sections),
+              toExtraValues(rawSections, schemaSections)
+            );
+            return (
+              <div>
+                <h2 style={{ marginTop: 0, fontSize: '1.2rem' }}>Review Configuration</h2>
+                <p style={{ color: '#666', fontSize: 14, marginBottom: '1.5rem' }}>
+                  Every section below is derived from the current schema -- a new
+                  <code> example.config.ini</code> option appears here automatically. Values changed
+                  this session are marked <ChangedBadge />; unchanged inherited defaults are marked{' '}
+                  <DefaultBadge />. Secrets are never shown in cleartext.
+                </p>
 
-            <div style={{ display: 'grid', gap: '1rem' }}>
-              <div
-                style={{
-                  padding: '1rem',
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  background: 'var(--background)',
-                }}
-              >
-                <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Core & Model</div>
-                <div style={{ fontSize: 14, color: '#666' }}>
-                  Default Model: <strong>{formValues.nyxgpt.default_model}</strong>
-                </div>
-                <div style={{ fontSize: 14, color: '#666' }}>
-                  Log Level: <strong>{formValues.logging.level}</strong>
-                </div>
-                <div style={{ fontSize: 14, color: '#666' }}>
-                  Ollama URL: <strong>{formValues.ollama.base_url}</strong>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  padding: '1rem',
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  background: 'var(--background)',
-                }}
-              >
-                <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>RAG Configuration</div>
-                <div style={{ fontSize: 14, color: '#666' }}>
-                  Status: <strong>{formValues.rag.enable_chat_context === 'true' ? 'Enabled' : 'Disabled'}</strong>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  padding: '1rem',
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  background: 'var(--background)',
-                }}
-              >
-                <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>API & Auth</div>
-                <div style={{ fontSize: 14, color: '#666' }}>
-                  Bind: <strong>{formValues.api.host}:{formValues.api.port}</strong>
-                </div>
-                <div style={{ fontSize: 14, color: '#666' }}>
-                  Auth: <strong>{formValues.auth.enabled === 'true' ? 'Required' : 'Disabled'}</strong>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  padding: '1rem',
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  background: 'var(--background)',
-                }}
-              >
-                <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>Observability</div>
-                <div style={{ fontSize: 14, color: '#666' }}>
-                  Tracing: <strong>{formValues.tracing.enabled === 'true' ? 'On' : 'Off'}</strong>
-                  {', '}
-                  Error tracking:{' '}
-                  <strong>{formValues.error_tracking.enabled === 'true' ? 'On' : 'Off'}</strong>
-                  {', '}
-                  Monitoring: <strong>{formValues.monitoring.enabled === 'true' ? 'On' : 'Off'}</strong>
-                  {', '}
-                  Log aggregation:{' '}
-                  <strong>{formValues.log_aggregation.enabled === 'true' ? 'On' : 'Off'}</strong>
-                </div>
-              </div>
-            </div>
-
-            <div style={{ fontSize: 13, color: '#666', marginTop: '1rem' }}>
-              Looking for live resource metrics? See{' '}
-              <a href="/settings" style={{ color: '#0066cc' }}>
-                Settings &rarr; Resource Usage
-              </a>
-              .
-            </div>
-
-            <div style={{ marginTop: '2rem' }}>
-              <button
-                onClick={handleSave}
-                disabled={saving}
-                aria-busy={saving}
-                aria-describedby={saveSuccess ? 'save-success' : saveError ? 'save-error' : undefined}
-                style={{
-                  padding: '12px 24px',
-                  background: saving ? '#ccc' : '#28a745',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: 6,
-                  cursor: saving ? 'not-allowed' : 'pointer',
-                  fontSize: 16,
-                  fontWeight: 600,
-                  width: '100%',
-                }}
-              >
-                {saving ? 'Saving...' : 'Save Configuration'}
-              </button>
-
-              {saveSuccess && (
-                <div
-                  id="save-success"
-                  role="status"
-                  aria-live="polite"
-                  style={{
-                    marginTop: 12,
-                    padding: '12px 16px',
-                    borderRadius: 6,
-                    fontSize: 14,
-                    background: 'var(--success-bg)',
-                    color: 'var(--success-text)',
-                    border: '1px solid #90ee90',
-                  }}
-                >
-                  <div style={{ fontWeight: 600, marginBottom: 8 }}>
-                    ✓ Configuration saved and applied.
-                  </div>
-
-                  {saveResult?.observability_reconciled && (
-                    <div style={{ fontSize: 13, marginBottom: 8 }}>
-                      Observability stack reconciled
-                      {saveResult.observability_result?.messages?.length
-                        ? `: ${saveResult.observability_result.messages.join('; ')}`
-                        : '.'}
-                    </div>
-                  )}
-
-                  {saveResult && saveResult.restart_required.length > 0 && (
-                    <div style={{ fontSize: 13 }}>
-                      <div style={{ marginBottom: 6 }}>
-                        The following need a restart to fully apply:
+                <div style={{ display: 'grid', gap: '1rem' }} data-testid="summary-sections">
+                  {schemaSections.map((spec) => (
+                    <div
+                      key={spec.section}
+                      style={{
+                        padding: '1rem',
+                        border: '1px solid var(--border)',
+                        borderRadius: 6,
+                        background: 'var(--background)',
+                      }}
+                      data-testid={`summary-section-${spec.section}`}
+                    >
+                      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>
+                        {spec.label}
                       </div>
-                      {saveResult.restart_required.map((target) => (
-                        <button
-                          key={target}
-                          onClick={() => handleRestart(target)}
-                          disabled={restarting !== null || restartedTargets.includes(target)}
-                          style={{
-                            marginRight: 8,
-                            marginBottom: 6,
-                            padding: '6px 12px',
-                            background: restartedTargets.includes(target) ? '#90ee90' : '#0066cc',
-                            color: restartedTargets.includes(target) ? '#1a1a1a' : 'white',
-                            border: 'none',
-                            borderRadius: 6,
-                            cursor:
-                              restarting !== null || restartedTargets.includes(target)
-                                ? 'not-allowed'
-                                : 'pointer',
-                            fontSize: 13,
-                            fontWeight: 600,
-                          }}
-                        >
-                          {restartedTargets.includes(target)
-                            ? `${target} restart scheduled`
-                            : restarting === target
-                              ? 'Scheduling...'
-                              : `Restart ${target}`}
-                        </button>
-                      ))}
-                      {restartError && (
-                        <div style={{ color: 'var(--error-text)', marginTop: 4 }}>
-                          Failed to schedule restart: {restartError}
-                        </div>
-                      )}
+                      {spec.fields.map((f) => {
+                        const label = humanizeKey(f.key);
+                        if (f.secret) {
+                          const secretMeta = isSecretValue(rawSections[spec.section]?.[f.key])
+                            ? (rawSections[spec.section][f.key] as SecretField)
+                            : EMPTY_SECRET;
+                          const willChange = pendingSecretValue(
+                            spec.section,
+                            f.key,
+                            formValues,
+                            extraValues
+                          ).trim();
+                          return (
+                            <div
+                              key={f.key}
+                              style={{ fontSize: 14, color: '#666', marginBottom: 4 }}
+                            >
+                              {label}:{' '}
+                              <strong>{secretMeta.set ? secretMeta.masked : 'Not set'}</strong>
+                              {willChange && <ChangedBadge label="will be updated" />}
+                            </div>
+                          );
+                        }
+                        const current = currentValues[spec.section]?.[f.key];
+                        const baseline = baselineValues[spec.section]?.[f.key];
+                        const changed = String(current) !== String(baseline);
+                        const isDefault =
+                          !changed && isDefaultField(fieldDefaults, spec.section, f.key);
+                        return (
+                          <div key={f.key} style={{ fontSize: 14, color: '#666', marginBottom: 4 }}>
+                            {label}: <strong>{formatSummaryValue(current)}</strong>
+                            {changed && <ChangedBadge />}
+                            {isDefault && <DefaultBadge />}
+                          </div>
+                        );
+                      })}
                     </div>
-                  )}
-
-                  <div style={{ fontSize: 13, opacity: 0.9, marginTop: 8 }}>
-                    <a href="/" style={{ color: 'inherit', textDecoration: 'underline' }}>
-                      Return to chat
-                    </a>
-                    .
-                  </div>
+                  ))}
                 </div>
-              )}
 
-              {saveError && (
-                <div id="save-error" style={{ marginTop: 12 }}>
-                  <ErrorMessage
-                    title="Failed to save configuration"
-                    message={saveError}
-                    onRetry={handleSave}
-                    retrying={saving}
-                  />
+                <div style={{ fontSize: 13, color: '#666', marginTop: '1rem' }}>
+                  Looking for live resource metrics? See{' '}
+                  <a href="/settings" style={{ color: '#0066cc' }}>
+                    Settings &rarr; Resource Usage
+                  </a>
+                  . Settings that need a restart to take effect show a restart button on the{' '}
+                  <a href="/admin/dashboard" style={{ color: '#0066cc' }}>
+                    Admin Dashboard
+                  </a>{' '}
+                  once saved.
                 </div>
-              )}
-            </div>
+              </div>
+            );
+          })()}
+
+        {saveError && (
+          <div id="save-error" style={{ marginTop: '1.5rem' }}>
+            <ErrorMessage
+              title="Failed to save configuration"
+              message={saveError}
+              onRetry={handleSave}
+              retrying={saving}
+            />
           </div>
         )}
-      </div>
 
-      {/* Navigation */}
-      <nav style={{ marginTop: '2rem' }} aria-label="Wizard navigation">
+        {/*
+          Save changes (left) / Cancel (right), attached to the configuration
+          box on every step -- not the bottom Previous/Next nav -- per the
+          owner's per-page-save design (#3407). Save persists every pending
+          edit and advances (next step, or the Admin Dashboard from the last
+          step); Cancel discards only edits made since the last save and
+          always returns to the Admin Dashboard.
+        */}
         <div
-          style={{ marginBottom: '0.5rem', textAlign: 'center', fontSize: 12, color: '#666' }}
-          role="note"
+          style={{
+            marginTop: '2rem',
+            paddingTop: '1.5rem',
+            borderTop: '1px solid var(--border)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'flex-start',
+            gap: 16,
+          }}
         >
-          💡 Use arrow keys (← →) to navigate, Enter to advance or save
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={handleSave}
+            disabled={saving || (currentStep === 'core' && !canAdvanceFromCore)}
+            aria-busy={saving}
+            aria-describedby={saveError ? 'save-error' : undefined}
+            style={{
+              padding: '12px 24px',
+              background:
+                saving || (currentStep === 'core' && !canAdvanceFromCore) ? '#ccc' : '#28a745',
+              color: 'white',
+              border: 'none',
+              borderRadius: 6,
+              cursor:
+                saving || (currentStep === 'core' && !canAdvanceFromCore)
+                  ? 'not-allowed'
+                  : 'pointer',
+              fontSize: 15,
+              fontWeight: 600,
+            }}
+          >
+            {saving
+              ? 'Saving...'
+              : currentStepIndex === steps.length - 1
+                ? 'Save Configuration'
+                : 'Save changes'}
+          </button>
+
+          <div style={{ textAlign: 'right' }}>
             <a
               href="/admin/dashboard"
               onClick={saving ? (e) => e.preventDefault() : handleCancelClick}
@@ -1872,6 +1854,23 @@ export default function AdminPage() {
             >
               Cancel
             </a>
+            <div style={{ fontSize: 11, color: '#666', marginTop: 6, maxWidth: 240 }}>
+              Discards only edits made since your last save.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Navigation */}
+      <nav style={{ marginTop: '2rem' }} aria-label="Wizard navigation">
+        <div
+          style={{ marginBottom: '0.5rem', textAlign: 'center', fontSize: 12, color: '#666' }}
+          role="note"
+        >
+          💡 Use arrow keys (← →) to navigate, Enter to advance or save
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', gap: 8 }}>
             <button
               onClick={goToPreviousStep}
               disabled={currentStepIndex === 0 || saving}
