@@ -1497,133 +1497,45 @@ def test_chat_no_rag_mode_flag_passes_none_to_chat_no_stream(
     assert calls[0]["rag_enabled"] is None
 
 
-def test_deploy_status(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    """Test `nyxgpt deploy status` prints active color and per-color health."""
-    import nyxgpt.cli as cli_mod
-
-    monkeypatch.setattr(
-        cli_mod.deploy_mod,
-        "status",
-        lambda namespace: {
-            "namespace": namespace,
-            "active": "blue",
-            "inactive": "green",
-            "colors": {
-                "blue": {"healthy": True, "message": "blue healthy (1/1 ready)"},
-                "green": {"healthy": False, "message": "green not healthy (0/1 ready)"},
-            },
-            "history": [{"from": "green", "to": "blue", "ts": 1000.0}],
-        },
-    )
-
-    exit_code = cli(["deploy", "status", "--namespace", "test-ns"])
-
-    assert exit_code == 0
-    out = capsys.readouterr().out
-    assert "Active color: blue (namespace=test-ns)" in out
-    assert "blue: healthy" in out
-    assert "green: unhealthy" in out
-    assert "green -> blue" in out
-
-
-def test_deploy_switch_success(
+def test_canary_deploy_success(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Test `nyxgpt deploy switch --to green` reports success and exit code 0."""
+    """Test `nyxgpt canary deploy` reports success and exit code 0."""
     import nyxgpt.cli as cli_mod
-    from nyxgpt.deploy import DeployResult
+    from nyxgpt.canary import CanaryResult
 
     calls: list[dict] = []
 
-    def fake_switch(*, target, namespace, force):
-        calls.append({"target": target, "namespace": namespace, "force": force})
-        return DeployResult(True, "Switched traffic from blue to green")
+    def fake_deploy(*, namespace):
+        calls.append({"namespace": namespace})
+        return CanaryResult(True, "Deployed nyxgpt-api:1.2.3-abcd123 to nyxgpt-api-canary")
 
-    monkeypatch.setattr(cli_mod.deploy_mod, "switch", fake_switch)
+    monkeypatch.setattr(cli_mod.canary_mod, "deploy", fake_deploy)
 
-    exit_code = cli(["deploy", "switch", "--to", "green", "--namespace", "test-ns"])
+    exit_code = cli(["canary", "deploy", "--namespace", "test-ns"])
 
     assert exit_code == 0
-    assert calls == [{"target": "green", "namespace": "test-ns", "force": False}]
-    assert "[OK] Switched traffic from blue to green" in capsys.readouterr().out
+    assert calls == [{"namespace": "test-ns"}]
+    assert "[OK] Deployed nyxgpt-api:1.2.3-abcd123 to nyxgpt-api-canary" in capsys.readouterr().out
 
 
-def test_deploy_switch_failure_returns_nonzero(
+def test_canary_deploy_failure_returns_nonzero(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Test `nyxgpt deploy switch` surfaces a failure with a nonzero exit code."""
+    """Test `nyxgpt canary deploy` surfaces a failure with a nonzero exit code."""
     import nyxgpt.cli as cli_mod
-    from nyxgpt.deploy import DeployResult
+    from nyxgpt.canary import CanaryResult
 
     monkeypatch.setattr(
-        cli_mod.deploy_mod,
-        "switch",
-        lambda **kwargs: DeployResult(False, "Refusing to switch: green not ready"),
+        cli_mod.canary_mod,
+        "deploy",
+        lambda **kwargs: CanaryResult(False, "Failed to build/load nyxgpt-api:1.2.3-abcd123"),
     )
 
-    exit_code = cli(["deploy", "switch", "--namespace", "test-ns"])
+    exit_code = cli(["canary", "deploy", "--namespace", "test-ns"])
 
     assert exit_code == 2
-    assert "[FAIL] Refusing to switch: green not ready" in capsys.readouterr().out
-
-
-def test_deploy_rollback(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Test `nyxgpt deploy rollback` reports success and exit code 0."""
-    import nyxgpt.cli as cli_mod
-    from nyxgpt.deploy import DeployResult
-
-    monkeypatch.setattr(
-        cli_mod.deploy_mod,
-        "rollback",
-        lambda namespace: DeployResult(True, "Switched traffic from green to blue"),
-    )
-
-    exit_code = cli(["deploy", "rollback", "--namespace", "test-ns"])
-
-    assert exit_code == 0
-    assert "[OK] Switched traffic from green to blue" in capsys.readouterr().out
-
-
-def test_deploy_switch_prints_details_when_present(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    import nyxgpt.cli as cli_mod
-    from nyxgpt.deploy import DeployResult
-
-    monkeypatch.setattr(
-        cli_mod.deploy_mod,
-        "switch",
-        lambda **kwargs: DeployResult(False, "Refusing to switch", "green: 0/1 ready"),
-    )
-
-    exit_code = cli(["deploy", "switch", "--namespace", "test-ns"])
-
-    assert exit_code == 2
-    out = capsys.readouterr().out
-    assert "[FAIL] Refusing to switch" in out
-    assert "green: 0/1 ready" in out
-
-
-def test_deploy_rollback_prints_details_when_present(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    import nyxgpt.cli as cli_mod
-    from nyxgpt.deploy import DeployResult
-
-    monkeypatch.setattr(
-        cli_mod.deploy_mod,
-        "rollback",
-        lambda namespace: DeployResult(True, "Rolled back", "blue: 1/1 ready"),
-    )
-
-    exit_code = cli(["deploy", "rollback", "--namespace", "test-ns"])
-
-    assert exit_code == 0
-    out = capsys.readouterr().out
-    assert "[OK] Rolled back" in out
-    assert "blue: 1/1 ready" in out
+    assert "[FAIL] Failed to build/load" in capsys.readouterr().out
 
 
 def test_ops_observability_dispatches_to_ops_module(
@@ -2869,34 +2781,6 @@ def test_ops_glitchtip_init_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(calls) == 1
 
 
-# --- deploy namespace resolution from config (no --namespace override) ---
-
-
-def test_deploy_status_uses_config_namespace(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Without --namespace, the namespace is resolved via get_deploy_namespace(config)."""
-    import nyxgpt.cli as cli_mod
-
-    monkeypatch.setattr(cli_mod, "get_deploy_namespace", lambda cfg: "from-config-ns")
-    monkeypatch.setattr(
-        cli_mod.deploy_mod,
-        "status",
-        lambda namespace: {
-            "namespace": namespace,
-            "active": "blue",
-            "colors": {"blue": {"healthy": True, "message": "ok"}},
-            "history": [],
-        },
-    )
-
-    exit_code = cli(["deploy", "status"])
-
-    assert exit_code == 0
-    out = capsys.readouterr().out
-    assert "namespace=from-config-ns" in out
-
-
 # --- canary command dispatch ---
 
 
@@ -2910,14 +2794,17 @@ def test_canary_status(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFi
             "namespace": namespace,
             "active": True,
             "weight_percent": 20,
-            "stable": {"healthy": True, "message": "stable ok"},
-            "canary": {"healthy": False, "message": "canary not ready"},
+            "stable": {"state": "healthy", "message": "stable ok", "version": "1.0.0"},
+            "canary": {"state": "unhealthy", "message": "canary not ready", "version": ""},
             "metrics": {
                 "total_requests": 100,
                 "error_rate_percent": 1.5,
                 "p95_latency_ms": 42.0,
             },
             "history": ["start at 10%"],
+            "mode": "kubernetes",
+            "mode_supported": True,
+            "mode_message": None,
         },
     )
 
@@ -2927,10 +2814,40 @@ def test_canary_status(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFi
     out = capsys.readouterr().out
     assert "in progress at 20%" in out
     assert "namespace=test-ns" in out
-    assert "stable: healthy" in out
+    assert "stable: healthy - stable ok, version=1.0.0" in out
     assert "canary: unhealthy" in out
     assert "100 requests" in out
     assert "start at 10%" in out
+
+
+def test_canary_status_notes_mode_when_unsupported(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import nyxgpt.cli as cli_mod
+
+    monkeypatch.setattr(
+        cli_mod.canary_mod,
+        "status",
+        lambda namespace: {
+            "namespace": namespace,
+            "active": False,
+            "weight_percent": 0,
+            "stable": {"state": "not_deployed", "message": "no cluster", "version": ""},
+            "canary": {"state": "not_deployed", "message": "no cluster", "version": ""},
+            "metrics": {"total_requests": 0, "error_rate_percent": 0.0, "p95_latency_ms": 0.0},
+            "history": [],
+            "mode": "terraform",
+            "mode_supported": False,
+            "mode_message": "Canary deployment is provided by Kubernetes mode; "
+            "this process is currently running in terraform mode.",
+        },
+    )
+
+    exit_code = cli(["canary", "status", "--namespace", "test-ns"])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "note: Canary deployment is provided by Kubernetes mode" in out
 
 
 def test_canary_start(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -3047,10 +2964,13 @@ def test_canary_status_uses_config_namespace(
             "namespace": namespace,
             "active": False,
             "weight_percent": 0,
-            "stable": {"healthy": True, "message": "ok"},
-            "canary": {"healthy": True, "message": "ok"},
+            "stable": {"state": "healthy", "message": "ok", "version": "1.0.0"},
+            "canary": {"state": "healthy", "message": "ok", "version": "1.0.0"},
             "metrics": {"total_requests": 0, "error_rate_percent": 0.0, "p95_latency_ms": 0.0},
             "history": [],
+            "mode": "kubernetes",
+            "mode_supported": True,
+            "mode_message": None,
         },
     )
 

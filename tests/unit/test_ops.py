@@ -1252,6 +1252,42 @@ def test_read_project_version_reads_from_pyproject(monkeypatch, tmp_path):
     assert ops._read_project_version() == "9.9.9"
 
 
+@pytest.mark.unit
+def test_project_version_public_wrapper_matches_private(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "nyxGPT"\nversion = "2.5.0"\n', encoding="utf-8"
+    )
+    assert ops.project_version() == "2.5.0"
+
+
+@pytest.mark.unit
+def test_build_and_load_k8s_image_public_wrapper_uses_given_tag(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_build_and_load_k8s_image",
+        lambda image: calls.append(image) or [ops.OpsResult(True, "ok")],
+    )
+    results = ops.build_and_load_k8s_image("nyxgpt-api:1.2.3-abcd123")
+    assert calls == ["nyxgpt-api:1.2.3-abcd123"]
+    assert results == [ops.OpsResult(True, "ok")]
+
+
+@pytest.mark.unit
+def test_record_canary_action_uses_canary_prefixed_command(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_record_ops_action",
+        lambda command, service, result, message="": calls.append(
+            (command, service, result, message)
+        ),
+    )
+    ops.record_canary_action("deploy", "success", "Deployed nyxgpt-api:1.2.3-abcd123")
+    assert calls == [("canary-deploy", "api", "success", "Deployed nyxgpt-api:1.2.3-abcd123")]
+
+
 # --- _install_config (first-run wizard on `nyxgpt ops install`, #3388) ---
 
 

@@ -58,11 +58,11 @@ def test_recent_respects_limit(cfg):
 
 
 def test_record_persists_to_disk(cfg):
-    admin_activity.record("deploy.switch", "blue -> green", cfg=cfg)
+    admin_activity.record("canary.deploy", "Deployed nyxgpt-api:1.2.3-abcd123", cfg=cfg)
 
     log_file = admin_activity._activity_log_path(cfg)
     assert log_file.exists()
-    assert "deploy.switch" in log_file.read_text(encoding="utf-8")
+    assert "canary.deploy" in log_file.read_text(encoding="utf-8")
 
 
 def test_recent_falls_back_to_disk_when_memory_empty(cfg):

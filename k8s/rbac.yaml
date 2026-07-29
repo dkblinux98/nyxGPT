@@ -9,25 +9,24 @@ kind: Role
 metadata:
   name: nyxgpt-api-deploy-ops
   namespace: nyxgpt
-  # Grants exactly what deploy.py/canary.py's kubectl calls need (see
-  # docs/kubernetes.md#bluegreen-deployment and #canary-deployment): read
-  # access to check Deployment health, patch the Service selector to cut
-  # blue/green traffic over, and scale the stable/canary Deployments'
-  # replica counts -- plus what self_heal.py's watchdog needs (see
-  # docs/self-healing.md#kubernetes-mode) to list this namespace's
-  # nyxgpt-api Pods and delete one to force its Deployment/ReplicaSet to
-  # recreate it. No broader cluster access than that -- in particular, no
-  # access to Secrets, ConfigMaps, or any resource outside this namespace.
+  # Grants exactly what canary.py's kubectl calls need (see
+  # docs/kubernetes.md#canary-deployment): read access to check Deployment
+  # health, patch a Deployment's image to deploy a new version (`kubectl set
+  # image`, `nyxgpt canary deploy`/promote), and scale the stable/canary
+  # Deployments' replica counts to shift traffic -- plus what self_heal.py's
+  # watchdog needs (see docs/self-healing.md#kubernetes-mode) to list this
+  # namespace's nyxgpt-api Pods and delete one to force its
+  # Deployment/ReplicaSet to recreate it. No broader cluster access than
+  # that -- in particular, no access to Secrets, ConfigMaps, or any resource
+  # outside this namespace. (Blue/green's Service-selector patch permission
+  # was retired along with deploy.py -- see #3409.)
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get"]
+    verbs: ["get", "update", "patch"]
   - apiGroups: ["apps"]
     resources: ["deployments/scale"]
     verbs: ["get", "update", "patch"]
-  - apiGroups: [""]
-    resources: ["services"]
-    verbs: ["get", "patch"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "delete"]

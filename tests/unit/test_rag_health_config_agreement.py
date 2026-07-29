@@ -55,7 +55,6 @@ def test_health_overview_and_config_agree_with_chat_runtime(enabled: bool) -> No
         patch(
             "nyxgpt.app.health_module.check_cassandra", return_value=cassandra_check
         ) as mock_check_cassandra,
-        patch("nyxgpt.app.deploy_module.status", return_value={}),
         patch("nyxgpt.app.canary_module.status", return_value={}),
     ):
         client = TestClient(app)
