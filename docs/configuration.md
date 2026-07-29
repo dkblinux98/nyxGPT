@@ -107,10 +107,12 @@ Settings → Resource Usage and the admin dashboard, #3384.)
 - **Settings that can't be hot-reloaded** — `[api] host`/`port`, the RAG
   Cassandra connection/embedding model, embedding/response/query cache
   backends, and anything else read only at process startup — are reported
-  back as `restart_required` in the save response. The wizard then offers a
-  **Restart** button per affected component, which wraps `nyxgpt ops
-  restart` (see [`docs/api.md`](api.md#config-wizard)) — you never need to
-  run a restart command yourself.
+  back as `restart_required` in the save response and tracked server-side.
+  The **Admin Dashboard** then shows a restart-required banner for the
+  affected component(s), which restarts them mode-aware (native, Compose,
+  Terraform, or Kubernetes, matching however the stack is actually running)
+  when you click **Restart now** (see [`docs/api.md`](api.md#config-wizard))
+  — you never need to run a restart command yourself.
 - **Enabling an observability toggle actually starts it.** Flipping
   `tracing`/`error_tracking`/`monitoring`/`log_aggregation` to enabled
   reconciles the Compose observability stack the same way `nyxgpt ops

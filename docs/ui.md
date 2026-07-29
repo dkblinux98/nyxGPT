@@ -335,7 +335,7 @@ Access settings at `http://127.0.0.1:3000/settings`, which has two tabs:
 
 Settings has a `← Back to Admin Dashboard` link to `/admin/dashboard`, the same anchor used by every other admin/SRE page reached via the dashboard (analytics, self-heal, logs, etc.). Settings is also reachable directly from the chat UI's [Settings Menu](#settings-menu-sidebar); users who enter that way and want to return to chat should use browser Back rather than the in-page link, which always goes to the admin dashboard.
 
-Back-nav follows two conventions depending on how a page is reached, not on its route path: admin/SRE pages reached via the admin dashboard (analytics, self-heal, canary, deploy, health, infrastructure, observability, settings) use `← Back to Admin Dashboard` targeting `/admin/dashboard`. Day-to-day user tools reached from the chat UI's Settings menu — Manage Models (`/models`), RAG Collections (`/admin/collections`), and RAG Playground (`/admin/playground`) — use `← Back to Chat` targeting `/`, even though the latter two live under the `/admin/` route path for historical reasons.
+Back-nav follows two conventions depending on how a page is reached, not on its route path: admin/SRE pages reached via the admin dashboard (analytics, self-heal, canary, deploy, health, infrastructure, observability, settings, and — since #3396 removed it from the chat Settings menu — the [Configuration Wizard](#configuration-wizard), #3407) use `← Back to Admin Dashboard` targeting `/admin/dashboard`. Day-to-day user tools reached from the chat UI's Settings menu — Manage Models (`/models`), RAG Collections (`/admin/collections`), and RAG Playground (`/admin/playground`) — use `← Back to Chat` targeting `/`, even though the latter two live under the `/admin/` route path for historical reasons.
 
 #### Settings Menu (Sidebar)
 
@@ -356,18 +356,22 @@ Access the dashboard at `http://127.0.0.1:3000/admin/dashboard` for an at-a-glan
   - **Configuration** shows the operation tiles — **Deployment Operations**, **Infrastructure Operations**, **Canary Operations**, and **Self-heal Operations** — alongside the **Configuration Wizard**, all in the same tile grid. These screens change something (switch/rollback a deploy, install/tear down infrastructure, control a canary rollout, toggle or trigger self-heal), so they live under Configuration rather than System Status. The "Operations" suffix on these four disambiguates them from the same-named Grafana dashboard links in the dashboard catalog on the SRE Overview page (`/admin/observability`), which observe the same subsystems rather than act on them.
 
   Every tile shows the destination name plus a one-line description of what that screen is for, with the same description as a hover tooltip. Tiles navigate in the same tab, carry no arrow decoration, and hover/highlight using the theme CSS variables so light and dark modes both work.
+- **Restart-required banner** (#3407) — stacked directly above the Configuration card, same width, outside it, shown only when a Configuration Wizard save left one or more components (currently only `api`) pending a restart. Lists which component(s) and which `section.key` fields triggered it (from `GET /api/v1/infra/restart-status`). Clicking **Restart now** calls `POST /api/v1/infra/restart-required`, which restarts every pending component mode-aware (native/Compose/Terraform/Kubernetes, reusing the same dispatcher as self-heal's manual "Heal Now" — see [Self-Healing](self-healing.md)) — the wrapper rule: no raw command is ever shown. The button then polls restart-status every 2s (up to 10 attempts) and reports **Restarting…** → the banner disappearing on success, or a "did not complete in time" message (banner stays, retryable) if it times out.
 - **Access Management** — Masked API keys wrap within their pane instead of overflowing it; revealing a key shows the full value, also wrapped.
 - **Back to Chat / logs links** — "← Back to Chat" and "View logs in Log Aggregation →" use an underlined inline-link style (`inlineLinkStyle`) for clear affordance.
 
 #### Configuration Wizard
 
-Access the wizard at `http://127.0.0.1:3000/admin` (#3354) to configure
+Access the wizard at `http://127.0.0.1:3000/admin` (#3354), reached from the
+[Admin Dashboard](#admin-dashboard)'s Configuration tile grid, to configure
 every section of `config.ini` (see
 [`docs/configuration.md`](configuration.md#option-3-web-configuration-wizard-edit-an-existing-install)
 for the full field-by-field reference). Its field list is **derived from
 `example.config.ini`** (#3388) rather than hand-maintained, so a new config
 option appears in the wizard automatically instead of the two silently
-drifting apart:
+drifting apart. The page header reads `← Back to Admin Dashboard`, targeting
+`/admin/dashboard`, matching the #3322/#3397 convention for dashboard-reached
+admin pages (#3407).
 
 1. **Core & Model** — Default model, chat timeout, sessions/vectorstore
    directories, log level/directory, and the Ollama backend URL
@@ -385,27 +389,34 @@ drifting apart:
    and `[github]` are excluded (agent-level concerns, not nyxGPT options).
    This step also shows a drift banner if `config.ini` has a key no longer
    declared in `example.config.ini`, with a **Remove** button per key.
-6. **Summary** — Review every section and save (with a link to
-   [Settings → Resource Usage](#settings) for live metrics; the wizard
-   itself configures nothing there and no longer interrupts the flow with
-   a monitoring step, #3384)
+6. **Summary** — Reviews the **entire** configuration Save would write,
+   grouped by section, **derived from the same schema as the rest of the
+   wizard** (#3407) — a section added to `example.config.ini` shows up here
+   automatically, not just the four originally hand-built groups. Values
+   changed this session show a "changed" badge; unchanged inherited defaults
+   show a "default" badge (#3385); secret fields never render in cleartext,
+   only their masked preview plus a "will be updated" badge if a new value
+   was typed. Includes a link to [Settings → Resource Usage](#settings) for
+   live metrics — the wizard itself configures nothing there.
 
-**Features:**
-- Visual progress indicator showing current step
-- Form validation for required fields
-- Connection testing to verify API connectivity
-- Secrets (API key, error tracking DSN/admin password, Grafana admin
-  password) are shown masked and never round-trip in cleartext; leave the
-  field blank to keep the current value, or type a new one to rotate it
-- Clear navigation between steps
-- A **Cancel** link, next to **Previous** on every step, discards pending
-  edits and returns to the Admin Dashboard. It prompts for confirmation
-  only if something was changed since the wizard loaded; with no edits it
-  exits immediately (#3387).
+**Save changes / Cancel (#3407):** every step shows **Save changes** on the
+left of the configuration box and **Cancel** on the right — not just the
+Summary step, and not in the bottom Previous/Next nav. **Save** persists
+every pending edit made anywhere in the wizard so far (not just the current
+page) and advances: to the next step on any page before the last, or to the
+**Admin Dashboard** from the Summary step (where it reads **Save
+Configuration**). A save that fails (validation error, network error) stays
+on the current page with the edits intact and an inline error instead of
+navigating. **Cancel** always returns to the **Admin Dashboard**, discarding
+only *unsaved* edits — a small note under the button says so explicitly.
+Changes already committed by an earlier per-page Save are never reverted by
+a later Cancel; it prompts for confirmation only if there are unsaved edits,
+exiting immediately otherwise (#3387). The pre-existing **Previous**/**Next**
+buttons in the bottom nav remain, for browsing between steps without saving.
 
 Keyboard shortcuts:
-- `←` / `→` — Navigate between steps
-- `Enter` — Advance to next step or save configuration
+- `←` / `→` — Navigate between steps (browsing only, doesn't save)
+- `Enter` — Advance to next step, or save on the Summary step
 
 **Configuration changes:** saving **merges** into `~/.nyxGPT/config.ini`
 (still the single source of truth, #3194) rather than rewriting it — only
@@ -415,13 +426,15 @@ hand-added keys) survive untouched (#3388). The save applies immediately —
 hot-reloadable settings (model, RAG, logging, auth) take effect on the next
 request with no restart. Settings that need a process bounce (API
 host/port, the RAG Cassandra connection/embedding model, cache backends,
-tracing/error-tracking/rate-limit config read only at startup) are reported
-on the Summary step with a **Restart** button per affected component,
-wrapping `nyxgpt ops restart` (`GET`/`POST /api/v1/config/sections`, `POST
-/api/v1/config/restart` — see [`docs/api.md`](api.md#config-wizard)).
-Enabling an observability toggle also reconciles the matching Compose stack
-the same way `nyxgpt ops observability` does, so it results in a working
-dashboard rather than a dangling flag.
+tracing/error-tracking/rate-limit config read only at startup) are tracked
+server-side and surfaced by the **Admin Dashboard's restart-required
+banner** instead of an in-wizard restart button (#3407) — see [Admin
+Dashboard](#admin-dashboard) above (`GET`/`POST /api/v1/config/sections`,
+`GET /api/v1/infra/restart-status`, `POST /api/v1/infra/restart-required` —
+see [`docs/api.md`](api.md#config-wizard)). Enabling an observability toggle
+also reconciles the matching Compose stack the same way `nyxgpt ops
+observability` does, so it results in a working dashboard rather than a
+dangling flag.
 
 **Prerequisites:**
 - FastAPI backend must be running (`nyxgpt ops install` or `nyxgpt ops restart api`)
