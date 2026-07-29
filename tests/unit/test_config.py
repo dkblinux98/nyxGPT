@@ -1865,12 +1865,22 @@ def test_get_batch_wait_time_ms_invalid(tmp_path: Path, caplog: pytest.LogCaptur
 # ---------------------------------------------------------------------------
 
 
-def test_get_tracing_enabled_invalid(tmp_path: Path) -> None:
+def test_get_tracing_enabled_defaults_to_true(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+
+    cfg = load_config(str(ini))
+    assert get_tracing_enabled(cfg) is True
+
+
+def test_get_tracing_enabled_invalid(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     ini = tmp_path / "config.ini"
     _write(ini, "[tracing]\nenabled = not_a_boolean\n")
 
     cfg = load_config(str(ini))
-    assert get_tracing_enabled(cfg) is False
+    caplog.set_level(logging.WARNING, logger="nyxgpt.config")
+    assert get_tracing_enabled(cfg) is True
+    assert "Invalid tracing.enabled" in caplog.text
 
 
 def test_get_tracing_config_returns_expected_shape(tmp_path: Path) -> None:

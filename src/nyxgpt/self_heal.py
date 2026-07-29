@@ -281,8 +281,24 @@ def _which(prog: str) -> str | None:
 
 
 def _run(cmd: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
-    """Run `cmd`, capturing stdout/stderr as text instead of raising on failure."""
-    return subprocess.run(cmd, check=False, text=True, capture_output=True, timeout=timeout)
+    """Run `cmd`, capturing stdout/stderr as text instead of raising on failure.
+
+    Non-zero exits are logged with the command and a stderr tail so a failed
+    probe/restart action is visible in Loki even when the caller only checks
+    `returncode` (#3415 gap 5).
+    """
+    result = subprocess.run(cmd, check=False, text=True, capture_output=True, timeout=timeout)
+    if result.returncode != 0:
+        logger.warning(
+            "Subprocess exited non-zero",
+            extra={
+                "component": "self_heal",
+                "cmd": cmd,
+                "returncode": result.returncode,
+                "stderr_tail": result.stderr[-2000:] if result.stderr else "",
+            },
+        )
+    return result
 
 
 def _state_path() -> Path:

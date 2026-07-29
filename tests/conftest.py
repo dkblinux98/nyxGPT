@@ -59,6 +59,13 @@ dir = ~/.nyxGPT/sessions
 dir = ~/.nyxGPT/logs
 level = INFO
 
+[tracing]
+# Tracing defaults to enabled in production (#3415), but the OTel SDK
+# instrumentation `init_tracing` performs (FastAPIInstrumentor, a global
+# TracerProvider) is real, process-wide, and sticky across tests -- so the
+# test fixture config keeps it off unless a test explicitly opts in.
+enabled = false
+
 [dev]
 release_branch = v1.0.0
 """

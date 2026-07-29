@@ -140,6 +140,9 @@ def test_list_component_status_parses_ps_json(monkeypatch):
         ]
     )
     monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=stdout))
+    # Isolate from the tracing-enabled-by-default desired-state check (#3415):
+    # this test is only about ps-json parsing, not observability profiles.
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
 
     statuses = self_heal.list_component_status()
 
@@ -240,6 +243,9 @@ def test_list_component_status_skips_blank_and_invalid_lines(monkeypatch):
         ]
     )
     monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=stdout))
+    # Isolate from the tracing-enabled-by-default desired-state check (#3415):
+    # this test is only about ps-json parsing, not observability profiles.
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
 
     statuses = self_heal.list_component_status()
 
@@ -999,8 +1005,10 @@ def test_enabled_observability_profiles_maps_sections_to_compose_profiles(monkey
 
 @pytest.mark.unit
 def test_enabled_observability_profiles_all_off_by_default(monkeypatch):
+    # Tracing defaults to enabled (#3415 owner decision); every other
+    # observability profile stays opt-in.
     monkeypatch.setattr(self_heal, "load_config", lambda: ConfigParser())
-    assert self_heal._enabled_observability_profiles() == set()
+    assert self_heal._enabled_observability_profiles() == {"tracing"}
 
 
 @pytest.mark.unit
@@ -1014,13 +1022,13 @@ def test_enabled_observability_profiles_missing_config_returns_empty(monkeypatch
 
 @pytest.mark.unit
 def test_enabled_observability_profiles_log_aggregation_maps_to_logging_profile(monkeypatch):
-    monkeypatch.setattr(self_heal, "load_config", lambda: _cfg(log_aggregation=True))
+    monkeypatch.setattr(self_heal, "load_config", lambda: _cfg(log_aggregation=True, tracing=False))
     assert self_heal._enabled_observability_profiles() == {"logging"}
 
 
 @pytest.mark.unit
 def test_enabled_observability_profiles_error_tracking_maps_to_errors_profile(monkeypatch):
-    monkeypatch.setattr(self_heal, "load_config", lambda: _cfg(error_tracking=True))
+    monkeypatch.setattr(self_heal, "load_config", lambda: _cfg(error_tracking=True, tracing=False))
     assert self_heal._enabled_observability_profiles() == {"errors"}
 
 

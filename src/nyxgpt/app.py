@@ -127,6 +127,7 @@ from nyxgpt.config import (
     get_tools_root,
     get_tracing_config,
     load_config,
+    log_effective_config,
 )
 from nyxgpt.logging import configure_logging, request_id_var
 from nyxgpt.ollama_client import ModelRuntimeError, get_json, post_json
@@ -254,6 +255,11 @@ async def lifespan(_app: FastAPI):
     except Exception as e:
         # Logging should not prevent API startup
         print(f"Logging initialization failed: {e}")
+
+    try:
+        log_effective_config(cfg)
+    except Exception as e:
+        log.warning("Failed to log effective config: %s", e, extra={"component": "startup"})
 
     # Initialize distributed tracing (no-op unless [tracing] enabled = true)
     try:
@@ -3238,8 +3244,12 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                                 from nyxgpt.token_counter import count_tokens
 
                                 total_tokens += count_tokens(remaining_text)
-                            except Exception:
-                                pass  # Token counting is optional
+                            except Exception as e:
+                                log.debug(
+                                    "Token counting failed for chunk, continuing without it: %s",
+                                    e,
+                                    extra={"component": "chat"},
+                                )
 
                             elapsed = time.time() - start_time
                             yield f"event: text\ndata: {json.dumps({'content': remaining_text, 'tokens': total_tokens, 'elapsed': elapsed})}\nid: {event_id}\n\n"
@@ -3256,8 +3266,12 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                             from nyxgpt.token_counter import count_tokens
 
                             total_tokens += count_tokens(chunk)
-                        except Exception:
-                            pass  # Token counting is optional
+                        except Exception as e:
+                            log.debug(
+                                "Token counting failed for chunk, continuing without it: %s",
+                                e,
+                                extra={"component": "chat"},
+                            )
 
                         elapsed = time.time() - start_time
                         yield f"event: text\ndata: {json.dumps({'content': chunk, 'tokens': total_tokens, 'elapsed': elapsed})}\nid: {event_id}\n\n"

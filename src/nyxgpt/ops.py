@@ -272,8 +272,34 @@ def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[s
     """Run `cmd`, capturing stdout/stderr as text.
 
     Raises `subprocess.CalledProcessError` on non-zero exit unless `check=False`.
+    Non-zero exits are always logged with the command and a stderr tail first,
+    so the evidence reaches Loki even when a caller catches the exception (or
+    passes `check=False`) without logging it itself (#3415 gap 5).
     """
-    return subprocess.run(cmd, check=check, text=True, capture_output=True)
+    try:
+        result = subprocess.run(cmd, check=check, text=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        logger.warning(
+            "Subprocess exited non-zero",
+            extra={
+                "component": "ops",
+                "cmd": cmd,
+                "returncode": e.returncode,
+                "stderr_tail": e.stderr[-2000:] if e.stderr else "",
+            },
+        )
+        raise
+    if result.returncode != 0:
+        logger.warning(
+            "Subprocess exited non-zero",
+            extra={
+                "component": "ops",
+                "cmd": cmd,
+                "returncode": result.returncode,
+                "stderr_tail": result.stderr[-2000:] if result.stderr else "",
+            },
+        )
+    return result
 
 
 def _which(prog: str) -> str | None:
@@ -338,7 +364,12 @@ def _brew_prefix() -> Path:
     try:
         cp = _run(["brew", "--prefix"])
         return Path((cp.stdout or "").strip())
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "brew --prefix failed, using default /opt/homebrew: %s",
+            e,
+            extra={"component": "ops"},
+        )
         return Path("/opt/homebrew")
 
 
@@ -390,7 +421,12 @@ def _compose_stack_snapshot() -> dict[str, str]:
     """
     try:
         statuses = self_heal.list_component_status()
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "list_component_status() failed, treating compose stack as empty: %s",
+            e,
+            extra={"component": "ops"},
+        )
         return {}
     return {s.service: s.state for s in statuses if s.source == "compose"}
 
@@ -410,7 +446,13 @@ def _terraform_or_kubernetes_managed_components() -> set[str]:
     """
     try:
         statuses = self_heal.list_component_status()
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "list_component_status() failed, treating no components as "
+            "Terraform/Kubernetes-managed: %s",
+            e,
+            extra={"component": "ops"},
+        )
         return set()
     return {s.service for s in statuses if s.source in ("terraform", "kubernetes")}
 
@@ -592,8 +634,14 @@ def _find_launchagent_template(
         try:
             if p.exists():
                 return p, candidates
-        except Exception:
+        except Exception as e:
             # If something odd happens (permissions, broken symlink), keep searching.
+            logger.warning(
+                "Could not check candidate path %s, skipping: %s",
+                p,
+                e,
+                extra={"component": "ops"},
+            )
             continue
     return None, candidates
 
@@ -1274,7 +1322,13 @@ def _ensure_web_deps() -> list[OpsResult]:
                 capture_output=True,
             )
             return cp.returncode == 0
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "Failed to resolve node package %r, assuming missing: %s",
+                pkg,
+                e,
+                extra={"component": "ops"},
+            )
             return False
 
     # Check if node_modules exists and undici can be resolved
@@ -1879,7 +1933,12 @@ def _resolve_api_key(explicit: str | None) -> str:
             entered = getpass.getpass(
                 "API key for the deployed stack's [auth] section (blank to auto-generate): "
             )
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "Interactive API key prompt failed, auto-generating one instead: %s",
+                e,
+                extra={"component": "ops"},
+            )
             entered = ""
         if entered:
             return entered
@@ -2822,7 +2881,13 @@ def _promtail_native_mount_missing(container_id: str) -> bool:
         return True
     try:
         mounts = json.loads(cp.stdout or "[]")
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "Failed to parse `docker inspect` mounts for %s, assuming misconfigured: %s",
+            container_id,
+            e,
+            extra={"component": "ops"},
+        )
         return True
     return not any(m.get("Destination") == PROMTAIL_NATIVE_LOG_MOUNT_MARKER for m in mounts)
 
@@ -2852,7 +2917,13 @@ def _log_aggregation_wiring_issue(cfg_path: Path | None = None) -> str | None:
     parser = ConfigParser()
     try:
         parser.read(cfg_path)
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "Failed to parse %s, skipping promtail wiring check: %s",
+            cfg_path,
+            e,
+            extra={"component": "ops"},
+        )
         return None
     if not get_log_aggregation_enabled(parser):
         return None
@@ -2898,7 +2969,13 @@ def _tracing_wiring_issue(cfg_path: Path | None = None) -> str | None:
     parser = ConfigParser()
     try:
         parser.read(cfg_path)
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "Failed to parse %s, skipping tracing wiring check: %s",
+            cfg_path,
+            e,
+            extra={"component": "ops"},
+        )
         return None
     if not get_tracing_enabled(parser):
         return None
@@ -2957,7 +3034,13 @@ def _loki_recent_volume_by_logger(
                 resp.raise_for_status()
                 result = resp.json().get("data", {}).get("result", [])
                 volumes[name] = int(float(result[0]["value"][1])) if result else 0
-    except Exception:
+    except Exception as e:
+        logger.warning(
+            "Failed to query Loki log volumes via %s, skipping: %s",
+            grafana_ui_url,
+            e,
+            extra={"component": "ops"},
+        )
         return None
     return volumes
 
@@ -2992,7 +3075,13 @@ def doctor(_args) -> int:
             parsed = ConfigParser()
             parsed.read(cfg)
             cfg_parser = parsed
-        except Exception:
+        except Exception as e:
+            logger.warning(
+                "Failed to parse %s, skipping config-dependent doctor checks: %s",
+                cfg,
+                e,
+                extra={"component": "ops"},
+            )
             cfg_parser = None
     if (
         cfg_parser is not None
@@ -3037,7 +3126,13 @@ def doctor(_args) -> int:
                     capture_output=True,
                 )
                 return cp.returncode == 0
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "Failed to resolve node package %r, assuming missing: %s",
+                    pkg,
+                    e,
+                    extra={"component": "ops"},
+                )
                 return False
 
         if _which("node") is None:
