@@ -56,12 +56,15 @@ function QueryCacheStatsBody({
   if (!stats.enabled) {
     return (
       <p style={{ margin: 0, fontSize: 14, color: 'var(--muted-foreground)' }}>
-        Query result caching is disabled. Enable it by setting{' '}
+        Query result caching is disabled. Enable it in the{' '}
+        <a href="/admin" style={{ color: 'var(--primary)' }}>
+          Configuration Wizard
+        </a>{' '}
+        (Additional Settings &rarr; RAG, retrieval &amp; caching &rarr;{' '}
         <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>
-          query_cache_enabled = true
-        </code>{' '}
-        under <code style={{ background: 'var(--code-bg)', padding: '2px 6px', borderRadius: 4 }}>[cache]</code>{' '}
-        in your nyxGPT config.
+          query_cache_enabled
+        </code>
+        ).
       </p>
     );
   }
