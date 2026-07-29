@@ -1506,8 +1506,8 @@ def test_canary_deploy_success(
 
     calls: list[dict] = []
 
-    def fake_deploy(*, namespace):
-        calls.append({"namespace": namespace})
+    def fake_deploy(*, namespace, component="api"):
+        calls.append({"namespace": namespace, "component": component})
         return CanaryResult(True, "Deployed nyxgpt-api:1.2.3-abcd123 to nyxgpt-api-canary")
 
     monkeypatch.setattr(cli_mod.canary_mod, "deploy", fake_deploy)
@@ -1515,7 +1515,7 @@ def test_canary_deploy_success(
     exit_code = cli(["canary", "deploy", "--namespace", "test-ns"])
 
     assert exit_code == 0
-    assert calls == [{"namespace": "test-ns"}]
+    assert calls == [{"namespace": "test-ns", "component": "api"}]
     assert "[OK] Deployed nyxgpt-api:1.2.3-abcd123 to nyxgpt-api-canary" in capsys.readouterr().out
 
 
@@ -2790,7 +2790,7 @@ def test_canary_status(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFi
     monkeypatch.setattr(
         cli_mod.canary_mod,
         "status",
-        lambda namespace: {
+        lambda namespace, component="api": {
             "namespace": namespace,
             "active": True,
             "weight_percent": 20,
@@ -2828,7 +2828,7 @@ def test_canary_status_notes_mode_when_unsupported(
     monkeypatch.setattr(
         cli_mod.canary_mod,
         "status",
-        lambda namespace: {
+        lambda namespace, component="api": {
             "namespace": namespace,
             "active": False,
             "weight_percent": 0,
@@ -2856,12 +2856,13 @@ def test_canary_start(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFix
 
     calls: list[dict] = []
 
-    def fake_start(*, namespace, weight_percent, total_replicas):
+    def fake_start(*, namespace, weight_percent, total_replicas, component="api"):
         calls.append(
             {
                 "namespace": namespace,
                 "weight_percent": weight_percent,
                 "total_replicas": total_replicas,
+                "component": component,
             }
         )
         return OpsResult(True, "Started canary rollout at 15%")
@@ -2919,7 +2920,7 @@ def test_canary_promote(
 
     calls: list[dict] = []
 
-    def fake_promote(*, namespace, step_percent, total_replicas):
+    def fake_promote(*, namespace, step_percent, total_replicas, component="api"):
         calls.append({"step_percent": step_percent})
         return OpsResult(True, "Promoted canary to 30%")
 
@@ -2941,7 +2942,7 @@ def test_canary_rollback(
     monkeypatch.setattr(
         cli_mod.canary_mod,
         "rollback",
-        lambda *, namespace, total_replicas: OpsResult(True, "Rolled back canary"),
+        lambda *, namespace, total_replicas, component="api": OpsResult(True, "Rolled back canary"),
     )
 
     exit_code = cli(["canary", "rollback", "--namespace", "test-ns"])
@@ -2960,7 +2961,7 @@ def test_canary_status_uses_config_namespace(
     monkeypatch.setattr(
         cli_mod.canary_mod,
         "status",
-        lambda namespace: {
+        lambda namespace, component="api": {
             "namespace": namespace,
             "active": False,
             "weight_percent": 0,
@@ -3049,7 +3050,9 @@ def test_canary_rollback_prints_details_when_present(
     monkeypatch.setattr(
         cli_mod.canary_mod,
         "rollback",
-        lambda *, namespace, total_replicas: OpsResult(True, "Rolled back", "stable at 100%"),
+        lambda *, namespace, total_replicas, component="api": OpsResult(
+            True, "Rolled back", "stable at 100%"
+        ),
     )
 
     exit_code = cli(["canary", "rollback", "--namespace", "test-ns"])
