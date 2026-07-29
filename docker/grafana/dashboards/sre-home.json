@@ -1,0 +1,88 @@
+{
+  "title": "nyxGPT / SRE Home",
+  "uid": "nyxgpt-sre-home",
+  "tags": ["nyxgpt", "sre", "home"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "nyxGPT SRE Home -- single pane of glass",
+      "type": "text",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "This is the single pane of glass for nyxGPT SRE work (#3411) -- there is no separate in-app SRE Overview page anymore.\n\n- **Logs** -- [Logs Drilldown, filtered to this app](/a/grafana-lokiexplore-app/explore/job/nyxgpt/logs?from=now-15m&to=now&var-ds=loki&var-filters=job%7C%3D%7Cnyxgpt&patterns=%5B%5D&var-fields=&var-levels=&var-metadata=&var-patterns=&var-lineFilterV2=&var-lineFilters=&timezone=browser&var-lineFormat=&var-jsonFields=&var-all-fields=&urlColumns=%5B%5D&visualizationType=%22logs%22&displayedFields=%5B%5D&userDisplayedFields=false&sortOrder=%22Ascending%22&wrapLogMessage=false&prettifyLogMessage=false)\n- **Traces** -- the panel below, backed by the Jaeger datasource\n- **Errors** -- the GlitchTip panels below, backed by the Infinity datasource; click through to the [GlitchTip UI](http://localhost:8080) for detail\n- **Dashboards** -- [System Overview](/d/nyxgpt-system-overview), [API Metrics](/d/nyxgpt-api-metrics), [RAG Performance](/d/nyxgpt-rag-performance), [Resource Usage](/d/nyxgpt-resource-usage), [Self-Healing](/d/nyxgpt-self-healing), [Canary Rollout](/d/nyxgpt-canary), [Logs Explorer](/d/nyxgpt-logs-explorer)\n\nPrometheus and Jaeger's own native UIs are debug tools now, not primary navigation -- look here first."
+      }
+    },
+    {
+      "id": 2,
+      "title": "Recent nyxgpt traces",
+      "type": "traces",
+      "datasource": { "type": "jaeger", "uid": "jaeger" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "datasource": { "type": "jaeger", "uid": "jaeger" },
+          "queryType": "search",
+          "service": "nyxgpt-api",
+          "operation": "",
+          "tags": "",
+          "limit": 20,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "GlitchTip: open issues (nyxgpt-backend)",
+      "type": "stat",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["count"] } },
+      "targets": [
+        {
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "url": "/api/0/projects/nyxgpt/nyxgpt-backend/issues/?statsPeriod=24h",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [{ "selector": "id", "text": "id", "type": "string" }],
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "GlitchTip: recent errors (nyxgpt-backend)",
+      "type": "table",
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
+      "gridPos": { "h": 10, "w": 18, "x": 6, "y": 16 },
+      "targets": [
+        {
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "url": "/api/0/projects/nyxgpt/nyxgpt-backend/issues/?statsPeriod=24h",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "title", "text": "Title", "type": "string" },
+            { "selector": "culprit", "text": "Culprit", "type": "string" },
+            { "selector": "count", "text": "Events", "type": "number" },
+            { "selector": "lastSeen", "text": "Last Seen", "type": "timestamp" },
+            { "selector": "permalink", "text": "Link", "type": "string" }
+          ],
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

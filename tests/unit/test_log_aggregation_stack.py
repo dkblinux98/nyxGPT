@@ -142,23 +142,12 @@ def test_promtail_regex_matches_millisecond_no_bracket_variant() -> None:
     assert match.group("message") == "handling request"
 
 
-def test_operational_logs_dashboard_is_provisioned() -> None:
+def test_operational_logs_dashboard_is_retired() -> None:
+    """Superseded by Grafana's Logs Drilldown app, which replaces the
+    curated per-component saved queries (#3411) -- the standalone dashboard
+    and its Dashboard Catalog entry are gone."""
     dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
-    dashboard = json.loads((dashboards_dir / "operational-logs.json").read_text())
-
-    assert dashboard["uid"] == "nyxgpt-operational-logs"
-    panel_types = {panel["type"] for panel in dashboard["panels"]}
-    assert panel_types == {"logs"}
-
-    for panel in dashboard["panels"]:
-        for target in panel["targets"]:
-            assert target["datasource"]["type"] == "loki"
-
-    exprs = [target["expr"] for panel in dashboard["panels"] for target in panel["targets"]]
-    assert any('logger="nyxgpt.self_heal"' in expr for expr in exprs)
-    assert any('logger="nyxgpt.deploy"' in expr for expr in exprs)
-    assert any('logger="nyxgpt.canary"' in expr for expr in exprs)
-    assert any('logger="nyxgpt.chat"' in expr and "ERROR" in expr for expr in exprs)
+    assert not (dashboards_dir / "operational-logs.json").exists()
 
 
 def test_grafana_has_loki_datasource() -> None:
@@ -183,6 +172,90 @@ def test_logs_explorer_dashboard_is_provisioned() -> None:
     for panel in dashboard["panels"]:
         for target in panel["targets"]:
             assert target["datasource"]["type"] == "loki"
+
+
+def test_sre_home_dashboard_is_provisioned_and_is_the_landing_page() -> None:
+    """The SRE Home dashboard (#3411) is the single pane of glass the Admin
+    Dashboard's SRE Overview tile opens -- it must be provisioned, and set
+    as Grafana's org/home default so it's what you land on."""
+    dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
+    dashboard = json.loads((dashboards_dir / "sre-home.json").read_text())
+
+    assert dashboard["uid"] == "nyxgpt-sre-home"
+    panel_types = {panel["type"] for panel in dashboard["panels"]}
+    assert "traces" in panel_types, "must give traces a default, non-blank view"
+
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    grafana_env = compose["services"]["grafana"]["environment"]
+    assert grafana_env["GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH"] == (
+        "/var/lib/grafana/dashboards/sre-home.json"
+    )
+
+
+def test_grafana_plugins_are_provisioned_on_a_fresh_install() -> None:
+    """Logs Drilldown and the Infinity datasource (GlitchTip panels) must be
+    guaranteed present/enabled on a fresh install (#3411), not assumed
+    bundled in a given Grafana image build."""
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    plugins = compose["services"]["grafana"]["environment"]["GF_INSTALL_PLUGINS"]
+
+    assert "grafana-lokiexplore-app" in plugins
+    assert "yesoreyeram-infinity-datasource" in plugins
+
+
+def test_grafana_has_jaeger_datasource() -> None:
+    datasource_config = yaml.safe_load(
+        (
+            REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources" / "datasource.yml"
+        ).read_text()
+    )
+    jaeger_datasource = next(
+        ds for ds in datasource_config["datasources"] if ds["name"] == "Jaeger"
+    )
+    assert jaeger_datasource["type"] == "jaeger"
+    assert jaeger_datasource["uid"] == "jaeger"
+    assert jaeger_datasource["url"] == "http://jaeger:16686"
+
+
+def test_loki_has_a_derived_field_linking_to_jaeger() -> None:
+    """Loki<->trace linkage config (#3411): a derived-field extraction for
+    `trace_id` pointing at the Jaeger datasource. Inert until #3415 stamps
+    `trace_id` into log lines, but must be present and correctly wired."""
+    datasource_config = yaml.safe_load(
+        (
+            REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources" / "datasource.yml"
+        ).read_text()
+    )
+    loki_datasource = next(ds for ds in datasource_config["datasources"] if ds["name"] == "Loki")
+    derived_fields = loki_datasource["jsonData"]["derivedFields"]
+
+    assert any(
+        f["datasourceUid"] == "jaeger" and "trace_id" in f["matcherRegex"] for f in derived_fields
+    )
+
+
+def test_grafana_has_glitchtip_infinity_datasource() -> None:
+    """GlitchTip is queried via its Sentry-compatible REST API through the
+    Infinity datasource plugin (#3411, owner-selected option), authenticated
+    with the token `nyxgpt ops glitchtip-init` mints -- never a hand-pasted
+    token."""
+    datasource_config = yaml.safe_load(
+        (
+            REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources" / "datasource.yml"
+        ).read_text()
+    )
+    glitchtip_datasource = next(
+        ds for ds in datasource_config["datasources"] if ds["name"] == "GlitchTip"
+    )
+    assert glitchtip_datasource["type"] == "yesoreyeram-infinity-datasource"
+    assert glitchtip_datasource["jsonData"]["auth_method"] == "bearerToken"
+    assert "glitchtip-grafana-token" in glitchtip_datasource["secureJsonData"]["bearerToken"]
+
+
+def test_grafana_mounts_the_glitchtip_token_secret_read_only() -> None:
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    volumes = compose["services"]["grafana"]["volumes"]
+    assert any(v.endswith(".nyxGPT/secrets:/etc/nyxgpt-secrets:ro") for v in volumes)
 
 
 def _cfg(**log_aggregation_options: str) -> ConfigParser:

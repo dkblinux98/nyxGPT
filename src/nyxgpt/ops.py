@@ -4017,8 +4017,26 @@ GLITCHTIP_TEAM_SLUG = "nyxgpt"
 GLITCHTIP_PROJECT_SLUG = "nyxgpt-backend"
 GLITCHTIP_PROJECT_NAME = "nyxgpt-backend"
 GLITCHTIP_TOKEN_NAME = "nyxgpt-ops-glitchtip-init"
-GLITCHTIP_TOKEN_SCOPES = ["org:read", "org:write", "project:read", "project:write"]
+# event:read lets Grafana's Infinity datasource (#3411) query issues/events
+# via GlitchTip's Sentry-compatible REST API; the rest predate that use.
+GLITCHTIP_TOKEN_SCOPES = ["org:read", "org:write", "project:read", "project:write", "event:read"]
 GLITCHTIP_DEFAULT_ADMIN_EMAIL = "admin@nyxgpt.local"
+
+
+def _glitchtip_grafana_token_path() -> Path:
+    """Where the GlitchTip API token is written for Grafana's Infinity
+    datasource to read (#3411) -- see
+    docker/grafana/provisioning/datasources/datasource.yml's `$__file{}`
+    reference and docs/docker-compose.md#grafana-single-pane-of-glass. Lives
+    outside `~/.nyxGPT/volumes/grafana` (Grafana's own data dir) so it isn't
+    swept by `nyxgpt ops down --volumes`, which deletes volume_dir()
+    contents -- this is a credential, not app data.
+
+    Computed fresh on every call (like `_provision_glitchtip`'s
+    `native_cfg_path`), not a module-level constant, so tests can
+    monkeypatch `Path.home`.
+    """
+    return Path.home() / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
 
 
 def _glitchtip_container_healthy() -> bool:
@@ -4500,6 +4518,45 @@ def _write_error_tracking_dsn(cfg_path: Path, dsn: str, *, chmod_600: bool) -> O
     return OpsResult(True, f"Wrote GlitchTip DSN into {cfg_path}")
 
 
+def _write_grafana_glitchtip_token(token: str) -> tuple[bool, OpsResult]:
+    """Write `token` to `_glitchtip_grafana_token_path()` for Grafana's Infinity datasource.
+
+    Returns `(changed, result)` -- `changed` is False when the file already
+    holds this exact token, which callers use to skip an unnecessary Grafana
+    restart (Grafana only re-reads provisioning files, including `$__file{}`
+    targets, at startup).
+    """
+    path = _glitchtip_grafana_token_path()
+    if path.exists() and path.read_text(encoding="utf-8").strip() == token:
+        return False, OpsResult(True, f"{path} already holds the current GlitchTip token")
+
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text(token, encoding="utf-8")
+    os.chmod(path, 0o600)
+    return True, OpsResult(True, f"Wrote GlitchTip API token for Grafana to {path}")
+
+
+def _restart_grafana_if_running() -> OpsResult:
+    """Restart the `grafana` Compose container if it's currently running.
+
+    Grafana only reads `$__file{}` provisioning targets (like the GlitchTip
+    Infinity token, see `_write_grafana_glitchtip_token`) at startup, so a
+    freshly (re)written token needs this to actually take effect.
+    """
+    if not _compose_available():
+        return OpsResult(True, "Skipped Grafana restart (Docker not found)")
+
+    running = _compose_stack_snapshot()
+    if running.get("grafana") != "running":
+        return OpsResult(True, "Skipped Grafana restart (not running)")
+
+    cmd = ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "restart", "grafana"]
+    cp = _run(cmd, check=False)
+    if cp.returncode != 0:
+        return OpsResult(False, "Failed to restart Grafana", (cp.stderr or cp.stdout or "").strip())
+    return OpsResult(True, "Restarted Grafana to pick up the new GlitchTip token")
+
+
 def _provision_glitchtip() -> list[OpsResult]:
     """Auto-provision a GlitchTip admin user, org, project, and DSN -- idempotent, zero-touch.
 
@@ -4593,6 +4650,11 @@ def _provision_glitchtip() -> list[OpsResult]:
 
     results.append(_write_error_tracking_dsn(native_cfg_path, dsn, chmod_600=True))
     results.append(_write_error_tracking_dsn(COMPOSE_CONFIG_FILE, dsn, chmod_600=False))
+
+    token_changed, token_write_result = _write_grafana_glitchtip_token(token)
+    results.append(token_write_result)
+    if token_changed:
+        results.append(_restart_grafana_if_running())
 
     return results
 

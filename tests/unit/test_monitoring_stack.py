@@ -189,10 +189,10 @@ def test_grafana_dashboards_are_provisioned() -> None:
         "api-metrics.json",
         "canary.json",
         "logs-explorer.json",
-        "operational-logs.json",
         "rag-performance.json",
         "resource-usage.json",
         "self-healing.json",
+        "sre-home.json",
         "system-overview.json",
     ]
 
