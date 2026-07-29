@@ -54,8 +54,8 @@ Wizard**: Core & Model (`[nyxgpt]`, `[logging]`, `[ollama]`), RAG
 Configuration (`[rag]`'s chat toggle and Cassandra connection), API & Auth
 (`[api]`, `[auth]`, `[rate_limit]`), Observability (`[tracing]`,
 `[error_tracking]`, `[monitoring]`, `[log_aggregation]`), **Additional
-Settings**, and a Summary/save step. (Live resource metrics moved to
-Settings → Resource Usage and the admin dashboard, #3384.)
+Settings**, and a Summary/save step. (Live resource metrics moved to the
+System Health screen and the admin dashboard, #3384, #3413.)
 
 - **The wizard's field list is *derived* from `example.config.ini`, not
   hand-maintained (#3388).** `src/nyxgpt/config_wizard.py` parses
