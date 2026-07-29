@@ -792,6 +792,12 @@ def _create_dist_tarball(tap_dir: Path, name: str, version: str) -> Path:
     else:
         _vendor_tree(REPO_ROOT / "src" / "nyxgpt", root / "src" / "nyxgpt")
         shutil.copy2(REPO_ROOT / "pyproject.toml", root / "pyproject.toml")
+        # config_wizard builds its schema from example.config.ini at import
+        # time (#3388), so `import nyxgpt.app` needs the file present. A venv
+        # install has no repo root above the package, so ship the template in
+        # the tarball; the formula copies it next to the installed package
+        # where _resolve_example_config_path() finds it with no env var (#3406).
+        shutil.copy2(REPO_ROOT / "example.config.ini", root / "example.config.ini")
 
     if tar_path.exists():
         tar_path.unlink()

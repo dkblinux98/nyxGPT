@@ -44,13 +44,23 @@ def _resolve_example_config_path() -> Path:
          source-relative path below doesn't reach the repo-root file, so the
          image ships example.config.ini and points this env var at it (see
          Dockerfile).
-      2. ``<repo root>/example.config.ini`` -- the source-checkout / local-first
+      2. ``<package dir>/example.config.ini`` -- package-adjacent copy. When
+         nyxgpt is installed into a venv (e.g. the self-contained Homebrew
+         keg, #3406) the module lives at ``site-packages/nyxgpt/`` with no repo
+         root above it, so the installer ships example.config.ini right next to
+         this module. Found here, the app imports with no env var -- which the
+         formula's ``test`` block and the always-on self-heal watchdog both
+         rely on.
+      3. ``<repo root>/example.config.ini`` -- the source-checkout / local-first
          layout, where this module is at ``src/nyxgpt/config_wizard.py`` so
          ``parents[2]`` is the repo root.
     """
     override = os.environ.get("NYXGPT_EXAMPLE_CONFIG")
     if override:
         return Path(override)
+    packaged = Path(__file__).resolve().parent / "example.config.ini"
+    if packaged.exists():
+        return packaged
     return Path(__file__).resolve().parents[2] / "example.config.ini"
 
 

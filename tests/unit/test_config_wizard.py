@@ -30,6 +30,46 @@ def _cfg(**sections: dict[str, str]) -> ConfigParser:
     return parser
 
 
+# --- _resolve_example_config_path (#3406, #3388) ---
+
+
+def test_resolve_example_config_env_override_wins(monkeypatch, tmp_path):
+    custom = tmp_path / "custom.ini"
+    custom.write_text("[nyxgpt]\n", encoding="utf-8")
+    monkeypatch.setenv("NYXGPT_EXAMPLE_CONFIG", str(custom))
+    assert config_wizard._resolve_example_config_path() == custom
+
+
+def test_resolve_example_config_prefers_package_adjacent(monkeypatch, tmp_path):
+    """A venv install (e.g. the self-contained Homebrew keg) ships
+    example.config.ini next to the module, so resolution finds it there with no
+    env var and no repo root above the package (#3406)."""
+    monkeypatch.delenv("NYXGPT_EXAMPLE_CONFIG", raising=False)
+    pkg_dir = tmp_path / "site-packages" / "nyxgpt"
+    pkg_dir.mkdir(parents=True)
+    module = pkg_dir / "config_wizard.py"
+    module.write_text("", encoding="utf-8")
+    packaged = pkg_dir / "example.config.ini"
+    packaged.write_text("[nyxgpt]\n", encoding="utf-8")
+    monkeypatch.setattr(config_wizard, "__file__", str(module))
+    assert config_wizard._resolve_example_config_path() == packaged.resolve()
+
+
+def test_resolve_example_config_falls_back_to_repo_root(monkeypatch, tmp_path):
+    """Source checkout: no env and no package-adjacent copy -> the repo-root
+    file (module at src/nyxgpt/config_wizard.py, so parents[2] is the root)."""
+    monkeypatch.delenv("NYXGPT_EXAMPLE_CONFIG", raising=False)
+    module = tmp_path / "repo" / "src" / "nyxgpt" / "config_wizard.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("", encoding="utf-8")
+    # deliberately no example.config.ini next to the module
+    monkeypatch.setattr(config_wizard, "__file__", str(module))
+    assert (
+        config_wizard._resolve_example_config_path()
+        == module.resolve().parents[2] / "example.config.ini"
+    )
+
+
 # --- validate_updates ---
 
 

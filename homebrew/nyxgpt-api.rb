@@ -15,12 +15,29 @@ class NyxgptApi < Formula
 
   depends_on "python@3.12"
 
+  # The vendored venv contains prebuilt wheels whose compiled extensions carry
+  # `@rpath` dylib IDs and no header padding (e.g. tiktoken's Rust `_tiktoken`
+  # .so). Homebrew's default post-install relocation rewrites those IDs to the
+  # absolute keg path and aborts with `MachO::HeaderPadError` (the load command
+  # can't grow without relinking). `preserve_rpath` tells Homebrew to leave
+  # `@rpath` IDs untouched -- correct here since Python loads these extensions
+  # by file path, so the dylib ID is cosmetic (#3406).
+  preserve_rpath
+
   def install
     python = Formula["python@3.12"].opt_bin/"python3.12"
     venv = libexec/"venv"
     system python, "-m", "venv", venv
     system venv/"bin/pip", "install", "--upgrade", "pip"
     system venv/"bin/pip", "install", buildpath
+
+    # config_wizard builds its schema from example.config.ini at import time
+    # (#3388), so `import nyxgpt.app` -- the wrapper, the `test` block, and the
+    # always-on self-heal watchdog -- needs it present. A venv has no repo root
+    # above the package, so drop the template next to the installed package
+    # where _resolve_example_config_path() finds it with no env var (#3406).
+    site_packages = venv/"lib/python3.12/site-packages/nyxgpt"
+    cp buildpath/"example.config.ini", site_packages/"example.config.ini"
 
     (bin/"nyxgpt-api").write <<~EOS
       #!/bin/bash

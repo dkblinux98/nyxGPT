@@ -2621,6 +2621,9 @@ def _make_fake_api_repo_root(tmp_path):
     (repo_root / "pyproject.toml").write_text(
         '[project]\nname = "nyxGPT"\nversion = "1.2.3"\n', encoding="utf-8"
     )
+    # config_wizard builds its schema from example.config.ini at import time,
+    # so the api tarball ships it for the venv install to find (#3406).
+    (repo_root / "example.config.ini").write_text("[nyxgpt]\n", encoding="utf-8")
     return repo_root
 
 
@@ -2650,6 +2653,9 @@ def test_create_dist_tarball_vendors_real_api_source(monkeypatch, tmp_path):
     with tarfile.open(tar_path, "r:gz") as tf:
         names = tf.getnames()
     assert "nyxgpt-api-1.2.3/pyproject.toml" in names
+    # example.config.ini rides along so the venv install can place it next to
+    # the package -- config_wizard needs it at import time (#3406, #3388).
+    assert "nyxgpt-api-1.2.3/example.config.ini" in names
     assert "nyxgpt-api-1.2.3/src/nyxgpt/app.py" in names
     assert not any("README.txt" in n for n in names)
     # Temp staging dir must be cleaned up.
