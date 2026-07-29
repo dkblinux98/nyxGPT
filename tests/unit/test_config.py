@@ -26,6 +26,7 @@ from nyxgpt.config import (
     get_chat_timeout_seconds,
     get_context_warning_threshold,
     get_context_window_size,
+    get_effective_config_summary,
     get_error_tracking_config,
     get_error_tracking_enabled,
     get_log_aggregation_config,
@@ -62,6 +63,8 @@ from nyxgpt.config import (
     get_vector_similarity_function,
     get_vectorstore_dir,
     load_config,
+    log_effective_config,
+    reset_fallback_warnings,
     validate_config,
 )
 
@@ -1996,3 +1999,83 @@ def test_get_self_heal_backoff_seconds_invalid(tmp_path: Path) -> None:
 
     cfg = load_config(str(ini))
     assert get_self_heal_backoff_seconds(cfg) == 30.0
+
+
+# ---------------------------------------------------------------------------
+# _log_fallback_once / effective config summary (#3415 gap 4)
+# ---------------------------------------------------------------------------
+
+
+def test_fallback_warning_logs_once_per_key(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\nchat_top_k = not_a_number\n")
+    cfg = load_config(str(ini))
+
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.config"):
+        assert get_rag_chat_top_k(cfg) == 3
+        assert get_rag_chat_top_k(cfg) == 3  # second call, same key
+
+    matching = [r for r in caplog.records if "rag.chat_top_k" in r.getMessage()]
+    assert len(matching) == 1, "Expected the fallback warning to log only once per key"
+
+
+def test_fallback_warning_dedup_reset_allows_relogging(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[rag]\nmin_score = not_a_number\n")
+    cfg = load_config(str(ini))
+
+    with caplog.at_level(logging.WARNING, logger="nyxgpt.config"):
+        get_rag_min_score(cfg)
+        reset_fallback_warnings()
+        get_rag_min_score(cfg)
+
+    matching = [r for r in caplog.records if "rag.min_score" in r.getMessage()]
+    assert len(matching) == 2
+
+
+def test_get_effective_config_summary_redacts_secrets(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        "[error_tracking]\ndsn = https://secret@example.com/1\n"
+        "[monitoring]\ngrafana_admin_password = hunter2\n",
+    )
+    cfg = load_config(str(ini))
+
+    summary = get_effective_config_summary(cfg)
+
+    assert summary["error_tracking.dsn"] == "***redacted***"
+    assert summary["monitoring.grafana_admin_password"] == "***redacted***"
+    assert "hunter2" not in str(summary)
+    assert "secret@example.com" not in str(summary)
+    assert summary["tracing.enabled"] is True
+
+
+def test_get_effective_config_summary_empty_secrets_stay_empty(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    cfg = load_config(str(ini))
+
+    summary = get_effective_config_summary(cfg)
+
+    assert summary["error_tracking.dsn"] == ""
+    assert summary["monitoring.grafana_admin_password"] == ""
+
+
+def test_log_effective_config_logs_at_info(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    ini = tmp_path / "config.ini"
+    _write(ini, "[nyxgpt]\ndefault_model = llama3.1:8b\n")
+    cfg = load_config(str(ini))
+
+    with caplog.at_level(logging.INFO, logger="nyxgpt.config"):
+        log_effective_config(cfg)
+
+    records = [r for r in caplog.records if r.getMessage() == "Effective configuration"]
+    assert records
+    assert records[0].effective_config["tracing.enabled"] is True

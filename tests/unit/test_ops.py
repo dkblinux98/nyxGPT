@@ -1239,6 +1239,40 @@ def test_run_invokes_subprocess_with_expected_kwargs():
 
 
 @pytest.mark.unit
+def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit_when_check_false(caplog):
+    # #3415 gap 5: subprocess evidence must reach Loki even when the caller
+    # only inspects the returncode instead of catching an exception.
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["false"], returncode=1, stdout="", stderr="boom\n"
+        )
+        with caplog.at_level("WARNING", logger="nyxgpt.ops"):
+            cp = ops._run(["false"], check=False)
+
+    assert cp.returncode == 1
+    records = [r for r in caplog.records if r.getMessage() == "Subprocess exited non-zero"]
+    assert records, "Expected _run to log the non-zero exit"
+    record = records[0]
+    assert record.cmd == ["false"]
+    assert record.returncode == 1
+    assert "boom" in record.stderr_tail
+
+
+@pytest.mark.unit
+def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit_when_check_true(caplog):
+    with (
+        caplog.at_level("WARNING", logger="nyxgpt.ops"),
+        pytest.raises(subprocess.CalledProcessError),
+    ):
+        ops._run(["python3", "-c", "import sys; sys.stderr.write('boom'); sys.exit(1)"])
+
+    records = [r for r in caplog.records if r.getMessage() == "Subprocess exited non-zero"]
+    assert records, "Expected _run to log the non-zero exit before raising"
+    assert records[0].returncode == 1
+    assert "boom" in records[0].stderr_tail
+
+
+@pytest.mark.unit
 def test_which_finds_and_misses():
     assert ops._which("python3") is not None
     assert ops._which("definitely-not-a-real-binary-xyz") is None

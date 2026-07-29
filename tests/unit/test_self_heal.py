@@ -76,6 +76,20 @@ def test_resolve_compose_file_uses_env_override(monkeypatch):
 
 
 @pytest.mark.unit
+def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit(caplog):
+    # #3415 gap 5: subprocess evidence (probe/restart failures) must reach
+    # Loki even though self_heal's `_run` never raises (always check=False).
+    with caplog.at_level("WARNING", logger="nyxgpt.self_heal"):
+        cp = self_heal._run(["python3", "-c", "import sys; sys.stderr.write('boom'); sys.exit(2)"])
+
+    assert cp.returncode == 2
+    records = [r for r in caplog.records if r.getMessage() == "Subprocess exited non-zero"]
+    assert records, "Expected _run to log the non-zero exit"
+    assert records[0].returncode == 2
+    assert "boom" in records[0].stderr_tail
+
+
+@pytest.mark.unit
 def test_resolve_compose_file_defaults_to_repo_root(monkeypatch):
     monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
     assert self_heal._resolve_compose_file() == self_heal.REPO_ROOT / "docker-compose.yml"
