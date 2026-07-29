@@ -71,7 +71,7 @@ describe('InfrastructurePage', () => {
     await waitFor(() => {
       expect(screen.getAllByText('DEPLOYED')).toHaveLength(2);
     });
-    expect(screen.getByText(/Terraform$/)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Terraform' })).toBeInTheDocument();
     expect(screen.getByText('api')).toBeInTheDocument();
     expect(screen.getAllByText('running')).toHaveLength(2);
     expect(screen.getByText('exited')).toBeInTheDocument();
@@ -108,7 +108,7 @@ describe('InfrastructurePage', () => {
     render(<InfrastructurePage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Terraform$/)).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Terraform' })).toBeInTheDocument();
     });
     expect(screen.queryByRole('button', { name: /^install$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^destroy$/i })).not.toBeInTheDocument();
