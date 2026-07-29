@@ -13,7 +13,8 @@ This is the sole deployment model as of #3409 -- blue/green (deploy.py) was
 retired in favor of canary, which is a strict superset for traffic purposes
 (0%/100% reproduces blue/green's cutover) plus metrics-gated gradual shift
 and auto-rollback. `api` is the only component covered today; `web`/`ollama`
-coverage and the Cassandra story are tracked as follow-up work (see #3409).
+coverage is tracked in follow-up issue #3419, and the Cassandra
+data-migration story is deferred per the #3409 owner decision.
 
 Metrics-based promotion/rollback reads the process-wide ResourceMonitor
 (error rate + p95 latency, see resource_monitor.py) since dedicated
