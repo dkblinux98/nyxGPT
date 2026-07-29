@@ -307,7 +307,7 @@ describe('CanaryPage', () => {
     await waitFor(() => {
       expect(screen.getByText('Started canary rollout at 15%')).toBeInTheDocument();
     });
-    expect(capturedBody).toEqual({ weight_percent: 15 });
+    expect(capturedBody).toEqual({ weight_percent: 15, component: 'api' });
 
     // Active state: rollout badge, metrics, and history entries (with and without from_weight_percent)
     expect(screen.getByText('ROLLOUT IN PROGRESS — 25%')).toBeInTheDocument();

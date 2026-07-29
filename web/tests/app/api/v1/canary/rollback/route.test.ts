@@ -1,5 +1,5 @@
 /**
- * Tests for the /api/v1/canary/rollback Next.js proxy route (issue #3245).
+ * Tests for the /api/v1/canary/rollback Next.js proxy route (issue #3245, #3419).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -8,6 +8,14 @@ function mockFetch(opts: { ok: boolean; status: number; data?: unknown }) {
     ok: opts.ok,
     status: opts.status,
     json: () => Promise.resolve(opts.data ?? {}),
+  });
+}
+
+function req(body: unknown = {}) {
+  return new Request('http://localhost/api/v1/canary/rollback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
 }
 
@@ -22,12 +30,13 @@ describe('/api/v1/canary/rollback proxy route', () => {
     mockFetch({ ok: true, status: 200, data: { rolledBack: true } });
 
     const { POST } = await import('../../../../../../src/app/api/v1/canary/rollback/route');
-    const response = (await POST()) as Response;
+    const response = (await POST(req({ component: 'web' }))) as Response;
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
     const [calledUrl, calledOptions] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(calledUrl).toBe('http://127.0.0.1:8000/api/v1/canary/rollback');
     expect(calledOptions.method).toBe('POST');
+    expect(JSON.parse(calledOptions.body)).toEqual({ component: 'web' });
 
     const body = await response.json();
     expect(body).toEqual({ rolledBack: true });
@@ -38,7 +47,7 @@ describe('/api/v1/canary/rollback proxy route', () => {
     mockFetch({ ok: true, status: 200, data: { rolledBack: true } });
 
     const { POST } = await import('../../../../../../src/app/api/v1/canary/rollback/route');
-    await POST();
+    await POST(req());
 
     const calledUrl: string = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(calledUrl).toBe('http://custom-backend:9000/api/v1/canary/rollback');
@@ -48,7 +57,7 @@ describe('/api/v1/canary/rollback proxy route', () => {
     mockFetch({ ok: false, status: 409, data: { error: 'no active rollout' } });
 
     const { POST } = await import('../../../../../../src/app/api/v1/canary/rollback/route');
-    const response = (await POST()) as Response;
+    const response = (await POST(req())) as Response;
 
     expect(response.status).toBe(409);
     const body = await response.json();
@@ -59,7 +68,7 @@ describe('/api/v1/canary/rollback proxy route', () => {
     global.fetch = vi.fn().mockRejectedValueOnce(new Error('ECONNREFUSED'));
 
     const { POST } = await import('../../../../../../src/app/api/v1/canary/rollback/route');
-    const response = (await POST()) as Response;
+    const response = (await POST(req())) as Response;
 
     expect(response.status).toBe(502);
     const body = await response.json();
@@ -74,7 +83,7 @@ describe('/api/v1/canary/rollback proxy route', () => {
     });
 
     const { POST } = await import('../../../../../../src/app/api/v1/canary/rollback/route');
-    const response = (await POST()) as Response;
+    const response = (await POST(req())) as Response;
 
     expect(response.status).toBe(502);
     const body = await response.json();

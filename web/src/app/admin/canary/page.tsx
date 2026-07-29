@@ -29,6 +29,7 @@ type HistoryEntry = {
 
 type CanaryStatus = {
   namespace: string;
+  component?: string;
   active: boolean;
   weight_percent: number;
   stable: TrackHealth;
@@ -41,6 +42,12 @@ type CanaryStatus = {
   mode_supported: boolean;
   mode_message: string | null;
 };
+
+const COMPONENTS = [
+  { key: 'api', label: 'api' },
+  { key: 'web', label: 'web' },
+] as const;
+type Component = (typeof COMPONENTS)[number]['key'];
 
 const TRACK_STATE_LABEL: Record<TrackState, string> = {
   not_deployed: 'Not deployed',
@@ -70,6 +77,7 @@ const CANARY_LOKI_QUERY =
   '{job="nyxgpt"} |= `canary:` |~ `deploying|Deployed|starting|started|promoting|Promoted|rolling back|rolled back|regression`';
 
 export default function CanaryPage() {
+  const [component, setComponent] = useState<Component>('api');
   const [status, setStatus] = useState<CanaryStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -88,7 +96,9 @@ export default function CanaryPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/v1/canary/status', { cache: 'no-store' });
+      const res = await fetch(`/api/v1/canary/status?component=${component}`, {
+        cache: 'no-store',
+      });
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || data.detail || `HTTP ${res.status}`);
@@ -100,7 +110,7 @@ export default function CanaryPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [component]);
 
   useEffect(() => {
     void loadStatus();
@@ -160,7 +170,7 @@ export default function CanaryPage() {
       return;
     return runAction(
       '/api/v1/canary/deploy',
-      undefined,
+      { component },
       setDeploying,
       'Deployed current version to canary'
     );
@@ -169,22 +179,32 @@ export default function CanaryPage() {
   const handleStart = () =>
     runAction(
       '/api/v1/canary/start',
-      { weight_percent: startWeight },
+      { weight_percent: startWeight, component },
       setStarting,
       `Started canary rollout at ${startWeight}%`
     );
 
   const handleEvaluate = () =>
-    runAction('/api/v1/canary/evaluate', undefined, setEvaluating, 'Evaluated canary metrics');
+    runAction(
+      '/api/v1/canary/evaluate',
+      { component },
+      setEvaluating,
+      'Evaluated canary metrics'
+    );
 
   const handlePromote = () => {
     if (!confirm('Promote the canary to a higher traffic share?')) return;
-    return runAction('/api/v1/canary/promote', {}, setPromoting, 'Promoted canary');
+    return runAction('/api/v1/canary/promote', { component }, setPromoting, 'Promoted canary');
   };
 
   const handleRollback = () => {
     if (!confirm('Roll back the canary rollout to 0% traffic?')) return;
-    return runAction('/api/v1/canary/rollback', undefined, setRollingBack, 'Rolled back canary');
+    return runAction(
+      '/api/v1/canary/rollback',
+      { component },
+      setRollingBack,
+      'Rolled back canary'
+    );
   };
 
   if (loading) {
@@ -211,14 +231,43 @@ export default function CanaryPage() {
             Canary Deployment
           </h1>
           <p style={{ color: 'var(--foreground-muted)', marginBottom: 8 }}>
-            Deploy a new version to nyxgpt-api-canary, gate a gradual weighted rollout on live
-            metrics, then promote it to nyxgpt-api-stable (or roll back). The sole deployment
-            model since blue/green was retired -- see docs/kubernetes.md.
+            Deploy a new version to nyxgpt-{component}-canary, gate a gradual weighted rollout on
+            live metrics, then promote it to nyxgpt-{component}-stable (or roll back). The sole
+            deployment model since blue/green was retired -- see docs/kubernetes.md.
           </p>
           <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
             ← Back to Admin Dashboard
           </a>
         </div>
+      </div>
+
+      <div
+        style={{
+          display: 'flex',
+          gap: '0.5rem',
+          marginBottom: '1.5rem',
+          borderBottom: '1px solid var(--border-color)',
+        }}
+      >
+        {COMPONENTS.map(({ key, label }) => (
+          <button
+            key={key}
+            onClick={() => setComponent(key)}
+            style={{
+              padding: '0.5rem 1rem',
+              border: 'none',
+              borderBottom: component === key ? '2px solid #3b82f6' : '2px solid transparent',
+              background: 'transparent',
+              color: component === key ? 'var(--foreground)' : 'var(--foreground-muted)',
+              fontWeight: component === key ? 600 : 400,
+              cursor: 'pointer',
+              fontSize: '0.9rem',
+              textTransform: 'capitalize',
+            }}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
       {error && (
