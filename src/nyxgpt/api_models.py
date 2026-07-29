@@ -280,6 +280,13 @@ class QueryCacheStatsResponse(BaseModel):
     ttl_seconds: int | None = Field(
         None, description="Cache entry time-to-live in seconds, null if disabled"
     )
+    rag_enabled: bool = Field(
+        description=(
+            "Whether RAG is enabled globally. The query cache is only exercised by RAG "
+            "retrievals, so enabled=true with rag_enabled=false means zero hits/misses "
+            "is expected, not a misconfiguration -- RAG may still be on per-chat."
+        )
+    )
 
 
 class QueryCacheClearResponse(BaseModel):

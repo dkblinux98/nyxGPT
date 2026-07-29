@@ -3523,6 +3523,7 @@ def rag_cache_stats(_request: Request) -> QueryCacheStatsResponse:
         backend=str(stats["backend"]),
         max_size=int(max_size) if max_size is not None else None,
         ttl_seconds=int(ttl_seconds) if ttl_seconds is not None else None,
+        rag_enabled=bool(stats["rag_enabled"]),
     )
 
 

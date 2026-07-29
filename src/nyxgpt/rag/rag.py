@@ -27,6 +27,7 @@ from nyxgpt.config import (
     get_rag_chat_top_k,
     get_rag_debug_mode,
     get_rag_dedupe,
+    get_rag_enabled,
     get_rag_include_headers,
     get_rag_include_scores,
     get_rag_max_chunks,
@@ -272,11 +273,17 @@ def get_query_cache_stats() -> dict[str, int | float | str | bool | None]:
 
     Returns:
         Dict with hits, misses, hit_rate, size, enabled, backend, max_size,
-        and ttl_seconds. Zeroed/empty (with enabled=False) if query result
-        caching is disabled (`[cache] query_cache_enabled = false`).
+        ttl_seconds, and rag_enabled. Zeroed/empty (with enabled=False) if
+        query result caching is disabled (`[cache] query_cache_enabled =
+        false`). `rag_enabled` reflects the global RAG on/off switch
+        (`get_rag_enabled`) so callers can distinguish "cache enabled but
+        never exercised because RAG is off" from an actually broken cache --
+        RAG can still be enabled per-chat even when the global default is
+        off, so this is informational, not an error state.
     """
     cache = _get_query_result_cache()
     cfg = load_config(None)
+    rag_enabled = get_rag_enabled(cfg)
 
     if isinstance(cache, MemoryCache):
         stats = cache.stats()
@@ -285,6 +292,7 @@ def get_query_cache_stats() -> dict[str, int | float | str | bool | None]:
             "enabled": True,
             "backend": "memory",
             "ttl_seconds": _query_cache_ttl_seconds(cfg, "memory"),
+            "rag_enabled": rag_enabled,
         }
     if isinstance(cache, DiskCache):
         stats = cache.stats()
@@ -294,6 +302,7 @@ def get_query_cache_stats() -> dict[str, int | float | str | bool | None]:
             "backend": "disk",
             "max_size": None,
             "ttl_seconds": _query_cache_ttl_seconds(cfg, "disk"),
+            "rag_enabled": rag_enabled,
         }
     return {
         "hits": 0,
@@ -304,6 +313,7 @@ def get_query_cache_stats() -> dict[str, int | float | str | bool | None]:
         "backend": "none",
         "max_size": None,
         "ttl_seconds": None,
+        "rag_enabled": rag_enabled,
     }
 
 

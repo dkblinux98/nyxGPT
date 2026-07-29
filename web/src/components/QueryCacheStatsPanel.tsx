@@ -13,6 +13,7 @@ type QueryCacheStats = {
   backend: string;
   max_size: number | null;
   ttl_seconds: number | null;
+  rag_enabled: boolean;
 };
 
 const statTileStyle: React.CSSProperties = {
@@ -69,8 +70,27 @@ function QueryCacheStatsBody({
     );
   }
 
+  const ragDisabledAndUnused =
+    !stats.rag_enabled && stats.hits === 0 && stats.misses === 0 && stats.size === 0;
+
+  if (ragDisabledAndUnused) {
+    return (
+      <p style={{ margin: 0, fontSize: 14, color: 'var(--muted-foreground)' }}>
+        RAG is disabled globally, so the query cache isn&apos;t exercised -- hits and misses will
+        stay at zero until RAG is enabled (globally or per-chat). This isn&apos;t an error; you
+        don&apos;t need to change anything here.
+      </p>
+    );
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {!stats.rag_enabled && (
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--muted-foreground)' }}>
+          RAG is disabled globally, but these stats reflect activity from chats where RAG was
+          enabled per-chat.
+        </p>
+      )}
       <div
         style={{
           display: 'grid',

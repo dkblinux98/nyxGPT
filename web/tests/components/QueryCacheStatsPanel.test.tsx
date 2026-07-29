@@ -15,6 +15,7 @@ const enabledStats = {
   backend: 'memory',
   max_size: 500,
   ttl_seconds: 300,
+  rag_enabled: true,
 };
 
 const disabledStats = {
@@ -26,6 +27,31 @@ const disabledStats = {
   backend: 'none',
   max_size: null,
   ttl_seconds: null,
+  rag_enabled: false,
+};
+
+const ragDisabledStats = {
+  hits: 0,
+  misses: 0,
+  hit_rate: 0.0,
+  size: 0,
+  enabled: true,
+  backend: 'memory',
+  max_size: 500,
+  ttl_seconds: 300,
+  rag_enabled: false,
+};
+
+const ragDisabledWithActivityStats = {
+  hits: 5,
+  misses: 1,
+  hit_rate: 0.8333333333333334,
+  size: 4,
+  enabled: true,
+  backend: 'memory',
+  max_size: 500,
+  ttl_seconds: 300,
+  rag_enabled: false,
 };
 
 describe('QueryCacheStatsPanel', () => {
@@ -99,6 +125,38 @@ describe('QueryCacheStatsPanel', () => {
     expect(screen.queryByRole('button', { name: /clear cache/i })).not.toBeInTheDocument();
     expect(screen.queryByText('80.0%')).not.toBeInTheDocument();
     expect(screen.queryByText('Hit rate')).not.toBeInTheDocument();
+  });
+
+  it('explains zeroed stats instead of showing bare zeros when RAG is disabled', async () => {
+    server.use(http.get('/api/v1/rag/cache/stats', () => HttpResponse.json(ragDisabledStats)));
+
+    render(<QueryCacheStatsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/RAG is disabled globally/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByRole('button', { name: /clear cache/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('Hit rate')).not.toBeInTheDocument();
+    expect(screen.queryByText('0.0%')).not.toBeInTheDocument();
+    // Not the cache-disabled message -- this is a distinct, non-error state.
+    expect(screen.queryByText(/Query result caching is disabled/i)).not.toBeInTheDocument();
+  });
+
+  it('still shows real stats and Clear Cache when global RAG is off but per-chat activity populated the cache', async () => {
+    server.use(http.get('/api/v1/rag/cache/stats', () => HttpResponse.json(ragDisabledWithActivityStats)));
+
+    render(<QueryCacheStatsPanel />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Hit rate')).toBeInTheDocument();
+    });
+    expect(screen.getByText('83.3%')).toBeInTheDocument();
+    expect(screen.getByText('5')).toBeInTheDocument();
+    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /clear cache/i })).toBeInTheDocument();
+    expect(
+      screen.getByText(/RAG is disabled globally, but these stats reflect activity/i)
+    ).toBeInTheDocument();
   });
 
   it('surfaces an error when the stats request fails', async () => {

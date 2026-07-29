@@ -302,7 +302,7 @@ The cache key (fingerprint) is built from the query text plus every input that a
 
 **Automatic invalidation**: The cache is cleared automatically whenever the document set or its embeddings change — on document ingestion/update (`ingest_document`), collection deletion (`DELETE /rag/collections/{name}`), and collection re-indexing (`POST /rag/collections/{name}/reindex`). A short TTL is a safety net, not the primary invalidation mechanism.
 
-**Monitoring hit rate**: `GET /rag/cache/stats` returns `{hits, misses, hit_rate, size, enabled, backend, max_size, ttl_seconds}`, also surfaced in the admin dashboard's Query Cache panel. Manually clear with `POST /rag/cache/clear` (or the panel's Clear Cache button).
+**Monitoring hit rate**: `GET /rag/cache/stats` returns `{hits, misses, hit_rate, size, enabled, backend, max_size, ttl_seconds, rag_enabled}`, also surfaced in the admin dashboard's Query Cache panel. `rag_enabled` reflects the global RAG on/off switch -- since the cache is only exercised by RAG retrievals, `enabled=true` with `rag_enabled=false` typically shows zero hits/misses (not a misconfiguration), though per-chat RAG overrides can still populate the cache while the global switch is off. Manually clear with `POST /rag/cache/clear` (or the panel's Clear Cache button).
 
 ### Cache Invalidation
 
