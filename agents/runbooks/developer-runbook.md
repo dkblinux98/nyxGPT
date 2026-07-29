@@ -22,6 +22,49 @@ This is the procedural “how” for implementing issues. Authority is defined i
 - Add/extend tests (unit/integration as appropriate).
 - Keep IO behind interfaces; maintain dependency flow.
 
+## 3a) Instrumentation conventions
+
+RCA, self-heal, and SRE work are only as good as the logging behind them
+(#3415). Apply these conventions to any new code, not just the file you're
+touching:
+
+- **No silent excepts.** Every `except Exception:` (or narrower) that
+  swallows an error and substitutes a default must log at WARNING (or ERROR
+  if the caller can't recover) what failed and what default was used —
+  `logger.warning("Invalid <key> in config, using default <value>: %s", e)`
+  is the pattern used throughout `config.py`'s getters
+  (`nyxgpt.config._log_fallback_once`, which also dedupes a given key's
+  warning to once per process — reuse it for new config getters instead of
+  a bare `except Exception: return default`).
+- **Subprocess failures must log cmd + rc + stderr tail.** Any helper that
+  wraps `subprocess.run` (see `ops.py`/`canary.py`/`self_heal.py`'s `_run`)
+  must log at WARNING on non-zero exit, in addition to whatever the
+  `CompletedProcess`/exception carries back to the caller — the caller's
+  handling of the result must never be the only path to visibility.
+- **New request paths get lifecycle records.** A request-shaped code path
+  (chat turn, RAG query/ingest, an API endpoint doing real work) emits a
+  start record and a completion-or-failure record at INFO, carrying
+  `session`/`model` where applicable, an `outcome`, and a `duration_ms` —
+  see `chat.py`'s `chat()`/`chat_stream()` and `rag.py`'s
+  `retrieve_context()`/`ingest_document()` for the pattern.
+- **Trace-context propagation for new outbound calls.** New code that calls
+  Ollama, another internal service, or shells out should carry the current
+  request/trace correlation id so cause and effect can be joined across
+  logs (see `tracing.traced_span`/`traced` for the current span helpers;
+  full W3C `traceparent` propagation across the web/API/Ollama boundary is
+  tracked under #3415 gap 6).
+- **Use the formatter's extras, not string interpolation, for structured
+  fields.** Pass `component` (subsystem name, e.g. `"ops"`, `"rag"`,
+  `"chat"`, `"ollama"`), and `session`/`model` where known, via
+  `extra={...}` — `StructuredFormatter` (`logging.py`) serializes them as
+  first-class JSON fields when `[logging] format = json`, instead of being
+  buried in a formatted message string.
+- **Exclude new polling endpoints from access-log noise.** A new
+  `/health`-, `/metrics`-, or dashboard-polling-style endpoint hit on a
+  fixed interval belongs in `logging.py`'s
+  `_ACCESS_LOG_EXCLUDED_PATH_PREFIXES`, or it will fill the rotating file
+  handler with near-zero-signal INFO lines on every poll.
+
 ## 4) Verification loop (MANDATORY - ALL must pass before commit)
 Run ALL of the following checks and fix issues until they pass:
 - `black --check .` - If fails, run `black .` to auto-format, then re-check

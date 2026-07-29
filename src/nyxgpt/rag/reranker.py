@@ -313,7 +313,11 @@ def rerank_results(
             reranked_result["original_score"] = result.get("score")
             reranked.append((reranked_result, score))
         except RerankError as e:
-            log.warning("Failed to rerank result: %s", e)
+            log.warning(
+                "Failed to rerank result: %s",
+                e,
+                extra={"component": "rag", "doc_id": result.get("doc_id")},
+            )
             failed_count += 1
             # Keep original result if reranking fails
             reranked.append((result, result.get("score", 0.0)))
@@ -323,9 +327,22 @@ def rerank_results(
     top_results = [r for r, _ in reranked[: config.top_n]]
 
     elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+    scores = [r["score"] for r in top_results if r.get("score") is not None]
+
+    log.debug(
+        "Reranking completed",
+        extra={
+            "component": "rag",
+            "candidate_count": len(results),
+            "result_count": len(top_results),
+            "failed_count": failed_count,
+            "score_min": min(scores) if scores else None,
+            "score_max": max(scores) if scores else None,
+            "duration_ms": round(elapsed_ms, 1),
+        },
+    )
 
     if collect_metrics:
-        scores = [r["score"] for r in top_results if r.get("score") is not None]
         metrics = RerankerDebugMetrics(
             reranker_model=config.model,
             num_candidates=len(results),
@@ -335,21 +352,6 @@ def rerank_results(
             score_max=max(scores) if scores else None,
             score_mean=sum(scores) / len(scores) if scores else None,
         )
-        log.debug(
-            "Reranking completed in %.2fms: %d candidates -> %d results (failed: %d)",
-            elapsed_ms,
-            len(results),
-            len(top_results),
-            failed_count,
-        )
         return top_results, metrics
-
-    log.debug(
-        "Reranking completed in %.2fms: %d candidates -> %d results (failed: %d)",
-        elapsed_ms,
-        len(results),
-        len(top_results),
-        failed_count,
-    )
 
     return top_results

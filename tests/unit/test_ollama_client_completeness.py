@@ -213,3 +213,58 @@ def test_retry_with_backoff_negative_max_retries_raises_fallback_error() -> None
         _retry_with_backoff(mock_func, max_retries=-1)
 
     mock_func.assert_not_called()
+
+
+# ============================================================================
+# Duration/status logging (#3415 gap 2)
+# ============================================================================
+
+
+def test_post_json_logs_duration_on_success(caplog: pytest.LogCaptureFixture) -> None:
+    resp = _mock_response(b'{"message": "ok"}')
+    resp.status = 200
+    with (
+        patch("urllib.request.urlopen", return_value=resp),
+        caplog.at_level("DEBUG", logger="nyxgpt.ollama_client"),
+    ):
+        post_json("http://x/api/chat", {"model": "m"})
+
+    records = [r for r in caplog.records if r.getMessage() == "Ollama request completed"]
+    assert records
+    assert records[0].url == "http://x/api/chat"
+    assert records[0].status == 200
+    assert isinstance(records[0].duration_ms, float)
+
+
+def test_post_json_logs_duration_on_http_error(caplog: pytest.LogCaptureFixture) -> None:
+    from nyxgpt.ollama_client import ModelRuntimeError
+
+    with (
+        patch("urllib.request.urlopen", side_effect=_http_error(500)),
+        caplog.at_level("WARNING", logger="nyxgpt.ollama_client"),
+        pytest.raises(ModelRuntimeError),
+    ):
+        post_json("http://x/api/chat", {"model": "m"})
+
+    records = [r for r in caplog.records if r.getMessage() == "Ollama request failed"]
+    assert records
+    assert records[0].status == 500
+
+
+def test_ollama_chat_stream_tokens_logs_duration_on_done(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    lines = [
+        json.dumps({"message": {"content": "hi"}, "done": False}).encode() + b"\n",
+        json.dumps({"message": {"content": ""}, "done": True}).encode() + b"\n",
+    ]
+    with (
+        patch("urllib.request.urlopen", return_value=_streaming_response(lines)),
+        caplog.at_level("DEBUG", logger="nyxgpt.ollama_client"),
+    ):
+        list(ollama_chat_stream_tokens("http://x", "m", [{"role": "user", "content": "hi"}]))
+
+    records = [r for r in caplog.records if r.getMessage() == "Ollama streaming request completed"]
+    assert records
+    assert records[0].model == "m"
+    assert isinstance(records[0].duration_ms, float)

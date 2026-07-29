@@ -52,8 +52,8 @@ def _cfg(**tracing_options: str) -> ConfigParser:
     return cfg
 
 
-def test_get_tracing_enabled_defaults_to_false() -> None:
-    assert get_tracing_enabled(_cfg()) is False
+def test_get_tracing_enabled_defaults_to_true() -> None:
+    assert get_tracing_enabled(_cfg()) is True
 
 
 def test_get_tracing_enabled_reads_config() -> None:
@@ -65,7 +65,7 @@ def test_get_tracing_config_defaults() -> None:
     result = get_tracing_config(_cfg())
 
     assert result == {
-        "enabled": False,
+        "enabled": True,
         "service_name": "nyxgpt-api",
         "otlp_endpoint": "http://localhost:4318/v1/traces",
         "jaeger_ui_url": "http://localhost:16686",

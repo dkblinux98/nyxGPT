@@ -38,3 +38,19 @@ def _reset_query_result_cache():
     rag_module._query_result_cache = None
     yield
     rag_module._query_result_cache = None
+
+
+@pytest.fixture(autouse=True)
+def _reset_config_fallback_warnings():
+    """Reset the config module's once-per-key fallback warning dedup set.
+
+    `config._log_fallback_once` only logs a given key's fallback once per
+    process, so without this reset a test asserting a fallback WARNING would
+    pass or fail depending on whether an earlier test already triggered the
+    same key's fallback.
+    """
+    from nyxgpt.config import reset_fallback_warnings
+
+    reset_fallback_warnings()
+    yield
+    reset_fallback_warnings()

@@ -77,7 +77,7 @@ import subprocess
 import threading
 import time
 from configparser import ConfigParser
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -252,7 +252,13 @@ class HealResult:
 
 @dataclass(frozen=True)
 class HealEvent:
-    """A single recorded self-heal action, as shown in the dashboard event log."""
+    """A single recorded self-heal action, as shown in the dashboard event log.
+
+    `evidence` captures the raw probe data that triggered the decision
+    (source, state, health, threshold values at decision time) so an
+    operator can read *why* a heal fired from the event itself instead of
+    having to reproduce the failure (#3415 gap 7, see #3381).
+    """
 
     ts: float
     service: str
@@ -261,6 +267,7 @@ class HealEvent:
     ok: bool
     restart_count: int
     message: str = ""
+    evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict suitable for JSON responses/state storage."""
@@ -272,6 +279,7 @@ class HealEvent:
             "ok": self.ok,
             "restart_count": self.restart_count,
             "message": self.message,
+            "evidence": self.evidence,
         }
 
 
@@ -281,8 +289,24 @@ def _which(prog: str) -> str | None:
 
 
 def _run(cmd: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
-    """Run `cmd`, capturing stdout/stderr as text instead of raising on failure."""
-    return subprocess.run(cmd, check=False, text=True, capture_output=True, timeout=timeout)
+    """Run `cmd`, capturing stdout/stderr as text instead of raising on failure.
+
+    Non-zero exits are logged with the command and a stderr tail so a failed
+    probe/restart action is visible in Loki even when the caller only checks
+    `returncode` (#3415 gap 5).
+    """
+    result = subprocess.run(cmd, check=False, text=True, capture_output=True, timeout=timeout)
+    if result.returncode != 0:
+        logger.warning(
+            "Subprocess exited non-zero",
+            extra={
+                "component": "self_heal",
+                "cmd": cmd,
+                "returncode": result.returncode,
+                "stderr_tail": result.stderr[-2000:] if result.stderr else "",
+            },
+        )
+    return result
 
 
 def _state_path() -> Path:
@@ -1259,6 +1283,19 @@ def heal_now(
                     now
                 )
 
+            evidence = {
+                "probe_type": status.source,
+                "state": status.state,
+                "health": status.health,
+                "healthy_before": status.healthy,
+                "container": status.container,
+                "manual": manual,
+                "restart_count_before": count,
+                "max_consecutive_restarts": max_consecutive_restarts,
+                "backoff_seconds": backoff_seconds,
+                "heal_result_details": result.details,
+            }
+
             log = logger.info if result.ok else logger.error
             log(
                 "self-heal: restart of %s %s (restart_count=%d): %s",
@@ -1272,6 +1309,7 @@ def heal_now(
                     "ok": result.ok,
                     "restart_count": new_count,
                     "reason": reason,
+                    "evidence": evidence,
                 },
             )
 
@@ -1283,6 +1321,7 @@ def heal_now(
                 ok=result.ok,
                 restart_count=new_count,
                 message=result.message,
+                evidence=evidence,
             )
             events.append(event.to_dict())
             healed.append(event.to_dict())

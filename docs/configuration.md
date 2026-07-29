@@ -622,12 +622,13 @@ claude_code_oauth_token =
 
 ## `[tracing]` section
 
-Distributed tracing via OpenTelemetry. Opt-in and local-only: no data is
-ever sent to an external/cloud endpoint, only to a local collector.
+Distributed tracing via OpenTelemetry. Enabled by default (2026-07-28 owner
+decision) and local-only: no data is ever sent to an external/cloud
+endpoint, only to a local collector.
 
 ```ini
 [tracing]
-enabled = false
+enabled = true
 service_name = nyxgpt-api
 otlp_endpoint = http://localhost:4318/v1/traces
 jaeger_ui_url = http://localhost:16686
@@ -635,7 +636,7 @@ jaeger_ui_url = http://localhost:16686
 
 | Key | Description |
 |---|---|
-| `enabled` | Enable distributed tracing (default: `false`) |
+| `enabled` | Enable distributed tracing (default: `true`) |
 | `service_name` | Service name attached to every span (default: `nyxgpt-api`) |
 | `otlp_endpoint` | OTLP/HTTP endpoint of the local collector spans are exported to (default: `http://localhost:4318/v1/traces`) |
 | `jaeger_ui_url` | URL of the local Jaeger UI -- a debug tool now (#3411); traces are browsed inside Grafana instead, via the SRE Overview tile |
@@ -651,10 +652,13 @@ a raw `docker compose` command, see
 nyxgpt ops observability
 ```
 
-`docker/config.docker.ini` (the Compose deployment's config) ships with
-`[tracing] enabled = true` out of the box, since the profile above starts
-automatically -- the `false` default shown here is `~/.nyxGPT/config.ini`'s
-(native deployment) baseline.
+`docker/config.docker.ini` (the Compose deployment's config) also ships
+with `[tracing] enabled = true` out of the box, matching
+`~/.nyxGPT/config.ini`'s (native deployment) default -- both start with
+tracing on. If the local collector isn't reachable yet (fresh install,
+`--skip-observability`, collector restart), span export degrades
+gracefully: chat/API behavior is unaffected and `nyxgpt ops doctor`
+reports OTLP reachability (#3350) as the diagnostic surface.
 
 See [`docs/api.md`](api.md#distributed-tracing) for the `GET /api/v1/tracing`
 status endpoint.

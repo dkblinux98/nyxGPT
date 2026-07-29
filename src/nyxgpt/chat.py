@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from configparser import ConfigParser
@@ -33,9 +34,30 @@ from nyxgpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
 from nyxgpt.rag.rag import compose_context, retrieve_context
 from nyxgpt.rag.vectorstore_cassandra import MetadataFilter
 from nyxgpt.sessions import load_session, save_session
-from nyxgpt.token_counter import count_message_tokens
+from nyxgpt.token_counter import count_message_tokens, count_tokens
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_token_count(text: str) -> int | None:
+    """Return `count_tokens(text)`, or None if the tokenizer isn't available.
+
+    Token counts are a "nice to have" on the chat lifecycle log record, not
+    load-bearing -- an unavailable tokenizer must never break the log line.
+    """
+    try:
+        return count_tokens(text)
+    except Exception:
+        return None
+
+
+def _safe_message_token_count(messages: list[dict[str, Any]]) -> int | None:
+    """Return `count_message_tokens(messages)`, or None if unavailable (see `_safe_token_count`)."""
+    try:
+        return count_message_tokens(messages)
+    except Exception:
+        return None
+
 
 # Global response cache instance (initialized lazily)
 _response_cache: CacheBackend[str] | None = None
@@ -770,6 +792,7 @@ def chat(
         ChatResult with reply and metadata
     """
 
+    request_start = time.monotonic()
     context = _prepare_chat_context(
         prompt=prompt,
         session=session,
@@ -782,6 +805,10 @@ def chat(
         rag_filters=rag_filters,
         attachments=attachments,
         output_format=output_format,
+    )
+    logger.info(
+        "Chat request started",
+        extra={"session": session, "model": context.chosen_model, "streaming": False},
     )
 
     # Try to retrieve from cache first
@@ -799,6 +826,17 @@ def chat(
         cfg = _cfg(config_path)
         _persist_chat_turn(context, prompt, cached_reply, cfg, sessions_dir)
 
+        logger.info(
+            "Chat request completed",
+            extra={
+                "session": session,
+                "model": context.chosen_model,
+                "streaming": False,
+                "outcome": "cache_hit",
+                "duration_ms": round((time.monotonic() - request_start) * 1000, 1),
+                "output_tokens": _safe_token_count(cached_reply),
+            },
+        )
         return ChatResult(
             session=context.state.name,
             model=context.chosen_model,
@@ -810,13 +848,31 @@ def chat(
 
     # Cache miss - call LLM
     logger.debug(f"Response cache miss for session={session}, calling LLM...")
-    reply = ollama_chat(
-        base_url=context.base_url,
-        model=context.chosen_model,
-        messages=context.messages,
-        timeout_s=context.chat_timeout_s,
-        output_format=context.output_format,
-    )
+    ollama_start = time.monotonic()
+    try:
+        reply = ollama_chat(
+            base_url=context.base_url,
+            model=context.chosen_model,
+            messages=context.messages,
+            timeout_s=context.chat_timeout_s,
+            output_format=context.output_format,
+        )
+    except Exception as e:
+        logger.error(
+            "Chat request failed",
+            extra={
+                "session": session,
+                "model": context.chosen_model,
+                "streaming": False,
+                "outcome": "error",
+                "duration_ms": round((time.monotonic() - request_start) * 1000, 1),
+                "ollama_duration_ms": round((time.monotonic() - ollama_start) * 1000, 1),
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
+        )
+        raise
+    ollama_duration_ms = round((time.monotonic() - ollama_start) * 1000, 1)
 
     # Store in cache
     cache.set(cache_key, reply)
@@ -824,6 +880,19 @@ def chat(
     cfg = _cfg(config_path)
     _persist_chat_turn(context, prompt, reply, cfg, sessions_dir)
 
+    logger.info(
+        "Chat request completed",
+        extra={
+            "session": session,
+            "model": context.chosen_model,
+            "streaming": False,
+            "outcome": "success",
+            "duration_ms": round((time.monotonic() - request_start) * 1000, 1),
+            "ollama_duration_ms": ollama_duration_ms,
+            "input_tokens": _safe_message_token_count(context.messages),
+            "output_tokens": _safe_token_count(reply),
+        },
+    )
     return ChatResult(
         session=context.state.name,
         model=context.chosen_model,
@@ -868,6 +937,7 @@ def chat_stream(
         on_retry: Optional callback(attempt, delay, error) for connection retries
     """
 
+    request_start = time.monotonic()
     context = _prepare_chat_context(
         prompt=prompt,
         session=session,
@@ -882,7 +952,10 @@ def chat_stream(
         output_format=output_format,
     )
 
-    logger.debug("Starting chat stream for session=%s, model=%s", session, context.chosen_model)
+    logger.info(
+        "Chat request started",
+        extra={"session": session, "model": context.chosen_model, "streaming": True},
+    )
 
     # Yield RAG metadata as first chunk if RAG was used
     if context.rag_used and context.rag_context:
@@ -926,6 +999,7 @@ def chat_stream(
 
     # Stream tokens and assemble final reply
     parts: list[str] = []
+    ollama_start = time.monotonic()
     try:
         for chunk in ollama_chat_stream_tokens(
             base_url=context.base_url,
@@ -948,10 +1022,14 @@ def chat_stream(
         # tests) still get actionable detail in nyxgpt.log instead of a bare
         # re-raise.
         logger.error(
-            "Ollama chat stream failed",
+            "Chat request failed",
             extra={
                 "session": session,
                 "model": context.chosen_model,
+                "streaming": True,
+                "outcome": "error",
+                "duration_ms": round((time.monotonic() - request_start) * 1000, 1),
+                "ollama_duration_ms": round((time.monotonic() - ollama_start) * 1000, 1),
                 "error": str(e),
                 "error_type": type(e).__name__,
             },
@@ -962,8 +1040,23 @@ def chat_stream(
         for retry_msg in retry_messages:
             yield retry_msg
         raise
+    ollama_duration_ms = round((time.monotonic() - ollama_start) * 1000, 1)
 
     reply = "".join(parts)
 
     cfg = _cfg(config_path)
     _persist_chat_turn(context, prompt, reply, cfg, sessions_dir)
+
+    logger.info(
+        "Chat request completed",
+        extra={
+            "session": session,
+            "model": context.chosen_model,
+            "streaming": True,
+            "outcome": "success",
+            "duration_ms": round((time.monotonic() - request_start) * 1000, 1),
+            "ollama_duration_ms": ollama_duration_ms,
+            "input_tokens": _safe_message_token_count(context.messages),
+            "output_tokens": _safe_token_count(reply),
+        },
+    )

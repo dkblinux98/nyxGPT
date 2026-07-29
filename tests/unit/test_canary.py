@@ -46,6 +46,33 @@ def _healthy(namespace_unused=None):
 
 
 @pytest.mark.unit
+def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit(caplog):
+    # #3415 gap 5: subprocess evidence must reach Loki even though canary's
+    # `_run` never raises (always check=False).
+    with caplog.at_level("WARNING", logger="nyxgpt.canary"):
+        cp = canary._run(["python3", "-c", "import sys; sys.stderr.write('boom'); sys.exit(3)"])
+
+    assert cp.returncode == 3
+    records = [r for r in caplog.records if r.getMessage() == "Subprocess exited non-zero"]
+    assert records, "Expected _run to log the non-zero exit"
+    assert records[0].returncode == 3
+    assert "boom" in records[0].stderr_tail
+
+
+@pytest.mark.unit
+def test_load_state_logs_and_falls_back_on_corrupt_state_file(tmp_path, monkeypatch, caplog):
+    state_path = tmp_path / "canary_state.json"
+    state_path.write_text("not json at all", encoding="utf-8")
+    monkeypatch.setattr(canary, "_state_path", lambda: state_path)
+
+    with caplog.at_level("WARNING", logger="nyxgpt.canary"):
+        state = canary._load_state()
+
+    assert state == {"active": False, "weight_percent": 0, "history": []}
+    assert any("Failed to load canary state" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.unit
 def test_deployment_health_healthy(monkeypatch):
     monkeypatch.setattr(canary, "_run", lambda cmd: CP(stdout=_deployment_json()))
     result = canary.deployment_health("nyxgpt-api-stable", "nyxgpt")

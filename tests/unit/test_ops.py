@@ -599,7 +599,9 @@ def test_ops_doctor_ok(monkeypatch, capsys, tmp_path):
     cfg_dir = tmp_path / ".nyxGPT"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     cfg = cfg_dir / "config.ini"
-    cfg.write_text("[project]\nname=nyxGPT\n", encoding="utf-8")
+    # Tracing defaults to enabled (#3415); disable it here so this test stays
+    # focused on the checks it's actually exercising.
+    cfg.write_text("[project]\nname=nyxGPT\n\n[tracing]\nenabled = false\n", encoding="utf-8")
 
     # Make home dir resolve into tmp_path
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
@@ -910,6 +912,10 @@ def test_ops_doctor_prints_loki_volume_by_logger_when_available(monkeypatch, cap
     cfg_dir = tmp_path / ".nyxGPT"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     _write_log_aggregation_config(cfg_dir / "config.ini")
+    # Tracing defaults to enabled (#3415); disable it so this test stays
+    # focused on the log-aggregation checks it's actually exercising.
+    with (cfg_dir / "config.ini").open("a", encoding="utf-8") as f:
+        f.write("\n[tracing]\nenabled = false\n")
 
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
@@ -935,6 +941,10 @@ def test_ops_doctor_omits_loki_volume_when_unreachable(monkeypatch, capsys, tmp_
     cfg_dir = tmp_path / ".nyxGPT"
     cfg_dir.mkdir(parents=True, exist_ok=True)
     _write_log_aggregation_config(cfg_dir / "config.ini")
+    # Tracing defaults to enabled (#3415); disable it so this test stays
+    # focused on the log-aggregation checks it's actually exercising.
+    with (cfg_dir / "config.ini").open("a", encoding="utf-8") as f:
+        f.write("\n[tracing]\nenabled = false\n")
 
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
@@ -1226,6 +1236,40 @@ def test_run_invokes_subprocess_with_expected_kwargs():
         cp = ops._run(["echo", "hi"])
         run.assert_called_once_with(["echo", "hi"], check=True, text=True, capture_output=True)
         assert cp.stdout == "hi\n"
+
+
+@pytest.mark.unit
+def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit_when_check_false(caplog):
+    # #3415 gap 5: subprocess evidence must reach Loki even when the caller
+    # only inspects the returncode instead of catching an exception.
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["false"], returncode=1, stdout="", stderr="boom\n"
+        )
+        with caplog.at_level("WARNING", logger="nyxgpt.ops"):
+            cp = ops._run(["false"], check=False)
+
+    assert cp.returncode == 1
+    records = [r for r in caplog.records if r.getMessage() == "Subprocess exited non-zero"]
+    assert records, "Expected _run to log the non-zero exit"
+    record = records[0]
+    assert record.cmd == ["false"]
+    assert record.returncode == 1
+    assert "boom" in record.stderr_tail
+
+
+@pytest.mark.unit
+def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit_when_check_true(caplog):
+    with (
+        caplog.at_level("WARNING", logger="nyxgpt.ops"),
+        pytest.raises(subprocess.CalledProcessError),
+    ):
+        ops._run(["python3", "-c", "import sys; sys.stderr.write('boom'); sys.exit(1)"])
+
+    records = [r for r in caplog.records if r.getMessage() == "Subprocess exited non-zero"]
+    assert records, "Expected _run to log the non-zero exit before raising"
+    assert records[0].returncode == 1
+    assert "boom" in records[0].stderr_tail
 
 
 @pytest.mark.unit
@@ -3770,7 +3814,11 @@ def test_ops_doctor_reports_missing_brew_and_docker(monkeypatch, capsys, tmp_pat
 def test_ops_doctor_web_deps_present_and_undici_resolves(monkeypatch, capsys, tmp_path):
     cfg_dir = tmp_path / ".nyxGPT"
     cfg_dir.mkdir(parents=True)
-    (cfg_dir / "config.ini").write_text("[project]\nname=nyxGPT\n", encoding="utf-8")
+    # Tracing defaults to enabled (#3415); disable it so this test stays
+    # focused on the web-deps checks it's actually exercising.
+    (cfg_dir / "config.ini").write_text(
+        "[project]\nname=nyxGPT\n\n[tracing]\nenabled = false\n", encoding="utf-8"
+    )
 
     web_dir = tmp_path / "web"
     (web_dir / "node_modules").mkdir(parents=True)
@@ -4019,7 +4067,11 @@ def test_ops_doctor_logs_issues_at_warning(caplog, monkeypatch, tmp_path):
 def test_ops_doctor_logs_ok_at_info(caplog, monkeypatch, tmp_path):
     cfg_dir = tmp_path / ".nyxGPT"
     cfg_dir.mkdir(parents=True)
-    (cfg_dir / "config.ini").write_text("[project]\nname=nyxGPT\n", encoding="utf-8")
+    # Tracing defaults to enabled (#3415); disable it so this test stays
+    # focused on the doctor logging behavior it's actually exercising.
+    (cfg_dir / "config.ini").write_text(
+        "[project]\nname=nyxGPT\n\n[tracing]\nenabled = false\n", encoding="utf-8"
+    )
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)

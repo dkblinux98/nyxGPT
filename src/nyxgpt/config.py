@@ -9,6 +9,7 @@ parse errors by falling back to that default rather than raising.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from configparser import ConfigParser
@@ -19,6 +20,27 @@ DEFAULT_CONFIG_PATH = Path.home() / ".nyxGPT" / "config.ini"
 _CACHED_CFG: ConfigParser | None = None
 _CACHED_PATH: Path | None = None
 _CACHED_MTIME_NS: int | None = None
+
+_logger = logging.getLogger(__name__)
+_fallback_warned_keys: set[str] = set()
+
+
+def _log_fallback_once(key: str, message: str, *, level: int = logging.WARNING) -> None:
+    """Log that a config fallback engaged for ``key``, once per key per process.
+
+    Getters call this from their except-block instead of silently returning a
+    default, so a bad/missing value is visible in the logs rather than only
+    showing up later as unexplained default behavior.
+    """
+    if key in _fallback_warned_keys:
+        return
+    _fallback_warned_keys.add(key)
+    _logger.log(level, message)
+
+
+def reset_fallback_warnings() -> None:
+    """Clear the once-per-key fallback warning dedup set (test helper)."""
+    _fallback_warned_keys.clear()
 
 
 class ConfigValidationError(Exception):
@@ -179,8 +201,9 @@ def load_config(path: str | Path | None = None) -> ConfigParser:
 
     try:
         mtime_ns = config_path.stat().st_mtime_ns
-    except Exception:
+    except OSError as e:
         # If we can’t stat for some reason, fall back to always re-reading.
+        _logger.debug("Could not stat %s, disabling hot-reload cache: %s", config_path, e)
         mtime_ns = None
 
     if (
@@ -428,6 +451,7 @@ def get_rag_chat_top_k(cfg: ConfigParser) -> int:
     try:
         return cfg.getint("rag", "chat_top_k", fallback=3)
     except Exception:
+        _log_fallback_once("rag.chat_top_k", "Invalid rag.chat_top_k in config, using default 3")
         return 3
 
 
@@ -439,6 +463,7 @@ def get_rag_min_score(cfg: ConfigParser) -> float:
     try:
         return cfg.getfloat("rag", "min_score", fallback=0.0)
     except Exception:
+        _log_fallback_once("rag.min_score", "Invalid rag.min_score in config, using default 0.0")
         return 0.0
 
 
@@ -450,6 +475,7 @@ def get_rag_max_chunks(cfg: ConfigParser) -> int:
     try:
         return cfg.getint("rag", "max_chunks", fallback=6)
     except Exception:
+        _log_fallback_once("rag.max_chunks", "Invalid rag.max_chunks in config, using default 6")
         return 6
 
 
@@ -462,6 +488,10 @@ def get_rag_chat_context_max_chars(cfg: ConfigParser) -> int:
     try:
         return cfg.getint("rag", "chat_context_max_chars", fallback=2400)
     except Exception:
+        _log_fallback_once(
+            "rag.chat_context_max_chars",
+            "Invalid rag.chat_context_max_chars in config, using default 2400",
+        )
         return 2400
 
 
@@ -473,6 +503,7 @@ def get_rag_dedupe(cfg: ConfigParser) -> bool:
     try:
         return cfg.getboolean("rag", "dedupe", fallback=True)
     except Exception:
+        _log_fallback_once("rag.dedupe", "Invalid rag.dedupe in config, using default True")
         return True
 
 
@@ -485,6 +516,9 @@ def get_rag_include_scores(cfg: ConfigParser) -> bool:
     try:
         return cfg.getboolean("rag", "include_scores", fallback=False)
     except Exception:
+        _log_fallback_once(
+            "rag.include_scores", "Invalid rag.include_scores in config, using default False"
+        )
         return False
 
 
@@ -497,6 +531,9 @@ def get_rag_include_headers(cfg: ConfigParser) -> bool:
     try:
         return cfg.getboolean("rag", "include_headers", fallback=True)
     except Exception:
+        _log_fallback_once(
+            "rag.include_headers", "Invalid rag.include_headers in config, using default True"
+        )
         return True
 
 
@@ -515,6 +552,9 @@ def get_rag_debug_mode(cfg: ConfigParser) -> bool:
     try:
         return cfg.getboolean("rag", "debug_mode", fallback=False)
     except Exception:
+        _log_fallback_once(
+            "rag.debug_mode", "Invalid rag.debug_mode in config, using default False"
+        )
         return False
 
 
@@ -533,6 +573,10 @@ def get_rag_good_score_threshold(cfg: ConfigParser) -> float:
     try:
         return cfg.getfloat("rag", "good_score_threshold", fallback=0.7)
     except Exception:
+        _log_fallback_once(
+            "rag.good_score_threshold",
+            "Invalid rag.good_score_threshold in config, using default 0.7",
+        )
         return 0.7
 
 
@@ -552,6 +596,10 @@ def get_rag_medium_score_threshold(cfg: ConfigParser) -> float:
     try:
         return cfg.getfloat("rag", "medium_score_threshold", fallback=0.4)
     except Exception:
+        _log_fallback_once(
+            "rag.medium_score_threshold",
+            "Invalid rag.medium_score_threshold in config, using default 0.4",
+        )
         return 0.4
 
 
@@ -570,6 +618,9 @@ def get_rate_limit_enabled(cfg: ConfigParser) -> bool:
     try:
         return cfg.getboolean("rate_limit", "enabled", fallback=False)
     except Exception:
+        _log_fallback_once(
+            "rate_limit.enabled", "Invalid rate_limit.enabled in config, using default False"
+        )
         return False
 
 
@@ -591,6 +642,10 @@ def get_rate_limit_config(cfg: ConfigParser) -> dict:
             "burst_size": cfg.getint("rate_limit", "burst_size", fallback=20),
         }
     except Exception:
+        _log_fallback_once(
+            "rate_limit.config",
+            "Invalid rate_limit.requests_per_second/burst_size in config, using defaults " "10/20",
+        )
         # Return defaults if any parsing errors
         return {
             "requests_per_second": 10,
@@ -624,12 +679,20 @@ def get_context_window_size(cfg: ConfigParser, model: str | None = None) -> int:
             try:
                 return cfg.getint("context", option)
             except Exception:
-                pass
+                _log_fallback_once(
+                    f"context.{option}",
+                    f"Invalid context.{option} in config, falling back to "
+                    "context.default_window_size",
+                )
 
     # Fall back to default
     try:
         return cfg.getint("context", "default_window_size", fallback=8192)
     except Exception:
+        _log_fallback_once(
+            "context.default_window_size",
+            "Invalid context.default_window_size in config, using default 8192",
+        )
         return 8192
 
 
@@ -649,6 +712,10 @@ def get_context_warning_threshold(cfg: ConfigParser) -> float:
         # Clamp to valid range
         return max(0.0, min(1.0, threshold))
     except Exception:
+        _log_fallback_once(
+            "context.warning_threshold",
+            "Invalid context.warning_threshold in config, using default 0.8",
+        )
         return 0.8
 
 
@@ -669,6 +736,10 @@ def get_system_prompt_minimize(cfg: ConfigParser) -> bool:
     try:
         return cfg.getboolean("nyxgpt", "system_prompt_minimize", fallback=False)
     except Exception:
+        _log_fallback_once(
+            "nyxgpt.system_prompt_minimize",
+            "Invalid nyxgpt.system_prompt_minimize in config, using default False",
+        )
         return False
 
 
@@ -693,6 +764,10 @@ def get_rag_instruction_template(cfg: ConfigParser) -> str:
     try:
         return cfg.get("rag", "instruction_template", fallback=default_template)
     except Exception:
+        _log_fallback_once(
+            "rag.instruction_template",
+            "Invalid rag.instruction_template in config, using built-in default",
+        )
         return default_template
 
 
@@ -712,6 +787,9 @@ def get_rag_context_format(cfg: ConfigParser) -> str:
     try:
         return cfg.get("rag", "context_format", fallback=default_format)
     except Exception:
+        _log_fallback_once(
+            "rag.context_format", "Invalid rag.context_format in config, using built-in default"
+        )
         return default_format
 
 
@@ -800,6 +878,10 @@ def get_cassandra_pool_size(cfg: ConfigParser) -> int:
         size = cfg.getint("rag", "cassandra_pool_size", fallback=2)
         return max(1, min(16, size))
     except Exception:
+        _log_fallback_once(
+            "rag.cassandra_pool_size",
+            "Invalid rag.cassandra_pool_size in config, using default 2",
+        )
         return 2
 
 
@@ -816,6 +898,10 @@ def get_cassandra_health_check_interval(cfg: ConfigParser) -> float:
         interval = cfg.getfloat("rag", "cassandra_health_check_interval", fallback=30.0)
         return max(5.0, min(300.0, interval))
     except Exception:
+        _log_fallback_once(
+            "rag.cassandra_health_check_interval",
+            "Invalid rag.cassandra_health_check_interval in config, using default 30.0",
+        )
         return 30.0
 
 
@@ -832,6 +918,10 @@ def get_cassandra_reconnect_max_attempts(cfg: ConfigParser) -> int:
         attempts = cfg.getint("rag", "cassandra_reconnect_max_attempts", fallback=3)
         return max(1, min(10, attempts))
     except Exception:
+        _log_fallback_once(
+            "rag.cassandra_reconnect_max_attempts",
+            "Invalid rag.cassandra_reconnect_max_attempts in config, using default 3",
+        )
         return 3
 
 
@@ -852,6 +942,10 @@ def get_cassandra_batch_size(cfg: ConfigParser) -> int:
         size = cfg.getint("rag", "cassandra_batch_size", fallback=20)
         return max(1, min(100, size))
     except Exception:
+        _log_fallback_once(
+            "rag.cassandra_batch_size",
+            "Invalid rag.cassandra_batch_size in config, using default 20",
+        )
         return 20
 
 
@@ -871,6 +965,10 @@ def get_vector_similarity_function(cfg: ConfigParser) -> str:
     try:
         value = cfg.get("rag", "vector_similarity_function", fallback="cosine").strip().lower()
     except Exception:
+        _log_fallback_once(
+            "rag.vector_similarity_function",
+            "Invalid rag.vector_similarity_function in config, using default cosine",
+        )
         return "cosine"
     return value if value in ("cosine", "dot_product", "euclidean") else "cosine"
 
@@ -892,6 +990,10 @@ def get_ann_oversample_factor(cfg: ConfigParser) -> float:
         factor = cfg.getfloat("rag", "ann_oversample_factor", fallback=1.0)
         return max(1.0, min(5.0, factor))
     except Exception:
+        _log_fallback_once(
+            "rag.ann_oversample_factor",
+            "Invalid rag.ann_oversample_factor in config, using default 1.0",
+        )
         return 1.0
 
 
@@ -912,6 +1014,10 @@ def get_cassandra_batch_query_concurrency(cfg: ConfigParser) -> int:
         concurrency = cfg.getint("rag", "cassandra_batch_query_concurrency", fallback=4)
         return max(1, min(32, concurrency))
     except Exception:
+        _log_fallback_once(
+            "rag.cassandra_batch_query_concurrency",
+            "Invalid rag.cassandra_batch_query_concurrency in config, using default 4",
+        )
         return 4
 
 
@@ -985,9 +1091,12 @@ def get_batch_wait_time_ms(cfg: ConfigParser) -> int:
 def get_tracing_enabled(cfg: ConfigParser) -> bool:
     """Get whether distributed tracing is enabled.
 
-    Disabled by default. When enabled, spans are exported via OTLP to a
-    local collector (e.g. the `tracing` Compose profile's OTel collector +
-    Jaeger all-in-one) -- traces never leave the machine.
+    Enabled by default (2026-07-28 owner decision). When enabled, spans are
+    exported via OTLP to a local collector (e.g. the `tracing` Compose
+    profile's OTel collector + Jaeger all-in-one) -- traces never leave the
+    machine. Span export degrades gracefully when the collector isn't
+    reachable yet (see `tracing.init_tracing`); `nyxgpt ops doctor` is the
+    diagnostic surface for that (#3350).
 
     Args:
         cfg: ConfigParser instance
@@ -996,9 +1105,12 @@ def get_tracing_enabled(cfg: ConfigParser) -> bool:
         True if tracing is enabled, False otherwise
     """
     try:
-        return cfg.getboolean("tracing", "enabled", fallback=False)
+        return cfg.getboolean("tracing", "enabled", fallback=True)
     except Exception:
-        return False
+        _log_fallback_once(
+            "tracing.enabled", "Invalid tracing.enabled in config, using default True"
+        )
+        return True
 
 
 def get_tracing_config(cfg: ConfigParser) -> dict:
@@ -1037,6 +1149,10 @@ def get_error_tracking_enabled(cfg: ConfigParser) -> bool:
     try:
         return cfg.getboolean("error_tracking", "enabled", fallback=False)
     except Exception:
+        _log_fallback_once(
+            "error_tracking.enabled",
+            "Invalid error_tracking.enabled in config, using default False",
+        )
         return False
 
 
@@ -1083,6 +1199,9 @@ def get_monitoring_enabled(cfg: ConfigParser) -> bool:
     try:
         return cfg.getboolean("monitoring", "enabled", fallback=False)
     except Exception:
+        _log_fallback_once(
+            "monitoring.enabled", "Invalid monitoring.enabled in config, using default False"
+        )
         return False
 
 
@@ -1138,6 +1257,10 @@ def get_log_aggregation_enabled(cfg: ConfigParser) -> bool:
     try:
         return cfg.getboolean("log_aggregation", "enabled", fallback=False)
     except Exception:
+        _log_fallback_once(
+            "log_aggregation.enabled",
+            "Invalid log_aggregation.enabled in config, using default False",
+        )
         return False
 
 
@@ -1176,6 +1299,9 @@ def get_self_heal_default_enabled(cfg: ConfigParser) -> bool:
     try:
         return cfg.getboolean("self_heal", "enabled", fallback=False)
     except Exception:
+        _log_fallback_once(
+            "self_heal.enabled", "Invalid self_heal.enabled in config, using default False"
+        )
         return False
 
 
@@ -1213,6 +1339,45 @@ def get_self_heal_backoff_seconds(cfg: ConfigParser) -> float:
         return max(0.0, cfg.getfloat("self_heal", "backoff_seconds", fallback=30.0))
     except (ValueError, TypeError):
         return 30.0
+
+
+_REDACTED = "***redacted***"
+
+
+def get_effective_config_summary(cfg: ConfigParser) -> dict[str, object]:
+    """Return a flat, redacted snapshot of the settings most relevant to RCA.
+
+    Used to log what the process actually resolved each setting to at
+    startup, so an operator debugging unexpected behavior doesn't have to
+    guess whether a fallback silently engaged. Secrets (``error_tracking.dsn``,
+    ``monitoring.grafana_admin_password``) are redacted rather than omitted,
+    so their presence/absence is still visible without leaking the value.
+    """
+    error_tracking = get_error_tracking_config(cfg)
+    return {
+        "logging.level": cfg.get("logging", "level", fallback="INFO").upper(),
+        "tracing.enabled": get_tracing_enabled(cfg),
+        "tracing.otlp_endpoint": get_tracing_config(cfg)["otlp_endpoint"],
+        "error_tracking.enabled": get_error_tracking_enabled(cfg),
+        "error_tracking.dsn": _REDACTED if error_tracking["dsn"] else "",
+        "monitoring.enabled": get_monitoring_enabled(cfg),
+        "monitoring.grafana_admin_password": (
+            _REDACTED if get_monitoring_grafana_admin_password(cfg) else ""
+        ),
+        "log_aggregation.enabled": get_log_aggregation_enabled(cfg),
+        "rate_limit.enabled": get_rate_limit_enabled(cfg),
+        "rag.enabled": get_rag_enabled(cfg),
+        "batch.enabled": get_batch_enabled(cfg),
+        "self_heal.enabled": get_self_heal_default_enabled(cfg),
+    }
+
+
+def log_effective_config(cfg: ConfigParser) -> None:
+    """Log the effective (redacted) config summary once, at startup."""
+    _logger.info(
+        "Effective configuration",
+        extra={"component": "startup", "effective_config": get_effective_config_summary(cfg)},
+    )
 
 
 __all__ = [
@@ -1268,4 +1433,7 @@ __all__ = [
     "get_cassandra_batch_query_concurrency",
     "validate_config",
     "ConfigValidationError",
+    "get_effective_config_summary",
+    "log_effective_config",
+    "reset_fallback_warnings",
 ]

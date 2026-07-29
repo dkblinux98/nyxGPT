@@ -340,7 +340,12 @@ when `[logging] format = json` -- see
   (reason=..., attempt=N)`) and **outcome** (`self-heal: restart of
   <service> succeeded/failed (restart_count=N): <message>`, `INFO` on
   success, `ERROR` on failure) -- logged at `INFO`/`ERROR` since these are
-  actual actions, not routine polling.
+  actual actions, not routine polling. The outcome record carries an
+  `evidence` extra (probe type, observed state/health, container, restart
+  counters, backoff, heal-result details) so the trigger can be read from
+  the log line in Loki; the same evidence is stored on the heal event and
+  shown in the Self-Healing dashboard's "Recent heal events" list under an
+  expandable "Probe evidence" block.
 - **Backoff skip** (`self-heal: skipping restart of <service>, backoff
   active (Xs remaining)`) -- `DEBUG`, since it repeats every check while a
   component is in backoff.

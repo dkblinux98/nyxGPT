@@ -78,8 +78,24 @@ def _kubectl_missing_message(fallback: str) -> str:
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run `cmd`, capturing stdout/stderr as text without raising on non-zero exit."""
-    return subprocess.run(cmd, check=False, text=True, capture_output=True)
+    """Run `cmd`, capturing stdout/stderr as text without raising on non-zero exit.
+
+    Non-zero exits are logged with the command and a stderr tail so failed
+    kubectl/rollout invocations show up in Loki instead of only reaching the
+    caller via the returned `CompletedProcess` (#3415 gap 5).
+    """
+    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    if result.returncode != 0:
+        logger.warning(
+            "Subprocess exited non-zero",
+            extra={
+                "component": "canary",
+                "cmd": cmd,
+                "returncode": result.returncode,
+                "stderr_tail": result.stderr[-2000:] if result.stderr else "",
+            },
+        )
+    return result
 
 
 def _state_path() -> Path:
@@ -102,8 +118,13 @@ def _load_state() -> dict[str, Any]:
             data.setdefault("weight_percent", 0)
             data.setdefault("history", [])
             return data
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(
+            "Failed to load canary state from %s, using defaults: %s",
+            path,
+            e,
+            extra={"component": "canary"},
+        )
     return {"active": False, "weight_percent": 0, "history": []}
 
 

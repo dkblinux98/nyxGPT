@@ -76,6 +76,20 @@ def test_resolve_compose_file_uses_env_override(monkeypatch):
 
 
 @pytest.mark.unit
+def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit(caplog):
+    # #3415 gap 5: subprocess evidence (probe/restart failures) must reach
+    # Loki even though self_heal's `_run` never raises (always check=False).
+    with caplog.at_level("WARNING", logger="nyxgpt.self_heal"):
+        cp = self_heal._run(["python3", "-c", "import sys; sys.stderr.write('boom'); sys.exit(2)"])
+
+    assert cp.returncode == 2
+    records = [r for r in caplog.records if r.getMessage() == "Subprocess exited non-zero"]
+    assert records, "Expected _run to log the non-zero exit"
+    assert records[0].returncode == 2
+    assert "boom" in records[0].stderr_tail
+
+
+@pytest.mark.unit
 def test_resolve_compose_file_defaults_to_repo_root(monkeypatch):
     monkeypatch.delenv("NYXGPT_COMPOSE_FILE", raising=False)
     assert self_heal._resolve_compose_file() == self_heal.REPO_ROOT / "docker-compose.yml"
@@ -140,6 +154,9 @@ def test_list_component_status_parses_ps_json(monkeypatch):
         ]
     )
     monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=stdout))
+    # Isolate from the tracing-enabled-by-default desired-state check (#3415):
+    # this test is only about ps-json parsing, not observability profiles.
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
 
     statuses = self_heal.list_component_status()
 
@@ -240,6 +257,9 @@ def test_list_component_status_skips_blank_and_invalid_lines(monkeypatch):
         ]
     )
     monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=stdout))
+    # Isolate from the tracing-enabled-by-default desired-state check (#3415):
+    # this test is only about ps-json parsing, not observability profiles.
+    monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
 
     statuses = self_heal.list_component_status()
 
@@ -626,6 +646,66 @@ def test_heal_now_restarts_unhealthy_component(monkeypatch):
 
 
 @pytest.mark.unit
+def test_heal_now_records_probe_evidence_on_event(monkeypatch):
+    # #3415 gap 7: the heal event must carry the raw probe evidence that
+    # triggered it, not just a human-readable `reason` string, so an
+    # operator can read *why* from the event instead of reproducing it.
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [
+            self_heal.ComponentStatus(
+                "web", "nyxgpt-web-1", "exited", "unhealthy", False, source="compose"
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "restart_component",
+        lambda service: self_heal.HealResult(False, f"Failed to restart {service}", "exit 1"),
+    )
+
+    result = self_heal.heal_now(max_consecutive_restarts=5, backoff_seconds=30.0)
+
+    event = result["healed"][0]
+    evidence = event["evidence"]
+    assert evidence["probe_type"] == "compose"
+    assert evidence["state"] == "exited"
+    assert evidence["health"] == "unhealthy"
+    assert evidence["healthy_before"] is False
+    assert evidence["container"] == "nyxgpt-web-1"
+    assert evidence["manual"] is False
+    assert evidence["restart_count_before"] == 0
+    assert evidence["max_consecutive_restarts"] == 5
+    assert evidence["backoff_seconds"] == 30.0
+    assert evidence["heal_result_details"] == "exit 1"
+
+    events = self_heal.recent_events()
+    assert events[0]["evidence"]["probe_type"] == "compose"
+
+
+@pytest.mark.unit
+def test_heal_now_logs_evidence_extra(monkeypatch, caplog):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False)],
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "restart_component",
+        lambda service: self_heal.HealResult(True, f"Restarted {service}"),
+    )
+
+    with caplog.at_level("INFO", logger="nyxgpt.self_heal"):
+        self_heal.heal_now()
+
+    records = [r for r in caplog.records if "restart of web succeeded" in r.getMessage()]
+    assert records
+    assert records[0].evidence["state"] == "exited"
+
+
+@pytest.mark.unit
 def test_heal_now_respects_backoff(monkeypatch):
     monkeypatch.setattr(
         self_heal,
@@ -999,8 +1079,10 @@ def test_enabled_observability_profiles_maps_sections_to_compose_profiles(monkey
 
 @pytest.mark.unit
 def test_enabled_observability_profiles_all_off_by_default(monkeypatch):
+    # Tracing defaults to enabled (#3415 owner decision); every other
+    # observability profile stays opt-in.
     monkeypatch.setattr(self_heal, "load_config", lambda: ConfigParser())
-    assert self_heal._enabled_observability_profiles() == set()
+    assert self_heal._enabled_observability_profiles() == {"tracing"}
 
 
 @pytest.mark.unit
@@ -1014,13 +1096,13 @@ def test_enabled_observability_profiles_missing_config_returns_empty(monkeypatch
 
 @pytest.mark.unit
 def test_enabled_observability_profiles_log_aggregation_maps_to_logging_profile(monkeypatch):
-    monkeypatch.setattr(self_heal, "load_config", lambda: _cfg(log_aggregation=True))
+    monkeypatch.setattr(self_heal, "load_config", lambda: _cfg(log_aggregation=True, tracing=False))
     assert self_heal._enabled_observability_profiles() == {"logging"}
 
 
 @pytest.mark.unit
 def test_enabled_observability_profiles_error_tracking_maps_to_errors_profile(monkeypatch):
-    monkeypatch.setattr(self_heal, "load_config", lambda: _cfg(error_tracking=True))
+    monkeypatch.setattr(self_heal, "load_config", lambda: _cfg(error_tracking=True, tracing=False))
     assert self_heal._enabled_observability_profiles() == {"errors"}
 
 

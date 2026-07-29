@@ -20,6 +20,7 @@ from nyxgpt.logging import (
     DEFAULT_DATEFMT,
     DEFAULT_FMT,
     DEFAULT_LOGGER_NAME,
+    AccessLogNoiseFilter,
     RequestIdFilter,
     StructuredFormatter,
     configure_logging,
@@ -307,3 +308,43 @@ def test_get_logger_defaults_to_app_logger_name() -> None:
 def test_get_logger_returns_named_logger() -> None:
     logger = get_logger("nyxgpt.custom")
     assert logger.name == "nyxgpt.custom"
+
+
+def _access_record(path: str, status: int = 200) -> logging.LogRecord:
+    return logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("127.0.0.1:12345", "GET", path, "1.1", status),
+        exc_info=None,
+    )
+
+
+def test_access_log_noise_filter_drops_health_and_metrics() -> None:
+    f = AccessLogNoiseFilter()
+    assert f.filter(_access_record("/health")) is False
+    assert f.filter(_access_record("/metrics")) is False
+    assert f.filter(_access_record("/metrics?foo=bar")) is False
+
+
+def test_access_log_noise_filter_keeps_other_paths() -> None:
+    f = AccessLogNoiseFilter()
+    assert f.filter(_access_record("/api/v1/chat/stream")) is True
+    assert f.filter(_access_record("/healthcheck-typo")) is False  # prefix match, by design
+
+
+def test_access_log_noise_filter_tolerates_missing_args() -> None:
+    f = AccessLogNoiseFilter()
+    record = _record()  # generic record with no positional args tuple content
+    assert f.filter(record) is True
+
+
+def test_configure_logging_attaches_access_log_noise_filter_once(tmp_path: Path) -> None:
+    configure_logging(_make_cfg(tmp_path), logger_name="nyxgpt-test-access-filter")
+    configure_logging(_make_cfg(tmp_path), logger_name="nyxgpt-test-access-filter")
+
+    access_logger = logging.getLogger("uvicorn.access")
+    filters = [f for f in access_logger.filters if isinstance(f, AccessLogNoiseFilter)]
+    assert len(filters) == 1

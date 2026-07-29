@@ -177,18 +177,48 @@ def post_json(url: str, payload: dict[str, Any], timeout_s: float = 120.0) -> di
             method="POST",
         )
 
+        start = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=timeout_s) as resp:
                 body = resp.read().decode("utf-8")
+                logger.debug(
+                    "Ollama request completed",
+                    extra={
+                        "component": "ollama",
+                        "url": url,
+                        "status": resp.status,
+                        "duration_ms": round((time.monotonic() - start) * 1000, 1),
+                    },
+                )
                 return json.loads(body) if body else {}
         except urllib.error.HTTPError as e:
+            duration_ms = round((time.monotonic() - start) * 1000, 1)
             body = e.read().decode("utf-8", errors="replace")
+            logger.warning(
+                "Ollama request failed",
+                extra={
+                    "component": "ollama",
+                    "url": url,
+                    "status": e.code,
+                    "duration_ms": duration_ms,
+                },
+            )
             if e.code >= 500:
                 raise ModelRuntimeError(
                     _model_runtime_message_generic(f"Ollama HTTP {e.code}: {body}")
                 ) from e
             raise RuntimeError(f"Ollama HTTP {e.code}: {body}") from e
         except urllib.error.URLError as e:
+            duration_ms = round((time.monotonic() - start) * 1000, 1)
+            logger.warning(
+                "Ollama request failed",
+                extra={
+                    "component": "ollama",
+                    "url": url,
+                    "error": str(e),
+                    "duration_ms": duration_ms,
+                },
+            )
             if _is_timeout_error(e):
                 raise ModelRuntimeError(
                     _model_runtime_message(f"no response within {timeout_s:.0f}s")
@@ -277,6 +307,8 @@ def post_json_lines(
                 raise RuntimeError(f"Ollama HTTP {e.code}: {body}") from e
             # Let URLError propagate for retry logic to catch
 
+        start = time.monotonic()
+
         # Use retry logic to establish connection
         try:
             resp = _retry_with_backoff(
@@ -285,6 +317,15 @@ def post_json_lines(
                 on_retry=on_retry,
             )
         except urllib.error.URLError as e:
+            logger.warning(
+                "Ollama streaming request failed to connect",
+                extra={
+                    "component": "ollama",
+                    "url": url,
+                    "error": str(e),
+                    "duration_ms": round((time.monotonic() - start) * 1000, 1),
+                },
+            )
             # Convert to RuntimeError after all retries exhausted
             if _is_timeout_error(e):
                 raise ModelRuntimeError(
@@ -300,6 +341,15 @@ def post_json_lines(
                         continue
                     yield json.loads(line)
         except (OSError, http.client.IncompleteRead) as e:
+            logger.warning(
+                "Ollama streaming request dropped mid-stream",
+                extra={
+                    "component": "ollama",
+                    "url": url,
+                    "error": str(e),
+                    "duration_ms": round((time.monotonic() - start) * 1000, 1),
+                },
+            )
             # The model runtime accepted the connection but the process died
             # mid-generation (e.g. OOM-killed) -- the socket drops instead of
             # returning an HTTP error, so this needs its own actionable message.
@@ -378,6 +428,7 @@ def ollama_chat_stream_tokens(
     if output_format is not None:
         payload["format"] = output_format
 
+    start = time.monotonic()
     for obj in post_json_lines(
         url, payload, timeout_s=timeout_s, max_retries=max_retries, on_retry=on_retry
     ):
@@ -386,6 +437,15 @@ def ollama_chat_stream_tokens(
         if isinstance(part, str) and part:
             yield part
         if obj.get("done") is True:
+            logger.debug(
+                "Ollama streaming request completed",
+                extra={
+                    "component": "ollama",
+                    "url": url,
+                    "model": model,
+                    "duration_ms": round((time.monotonic() - start) * 1000, 1),
+                },
+            )
             break
 
 

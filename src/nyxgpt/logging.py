@@ -106,6 +106,29 @@ class RequestIdFilter(logging.Filter):
         return True
 
 
+# Paths polled by the UI/monitoring and self/liveness checks: real coverage
+# comes from the latency middleware + Prometheus, so logging every poll at
+# INFO would just fill the rotating file handler with noise (see #3415).
+_ACCESS_LOG_EXCLUDED_PATH_PREFIXES = ("/health", "/metrics")
+
+
+class AccessLogNoiseFilter(logging.Filter):
+    """Drops uvicorn access-log records for high-frequency polling endpoints.
+
+    Attached directly to the ``uvicorn.access`` logger (not a handler), so it
+    only ever inspects that logger's own records -- access log records carry
+    ``(client_addr, method, path, http_version, status_code)`` as ``args``.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Return False (drop the record) for excluded-path polling requests."""
+        args = record.args
+        if not isinstance(args, tuple) or len(args) < 3:
+            return True
+        path = str(args[2]).split("?", 1)[0]
+        return not path.startswith(_ACCESS_LOG_EXCLUDED_PATH_PREFIXES)
+
+
 def _coerce_cfg(cfg: ConfigParser | None) -> ConfigParser:
     """Return a ConfigParser.
 
@@ -328,6 +351,10 @@ def configure_logging(
         subsystem_logger = logging.getLogger(name)
         subsystem_logger.setLevel(level)
         subsystem_logger.propagate = True
+
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, AccessLogNoiseFilter) for f in access_logger.filters):
+        access_logger.addFilter(AccessLogNoiseFilter())
 
     return logger
 

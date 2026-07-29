@@ -234,7 +234,7 @@ def test_read_sections_returns_effective_default_when_section_absent():
     sections = config_wizard.read_sections(cfg)
     assert sections["tracing"]["service_name"] == "nyxgpt-api"
     assert sections["tracing"]["otlp_endpoint"] == "http://localhost:4318/v1/traces"
-    assert sections["tracing"]["enabled"] == "false"
+    assert sections["tracing"]["enabled"] == "true"
 
 
 def test_read_sections_returns_effective_default_for_error_tracking():
