@@ -21,9 +21,13 @@ class NyxgptWeb < Formula
   def install
     system "npm", "ci"
     system "npm", "run", "build"
-    # Drop devDependencies now that the production build exists -- `next
-    # start` only needs the "dependencies" in package.json at runtime.
+    # Drop devDependencies now that the production build exists to slim the
+    # keg. But `next start` re-reads next.config.ts at boot and needs
+    # TypeScript to transpile it, so restore just that one devDep afterward --
+    # pruning it caused "Cannot find module 'typescript'" and a crash loop at
+    # runtime (#3406).
     system "npm", "prune", "--omit=dev"
+    system "npm", "install", "--no-save", "typescript"
     # `Dir["*"]` skips dotfiles/dotdirs -- the `.next` production build
     # output needs its own explicit copy, or `npm run start` below would
     # have nothing to serve.
@@ -84,14 +88,16 @@ PY
       cd "#{libexec}"
       exec npm run start
     SH
-    # Use the shell `chmod` (as nyxgpt-api.rb does) rather than Ruby's
-    # `chmod 0755, ...`, which left the wrapper non-executable (0444) -- an
-    # unrunnable launcher makes the launchd service fail to exec (error 78).
+    # Best-effort exec bit for anyone invoking the wrapper directly. Homebrew's
+    # post-install Cleaner resets keg scripts to 0444 regardless, so this does
+    # not survive -- which is why the service below launches the wrapper via
+    # `/bin/bash` (like nyxgpt-api.rb): bash reads the script without needing an
+    # exec bit, avoiding the launchd exec failure (error 78) (#3406).
     system "chmod", "0755", bin/"nyxgpt-web"
   end
 
   service do
-    run [opt_bin/"nyxgpt-web"]
+    run ["/bin/bash", opt_bin/"nyxgpt-web"]
     keep_alive true
 
     # Homebrew's conventional log locations (arm64):

@@ -2834,6 +2834,30 @@ def test_install_homebrew_web_success(monkeypatch, tmp_path):
     assert any(cmd[:3] == ["brew", "services", "start"] for cmd in run_calls)
 
 
+# --- real formula invariants (regression guards for launchd error 78, #3406) ---
+
+
+@pytest.mark.unit
+def test_web_formula_launches_via_bash_and_restores_typescript():
+    """Homebrew's post-install Cleaner strips the wrapper's exec bit to 0444, so
+    the service must invoke it via /bin/bash (a direct exec fails with launchd
+    error 78). And `npm prune --omit=dev` removes TypeScript, which `next start`
+    needs to load next.config.ts, so the formula must restore it (#3406)."""
+    formula = Path(__file__).resolve().parents[2] / "homebrew" / "nyxgpt-web.rb"
+    text = formula.read_text(encoding="utf-8")
+    assert 'run ["/bin/bash", opt_bin/"nyxgpt-web"]' in text
+    assert '"npm", "install", "--no-save", "typescript"' in text
+
+
+@pytest.mark.unit
+def test_api_formula_launches_via_bash():
+    """The api service also invokes its wrapper via /bin/bash, so Cleaner
+    stripping the exec bit can't cause launchd error 78 (#3406)."""
+    formula = Path(__file__).resolve().parents[2] / "homebrew" / "nyxgpt-api.rb"
+    text = formula.read_text(encoding="utf-8")
+    assert 'run ["/bin/bash", opt_bin/"nyxgpt-api"]' in text
+
+
 # --- _brew_install_or_reinstall ---
 
 
