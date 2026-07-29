@@ -2,36 +2,27 @@ name: Terraform Local Smoke
 
 # The full-stack `--local` deploy is `nyxgpt ops install --terraform --local`
 # (there is no raw `docker compose up` full-stack path). This gate exercises
-# that command end-to-end so the defects that broke it but passed unit-test /
-# type-check CI are caught: the web page-type build errors, the api's missing
+# that command end-to-end -- a real deploy of the Terraform stack + Docker
+# images + observability -- to catch the class of integration defects that
+# unit-test / type-check CI can't see: web build errors, the api's missing
 # example.config.ini / httpx, the terraform network aliases + cassandra
-# cluster name, the derived-config transforms, and the observability stack
-# working on the terraform network (Prometheus scraping the api).
+# cluster name, the derived-config transforms, and observability on the
+# terraform network (Prometheus scraping the api). See the trigger scope below.
 
+# Scoped to Terraform changes only. Standing up the full `--terraform --local`
+# stack is expensive, so this must not gate every code review -- it runs only
+# when the Terraform config (or this workflow) changes. Trade-off: it will NOT
+# catch app-code (src/**, web/**), Dockerfile/Compose, or ops.py deploy-logic
+# changes that could break the deploy. Add those globs back here if that
+# broader coverage is wanted.
 on:
   pull_request:
     paths:
-      - 'Dockerfile'
-      - 'web/Dockerfile'
-      - 'docker-compose.yml'
-      - 'docker/**'
       - 'terraform/**'
-      - 'src/**'
-      - 'web/**'
-      - 'pyproject.toml'
-      - 'example.config.ini'
       - '.github/workflows/terraform-local-smoke.yml'
   push:
     paths:
-      - 'Dockerfile'
-      - 'web/Dockerfile'
-      - 'docker-compose.yml'
-      - 'docker/**'
       - 'terraform/**'
-      - 'src/**'
-      - 'web/**'
-      - 'pyproject.toml'
-      - 'example.config.ini'
       - '.github/workflows/terraform-local-smoke.yml'
 
 jobs:

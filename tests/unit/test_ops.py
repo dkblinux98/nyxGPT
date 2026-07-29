@@ -6626,6 +6626,44 @@ def test_down_terraform_destroy_failure(monkeypatch):
     assert rc == 2
 
 
+@pytest.mark.unit
+def test_down_terraform_prunes_docker_build_cache(monkeypatch):
+    """`down --terraform` reclaims the BuildKit cache the deploy's image builds
+    accumulate (17GB+ across repeated local deploys), AFTER terraform destroy."""
+    calls = []
+
+    def fake_run(cmd, check=True):
+        calls.append(cmd)
+        if cmd[:3] == ["docker", "builder", "prune"]:
+            return CP(returncode=0, stdout="Total reclaimed space: 12.3GB")
+        return CP(returncode=0, stdout="ok")
+
+    monkeypatch.setattr(ops, "_which", lambda prog: f"/usr/bin/{prog}")
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._down_terraform_steps()
+
+    assert ["docker", "builder", "prune", "-f"] in calls
+    assert any("build cache pruned" in r.message and "12.3GB" in r.message for r in results)
+    destroy_i = next(i for i, c in enumerate(calls) if "destroy" in c)
+    prune_i = next(i for i, c in enumerate(calls) if c[:3] == ["docker", "builder", "prune"])
+    assert destroy_i < prune_i
+
+
+@pytest.mark.unit
+def test_down_terraform_cache_prune_failure_is_non_fatal(monkeypatch):
+    """A build-cache prune failure is best-effort and never fails the teardown."""
+
+    def fake_run(cmd, check=True):
+        if cmd[:3] == ["docker", "builder", "prune"]:
+            return CP(returncode=1, stderr="prune boom")
+        return CP(returncode=0, stdout="ok")
+
+    monkeypatch.setattr(ops, "_which", lambda prog: f"/usr/bin/{prog}")
+    monkeypatch.setattr(ops, "_run", fake_run)
+    rc = ops._down_terraform(SimpleNamespace())
+    assert rc == 0
+
+
 # --- Kubernetes: _ensure_kubectl_and_cluster ---
 
 

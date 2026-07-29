@@ -2185,6 +2185,29 @@ def _down_terraform_steps() -> list[OpsResult]:
         else:
             results.append(OpsResult(False, "terraform destroy failed", _cp_details(cp)))
 
+    # The `--terraform --local` deploy builds the nyxgpt-api/web images via
+    # `docker build`, whose BuildKit layer cache balloons across repeated
+    # deploys (17GB+ observed). Reclaim it on teardown -- "down" means we're
+    # done, so the cache has served its purpose and the next deploy rebuilds it
+    # as needed. NOTE: Docker's build cache is host-global, not per-project, so
+    # this also clears cache for any other local Docker builds; that's an
+    # acceptable trade on a dev/ops box and is what keeps disk from creeping up.
+    # Best-effort: a prune failure never fails the teardown.
+    if _which("docker") is not None:
+        cp = _run(["docker", "builder", "prune", "-f"], check=False)
+        reclaimed = next(
+            (ln.strip() for ln in (cp.stdout or "").splitlines() if "reclaimed" in ln.lower()),
+            "",
+        )
+        if cp.returncode == 0:
+            results.append(
+                OpsResult(
+                    True, "docker build cache pruned" + (f" -- {reclaimed}" if reclaimed else "")
+                )
+            )
+        else:
+            results.append(OpsResult(True, f"docker build cache prune skipped ({_cp_details(cp)})"))
+
     result, message = _ops_action_outcome(results)
     _record_ops_action("down", "terraform", result, message)
     return results
