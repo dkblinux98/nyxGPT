@@ -15,10 +15,21 @@ from fastapi.testclient import TestClient
 
 import nyxgpt.app as app_module
 import nyxgpt.config as config_module
+import nyxgpt.restart_state as restart_state_module
 from nyxgpt.app import app
 from nyxgpt.ops import OpsResult
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _reset_restart_state():
+    """`restart_state` is process-global, in-memory state (#3407) -- reset it
+    around every test so one test's pending-restart flag can't leak into the
+    next."""
+    restart_state_module.reset()
+    yield
+    restart_state_module.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -180,6 +191,95 @@ def test_restart_endpoint_defaults_to_all(_isolated_config):
         resp = client.post("/api/v1/config/restart", json={})
     assert resp.status_code == 200
     assert resp.json()["target"] == "all"
+
+
+# --- Restart-pending tracking + mode-aware restart-required (#3407) ---
+
+
+def test_post_sections_marks_restart_pending(_isolated_config):
+    client = TestClient(app)
+    resp = client.post("/api/v1/config/sections", json={"api": {"port": 9500}})
+    assert resp.status_code == 200
+
+    status = client.get("/api/v1/infra/restart-status")
+    assert status.status_code == 200
+    pending = status.json()["pending"]
+    assert "api" in pending
+    assert pending["api"]["keys"] == ["api.port"]
+    assert isinstance(pending["api"]["since"], float)
+
+
+def test_post_sections_accumulates_restart_pending_keys_across_saves(_isolated_config):
+    client = TestClient(app)
+    client.post("/api/v1/config/sections", json={"api": {"port": 9500}})
+    client.post("/api/v1/config/sections", json={"api": {"host": "0.0.0.0"}})
+
+    pending = client.get("/api/v1/infra/restart-status").json()["pending"]
+    assert pending["api"]["keys"] == ["api.host", "api.port"]
+
+
+def test_restart_status_empty_with_no_pending_restart(_isolated_config):
+    client = TestClient(app)
+    resp = client.get("/api/v1/infra/restart-status")
+    assert resp.status_code == 200
+    assert resp.json() == {"pending": {}}
+
+
+def test_restart_required_endpoint_rejects_when_nothing_pending(_isolated_config):
+    client = TestClient(app)
+    resp = client.post("/api/v1/infra/restart-required", json={})
+    assert resp.status_code == 400
+
+
+def test_restart_required_endpoint_rejects_unknown_target(_isolated_config):
+    client = TestClient(app)
+    client.post("/api/v1/config/sections", json={"api": {"port": 9500}})
+    resp = client.post("/api/v1/infra/restart-required", json={"target": "web"})
+    assert resp.status_code == 400
+
+
+def test_restart_required_endpoint_schedules_and_returns_immediately(_isolated_config):
+    client = TestClient(app)
+    client.post("/api/v1/config/sections", json={"api": {"port": 9500}})
+
+    with patch("nyxgpt.app.self_heal_module.heal_now") as mock_heal_now:
+        resp = client.post("/api/v1/infra/restart-required", json={})
+        assert resp.status_code == 200
+        assert resp.json() == {"targets": ["api"], "status": "running"}
+        # Deferred via threading.Timer, not called inline.
+        mock_heal_now.assert_not_called()
+
+
+def test_do_restart_required_clears_pending_on_success(_isolated_config):
+    restart_state_module.mark_pending("api", ["api.port"])
+    with (
+        patch(
+            "nyxgpt.app.self_heal_module.heal_now",
+            return_value={
+                "checked": [],
+                "healed": [{"service": "api", "ok": True, "message": "Restarted nyxgpt-api"}],
+            },
+        ),
+        patch("nyxgpt.app.ops_module.record_manual_restart") as mock_record,
+    ):
+        app_module._do_restart_required(["api"])
+
+    assert restart_state_module.snapshot() == {}
+    mock_record.assert_called_once_with("api", True, "Restarted nyxgpt-api")
+
+
+def test_do_restart_required_keeps_pending_on_failure(_isolated_config):
+    restart_state_module.mark_pending("api", ["api.port"])
+    with patch(
+        "nyxgpt.app.self_heal_module.heal_now",
+        return_value={
+            "checked": [],
+            "healed": [{"service": "api", "ok": False, "message": "brew not found"}],
+        },
+    ):
+        app_module._do_restart_required(["api"])
+
+    assert "api" in restart_state_module.snapshot()
 
 
 # --- Drift reconciliation: stale_keys + POST /config/sections/stale-keys/remove (#3388) ---

@@ -2,6 +2,102 @@ import { http, HttpResponse } from 'msw';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://127.0.0.1:8000';
 
+/**
+ * Mirrors `config_wizard.schema_summary()`'s derived schema (#3388) for the
+ * 11 sections the wizard hand-builds fields for (#3354) -- section labels
+ * match `config_wizard._SECTION_LABELS`, and secret/restart_component/
+ * observability flags match `config_wizard._FIELD_OVERRIDES`, so tests that
+ * rely on the default `GET /api/v1/config/sections` mock exercise the same
+ * schema-driven Summary step (#3407) real traffic would.
+ */
+export const FULL_WIZARD_SCHEMA = [
+  {
+    section: 'nyxgpt',
+    label: 'Core & model',
+    fields: [
+      { key: 'default_model', secret: false, restart_component: null, observability: false },
+      { key: 'chat_timeout_seconds', secret: false, restart_component: null, observability: false },
+      { key: 'sessions_dir', secret: false, restart_component: null, observability: false },
+      { key: 'vectorstore_dir', secret: false, restart_component: null, observability: false },
+    ],
+  },
+  {
+    section: 'logging',
+    label: 'Logging',
+    fields: [
+      { key: 'level', secret: false, restart_component: null, observability: false },
+      { key: 'dir', secret: false, restart_component: null, observability: false },
+    ],
+  },
+  {
+    section: 'ollama',
+    label: 'Model backend',
+    fields: [{ key: 'base_url', secret: false, restart_component: null, observability: false }],
+  },
+  {
+    section: 'api',
+    label: 'API server',
+    fields: [
+      { key: 'host', secret: false, restart_component: 'api', observability: false },
+      { key: 'port', secret: false, restart_component: 'api', observability: false },
+    ],
+  },
+  {
+    section: 'auth',
+    label: 'Authentication',
+    fields: [
+      { key: 'enabled', secret: false, restart_component: 'api', observability: false },
+      { key: 'header', secret: false, restart_component: 'api', observability: false },
+      { key: 'api_key', secret: true, restart_component: 'api', observability: false },
+    ],
+  },
+  {
+    section: 'rate_limit',
+    label: 'Rate limiting',
+    fields: [{ key: 'enabled', secret: false, restart_component: 'api', observability: false }],
+  },
+  {
+    section: 'rag',
+    label: 'RAG / retrieval',
+    fields: [
+      { key: 'enable_chat_context', secret: false, restart_component: null, observability: false },
+      { key: 'cassandra_hosts', secret: false, restart_component: 'api', observability: false },
+      { key: 'cassandra_port', secret: false, restart_component: 'api', observability: false },
+      { key: 'cassandra_keyspace', secret: false, restart_component: 'api', observability: false },
+      { key: 'cassandra_table', secret: false, restart_component: 'api', observability: false },
+      { key: 'embedding_model', secret: false, restart_component: 'api', observability: false },
+    ],
+  },
+  {
+    section: 'tracing',
+    label: 'Tracing',
+    fields: [
+      { key: 'enabled', secret: false, restart_component: 'api', observability: true },
+      { key: 'service_name', secret: false, restart_component: null, observability: false },
+      { key: 'otlp_endpoint', secret: false, restart_component: null, observability: false },
+    ],
+  },
+  {
+    section: 'error_tracking',
+    label: 'Error tracking',
+    fields: [
+      { key: 'enabled', secret: false, restart_component: 'api', observability: true },
+      { key: 'dsn', secret: true, restart_component: null, observability: false },
+      { key: 'environment', secret: false, restart_component: null, observability: false },
+    ],
+  },
+  {
+    section: 'monitoring',
+    label: 'Monitoring',
+    fields: [{ key: 'enabled', secret: false, restart_component: null, observability: true }],
+  },
+  {
+    section: 'log_aggregation',
+    label: 'Log aggregation',
+    fields: [{ key: 'enabled', secret: false, restart_component: null, observability: true }],
+  },
+];
+
 export const handlers = [
   // GET /api/models
   http.get(`${API_BASE_URL}/api/v1/models`, () => {
@@ -139,7 +235,7 @@ export const handlers = [
         monitoring: { enabled: 'false' },
         log_aggregation: { enabled: 'false' },
       },
-      schema: [],
+      schema: FULL_WIZARD_SCHEMA,
     });
   }),
 
@@ -252,6 +348,17 @@ export const handlers = [
       },
       auth_enabled: false,
     });
+  }),
+
+  // GET /api/v1/infra/restart-status
+  http.get('/api/v1/infra/restart-status', () => {
+    return HttpResponse.json({ pending: {} });
+  }),
+
+  // POST /api/v1/infra/restart-required
+  http.post('/api/v1/infra/restart-required', async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as { target?: string };
+    return HttpResponse.json({ targets: body.target ? [body.target] : ['api'], status: 'running' });
   }),
 
   // GET /api/v1/admin/health

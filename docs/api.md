@@ -671,9 +671,10 @@ the save merge -- everything else in the file is untouched.
 
 ### `POST /api/v1/config/restart`
 
-Offers the wizard's "Restart" button a way to apply changes that
-`config/sections` reported in `restart_required`, without the user ever
-running a raw restart command. Wraps `nyxgpt ops restart`.
+Wraps `nyxgpt ops restart` in native mode. Superseded for the wizard/Admin
+Dashboard flow by `POST /api/v1/infra/restart-required` below (#3407), which
+is mode-aware; this endpoint remains for any caller that wants a specific
+native-mode target directly.
 
 **Request:**
 
@@ -689,6 +690,55 @@ is sent, since the target may be this very API process.
 
 ```json
 { "target": "api", "status": "scheduled" }
+```
+
+### `GET /api/v1/infra/restart-status`
+
+Backs the Admin Dashboard's restart-required banner (#3407). Every field a
+`POST /config/sections` save reports in `restart_required` is recorded here
+(process-local, in-memory) along with the `section.key` fields that
+triggered it, until it's actually restarted via `restart-required` below.
+
+**Response:**
+
+```json
+{
+  "pending": {
+    "api": { "keys": ["api.port", "rag.cassandra_hosts"], "since": 1743000000.123 }
+  }
+}
+```
+
+An empty `pending` object means nothing is currently waiting on a restart.
+
+### `POST /api/v1/infra/restart-required`
+
+Restarts whichever component(s) `restart-status` reports as pending, or a
+specific one via `target`. Mode-aware: detects whether each component is
+running native, Docker Compose, Terraform-, or Kubernetes-managed (reusing
+`self_heal.list_component_status()`'s detection, #3193/#3344) and restarts
+it the matching way -- the same dispatcher backing self-heal's manual "Heal
+Now" button -- so the caller never needs to know or send a raw command.
+Runs off-thread (restarting `api` kills the process handling the request
+once the underlying command lands), so the response reports `"running"`;
+poll `restart-status` to learn when the pending flag clears. Each restart is
+recorded as an ops lifecycle action (`nyxgpt_ops_actions_total`, #3390),
+same as any other operator-initiated restart.
+
+**Request:**
+
+```json
+{ "target": "api" }
+```
+
+`target` is optional; omitted, every currently pending component is
+restarted. Returns `400` if `target` isn't currently pending, or if nothing
+is pending at all with no `target` given.
+
+**Response:**
+
+```json
+{ "targets": ["api"], "status": "running" }
 ```
 
 ---
