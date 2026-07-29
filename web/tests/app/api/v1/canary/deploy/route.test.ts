@@ -51,6 +51,8 @@ describe('/api/v1/canary/deploy proxy route', () => {
     const response = (await POST()) as Response;
 
     expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body).toEqual({ error: 'rollout did not become healthy' });
   });
 
   it('returns 502 with structured error when backend is unreachable', async () => {

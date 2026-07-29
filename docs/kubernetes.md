@@ -332,9 +332,12 @@ profiles are active).
 Neither the stable nor canary Deployment has an HPA attached -- autoscaling
 would fight canary's replica-count-based traffic split (see [Canary
 Deployment](#canary-deployment)). `nyxgpt-api-stable` runs a fixed
-`total_replicas` (4 by default, `[canary] total_replicas`); scale it
-manually (`kubectl -n nyxgpt scale deployment/nyxgpt-api-stable
---replicas=N`) if you need more capacity. Because sessions and the vector
+`total_replicas` (4 by default, `[canary] total_replicas`); there is no
+`nyxgpt`-wrapped command for changing steady-state replica count yet, so if
+you need more capacity today, raising it is a manual `kubectl` escape hatch
+pending a wrapper (tracked as follow-up work), not a first-class operation --
+prefer adjusting `[canary] total_replicas` and letting the next rollout apply
+it where that's sufficient. Because sessions and the vector
 store default to in-container paths (`/root/.nyxGPT/...`), state is **not**
 shared across replicas or persisted across restarts. If you need either, add
 a `PersistentVolumeClaim`, mount it at `/root/.nyxGPT`, and switch the
