@@ -105,17 +105,29 @@ jobs:
           set_project_field_value "$ITEM_ID" "Effort" "XS"
           echo "✓ Effort: XS"
 
-          # Set Label (Feature by default, unless already has Acceptance Failure)
-          if ! echo "$LABELS" | grep -q "Acceptance Failure"; then
+          # Set Label (Feature by default) -- but only when the issue carries
+          # no recognized label yet. The single-label rule
+          # (developer_submit_for_review.sh requires exactly one) means adding
+          # Feature on top of an existing Improvement/Release Management label
+          # created a two-label deadlock that had to be trimmed by hand every
+          # time (#3390, #3413, #3415).
+          if echo "$LABELS" | grep -qE "Acceptance Failure|Improvement|Release Management|Feature"; then
+            echo "✓ Label: already labeled ($LABELS), leaving as-is"
+          else
             gh issue edit "$ISSUE" --add-label "Feature"
             echo "✓ Label: Feature"
-          else
-            echo "✓ Label: Acceptance Failure (already set)"
           fi
 
-          # Determine Module based on title/body keywords
+          # Determine Module based on title/body keywords.
+          # The sre branch runs FIRST: observability/SRE issues routinely
+          # mention "web"/"api"/"log" in passing, and the old greedy
+          # web|ui first-match mis-stamped them (e.g. #3415 stamped web-ui
+          # because its body said "Web tier"). The project's Module option
+          # was renamed observability -> sre (owner, 2026-07-29).
           MODULE=""
-          if echo "$TITLE $BODY" | grep -qiE "web|ui|frontend|react|vue"; then
+          if echo "$TITLE $BODY" | grep -qiE "\bsre\b|observab|monitor|metric|grafana|prometheus|loki|jaeger|glitchtip|self.heal|tracing|instrumentation"; then
+            MODULE="sre"
+          elif echo "$TITLE $BODY" | grep -qiE "web|ui|frontend|react|vue"; then
             MODULE="web-ui"
           elif echo "$TITLE $BODY" | grep -qiE "api|endpoint|rest|graphql"; then
             MODULE="api"
@@ -131,8 +143,10 @@ jobs:
             MODULE="documentation"
           elif echo "$TITLE $BODY" | grep -qiE "security|auth|permission"; then
             MODULE="security"
-          elif echo "$TITLE $BODY" | grep -qiE "observ|monitor|metric|log"; then
-            MODULE="observability"
+          elif echo "$TITLE $BODY" | grep -qiE "logging|\blogs?\b"; then
+            # Logging/observability catch-all that didn't match the sre
+            # branch above (option renamed observability -> sre).
+            MODULE="sre"
           else
             MODULE="api"  # Default fallback
           fi
