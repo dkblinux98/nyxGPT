@@ -3,7 +3,7 @@ import { act, render, screen, within, fireEvent, waitFor } from '@testing-librar
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
 import AdminDashboardPage from '../../../src/app/admin/dashboard/page';
-import { ADMIN_NAV } from '../../../src/app/admin/dashboard/nav';
+import { ADMIN_NAV, grafanaSreHomeUrl } from '../../../src/app/admin/dashboard/nav';
 
 describe('AdminDashboardPage', () => {
   beforeEach(() => {
@@ -68,7 +68,11 @@ describe('AdminDashboardPage', () => {
       expect(screen.getByText(/Canary: idle/)).toBeInTheDocument();
     });
 
-    for (const dest of ADMIN_NAV) {
+    // The SRE Overview tile is the sanctioned exception (#3411): it launches
+    // the Grafana single pane of glass in a new tab instead of an in-app
+    // page, so it's excluded from the same-tab assertions below and covered
+    // by its own tests instead.
+    for (const dest of ADMIN_NAV.filter((d) => !d.external)) {
       const tile = screen.getByRole('link', { name: new RegExp(dest.label) });
       expect(tile).toHaveAttribute('href', dest.href);
       // Hover tooltip explains what the screen is for; the same text is
@@ -79,6 +83,31 @@ describe('AdminDashboardPage', () => {
       expect(tile).not.toHaveAttribute('target');
       expect(tile.textContent).not.toContain('→');
     }
+  });
+
+  it('launches the Grafana SRE Overview single pane of glass in a new tab', async () => {
+    render(<AdminDashboardPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Canary: idle/)).toBeInTheDocument();
+    });
+
+    const tile = await screen.findByRole('link', { name: /SRE Overview/ });
+    await waitFor(() => {
+      expect(tile).toHaveAttribute('href', grafanaSreHomeUrl('http://localhost:3001'));
+    });
+    expect(tile).toHaveAttribute('target', '_blank');
+    expect(tile).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('falls back to the default Grafana URL for the SRE Overview tile if /api/v1/monitoring fails', async () => {
+    server.use(http.get('/api/v1/monitoring', () => new HttpResponse(null, { status: 500 })));
+    render(<AdminDashboardPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Canary: idle/)).toBeInTheDocument();
+    });
+
+    const tile = screen.getByRole('link', { name: /SRE Overview/ });
+    expect(tile).toHaveAttribute('href', grafanaSreHomeUrl('http://localhost:3001'));
   });
 
   it('groups observation tiles under System Status and operation tiles under Configuration', async () => {
