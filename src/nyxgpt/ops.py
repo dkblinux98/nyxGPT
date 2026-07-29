@@ -2313,8 +2313,15 @@ def _kubectl_context() -> str:
     return (cp.stdout or "").strip()
 
 
-def _build_and_load_k8s_image(image: str = K8S_IMAGE) -> list[OpsResult]:
-    """Build `image` from the current checkout and load it into the current cluster's image cache.
+def _build_and_load_k8s_image(
+    image: str = K8S_IMAGE,
+    *,
+    context: Path = REPO_ROOT,
+    fingerprint_paths: list[Path] | None = None,
+    excludes: frozenset[str] = frozenset(),
+    build_args: dict[str, str] | None = None,
+) -> list[OpsResult]:
+    """Build `image` from `context` and load it into the current cluster's image cache.
 
     Docker Desktop's built-in cluster shares the host's image cache, so a
     build alone is enough there. kind/minikube each need an explicit
@@ -2323,35 +2330,43 @@ def _build_and_load_k8s_image(image: str = K8S_IMAGE) -> list[OpsResult]:
     to do it themselves if their cluster doesn't share the host cache.
 
     `image` defaults to the mutable `nyxgpt-api:local` tag `nyxgpt ops
-    install --kubernetes` uses; `nyxgpt ops deploy --kubernetes` passes a
-    versioned tag instead (see `build_and_load_k8s_image` / #3409). Either
-    way the build itself is gated by `_docker_build_if_needed` (#3414): a
-    versioned tag is always missing locally the first time (so it always
-    builds), while the repeated `:local` tag skips the rebuild once the
-    source stops changing between installs, mirroring the Homebrew
-    reinstall-if-needed behavior from #3406.
+    install --kubernetes` uses; `nyxgpt ops deploy --kubernetes` (via
+    `canary.deploy`) passes a versioned tag instead (see
+    `build_and_load_k8s_image` / #3409). `context`/`fingerprint_paths`/
+    `excludes`/`build_args` default to the `nyxgpt-api` image's build (repo
+    root, `_API_IMAGE_FINGERPRINT_PATHS`); `canary.deploy` overrides them for
+    the `web` component to build `web/` with `_WEB_VENDOR_EXCLUDES` and the
+    `NEXT_PUBLIC_API_BASE_URL` build arg (#3419), mirroring
+    `_build_terraform_docker_images`'s web build. Either way the build
+    itself is gated by `_docker_build_if_needed` (#3414): a versioned tag is
+    always missing locally the first time (so it always builds), while the
+    repeated `:local` tag skips the rebuild once the source stops changing
+    between installs, mirroring the Homebrew reinstall-if-needed behavior
+    from #3406.
     """
     if _which("docker") is None:
-        return [OpsResult(False, "docker not found on PATH -- cannot build the nyxgpt-api image")]
+        return [OpsResult(False, f"docker not found on PATH -- cannot build the {image} image")]
     try:
         decision = _docker_build_if_needed(
             image,
-            REPO_ROOT,
-            fingerprint_paths=_API_IMAGE_FINGERPRINT_PATHS,
+            context,
+            fingerprint_paths=fingerprint_paths or _API_IMAGE_FINGERPRINT_PATHS,
+            excludes=excludes,
+            build_args=build_args,
             marker_dir=DOCKER_IMAGE_MARKER_DIR,
         )
     except RuntimeError as e:
         return [OpsResult(False, "docker build failed", str(e))]
     results = [OpsResult(True, f"{image}: {decision}")]
 
-    context = _kubectl_context()
-    if "docker-desktop" in context:
+    cluster_context = _kubectl_context()
+    if "docker-desktop" in cluster_context:
         results.append(
             OpsResult(True, "Docker Desktop cluster shares the host image cache -- skipped load")
         )
         return results
-    if context.startswith("kind-") and _which("kind") is not None:
-        cluster_name = context.removeprefix("kind-")
+    if cluster_context.startswith("kind-") and _which("kind") is not None:
+        cluster_name = cluster_context.removeprefix("kind-")
         cp = _run(["kind", "load", "docker-image", image, "--name", cluster_name], check=False)
         if cp.returncode != 0:
             results.append(OpsResult(False, "kind load docker-image failed", _cp_details(cp)))
@@ -2368,7 +2383,7 @@ def _build_and_load_k8s_image(image: str = K8S_IMAGE) -> list[OpsResult]:
     results.append(
         OpsResult(
             True,
-            f"Unrecognized cluster context {context!r} -- skipped image load",
+            f"Unrecognized cluster context {cluster_context!r} -- skipped image load",
             "If this cluster doesn't share the host's image cache, load "
             f"{image} into it manually before the Pods can start.",
         )
@@ -2376,14 +2391,35 @@ def _build_and_load_k8s_image(image: str = K8S_IMAGE) -> list[OpsResult]:
     return results
 
 
-def build_and_load_k8s_image(image: str) -> list[OpsResult]:
+def build_and_load_k8s_image(
+    image: str,
+    *,
+    context: Path | None = None,
+    fingerprint_paths: list[Path] | None = None,
+    excludes: frozenset[str] = frozenset(),
+    build_args: dict[str, str] | None = None,
+) -> list[OpsResult]:
     """Build and load a specific, caller-chosen image tag (used by `nyxgpt ops deploy --kubernetes`).
 
     Public wrapper around `_build_and_load_k8s_image` for cross-module use
     (`canary.deploy`) -- the mutable-`:local`-tag install flow keeps calling
-    the private function directly with its default.
+    the private function directly with its default. `canary.deploy` calls
+    this with no extra kwargs for the `api` component (forwarding only
+    `image`, identical to the original single-argument call) and with
+    `web/`'s context/fingerprint/build-args for the `web` component (#3419)
+    -- only kwargs the caller actually supplied are forwarded, so the `api`
+    call path is unchanged.
     """
-    return _build_and_load_k8s_image(image)
+    kwargs: dict[str, Any] = {}
+    if context is not None:
+        kwargs["context"] = context
+    if fingerprint_paths is not None:
+        kwargs["fingerprint_paths"] = fingerprint_paths
+    if excludes:
+        kwargs["excludes"] = excludes
+    if build_args is not None:
+        kwargs["build_args"] = build_args
+    return _build_and_load_k8s_image(image, **kwargs)
 
 
 def _ensure_k8s_secret(api_key: str | None) -> list[OpsResult]:
@@ -2442,32 +2478,53 @@ def _k8s_stack_health() -> list[OpsResult]:
             name, _, phase = entry.partition("=")
             results.append(OpsResult(phase == "Running", f"pod {name}: {phase}"))
 
-    cp = _run(
-        ["kubectl", "-n", K8S_NAMESPACE, "get", "svc", "nyxgpt-api", "--no-headers"], check=False
-    )
-    results.append(
-        OpsResult(
-            cp.returncode == 0,
-            "Service nyxgpt-api" + (" found" if cp.returncode == 0 else " not found"),
+    for svc in ("nyxgpt-api", "nyxgpt-web"):
+        cp = _run(["kubectl", "-n", K8S_NAMESPACE, "get", "svc", svc, "--no-headers"], check=False)
+        results.append(
+            OpsResult(
+                cp.returncode == 0,
+                f"Service {svc}" + (" found" if cp.returncode == 0 else " not found"),
+            )
         )
-    )
     return results
+
+
+def _build_and_load_k8s_web_image() -> list[OpsResult]:
+    """Build/load `nyxgpt-web:local`, the web canary pair's image (#3419).
+
+    Mirrors `_build_terraform_docker_images`'s web build: context is `web/`
+    (not the repo root), fingerprinted on `web/` itself (excluding
+    `_WEB_VENDOR_EXCLUDES` build artifacts) rather than the whole build
+    context, with the same `NEXT_PUBLIC_API_BASE_URL` build arg default
+    Terraform's local deploy uses -- this is inlined into the browser bundle
+    at build time, and like Terraform's containers, a k8s Pod is only
+    reachable from the operator's own workstation (via `kubectl
+    port-forward`), so the same host-local default applies.
+    """
+    return _build_and_load_k8s_image(
+        TF_WEB_IMAGE,
+        context=REPO_ROOT / "web",
+        fingerprint_paths=[REPO_ROOT / "web"],
+        excludes=_WEB_VENDOR_EXCLUDES,
+        build_args={"NEXT_PUBLIC_API_BASE_URL": TF_WEB_API_BASE_URL_DEFAULT},
+    )
 
 
 def _install_kubernetes_steps(api_key: str | None) -> list[OpsResult]:
     """Run the Kubernetes bring-up steps and return structured results (no printing).
 
     Prereq checks (cluster reachable, kubectl present), builds and loads
-    `nyxgpt-api:local`, bootstraps k8s/secret.yaml (prompting for the API
-    key, never committing it), applies the kustomization, and snapshots
-    Pod/Service health. Stops at the first failing step, same rationale
-    as `_install_terraform_steps`.
+    `nyxgpt-api:local` and `nyxgpt-web:local`, bootstraps k8s/secret.yaml
+    (prompting for the API key, never committing it), applies the
+    kustomization (which now includes the web stable/canary pair -- #3419),
+    and snapshots Pod/Service health. Stops at the first failing step, same
+    rationale as `_install_terraform_steps`.
 
     Shared by the `nyxgpt ops install --kubernetes --local` CLI entrypoint
     (`_install_kubernetes`) and `install_kubernetes_local`, the SRE/admin
     dashboard API's structured equivalent.
     """
-    collision = _refuse_port_collision(["api"])
+    collision = _refuse_port_collision(["api", "web"])
     if collision is not None:
         _record_ops_action("install", "kubernetes", "refused", collision.message)
         return [collision]
@@ -2478,9 +2535,10 @@ def _install_kubernetes_steps(api_key: str | None) -> list[OpsResult]:
     )
     results: list[OpsResult] = []
     steps: list[tuple[str, Callable[[], list[OpsResult]]]] = [
-        ("clear intentional-stop markers", lambda: _clear_intentional_stops(["api"])),
+        ("clear intentional-stop markers", lambda: _clear_intentional_stops(["api", "web"])),
         ("cluster prerequisites", _ensure_kubectl_and_cluster),
-        ("build/load image", _build_and_load_k8s_image),
+        ("build/load api image", _build_and_load_k8s_image),
+        ("build/load web image", _build_and_load_k8s_web_image),
         ("secret bootstrap", lambda: _ensure_k8s_secret(api_key)),
         ("apply kustomization", _kubectl_apply_kustomization),
     ]
