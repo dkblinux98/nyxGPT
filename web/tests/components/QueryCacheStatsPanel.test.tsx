@@ -93,8 +93,12 @@ describe('QueryCacheStatsPanel', () => {
     await waitFor(() => {
       expect(screen.getByText(/Query result caching is disabled/i)).toBeInTheDocument();
     });
-    expect(screen.getByText('query_cache_enabled = true')).toBeInTheDocument();
+    expect(screen.getByText('query_cache_enabled')).toBeInTheDocument();
+    const wizardLink = screen.getByRole('link', { name: /configuration wizard/i });
+    expect(wizardLink).toHaveAttribute('href', '/admin');
     expect(screen.queryByRole('button', { name: /clear cache/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('80.0%')).not.toBeInTheDocument();
+    expect(screen.queryByText('Hit rate')).not.toBeInTheDocument();
   });
 
   it('surfaces an error when the stats request fails', async () => {
