@@ -6868,6 +6868,75 @@ def test_build_and_load_k8s_image_skips_rebuild_when_source_unchanged(monkeypatc
     assert not any(c[:2] == ["docker", "build"] for c in run_calls)
 
 
+# --- Kubernetes: build_and_load_k8s_image() public wrapper kwargs (#3419) ---
+
+
+@pytest.mark.unit
+def test_build_and_load_k8s_image_public_wrapper_forwards_only_given_kwargs(monkeypatch):
+    """The web component passes context/fingerprint_paths/excludes/build_args; the api
+    component (default call) must keep forwarding zero kwargs (see the docstring and
+    test_build_and_load_k8s_image_public_wrapper_uses_given_tag above)."""
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_build_and_load_k8s_image",
+        lambda image, **kwargs: calls.append((image, kwargs)) or [ops.OpsResult(True, "ok")],
+    )
+
+    ops.build_and_load_k8s_image("nyxgpt-api:1.2.3-abcd123")
+    assert calls[-1] == ("nyxgpt-api:1.2.3-abcd123", {})
+
+    web_context = ops.REPO_ROOT / "web"
+    results = ops.build_and_load_k8s_image(
+        "nyxgpt-web:1.2.3-abcd123",
+        context=web_context,
+        fingerprint_paths=[web_context],
+        excludes=ops._WEB_VENDOR_EXCLUDES,
+        build_args={"NEXT_PUBLIC_API_BASE_URL": "http://localhost:8000"},
+    )
+    assert calls[-1] == (
+        "nyxgpt-web:1.2.3-abcd123",
+        {
+            "context": web_context,
+            "fingerprint_paths": [web_context],
+            "excludes": ops._WEB_VENDOR_EXCLUDES,
+            "build_args": {"NEXT_PUBLIC_API_BASE_URL": "http://localhost:8000"},
+        },
+    )
+    assert results == [ops.OpsResult(True, "ok")]
+
+
+# --- Kubernetes: _build_and_load_k8s_web_image (#3419) ---
+
+
+@pytest.mark.unit
+def test_build_and_load_k8s_web_image_builds_web_context_with_build_arg(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/" + prog if prog == "docker" else None
+    )
+    monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
+    run_calls = []
+
+    def fake_run(cmd, check=True):
+        run_calls.append(cmd)
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return CP(returncode=1)
+        if cmd[:2] == ["docker", "build"]:
+            return CP(returncode=0)
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(stdout="docker-desktop")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._build_and_load_k8s_web_image()
+
+    assert all(r.ok for r in results)
+    build_cmd = next(c for c in run_calls if c[:2] == ["docker", "build"])
+    assert build_cmd[2:5] == ["-t", ops.TF_WEB_IMAGE, "--build-arg"]
+    assert f"NEXT_PUBLIC_API_BASE_URL={ops.TF_WEB_API_BASE_URL_DEFAULT}" in build_cmd
+    assert str(ops.REPO_ROOT / "web") in build_cmd
+
+
 # --- Kubernetes: _ensure_k8s_secret ---
 
 
@@ -6933,6 +7002,27 @@ def test_k8s_stack_health_reports_pods_service(monkeypatch):
     assert pod_results[1].ok is False
     assert not any("HPA" in r.message for r in results)
     assert any("Service nyxgpt-api found" in r.message for r in results)
+
+
+@pytest.mark.unit
+def test_k8s_stack_health_reports_web_service_alongside_api(monkeypatch):
+    """#3419: the post-apply health snapshot must check nyxgpt-web too, distinguishing
+    found from not-found per service rather than reporting one combined result."""
+
+    def fake_run(cmd, check=True):
+        if cmd[4] == "pods":
+            return CP(returncode=0, stdout="nyxgpt-web-stable-abc=Running;")
+        if cmd[4] == "svc":
+            svc_name = cmd[5]
+            if svc_name == "nyxgpt-api":
+                return CP(returncode=0, stdout="nyxgpt-api   ClusterIP\n")
+            return CP(returncode=1)
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._k8s_stack_health()
+    assert any(r.ok and "Service nyxgpt-api found" in r.message for r in results)
+    assert any(not r.ok and "Service nyxgpt-web not found" in r.message for r in results)
 
 
 # --- Kubernetes: _install_kubernetes / _down_kubernetes ---

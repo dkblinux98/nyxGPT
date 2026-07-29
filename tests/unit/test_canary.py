@@ -995,3 +995,234 @@ def test_canary_lifecycle_actions_recorded_via_ops_module(monkeypatch):
         )
         >= 1
     )
+
+
+# --- Component parameter (#3419: web canary + documented ollama infeasibility) ---
+
+
+@pytest.mark.unit
+def test_component_spec_unknown_component_is_rejected():
+    spec, err = canary._component_spec("cassandra")
+    assert spec is None
+    assert err is not None
+    assert not err.ok
+    assert "Unknown canary component" in err.message
+    assert "'cassandra'" in err.message
+
+
+@pytest.mark.unit
+def test_component_spec_ollama_is_rejected_with_documented_reason():
+    spec, err = canary._component_spec("ollama")
+    assert spec is None
+    assert err is not None
+    assert not err.ok
+    assert err.message == canary.OLLAMA_UNSUPPORTED_REASON
+    assert "model store" in err.message
+
+
+@pytest.mark.unit
+def test_component_spec_api_and_web_are_supported():
+    api_spec, api_err = canary._component_spec("api")
+    web_spec, web_err = canary._component_spec("web")
+    assert api_err is None and api_spec is not None
+    assert web_err is None and web_spec is not None
+    assert api_spec.stable_deployment == "nyxgpt-api-stable"
+    assert web_spec.stable_deployment == "nyxgpt-web-stable"
+    assert web_spec.canary_deployment == "nyxgpt-web-canary"
+    assert web_spec.container_name == "nyxgpt-web"
+    assert web_spec.image_repository == "nyxgpt-web"
+
+
+@pytest.mark.unit
+def test_status_unknown_component_reports_unavailable_with_reason():
+    data = canary.status("nyxgpt", component="not-a-component")
+    assert data["available"] is False
+    assert data["mode_supported"] is False
+    assert "Unknown canary component" in data["unavailable_reason"]
+    assert "Unknown canary component" in data["mode_message"]
+
+
+@pytest.mark.unit
+def test_status_ollama_reports_unavailable_with_documented_reason():
+    data = canary.status("nyxgpt", component="ollama")
+    assert data["available"] is False
+    assert data["unavailable_reason"] == canary.OLLAMA_UNSUPPORTED_REASON
+    assert data["mode_message"] == canary.OLLAMA_UNSUPPORTED_REASON
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "action_call",
+    [
+        lambda: canary.deploy(namespace="nyxgpt", component="ollama"),
+        lambda: canary.start(namespace="nyxgpt", component="ollama"),
+        lambda: canary.evaluate("nyxgpt", component="ollama"),
+        lambda: canary.promote(namespace="nyxgpt", component="ollama"),
+        lambda: canary.rollback(namespace="nyxgpt", component="ollama"),
+    ],
+)
+def test_every_lifecycle_action_refuses_ollama(action_call):
+    result = action_call()
+    assert not result.ok
+    assert result.message == canary.OLLAMA_UNSUPPORTED_REASON
+
+
+@pytest.mark.unit
+def test_deploy_web_component_builds_with_web_kwargs_and_sets_web_container(monkeypatch):
+    monkeypatch.setattr(canary.ops_module, "project_version", lambda: "1.2.3")
+    monkeypatch.setattr(canary, "_git_short_sha", lambda: "abcd123")
+    build_mock = MagicMock(return_value=[canary.CanaryResult(True, "built")])
+    monkeypatch.setattr(canary.ops_module, "build_and_load_k8s_image", build_mock)
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", run_mock)
+
+    result = canary.deploy(namespace="nyxgpt", component="web")
+
+    assert result.ok
+    assert "nyxgpt-web:1.2.3-abcd123" in result.message
+    build_mock.assert_called_once_with(
+        "nyxgpt-web:1.2.3-abcd123",
+        context=canary.COMPONENTS["web"].build_context,
+        fingerprint_paths=canary.COMPONENTS["web"].build_fingerprint_paths,
+        excludes=canary.COMPONENTS["web"].build_excludes,
+        build_args=canary.COMPONENTS["web"].build_args,
+    )
+    calls = [c.args[0] for c in run_mock.call_args_list]
+    assert calls[0] == [
+        "kubectl",
+        "set",
+        "image",
+        "deployment/nyxgpt-web-canary",
+        "nyxgpt-web=nyxgpt-web:1.2.3-abcd123",
+        "-n",
+        "nyxgpt",
+    ]
+    assert calls[1][:4] == ["kubectl", "rollout", "status", "deployment/nyxgpt-web-canary"]
+
+
+@pytest.mark.unit
+def test_start_web_component_scales_web_deployments_and_uses_own_state(monkeypatch):
+    scale_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", scale_mock)
+
+    result = canary.start(namespace="nyxgpt", weight_percent=10, total_replicas=4, component="web")
+
+    assert result.ok
+    calls = [c.args[0] for c in scale_mock.call_args_list]
+    assert calls[0][:4] == ["kubectl", "scale", "deployment", "nyxgpt-web-canary"]
+    assert calls[1][:4] == ["kubectl", "scale", "deployment", "nyxgpt-web-stable"]
+
+    web_state = canary._load_state("web")
+    assert web_state["active"] is True
+    assert web_state["weight_percent"] == 10
+
+    # api's own state must be untouched by a web-only rollout (the "components"
+    # sub-object storing web's state rides along in the same file, see _save_state).
+    api_state = canary._load_state("api")
+    assert api_state["active"] is False
+    assert api_state["weight_percent"] == 0
+    assert api_state["history"] == []
+
+
+@pytest.mark.unit
+def test_web_and_api_rollout_state_do_not_collide(monkeypatch):
+    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+
+    canary.start(namespace="nyxgpt", weight_percent=20, total_replicas=4, component="api")
+    canary.start(namespace="nyxgpt", weight_percent=50, total_replicas=4, component="web")
+
+    api_state = canary._load_state("api")
+    web_state = canary._load_state("web")
+    assert api_state["weight_percent"] == 20
+    assert web_state["weight_percent"] == 50
+
+    # Both survive a rollback of just one component.
+    canary.rollback(namespace="nyxgpt", component="web")
+    assert canary._load_state("api")["weight_percent"] == 20
+    assert canary._load_state("web")["active"] is False
+
+
+@pytest.mark.unit
+def test_promote_web_component_finalizes_with_web_container_and_repository(monkeypatch):
+    canary._save_state(
+        {"active": True, "weight_percent": 90, "total_replicas": 4, "history": []}, "web"
+    )
+    monkeypatch.setattr(
+        canary,
+        "deployment_health",
+        lambda name, ns: canary.TrackHealth("healthy", f"{name} healthy", "1.2.3-abcd123"),
+    )
+    run_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", run_mock)
+
+    result = canary.promote(namespace="nyxgpt", step_percent=25, component="web")
+
+    assert result.ok
+    assert "nyxgpt-web-stable" in result.message
+    calls = [c.args[0] for c in run_mock.call_args_list]
+    assert calls[0] == [
+        "kubectl",
+        "set",
+        "image",
+        "deployment/nyxgpt-web-stable",
+        "nyxgpt-web=nyxgpt-web:1.2.3-abcd123",
+        "-n",
+        "nyxgpt",
+    ]
+    assert canary._load_state("web")["active"] is False
+
+
+@pytest.mark.unit
+def test_rollback_web_component_scales_web_deployments(monkeypatch):
+    canary._save_state(
+        {"active": True, "weight_percent": 50, "total_replicas": 4, "history": []}, "web"
+    )
+    scale_mock = MagicMock(return_value=CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", scale_mock)
+
+    result = canary.rollback(namespace="nyxgpt", component="web")
+
+    assert result.ok
+    calls = [c.args[0] for c in scale_mock.call_args_list]
+    assert calls[0][:4] == ["kubectl", "scale", "deployment", "nyxgpt-web-canary"]
+    assert "--replicas=0" in calls[0]
+    assert calls[1][:4] == ["kubectl", "scale", "deployment", "nyxgpt-web-stable"]
+
+
+@pytest.mark.unit
+def test_web_component_records_ops_action_with_web_service_label(monkeypatch):
+    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+
+    canary.start(namespace="nyxgpt", weight_percent=10, total_replicas=4, component="web")
+
+    assert (
+        _metric_value(
+            "nyxgpt_ops_actions_total", command="canary-start", service="web", result="success"
+        )
+        >= 1
+    )
+
+
+@pytest.mark.unit
+def test_web_component_status_uses_component_labeled_metrics_only(monkeypatch):
+    """The legacy api-only nyxgpt_canary_* metrics must not be touched by a web status call."""
+    canary._save_state({"active": True, "weight_percent": 42, "history": []}, "web")
+    monkeypatch.setattr(
+        canary,
+        "deployment_health",
+        lambda name, ns: canary.TrackHealth("healthy", f"{name} healthy", "2.0.0"),
+    )
+
+    canary.status("nyxgpt", component="web")
+
+    assert _metric_value("nyxgpt_canary_component_rollout_active", component="web") == 1
+    assert _metric_value("nyxgpt_canary_component_weight_percent", component="web") == 42
+    assert (
+        _metric_value(
+            "nyxgpt_canary_component_track_version_info",
+            component="web",
+            track="stable",
+            version="2.0.0",
+        )
+        == 1
+    )
