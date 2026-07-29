@@ -37,10 +37,8 @@ Quick reference of all 85 available endpoints:
 | `/api/v1/admin/access` | POST | Update API-key access configuration / rotate key |
 | `/api/v1/analytics/usage` | GET | Aggregated chat usage analytics (tokens, sessions, by model/day) |
 | `/api/v1/analytics/export` | GET | Export recorded usage events (json/csv) |
-| `/api/v1/deploy/status` | GET | Blue/green deployment status (active color, health, history) |
-| `/api/v1/deploy/switch` | POST | Cut traffic over to a color (health-checked) |
-| `/api/v1/deploy/rollback` | POST | Switch traffic back to the previously active color |
-| `/api/v1/canary/status` | GET | Canary rollout status (weight, stable/canary health, live metrics, history) |
+| `/api/v1/canary/status` | GET | Canary rollout status (weight, stable/canary health + version, mode, live metrics, history) |
+| `/api/v1/canary/deploy` | POST | Build the current checkout into a versioned image and deploy it to canary only |
 | `/api/v1/canary/start` | POST | Start a canary rollout at an initial traffic weight |
 | `/api/v1/canary/evaluate` | POST | Check live error-rate/latency metrics against thresholds; auto-rollback on regression |
 | `/api/v1/canary/promote` | POST | Increase the canary's traffic share by a step |
@@ -169,13 +167,11 @@ Prometheus text exposition format metrics for scraping. Unauthenticated
 | `nyxgpt_selfheal_restarts_total` | Counter | `service`, `result` | Self-heal restart attempts, by service and outcome (`ok`/`failed`) |
 | `nyxgpt_selfheal_restart_count` | Gauge | `service` | Current consecutive-restart count per service (resets to 0 once healthy) |
 | `nyxgpt_selfheal_last_recovery_timestamp` | Gauge | `service` | Unix timestamp of the last successful self-heal restart, by service |
-| `nyxgpt_deploy_active_color` | Gauge | `color` | Whether a blue/green color is currently receiving traffic (1) or not (0) |
-| `nyxgpt_deploy_switches_total` | Counter | `from_color`, `to_color`, `result` | Blue/green switch attempts, by direction and outcome (`ok`/`failed`) |
-| `nyxgpt_deploy_rollbacks_total` | Counter | `result` | Blue/green rollback attempts, by outcome (`ok`/`failed`) |
 | `nyxgpt_canary_rollout_active` | Gauge | — | Whether a canary rollout is currently in progress (1) or idle (0) |
 | `nyxgpt_canary_weight_percent` | Gauge | — | Current canary traffic weight percentage (0-100) |
 | `nyxgpt_canary_evaluations_total` | Counter | `result` | Canary metric evaluations, by result (`pass`/`insufficient_data`/`regression`) |
-| `nyxgpt_canary_events_total` | Counter | `action`, `result` | Canary lifecycle events (`start`/`promote`/`rollback`), by outcome |
+| `nyxgpt_canary_events_total` | Counter | `action`, `result` | Canary lifecycle events (`deploy`/`start`/`promote`/`rollback`), by outcome |
+| `nyxgpt_canary_track_version_info` | Gauge | `track`, `version` | 1 for the (track, version) currently observed on that track's Deployment |
 | `nyxgpt_rag_ingests_total` | Counter | `source`, `result` | RAG document ingestion attempts, by source (`document`/`upload`/`repo`) and outcome (`success`/`failure`) |
 | `nyxgpt_cache_requests_total` | Counter | `cache`, `result` | Cache lookups, by cache (`chat_response`/`embedding`/`rag_query_result`) and outcome (`hit`/`miss`) |
 | `nyxgpt_rate_limit_rejections_total` | Counter | `path` | Requests rejected by the per-client rate limiter |
@@ -753,9 +749,9 @@ management" here means the shared API key rather than per-user accounts.
 
 ### `GET /api/v1/admin/overview`
 
-Aggregate system status: app info, resource metrics, deploy/canary/self-heal
+Aggregate system status: app info, resource metrics, canary/self-heal
 status, opt-in observability stack flags, and whether API-key auth is
-enabled. Individual sub-sections (e.g. `deploy`, `canary`, `self_heal`)
+enabled. Individual sub-sections (e.g. `canary`, `self_heal`)
 degrade to `{"error": "..."}` instead of failing the whole request when a
 backing service (like a local K8s cluster or the Docker daemon) is
 unavailable.
@@ -770,7 +766,6 @@ unavailable.
     "rag_enabled": false
   },
   "resource_metrics": { "memory": {}, "cpu": {}, "latency": {}, "queue": {} },
-  "deploy": { "namespace": "nyxgpt", "active": "blue", "inactive": "green" },
   "canary": { "namespace": "nyxgpt", "active": false },
   "self_heal": { "enabled": false, "components": [], "unhealthy_count": 0, "events": [] },
   "observability": {
@@ -807,9 +802,9 @@ critical on any unreachable dependency).
 
 ### `GET /api/v1/admin/activity`
 
-Return recent admin dashboard activity (config changes, deploy/canary
-actions, model pulls/deletes, access changes). Accepts an optional
-`limit` query parameter (default 50, max 500).
+Return recent admin dashboard activity (config changes, canary actions,
+model pulls/deletes, access changes). Accepts an optional `limit` query
+parameter (default 50, max 500).
 
 **Response:**
 
@@ -817,7 +812,7 @@ actions, model pulls/deletes, access changes). Accepts an optional
 {
   "events": [
     { "ts": 1768300800.0, "action": "config.updated", "detail": "log_level=DEBUG" },
-    { "ts": 1768300900.0, "action": "deploy.switch", "detail": "Switched traffic from blue to green" }
+    { "ts": 1768300900.0, "action": "canary.deploy", "detail": "Deployed nyxgpt-api:2.0.0-abc1234 to nyxgpt-api-canary" }
   ]
 }
 ```
@@ -914,104 +909,28 @@ header so browsers download the file directly.
 
 ---
 
-## Deployment (Blue/Green)
-
-Local blue/green deployment for `nyxgpt-api` on a local Kubernetes cluster
-(kind/minikube/k3s) — see [kubernetes.md](kubernetes.md#bluegreen-deployment)
-for the full workflow and the `nyxgpt deploy` CLI. These endpoints back the
-SRE/admin dashboard at `/admin/deploy`.
-
-Every switch/rollback decision (attempt, refusal, outcome) is logged with
-structured fields and exported as the `nyxgpt_deploy_*` metrics above -- see
-[kubernetes.md#deploy-logging--metrics](kubernetes.md#deploy-logging--metrics)
-for the pre-provisioned Grafana **Blue-Green Deployment** dashboard and the
-Loki saved query, both linked directly from `/admin/deploy`.
-
-### `GET /api/v1/deploy/status`
-
-Return which color is active, each color's health, and recent switch history.
-
-**Response:**
-
-```json
-{
-  "namespace": "nyxgpt",
-  "active": "blue",
-  "inactive": "green",
-  "colors": {
-    "blue": { "healthy": true, "message": "nyxgpt-api-blue healthy (1/1 ready)" },
-    "green": { "healthy": true, "message": "nyxgpt-api-green healthy (1/1 ready)" }
-  },
-  "history": [{ "from": "green", "to": "blue", "ts": 1730000000.0 }],
-  "available": true,
-  "unavailable_reason": null
-}
-```
-
-`available` is `false` when blue/green deployment can't operate in the
-current deployment mode (e.g. under docker-compose, which has no cluster for
-`kubectl` to reach — see
-[docker-compose.md](docker-compose.md#bluegreen-and-canary-deployment)); in
-that case `unavailable_reason` explains why and every color's `message`
-carries the same explanation instead of a raw `kubectl not found` error.
-
-### `POST /api/v1/deploy/switch`
-
-Cut traffic over to a color. Refuses (`409`) unless the target Deployment is
-healthy, unless `force` is set.
-
-**Request:**
-
-```json
-{ "to": "green", "force": false }
-```
-
-`to` is optional; if omitted, the target defaults to whichever color is
-currently inactive. `force` is optional (default `false`).
-
-**Response:**
-
-```json
-{ "ok": true, "message": "Switched traffic from blue to green" }
-```
-
-Returns `400` if `to` is not `"blue"` or `"green"`, and `409` if the switch
-was refused (e.g. the target is unhealthy).
-
-### `POST /api/v1/deploy/rollback`
-
-Switch traffic back to the color that was active before the last switch.
-Unlike `switch`, this bypasses the health gate — it's the emergency escape
-hatch. Returns `409` if there is no switch history to roll back to.
-
-**Response:**
-
-```json
-{ "ok": true, "message": "Switched traffic from green to blue" }
-```
-
----
-
 ## Canary Deployment
 
 Local canary deployment for `nyxgpt-api` on a local Kubernetes cluster
 (kind/minikube/k3s) — see [kubernetes.md](kubernetes.md#canary-deployment)
-for the full workflow and the `nyxgpt canary` CLI. These endpoints back the
-SRE/admin dashboard at `/admin/canary`. Traffic is split by the
-`nyxgpt-api-stable`/`nyxgpt-api-canary` Deployments' replica-count ratio
-behind a shared Service (kube-proxy is the traffic layer — no in-cluster
-proxy or cloud LB involved).
+for the full deploy -> gate -> promote workflow and the `nyxgpt canary` CLI.
+These endpoints back the SRE/admin dashboard at `/admin/canary`. Traffic is
+split by the `nyxgpt-api-stable`/`nyxgpt-api-canary` Deployments'
+replica-count ratio behind a shared Service (kube-proxy is the traffic
+layer — no in-cluster proxy or cloud LB involved). This is the sole
+deployment model since #3409 retired blue/green in favor of it.
 
-Every start/evaluate/promote/rollback decision is logged with structured
-fields and exported as the `nyxgpt_canary_*` metrics above -- see
+Every deploy/start/evaluate/promote/rollback decision is logged with
+structured fields and exported as the `nyxgpt_canary_*` metrics above -- see
 [kubernetes.md#canary-logging--metrics](kubernetes.md#canary-logging--metrics)
 for the pre-provisioned Grafana **Canary Rollout** dashboard and the Loki
 saved query, both linked directly from `/admin/canary`.
 
 ### `GET /api/v1/canary/status`
 
-Return rollout progress, stable/canary health, live error-rate/latency
-metrics, and recent action history.
+Return rollout progress, stable/canary health + running version, the
+currently detected deployment mode, live error-rate/latency metrics, and
+recent action history.
 
 **Response:**
 
@@ -1020,17 +939,45 @@ metrics, and recent action history.
   "namespace": "nyxgpt",
   "active": true,
   "weight_percent": 25,
-  "stable": { "healthy": true, "message": "nyxgpt-api-stable healthy (3/3 ready)" },
-  "canary": { "healthy": true, "message": "nyxgpt-api-canary healthy (1/1 ready)" },
+  "stable": { "state": "healthy", "message": "nyxgpt-api-stable healthy (3/3 ready)", "version": "2.0.0-abc1234" },
+  "canary": { "state": "healthy", "message": "nyxgpt-api-canary healthy (1/1 ready)", "version": "2.0.0-def5678" },
   "metrics": { "total_requests": 120, "error_rate_percent": 0.83, "p95_latency_ms": 340.5 },
   "history": [{ "action": "start", "weight_percent": 10, "ts": 1730000000.0 }],
   "available": true,
-  "unavailable_reason": null
+  "unavailable_reason": null,
+  "mode": "kubernetes",
+  "mode_supported": true,
+  "mode_message": null
 }
 ```
 
-`available`/`unavailable_reason` behave the same as on `GET
-/api/v1/deploy/status` above.
+`stable`/`canary.state` is one of `"not_deployed"` (cluster unreachable, the
+Deployment doesn't exist yet, or it's at 0 desired replicas -- neutral, not
+an alarm), `"unhealthy"` (Pods not all ready), `"healthy"`, or `"error"` (a
+genuine kubectl failure against a reachable cluster, distinguishable from
+"not deployed" -- see #3409). `available` is `false` when kubectl itself
+isn't reachable (e.g. under docker-compose, which has no cluster to reach —
+see [docker-compose.md](docker-compose.md#canary-deployment)); in that case
+`unavailable_reason` explains why. `mode` is the currently detected
+deployment mode (`"native"`/`"terraform"`/`"kubernetes"`/`"compose"`);
+`mode_supported` is `false` outside Kubernetes mode, with `mode_message`
+explaining which mode provides canary — this is a positive mode detection,
+not an inference from a failed kubectl call.
+
+### `POST /api/v1/canary/deploy`
+
+Build the current checkout into a versioned image
+(`<project version>-<git short sha>`, never the mutable `:local` tag),
+patch **only** the canary Deployment's image, and wait for its rollout.
+Stable is never touched, even on failure. Traffic weighting is a separate,
+deliberate action (`start`/`promote` below). Returns `409` if the build,
+image patch, or rollout wait fails.
+
+**Response:**
+
+```json
+{ "ok": true, "message": "Deployed nyxgpt-api:2.0.0-abc1234 to nyxgpt-api-canary; start or continue a rollout to shift traffic to it" }
+```
 
 ### `POST /api/v1/canary/start`
 
@@ -1067,8 +1014,15 @@ regression triggered an automatic rollback.
 
 ### `POST /api/v1/canary/promote`
 
-Increase the canary's traffic share by a step, finalizing at 100%. Returns
-`409` if there is no rollout in progress.
+Increase the canary's traffic share by a step. Refuses (`409`) to shift more
+traffic to the canary unless it is currently healthy. At 100%, instead of
+leaving the canary holding all the traffic, this copies the canary's image
+version onto `nyxgpt-api-stable`, waits for stable's rollout to become
+healthy, then scales canary back to 0 and stable back to `total_replicas` --
+stable now runs the promoted version at 100% traffic, completing the
+deploy -> gate -> promote cycle. If stable's rollout onto the new version
+fails, canary is left running untouched (`409`) so you can retry or roll
+back. Returns `409` if there is no rollout in progress.
 
 **Request:**
 
@@ -1078,10 +1032,16 @@ Increase the canary's traffic share by a step, finalizing at 100%. Returns
 
 `step_percent` is optional (default: `[canary] step_percent`, `25`).
 
-**Response:**
+**Response (intermediate step):**
 
 ```json
 { "ok": true, "message": "Promoted canary to 35% (1/4 replicas)" }
+```
+
+**Response (final step, 100%):**
+
+```json
+{ "ok": true, "message": "Promoted nyxgpt-api:2.0.0-abc1234 to nyxgpt-api-stable at 100% traffic; canary scaled back to 0" }
 ```
 
 ### `POST /api/v1/canary/rollback`
@@ -3717,7 +3677,7 @@ curl http://127.0.0.1:8000/api/v1/log-aggregation
 - `enabled` - Whether `[log_aggregation] enabled = true` in config.ini
 - `grafana_explore_url` - URL of the Grafana Explore view for searching logs
 - `active` - Mirrors `enabled` (the Loki/promtail stack itself runs outside this process, as Docker Compose services)
-- `curated_queries` - LogQL queries provisioned as code, mirroring the per-component panels in the Operational Logs dashboard (self-heal, deploy, canary, chat errors, RAG pipeline) -- each has a `label`, a `hint`, and the raw `query` text. The web UI turns each one into an "Open in Explore" deep link (Grafana has no file-based provisioning for Explore's own query library, but its state is URL-encodable, so the link opens Explore with the query already loaded against the `loki` datasource); the raw `query` text is also shown for copy/paste
+- `curated_queries` - LogQL queries provisioned as code, mirroring the per-component panels in the Operational Logs dashboard (self-heal, canary, chat errors, RAG pipeline) -- each has a `label`, a `hint`, and the raw `query` text. The web UI turns each one into an "Open in Explore" deep link (Grafana has no file-based provisioning for Explore's own query library, but its state is URL-encodable, so the link opens Explore with the query already loaded against the `loki` datasource); the raw `query` text is also shown for copy/paste
 
 **How it works:**
 

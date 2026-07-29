@@ -90,27 +90,6 @@ OPS_ACTIONS_TOTAL = Counter(
     registry=REGISTRY,
 )
 
-DEPLOY_ACTIVE_COLOR = Gauge(
-    "nyxgpt_deploy_active_color",
-    "Whether a blue/green color is currently receiving traffic (1) or not (0)",
-    ["color"],
-    registry=REGISTRY,
-)
-
-DEPLOY_SWITCHES_TOTAL = Counter(
-    "nyxgpt_deploy_switches_total",
-    "Total blue/green traffic switches attempted, by direction and outcome",
-    ["from_color", "to_color", "result"],
-    registry=REGISTRY,
-)
-
-DEPLOY_ROLLBACKS_TOTAL = Counter(
-    "nyxgpt_deploy_rollbacks_total",
-    "Total blue/green rollback attempts, by outcome",
-    ["result"],
-    registry=REGISTRY,
-)
-
 CANARY_ROLLOUT_ACTIVE = Gauge(
     "nyxgpt_canary_rollout_active",
     "Whether a canary rollout is currently in progress (1) or idle (0)",
@@ -134,6 +113,15 @@ CANARY_EVENTS_TOTAL = Counter(
     "nyxgpt_canary_events_total",
     "Total canary rollout lifecycle events, by action and outcome",
     ["action", "result"],
+    registry=REGISTRY,
+)
+
+CANARY_TRACK_VERSION_INFO = Gauge(
+    "nyxgpt_canary_track_version_info",
+    "Info metric: 1 for the (track, version) currently observed on that track's Deployment "
+    "image tag. Stale (track, version) series from a prior deploy/promote aren't cleared -- "
+    "query with topk(1, ...) or a recent time range to see only the current version.",
+    ["track", "version"],
     registry=REGISTRY,
 )
 

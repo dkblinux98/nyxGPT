@@ -309,14 +309,13 @@ first boot with a Prometheus datasource and eight dashboards under
   by service/outcome, time since last recovery, and a Loki-backed
   restart/recovery event timeline — see
   [self-healing.md](self-healing.md#observability-logs-metrics-and-the-self-healing-dashboard).
-- **Blue-Green Deployment** — active color, switch/rollback counts (24h),
-  switches by direction/outcome, rollbacks by outcome, and a Loki-backed
-  switch/rollback event timeline — see
-  [kubernetes.md](kubernetes.md#deploy-logging--metrics).
 - **Canary Rollout** — rollout active/idle, live traffic split, rollback
-  count (24h), evaluation results, lifecycle events by action/outcome, and a
-  Loki-backed start/promote/rollback event timeline — see
-  [kubernetes.md](kubernetes.md#canary-logging--metrics).
+  count (24h), evaluation results, lifecycle events by action/outcome,
+  per-track running versions, and a Loki-backed deploy/start/promote/
+  rollback event timeline — see
+  [kubernetes.md](kubernetes.md#canary-logging--metrics). (The blue-green
+  deployment dashboard was retired -- canary is the sole deployment model,
+  see #3409.)
 
 Every dashboard above (plus Logs Explorer and Operational Logs — see
 [Log Aggregation](#log-aggregation)) is reachable from one place: the
@@ -391,7 +390,7 @@ not just the compose file's text), catching a container that was created
 before a `docker-compose.yml` edit rather than leaving it to a
 silently-empty dashboard. `nyxgpt ops doctor` also reports a per-component
 log volume for the last 24h (via Loki), so an idle curated component
-(e.g. deploy/canary on a native install that's never run a k8s operation)
+(e.g. canary on a native install that's never run a k8s operation)
 isn't mistaken for a broken pipeline.
 
 nyxgpt logs timestamps in UTC (see `nyxgpt.logging.configure_logging`) and
@@ -512,17 +511,18 @@ to turn it on (`/admin/self-heal`, `nyxgpt self-heal`, or the API), and
 `scripts/smoke-test.sh`, the documented end-to-end smoke test (deploy →
 verify chat/RAG → kill each component → observe auto-heal → teardown).
 
-## Blue/Green and Canary Deployment
+## Canary Deployment
 
-`/admin/deploy` and `/admin/canary` (blue/green cutover and weighted canary
-rollout — see [kubernetes.md](kubernetes.md#bluegreen-deployment)) are not
-operable under docker-compose: there is no Kubernetes cluster here for
-`kubectl` to reach, and the compose stack runs a single `api` container
-rather than the multiple colored/tracked Deployments those features cut
-traffic between. The dashboards detect this deployment mode and show a
-banner explaining that instead of a per-color `kubectl not found` error.
-Use the [Kubernetes deployment](kubernetes.md) to operate these features —
-the same `api` image ships `kubectl` and the RBAC it needs there.
+`/admin/canary` (deploy/gate/promote weighted canary rollout — see
+[kubernetes.md](kubernetes.md#canary-deployment)) is not operable under
+docker-compose: there is no Kubernetes cluster here for `kubectl` to reach,
+and the compose stack runs a single `api` container rather than the
+stable/canary Deployment pair the feature shifts traffic between. The page
+detects this deployment mode and explicitly says canary doesn't apply here
+and which mode provides it, instead of inferring "unavailable" from a
+`kubectl not found` error. Use the [Kubernetes deployment](kubernetes.md) to
+operate this feature — the same `api` image ships `kubectl` and the RBAC it
+needs there.
 
 ## Rebuilding after code changes
 

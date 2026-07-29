@@ -7,46 +7,77 @@ import CanaryPage from '../../../src/app/admin/canary/page';
 import { exploreQueryUrl } from '../../../src/lib/grafanaExplore';
 
 const CANARY_LOKI_QUERY =
-  '{job="nyxgpt"} |= `canary:` |~ `starting|started|promoting|promoted|rolling back|rolled back|regression`';
+  '{job="nyxgpt"} |= `canary:` |~ `deploying|Deployed|starting|started|promoting|Promoted|rolling back|rolled back|regression`';
 
 const mockStatus = {
   namespace: 'nyxgpt',
   active: false,
   weight_percent: 0,
-  stable: { healthy: true, message: 'ok' },
-  canary: { healthy: true, message: 'ok' },
+  stable: { state: 'healthy', message: 'ok', version: '1.0.0-abc1234' },
+  canary: { state: 'not_deployed', message: 'nyxgpt-api-canary has 0 desired replicas (idle)', version: '' },
   metrics: { total_requests: 0, error_rate_percent: 0, p95_latency_ms: 0 },
   history: [],
   available: true,
   unavailable_reason: null,
+  mode: 'kubernetes',
+  mode_supported: true,
+  mode_message: null,
 };
 
 const mockActiveStatus = {
   namespace: 'nyxgpt',
   active: true,
   weight_percent: 25,
-  stable: { healthy: true, message: 'ok' },
-  canary: { healthy: false, message: 'elevated errors' },
+  stable: { state: 'healthy', message: 'ok', version: '1.0.0-abc1234' },
+  canary: { state: 'unhealthy', message: 'elevated errors', version: '1.1.0-def5678' },
   metrics: { total_requests: 120, error_rate_percent: 1.234, p95_latency_ms: 456.7 },
   history: [
     { action: 'started', weight_percent: 10, ts: 1768300000 },
     { action: 'promoted', weight_percent: 25, from_weight_percent: 10, ts: 1768300100 },
     { action: 'evaluated', ts: 1768300200 },
+    { action: 'deploy', version: 'nyxgpt-api:1.1.0-def5678', ts: 1768300300 },
   ],
   available: true,
   unavailable_reason: null,
+  mode: 'kubernetes',
+  mode_supported: true,
+  mode_message: null,
+};
+
+const mockActiveHealthyStatus = {
+  ...mockActiveStatus,
+  canary: { state: 'healthy', message: 'nyxgpt-api-canary healthy (1/1 ready)', version: '1.1.0-def5678' },
 };
 
 const mockUnavailableStatus = {
   namespace: 'nyxgpt',
   active: false,
   weight_percent: 0,
-  stable: { healthy: true, message: 'ok' },
-  canary: { healthy: true, message: 'ok' },
+  stable: { state: 'not_deployed', message: 'No reachable Kubernetes cluster', version: '' },
+  canary: { state: 'not_deployed', message: 'No reachable Kubernetes cluster', version: '' },
   metrics: { total_requests: 0, error_rate_percent: 0, p95_latency_ms: 0 },
   history: [],
   available: false,
-  unavailable_reason: 'Not running on Kubernetes',
+  unavailable_reason: 'kubectl not found; cannot check deployment health',
+  mode: 'kubernetes',
+  mode_supported: true,
+  mode_message: null,
+};
+
+const mockUnsupportedModeStatus = {
+  namespace: 'nyxgpt',
+  active: false,
+  weight_percent: 0,
+  stable: { state: 'not_deployed', message: 'No reachable Kubernetes cluster', version: '' },
+  canary: { state: 'not_deployed', message: 'No reachable Kubernetes cluster', version: '' },
+  metrics: { total_requests: 0, error_rate_percent: 0, p95_latency_ms: 0 },
+  history: [],
+  available: false,
+  unavailable_reason: 'No reachable Kubernetes cluster',
+  mode: 'terraform',
+  mode_supported: false,
+  mode_message:
+    'Canary deployment is provided by Kubernetes mode; this process is currently running in terraform mode. Run `nyxgpt ops install --kubernetes` to enable it.',
 };
 
 const mockMonitoringActive = {
@@ -161,7 +192,37 @@ describe('CanaryPage', () => {
     expect(screen.queryByText(/Canary Rollout dashboard/i)).not.toBeInTheDocument();
   });
 
-  it('shows the unavailable banner and allows refreshing', async () => {
+  it('renders the three honest track states plus version, never a false Unhealthy', async () => {
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockStatus)));
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Healthy')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Not deployed')).toBeInTheDocument();
+    expect(screen.getByText('nyxgpt-api-canary has 0 desired replicas (idle)')).toBeInTheDocument();
+    expect(screen.getByText('1.0.0-abc1234')).toBeInTheDocument();
+    expect(screen.queryByText('Unhealthy')).not.toBeInTheDocument();
+  });
+
+  it('shows the mode banner (not a false unhealthy alarm) when running outside Kubernetes mode', async () => {
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockUnsupportedModeStatus)));
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/doesn.t apply to the current deployment mode \(terraform\)/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Run `nyxgpt ops install --kubernetes`/)).toBeInTheDocument();
+    // The mode banner is the honest explanation -- no Unhealthy cards or unreachable-cluster banner shown.
+    expect(screen.queryByText('Unhealthy')).not.toBeInTheDocument();
+    expect(screen.queryByText('Kubernetes is unreachable.')).not.toBeInTheDocument();
+  });
+
+  it('shows the unreachable-cluster banner and allows refreshing when mode is Kubernetes but kubectl is unavailable', async () => {
     server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockUnavailableStatus)));
     mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
     const user = userEvent.setup();
@@ -169,15 +230,15 @@ describe('CanaryPage', () => {
     render(<CanaryPage />);
 
     await waitFor(() => {
-      expect(screen.getByText(/Not available in this deployment mode/)).toBeInTheDocument();
+      expect(screen.getByText('Kubernetes is unreachable.')).toBeInTheDocument();
     });
-    expect(screen.getByText('Not running on Kubernetes')).toBeInTheDocument();
+    expect(screen.getByText('kubectl not found; cannot check deployment health')).toBeInTheDocument();
 
     server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockStatus)));
     await user.click(screen.getByRole('button', { name: /refresh/i }));
 
     await waitFor(() => {
-      expect(screen.queryByText(/Not available in this deployment mode/)).not.toBeInTheDocument();
+      expect(screen.queryByText('Kubernetes is unreachable.')).not.toBeInTheDocument();
     });
   });
 
@@ -258,11 +319,76 @@ describe('CanaryPage', () => {
     expect(screen.getByText(/promoted → 25% \(from 10%\)/)).toBeInTheDocument();
     expect(screen.getByText(/started → 10%/)).toBeInTheDocument();
     expect(screen.getByText(/^evaluated at /)).toBeInTheDocument();
+    expect(screen.getByText(/deploy.*\(nyxgpt-api:1\.1\.0-def5678\)/)).toBeInTheDocument();
+  });
+
+  it('deploys the current version to canary only', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockStatus)));
+    const user = userEvent.setup();
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /deploy current version to canary/i })).toBeInTheDocument();
+    });
+
+    server.use(
+      http.post('/api/v1/canary/deploy', () =>
+        HttpResponse.json({ message: 'Deployed nyxgpt-api:1.1.0-def5678 to nyxgpt-api-canary' })
+      )
+    );
+    await user.click(screen.getByRole('button', { name: /deploy current version to canary/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Deployed nyxgpt-api:1.1.0-def5678 to nyxgpt-api-canary')).toBeInTheDocument();
+    });
+  });
+
+  it('does not deploy when the confirmation is declined', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockStatus)));
+    global.confirm = vi.fn().mockReturnValue(false);
+    const user = userEvent.setup();
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /deploy current version to canary/i })).toBeInTheDocument();
+    });
+
+    const deploySpy = vi.fn();
+    server.use(
+      http.post('/api/v1/canary/deploy', () => {
+        deploySpy();
+        return HttpResponse.json({});
+      })
+    );
+    await user.click(screen.getByRole('button', { name: /deploy current version to canary/i }));
+    expect(deploySpy).not.toHaveBeenCalled();
+  });
+
+  it('disables rollout controls with an explanatory hint when stable is not healthy', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    // A reachable cluster (available/mode_supported) but an unhealthy stable pair.
+    const notReadyStatus = {
+      ...mockStatus,
+      stable: { state: 'unhealthy', message: 'nyxgpt-api-stable not healthy (2/4 ready)', version: '1.0.0-abc1234' },
+    };
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(notReadyStatus)));
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Rollout controls are disabled until the stable\/canary pair is up/)).toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: /deploy current version to canary/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^start canary$/i })).toBeDisabled();
   });
 
   it('evaluates, promotes, and rolls back an active canary, honoring declined confirmations', async () => {
     mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
-    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockActiveStatus)));
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockActiveHealthyStatus)));
     const user = userEvent.setup();
 
     render(<CanaryPage />);
@@ -303,9 +429,26 @@ describe('CanaryPage', () => {
     });
   });
 
-  it('walks every action-error fallback branch and a non-Error action rejection', async () => {
+  it('disables Promote (with a hint) while the canary itself is unhealthy', async () => {
     mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
     server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockActiveStatus)));
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^promote$/i })).toBeInTheDocument();
+    });
+    const promoteButton = screen.getByRole('button', { name: /^promote$/i });
+    expect(promoteButton).toBeDisabled();
+    expect(promoteButton).toHaveAttribute(
+      'title',
+      'Refusing to shift more traffic to a canary that is not healthy'
+    );
+  });
+
+  it('walks every action-error fallback branch and a non-Error action rejection', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockActiveHealthyStatus)));
     const user = userEvent.setup();
 
     render(<CanaryPage />);

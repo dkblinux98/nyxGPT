@@ -4,13 +4,14 @@ metadata:
   name: nyxgpt-api
   namespace: nyxgpt
 spec:
-  # selector.color determines which of nyxgpt-api-blue / nyxgpt-api-green
-  # receives traffic. Do not edit this by hand -- it is managed by
-  # `nyxgpt deploy switch` / `nyxgpt deploy rollback` (see docs/kubernetes.md).
-  # "blue" is the default active color on first apply.
+  # Selects Pods from BOTH nyxgpt-api-stable and nyxgpt-api-canary (they share
+  # the app: nyxgpt-api-canary-pool label) -- the same selector as
+  # service-canary.yaml. This is the primary in-cluster entry point for the
+  # api; traffic split between stable/canary is managed by replica count via
+  # `nyxgpt canary start/promote/rollback` (see docs/kubernetes.md), not by
+  # this selector. Blue/green (a `color` selector flip) was retired -- see #3409.
   selector:
-    app: nyxgpt-api
-    color: blue
+    app: nyxgpt-api-canary-pool
   ports:
     - name: http
       port: 8000

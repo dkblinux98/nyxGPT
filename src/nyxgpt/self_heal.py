@@ -21,11 +21,11 @@ Four deployment modes are covered:
   via `docker ps`/`docker restart <container>`, the same way native mode's
   `nyxgpt-cassandra` is -- see `_list_terraform_component_status`.
 - **Kubernetes** (`nyxgpt ops install --kubernetes --local`): the `nyxgpt-api`
-  Deployments' Pods (blue/green/stable/canary, see `k8s/`), checked via
+  Deployments' Pods (stable/canary, see `k8s/`), checked via
   `kubectl get pods` and healed via `kubectl delete pod` (the Deployment's
   controller recreates it) -- see `_list_kubernetes_component_status`. This
   is on top of, not instead of, Kubernetes' own kubelet liveness-probe
-  restarts and `deploy.py`/`canary.py`'s blue/green + auto-rollback; it adds
+  restarts and `canary.py`'s metrics-gated rollout + auto-rollback; it adds
   the same "torn-down/stuck" recovery + unified dashboard visibility the
   other three modes get.
 
@@ -64,7 +64,7 @@ again" signal.
 State (whether the watchdog is enabled, per-service restart counts, the
 intentional-stop registry, and the recent event history shown on the
 SRE/admin dashboard) is persisted to `~/.nyxGPT/self_heal_state.json`,
-mirroring deploy.py/canary.py's `deploy_state.json`/`canary_state.json`.
+mirroring canary.py's `canary_state.json`.
 """
 
 from __future__ import annotations
@@ -168,11 +168,10 @@ TERRAFORM_CONTAINERS: dict[str, str] = {
 }
 
 # Namespace and label selector for the Kubernetes-managed `nyxgpt-api` Pods
-# (blue/green deployments use `app=nyxgpt-api`, stable/canary use
-# `app=nyxgpt-api-canary-pool` -- see k8s/deployment-*.yaml). Mirrors
-# ops.K8S_NAMESPACE.
+# (stable/canary both use `app=nyxgpt-api-canary-pool` -- see
+# k8s/deployment-stable.yaml / deployment-canary.yaml). Mirrors ops.K8S_NAMESPACE.
 K8S_NAMESPACE = "nyxgpt"
-K8S_POD_LABEL_SELECTOR = "app in (nyxgpt-api,nyxgpt-api-canary-pool)"
+K8S_POD_LABEL_SELECTOR = "app=nyxgpt-api-canary-pool"
 
 # Docker Compose profiles that make up the opt-in observability suite.
 # Mirrors ops.OBSERVABILITY_PROFILES -- kept as a separate copy (rather than
@@ -526,12 +525,12 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
     """Health-check the Kubernetes-managed `nyxgpt-api` Pods via `kubectl get pods`.
 
     Covers `nyxgpt ops install --kubernetes --local` (see `k8s/`): the
-    blue/green/stable/canary Deployments' Pods, one `ComponentStatus` per
-    Pod (not per Deployment -- `stable` alone can run several replicas, and
-    each needs its own backoff/restart-count bookkeeping in `heal_now`).
-    Healed via `kubectl delete pod`, which the Pod's Deployment/ReplicaSet
-    then recreates -- on top of, not instead of, kubelet's own liveness-probe
-    restarts and `deploy.py`/`canary.py`'s blue/green + auto-rollback (see
+    stable/canary Deployments' Pods, one `ComponentStatus` per Pod (not per
+    Deployment -- `stable` alone can run several replicas, and each needs
+    its own backoff/restart-count bookkeeping in `heal_now`). Healed via
+    `kubectl delete pod`, which the Pod's Deployment/ReplicaSet then
+    recreates -- on top of, not instead of, kubelet's own liveness-probe
+    restarts and `canary.py`'s metrics-gated rollout + auto-rollback (see
     the module docstring).
 
     Returns an empty list (never raises) if `kubectl` isn't on PATH, there's

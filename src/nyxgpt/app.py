@@ -50,7 +50,6 @@ from nyxgpt import admin_activity as admin_activity_module
 from nyxgpt import api_models, config_wizard, models, sessions, tools_fs
 from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
-from nyxgpt import deploy as deploy_module
 from nyxgpt import error_tracking as error_tracking_module
 from nyxgpt import health as health_module
 from nyxgpt import metrics as prom_metrics
@@ -110,7 +109,6 @@ from nyxgpt.config import (
     get_canary_total_replicas,
     get_chat_timeout_seconds,
     get_default_model,
-    get_deploy_namespace,
     get_error_tracking_config,
     get_log_aggregation_config,
     get_monitoring_config,
@@ -1293,13 +1291,8 @@ def _loki_curated_queries() -> list[dict[str, str]]:
             "query": '{job="nyxgpt", logger="nyxgpt.self_heal"}',
         },
         {
-            "label": "Deploy events",
-            "hint": "Blue/green switch and rollback activity",
-            "query": '{job="nyxgpt", logger="nyxgpt.deploy"}',
-        },
-        {
             "label": "Canary events",
-            "hint": "Canary rollout, evaluation, and promotion activity",
+            "hint": "Canary deploy, rollout, evaluation, and promotion activity",
             "query": '{job="nyxgpt", logger="nyxgpt.canary"}',
         },
         {
@@ -1656,12 +1649,12 @@ def infra_restart_required(payload: dict[str, Any] = Body(default={})) -> dict[s
 def admin_overview(request: Request) -> dict[str, Any]:
     """Aggregate system status for the admin dashboard overview panel.
 
-    Combines app info, resource metrics, deploy/canary status, and the
+    Combines app info, resource metrics, canary status, and the
     enabled/disabled state of opt-in observability stacks into a single
     response so the dashboard can render a status summary in one request.
     Individual sub-sections degrade to an `{"error": ...}` payload instead
     of failing the whole request when a backing service (e.g. a local K8s
-    cluster for deploy/canary) is unavailable.
+    cluster for canary) is unavailable.
     """
     cfg = _req_cfg(request)
 
@@ -1683,7 +1676,6 @@ def admin_overview(request: Request) -> dict[str, Any]:
             "rag_enabled": get_rag_enabled(cfg),
         },
         "resource_metrics": resource_metrics_summary,
-        "deploy": _safe(deploy_module.status, get_deploy_namespace(cfg)),
         "canary": _safe(canary_module.status, get_canary_namespace(cfg)),
         "self_heal": _safe(self_heal_module.status),
         "observability": {
@@ -1826,59 +1818,33 @@ def analytics_export(request: Request, format: str = "json") -> Response:
     )
 
 
-# --- Local blue/green deployment endpoints (SRE/admin dashboard) ---
-@api.get("/deploy/status")
-def deploy_status(request: Request) -> dict[str, Any]:
-    """Return blue/green deployment status: active/inactive colors, per-color health, and switch history."""
-    cfg = _req_cfg(request)
-    return deploy_module.status(get_deploy_namespace(cfg))
-
-
-@api.post("/deploy/switch")
-def deploy_switch(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Cut traffic over to the given color (or the inactive color if `to` is omitted).
-
-    Body: `{"to": "blue"|"green", "force": bool}`. Returns `400` for an
-    unrecognized color. Refuses to switch to a color whose Deployment isn't
-    ready unless `force=true` is set, returning `409` in that case (and for
-    any other switch failure). On success, records a `deploy.switch` admin
-    activity event.
-    """
-    cfg = _req_cfg(request)
-    target = payload.get("to")
-    if target is not None and target not in deploy_module.COLORS:
-        raise HTTPException(status_code=400, detail=f"Invalid color: {target!r}")
-    result = deploy_module.switch(
-        target=target, namespace=get_deploy_namespace(cfg), force=bool(payload.get("force", False))
-    )
-    if not result.ok:
-        raise HTTPException(status_code=409, detail=result.message)
-    admin_activity_module.record("deploy.switch", result.message)
-    return {"ok": result.ok, "message": result.message}
-
-
-@api.post("/deploy/rollback")
-def deploy_rollback(request: Request) -> dict[str, Any]:
-    """Switch traffic back to the previously active color, per the switch history.
-
-    Returns `409` if there is no prior switch to roll back to, or the
-    rollback target isn't ready. Records a `deploy.rollback` admin activity
-    event on success.
-    """
-    cfg = _req_cfg(request)
-    result = deploy_module.rollback(get_deploy_namespace(cfg))
-    if not result.ok:
-        raise HTTPException(status_code=409, detail=result.message)
-    admin_activity_module.record("deploy.rollback", result.message)
-    return {"ok": result.ok, "message": result.message}
-
-
 # --- Local canary deployment endpoints (SRE/admin dashboard) ---
+# Blue/green (deploy.py, `/api/v1/deploy/*`) was retired in favor of canary,
+# a strict superset for traffic purposes (0%/100% reproduces a cutover) plus
+# metrics-gated gradual shift and auto-rollback -- see #3409.
 @api.get("/canary/status")
 def canary_status(request: Request) -> dict[str, Any]:
-    """Return canary rollout status: active flag, traffic weight, stable/canary health, and metrics snapshot."""
+    """Return canary rollout status: active flag, traffic weight, stable/canary health/version,
+    the currently detected deployment mode, and a metrics snapshot."""
     cfg = _req_cfg(request)
     return canary_module.status(get_canary_namespace(cfg))
+
+
+@api.post("/canary/deploy")
+def canary_deploy(request: Request) -> dict[str, Any]:
+    """Build the current checkout into a versioned image and deploy it to canary only.
+
+    Never touches stable, even on failure. Traffic weighting is a separate,
+    deliberate action (`/canary/start` and `/canary/promote`). Returns `409`
+    if the build, image patch, or rollout wait fails. Records a
+    `canary.deploy` admin activity event on success.
+    """
+    cfg = _req_cfg(request)
+    result = canary_module.deploy(namespace=get_canary_namespace(cfg))
+    if not result.ok:
+        raise HTTPException(status_code=409, detail=result.message)
+    admin_activity_module.record("canary.deploy", result.message)
+    return {"ok": result.ok, "message": result.message}
 
 
 @api.post("/canary/start")

@@ -2,9 +2,9 @@
 
 Defines the `nyxgpt` argparse-based CLI: subcommands for chatting, managing
 sessions, RAG ingestion/query, Ollama model management, the MCP server, the
-terminal UI, and local ops/deploy/canary/self-heal operations. Each
-`cmd_*` function implements one subcommand and is invoked from `cli()`,
-which builds the argument parser and dispatches to the matching handler.
+terminal UI, and local ops/canary/self-heal operations. Each `cmd_*`
+function implements one subcommand and is invoked from `cli()`, which
+builds the argument parser and dispatches to the matching handler.
 """
 
 from __future__ import annotations
@@ -15,9 +15,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-# Deploy (blue/green), canary, and ops implementations live in separate modules for testability.
+# Canary and ops implementations live in separate modules for testability.
+# (blue/green lived in nyxgpt.deploy; retired in favor of canary -- see #3409.)
 from nyxgpt import canary as canary_mod
-from nyxgpt import deploy as deploy_mod
 from nyxgpt import models, sessions, tools_fs
 from nyxgpt import ops as ops_mod
 from nyxgpt import self_heal as self_heal_mod
@@ -30,7 +30,6 @@ from nyxgpt.config import (
     get_canary_step_percent,
     get_canary_total_replicas,
     get_default_model,
-    get_deploy_namespace,
     get_ollama_base_url,
     get_sessions_dir,
     load_config,
@@ -1350,77 +1349,6 @@ def cmd_mcp() -> int:
         return 1
 
 
-def _deploy_namespace(cfg_path: Path | None, override: str | None) -> str:
-    """Resolve the Kubernetes namespace for deploy commands: `override` if given, else config."""
-    if override:
-        return override
-    return get_deploy_namespace(load_config(cfg_path))
-
-
-def cmd_deploy_status(cfg_path: Path | None, namespace: str | None) -> int:
-    """Print which blue/green color is currently active and each color's health.
-
-    Args:
-        cfg_path: Optional path to a config.ini to load instead of the default.
-        namespace: Kubernetes namespace override (default: from config).
-
-    Returns:
-        0 always.
-    """
-    ns = _deploy_namespace(cfg_path, namespace)
-    data = deploy_mod.status(ns)
-    print(f"Active color: {data['active']} (namespace={data['namespace']})")
-    for color, info in data["colors"].items():
-        marker = "*" if color == data["active"] else " "
-        state = "healthy" if info["healthy"] else "unhealthy"
-        print(f" {marker} {color}: {state} - {info['message']}")
-    if data["history"]:
-        print("\nRecent switches:")
-        for entry in data["history"]:
-            print(f"  {entry['from']} -> {entry['to']} (ts={entry['ts']})")
-    return 0
-
-
-def cmd_deploy_switch(
-    cfg_path: Path | None, namespace: str | None, target: str | None, force: bool
-) -> int:
-    """Cut traffic over to a blue/green color, health-checking it first unless forced.
-
-    Args:
-        cfg_path: Optional path to a config.ini to load instead of the default.
-        namespace: Kubernetes namespace override (default: from config).
-        target: Color to switch to (default: the currently inactive one).
-        force: If True, switch even if the target color is unhealthy.
-
-    Returns:
-        0 if the switch succeeded, 2 if it failed (e.g. target unhealthy).
-    """
-    ns = _deploy_namespace(cfg_path, namespace)
-    result = deploy_mod.switch(target=target, namespace=ns, force=force)
-    print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
-    if result.details:
-        print(f"  {result.details}")
-    return 0 if result.ok else 2
-
-
-def cmd_deploy_rollback(cfg_path: Path | None, namespace: str | None) -> int:
-    """Switch traffic back to the previously active blue/green color.
-
-    Args:
-        cfg_path: Optional path to a config.ini to load instead of the default.
-        namespace: Kubernetes namespace override (default: from config).
-
-    Returns:
-        0 if the rollback succeeded, 2 if it failed.
-    """
-    ns = _deploy_namespace(cfg_path, namespace)
-    result = deploy_mod.rollback(ns)
-    print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
-    if result.details:
-        print(f"  {result.details}")
-    return 0 if result.ok else 2
-
-
 def _canary_namespace(cfg_path: Path | None, override: str | None) -> str:
     """Resolve the Kubernetes namespace for canary commands: `override` if given, else config."""
     if override:
@@ -1429,7 +1357,7 @@ def _canary_namespace(cfg_path: Path | None, override: str | None) -> str:
 
 
 def cmd_canary_status(cfg_path: Path | None, namespace: str | None) -> int:
-    """Print canary rollout progress, stable/canary health, and live traffic metrics.
+    """Print canary rollout progress, stable/canary health/version, and live traffic metrics.
 
     Args:
         cfg_path: Optional path to a config.ini to load instead of the default.
@@ -1440,14 +1368,16 @@ def cmd_canary_status(cfg_path: Path | None, namespace: str | None) -> int:
     """
     ns = _canary_namespace(cfg_path, namespace)
     data = canary_mod.status(ns)
-    state = "in progress" if data["active"] else "idle"
-    print(f"Canary rollout: {state} at {data['weight_percent']}% (namespace={data['namespace']})")
+    rollout_state = "in progress" if data["active"] else "idle"
     print(
-        f"  stable: {'healthy' if data['stable']['healthy'] else 'unhealthy'} - {data['stable']['message']}"
+        f"Canary rollout: {rollout_state} at {data['weight_percent']}% (namespace={data['namespace']})"
     )
-    print(
-        f"  canary: {'healthy' if data['canary']['healthy'] else 'unhealthy'} - {data['canary']['message']}"
-    )
+    if not data["mode_supported"]:
+        print(f"  note: {data['mode_message']}")
+    for track in ("stable", "canary"):
+        info = data[track]
+        version = f", version={info['version']}" if info["version"] else ""
+        print(f"  {track}: {info['state']} - {info['message']}{version}")
     metrics = data["metrics"]
     print(
         f"  metrics: {metrics['total_requests']} requests, "
@@ -1458,6 +1388,24 @@ def cmd_canary_status(cfg_path: Path | None, namespace: str | None) -> int:
         for entry in data["history"]:
             print(f"  {entry}")
     return 0
+
+
+def cmd_canary_deploy(cfg_path: Path | None, namespace: str | None) -> int:
+    """Build the current checkout into a versioned image and deploy it to canary only.
+
+    Args:
+        cfg_path: Optional path to a config.ini to load instead of the default.
+        namespace: Kubernetes namespace override (default: from config).
+
+    Returns:
+        0 if the deploy succeeded, 2 if it failed (stable is left untouched either way).
+    """
+    ns = _canary_namespace(cfg_path, namespace)
+    result = canary_mod.deploy(namespace=ns)
+    print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
+    if result.details:
+        print(f"  {result.details}")
+    return 0 if result.ok else 2
 
 
 def cmd_canary_start(cfg_path: Path | None, namespace: str | None, weight_percent: int) -> int:
@@ -2085,47 +2033,26 @@ def cli(argv: list[str] | None = None) -> int:
         ),
     )
 
-    # Add deploy command (local blue/green switching on a local k8s cluster)
-    deploy_p = sub.add_parser(
-        "deploy", help="Local blue/green deployment (kind/minikube/k3s cluster)"
-    )
-    deploy_sub = deploy_p.add_subparsers(dest="deploy_cmd", required=True)
-
-    deploy_status = deploy_sub.add_parser(
-        "status", help="Show which color is active and each color's health"
-    )
-    deploy_status.add_argument(
-        "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
-    )
-
-    deploy_switch = deploy_sub.add_parser(
-        "switch", help="Cut traffic over to a color (health-checked before switching)"
-    )
-    deploy_switch.add_argument(
-        "--to", choices=list(deploy_mod.COLORS), help="Target color (default: the inactive one)"
-    )
-    deploy_switch.add_argument(
-        "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
-    )
-    deploy_switch.add_argument(
-        "--force", action="store_true", help="Switch even if the target is unhealthy"
-    )
-
-    deploy_rollback = deploy_sub.add_parser(
-        "rollback", help="Switch traffic back to the previously active color"
-    )
-    deploy_rollback.add_argument(
-        "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
-    )
-
-    # Add canary command (local weighted-traffic canary rollout on a local k8s cluster)
+    # Add canary command (local weighted-traffic canary rollout on a local k8s cluster --
+    # the sole deployment model since #3409 retired blue/green in favor of it)
     canary_p = sub.add_parser("canary", help="Local canary deployment (kind/minikube/k3s cluster)")
     canary_sub = canary_p.add_subparsers(dest="canary_cmd", required=True)
 
     canary_status_p = canary_sub.add_parser(
-        "status", help="Show rollout progress, stable/canary health, and live metrics"
+        "status", help="Show rollout progress, stable/canary health/version, and live metrics"
     )
     canary_status_p.add_argument(
+        "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
+    )
+
+    canary_deploy_p = canary_sub.add_parser(
+        "deploy",
+        help=(
+            "Build the current checkout into a versioned image and deploy it to canary "
+            "only (stable is never touched); traffic weighting is a separate step"
+        ),
+    )
+    canary_deploy_p.add_argument(
         "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
     )
 
@@ -2334,17 +2261,11 @@ def cli(argv: list[str] | None = None) -> int:
         if args.ops_cmd == "migrate-volumes":
             return ops_mod.migrate_volumes_cmd(args)
 
-    if cmd == "deploy":
-        if args.deploy_cmd == "status":
-            return cmd_deploy_status(args.config, args.namespace)
-        if args.deploy_cmd == "switch":
-            return cmd_deploy_switch(args.config, args.namespace, args.to, args.force)
-        if args.deploy_cmd == "rollback":
-            return cmd_deploy_rollback(args.config, args.namespace)
-
     if cmd == "canary":
         if args.canary_cmd == "status":
             return cmd_canary_status(args.config, args.namespace)
+        if args.canary_cmd == "deploy":
+            return cmd_canary_deploy(args.config, args.namespace)
         if args.canary_cmd == "start":
             return cmd_canary_start(args.config, args.namespace, args.weight)
         if args.canary_cmd == "evaluate":

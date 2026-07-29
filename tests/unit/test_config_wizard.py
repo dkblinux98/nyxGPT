@@ -378,7 +378,6 @@ def test_previously_absent_sections_are_now_covered():
     for section in (
         "cache",
         "web",
-        "deploy",
         "canary",
         "batch",
         "self_heal",

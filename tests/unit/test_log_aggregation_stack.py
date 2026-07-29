@@ -245,7 +245,7 @@ def test_log_aggregation_status_endpoint_includes_curated_loki_queries() -> None
     curated_queries = response.json()["curated_queries"]
     assert len(curated_queries) >= 4
     labels = {q["label"] for q in curated_queries}
-    assert {"Self-heal events", "Deploy events", "Canary events", "Chat errors"} <= labels
+    assert {"Self-heal events", "Canary events", "Chat errors"} <= labels
     for q in curated_queries:
         assert q["query"].startswith('{job="nyxgpt"')
         assert q["hint"]

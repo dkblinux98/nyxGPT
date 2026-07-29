@@ -288,7 +288,6 @@ _SECTION_LABELS: dict[str, str] = {
     "ollama": "Model backend",
     "api": "API server",
     "web": "Web UI server",
-    "deploy": "Deployment (Kubernetes)",
     "canary": "Canary rollout",
     "auth": "Authentication",
     "rate_limit": "Rate limiting",

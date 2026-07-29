@@ -255,6 +255,19 @@ def record_manual_restart(service: str, ok: bool, message: str = "") -> None:
     _record_ops_action("restart", service, "success" if ok else "failure", message)
 
 
+def record_canary_action(action: str, result: str, message: str = "") -> None:
+    """Record a canary lifecycle action (deploy/start/promote/rollback) per #3390.
+
+    `canary.py` funnels every rollout action through here rather than calling
+    `_record_ops_action` directly, keeping the "canary-<action>" command
+    naming convention (mirroring "install"/"restart"/"down") in one place.
+    `service` is always "api" today -- canary only covers the api component
+    (see #3409); it'll gain a real component label if/when web/ollama
+    coverage lands.
+    """
+    _record_ops_action(f"canary-{action}", "api", result, message)
+
+
 def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text.
 
@@ -280,6 +293,16 @@ def _read_project_version() -> str:
         return "0.0.0"
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     return str(data.get("project", {}).get("version", "0.0.0"))
+
+
+def project_version() -> str:
+    """Public wrapper around `_read_project_version()`, for cross-module version stamping.
+
+    Used by `canary.py` to stamp the versioned image tag `nyxgpt ops deploy
+    --kubernetes` builds (see #3409) -- `_read_project_version` stays private
+    since every other caller is internal to this module.
+    """
+    return _read_project_version()
 
 
 def _ensure_dir(p: Path) -> None:
@@ -2050,21 +2073,25 @@ def _kubectl_context() -> str:
     return (cp.stdout or "").strip()
 
 
-def _build_and_load_k8s_image() -> list[OpsResult]:
-    """Build the `nyxgpt-api:local` image and load it into the current cluster's image cache.
+def _build_and_load_k8s_image(image: str = K8S_IMAGE) -> list[OpsResult]:
+    """Build `image` from the current checkout and load it into the current cluster's image cache.
 
     Docker Desktop's built-in cluster shares the host's image cache, so a
     build alone is enough there. kind/minikube each need an explicit
     load step; an unrecognized cluster type is treated the same way the
     documented manual flow would be -- skip the load and tell the operator
     to do it themselves if their cluster doesn't share the host cache.
+
+    `image` defaults to the mutable `nyxgpt-api:local` tag `nyxgpt ops
+    install --kubernetes` uses; `nyxgpt ops deploy --kubernetes` passes a
+    versioned tag instead (see `build_and_load_k8s_image` / #3409).
     """
     if _which("docker") is None:
         return [OpsResult(False, "docker not found on PATH -- cannot build the nyxgpt-api image")]
-    cp = _run(["docker", "build", "-t", K8S_IMAGE, str(REPO_ROOT)], check=False)
+    cp = _run(["docker", "build", "-t", image, str(REPO_ROOT)], check=False)
     if cp.returncode != 0:
         return [OpsResult(False, "docker build failed", _cp_details(cp))]
-    results = [OpsResult(True, f"Built {K8S_IMAGE}")]
+    results = [OpsResult(True, f"Built {image}")]
 
     context = _kubectl_context()
     if "docker-desktop" in context:
@@ -2074,28 +2101,38 @@ def _build_and_load_k8s_image() -> list[OpsResult]:
         return results
     if context.startswith("kind-") and _which("kind") is not None:
         cluster_name = context.removeprefix("kind-")
-        cp = _run(["kind", "load", "docker-image", K8S_IMAGE, "--name", cluster_name], check=False)
+        cp = _run(["kind", "load", "docker-image", image, "--name", cluster_name], check=False)
         if cp.returncode != 0:
             results.append(OpsResult(False, "kind load docker-image failed", _cp_details(cp)))
         else:
-            results.append(OpsResult(True, f"Loaded {K8S_IMAGE} into kind cluster {cluster_name}"))
+            results.append(OpsResult(True, f"Loaded {image} into kind cluster {cluster_name}"))
         return results
     if _which("minikube") is not None:
-        cp = _run(["minikube", "image", "load", K8S_IMAGE], check=False)
+        cp = _run(["minikube", "image", "load", image], check=False)
         if cp.returncode != 0:
             results.append(OpsResult(False, "minikube image load failed", _cp_details(cp)))
         else:
-            results.append(OpsResult(True, f"Loaded {K8S_IMAGE} into minikube"))
+            results.append(OpsResult(True, f"Loaded {image} into minikube"))
         return results
     results.append(
         OpsResult(
             True,
             f"Unrecognized cluster context {context!r} -- skipped image load",
             "If this cluster doesn't share the host's image cache, load "
-            f"{K8S_IMAGE} into it manually before the Pods can start.",
+            f"{image} into it manually before the Pods can start.",
         )
     )
     return results
+
+
+def build_and_load_k8s_image(image: str) -> list[OpsResult]:
+    """Build and load a specific, caller-chosen image tag (used by `nyxgpt ops deploy --kubernetes`).
+
+    Public wrapper around `_build_and_load_k8s_image` for cross-module use
+    (`canary.deploy`) -- the mutable-`:local`-tag install flow keeps calling
+    the private function directly with its default.
+    """
+    return _build_and_load_k8s_image(image)
 
 
 def _ensure_k8s_secret(api_key: str | None) -> list[OpsResult]:
@@ -2115,7 +2152,7 @@ def _ensure_k8s_secret(api_key: str | None) -> list[OpsResult]:
 
 
 def _kubectl_apply_kustomization() -> list[OpsResult]:
-    """Apply `k8s/`'s kustomization (namespace, RBAC, ConfigMap, Secret, Deployments, HPAs, Service)."""
+    """Apply `k8s/`'s kustomization (namespace, RBAC, ConfigMap, Secret, Deployments, Service)."""
     cp = _run(["kubectl", "apply", "-k", str(K8S_DIR)], check=False)
     if cp.returncode != 0:
         return [OpsResult(False, "kubectl apply -k k8s/ failed", _cp_details(cp))]
@@ -2123,10 +2160,12 @@ def _kubectl_apply_kustomization() -> list[OpsResult]:
 
 
 def _k8s_stack_health() -> list[OpsResult]:
-    """Snapshot of Pod/HPA/Service health in the `nyxgpt` namespace right after apply.
+    """Snapshot of Pod/Service health in the `nyxgpt` namespace right after apply.
 
     A one-shot snapshot, not a wait-until-ready loop -- Pods may still be
-    starting when this runs; re-check with `nyxgpt ops status`.
+    starting when this runs; re-check with `nyxgpt ops status`. No HPA check
+    here -- the stable/canary Deployments deliberately have none (autoscaling
+    would fight canary.py's replica-count-based traffic split; see #3409).
     """
     results: list[OpsResult] = []
 
@@ -2152,12 +2191,6 @@ def _k8s_stack_health() -> list[OpsResult]:
             name, _, phase = entry.partition("=")
             results.append(OpsResult(phase == "Running", f"pod {name}: {phase}"))
 
-    cp = _run(["kubectl", "-n", K8S_NAMESPACE, "get", "hpa", "--no-headers"], check=False)
-    hpa_lines = [line for line in (cp.stdout or "").splitlines() if line.strip()]
-    results.append(
-        OpsResult(cp.returncode == 0 and bool(hpa_lines), f"{len(hpa_lines)} HPA(s) found")
-    )
-
     cp = _run(
         ["kubectl", "-n", K8S_NAMESPACE, "get", "svc", "nyxgpt-api", "--no-headers"], check=False
     )
@@ -2176,7 +2209,7 @@ def _install_kubernetes_steps(api_key: str | None) -> list[OpsResult]:
     Prereq checks (cluster reachable, kubectl present), builds and loads
     `nyxgpt-api:local`, bootstraps k8s/secret.yaml (prompting for the API
     key, never committing it), applies the kustomization, and snapshots
-    Pod/HPA/Service health. Stops at the first failing step, same rationale
+    Pod/Service health. Stops at the first failing step, same rationale
     as `_install_terraform_steps`.
 
     Shared by the `nyxgpt ops install --kubernetes --local` CLI entrypoint

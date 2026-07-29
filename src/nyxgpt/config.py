@@ -306,21 +306,12 @@ def get_tools_root(cfg: ConfigParser) -> Path:
     return _expand_path(val or str(Path.home()))
 
 
-def get_deploy_namespace(cfg: ConfigParser) -> str:
-    """Return the Kubernetes namespace used for deploys (``[deploy] namespace``).
-
-    Falls back to ``"nyxgpt"``.
-    """
-    return cfg.get("deploy", "namespace", fallback="nyxgpt")
-
-
 def get_canary_namespace(cfg: ConfigParser) -> str:
     """Return the Kubernetes namespace used for canary rollouts (``[canary] namespace``).
 
-    Falls back to whatever `get_deploy_namespace` resolves to, so canary
-    and deploy stay in the same namespace unless explicitly split.
+    Falls back to ``"nyxgpt"``.
     """
-    return cfg.get("canary", "namespace", fallback=get_deploy_namespace(cfg))
+    return cfg.get("canary", "namespace", fallback="nyxgpt")
 
 
 def get_canary_total_replicas(cfg: ConfigParser) -> int:

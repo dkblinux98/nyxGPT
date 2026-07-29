@@ -136,7 +136,7 @@
     },
     {
       "id": 7,
-      "title": "Start / promote / rollback timeline (canary log events)",
+      "title": "Deploy / start / promote / rollback timeline (canary log events)",
       "type": "logs",
       "datasource": { "type": "loki", "uid": "loki" },
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 22 },
@@ -149,7 +149,28 @@
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{job=\"nyxgpt\"} |= `canary:` |~ `starting|started|promoting|promoted|rolling back|rolled back|regression`",
+          "expr": "{job=\"nyxgpt\"} |= `canary:` |~ `deploying|Deployed|starting|started|promoting|Promoted|rolling back|rolled back|regression`",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Stable / canary versions",
+      "type": "table",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "transformations": [
+        { "id": "labelsToFields", "options": {} },
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "Value": true } } }
+      ],
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "nyxgpt_canary_track_version_info == 1",
+          "format": "table",
+          "instant": true,
           "refId": "A"
         }
       ]

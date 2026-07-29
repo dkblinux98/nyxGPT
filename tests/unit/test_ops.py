@@ -1252,6 +1252,42 @@ def test_read_project_version_reads_from_pyproject(monkeypatch, tmp_path):
     assert ops._read_project_version() == "9.9.9"
 
 
+@pytest.mark.unit
+def test_project_version_public_wrapper_matches_private(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "nyxGPT"\nversion = "2.5.0"\n', encoding="utf-8"
+    )
+    assert ops.project_version() == "2.5.0"
+
+
+@pytest.mark.unit
+def test_build_and_load_k8s_image_public_wrapper_uses_given_tag(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_build_and_load_k8s_image",
+        lambda image: calls.append(image) or [ops.OpsResult(True, "ok")],
+    )
+    results = ops.build_and_load_k8s_image("nyxgpt-api:1.2.3-abcd123")
+    assert calls == ["nyxgpt-api:1.2.3-abcd123"]
+    assert results == [ops.OpsResult(True, "ok")]
+
+
+@pytest.mark.unit
+def test_record_canary_action_uses_canary_prefixed_command(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_record_ops_action",
+        lambda command, service, result, message="": calls.append(
+            (command, service, result, message)
+        ),
+    )
+    ops.record_canary_action("deploy", "success", "Deployed nyxgpt-api:1.2.3-abcd123")
+    assert calls == [("canary-deploy", "api", "success", "Deployed nyxgpt-api:1.2.3-abcd123")]
+
+
 # --- _install_config (first-run wizard on `nyxgpt ops install`, #3388) ---
 
 
@@ -6400,15 +6436,13 @@ def test_kubectl_apply_kustomization_failure(monkeypatch):
 
 
 @pytest.mark.unit
-def test_k8s_stack_health_reports_pods_hpa_service(monkeypatch):
+def test_k8s_stack_health_reports_pods_service(monkeypatch):
     def fake_run(cmd, check=True):
         if cmd[4] == "pods":
             return CP(
                 returncode=0,
-                stdout="nyxgpt-api-blue-abc=Running;nyxgpt-api-green-def=Pending;",
+                stdout="nyxgpt-api-stable-abc=Running;nyxgpt-api-canary-def=Pending;",
             )
-        if cmd[4] == "hpa":
-            return CP(returncode=0, stdout="nyxgpt-api-blue   Deployment/nyxgpt-api-blue\n")
         if cmd[4] == "svc":
             return CP(returncode=0, stdout="nyxgpt-api   ClusterIP\n")
         raise AssertionError(f"unexpected: {cmd}")
@@ -6419,7 +6453,7 @@ def test_k8s_stack_health_reports_pods_hpa_service(monkeypatch):
     assert len(pod_results) == 2
     assert pod_results[0].ok is True
     assert pod_results[1].ok is False
-    assert any("HPA" in r.message and r.ok for r in results)
+    assert not any("HPA" in r.message for r in results)
     assert any("Service nyxgpt-api found" in r.message for r in results)
 
 
@@ -6745,7 +6779,7 @@ def test_status_shows_kubernetes_pods_when_present(monkeypatch, capsys):
 
     def fake_run(cmd, check=True):
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
-            return CP(returncode=0, stdout="nyxgpt-api-blue-abc   1/1   Running\n")
+            return CP(returncode=0, stdout="nyxgpt-api-stable-abc   1/1   Running\n")
         return CP(stdout="")
 
     monkeypatch.setattr(ops, "_which", fake_which)
@@ -6758,7 +6792,7 @@ def test_status_shows_kubernetes_pods_when_present(monkeypatch, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "Kubernetes (nyxgpt namespace" in out
-    assert "nyxgpt-api-blue-abc" in out
+    assert "nyxgpt-api-stable-abc" in out
 
 
 @pytest.mark.unit

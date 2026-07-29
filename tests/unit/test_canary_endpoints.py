@@ -22,12 +22,23 @@ def test_canary_status_endpoint_returns_module_status():
         "namespace": "nyxgpt",
         "active": True,
         "weight_percent": 25,
-        "stable": {"healthy": True, "message": "nyxgpt-api-stable healthy (3/3 ready)"},
-        "canary": {"healthy": True, "message": "nyxgpt-api-canary healthy (1/1 ready)"},
+        "stable": {
+            "state": "healthy",
+            "message": "nyxgpt-api-stable healthy (3/3 ready)",
+            "version": "1.2.3-abcd123",
+        },
+        "canary": {
+            "state": "healthy",
+            "message": "nyxgpt-api-canary healthy (1/1 ready)",
+            "version": "1.2.3-abcd123",
+        },
         "metrics": {"total_requests": 100, "error_rate_percent": 1.0, "p95_latency_ms": 250.0},
         "history": [],
         "available": True,
         "unavailable_reason": None,
+        "mode": "kubernetes",
+        "mode_supported": True,
+        "mode_message": None,
     }
 
     with patch("nyxgpt.app.canary_module.status", return_value=expected) as mock_status:
@@ -37,6 +48,35 @@ def test_canary_status_endpoint_returns_module_status():
     assert response.status_code == 200
     assert response.json() == expected
     mock_status.assert_called_once()
+
+
+def test_canary_deploy_endpoint_success():
+    with patch(
+        "nyxgpt.app.canary_module.deploy",
+        return_value=CanaryResult(True, "Deployed nyxgpt-api:1.2.3-abcd123 to nyxgpt-api-canary"),
+    ) as mock_deploy:
+        client = TestClient(app)
+        response = client.post("/api/v1/canary/deploy")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert "Deployed" in body["message"]
+    mock_deploy.assert_called_once()
+
+
+def test_canary_deploy_endpoint_returns_409_on_failure():
+    with patch(
+        "nyxgpt.app.canary_module.deploy",
+        return_value=CanaryResult(
+            False, "Deployed nyxgpt-api:1.2.3-abcd123 but its rollout did not become healthy"
+        ),
+    ):
+        client = TestClient(app)
+        response = client.post("/api/v1/canary/deploy")
+
+    assert response.status_code == 409
+    assert "did not become healthy" in response.json()["error"]["message"]
 
 
 def test_canary_start_endpoint_success():

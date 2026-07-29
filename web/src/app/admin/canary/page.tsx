@@ -5,9 +5,12 @@ import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
 import { exploreQueryUrl } from '../../../lib/grafanaExplore';
 
+type TrackState = 'not_deployed' | 'unhealthy' | 'healthy' | 'error';
+
 type TrackHealth = {
-  healthy: boolean;
+  state: TrackState;
   message: string;
+  version: string;
 };
 
 type Metrics = {
@@ -20,6 +23,7 @@ type HistoryEntry = {
   action: string;
   weight_percent?: number;
   from_weight_percent?: number;
+  version?: string;
   ts: number;
 };
 
@@ -33,6 +37,23 @@ type CanaryStatus = {
   history: HistoryEntry[];
   available: boolean;
   unavailable_reason: string | null;
+  mode: string;
+  mode_supported: boolean;
+  mode_message: string | null;
+};
+
+const TRACK_STATE_LABEL: Record<TrackState, string> = {
+  not_deployed: 'Not deployed',
+  unhealthy: 'Unhealthy',
+  healthy: 'Healthy',
+  error: 'Error',
+};
+
+const TRACK_STATE_COLOR: Record<TrackState, string> = {
+  not_deployed: 'var(--foreground-muted)',
+  unhealthy: '#ef4444',
+  healthy: '#22c55e',
+  error: '#ef4444',
 };
 
 type MonitoringStatus = {
@@ -46,7 +67,7 @@ type LogAggregationStatus = {
 };
 
 const CANARY_LOKI_QUERY =
-  '{job="nyxgpt"} |= `canary:` |~ `starting|started|promoting|promoted|rolling back|rolled back|regression`';
+  '{job="nyxgpt"} |= `canary:` |~ `deploying|Deployed|starting|started|promoting|Promoted|rolling back|rolled back|regression`';
 
 export default function CanaryPage() {
   const [status, setStatus] = useState<CanaryStatus | null>(null);
@@ -55,6 +76,7 @@ export default function CanaryPage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [startWeight, setStartWeight] = useState(10);
+  const [deploying, setDeploying] = useState(false);
   const [starting, setStarting] = useState(false);
   const [evaluating, setEvaluating] = useState(false);
   const [promoting, setPromoting] = useState(false);
@@ -133,6 +155,17 @@ export default function CanaryPage() {
     }
   }
 
+  const handleDeploy = () => {
+    if (!confirm('Build the current checkout and deploy it to canary only (stable is untouched)?'))
+      return;
+    return runAction(
+      '/api/v1/canary/deploy',
+      undefined,
+      setDeploying,
+      'Deployed current version to canary'
+    );
+  };
+
   const handleStart = () =>
     runAction(
       '/api/v1/canary/start',
@@ -178,8 +211,9 @@ export default function CanaryPage() {
             Canary Deployment
           </h1>
           <p style={{ color: 'var(--foreground-muted)', marginBottom: 8 }}>
-            Gradual weighted rollout between nyxgpt-api-stable and nyxgpt-api-canary, with
-            metrics-based promotion and automatic rollback.
+            Deploy a new version to nyxgpt-api-canary, gate a gradual weighted rollout on live
+            metrics, then promote it to nyxgpt-api-stable (or roll back). The sole deployment
+            model since blue/green was retired -- see docs/kubernetes.md.
           </p>
           <a href="/admin/dashboard" style={{ color: '#0066cc', textDecoration: 'none' }}>
             ← Back to Admin Dashboard
@@ -279,14 +313,14 @@ export default function CanaryPage() {
             </span>
           </div>
 
-          {!status.available && (
+          {!status.mode_supported && (
             <div
               style={{
                 marginBottom: '1.5rem',
                 padding: '1rem 1.5rem',
                 borderRadius: '0.5rem',
                 background: 'var(--background-secondary)',
-                border: '1px solid #f59e0b',
+                border: '1px solid var(--border-color)',
                 fontSize: '0.875rem',
                 display: 'flex',
                 alignItems: 'center',
@@ -295,8 +329,8 @@ export default function CanaryPage() {
               }}
             >
               <span>
-                <strong>Not available in this deployment mode.</strong>{' '}
-                {status.unavailable_reason}
+                <strong>Canary doesn&apos;t apply to the current deployment mode ({status.mode}).</strong>{' '}
+                {status.mode_message}
               </span>
               <button
                 onClick={loadStatus}
@@ -315,7 +349,42 @@ export default function CanaryPage() {
             </div>
           )}
 
-          {status.available && (
+          {status.mode_supported && !status.available && (
+            <div
+              style={{
+                marginBottom: '1.5rem',
+                padding: '1rem 1.5rem',
+                borderRadius: '0.5rem',
+                background: 'var(--background-secondary)',
+                border: '1px solid #ef4444',
+                fontSize: '0.875rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '1rem',
+              }}
+            >
+              <span>
+                <strong>Kubernetes is unreachable.</strong> {status.unavailable_reason}
+              </span>
+              <button
+                onClick={loadStatus}
+                style={{
+                  padding: '0.4rem 0.75rem',
+                  backgroundColor: 'var(--background)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '0.375rem',
+                  cursor: 'pointer',
+                  fontSize: '0.8rem',
+                  flexShrink: 0,
+                }}
+              >
+                Refresh
+              </button>
+            </div>
+          )}
+
+          {status.mode_supported && status.available && (
           <>
           <div
             style={{
@@ -343,12 +412,17 @@ export default function CanaryPage() {
                 <h3 style={{ fontSize: '1.1rem', fontWeight: 'bold', marginBottom: '0.5rem' }}>
                   {label}
                 </h3>
-                <p style={{ fontSize: '0.875rem', color: health.healthy ? '#22c55e' : '#ef4444' }}>
-                  {health.healthy ? 'Healthy' : 'Unhealthy'}
+                <p style={{ fontSize: '0.875rem', color: TRACK_STATE_COLOR[health.state] }}>
+                  {TRACK_STATE_LABEL[health.state]}
                 </p>
                 <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginTop: '0.25rem' }}>
                   {health.message}
                 </p>
+                {health.version && (
+                  <p style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', marginTop: '0.25rem' }}>
+                    version: <code>{health.version}</code>
+                  </p>
+                )}
               </div>
             ))}
           </div>
@@ -385,7 +459,37 @@ export default function CanaryPage() {
             </div>
           </div>
 
+          {(() => {
+            const pairNotReady = status.stable.state !== 'healthy' || status.canary.state === 'error';
+            const notReadyHint =
+              status.canary.state === 'error' ? status.canary.message : status.stable.message;
+            return pairNotReady ? (
+              <p style={{ fontSize: '0.8rem', color: 'var(--foreground-muted)', marginBottom: '0.75rem' }}>
+                Rollout controls are disabled until the stable/canary pair is up: {notReadyHint}
+              </p>
+            ) : null;
+          })()}
+
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+            <button
+              onClick={handleDeploy}
+              disabled={deploying || status.stable.state !== 'healthy' || status.canary.state === 'error'}
+              style={{
+                padding: '0.5rem 1rem',
+                backgroundColor: 'var(--background-secondary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '0.375rem',
+                cursor:
+                  deploying || status.stable.state !== 'healthy' || status.canary.state === 'error'
+                    ? 'not-allowed'
+                    : 'pointer',
+                fontSize: '0.875rem',
+                fontWeight: '600',
+              }}
+              title="Build the current checkout and deploy it to the canary Deployment only; traffic weighting is a separate step"
+            >
+              {deploying ? 'Deploying...' : 'Deploy current version to canary'}
+            </button>
             {!status.active && (
               <>
                 <label style={{ fontSize: '0.875rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -409,7 +513,7 @@ export default function CanaryPage() {
                 </label>
                 <button
                   onClick={handleStart}
-                  disabled={starting}
+                  disabled={starting || status.stable.state !== 'healthy' || status.canary.state === 'error'}
                   style={{
                     padding: '0.5rem 1rem',
                     backgroundColor: '#3b82f6',
@@ -444,7 +548,7 @@ export default function CanaryPage() {
                 </button>
                 <button
                   onClick={handlePromote}
-                  disabled={promoting}
+                  disabled={promoting || status.canary.state !== 'healthy'}
                   style={{
                     padding: '0.5rem 1rem',
                     backgroundColor: '#22c55e',
@@ -455,6 +559,11 @@ export default function CanaryPage() {
                     fontSize: '0.875rem',
                     fontWeight: '600',
                   }}
+                  title={
+                    status.canary.state !== 'healthy'
+                      ? 'Refusing to shift more traffic to a canary that is not healthy'
+                      : undefined
+                  }
                 >
                   {promoting ? 'Promoting...' : 'Promote'}
                 </button>
@@ -517,6 +626,7 @@ export default function CanaryPage() {
                     {entry.action}
                     {entry.weight_percent !== undefined ? ` → ${entry.weight_percent}%` : ''}
                     {entry.from_weight_percent !== undefined ? ` (from ${entry.from_weight_percent}%)` : ''}
+                    {entry.version ? ` (${entry.version})` : ''}
                     {' at '}
                     {new Date(entry.ts * 1000).toLocaleString()}
                   </li>

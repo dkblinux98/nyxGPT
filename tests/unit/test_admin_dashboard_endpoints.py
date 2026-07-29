@@ -1,7 +1,7 @@
 """Unit tests for the /api/v1/admin/* endpoints (admin dashboard).
 
 Covers src/nyxgpt/app.py's admin_overview/admin_activity_list/admin_access_*
-route handlers. External dependencies (deploy/canary status, the resource
+route handlers. External dependencies (canary status, the resource
 monitor, and config file writes) are mocked so no cluster or real config
 mutation is required.
 
@@ -28,11 +28,9 @@ def _auth_cfg(enabled=False, header="X-API-Key", api_key=""):
 
 
 def test_admin_overview_aggregates_status():
-    deploy_status = {"namespace": "nyxgpt", "active": "blue", "inactive": "green"}
     canary_status = {"namespace": "nyxgpt", "active": False}
 
     with (
-        patch("nyxgpt.app.deploy_module.status", return_value=deploy_status),
         patch("nyxgpt.app.canary_module.status", return_value=canary_status),
         patch("nyxgpt.app.get_resource_monitor", return_value=None),
     ):
@@ -41,7 +39,6 @@ def test_admin_overview_aggregates_status():
 
     assert response.status_code == 200
     body = response.json()
-    assert body["deploy"] == deploy_status
     assert body["canary"] == canary_status
     assert body["resource_metrics"] is None
     assert "info" in body
@@ -55,10 +52,9 @@ def test_admin_overview_aggregates_status():
     assert "auth_enabled" in body
 
 
-def test_admin_overview_degrades_gracefully_when_deploy_status_fails():
+def test_admin_overview_degrades_gracefully_when_canary_status_fails():
     with (
-        patch("nyxgpt.app.deploy_module.status", side_effect=RuntimeError("kubectl not found")),
-        patch("nyxgpt.app.canary_module.status", return_value={}),
+        patch("nyxgpt.app.canary_module.status", side_effect=RuntimeError("kubectl not found")),
         patch("nyxgpt.app.get_resource_monitor", return_value=None),
     ):
         client = TestClient(app)
@@ -66,8 +62,8 @@ def test_admin_overview_degrades_gracefully_when_deploy_status_fails():
 
     assert response.status_code == 200
     body = response.json()
-    assert "error" in body["deploy"]
-    assert "kubectl not found" in body["deploy"]["error"]
+    assert "error" in body["canary"]
+    assert "kubectl not found" in body["canary"]["error"]
 
 
 # --- GET /admin/activity ---

@@ -26,7 +26,6 @@ from nyxgpt.config import (
     get_chat_timeout_seconds,
     get_context_warning_threshold,
     get_context_window_size,
-    get_deploy_namespace,
     get_error_tracking_config,
     get_error_tracking_enabled,
     get_log_aggregation_config,
@@ -1425,34 +1424,18 @@ host = 0.0.0.0
 
 
 # ---------------------------------------------------------------------------
-# get_deploy_namespace / get_canary_namespace
+# get_canary_namespace
 # ---------------------------------------------------------------------------
 
 
-def test_get_deploy_namespace_default() -> None:
+def test_get_canary_namespace_default() -> None:
     cfg = load_config(None)
-    assert get_deploy_namespace(cfg) == "nyxgpt"
-
-
-def test_get_deploy_namespace_override(tmp_path: Path) -> None:
-    ini = tmp_path / "config.ini"
-    _write(ini, "[deploy]\nnamespace = custom-ns\n")
-
-    cfg = load_config(str(ini))
-    assert get_deploy_namespace(cfg) == "custom-ns"
-
-
-def test_get_canary_namespace_defaults_to_deploy_namespace(tmp_path: Path) -> None:
-    ini = tmp_path / "config.ini"
-    _write(ini, "[deploy]\nnamespace = custom-ns\n")
-
-    cfg = load_config(str(ini))
-    assert get_canary_namespace(cfg) == "custom-ns"
+    assert get_canary_namespace(cfg) == "nyxgpt"
 
 
 def test_get_canary_namespace_override(tmp_path: Path) -> None:
     ini = tmp_path / "config.ini"
-    _write(ini, "[deploy]\nnamespace = custom-ns\n[canary]\nnamespace = canary-ns\n")
+    _write(ini, "[canary]\nnamespace = canary-ns\n")
 
     cfg = load_config(str(ini))
     assert get_canary_namespace(cfg) == "canary-ns"
