@@ -879,6 +879,106 @@ def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir:
     return decision
 
 
+# Where `_docker_build_if_needed` records the sha256 fingerprint of the source
+# an image was last built from (`.<image>.sha256`, image name/tag sanitized) --
+# the Docker-image analogue of `_tap_repo(tap) / "dist"` for the Homebrew
+# markers `_brew_install_or_reinstall` reads/writes.
+DOCKER_IMAGE_MARKER_DIR = Path.home() / ".nyxGPT" / "docker-images"
+
+
+def _hash_paths(paths: list[Path], *, excludes: frozenset[str] = frozenset()) -> str:
+    """sha256 fingerprint over the file contents under `paths` (files or directories).
+
+    Walks each directory deterministically (sorted, skipping any dir named in
+    `excludes` -- e.g. `_WEB_VENDOR_EXCLUDES`), hashing every file's path
+    relative to its base plus its bytes, so the digest changes iff the
+    content or layout under `paths` actually changed. Used by
+    `_docker_build_if_needed` to detect source changes for the app the
+    image is built from -- the Docker-image equivalent of `_sha256_file`
+    over `_create_dist_tarball`'s vendored tarball.
+    """
+    digest = hashlib.sha256()
+    for base in sorted(paths, key=str):
+        if base.is_file():
+            digest.update(f"{base.name}\0".encode())
+            digest.update(base.read_bytes())
+            continue
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = sorted(n for n in dirnames if n not in excludes)
+            for fname in sorted(filenames):
+                fpath = Path(dirpath) / fname
+                rel = fpath.relative_to(base)
+                digest.update(f"{base.name}/{rel}\0".encode())
+                digest.update(fpath.read_bytes())
+    return digest.hexdigest()
+
+
+def _docker_build_if_needed(
+    image: str,
+    context: Path,
+    *,
+    fingerprint_paths: list[Path],
+    excludes: frozenset[str] = frozenset(),
+    build_args: dict[str, str] | None = None,
+    marker_dir: Path,
+) -> str:
+    """`docker build -t image context`, skipping the work when the source hasn't changed.
+
+    Mirrors `_brew_install_or_reinstall` (#3406) for the Docker/terraform
+    image build sites (#3414). Compares a sha256 fingerprint of
+    `fingerprint_paths` -- the actual app source the image is built from
+    (e.g. `src/nyxgpt/` + `pyproject.toml` for `nyxgpt-api`, `web/` for
+    `nyxgpt-web`), not the whole build context -- against the one recorded
+    the last time `image` was actually built (`marker_dir/.<image>.sha256`,
+    name/tag sanitized). If `image` already exists locally and the
+    fingerprint matches, the source hasn't changed since the last build:
+    skip `docker build` entirely. Otherwise (image missing, or the
+    fingerprint changed -- a new/edited source tree), run the build and
+    record the new fingerprint.
+
+    Returns a short human-readable string describing which of the three
+    decisions was made ("built" / "rebuilt (source changed since last
+    build)" / "already up to date (skipped rebuild)"), for the caller to
+    report.
+    """
+    marker_name = re.sub(r"[^A-Za-z0-9_.-]", "_", image)
+    marker = marker_dir / f".{marker_name}.sha256"
+    previous_fingerprint = marker.read_text(encoding="utf-8").strip() if marker.exists() else None
+    fingerprint = _hash_paths(fingerprint_paths, excludes=excludes)
+
+    image_exists = _run(["docker", "image", "inspect", image], check=False).returncode == 0
+    if image_exists and previous_fingerprint == fingerprint:
+        return "already up to date (skipped rebuild)"
+
+    cmd = ["docker", "build", "-t", image]
+    for arg_name, arg_value in (build_args or {}).items():
+        cmd += ["--build-arg", f"{arg_name}={arg_value}"]
+    cmd.append(str(context))
+    cp = _run(cmd, check=False)
+    if cp.returncode != 0:
+        # As with `_brew_install_or_reinstall`: surface the failure and do NOT
+        # record the fingerprint, so a broken build doesn't get skipped (and
+        # so stick as a stale image) on the next run.
+        detail = (cp.stderr or cp.stdout or "").strip()
+        raise RuntimeError(f"docker build {image} failed: {detail[-800:]}")
+
+    _ensure_dir(marker_dir)
+    marker.write_text(fingerprint, encoding="utf-8")
+    return "built" if previous_fingerprint is None else "rebuilt (source changed since last build)"
+
+
+# The app source `nyxgpt-api`'s image is built from -- COPY'd into the
+# Dockerfile (pyproject.toml, src/nyxgpt/, example.config.ini) plus the
+# entrypoint script it also COPYs -- not the whole build context, so an
+# unrelated repo-root change (docs, terraform/, etc.) doesn't force a rebuild.
+_API_IMAGE_FINGERPRINT_PATHS = [
+    REPO_ROOT / "src" / "nyxgpt",
+    REPO_ROOT / "pyproject.toml",
+    REPO_ROOT / "example.config.ini",
+    REPO_ROOT / "docker" / "entrypoint.sh",
+]
+
+
 def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResult]:
     """Build and install the `nyxgpt-api` Homebrew formula into `tap`, then start the service.
 
@@ -1827,6 +1927,16 @@ TERRAFORM_CONTAINERS: dict[str, str] = {
 # so `brew install terraform` fails -- install from the official tap instead.
 HASHICORP_TAP = "hashicorp/tap"
 
+# Matches terraform/variables.tf's `api_image_tag`/`web_image_tag` defaults
+# ("local") that terraform/main.tf's `docker_image.api`/`.web` resources
+# interpolate into their image `name` -- the tag `_build_terraform_docker_images`
+# pre-builds below so `terraform apply`'s own `build {}` block hits Docker's
+# layer cache instead of doing real work when the source hasn't changed.
+TF_API_IMAGE = "nyxgpt-api:local"
+TF_WEB_IMAGE = "nyxgpt-web:local"
+# Matches terraform/variables.tf's `web_api_base_url` default.
+TF_WEB_API_BASE_URL_DEFAULT = "http://localhost:8000"
+
 
 def _ensure_terraform_binary() -> list[OpsResult]:
     """Ensure `terraform` is on PATH, installing it via the HashiCorp tap if missing."""
@@ -1888,6 +1998,49 @@ def _terraform_init_plan_apply() -> list[OpsResult]:
         results.append(OpsResult(False, "terraform apply failed", _cp_details(cp)))
         return results
     results.append(OpsResult(True, "terraform apply"))
+    return results
+
+
+def _build_terraform_docker_images() -> list[OpsResult]:
+    """Build the `nyxgpt-api`/`nyxgpt-web` images the Terraform `--local` deploy
+    consumes, skipping each build the app source hasn't changed since (#3414).
+
+    Runs before `terraform init/plan/apply` so `docker_image.api`/`.web` in
+    terraform/main.tf (tag `local`, matching `TF_API_IMAGE`/`TF_WEB_IMAGE`
+    here) already exist locally in the target state: unchanged source means
+    `_docker_build_if_needed` skips the rebuild entirely (reported below,
+    mirroring the Homebrew `_install_homebrew_api`/`_web` decision output);
+    changed source means it rebuilds now, so terraform's own `build {}` block
+    then just hits Docker's layer cache instead of doing the real work again.
+    """
+    if _which("docker") is None:
+        return [OpsResult(False, "docker not found on PATH -- cannot build nyxgpt-api/nyxgpt-web")]
+
+    results: list[OpsResult] = []
+    try:
+        decision = _docker_build_if_needed(
+            TF_API_IMAGE,
+            REPO_ROOT,
+            fingerprint_paths=_API_IMAGE_FINGERPRINT_PATHS,
+            marker_dir=DOCKER_IMAGE_MARKER_DIR,
+        )
+        results.append(OpsResult(True, f"{TF_API_IMAGE}: {decision}"))
+    except RuntimeError as e:
+        results.append(OpsResult(False, f"docker build {TF_API_IMAGE} failed", str(e)))
+
+    try:
+        decision = _docker_build_if_needed(
+            TF_WEB_IMAGE,
+            REPO_ROOT / "web",
+            fingerprint_paths=[REPO_ROOT / "web"],
+            excludes=_WEB_VENDOR_EXCLUDES,
+            build_args={"NEXT_PUBLIC_API_BASE_URL": TF_WEB_API_BASE_URL_DEFAULT},
+            marker_dir=DOCKER_IMAGE_MARKER_DIR,
+        )
+        results.append(OpsResult(True, f"{TF_WEB_IMAGE}: {decision}"))
+    except RuntimeError as e:
+        results.append(OpsResult(False, f"docker build {TF_WEB_IMAGE} failed", str(e)))
+
     return results
 
 
@@ -1958,6 +2111,11 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
         # docker-compose.yml), so the derived file has to exist first or
         # Docker creates an empty directory in its place.
         ("compose config (derive from native)", _generate_compose_config),
+        # Must run before apply: pre-builds (or skips, if source is unchanged
+        # since the last build -- #3414) the images `docker_image.api`/`.web`
+        # reference by tag, so terraform's own build hits Docker's cache
+        # instead of doing the work again.
+        ("docker images (source-change detection)", _build_terraform_docker_images),
         ("terraform init/plan/apply", _terraform_init_plan_apply),
         # After apply (network + core containers exist): bring the observability
         # stack up on the terraform network and auto-provision GlitchTip, so the
@@ -2084,14 +2242,25 @@ def _build_and_load_k8s_image(image: str = K8S_IMAGE) -> list[OpsResult]:
 
     `image` defaults to the mutable `nyxgpt-api:local` tag `nyxgpt ops
     install --kubernetes` uses; `nyxgpt ops deploy --kubernetes` passes a
-    versioned tag instead (see `build_and_load_k8s_image` / #3409).
+    versioned tag instead (see `build_and_load_k8s_image` / #3409). Either
+    way the build itself is gated by `_docker_build_if_needed` (#3414): a
+    versioned tag is always missing locally the first time (so it always
+    builds), while the repeated `:local` tag skips the rebuild once the
+    source stops changing between installs, mirroring the Homebrew
+    reinstall-if-needed behavior from #3406.
     """
     if _which("docker") is None:
         return [OpsResult(False, "docker not found on PATH -- cannot build the nyxgpt-api image")]
-    cp = _run(["docker", "build", "-t", image, str(REPO_ROOT)], check=False)
-    if cp.returncode != 0:
-        return [OpsResult(False, "docker build failed", _cp_details(cp))]
-    results = [OpsResult(True, f"Built {image}")]
+    try:
+        decision = _docker_build_if_needed(
+            image,
+            REPO_ROOT,
+            fingerprint_paths=_API_IMAGE_FINGERPRINT_PATHS,
+            marker_dir=DOCKER_IMAGE_MARKER_DIR,
+        )
+    except RuntimeError as e:
+        return [OpsResult(False, "docker build failed", str(e))]
+    results = [OpsResult(True, f"{image}: {decision}")]
 
     context = _kubectl_context()
     if "docker-desktop" in context:

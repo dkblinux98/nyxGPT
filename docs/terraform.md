@@ -48,8 +48,13 @@ none), installs Terraform via the official HashiCorp tap if it isn't already
 on PATH (`brew install terraform` no longer works on its own — HashiCorp
 pulled the formula from homebrew-core after the 2023 BUSL relicense),
 bootstraps `terraform.tfvars` from the example (a random `auth_api_key` is
-generated unless you pass `--api-key` or answer the interactive prompt), and
-runs `init` → `plan` → `apply`, then reports each container's health plus the
+generated unless you pass `--api-key` or answer the interactive prompt),
+builds the `nyxgpt-api:local`/`nyxgpt-web:local` images that
+`docker_image.api`/`.web` reference -- skipping the build and reusing the
+current image when the app source (`src/nyxgpt/`+`pyproject.toml` for api,
+`web/` for web) hasn't changed since it was last built, mirroring the
+Homebrew reinstall-if-needed behavior from [ops.md](ops.md) -- and runs
+`init` → `plan` → `apply`, then reports each container's health plus the
 `api_url`/`web_url`/`ollama_url` outputs.
 
 `--local` is required and explicit — it's the only locality implemented
