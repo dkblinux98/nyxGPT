@@ -589,7 +589,7 @@ returned in cleartext.
     "auth": { "enabled": "false", "header": "X-API-Key", "api_key": { "set": false, "masked": null } },
     "rate_limit": { "enabled": "false" },
     "rag": { "enable_chat_context": "false", "cassandra_hosts": "127.0.0.1", "cassandra_port": "9042", "cassandra_keyspace": "nyxgpt", "cassandra_table": "rag_chunks", "embedding_model": "nomic-embed-text", "...": "and ~40 more chunking/retrieval/reranking fields" },
-    "tracing": { "enabled": "false", "service_name": "nyxgpt-api", "otlp_endpoint": "http://localhost:4318/v1/traces" },
+    "tracing": { "enabled": "true", "service_name": "nyxgpt-api", "otlp_endpoint": "http://localhost:4318/v1/traces" },
     "error_tracking": { "enabled": "false", "dsn": { "set": false, "masked": null }, "environment": "development" },
     "monitoring": { "enabled": "false" },
     "log_aggregation": { "enabled": "false" },
