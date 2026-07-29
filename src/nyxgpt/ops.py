@@ -115,9 +115,12 @@ VOLUME_DIR_NAMES: dict[str, str] = {
     # Shared across every mode that mounts them: the native `nyxgpt-cassandra`
     # container (`_ensure_cassandra_container` below), docker-compose.yml, and
     # terraform/main.tf all bind to the *same* ~/.nyxGPT/volumes/cassandra and
-    # ~/.nyxGPT/volumes/nyxgpt-data directories -- ollama is shared between
-    # Compose and Terraform only (native Ollama isn't containerized; it keeps
-    # its own Homebrew-managed model store).
+    # ~/.nyxGPT/volumes/nyxgpt-data directories -- ollama is now shared by
+    # native mode too (see #3431): native Ollama isn't containerized, but
+    # `_ensure_ollama_service` points its `OLLAMA_MODELS` env var at
+    # ~/.nyxGPT/volumes/ollama/models, the same directory Compose/Terraform's
+    # `ollama` container bind-mounts (as /root/.ollama), instead of native
+    # Ollama's own default ~/.ollama/models store.
     "cassandra": "cassandra",
     "ollama": "ollama",
     "nyxgpt-data": "nyxgpt-data",
@@ -659,8 +662,8 @@ def _install_launchagent_from_template(tpl: Path, dst: Path) -> None:
 
 
 def _install_scripts() -> list[OpsResult]:
-    """Copy the run-web/follow-cassandra-logs/follow-ollama-logs helper scripts into
-    ~/.nyxGPT/scripts, executable.
+    """Copy the run-web/follow-cassandra-logs/follow-ollama-logs/set-ollama-models-env
+    helper scripts into ~/.nyxGPT/scripts, executable.
 
     Scripts not present in the repo's `scripts/` dir are skipped (reported
     as ok, since not every deployment needs them). Returns one OpsResult per
@@ -671,7 +674,12 @@ def _install_scripts() -> list[OpsResult]:
     dst_dir = Path.home() / ".nyxGPT" / "scripts"
     _ensure_dir(dst_dir)
 
-    for name in ("run-web.sh", "follow-cassandra-logs.sh", "follow-ollama-logs.sh"):
+    for name in (
+        "run-web.sh",
+        "follow-cassandra-logs.sh",
+        "follow-ollama-logs.sh",
+        "set-ollama-models-env.sh",
+    ):
         src = src_dir / name
         if not src.exists():
             # Not required — some users run the web/API without wrappers.
@@ -748,6 +756,41 @@ def _install_ollama_launchagent() -> list[OpsResult]:
     _run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=False)
 
     results.append(OpsResult(True, "Installed Ollama logs LaunchAgent", str(dst)))
+    return results
+
+
+def _install_ollama_env_launchagent() -> list[OpsResult]:
+    """Install and (re)load the Ollama shared-model-store env LaunchAgent (#3431).
+
+    Mirrors `_install_ollama_launchagent`/`_install_cassandra_launchagent`:
+    locates the `com.nyxgpt.ollama-env.plist` template, copies it into
+    ~/Library/LaunchAgents, then boots it out and back in. That LaunchAgent
+    runs `scripts/set-ollama-models-env.sh` (`launchctl setenv OLLAMA_MODELS
+    ...`) at every login, since a bare `launchctl setenv` call (as done
+    immediately by `_ensure_ollama_service`) only applies to the current
+    session and would otherwise be lost on reboot. Returns a single-element
+    list of OpsResult; fails if the template can't be found among the
+    candidate paths.
+    """
+    results: list[OpsResult] = []
+    tpl, checked = _find_launchagent_template("com.nyxgpt.ollama-env.plist")
+    if tpl is None:
+        details = "Tried:\n" + "\n".join(str(p) for p in checked) + f"\nREPO_ROOT={REPO_ROOT}"
+        results.append(OpsResult(False, "Missing Ollama env LaunchAgent template", details))
+        return results
+    la_dir = Path.home() / "Library" / "LaunchAgents"
+    _ensure_dir(la_dir)
+    dst = la_dir / tpl.name
+    _install_launchagent_from_template(tpl, dst)
+
+    label = "com.nyxgpt.ollama-env"
+    domain = f"gui/{os.getuid()}"
+
+    _run(["launchctl", "bootout", domain, str(dst)], check=False)
+    _run(["launchctl", "bootstrap", domain, str(dst)], check=False)
+    _run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=False)
+
+    results.append(OpsResult(True, "Installed Ollama env LaunchAgent", str(dst)))
     return results
 
 
@@ -1244,32 +1287,163 @@ def _persist_compose_file_path() -> list[OpsResult]:
     return [OpsResult(True, f"Recorded compose-file path in config.ini: {compose_path}")]
 
 
+def _shared_ollama_models_dir() -> Path:
+    """Path native Ollama's `OLLAMA_MODELS` must point at to read the same
+    models as Compose/Terraform (#3431).
+
+    Ollama's `OLLAMA_MODELS` env var names a directory holding `blobs/` and
+    `manifests/` directly (its default is `~/.ollama/models`, which has that
+    layout). The shared `~/.nyxGPT/volumes/ollama` dir is bind-mounted to
+    `/root/.ollama` in the Compose/Terraform `ollama` containers, which -- not
+    having `OLLAMA_MODELS` overridden themselves -- store models at the
+    container-default `/root/.ollama/models`, i.e. host
+    `~/.nyxGPT/volumes/ollama/models`. Pointing native `OLLAMA_MODELS` at that
+    same subdirectory (rather than its `~/.nyxGPT/volumes/ollama` parent)
+    is what actually unifies the two stores.
+    """
+    d = volume_dir("ollama") / "models"
+    _ensure_dir(d)
+    return d
+
+
+def _ollama_migration_state_path(name: str) -> Path:
+    """Path to a `~/.nyxGPT/.migration-state/` marker for a one-time Ollama
+    unification step (#3431) -- mirrors `_migration_marker_path`'s pattern so
+    later `nyxgpt ops install` runs skip work already done rather than
+    re-touching it (merged models, an already-applied env restart, ...).
+    """
+    state_dir = Path.home() / ".nyxGPT" / ".migration-state"
+    _ensure_dir(state_dir)
+    return state_dir / name
+
+
+def _migrate_native_ollama_models(dest_models_dir: Path) -> list[OpsResult]:
+    """One-time merge of native Ollama's own store (`~/.ollama/models`) into
+    the shared `dest_models_dir`, so pointing native Ollama at the shared
+    store doesn't silently orphan models already pulled natively before this
+    unification (#3431).
+
+    Additive merge, not overwrite: blobs are content-addressed by sha256
+    digest (so an existing blob at the destination is always identical to
+    the source one) and manifests take the destination's copy as
+    authoritative on conflict -- the shared store is what Compose/Terraform
+    already use, so it wins. Idempotent via a marker file, mirroring
+    `migrate_legacy_volumes`.
+    """
+    marker = _ollama_migration_state_path("ollama-native-models.migrated")
+    if marker.exists():
+        return [OpsResult(True, "Native Ollama models: already reconciled (nothing to migrate)")]
+
+    src_dir = Path.home() / ".ollama" / "models"
+    if not src_dir.exists():
+        marker.touch()
+        return [OpsResult(True, "No native Ollama model store found (nothing to migrate)")]
+
+    copied = 0
+    for src_file in src_dir.rglob("*"):
+        if not src_file.is_file():
+            continue
+        dst_file = dest_models_dir / src_file.relative_to(src_dir)
+        if dst_file.exists():
+            continue
+        _copy_file(src_file, dst_file)
+        copied += 1
+
+    marker.touch()
+    if copied:
+        return [
+            OpsResult(
+                True,
+                f"Merged {copied} native Ollama model file(s) into the shared store",
+                f"Source: {src_dir}\nDest: {dest_models_dir}\n"
+                f"The old {src_dir} files were left in place -- safe to remove by hand "
+                "once you've confirmed the shared store has everything you need.",
+            )
+        ]
+    return [OpsResult(True, "Native Ollama model store already matched the shared store")]
+
+
+def _set_native_ollama_models_env(models_dir: Path) -> OpsResult:
+    """Point native Ollama at `models_dir` via `launchctl setenv OLLAMA_MODELS`
+    -- never a symlink (owner constraint, #3431) -- so `brew services
+    start`/`restart ollama` picks it up in the user's launchd GUI session.
+
+    `launchctl setenv` only applies to the current login session, which is
+    why `nyxgpt ops install` also installs a RunAtLoad LaunchAgent
+    (`_install_ollama_env_launchagent`) that reapplies it at every login.
+    """
+    cp = _run(["launchctl", "setenv", "OLLAMA_MODELS", str(models_dir)], check=False)
+    if cp.returncode == 0:
+        return OpsResult(True, f"Set OLLAMA_MODELS={models_dir} for native Ollama")
+    details = (cp.stdout or "").strip() + (
+        "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+    )
+    return OpsResult(False, "Failed to set OLLAMA_MODELS via launchctl setenv", details.strip())
+
+
 def _ensure_ollama_service() -> list[OpsResult]:
-    """Ensure the native Ollama Homebrew service is installed and running.
+    """Ensure the native Ollama Homebrew service is installed, running, and
+    pointed at the shared model store.
 
     Reconciles to the intended state like `_ensure_cassandra_container`:
-    already started -> no-op; installed but stopped -> `brew services start`;
-    formula absent -> `brew install ollama` first, then start. Without this
-    step, `ops install` only set up the Ollama *logs* LaunchAgent and never
-    started Ollama itself, so chat/embeddings stayed down after an `ops down`
-    until a manual `ops restart ollama`.
+    already started (and already pointed at the shared store) -> no-op;
+    installed but stopped -> `brew services start`; formula absent -> `brew
+    install ollama` first, then start. Without this step, `ops install` only
+    set up the Ollama *logs* LaunchAgent and never started Ollama itself, so
+    chat/embeddings stayed down after an `ops down` until a manual `ops
+    restart ollama`.
+
+    Also unifies the native model store with Compose/Terraform's shared one
+    (#3431): merges any models already pulled natively into
+    `~/.nyxGPT/volumes/ollama/models`, then points native Ollama at it via
+    `launchctl setenv OLLAMA_MODELS` (see `_set_native_ollama_models_env`).
+    An already-running service doesn't pick up a `launchctl setenv` change on
+    its own, so the first time this runs against a live service it issues a
+    one-time `brew services restart` -- gated by a marker so later runs stay
+    a no-op, same as every other reconciler here.
     """
     if _which("brew") is None:
         return [OpsResult(False, "Homebrew not found; cannot ensure ollama service", "")]
 
+    results: list[OpsResult] = []
+    models_dir = _shared_ollama_models_dir()
+    results.extend(_migrate_native_ollama_models(models_dir))
+
+    env_marker = _ollama_migration_state_path("ollama-native-env.configured")
+    env_already_applied = env_marker.exists()
+    env_result = _set_native_ollama_models_env(models_dir)
+    results.append(env_result)
+    if env_result.ok:
+        env_marker.touch()
+
     state = _brew_services_snapshot().get("ollama")
 
     if state == "started":
-        return [OpsResult(True, "Ollama brew service already running")]
+        if env_already_applied:
+            results.append(OpsResult(True, "Ollama brew service already running"))
+            return results
+        cp = _run(["brew", "services", "restart", "ollama"], check=False)
+        if cp.returncode == 0:
+            results.append(
+                OpsResult(True, "Restarted brew service: ollama (to pick up shared OLLAMA_MODELS)")
+            )
+        else:
+            details = (cp.stdout or "").strip() + (
+                "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+            )
+            results.append(
+                OpsResult(False, "Failed to restart brew service: ollama", details.strip())
+            )
+        return results
 
-    results: list[OpsResult] = []
     if state is None:
         cp = _run(["brew", "install", "ollama"], check=False)
         if cp.returncode != 0:
             details = (cp.stdout or "").strip() + (
                 "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
             )
-            return [OpsResult(False, "Failed to brew install ollama", details.strip())]
+            results.append(OpsResult(False, "Failed to brew install ollama", details.strip()))
+            return results
         results.append(OpsResult(True, "Installed ollama formula"))
 
     cp = _run(["brew", "services", "start", "ollama"], check=False)
@@ -2693,11 +2867,12 @@ def install(args) -> int:
     phantom Docker Compose app-tier containers leaked from an earlier run or
     a raw `docker compose up`, then ensuring the
     local Cassandra container plus every other install step (scripts, web deps,
-    MCP deps, Cassandra LaunchAgent, Ollama logs LaunchAgent, Homebrew
-    formulas, the native Ollama service, log symlinks, env sync from
-    config.ini, the observability stack) -- printing an OK/FAIL line per
-    result. A failure in one step doesn't stop the rest from
-    running.
+    MCP deps, Cassandra LaunchAgent, Ollama logs LaunchAgent, Ollama env
+    LaunchAgent, Homebrew formulas, the native Ollama service (including
+    pointing it at the shared model store -- see `_ensure_ollama_service`,
+    #3431), log symlinks, env sync from config.ini, the observability stack)
+    -- printing an OK/FAIL line per result. A failure in one step doesn't
+    stop the rest from running.
 
     The observability step (Grafana/Loki/Jaeger/GlitchTip) runs by default so
     a fresh install comes up with the full SRE view already populated --
@@ -2731,6 +2906,7 @@ def install(args) -> int:
         ("cassandra container", _ensure_cassandra_container),
         ("cassandra launchagent", _install_cassandra_launchagent),
         ("ollama logs launchagent", _install_ollama_launchagent),
+        ("ollama env launchagent", _install_ollama_env_launchagent),
         ("homebrew api", _install_homebrew_api),
         ("homebrew web", _install_homebrew_web),
         ("ollama service", _ensure_ollama_service),
@@ -3119,7 +3295,12 @@ def doctor(_args) -> int:
         if volumes is not None:
             volume_info = ", ".join(f"{k}={v}" for k, v in volumes.items())
 
-    for name in ("run-web.sh", "follow-cassandra-logs.sh", "follow-ollama-logs.sh"):
+    for name in (
+        "run-web.sh",
+        "follow-cassandra-logs.sh",
+        "follow-ollama-logs.sh",
+        "set-ollama-models-env.sh",
+    ):
         p = Path.home() / ".nyxGPT" / "scripts" / name
         if p.exists() and not os.access(p, os.X_OK):
             issues.append(f"Script not executable {p}")
