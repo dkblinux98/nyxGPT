@@ -93,6 +93,20 @@ const mockStatusKubernetesServing = {
     weight_percent: 20,
     stable: { state: 'healthy', message: 'nyxgpt-api-stable healthy (4/4 ready)', version: '2.0.0-abc123' },
     canary: { state: 'healthy', message: 'nyxgpt-api-canary healthy (1/1 ready)', version: '2.0.1-def456' },
+    components: {
+      api: {
+        active: true,
+        weight_percent: 20,
+        stable: { state: 'healthy', message: 'nyxgpt-api-stable healthy (4/4 ready)', version: '2.0.0-abc123' },
+        canary: { state: 'healthy', message: 'nyxgpt-api-canary healthy (1/1 ready)', version: '2.0.1-def456' },
+      },
+      web: {
+        active: false,
+        weight_percent: 0,
+        stable: { state: 'healthy', message: 'nyxgpt-web-stable healthy (4/4 ready)', version: '2.0.0-abc123' },
+        canary: { state: 'not_deployed', message: 'nyxgpt-web-canary has 0 desired replicas (idle)', version: '' },
+      },
+    },
   },
 };
 
@@ -116,6 +130,14 @@ describe('InfrastructurePage', () => {
         weight_percent: 0,
         stable: { state: 'healthy', message: 'nyxgpt-api-stable healthy (4/4 ready)', version: '' },
         canary: { state: 'not_deployed', message: 'nyxgpt-api-canary not deployed', version: '' },
+        components: {
+          api: {
+            active: false,
+            weight_percent: 0,
+            stable: { state: 'healthy', message: 'nyxgpt-api-stable healthy (4/4 ready)', version: '' },
+            canary: { state: 'not_deployed', message: 'nyxgpt-api-canary not deployed', version: '' },
+          },
+        },
       },
     };
     server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(inactiveServing)));
@@ -213,6 +235,21 @@ describe('InfrastructurePage', () => {
     expect(await screen.findByText(/Canary rollout active -- 20% of traffic to canary/)).toBeInTheDocument();
     expect(screen.getByText(/nyxgpt-api-stable healthy/)).toBeInTheDocument();
     expect(screen.getByText(/nyxgpt-api-canary healthy/)).toBeInTheDocument();
+  });
+
+  it('shows web alongside api in the per-component canary breakdown (kubernetes mode)', async () => {
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusKubernetesServing)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Canary rollout active -- 20% of traffic to canary/)).toBeInTheDocument();
+    });
+    expect(screen.getByText('api')).toBeInTheDocument();
+    expect(screen.getByText('web')).toBeInTheDocument();
+    expect(screen.getByText(/nyxgpt-web-stable healthy/)).toBeInTheDocument();
+    expect(screen.getByText(/nyxgpt-web-canary has 0 desired replicas \(idle\)/)).toBeInTheDocument();
+    expect(screen.getByText('No canary rollout active -- stable serves 100% of traffic.')).toBeInTheDocument();
   });
 
   it('surfaces a port conflict warning when native and compose collide', async () => {

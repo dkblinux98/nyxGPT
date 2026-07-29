@@ -1829,24 +1829,30 @@ def analytics_export(request: Request, format: str = "json") -> Response:
 # a strict superset for traffic purposes (0%/100% reproduces a cutover) plus
 # metrics-gated gradual shift and auto-rollback -- see #3409.
 @api.get("/canary/status")
-def canary_status(request: Request) -> dict[str, Any]:
+def canary_status(request: Request, component: str = "api") -> dict[str, Any]:
     """Return canary rollout status: active flag, traffic weight, stable/canary health/version,
-    the currently detected deployment mode, and a metrics snapshot."""
+    the currently detected deployment mode, and a metrics snapshot.
+
+    `component` (query param, default `api`) selects which component's pair
+    to report on -- `api` or `web` (see canary.py's `COMPONENTS`, #3419).
+    """
     cfg = _req_cfg(request)
-    return canary_module.status(get_canary_namespace(cfg))
+    return canary_module.status(get_canary_namespace(cfg), component=component)
 
 
 @api.post("/canary/deploy")
-def canary_deploy(request: Request) -> dict[str, Any]:
+def canary_deploy(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     """Build the current checkout into a versioned image and deploy it to canary only.
 
-    Never touches stable, even on failure. Traffic weighting is a separate,
+    Body: `{"component": str}` (default `api`; `api` or `web`, #3419). Never
+    touches stable, even on failure. Traffic weighting is a separate,
     deliberate action (`/canary/start` and `/canary/promote`). Returns `409`
     if the build, image patch, or rollout wait fails. Records a
     `canary.deploy` admin activity event on success.
     """
     cfg = _req_cfg(request)
-    result = canary_module.deploy(namespace=get_canary_namespace(cfg))
+    component = payload.get("component", "api")
+    result = canary_module.deploy(namespace=get_canary_namespace(cfg), component=component)
     if not result.ok:
         raise HTTPException(status_code=409, detail=result.message)
     admin_activity_module.record("canary.deploy", result.message)
@@ -1855,18 +1861,21 @@ def canary_deploy(request: Request) -> dict[str, Any]:
 
 @api.post("/canary/start")
 def canary_start(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
-    """Start a canary rollout: scale up `nyxgpt-api-canary` to `weight_percent` of traffic.
+    """Start a canary rollout: scale up the canary Deployment to `weight_percent` of traffic.
 
-    Body: `{"weight_percent": int}` (default 10). Returns `409` if a
-    rollout is already in progress or the scale operation fails. Records a
+    Body: `{"weight_percent": int, "component": str}` (weight default 10;
+    component default `api`, #3409/#3419). Returns `409` if a rollout is
+    already in progress or the scale operation fails. Records a
     `canary.start` admin activity event on success.
     """
     cfg = _req_cfg(request)
     weight_percent = int(payload.get("weight_percent", 10))
+    component = payload.get("component", "api")
     result = canary_module.start(
         namespace=get_canary_namespace(cfg),
         weight_percent=weight_percent,
         total_replicas=get_canary_total_replicas(cfg),
+        component=component,
     )
     if not result.ok:
         raise HTTPException(status_code=409, detail=result.message)
@@ -1875,21 +1884,23 @@ def canary_start(request: Request, payload: dict[str, Any] = Body(default={})) -
 
 
 @api.post("/canary/evaluate")
-def canary_evaluate(request: Request) -> dict[str, Any]:
+def canary_evaluate(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     """Compare live error-rate/latency metrics against configured thresholds.
 
-    Automatically rolls back the canary if either threshold is breached.
-    Returns `409` if no rollout is active. Returns ok=True with an
-    "insufficient data" note (rather than failing) when too few requests
-    have been observed yet to judge the canary. Records a `canary.evaluate`
-    admin activity event.
+    Body: `{"component": str}` (default `api`, #3419). Automatically rolls
+    back the canary if either threshold is breached. Returns `409` if no
+    rollout is active. Returns ok=True with an "insufficient data" note
+    (rather than failing) when too few requests have been observed yet to
+    judge the canary. Records a `canary.evaluate` admin activity event.
     """
     cfg = _req_cfg(request)
+    component = payload.get("component", "api")
     result = canary_module.evaluate(
         get_canary_namespace(cfg),
         error_rate_threshold_percent=get_canary_error_rate_threshold(cfg),
         latency_p95_threshold_ms=get_canary_latency_p95_threshold_ms(cfg),
         min_requests=get_canary_min_requests(cfg),
+        component=component,
     )
     if not result.ok:
         raise HTTPException(status_code=409, detail=result.message)
@@ -1901,19 +1912,21 @@ def canary_evaluate(request: Request) -> dict[str, Any]:
 def canary_promote(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
     """Increase the canary's traffic share by `step_percent`, finalizing at 100%.
 
-    Body: `{"step_percent": int}` (defaults to the configured
-    `canary_step_percent` when omitted). Returns `409` if no rollout is
-    active or the scale operation fails. Records a `canary.promote` admin
-    activity event on success.
+    Body: `{"step_percent": int, "component": str}` (step defaults to the
+    configured `canary_step_percent` when omitted; component default `api`,
+    #3419). Returns `409` if no rollout is active or the scale operation
+    fails. Records a `canary.promote` admin activity event on success.
     """
     cfg = _req_cfg(request)
     step_percent = payload.get("step_percent")
+    component = payload.get("component", "api")
     result = canary_module.promote(
         namespace=get_canary_namespace(cfg),
         step_percent=(
             int(step_percent) if step_percent is not None else get_canary_step_percent(cfg)
         ),
         total_replicas=get_canary_total_replicas(cfg),
+        component=component,
     )
     if not result.ok:
         raise HTTPException(status_code=409, detail=result.message)
@@ -1922,18 +1935,21 @@ def canary_promote(request: Request, payload: dict[str, Any] = Body(default={}))
 
 
 @api.post("/canary/rollback")
-def canary_rollback(request: Request) -> dict[str, Any]:
-    """Cut all traffic back to `nyxgpt-api-stable`, the emergency escape hatch for a bad canary.
+def canary_rollback(request: Request, payload: dict[str, Any] = Body(default={})) -> dict[str, Any]:
+    """Cut all traffic back to the stable Deployment, the emergency escape hatch for a bad canary.
 
-    Scales the canary Deployment to 0 first (removing it from the
-    Service's endpoints) before restoring the stable Deployment's full
-    replica count. Returns `409` if no rollout is active or the scale
-    operation fails. Records a `canary.rollback` admin activity event on
-    success.
+    Body: `{"component": str}` (default `api`, #3419). Scales the canary
+    Deployment to 0 first (removing it from the Service's endpoints) before
+    restoring the stable Deployment's full replica count. Returns `409` if
+    no rollout is active or the scale operation fails. Records a
+    `canary.rollback` admin activity event on success.
     """
     cfg = _req_cfg(request)
+    component = payload.get("component", "api")
     result = canary_module.rollback(
-        namespace=get_canary_namespace(cfg), total_replicas=get_canary_total_replicas(cfg)
+        namespace=get_canary_namespace(cfg),
+        total_replicas=get_canary_total_replicas(cfg),
+        component=component,
     )
     if not result.ok:
         raise HTTPException(status_code=409, detail=result.message)

@@ -7194,6 +7194,75 @@ def test_build_and_load_k8s_image_skips_rebuild_when_source_unchanged(monkeypatc
     assert not any(c[:2] == ["docker", "build"] for c in run_calls)
 
 
+# --- Kubernetes: build_and_load_k8s_image() public wrapper kwargs (#3419) ---
+
+
+@pytest.mark.unit
+def test_build_and_load_k8s_image_public_wrapper_forwards_only_given_kwargs(monkeypatch):
+    """The web component passes context/fingerprint_paths/excludes/build_args; the api
+    component (default call) must keep forwarding zero kwargs (see the docstring and
+    test_build_and_load_k8s_image_public_wrapper_uses_given_tag above)."""
+    calls = []
+    monkeypatch.setattr(
+        ops,
+        "_build_and_load_k8s_image",
+        lambda image, **kwargs: calls.append((image, kwargs)) or [ops.OpsResult(True, "ok")],
+    )
+
+    ops.build_and_load_k8s_image("nyxgpt-api:1.2.3-abcd123")
+    assert calls[-1] == ("nyxgpt-api:1.2.3-abcd123", {})
+
+    web_context = ops.REPO_ROOT / "web"
+    results = ops.build_and_load_k8s_image(
+        "nyxgpt-web:1.2.3-abcd123",
+        context=web_context,
+        fingerprint_paths=[web_context],
+        excludes=ops._WEB_VENDOR_EXCLUDES,
+        build_args={"NEXT_PUBLIC_API_BASE_URL": "http://localhost:8000"},
+    )
+    assert calls[-1] == (
+        "nyxgpt-web:1.2.3-abcd123",
+        {
+            "context": web_context,
+            "fingerprint_paths": [web_context],
+            "excludes": ops._WEB_VENDOR_EXCLUDES,
+            "build_args": {"NEXT_PUBLIC_API_BASE_URL": "http://localhost:8000"},
+        },
+    )
+    assert results == [ops.OpsResult(True, "ok")]
+
+
+# --- Kubernetes: _build_and_load_k8s_web_image (#3419) ---
+
+
+@pytest.mark.unit
+def test_build_and_load_k8s_web_image_builds_web_context_with_build_arg(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/" + prog if prog == "docker" else None
+    )
+    monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
+    run_calls = []
+
+    def fake_run(cmd, check=True):
+        run_calls.append(cmd)
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            return CP(returncode=1)
+        if cmd[:2] == ["docker", "build"]:
+            return CP(returncode=0)
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(stdout="docker-desktop")
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._build_and_load_k8s_web_image()
+
+    assert all(r.ok for r in results)
+    build_cmd = next(c for c in run_calls if c[:2] == ["docker", "build"])
+    assert build_cmd[2:5] == ["-t", ops.TF_WEB_IMAGE, "--build-arg"]
+    assert f"NEXT_PUBLIC_API_BASE_URL={ops.TF_WEB_API_BASE_URL_DEFAULT}" in build_cmd
+    assert str(ops.REPO_ROOT / "web") in build_cmd
+
+
 # --- Kubernetes: _ensure_k8s_secret ---
 
 
@@ -7261,6 +7330,27 @@ def test_k8s_stack_health_reports_pods_service(monkeypatch):
     assert any("Service nyxgpt-api found" in r.message for r in results)
 
 
+@pytest.mark.unit
+def test_k8s_stack_health_reports_web_service_alongside_api(monkeypatch):
+    """#3419: the post-apply health snapshot must check nyxgpt-web too, distinguishing
+    found from not-found per service rather than reporting one combined result."""
+
+    def fake_run(cmd, check=True):
+        if cmd[4] == "pods":
+            return CP(returncode=0, stdout="nyxgpt-web-stable-abc=Running;")
+        if cmd[4] == "svc":
+            svc_name = cmd[5]
+            if svc_name == "nyxgpt-api":
+                return CP(returncode=0, stdout="nyxgpt-api   ClusterIP\n")
+            return CP(returncode=1)
+        raise AssertionError(f"unexpected: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    results = ops._k8s_stack_health()
+    assert any(r.ok and "Service nyxgpt-api found" in r.message for r in results)
+    assert any(not r.ok and "Service nyxgpt-web not found" in r.message for r in results)
+
+
 # --- Kubernetes: _install_kubernetes / _down_kubernetes ---
 
 
@@ -7291,6 +7381,7 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
     with (
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok) as c,
         patch.object(ops, "_build_and_load_k8s_image", return_value=ok) as b,
+        patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok) as bw,
         patch.object(ops, "_ensure_k8s_secret", return_value=ok) as s,
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok) as a,
         patch.object(ops, "_k8s_stack_health", return_value=ok) as h,
@@ -7299,6 +7390,7 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
     assert rc == 0
     c.assert_called_once()
     b.assert_called_once()
+    bw.assert_called_once()
     s.assert_called_once_with("k")
     a.assert_called_once()
     h.assert_called_once()
@@ -7306,15 +7398,16 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
 
 
 @pytest.mark.unit
-def test_install_kubernetes_clears_intentional_stop_marker_for_api(monkeypatch, capsys):
-    """Kubernetes only manages `api` (no k8s manifest for web/ollama/cassandra)
-    -- its intentional-stop marker must be cleared, and only that one (#3406)."""
+def test_install_kubernetes_clears_intentional_stop_markers_for_api_and_web(monkeypatch, capsys):
+    """Kubernetes manages both `api` and `web` (#3419) -- both intentional-stop
+    markers must be cleared, and only those two (no manifest for ollama/cassandra)."""
     args = SimpleNamespace(local=True, cloud=False, api_key="k")
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     ok = [ops.OpsResult(True, "ok")]
     with (
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
         patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok),
         patch.object(ops, "_ensure_k8s_secret", return_value=ok),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
@@ -7322,7 +7415,7 @@ def test_install_kubernetes_clears_intentional_stop_marker_for_api(monkeypatch, 
     ):
         rc = ops._install_kubernetes(args)
     assert rc == 0
-    clear_stopped.assert_called_once_with("api")
+    assert clear_stopped.call_args_list == [call("api"), call("web")]
 
 
 @pytest.mark.unit
@@ -7336,6 +7429,7 @@ def test_install_kubernetes_stops_pipeline_on_step_failure(monkeypatch):
             return_value=[ops.OpsResult(False, "no cluster")],
         ),
         patch.object(ops, "_build_and_load_k8s_image") as b,
+        patch.object(ops, "_build_and_load_k8s_web_image") as bw,
         patch.object(ops, "_ensure_k8s_secret") as s,
         patch.object(ops, "_kubectl_apply_kustomization") as a,
         patch.object(ops, "_k8s_stack_health") as h,
@@ -7343,6 +7437,7 @@ def test_install_kubernetes_stops_pipeline_on_step_failure(monkeypatch):
         rc = ops._install_kubernetes(args)
     assert rc == 2
     b.assert_not_called()
+    bw.assert_not_called()
     s.assert_not_called()
     a.assert_not_called()
     h.assert_not_called()
@@ -7608,17 +7703,32 @@ def test_infra_status_serving_delegates_to_canary_status_in_kubernetes_mode(monk
         lambda cmd, check=True: CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n"),
     )
 
-    fake_status = {
-        "active": True,
-        "weight_percent": 25,
-        "stable": {"state": "healthy", "message": "stable healthy", "version": "1.0.0-aaa"},
-        "canary": {"state": "healthy", "message": "canary healthy", "version": "1.0.1-bbb"},
+    fake_statuses = {
+        "api": {
+            "active": True,
+            "weight_percent": 25,
+            "stable": {"state": "healthy", "message": "stable healthy", "version": "1.0.0-aaa"},
+            "canary": {"state": "healthy", "message": "canary healthy", "version": "1.0.1-bbb"},
+        },
+        "web": {
+            "active": False,
+            "weight_percent": 0,
+            "stable": {"state": "healthy", "message": "web stable healthy", "version": "1.0.0-aaa"},
+            "canary": {"state": "not_deployed", "message": "web canary idle", "version": ""},
+        },
     }
-    monkeypatch.setattr(canary, "status", lambda: fake_status)
+    monkeypatch.setattr(canary, "status", lambda component="api": fake_statuses[component])
 
     result = ops.infra_status()
     assert result["mode"] == "kubernetes"
-    assert result["serving"] == {"supported": True, **fake_status}
+    # Per-component (#3419): every canary-capable component is broken out.
+    assert result["serving"]["components"] == fake_statuses
+    # Backward compatible: api's fields are still spread at the top level.
+    assert result["serving"] == {
+        "supported": True,
+        "components": fake_statuses,
+        **fake_statuses["api"],
+    }
 
 
 # --- install()/down() dispatch to the Terraform/Kubernetes paths ---
@@ -7704,12 +7814,63 @@ def test_status_shows_kubernetes_pods_when_present(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    # Isolate from real kubectl/canary probing -- this test only cares about the pod listing.
+    monkeypatch.setattr(
+        ops, "_serving_status", lambda running_mode: {"supported": False, "message": "n/a"}
+    )
 
     rc = ops.status(MagicMock())
     assert rc == 0
     out = capsys.readouterr().out
     assert "Kubernetes (nyxgpt namespace" in out
     assert "nyxgpt-api-stable-abc" in out
+
+
+@pytest.mark.unit
+def test_status_shows_per_component_canary_when_kubernetes_pods_present(monkeypatch, capsys):
+    """`nyxgpt ops status` surfaces every canary-capable component's rollout state (#3419)."""
+
+    def fake_which(prog):
+        return "/usr/local/bin/kubectl" if prog == "kubectl" else None
+
+    def fake_run(cmd, check=True):
+        if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
+            return CP(returncode=0, stdout="nyxgpt-api-stable-abc   1/1   Running\n")
+        return CP(stdout="")
+
+    monkeypatch.setattr(ops, "_which", fake_which)
+    monkeypatch.setattr(ops, "_run", fake_run)
+    monkeypatch.setattr(ops, "_brew_services_snapshot", lambda: {})
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    monkeypatch.setattr(
+        ops,
+        "_serving_status",
+        lambda running_mode: {
+            "supported": True,
+            "components": {
+                "api": {
+                    "active": True,
+                    "weight_percent": 25,
+                    "stable": {"state": "healthy", "message": "ok", "version": "1.0.0-aaa"},
+                    "canary": {"state": "healthy", "message": "ok", "version": "1.0.1-bbb"},
+                },
+                "web": {
+                    "active": False,
+                    "weight_percent": 0,
+                    "stable": {"state": "healthy", "message": "ok", "version": "1.0.0-aaa"},
+                    "canary": {"state": "not_deployed", "message": "idle", "version": ""},
+                },
+            },
+        },
+    )
+
+    rc = ops.status(MagicMock())
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Canary (per component" in out
+    assert "api: rollout active -- 25%" in out
+    assert "web: rollout idle" in out
 
 
 @pytest.mark.unit

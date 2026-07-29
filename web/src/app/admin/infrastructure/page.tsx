@@ -31,6 +31,15 @@ type InfraStatus = {
         weight_percent: number;
         stable: { state: string; message: string; version: string | null };
         canary: { state: string; message: string; version: string | null };
+        components: Record<
+          string,
+          {
+            active: boolean;
+            weight_percent: number;
+            stable: { state: string; message: string; version: string | null };
+            canary: { state: string; message: string; version: string | null };
+          }
+        >;
       };
 };
 
@@ -199,22 +208,27 @@ export default function InfrastructurePage() {
             {!status.serving.supported ? (
               <p style={{ fontSize: '0.875rem' }}>{status.serving.message}</p>
             ) : (
-              <div style={{ fontSize: '0.875rem', display: 'grid', gap: '0.4rem' }}>
-                <p>
-                  {status.serving.active
-                    ? `Canary rollout active -- ${status.serving.weight_percent}% of traffic to canary.`
-                    : 'No canary rollout active -- stable serves 100% of traffic.'}
-                </p>
-                <p>
-                  Stable: <strong>{status.serving.stable.state}</strong>
-                  {status.serving.stable.version ? ` (${status.serving.stable.version})` : ''} —{' '}
-                  {status.serving.stable.message}
-                </p>
-                <p>
-                  Canary: <strong>{status.serving.canary.state}</strong>
-                  {status.serving.canary.version ? ` (${status.serving.canary.version})` : ''} —{' '}
-                  {status.serving.canary.message}
-                </p>
+              <div style={{ display: 'grid', gap: '1rem' }}>
+                {Object.entries(status.serving.components).map(([component, c]) => (
+                  <div key={component} style={{ fontSize: '0.875rem', display: 'grid', gap: '0.4rem' }}>
+                    <p style={{ fontWeight: 600, textTransform: 'capitalize' }}>{component}</p>
+                    <p>
+                      {c.active
+                        ? `Canary rollout active -- ${c.weight_percent}% of traffic to canary.`
+                        : 'No canary rollout active -- stable serves 100% of traffic.'}
+                    </p>
+                    <p>
+                      Stable: <strong>{c.stable.state}</strong>
+                      {c.stable.version ? ` (${c.stable.version})` : ''} —{' '}
+                      {c.stable.message}
+                    </p>
+                    <p>
+                      Canary: <strong>{c.canary.state}</strong>
+                      {c.canary.version ? ` (${c.canary.version})` : ''} —{' '}
+                      {c.canary.message}
+                    </p>
+                  </div>
+                ))}
               </div>
             )}
             <p style={{ fontSize: '0.85rem', color: 'var(--foreground-muted)', marginTop: '0.75rem' }}>

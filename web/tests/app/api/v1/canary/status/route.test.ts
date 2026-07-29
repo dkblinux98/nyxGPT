@@ -1,5 +1,5 @@
 /**
- * Tests for the /api/v1/canary/status Next.js proxy route (issue #3245).
+ * Tests for the /api/v1/canary/status Next.js proxy route (issue #3245, #3419).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -9,6 +9,13 @@ function mockFetch(opts: { ok: boolean; status: number; data?: unknown }) {
     status: opts.status,
     json: () => Promise.resolve(opts.data ?? {}),
   });
+}
+
+function req(component?: string) {
+  const url = component
+    ? `http://localhost/api/v1/canary/status?component=${component}`
+    : 'http://localhost/api/v1/canary/status';
+  return new Request(url);
 }
 
 describe('/api/v1/canary/status proxy route', () => {
@@ -22,11 +29,11 @@ describe('/api/v1/canary/status proxy route', () => {
     mockFetch({ ok: true, status: 200, data: { phase: 'stable' } });
 
     const { GET } = await import('../../../../../../src/app/api/v1/canary/status/route');
-    const response = (await GET()) as Response;
+    const response = (await GET(req())) as Response;
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
     const [calledUrl, calledOptions] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(calledUrl).toBe('http://127.0.0.1:8000/api/v1/canary/status');
+    expect(calledUrl).toBe('http://127.0.0.1:8000/api/v1/canary/status?component=api');
     expect(calledOptions.method).toBe('GET');
 
     expect(response.status).toBe(200);
@@ -34,22 +41,32 @@ describe('/api/v1/canary/status proxy route', () => {
     expect(body).toEqual({ phase: 'stable' });
   });
 
+  it('forwards the component query param when set', async () => {
+    mockFetch({ ok: true, status: 200, data: { phase: 'stable' } });
+
+    const { GET } = await import('../../../../../../src/app/api/v1/canary/status/route');
+    await GET(req('web'));
+
+    const calledUrl: string = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(calledUrl).toBe('http://127.0.0.1:8000/api/v1/canary/status?component=web');
+  });
+
   it('uses NYXGPT_API_BASE_URL when set', async () => {
     process.env.NYXGPT_API_BASE_URL = 'http://custom-backend:9000';
     mockFetch({ ok: true, status: 200, data: { phase: 'stable' } });
 
     const { GET } = await import('../../../../../../src/app/api/v1/canary/status/route');
-    await GET();
+    await GET(req());
 
     const calledUrl: string = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(calledUrl).toBe('http://custom-backend:9000/api/v1/canary/status');
+    expect(calledUrl).toBe('http://custom-backend:9000/api/v1/canary/status?component=api');
   });
 
   it('passes through backend response status and body when backend errors', async () => {
     mockFetch({ ok: false, status: 503, data: { error: 'backend unavailable' } });
 
     const { GET } = await import('../../../../../../src/app/api/v1/canary/status/route');
-    const response = (await GET()) as Response;
+    const response = (await GET(req())) as Response;
 
     expect(response.status).toBe(503);
     const body = await response.json();
@@ -60,7 +77,7 @@ describe('/api/v1/canary/status proxy route', () => {
     global.fetch = vi.fn().mockRejectedValueOnce(new Error('ECONNREFUSED'));
 
     const { GET } = await import('../../../../../../src/app/api/v1/canary/status/route');
-    const response = (await GET()) as Response;
+    const response = (await GET(req())) as Response;
 
     expect(response.status).toBe(502);
     const body = await response.json();
@@ -75,7 +92,7 @@ describe('/api/v1/canary/status proxy route', () => {
     });
 
     const { GET } = await import('../../../../../../src/app/api/v1/canary/status/route');
-    const response = (await GET()) as Response;
+    const response = (await GET(req())) as Response;
 
     expect(response.status).toBe(502);
     const body = await response.json();

@@ -167,11 +167,16 @@ Prometheus text exposition format metrics for scraping. Unauthenticated
 | `nyxgpt_selfheal_restarts_total` | Counter | `service`, `result` | Self-heal restart attempts, by service and outcome (`ok`/`failed`) |
 | `nyxgpt_selfheal_restart_count` | Gauge | `service` | Current consecutive-restart count per service (resets to 0 once healthy) |
 | `nyxgpt_selfheal_last_recovery_timestamp` | Gauge | `service` | Unix timestamp of the last successful self-heal restart, by service |
-| `nyxgpt_canary_rollout_active` | Gauge | — | Whether a canary rollout is currently in progress (1) or idle (0) |
-| `nyxgpt_canary_weight_percent` | Gauge | — | Current canary traffic weight percentage (0-100) |
-| `nyxgpt_canary_evaluations_total` | Counter | `result` | Canary metric evaluations, by result (`pass`/`insufficient_data`/`regression`) |
-| `nyxgpt_canary_events_total` | Counter | `action`, `result` | Canary lifecycle events (`deploy`/`start`/`promote`/`rollback`), by outcome |
-| `nyxgpt_canary_track_version_info` | Gauge | `track`, `version` | 1 for the (track, version) currently observed on that track's Deployment |
+| `nyxgpt_canary_rollout_active` | Gauge | — | `api`-only: whether a canary rollout is currently in progress (1) or idle (0) |
+| `nyxgpt_canary_weight_percent` | Gauge | — | `api`-only: current canary traffic weight percentage (0-100) |
+| `nyxgpt_canary_evaluations_total` | Counter | `result` | `api`-only: canary metric evaluations, by result (`pass`/`insufficient_data`/`regression`) |
+| `nyxgpt_canary_events_total` | Counter | `action`, `result` | `api`-only: canary lifecycle events (`deploy`/`start`/`promote`/`rollback`), by outcome |
+| `nyxgpt_canary_track_version_info` | Gauge | `track`, `version` | `api`-only: 1 for the (track, version) currently observed on that track's Deployment |
+| `nyxgpt_canary_component_rollout_active` | Gauge | `component` | Whether a canary rollout is currently in progress (1) or idle (0), by component (#3419) |
+| `nyxgpt_canary_component_weight_percent` | Gauge | `component` | Current canary traffic weight percentage (0-100), by component |
+| `nyxgpt_canary_component_evaluations_total` | Counter | `component`, `result` | Canary metric evaluations, by component and result |
+| `nyxgpt_canary_component_events_total` | Counter | `component`, `action`, `result` | Canary lifecycle events, by component, action, and outcome |
+| `nyxgpt_canary_component_track_version_info` | Gauge | `component`, `track`, `version` | 1 for the (component, track, version) currently observed on that component's track Deployment |
 | `nyxgpt_rag_ingests_total` | Counter | `source`, `result` | RAG document ingestion attempts, by source (`document`/`upload`/`repo`) and outcome (`success`/`failure`) |
 | `nyxgpt_cache_requests_total` | Counter | `cache`, `result` | Cache lookups, by cache (`chat_response`/`embedding`/`rag_query_result`) and outcome (`hit`/`miss`) |
 | `nyxgpt_rate_limit_rejections_total` | Counter | `path` | Requests rejected by the per-client rate limiter |
@@ -916,14 +921,23 @@ header so browsers download the file directly.
 
 ## Canary Deployment
 
-Local canary deployment for `nyxgpt-api` on a local Kubernetes cluster
-(kind/minikube/k3s) — see [kubernetes.md](kubernetes.md#canary-deployment)
-for the full deploy -> gate -> promote workflow and the `nyxgpt canary` CLI.
-These endpoints back the SRE/admin dashboard at `/admin/canary`. Traffic is
-split by the `nyxgpt-api-stable`/`nyxgpt-api-canary` Deployments'
-replica-count ratio behind a shared Service (kube-proxy is the traffic
-layer — no in-cluster proxy or cloud LB involved). This is the sole
-deployment model since #3409 retired blue/green in favor of it.
+Local canary deployment for `nyxgpt-api` and `nyxgpt-web` on a local
+Kubernetes cluster (kind/minikube/k3s) — see
+[kubernetes.md](kubernetes.md#canary-deployment) for the full deploy -> gate
+-> promote workflow and the `nyxgpt canary` CLI. These endpoints back the
+SRE/admin dashboard at `/admin/canary`. Traffic is split by each
+component's stable/canary Deployment pair's replica-count ratio behind a
+shared Service (kube-proxy is the traffic layer — no in-cluster proxy or
+cloud LB involved). This is the sole deployment model since #3409 retired
+blue/green in favor of it.
+
+Every endpoint below accepts an optional `component` field -- `"api"`
+(default) or `"web"` (#3419) -- selecting which component's stable/canary
+pair to operate on: a query param (`?component=web`) on `GET
+/canary/status`, a JSON body field (`{"component": "web"}`) on the `POST`
+endpoints. `component: "ollama"` is accepted but always returns `409`: see
+[kubernetes.md#ollama-canary-feasibility](kubernetes.md#ollama-canary-feasibility)
+for why ollama canary isn't implemented.
 
 Every deploy/start/evaluate/promote/rollback decision is logged with
 structured fields and exported as the `nyxgpt_canary_*` metrics above -- see
@@ -935,13 +949,15 @@ saved query, both linked directly from `/admin/canary`.
 
 Return rollout progress, stable/canary health + running version, the
 currently detected deployment mode, live error-rate/latency metrics, and
-recent action history.
+recent action history. `?component=api|web` (default `api`) selects the
+component.
 
 **Response:**
 
 ```json
 {
   "namespace": "nyxgpt",
+  "component": "api",
   "active": true,
   "weight_percent": 25,
   "stable": { "state": "healthy", "message": "nyxgpt-api-stable healthy (3/3 ready)", "version": "2.0.0-abc1234" },
@@ -978,6 +994,12 @@ Stable is never touched, even on failure. Traffic weighting is a separate,
 deliberate action (`start`/`promote` below). Returns `409` if the build,
 image patch, or rollout wait fails.
 
+**Request (optional):**
+
+```json
+{ "component": "api" }
+```
+
 **Response:**
 
 ```json
@@ -992,10 +1014,11 @@ rollout is already in progress.
 **Request:**
 
 ```json
-{ "weight_percent": 10 }
+{ "weight_percent": 10, "component": "api" }
 ```
 
 `weight_percent` is optional (default `10`), clamped to `1`-`99`.
+`component` is optional (default `"api"`; `"api"` or `"web"`).
 
 **Response:**
 
@@ -1010,6 +1033,12 @@ the configured `[canary]` thresholds. Automatically rolls back if either is
 breached, or reports "insufficient data" (still `200`) if too few requests
 have been observed. Returns `409` if there is no rollout in progress or a
 regression triggered an automatic rollback.
+
+**Request (optional):**
+
+```json
+{ "component": "api" }
+```
 
 **Response:**
 
@@ -1032,10 +1061,11 @@ back. Returns `409` if there is no rollout in progress.
 **Request:**
 
 ```json
-{ "step_percent": 25 }
+{ "step_percent": 25, "component": "api" }
 ```
 
 `step_percent` is optional (default: `[canary] step_percent`, `25`).
+`component` is optional (default `"api"`; `"api"` or `"web"`).
 
 **Response (intermediate step):**
 
@@ -1051,10 +1081,16 @@ back. Returns `409` if there is no rollout in progress.
 
 ### `POST /api/v1/canary/rollback`
 
-Cut all traffic back to `nyxgpt-api-stable`. Scales the canary Deployment to
-0 first (removing it from the Service's endpoints) before restoring stable's
-replica count — the emergency escape hatch, not blocked by a flaky
+Cut all traffic back to the stable Deployment. Scales the canary Deployment
+to 0 first (removing it from the Service's endpoints) before restoring
+stable's replica count — the emergency escape hatch, not blocked by a flaky
 stable-scale-up. Returns `409` if there is no rollout in progress.
+
+**Request (optional):**
+
+```json
+{ "component": "api" }
+```
 
 **Response:**
 

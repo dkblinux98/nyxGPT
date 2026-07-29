@@ -1356,18 +1356,19 @@ def _canary_namespace(cfg_path: Path | None, override: str | None) -> str:
     return get_canary_namespace(load_config(cfg_path))
 
 
-def cmd_canary_status(cfg_path: Path | None, namespace: str | None) -> int:
+def cmd_canary_status(cfg_path: Path | None, namespace: str | None, component: str = "api") -> int:
     """Print canary rollout progress, stable/canary health/version, and live traffic metrics.
 
     Args:
         cfg_path: Optional path to a config.ini to load instead of the default.
         namespace: Kubernetes namespace override (default: from config).
+        component: Which component's stable/canary pair to report on (default: "api"; #3419).
 
     Returns:
         0 always.
     """
     ns = _canary_namespace(cfg_path, namespace)
-    data = canary_mod.status(ns)
+    data = canary_mod.status(ns, component=component)
     rollout_state = "in progress" if data["active"] else "idle"
     print(
         f"Canary rollout: {rollout_state} at {data['weight_percent']}% (namespace={data['namespace']})"
@@ -1390,31 +1391,35 @@ def cmd_canary_status(cfg_path: Path | None, namespace: str | None) -> int:
     return 0
 
 
-def cmd_canary_deploy(cfg_path: Path | None, namespace: str | None) -> int:
+def cmd_canary_deploy(cfg_path: Path | None, namespace: str | None, component: str = "api") -> int:
     """Build the current checkout into a versioned image and deploy it to canary only.
 
     Args:
         cfg_path: Optional path to a config.ini to load instead of the default.
         namespace: Kubernetes namespace override (default: from config).
+        component: Which component to deploy (default: "api"; "api" or "web", #3419).
 
     Returns:
         0 if the deploy succeeded, 2 if it failed (stable is left untouched either way).
     """
     ns = _canary_namespace(cfg_path, namespace)
-    result = canary_mod.deploy(namespace=ns)
+    result = canary_mod.deploy(namespace=ns, component=component)
     print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
     if result.details:
         print(f"  {result.details}")
     return 0 if result.ok else 2
 
 
-def cmd_canary_start(cfg_path: Path | None, namespace: str | None, weight_percent: int) -> int:
+def cmd_canary_start(
+    cfg_path: Path | None, namespace: str | None, weight_percent: int, component: str = "api"
+) -> int:
     """Start a canary rollout, initially routing `weight_percent` of traffic to it.
 
     Args:
         cfg_path: Optional path to a config.ini to load instead of the default.
         namespace: Kubernetes namespace override (default: from config).
         weight_percent: Initial percentage of traffic to route to the canary.
+        component: Which component to start (default: "api"; "api" or "web", #3419).
 
     Returns:
         0 if the rollout started successfully, 2 if it failed.
@@ -1422,7 +1427,10 @@ def cmd_canary_start(cfg_path: Path | None, namespace: str | None, weight_percen
     ns = _canary_namespace(cfg_path, namespace)
     cfg = load_config(cfg_path)
     result = canary_mod.start(
-        namespace=ns, weight_percent=weight_percent, total_replicas=get_canary_total_replicas(cfg)
+        namespace=ns,
+        weight_percent=weight_percent,
+        total_replicas=get_canary_total_replicas(cfg),
+        component=component,
     )
     print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
     if result.details:
@@ -1430,7 +1438,9 @@ def cmd_canary_start(cfg_path: Path | None, namespace: str | None, weight_percen
     return 0 if result.ok else 2
 
 
-def cmd_canary_evaluate(cfg_path: Path | None, namespace: str | None) -> int:
+def cmd_canary_evaluate(
+    cfg_path: Path | None, namespace: str | None, component: str = "api"
+) -> int:
     """Check the canary's live error-rate/latency metrics against configured thresholds.
 
     Automatically rolls back the canary if it's regressing (see
@@ -1439,6 +1449,7 @@ def cmd_canary_evaluate(cfg_path: Path | None, namespace: str | None) -> int:
     Args:
         cfg_path: Optional path to a config.ini to load instead of the default.
         namespace: Kubernetes namespace override (default: from config).
+        component: Which component to evaluate (default: "api"; "api" or "web", #3419).
 
     Returns:
         0 if the canary passed evaluation, 2 if it failed (and was rolled back).
@@ -1450,6 +1461,7 @@ def cmd_canary_evaluate(cfg_path: Path | None, namespace: str | None) -> int:
         error_rate_threshold_percent=get_canary_error_rate_threshold(cfg),
         latency_p95_threshold_ms=get_canary_latency_p95_threshold_ms(cfg),
         min_requests=get_canary_min_requests(cfg),
+        component=component,
     )
     print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
     if result.details:
@@ -1458,7 +1470,10 @@ def cmd_canary_evaluate(cfg_path: Path | None, namespace: str | None) -> int:
 
 
 def cmd_canary_promote(
-    cfg_path: Path | None, namespace: str | None, step_percent: int | None
+    cfg_path: Path | None,
+    namespace: str | None,
+    step_percent: int | None,
+    component: str = "api",
 ) -> int:
     """Increase the canary's traffic share by a step percentage.
 
@@ -1466,6 +1481,7 @@ def cmd_canary_promote(
         cfg_path: Optional path to a config.ini to load instead of the default.
         namespace: Kubernetes namespace override (default: from config).
         step_percent: Percentage points to add (default: from config).
+        component: Which component to promote (default: "api"; "api" or "web", #3419).
 
     Returns:
         0 if the promotion succeeded, 2 if it failed.
@@ -1476,6 +1492,7 @@ def cmd_canary_promote(
         namespace=ns,
         step_percent=step_percent if step_percent is not None else get_canary_step_percent(cfg),
         total_replicas=get_canary_total_replicas(cfg),
+        component=component,
     )
     print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
     if result.details:
@@ -1483,19 +1500,24 @@ def cmd_canary_promote(
     return 0 if result.ok else 2
 
 
-def cmd_canary_rollback(cfg_path: Path | None, namespace: str | None) -> int:
+def cmd_canary_rollback(
+    cfg_path: Path | None, namespace: str | None, component: str = "api"
+) -> int:
     """Cut all traffic back to the stable deployment, abandoning the canary.
 
     Args:
         cfg_path: Optional path to a config.ini to load instead of the default.
         namespace: Kubernetes namespace override (default: from config).
+        component: Which component to roll back (default: "api"; "api" or "web", #3419).
 
     Returns:
         0 if the rollback succeeded, 2 if it failed.
     """
     ns = _canary_namespace(cfg_path, namespace)
     cfg = load_config(cfg_path)
-    result = canary_mod.rollback(namespace=ns, total_replicas=get_canary_total_replicas(cfg))
+    result = canary_mod.rollback(
+        namespace=ns, total_replicas=get_canary_total_replicas(cfg), component=component
+    )
     print(f"[{'OK' if result.ok else 'FAIL'}] {result.message}")
     if result.details:
         print(f"  {result.details}")
@@ -2038,11 +2060,17 @@ def cli(argv: list[str] | None = None) -> int:
     canary_p = sub.add_parser("canary", help="Local canary deployment (kind/minikube/k3s cluster)")
     canary_sub = canary_p.add_subparsers(dest="canary_cmd", required=True)
 
+    # --component is shared by every canary subcommand (default "api"; "web" as of
+    # #3419 -- see canary.py's COMPONENTS. "ollama" is accepted but always refused
+    # with an explanation, see OLLAMA_UNSUPPORTED_REASON).
     canary_status_p = canary_sub.add_parser(
         "status", help="Show rollout progress, stable/canary health/version, and live metrics"
     )
     canary_status_p.add_argument(
         "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
+    )
+    canary_status_p.add_argument(
+        "--component", default="api", help="Component to report on (default: api; or web)"
     )
 
     canary_deploy_p = canary_sub.add_parser(
@@ -2055,6 +2083,9 @@ def cli(argv: list[str] | None = None) -> int:
     canary_deploy_p.add_argument(
         "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
     )
+    canary_deploy_p.add_argument(
+        "--component", default="api", help="Component to deploy (default: api; or web)"
+    )
 
     canary_start_p = canary_sub.add_parser(
         "start", help="Start a canary rollout at an initial traffic weight"
@@ -2065,6 +2096,9 @@ def cli(argv: list[str] | None = None) -> int:
     canary_start_p.add_argument(
         "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
     )
+    canary_start_p.add_argument(
+        "--component", default="api", help="Component to start (default: api; or web)"
+    )
 
     canary_evaluate_p = canary_sub.add_parser(
         "evaluate",
@@ -2072,6 +2106,9 @@ def cli(argv: list[str] | None = None) -> int:
     )
     canary_evaluate_p.add_argument(
         "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
+    )
+    canary_evaluate_p.add_argument(
+        "--component", default="api", help="Component to evaluate (default: api; or web)"
     )
 
     canary_promote_p = canary_sub.add_parser(
@@ -2083,12 +2120,18 @@ def cli(argv: list[str] | None = None) -> int:
     canary_promote_p.add_argument(
         "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
     )
+    canary_promote_p.add_argument(
+        "--component", default="api", help="Component to promote (default: api; or web)"
+    )
 
     canary_rollback_p = canary_sub.add_parser(
-        "rollback", help="Cut all traffic back to nyxgpt-api-stable"
+        "rollback", help="Cut all traffic back to the stable deployment"
     )
     canary_rollback_p.add_argument(
         "--namespace", help="Kubernetes namespace (default: from config, else nyxgpt)"
+    )
+    canary_rollback_p.add_argument(
+        "--component", default="api", help="Component to roll back (default: api; or web)"
     )
 
     # Add self-heal command (Docker Compose stack watchdog)
@@ -2263,17 +2306,17 @@ def cli(argv: list[str] | None = None) -> int:
 
     if cmd == "canary":
         if args.canary_cmd == "status":
-            return cmd_canary_status(args.config, args.namespace)
+            return cmd_canary_status(args.config, args.namespace, args.component)
         if args.canary_cmd == "deploy":
-            return cmd_canary_deploy(args.config, args.namespace)
+            return cmd_canary_deploy(args.config, args.namespace, args.component)
         if args.canary_cmd == "start":
-            return cmd_canary_start(args.config, args.namespace, args.weight)
+            return cmd_canary_start(args.config, args.namespace, args.weight, args.component)
         if args.canary_cmd == "evaluate":
-            return cmd_canary_evaluate(args.config, args.namespace)
+            return cmd_canary_evaluate(args.config, args.namespace, args.component)
         if args.canary_cmd == "promote":
-            return cmd_canary_promote(args.config, args.namespace, args.step)
+            return cmd_canary_promote(args.config, args.namespace, args.step, args.component)
         if args.canary_cmd == "rollback":
-            return cmd_canary_rollback(args.config, args.namespace)
+            return cmd_canary_rollback(args.config, args.namespace, args.component)
 
     if cmd == "self-heal":
         if args.self_heal_cmd == "status":

@@ -1,12 +1,16 @@
 import { apiFetch } from "@/lib/apiProxy";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const res = await apiFetch(`/api/v1/canary/status`, {
-      method: "GET",
-      headers: { "Content-Type": "application/json" },
-      cache: "no-store",
-    });
+    const component = new URL(request.url).searchParams.get("component") ?? "api";
+    const res = await apiFetch(
+      `/api/v1/canary/status?component=${encodeURIComponent(component)}`,
+      {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+      }
+    );
 
     const data = await res.json();
 

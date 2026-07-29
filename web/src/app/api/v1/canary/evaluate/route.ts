@@ -1,10 +1,12 @@
 import { apiFetch } from "@/lib/apiProxy";
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
+    const body = await request.json().catch(() => ({}));
     const res = await apiFetch(`/api/v1/canary/evaluate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
       cache: "no-store",
     });
 

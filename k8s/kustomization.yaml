@@ -10,3 +10,7 @@ resources:
   - deployment-stable.yaml
   - deployment-canary.yaml
   - service-canary.yaml
+  - service-web.yaml
+  - deployment-web-stable.yaml
+  - deployment-web-canary.yaml
+  - service-web-canary.yaml

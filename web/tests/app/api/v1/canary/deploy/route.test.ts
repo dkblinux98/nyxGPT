@@ -1,5 +1,5 @@
 /**
- * Tests for the /api/v1/canary/deploy Next.js proxy route (#3409).
+ * Tests for the /api/v1/canary/deploy Next.js proxy route (#3409, #3419).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -8,6 +8,14 @@ function mockFetch(opts: { ok: boolean; status: number; data?: unknown }) {
     ok: opts.ok,
     status: opts.status,
     json: () => Promise.resolve(opts.data ?? {}),
+  });
+}
+
+function req(body: unknown = {}) {
+  return new Request('http://localhost/api/v1/canary/deploy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
 }
 
@@ -22,12 +30,13 @@ describe('/api/v1/canary/deploy proxy route', () => {
     mockFetch({ ok: true, status: 200, data: { ok: true, message: 'Deployed' } });
 
     const { POST } = await import('../../../../../../src/app/api/v1/canary/deploy/route');
-    const response = (await POST()) as Response;
+    const response = (await POST(req({ component: 'web' }))) as Response;
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
     const [calledUrl, calledOptions] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(calledUrl).toBe('http://127.0.0.1:8000/api/v1/canary/deploy');
     expect(calledOptions.method).toBe('POST');
+    expect(JSON.parse(calledOptions.body)).toEqual({ component: 'web' });
 
     const body = await response.json();
     expect(body).toEqual({ ok: true, message: 'Deployed' });
@@ -38,17 +47,31 @@ describe('/api/v1/canary/deploy proxy route', () => {
     mockFetch({ ok: true, status: 200, data: { ok: true } });
 
     const { POST } = await import('../../../../../../src/app/api/v1/canary/deploy/route');
-    await POST();
+    await POST(req());
 
     const calledUrl: string = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(calledUrl).toBe('http://custom-backend:9000/api/v1/canary/deploy');
+  });
+
+  it('falls back to an empty body when request JSON is invalid', async () => {
+    mockFetch({ ok: true, status: 200, data: { ok: true } });
+
+    const { POST } = await import('../../../../../../src/app/api/v1/canary/deploy/route');
+    const badReq = new Request('http://localhost/api/v1/canary/deploy', {
+      method: 'POST',
+      body: 'not json',
+    });
+    await POST(badReq);
+
+    const calledOptions = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(JSON.parse(calledOptions.body)).toEqual({});
   });
 
   it('passes through backend response status', async () => {
     mockFetch({ ok: false, status: 409, data: { error: 'rollout did not become healthy' } });
 
     const { POST } = await import('../../../../../../src/app/api/v1/canary/deploy/route');
-    const response = (await POST()) as Response;
+    const response = (await POST(req())) as Response;
 
     expect(response.status).toBe(409);
     const body = await response.json();
@@ -59,7 +82,7 @@ describe('/api/v1/canary/deploy proxy route', () => {
     global.fetch = vi.fn().mockRejectedValueOnce(new Error('ECONNREFUSED'));
 
     const { POST } = await import('../../../../../../src/app/api/v1/canary/deploy/route');
-    const response = (await POST()) as Response;
+    const response = (await POST(req())) as Response;
 
     expect(response.status).toBe(502);
     const body = await response.json();
@@ -74,7 +97,7 @@ describe('/api/v1/canary/deploy proxy route', () => {
     });
 
     const { POST } = await import('../../../../../../src/app/api/v1/canary/deploy/route');
-    const response = (await POST()) as Response;
+    const response = (await POST(req())) as Response;
 
     expect(response.status).toBe(502);
     const body = await response.json();

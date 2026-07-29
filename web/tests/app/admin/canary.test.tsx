@@ -307,7 +307,7 @@ describe('CanaryPage', () => {
     await waitFor(() => {
       expect(screen.getByText('Started canary rollout at 15%')).toBeInTheDocument();
     });
-    expect(capturedBody).toEqual({ weight_percent: 15 });
+    expect(capturedBody).toEqual({ weight_percent: 15, component: 'api' });
 
     // Active state: rollout badge, metrics, and history entries (with and without from_weight_percent)
     expect(screen.getByText('ROLLOUT IN PROGRESS — 25%')).toBeInTheDocument();
@@ -464,6 +464,61 @@ describe('CanaryPage', () => {
       'title',
       'Refusing to shift more traffic to a canary that is not healthy'
     );
+  });
+
+  it('switches components via the tab bar, refetching status and re-targeting every action', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockStatus)));
+    const user = userEvent.setup();
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Deploy a new version to nyxgpt-api-canary,/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/then promote it to nyxgpt-api-stable/)).toBeInTheDocument();
+
+    let lastStatusUrl: string | null = null;
+    const webStatus = {
+      ...mockStatus,
+      component: 'web',
+      stable: { state: 'healthy', message: 'nyxgpt-web-stable healthy (2/2 ready)', version: '2.0.0-web1' },
+      canary: { state: 'not_deployed', message: 'nyxgpt-web-canary has 0 desired replicas (idle)', version: '' },
+    };
+    server.use(
+      http.get('/api/v1/canary/status', ({ request }) => {
+        lastStatusUrl = request.url;
+        return HttpResponse.json(webStatus);
+      })
+    );
+
+    await user.click(screen.getByRole('button', { name: /^web$/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/nyxgpt-web-stable healthy/)).toBeInTheDocument();
+    });
+    expect(lastStatusUrl).toContain('component=web');
+    expect(screen.getByText(/Deploy a new version to nyxgpt-web-canary,/)).toBeInTheDocument();
+    expect(screen.getByText(/then promote it to nyxgpt-web-stable/)).toBeInTheDocument();
+
+    let deployBody: unknown = null;
+    server.use(
+      http.post('/api/v1/canary/deploy', async ({ request }) => {
+        deployBody = await request.json();
+        return HttpResponse.json({ message: 'Deployed nyxgpt-web:2.0.1-web2 to nyxgpt-web-canary' });
+      })
+    );
+    await user.click(screen.getByRole('button', { name: /deploy current version to canary/i }));
+    await waitFor(() => {
+      expect(deployBody).toEqual({ component: 'web' });
+    });
+
+    // Switching back to api re-fetches the api-scoped status.
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(mockStatus)));
+    await user.click(screen.getByRole('button', { name: /^api$/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Deploy a new version to nyxgpt-api-canary,/)).toBeInTheDocument();
+    });
   });
 
   it('walks every action-error fallback branch and a non-Error action rejection', async () => {
