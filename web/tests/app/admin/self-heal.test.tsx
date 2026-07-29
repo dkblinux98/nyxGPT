@@ -55,6 +55,25 @@ const mockStatus = {
       ok: false,
       restart_count: 3,
       message: 'Giving up after 3 attempts',
+      evidence: {
+        probe_type: 'compose',
+        state: 'running',
+        health: 'unhealthy',
+        healthy_before: false,
+        container: 'nyxgpt-api-1',
+        restart_count_before: 2,
+        max_consecutive_restarts: 3,
+      },
+    },
+    {
+      ts: 1768301000,
+      service: 'ollama',
+      reason: 'state=exited health=n/a',
+      action: 'restart',
+      ok: true,
+      restart_count: 1,
+      message: 'Restarted ollama',
+      evidence: {},
     },
   ],
 };
@@ -136,11 +155,31 @@ describe('SelfHealPage', () => {
     expect(screen.getByText('1 unhealthy')).toBeInTheDocument();
     expect(screen.getByText(/Restarted web/)).toBeInTheDocument();
     expect(screen.getByText(/Giving up after 3 attempts/)).toBeInTheDocument();
-    expect(screen.getByText('OK')).toBeInTheDocument();
+    expect(screen.getAllByText('OK')).toHaveLength(2);
     expect(screen.getByText('FAILED')).toBeInTheDocument();
     // Source badge reflects native vs Compose per component.
     expect(screen.getByText('native')).toBeInTheDocument();
     expect(screen.getByText('compose')).toBeInTheDocument();
+  });
+
+  it('surfaces probe evidence on heal events that carry it, and only on those', async () => {
+    server.use(http.get('/api/v1/self-heal/status', () => HttpResponse.json(mockStatus)));
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Giving up after 3 attempts/)).toBeInTheDocument();
+    });
+    // Only the api event carries a non-empty evidence dict; the web event has
+    // none at all and the ollama event has an empty one -- neither gets a block.
+    expect(screen.getAllByText('Probe evidence')).toHaveLength(1);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByText('Probe evidence'));
+    expect(screen.getByText(/"probe_type": "compose"/)).toBeInTheDocument();
+    expect(screen.getByText(/"health": "unhealthy"/)).toBeInTheDocument();
+    expect(screen.getByText(/"max_consecutive_restarts": 3/)).toBeInTheDocument();
   });
 
   it('describes the monitored set as core app components regardless of source, not "the Docker Compose stack"', async () => {

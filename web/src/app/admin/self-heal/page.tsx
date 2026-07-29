@@ -23,6 +23,7 @@ type HealEvent = {
   ok: boolean;
   restart_count: number;
   message: string;
+  evidence?: Record<string, unknown>;
 };
 
 type DetectedMode = 'native' | 'compose' | 'terraform' | 'kubernetes' | 'none';
@@ -501,6 +502,29 @@ export default function SelfHealPage() {
                     </span>{' '}
                     {event.service}: {event.message} ({event.reason}, restart #
                     {event.restart_count}) at {new Date(event.ts * 1000).toLocaleString()}
+                    {event.evidence && Object.keys(event.evidence).length > 0 && (
+                      <details style={{ marginTop: '0.375rem' }}>
+                        <summary
+                          style={{ cursor: 'pointer', color: 'var(--foreground-muted)', fontSize: '0.8125rem' }}
+                        >
+                          Probe evidence
+                        </summary>
+                        <pre
+                          style={{
+                            margin: '0.375rem 0 0',
+                            padding: '0.5rem',
+                            fontSize: '0.75rem',
+                            background: 'var(--background)',
+                            border: '1px solid var(--border-color)',
+                            borderRadius: '0.25rem',
+                            overflowX: 'auto',
+                            whiteSpace: 'pre-wrap',
+                          }}
+                        >
+                          {JSON.stringify(event.evidence, null, 2)}
+                        </pre>
+                      </details>
+                    )}
                   </li>
                 ))}
               </ul>
