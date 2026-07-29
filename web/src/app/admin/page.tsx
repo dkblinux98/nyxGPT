@@ -1763,8 +1763,8 @@ export default function AdminPage() {
 
                 <div style={{ fontSize: 13, color: '#666', marginTop: '1rem' }}>
                   Looking for live resource metrics? See{' '}
-                  <a href="/settings" style={{ color: '#0066cc' }}>
-                    Settings &rarr; Resource Usage
+                  <a href="/admin/health" style={{ color: '#0066cc' }}>
+                    System Health
                   </a>
                   . Settings that need a restart to take effect show a restart button on the{' '}
                   <a href="/admin/dashboard" style={{ color: '#0066cc' }}>

@@ -1,10 +1,48 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
 import AdminHealthPage from '../../../src/app/admin/health/page';
 
+const emptyUsageSummary = {
+  total_requests: 0,
+  total_prompt_tokens: 0,
+  total_completion_tokens: 0,
+  total_tokens: 0,
+  session_count: 0,
+  by_model: [],
+  by_day: [],
+};
+
+const emptyMetricsHistory = {
+  range: '1h',
+  points: [],
+  sample_interval_seconds: 60,
+  requested_window_seconds: 3600,
+  earliest_available_ts: null,
+  history_available_seconds: 0,
+};
+
+const zeroMetrics = {
+  memory: { rss_mb: 0, vms_mb: 0, percent: 0, available_mb: 0 },
+  cpu: { process_percent: 0, system_percent: 0 },
+  latency: { avg_ms: 0, p50_ms: 0, p95_ms: 0, p99_ms: 0 },
+  queue: { depth: 0, total_requests: 0 },
+};
+
 describe('AdminHealthPage', () => {
+  // The consolidated screen (#3413) also mounts the Usage Analytics and
+  // Resource Metrics sections on every render, so every test needs default
+  // handlers for their endpoints -- individual tests below override these
+  // via their own `server.use()` where they care about the response.
+  beforeEach(() => {
+    server.use(
+      http.get('/api/v1/analytics/usage', () => HttpResponse.json(emptyUsageSummary)),
+      http.get('/api/metrics', () => HttpResponse.json(zeroMetrics)),
+      http.get('/api/v1/metrics/history', () => HttpResponse.json(emptyMetricsHistory))
+    );
+  });
+
   it('renders the heading and back link', async () => {
     render(<AdminHealthPage />);
     await waitFor(() => {
@@ -82,7 +120,18 @@ describe('AdminHealthPage', () => {
   });
 
   it('shows a string error message when a non-Error value is thrown', async () => {
-    const fetchSpy = vi.spyOn(global, 'fetch').mockRejectedValueOnce('boom');
+    // Routed by URL rather than mockRejectedValueOnce: the page now mounts
+    // sibling sections (Usage Analytics, Resource Metrics) that also fetch
+    // on mount, and a call-order-based one-time rejection could land on any
+    // of them instead of the health endpoint this test targets.
+    const realFetch = global.fetch;
+    const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation((input, init) => {
+      const url = typeof input === 'string' ? input : (input as Request).url;
+      if (url.includes('/api/v1/admin/health')) {
+        return Promise.reject('boom');
+      }
+      return realFetch(input, init);
+    });
     render(<AdminHealthPage />);
     await waitFor(() => {
       expect(screen.getAllByText(/boom/).length).toBeGreaterThan(0);
@@ -164,5 +213,98 @@ describe('AdminHealthPage', () => {
     });
     expect(screen.getByText(/Queue depth elevated/)).toBeInTheDocument();
     expect(screen.getByText('warning')).toBeInTheDocument();
+  });
+
+  describe('consolidated screen sections (#3413)', () => {
+    it('renders section anchor jump links for all three sections', async () => {
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: 'System Health' })).toBeInTheDocument();
+      });
+
+      const nav = screen.getByRole('navigation', { name: 'System Health sections' });
+      expect(within(nav).getByRole('link', { name: 'Service Health' })).toHaveAttribute(
+        'href',
+        '#service-health'
+      );
+      expect(within(nav).getByRole('link', { name: 'Usage Analytics' })).toHaveAttribute(
+        'href',
+        '#usage-analytics'
+      );
+      expect(within(nav).getByRole('link', { name: 'Resource Metrics' })).toHaveAttribute(
+        'href',
+        '#resource-metrics'
+      );
+    });
+
+    it('renders the Usage Analytics section with data from the analytics endpoint', async () => {
+      server.use(
+        http.get('/api/v1/analytics/usage', () =>
+          HttpResponse.json({
+            total_requests: 42,
+            total_prompt_tokens: 100,
+            total_completion_tokens: 50,
+            total_tokens: 150,
+            session_count: 3,
+            by_model: [{ model: 'llama3.1:8b', requests: 42, prompt_tokens: 100, completion_tokens: 50 }],
+            by_day: [{ date: '2026-07-28', requests: 42, prompt_tokens: 100, completion_tokens: 50 }],
+          })
+        )
+      );
+
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: 'Usage Analytics' })).toBeInTheDocument();
+      });
+      await waitFor(() => {
+        expect(screen.getByText('150')).toBeInTheDocument(); // total_tokens stat tile
+      });
+      expect(screen.getByText('llama3.1:8b')).toBeInTheDocument();
+    });
+
+    it('renders the Resource Metrics section with data from the metrics endpoint', async () => {
+      server.use(
+        http.get('/api/metrics', () =>
+          HttpResponse.json({
+            memory: { rss_mb: 256, vms_mb: 512, percent: 12.5, available_mb: 4096 },
+            cpu: { process_percent: 3.2, system_percent: 15.5 },
+            latency: { avg_ms: 10, p50_ms: 9, p95_ms: 20, p99_ms: 30 },
+            queue: { depth: 1, total_requests: 5 },
+          })
+        )
+      );
+
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: 'Resource Metrics' })).toBeInTheDocument();
+      });
+      await waitFor(() => {
+        expect(screen.getByText('256.0 MB')).toBeInTheDocument();
+      });
+    });
+
+    it('the Resource Utilization card\'s "Full metrics" link jumps to the Resource Metrics section on the same page', async () => {
+      server.use(
+        http.get('/api/v1/admin/health', () =>
+          HttpResponse.json({
+            service: { status: 'ok', uptime_s: 60 },
+            dependencies: [],
+            resource_metrics: {
+              memory: { rss_mb: 128, percent: 2.5 },
+              cpu: { process_percent: 1.1 },
+              queue: { depth: 0 },
+              errors: { rate_percent: 0 },
+            },
+            alerts: [],
+          })
+        )
+      );
+
+      render(<AdminHealthPage />);
+      await waitFor(() => {
+        expect(screen.getByText(/128 MB/)).toBeInTheDocument();
+      });
+      expect(screen.getByRole('link', { name: /full metrics/i })).toHaveAttribute('href', '#resource-metrics');
+    });
   });
 });

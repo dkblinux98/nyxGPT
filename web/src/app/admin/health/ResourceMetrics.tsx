@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useState, useRef, type CSSProperties } from 'react';
-import LoadingSpinner from '../../components/LoadingSpinner';
-import ErrorMessage from '../../components/ErrorMessage';
+import LoadingSpinner from '../../../components/LoadingSpinner';
+import ErrorMessage from '../../../components/ErrorMessage';
 
 type MetricsData = {
   memory: {

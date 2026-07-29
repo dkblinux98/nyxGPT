@@ -151,13 +151,7 @@ describe('AdminDashboardPage', () => {
     const systemStatus = screen.getByRole('region', { name: 'System status overview' });
     const configuration = screen.getByRole('region', { name: 'Configuration management' });
 
-    const observationLabels = [
-      'System Health',
-      'Infrastructure Status',
-      'SRE Overview',
-      'Usage Analytics',
-      'Full Metrics',
-    ];
+    const observationLabels = ['System Health', 'Infrastructure Status', 'SRE Overview'];
     const operationLabels = ['Canary Operations', 'Self-heal Operations'];
 
     for (const label of observationLabels) {

@@ -2,8 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { server } from '../../mocks/server';
-import AdminAnalyticsPage from '../../../src/app/admin/analytics/page';
+import { server } from '../../../mocks/server';
+import UsageAnalyticsSection from '../../../../src/app/admin/health/UsageAnalyticsSection';
 
 const fullSummary = {
   total_requests: 120,
@@ -35,23 +35,11 @@ function mockUsage(summary = fullSummary) {
   server.use(http.get('/api/v1/analytics/usage', () => HttpResponse.json(summary)));
 }
 
-describe('AdminAnalyticsPage', () => {
-  it('renders the heading and back link', async () => {
-    mockUsage();
-
-    render(<AdminAnalyticsPage />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('heading', { name: 'Usage Analytics' })).toBeInTheDocument();
-    });
-    const link = screen.getByRole('link', { name: /back to admin dashboard/i });
-    expect(link).toHaveAttribute('href', '/admin/dashboard');
-  });
-
+describe('UsageAnalyticsSection', () => {
   it('renders usage totals, model breakdown, and requests-by-day bars', async () => {
     mockUsage();
 
-    render(<AdminAnalyticsPage />);
+    render(<UsageAnalyticsSection />);
 
     await waitFor(() => {
       expect(screen.getByText('120')).toBeInTheDocument();
@@ -73,7 +61,7 @@ describe('AdminAnalyticsPage', () => {
   it('shows the empty states for model usage and requests-by-day when there is no data', async () => {
     mockUsage(emptySummary);
 
-    render(<AdminAnalyticsPage />);
+    render(<UsageAnalyticsSection />);
 
     await waitFor(() => {
       expect(screen.getAllByText('No usage recorded yet.').length).toBe(2);
@@ -83,7 +71,7 @@ describe('AdminAnalyticsPage', () => {
   it('shows an error and recovers on retry', async () => {
     server.use(http.get('/api/v1/analytics/usage', () => new HttpResponse(null, { status: 500 })));
 
-    render(<AdminAnalyticsPage />);
+    render(<UsageAnalyticsSection />);
 
     await waitFor(() => {
       expect(screen.getByText('Failed to load usage analytics')).toBeInTheDocument();
@@ -102,7 +90,7 @@ describe('AdminAnalyticsPage', () => {
     const fetchSpy = vi.spyOn(global, 'fetch');
     fetchSpy.mockImplementationOnce(() => Promise.reject('usage gremlin'));
 
-    render(<AdminAnalyticsPage />);
+    render(<UsageAnalyticsSection />);
 
     await waitFor(() => {
       expect(screen.getByText('usage gremlin')).toBeInTheDocument();
@@ -115,7 +103,7 @@ describe('AdminAnalyticsPage', () => {
     mockUsage();
     const user = userEvent.setup();
 
-    render(<AdminAnalyticsPage />);
+    render(<UsageAnalyticsSection />);
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /export json/i })).toBeInTheDocument();
     });
@@ -146,7 +134,7 @@ describe('AdminAnalyticsPage', () => {
     mockUsage();
     const user = userEvent.setup();
 
-    render(<AdminAnalyticsPage />);
+    render(<UsageAnalyticsSection />);
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /export csv/i })).toBeInTheDocument();
     });
@@ -168,7 +156,7 @@ describe('AdminAnalyticsPage', () => {
     mockUsage();
     const user = userEvent.setup();
 
-    render(<AdminAnalyticsPage />);
+    render(<UsageAnalyticsSection />);
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /export json/i })).toBeInTheDocument();
     });
@@ -194,7 +182,7 @@ describe('AdminAnalyticsPage', () => {
     mockUsage();
     const user = userEvent.setup();
 
-    render(<AdminAnalyticsPage />);
+    render(<UsageAnalyticsSection />);
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /export json/i })).toBeInTheDocument();
     });
