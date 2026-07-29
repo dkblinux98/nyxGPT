@@ -6965,6 +6965,7 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
     with (
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok) as c,
         patch.object(ops, "_build_and_load_k8s_image", return_value=ok) as b,
+        patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok) as bw,
         patch.object(ops, "_ensure_k8s_secret", return_value=ok) as s,
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok) as a,
         patch.object(ops, "_k8s_stack_health", return_value=ok) as h,
@@ -6973,6 +6974,7 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
     assert rc == 0
     c.assert_called_once()
     b.assert_called_once()
+    bw.assert_called_once()
     s.assert_called_once_with("k")
     a.assert_called_once()
     h.assert_called_once()
@@ -6980,15 +6982,16 @@ def test_install_kubernetes_success_runs_all_steps(monkeypatch, capsys):
 
 
 @pytest.mark.unit
-def test_install_kubernetes_clears_intentional_stop_marker_for_api(monkeypatch, capsys):
-    """Kubernetes only manages `api` (no k8s manifest for web/ollama/cassandra)
-    -- its intentional-stop marker must be cleared, and only that one (#3406)."""
+def test_install_kubernetes_clears_intentional_stop_markers_for_api_and_web(monkeypatch, capsys):
+    """Kubernetes manages both `api` and `web` (#3419) -- both intentional-stop
+    markers must be cleared, and only those two (no manifest for ollama/cassandra)."""
     args = SimpleNamespace(local=True, cloud=False, api_key="k")
     monkeypatch.setattr(ops, "_refuse_port_collision", lambda components: None)
     ok = [ops.OpsResult(True, "ok")]
     with (
         patch.object(ops, "_ensure_kubectl_and_cluster", return_value=ok),
         patch.object(ops, "_build_and_load_k8s_image", return_value=ok),
+        patch.object(ops, "_build_and_load_k8s_web_image", return_value=ok),
         patch.object(ops, "_ensure_k8s_secret", return_value=ok),
         patch.object(ops, "_kubectl_apply_kustomization", return_value=ok),
         patch.object(ops, "_k8s_stack_health", return_value=ok),
@@ -6996,7 +6999,7 @@ def test_install_kubernetes_clears_intentional_stop_marker_for_api(monkeypatch, 
     ):
         rc = ops._install_kubernetes(args)
     assert rc == 0
-    clear_stopped.assert_called_once_with("api")
+    assert clear_stopped.call_args_list == [call("api"), call("web")]
 
 
 @pytest.mark.unit
@@ -7010,6 +7013,7 @@ def test_install_kubernetes_stops_pipeline_on_step_failure(monkeypatch):
             return_value=[ops.OpsResult(False, "no cluster")],
         ),
         patch.object(ops, "_build_and_load_k8s_image") as b,
+        patch.object(ops, "_build_and_load_k8s_web_image") as bw,
         patch.object(ops, "_ensure_k8s_secret") as s,
         patch.object(ops, "_kubectl_apply_kustomization") as a,
         patch.object(ops, "_k8s_stack_health") as h,
@@ -7017,6 +7021,7 @@ def test_install_kubernetes_stops_pipeline_on_step_failure(monkeypatch):
         rc = ops._install_kubernetes(args)
     assert rc == 2
     b.assert_not_called()
+    bw.assert_not_called()
     s.assert_not_called()
     a.assert_not_called()
     h.assert_not_called()

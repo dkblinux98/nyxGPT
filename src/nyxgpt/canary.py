@@ -1,8 +1,8 @@
-"""Canary deployment for the nyxGPT API on a local Kubernetes cluster.
+"""Canary deployment for nyxGPT components on a local Kubernetes cluster.
 
-Runs a second `nyxgpt-api-canary` Deployment alongside the existing
-`nyxgpt-api-stable` Deployment, both fronted by a single Service
-(`nyxgpt-api-canary`, see k8s/service-canary.yaml). Traffic is split by
+Runs a second `<component>-canary` Deployment alongside the existing
+`<component>-stable` Deployment, both fronted by a single Service (see
+k8s/service-canary.yaml / k8s/service-web-canary.yaml). Traffic is split by
 replica-count ratio: kube-proxy round-robins Service traffic evenly across
 every matching Pod endpoint, so `canary_replicas / total_replicas`
 approximates the canary's share of requests. There is no cloud traffic
@@ -12,9 +12,12 @@ local-cluster workflow documented in docs/kubernetes.md (kind/minikube/k3s).
 This is the sole deployment model as of #3409 -- blue/green (deploy.py) was
 retired in favor of canary, which is a strict superset for traffic purposes
 (0%/100% reproduces blue/green's cutover) plus metrics-gated gradual shift
-and auto-rollback. `api` is the only component covered today; `web`/`ollama`
-coverage is tracked in follow-up issue #3419, and the Cassandra
-data-migration story is deferred per the #3409 owner decision.
+and auto-rollback. `api` and `web` are covered as of #3419 (every public
+function below takes a `component: str = "api"` parameter -- see
+`COMPONENTS`); `ollama` is deliberately not implemented (see
+`OLLAMA_UNSUPPORTED_REASON` and docs/kubernetes.md#ollama-canary-feasibility
+for why), and the Cassandra data-migration story remains deferred per the
+#3409 owner decision.
 
 Metrics-based promotion/rollback reads the process-wide ResourceMonitor
 (error rate + p95 latency, see resource_monitor.py) since dedicated
@@ -53,6 +56,123 @@ NOT_SUPPORTED_UNDER_COMPOSE = (
     "Canary deployment requires the Kubernetes deployment mode; not "
     "available under docker-compose. See docs/kubernetes.md."
 )
+
+# `web` net-new k8s workloads and component parameter (#3419, follow-up to
+# #3409). Constants and behavior for the `api` component (above) are
+# untouched -- every public function below defaults `component="api"` and,
+# on that default, resolves to exactly the same deployment/service names,
+# state-file shape, and metric labels as before this component parameter
+# existed, so on-disk state and existing callers keep working unmodified.
+WEB_SERVICE_NAME = "nyxgpt-web-canary"
+WEB_STABLE_DEPLOYMENT = "nyxgpt-web-stable"
+WEB_CANARY_DEPLOYMENT = "nyxgpt-web-canary"
+WEB_IMAGE_REPOSITORY = "nyxgpt-web"
+WEB_CONTAINER_NAME = "nyxgpt-web"
+DEFAULT_WEB_TOTAL_REPLICAS = 4
+
+# `ollama` is deliberately NOT implemented: every replica of a canary'd
+# Ollama Deployment would need its own local model store (Ollama has no
+# concept of a read replica -- `ollama serve` owns and writes to its own
+# blob directory), so a stable/canary pair either shares one
+# ReadWriteMany-mounted volume -- risking concurrent writers racing to pull/
+# evict the same model blobs, and no upstream guidance that this is safe --
+# or doubles local disk usage for models that can run several GB each. Both
+# are real costs for a local-first, single-user deployment target with no
+# solved-elsewhere precedent to lean on, so this documents the infeasibility
+# (per this issue's AC) rather than shipping an unsound split. See
+# docs/kubernetes.md#ollama-canary-feasibility for the full writeup; revisit
+# if Ollama gains a supported multi-instance/shared-storage model.
+OLLAMA_UNSUPPORTED_REASON = (
+    "ollama canary is not implemented: every Deployment replica would need "
+    "its own local model store since Ollama has no read-replica model, so a "
+    "stable/canary split means either a shared volume with concurrent "
+    "writers racing to pull/evict the same model blobs, or duplicating "
+    "multi-GB models per track -- both real costs for a local-first, "
+    "single-user target. See docs/kubernetes.md#ollama-canary-feasibility."
+)
+
+
+@dataclass(frozen=True)
+class ComponentSpec:
+    """Everything canary's generic (`_scale`/`_set_image`/`deployment_health`/build) plumbing
+    needs to operate on one component's stable/canary Deployment pair.
+
+    `build_context`/`build_fingerprint_paths`/`build_excludes`/`build_args`
+    are only consulted for non-`api` components -- `deploy()` keeps calling
+    `ops_module.build_and_load_k8s_image(tag)` with no extra kwargs for
+    `api`, identical to the pre-#3419 call, so that path (and the tests
+    mocking it with a single-argument stub) is unaffected.
+    """
+
+    key: str
+    stable_deployment: str
+    canary_deployment: str
+    service_name: str
+    image_repository: str
+    container_name: str
+    default_total_replicas: int
+    supported: bool = True
+    unsupported_reason: str = ""
+    build_context: Path | None = None
+    build_fingerprint_paths: list[Path] | None = None
+    build_excludes: frozenset[str] = frozenset()
+    build_args: dict[str, str] | None = None
+
+
+COMPONENTS: dict[str, ComponentSpec] = {
+    "api": ComponentSpec(
+        key="api",
+        stable_deployment=STABLE_DEPLOYMENT,
+        canary_deployment=CANARY_DEPLOYMENT,
+        service_name=SERVICE_NAME,
+        image_repository=IMAGE_REPOSITORY,
+        container_name="nyxgpt-api",
+        default_total_replicas=DEFAULT_TOTAL_REPLICAS,
+    ),
+    "web": ComponentSpec(
+        key="web",
+        stable_deployment=WEB_STABLE_DEPLOYMENT,
+        canary_deployment=WEB_CANARY_DEPLOYMENT,
+        service_name=WEB_SERVICE_NAME,
+        image_repository=WEB_IMAGE_REPOSITORY,
+        container_name=WEB_CONTAINER_NAME,
+        default_total_replicas=DEFAULT_WEB_TOTAL_REPLICAS,
+        build_context=ops_module.REPO_ROOT / "web",
+        build_fingerprint_paths=[ops_module.REPO_ROOT / "web"],
+        build_excludes=ops_module._WEB_VENDOR_EXCLUDES,
+        build_args={"NEXT_PUBLIC_API_BASE_URL": ops_module.TF_WEB_API_BASE_URL_DEFAULT},
+    ),
+    "ollama": ComponentSpec(
+        key="ollama",
+        stable_deployment="",
+        canary_deployment="",
+        service_name="",
+        image_repository="",
+        container_name="",
+        default_total_replicas=0,
+        supported=False,
+        unsupported_reason=OLLAMA_UNSUPPORTED_REASON,
+    ),
+}
+
+
+def _component_spec(component: str) -> tuple[ComponentSpec | None, CanaryResult | None]:
+    """Resolve `component` to its `ComponentSpec`, or a `CanaryResult` explaining why not.
+
+    Unknown components are rejected outright; `ollama` resolves to a known
+    but `supported=False` spec, surfaced via `unsupported_reason` (see
+    `OLLAMA_UNSUPPORTED_REASON`) rather than a generic "unknown component"
+    message.
+    """
+    spec = COMPONENTS.get(component)
+    if spec is None:
+        return None, CanaryResult(
+            False,
+            f"Unknown canary component {component!r}; expected one of {sorted(COMPONENTS)}",
+        )
+    if not spec.supported:
+        return None, CanaryResult(False, spec.unsupported_reason)
+    return spec, None
 
 
 def _which(prog: str) -> str | None:
@@ -103,21 +223,34 @@ def _state_path() -> Path:
     return Path.home() / ".nyxGPT" / "canary_state.json"
 
 
-def _load_state() -> dict[str, Any]:
+def _load_state(component: str = "api") -> dict[str, Any]:
     """Load canary rollout state from disk, defaulting to inactive/0% with no history.
 
     Tolerates a missing or corrupt state file by falling back to defaults.
+    `api`'s state lives at the file's top level exactly as it always has
+    (untouched by #3419, so existing on-disk state and callers keep
+    working); other components' state lives nested under a `"components"`
+    key so the two never collide.
     """
+    default: dict[str, Any] = {"active": False, "weight_percent": 0, "history": []}
     path = _state_path()
     if not path.exists():
-        return {"active": False, "weight_percent": 0, "history": []}
+        return default
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
-            data.setdefault("active", False)
-            data.setdefault("weight_percent", 0)
-            data.setdefault("history", [])
-            return data
+            if component == "api":
+                data.setdefault("active", False)
+                data.setdefault("weight_percent", 0)
+                data.setdefault("history", [])
+                return data
+            sub = data.get("components", {}).get(component)
+            if not isinstance(sub, dict):
+                return dict(default)
+            sub.setdefault("active", False)
+            sub.setdefault("weight_percent", 0)
+            sub.setdefault("history", [])
+            return sub
     except Exception as e:
         logger.warning(
             "Failed to load canary state from %s, using defaults: %s",
@@ -125,14 +258,34 @@ def _load_state() -> dict[str, Any]:
             e,
             extra={"component": "canary"},
         )
-    return {"active": False, "weight_percent": 0, "history": []}
+    return dict(default)
 
 
-def _save_state(state: dict[str, Any]) -> None:
-    """Persist canary rollout state to disk as JSON, creating parent dirs as needed."""
+def _save_state(state: dict[str, Any], component: str = "api") -> None:
+    """Persist canary rollout state to disk as JSON, creating parent dirs as needed.
+
+    `api` writes `state` as the whole file's top level, byte-for-byte like
+    before #3419 (any other component's nested `"components"` entry rides
+    along unmodified since `_load_state("api")` returns the raw top-level
+    dict, "components" key included). Other components merge `state` into
+    that same file's `"components"` sub-object instead of overwriting it.
+    """
     path = _state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    if component == "api":
+        path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        return
+    existing: dict[str, Any] = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                existing = loaded
+        except Exception:
+            existing = {}
+    components = existing.setdefault("components", {})
+    components[component] = state
+    path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
 
 
 @dataclass(frozen=True)
@@ -267,14 +420,16 @@ def _scale(name: str, replicas: int, namespace: str = DEFAULT_NAMESPACE) -> Cana
     return CanaryResult(True, f"Scaled {name} to {replicas} replicas")
 
 
-def _set_image(name: str, image: str, namespace: str = DEFAULT_NAMESPACE) -> CanaryResult:
-    """Patch Deployment `name`'s container image via `kubectl set image`."""
+def _set_image(
+    name: str, image: str, namespace: str = DEFAULT_NAMESPACE, *, container: str = "nyxgpt-api"
+) -> CanaryResult:
+    """Patch Deployment `name`'s `container`'s image via `kubectl set image`."""
     if _which("kubectl") is None:
         return CanaryResult(
             False, _kubectl_missing_message("kubectl not found; cannot set deployment image")
         )
     cp = _run(
-        ["kubectl", "set", "image", f"deployment/{name}", f"nyxgpt-api={image}", "-n", namespace]
+        ["kubectl", "set", "image", f"deployment/{name}", f"{container}={image}", "-n", namespace]
     )
     if cp.returncode != 0:
         return CanaryResult(
@@ -321,8 +476,8 @@ def _git_short_sha() -> str:
     return (cp.stdout or "").strip() if cp.returncode == 0 else ""
 
 
-def _versioned_image_tag() -> str:
-    """Build a stamped, immutable image tag: `<project version>-<git short sha>`.
+def _versioned_image_tag(spec: ComponentSpec) -> str:
+    """Build a stamped, immutable image tag: `<image repository>:<project version>-<git short sha>`.
 
     Deliberately not the mutable `:local` tag `nyxgpt ops install --kubernetes` uses --
     a canary deploy needs stable and canary to be able to run two *different*,
@@ -331,7 +486,7 @@ def _versioned_image_tag() -> str:
     version = ops_module.project_version()
     sha = _git_short_sha()
     tag = f"{version}-{sha}" if sha else version
-    return f"{IMAGE_REPOSITORY}:{tag}"
+    return f"{spec.image_repository}:{tag}"
 
 
 def _split_replicas(total: int, weight_percent: int) -> tuple[int, int]:
@@ -362,34 +517,67 @@ def metrics_snapshot() -> dict[str, Any]:
     }
 
 
-def status(namespace: str = DEFAULT_NAMESPACE) -> dict[str, Any]:
-    """Return a snapshot of canary rollout state for `namespace`.
+def status(namespace: str = DEFAULT_NAMESPACE, component: str = "api") -> dict[str, Any]:
+    """Return a snapshot of canary rollout state for `namespace`/`component`.
 
     Includes whether a rollout is active, its current traffic weight,
     stable/canary health (as an honest not_deployed/unhealthy/healthy/error
     state plus the version each is running), a live error-rate/latency
     metrics snapshot, the last 10 history entries, the currently detected
     deployment mode (with an explanation when it isn't Kubernetes), and
-    whether kubectl is available (with a reason string when it isn't).
+    whether kubectl is available (with a reason string when it isn't). An
+    unknown or unsupported `component` (e.g. `ollama`, see
+    `OLLAMA_UNSUPPORTED_REASON`) reports `available: False` with the reason
+    in both `unavailable_reason` and `mode_message` instead of raising.
     """
-    state = _load_state()
-    stable_health = deployment_health(STABLE_DEPLOYMENT, namespace)
-    canary_health = deployment_health(CANARY_DEPLOYMENT, namespace)
+    mode = current_mode()
+    spec, err = _component_spec(component)
+    if spec is None:
+        assert err is not None
+        return {
+            "namespace": namespace,
+            "component": component,
+            "active": False,
+            "weight_percent": 0,
+            "stable": {"state": "not_deployed", "message": err.message, "version": ""},
+            "canary": {"state": "not_deployed", "message": err.message, "version": ""},
+            "metrics": metrics_snapshot(),
+            "history": [],
+            "available": False,
+            "unavailable_reason": err.message,
+            "mode": mode,
+            "mode_supported": False,
+            "mode_message": err.message,
+        }
+
+    state = _load_state(component)
+    stable_health = deployment_health(spec.stable_deployment, namespace)
+    canary_health = deployment_health(spec.canary_deployment, namespace)
     kubectl_present = _which("kubectl") is not None
     active = bool(state.get("active", False))
     weight_percent = state.get("weight_percent", 0)
-    mode = current_mode()
 
-    prom_metrics.CANARY_ROLLOUT_ACTIVE.set(1 if active else 0)
-    prom_metrics.CANARY_WEIGHT_PERCENT.set(weight_percent)
+    if component == "api":
+        prom_metrics.CANARY_ROLLOUT_ACTIVE.set(1 if active else 0)
+        prom_metrics.CANARY_WEIGHT_PERCENT.set(weight_percent)
+        for track, health in (("stable", stable_health), ("canary", canary_health)):
+            if health.version:
+                prom_metrics.CANARY_TRACK_VERSION_INFO.labels(
+                    track=track, version=health.version
+                ).set(1)
+    prom_metrics.CANARY_COMPONENT_ROLLOUT_ACTIVE.labels(component=component).set(
+        1 if active else 0
+    )
+    prom_metrics.CANARY_COMPONENT_WEIGHT_PERCENT.labels(component=component).set(weight_percent)
     for track, health in (("stable", stable_health), ("canary", canary_health)):
         if health.version:
-            prom_metrics.CANARY_TRACK_VERSION_INFO.labels(track=track, version=health.version).set(
-                1
-            )
+            prom_metrics.CANARY_COMPONENT_TRACK_VERSION_INFO.labels(
+                component=component, track=track, version=health.version
+            ).set(1)
 
     return {
         "namespace": namespace,
+        "component": component,
         "active": active,
         "weight_percent": weight_percent,
         "stable": {
@@ -420,6 +608,7 @@ def deploy(
     namespace: str = DEFAULT_NAMESPACE,
     *,
     image: str | None = None,
+    component: str = "api",
 ) -> CanaryResult:
     """Build the current checkout into a versioned image and deploy it to canary ONLY.
 
@@ -427,58 +616,84 @@ def deploy(
     was (see #3409). Traffic weighting is a separate, deliberate action (`start`/
     `promote`); this only changes which code the canary Deployment's Pods run.
     """
+    spec, err = _component_spec(component)
+    if spec is None:
+        assert err is not None
+        return err
     if _which("kubectl") is None:
-        message = _kubectl_missing_message("kubectl not found; cannot deploy to canary")
-        ops_module.record_canary_action("deploy", "failure", message)
+        message = _kubectl_missing_message(f"kubectl not found; cannot deploy to {component} canary")
+        ops_module.record_canary_action("deploy", "failure", message, component=component)
         return CanaryResult(False, message)
 
-    tag = image or _versioned_image_tag()
+    tag = image or _versioned_image_tag(spec)
     logger.info(
         "canary: deploying %s to %s only",
         tag,
-        CANARY_DEPLOYMENT,
-        extra={"component": "canary", "action": "deploy", "version": tag},
+        spec.canary_deployment,
+        extra={"component": "canary", "action": "deploy", "version": tag, "canary_component": component},
     )
 
-    build_results = ops_module.build_and_load_k8s_image(tag)
+    if component == "api":
+        # Unchanged from before #3419: exactly one positional argument, so
+        # tests (and any other caller) mocking this with a single-arg stub
+        # keep working.
+        build_results = ops_module.build_and_load_k8s_image(tag)
+    else:
+        build_results = ops_module.build_and_load_k8s_image(
+            tag,
+            context=spec.build_context,
+            fingerprint_paths=spec.build_fingerprint_paths,
+            excludes=spec.build_excludes,
+            build_args=spec.build_args,
+        )
     if not all(r.ok for r in build_results):
         detail = "; ".join(r.message for r in build_results if not r.ok)
-        ops_module.record_canary_action("deploy", "failure", detail)
+        ops_module.record_canary_action("deploy", "failure", detail, component=component)
         return CanaryResult(False, f"Failed to build/load {tag}", detail)
 
-    set_result = _set_image(CANARY_DEPLOYMENT, tag, namespace)
+    set_result = _set_image(spec.canary_deployment, tag, namespace, container=spec.container_name)
     if not set_result.ok:
-        ops_module.record_canary_action("deploy", "failure", set_result.message)
+        ops_module.record_canary_action("deploy", "failure", set_result.message, component=component)
         return set_result
 
-    rollout_result = _wait_rollout(CANARY_DEPLOYMENT, namespace)
+    rollout_result = _wait_rollout(spec.canary_deployment, namespace)
     if not rollout_result.ok:
         message = (
-            f"Deployed {tag} to {CANARY_DEPLOYMENT} but its rollout did not become "
+            f"Deployed {tag} to {spec.canary_deployment} but its rollout did not become "
             "healthy; stable was not touched"
         )
-        ops_module.record_canary_action("deploy", "failure", message)
+        ops_module.record_canary_action("deploy", "failure", message, component=component)
         logger.error(
             "canary: %s: %s",
             message,
             rollout_result.message,
-            extra={"component": "canary", "action": "deploy", "outcome": "failed"},
+            extra={"component": "canary", "action": "deploy", "outcome": "failed", "canary_component": component},
         )
         return CanaryResult(False, message, rollout_result.message)
 
-    state = _load_state()
+    state = _load_state(component)
     history = state.setdefault("history", [])
     history.append({"action": "deploy", "version": tag, "ts": time.time()})
     state["history"] = history[-HISTORY_LIMIT:]
-    _save_state(state)
+    _save_state(state, component)
 
-    prom_metrics.CANARY_EVENTS_TOTAL.labels(action="deploy", result="ok").inc()
-    message = f"Deployed {tag} to {CANARY_DEPLOYMENT}"
-    ops_module.record_canary_action("deploy", "success", message)
+    if component == "api":
+        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="deploy", result="ok").inc()
+    prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
+        component=component, action="deploy", result="ok"
+    ).inc()
+    message = f"Deployed {tag} to {spec.canary_deployment}"
+    ops_module.record_canary_action("deploy", "success", message, component=component)
     logger.info(
         "canary: %s",
         message,
-        extra={"component": "canary", "action": "deploy", "outcome": "ok", "version": tag},
+        extra={
+            "component": "canary",
+            "action": "deploy",
+            "outcome": "ok",
+            "version": tag,
+            "canary_component": component,
+        },
     )
     return CanaryResult(True, f"{message}; start or continue a rollout to shift traffic to it")
 
@@ -487,14 +702,20 @@ def start(
     namespace: str = DEFAULT_NAMESPACE,
     weight_percent: int = 10,
     total_replicas: int = DEFAULT_TOTAL_REPLICAS,
+    *,
+    component: str = "api",
 ) -> CanaryResult:
-    """Start a canary rollout: scale up nyxgpt-api-canary to `weight_percent` of traffic."""
-    state = _load_state()
+    """Start a canary rollout: scale up the canary Deployment to `weight_percent` of traffic."""
+    spec, err = _component_spec(component)
+    if spec is None:
+        assert err is not None
+        return err
+    state = _load_state(component)
     if state.get("active"):
         logger.info(
             "canary: start rejected, rollout already in progress at %s%%",
             state.get("weight_percent", 0),
-            extra={"component": "canary", "action": "start", "outcome": "rejected"},
+            extra={"component": "canary", "action": "start", "outcome": "rejected", "canary_component": component},
         )
         return CanaryResult(
             False, f"Canary rollout already in progress at {state.get('weight_percent', 0)}%"
@@ -502,7 +723,9 @@ def start(
     if _which("kubectl") is None:
         message = _kubectl_missing_message("kubectl not found; cannot start canary rollout")
         logger.warning(
-            "canary: start failed, %s", message, extra={"component": "canary", "action": "start"}
+            "canary: start failed, %s",
+            message,
+            extra={"component": "canary", "action": "start", "canary_component": component},
         )
         return CanaryResult(False, message)
 
@@ -514,27 +737,40 @@ def start(
         weight_percent,
         canary_replicas,
         stable_replicas,
-        extra={"component": "canary", "action": "start", "weight_percent": weight_percent},
+        extra={
+            "component": "canary",
+            "action": "start",
+            "weight_percent": weight_percent,
+            "canary_component": component,
+        },
     )
 
-    canary_result = _scale(CANARY_DEPLOYMENT, canary_replicas, namespace)
+    canary_result = _scale(spec.canary_deployment, canary_replicas, namespace)
     if not canary_result.ok:
-        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="start", result="failed").inc()
-        ops_module.record_canary_action("start", "failure", canary_result.message)
+        if component == "api":
+            prom_metrics.CANARY_EVENTS_TOTAL.labels(action="start", result="failed").inc()
+        prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
+            component=component, action="start", result="failed"
+        ).inc()
+        ops_module.record_canary_action("start", "failure", canary_result.message, component=component)
         logger.error(
             "canary: start failed scaling canary: %s",
             canary_result.message,
-            extra={"component": "canary", "action": "start", "outcome": "failed"},
+            extra={"component": "canary", "action": "start", "outcome": "failed", "canary_component": component},
         )
         return canary_result
-    stable_result = _scale(STABLE_DEPLOYMENT, stable_replicas, namespace)
+    stable_result = _scale(spec.stable_deployment, stable_replicas, namespace)
     if not stable_result.ok:
-        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="start", result="failed").inc()
-        ops_module.record_canary_action("start", "failure", stable_result.message)
+        if component == "api":
+            prom_metrics.CANARY_EVENTS_TOTAL.labels(action="start", result="failed").inc()
+        prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
+            component=component, action="start", result="failed"
+        ).inc()
+        ops_module.record_canary_action("start", "failure", stable_result.message, component=component)
         logger.error(
             "canary: start failed scaling stable: %s",
             stable_result.message,
-            extra={"component": "canary", "action": "start", "outcome": "failed"},
+            extra={"component": "canary", "action": "start", "outcome": "failed", "canary_component": component},
         )
         return stable_result
 
@@ -544,15 +780,21 @@ def start(
     history = state.setdefault("history", [])
     history.append({"action": "start", "weight_percent": weight_percent, "ts": time.time()})
     state["history"] = history[-HISTORY_LIMIT:]
-    _save_state(state)
+    _save_state(state, component)
 
-    prom_metrics.CANARY_EVENTS_TOTAL.labels(action="start", result="ok").inc()
-    prom_metrics.CANARY_ROLLOUT_ACTIVE.set(1)
-    prom_metrics.CANARY_WEIGHT_PERCENT.set(weight_percent)
+    if component == "api":
+        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="start", result="ok").inc()
+        prom_metrics.CANARY_ROLLOUT_ACTIVE.set(1)
+        prom_metrics.CANARY_WEIGHT_PERCENT.set(weight_percent)
+    prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
+        component=component, action="start", result="ok"
+    ).inc()
+    prom_metrics.CANARY_COMPONENT_ROLLOUT_ACTIVE.labels(component=component).set(1)
+    prom_metrics.CANARY_COMPONENT_WEIGHT_PERCENT.labels(component=component).set(weight_percent)
     message = (
         f"Started canary rollout at {weight_percent}% ({canary_replicas}/{total_replicas} replicas)"
     )
-    ops_module.record_canary_action("start", "success", message)
+    ops_module.record_canary_action("start", "success", message, component=component)
     logger.info(
         "canary: %s",
         message,
@@ -561,6 +803,7 @@ def start(
             "action": "start",
             "outcome": "ok",
             "weight_percent": weight_percent,
+            "canary_component": component,
         },
     )
 
@@ -573,6 +816,7 @@ def evaluate(
     error_rate_threshold_percent: float = 5.0,
     latency_p95_threshold_ms: float = 2000.0,
     min_requests: int = 20,
+    component: str = "api",
 ) -> CanaryResult:
     """Compare live error-rate/latency metrics against thresholds.
 
@@ -581,18 +825,31 @@ def evaluate(
     have been observed to judge the canary yet, so a quiet canary doesn't
     get auto-rolled-back for lack of traffic.
     """
-    state = _load_state()
+    spec, err = _component_spec(component)
+    if spec is None:
+        assert err is not None
+        return err
+    state = _load_state(component)
     if not state.get("active"):
         return CanaryResult(False, "No canary rollout in progress")
 
     metrics = metrics_snapshot()
     if metrics["total_requests"] < min_requests:
-        prom_metrics.CANARY_EVALUATIONS_TOTAL.labels(result="insufficient_data").inc()
+        if component == "api":
+            prom_metrics.CANARY_EVALUATIONS_TOTAL.labels(result="insufficient_data").inc()
+        prom_metrics.CANARY_COMPONENT_EVALUATIONS_TOTAL.labels(
+            component=component, result="insufficient_data"
+        ).inc()
         logger.info(
             "canary: evaluate holding, insufficient data (%d/%d requests)",
             metrics["total_requests"],
             min_requests,
-            extra={"component": "canary", "action": "evaluate", "outcome": "insufficient_data"},
+            extra={
+                "component": "canary",
+                "action": "evaluate",
+                "outcome": "insufficient_data",
+                "canary_component": component,
+            },
         )
         return CanaryResult(
             True,
@@ -611,25 +868,41 @@ def evaluate(
         )
 
     if breaches:
-        prom_metrics.CANARY_EVALUATIONS_TOTAL.labels(result="regression").inc()
+        if component == "api":
+            prom_metrics.CANARY_EVALUATIONS_TOTAL.labels(result="regression").inc()
+        prom_metrics.CANARY_COMPONENT_EVALUATIONS_TOTAL.labels(
+            component=component, result="regression"
+        ).inc()
         logger.warning(
             "canary: evaluate detected regression (%s); rolling back",
             "; ".join(breaches),
-            extra={"component": "canary", "action": "evaluate", "outcome": "regression"},
+            extra={
+                "component": "canary",
+                "action": "evaluate",
+                "outcome": "regression",
+                "canary_component": component,
+            },
         )
-        rollback_result = rollback(namespace, trigger="auto")
+        rollback_result = rollback(namespace, trigger="auto", component=component)
         return CanaryResult(
             False,
             f"Metrics regression detected ({'; '.join(breaches)}); automatically rolled back",
             rollback_result.message,
         )
 
-    prom_metrics.CANARY_EVALUATIONS_TOTAL.labels(result="pass").inc()
+    if component == "api":
+        prom_metrics.CANARY_EVALUATIONS_TOTAL.labels(result="pass").inc()
+    prom_metrics.CANARY_COMPONENT_EVALUATIONS_TOTAL.labels(component=component, result="pass").inc()
     logger.info(
         "canary: evaluate passed (error_rate=%.2f%%, p95=%.2fms); safe to promote",
         metrics["error_rate_percent"],
         metrics["p95_latency_ms"],
-        extra={"component": "canary", "action": "evaluate", "outcome": "pass"},
+        extra={
+            "component": "canary",
+            "action": "evaluate",
+            "outcome": "pass",
+            "canary_component": component,
+        },
     )
     return CanaryResult(
         True,
@@ -639,7 +912,12 @@ def evaluate(
 
 
 def _finalize_promotion(
-    state: dict[str, Any], canary_health: TrackHealth, namespace: str, total: int
+    state: dict[str, Any],
+    canary_health: TrackHealth,
+    namespace: str,
+    total: int,
+    spec: ComponentSpec,
+    component: str,
 ) -> CanaryResult:
     """Complete a promotion: copy canary's image to stable, then return weight to 100% stable.
 
@@ -652,31 +930,31 @@ def _finalize_promotion(
     version = canary_health.version
     if not version:
         message = "Cannot determine the canary's image version to promote"
-        ops_module.record_canary_action("promote", "failure", message)
+        ops_module.record_canary_action("promote", "failure", message, component=component)
         return CanaryResult(False, message)
 
-    image = f"{IMAGE_REPOSITORY}:{version}"
-    set_result = _set_image(STABLE_DEPLOYMENT, image, namespace)
+    image = f"{spec.image_repository}:{version}"
+    set_result = _set_image(spec.stable_deployment, image, namespace, container=spec.container_name)
     if not set_result.ok:
-        ops_module.record_canary_action("promote", "failure", set_result.message)
+        ops_module.record_canary_action("promote", "failure", set_result.message, component=component)
         return CanaryResult(
             False,
-            f"Promotion failed updating {STABLE_DEPLOYMENT}'s image; canary left untouched",
+            f"Promotion failed updating {spec.stable_deployment}'s image; canary left untouched",
             set_result.message,
         )
 
-    rollout_result = _wait_rollout(STABLE_DEPLOYMENT, namespace)
+    rollout_result = _wait_rollout(spec.stable_deployment, namespace)
     if not rollout_result.ok:
-        ops_module.record_canary_action("promote", "failure", rollout_result.message)
+        ops_module.record_canary_action("promote", "failure", rollout_result.message, component=component)
         return CanaryResult(
             False,
-            f"{STABLE_DEPLOYMENT} did not become healthy on {version}; canary left running "
+            f"{spec.stable_deployment} did not become healthy on {version}; canary left running "
             "so you can retry the promotion or roll back",
             rollout_result.message,
         )
 
-    canary_result = _scale(CANARY_DEPLOYMENT, 0, namespace)
-    stable_result = _scale(STABLE_DEPLOYMENT, total, namespace)
+    canary_result = _scale(spec.canary_deployment, 0, namespace)
+    stable_result = _scale(spec.stable_deployment, total, namespace)
 
     state["weight_percent"] = 0
     state["active"] = False
@@ -685,23 +963,37 @@ def _finalize_promotion(
         {"action": "promote", "weight_percent": 100, "version": version, "ts": time.time()}
     )
     state["history"] = history[-HISTORY_LIMIT:]
-    _save_state(state)
+    _save_state(state, component)
 
-    prom_metrics.CANARY_EVENTS_TOTAL.labels(action="promote", result="ok").inc()
-    prom_metrics.CANARY_WEIGHT_PERCENT.set(0)
-    prom_metrics.CANARY_ROLLOUT_ACTIVE.set(0)
-    message = f"Promoted {version} to {STABLE_DEPLOYMENT} at 100% traffic; canary scaled back to 0"
-    ops_module.record_canary_action("promote", "success", message)
+    if component == "api":
+        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="promote", result="ok").inc()
+        prom_metrics.CANARY_WEIGHT_PERCENT.set(0)
+        prom_metrics.CANARY_ROLLOUT_ACTIVE.set(0)
+    prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
+        component=component, action="promote", result="ok"
+    ).inc()
+    prom_metrics.CANARY_COMPONENT_WEIGHT_PERCENT.labels(component=component).set(0)
+    prom_metrics.CANARY_COMPONENT_ROLLOUT_ACTIVE.labels(component=component).set(0)
+    message = (
+        f"Promoted {version} to {spec.stable_deployment} at 100% traffic; canary scaled back to 0"
+    )
+    ops_module.record_canary_action("promote", "success", message, component=component)
     logger.info(
         "canary: %s",
         message,
-        extra={"component": "canary", "action": "promote", "outcome": "ok", "weight_percent": 100},
+        extra={
+            "component": "canary",
+            "action": "promote",
+            "outcome": "ok",
+            "weight_percent": 100,
+            "canary_component": component,
+        },
     )
 
     if not (canary_result.ok and stable_result.ok):
         return CanaryResult(
             True,
-            f"Promoted {version} to {STABLE_DEPLOYMENT}, but restoring steady-state replica "
+            f"Promoted {version} to {spec.stable_deployment}, but restoring steady-state replica "
             f"counts had an issue: {canary_result.message}; {stable_result.message}",
         )
     return CanaryResult(True, message)
@@ -711,6 +1003,8 @@ def promote(
     namespace: str = DEFAULT_NAMESPACE,
     step_percent: int = 25,
     total_replicas: int = DEFAULT_TOTAL_REPLICAS,
+    *,
+    component: str = "api",
 ) -> CanaryResult:
     """Increase the canary's traffic share by `step_percent`.
 
@@ -722,7 +1016,11 @@ def promote(
     shift more traffic to an unhealthy canary at every step, including this
     final one.
     """
-    state = _load_state()
+    spec, err = _component_spec(component)
+    if spec is None:
+        assert err is not None
+        return err
+    state = _load_state(component)
     if not state.get("active"):
         return CanaryResult(False, "No canary rollout in progress")
     if _which("kubectl") is None:
@@ -730,18 +1028,23 @@ def promote(
         logger.warning(
             "canary: promote failed, %s",
             message,
-            extra={"component": "canary", "action": "promote"},
+            extra={"component": "canary", "action": "promote", "canary_component": component},
         )
         return CanaryResult(False, message)
 
-    canary_health = deployment_health(CANARY_DEPLOYMENT, namespace)
+    canary_health = deployment_health(spec.canary_deployment, namespace)
     if canary_health.state != "healthy":
         message = f"Refusing to shift more traffic to canary: {canary_health.message}"
-        ops_module.record_canary_action("promote", "refused", message)
+        ops_module.record_canary_action("promote", "refused", message, component=component)
         logger.warning(
             "canary: %s",
             message,
-            extra={"component": "canary", "action": "promote", "outcome": "refused"},
+            extra={
+                "component": "canary",
+                "action": "promote",
+                "outcome": "refused",
+                "canary_component": component,
+            },
         )
         return CanaryResult(False, message)
 
@@ -749,7 +1052,7 @@ def promote(
     new_weight = min(100, state.get("weight_percent", 0) + max(1, step_percent))
 
     if new_weight >= 100:
-        return _finalize_promotion(state, canary_health, namespace, total)
+        return _finalize_promotion(state, canary_health, namespace, total, spec, component)
 
     canary_replicas, stable_replicas = _split_replicas(total, new_weight)
 
@@ -759,27 +1062,50 @@ def promote(
         new_weight,
         canary_replicas,
         stable_replicas,
-        extra={"component": "canary", "action": "promote", "weight_percent": new_weight},
+        extra={
+            "component": "canary",
+            "action": "promote",
+            "weight_percent": new_weight,
+            "canary_component": component,
+        },
     )
 
-    canary_result = _scale(CANARY_DEPLOYMENT, canary_replicas, namespace)
+    canary_result = _scale(spec.canary_deployment, canary_replicas, namespace)
     if not canary_result.ok:
-        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="promote", result="failed").inc()
-        ops_module.record_canary_action("promote", "failure", canary_result.message)
+        if component == "api":
+            prom_metrics.CANARY_EVENTS_TOTAL.labels(action="promote", result="failed").inc()
+        prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
+            component=component, action="promote", result="failed"
+        ).inc()
+        ops_module.record_canary_action("promote", "failure", canary_result.message, component=component)
         logger.error(
             "canary: promote failed scaling canary: %s",
             canary_result.message,
-            extra={"component": "canary", "action": "promote", "outcome": "failed"},
+            extra={
+                "component": "canary",
+                "action": "promote",
+                "outcome": "failed",
+                "canary_component": component,
+            },
         )
         return canary_result
-    stable_result = _scale(STABLE_DEPLOYMENT, stable_replicas, namespace)
+    stable_result = _scale(spec.stable_deployment, stable_replicas, namespace)
     if not stable_result.ok:
-        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="promote", result="failed").inc()
-        ops_module.record_canary_action("promote", "failure", stable_result.message)
+        if component == "api":
+            prom_metrics.CANARY_EVENTS_TOTAL.labels(action="promote", result="failed").inc()
+        prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
+            component=component, action="promote", result="failed"
+        ).inc()
+        ops_module.record_canary_action("promote", "failure", stable_result.message, component=component)
         logger.error(
             "canary: promote failed scaling stable: %s",
             stable_result.message,
-            extra={"component": "canary", "action": "promote", "outcome": "failed"},
+            extra={
+                "component": "canary",
+                "action": "promote",
+                "outcome": "failed",
+                "canary_component": component,
+            },
         )
         return stable_result
 
@@ -787,12 +1113,17 @@ def promote(
     history = state.setdefault("history", [])
     history.append({"action": "promote", "weight_percent": new_weight, "ts": time.time()})
     state["history"] = history[-HISTORY_LIMIT:]
-    _save_state(state)
+    _save_state(state, component)
 
-    prom_metrics.CANARY_EVENTS_TOTAL.labels(action="promote", result="ok").inc()
-    prom_metrics.CANARY_WEIGHT_PERCENT.set(new_weight)
+    if component == "api":
+        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="promote", result="ok").inc()
+        prom_metrics.CANARY_WEIGHT_PERCENT.set(new_weight)
+    prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
+        component=component, action="promote", result="ok"
+    ).inc()
+    prom_metrics.CANARY_COMPONENT_WEIGHT_PERCENT.labels(component=component).set(new_weight)
     message = f"Promoted canary to {new_weight}% ({canary_replicas}/{total} replicas)"
-    ops_module.record_canary_action("promote", "success", message)
+    ops_module.record_canary_action("promote", "success", message, component=component)
     logger.info(
         "canary: %s",
         message,
@@ -801,6 +1132,7 @@ def promote(
             "action": "promote",
             "outcome": "ok",
             "weight_percent": new_weight,
+            "canary_component": component,
         },
     )
     return CanaryResult(True, message)
@@ -811,8 +1143,9 @@ def rollback(
     total_replicas: int = DEFAULT_TOTAL_REPLICAS,
     *,
     trigger: str = "manual",
+    component: str = "api",
 ) -> CanaryResult:
-    """Cut all traffic back to nyxgpt-api-stable.
+    """Cut all traffic back to the stable Deployment.
 
     Scales the canary Deployment to 0 first (removing it from the Service's
     endpoints, which stops it receiving traffic) before restoring stable --
@@ -824,7 +1157,11 @@ def rollback(
     rollback -- recorded on the `nyxgpt_canary_events_total` metric and in
     the log line so a dashboard/log query can distinguish the two.
     """
-    state = _load_state()
+    spec, err = _component_spec(component)
+    if spec is None:
+        assert err is not None
+        return err
+    state = _load_state(component)
     if not state.get("active"):
         return CanaryResult(False, "No canary rollout in progress")
     if _which("kubectl") is None:
@@ -832,7 +1169,12 @@ def rollback(
         logger.warning(
             "canary: rollback failed, %s",
             message,
-            extra={"component": "canary", "action": "rollback", "trigger": trigger},
+            extra={
+                "component": "canary",
+                "action": "rollback",
+                "trigger": trigger,
+                "canary_component": component,
+            },
         )
         return CanaryResult(False, message)
 
@@ -848,20 +1190,30 @@ def rollback(
             "action": "rollback",
             "trigger": trigger,
             "weight_percent": previous_weight,
+            "canary_component": component,
         },
     )
 
-    canary_result = _scale(CANARY_DEPLOYMENT, 0, namespace)
+    canary_result = _scale(spec.canary_deployment, 0, namespace)
     if not canary_result.ok:
-        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="rollback", result="failed").inc()
-        ops_module.record_canary_action("rollback", "failure", canary_result.message)
+        if component == "api":
+            prom_metrics.CANARY_EVENTS_TOTAL.labels(action="rollback", result="failed").inc()
+        prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
+            component=component, action="rollback", result="failed"
+        ).inc()
+        ops_module.record_canary_action("rollback", "failure", canary_result.message, component=component)
         logger.error(
             "canary: rollback failed scaling canary to 0: %s",
             canary_result.message,
-            extra={"component": "canary", "action": "rollback", "outcome": "failed"},
+            extra={
+                "component": "canary",
+                "action": "rollback",
+                "outcome": "failed",
+                "canary_component": component,
+            },
         )
         return canary_result
-    stable_result = _scale(STABLE_DEPLOYMENT, total, namespace)
+    stable_result = _scale(spec.stable_deployment, total, namespace)
 
     state["active"] = False
     state["weight_percent"] = 0
@@ -870,33 +1222,55 @@ def rollback(
         {"action": "rollback", "from_weight_percent": previous_weight, "ts": time.time()}
     )
     state["history"] = history[-HISTORY_LIMIT:]
-    _save_state(state)
+    _save_state(state, component)
 
-    prom_metrics.CANARY_ROLLOUT_ACTIVE.set(0)
-    prom_metrics.CANARY_WEIGHT_PERCENT.set(0)
+    if component == "api":
+        prom_metrics.CANARY_ROLLOUT_ACTIVE.set(0)
+        prom_metrics.CANARY_WEIGHT_PERCENT.set(0)
+    prom_metrics.CANARY_COMPONENT_ROLLOUT_ACTIVE.labels(component=component).set(0)
+    prom_metrics.CANARY_COMPONENT_WEIGHT_PERCENT.labels(component=component).set(0)
 
     if not stable_result.ok:
-        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="rollback", result="partial").inc()
-        ops_module.record_canary_action("rollback", "partial", stable_result.message)
+        if component == "api":
+            prom_metrics.CANARY_EVENTS_TOTAL.labels(action="rollback", result="partial").inc()
+        prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
+            component=component, action="rollback", result="partial"
+        ).inc()
+        ops_module.record_canary_action("rollback", "partial", stable_result.message, component=component)
         logger.warning(
             "canary: rollback partially failed, canary stopped but stable restore failed: %s",
             stable_result.message,
-            extra={"component": "canary", "action": "rollback", "outcome": "partial"},
+            extra={
+                "component": "canary",
+                "action": "rollback",
+                "outcome": "partial",
+                "canary_component": component,
+            },
         )
         return CanaryResult(
             True,
-            f"Canary traffic stopped (scaled to 0%), but restoring {STABLE_DEPLOYMENT} to "
+            f"Canary traffic stopped (scaled to 0%), but restoring {spec.stable_deployment} to "
             f"{total} replicas failed: {stable_result.message}",
         )
 
-    prom_metrics.CANARY_EVENTS_TOTAL.labels(action="rollback", result="ok").inc()
+    if component == "api":
+        prom_metrics.CANARY_EVENTS_TOTAL.labels(action="rollback", result="ok").inc()
+    prom_metrics.CANARY_COMPONENT_EVENTS_TOTAL.labels(
+        component=component, action="rollback", result="ok"
+    ).inc()
     message = f"Rolled back canary rollout from {previous_weight}% to 0%"
-    ops_module.record_canary_action("rollback", "success", message)
+    ops_module.record_canary_action("rollback", "success", message, component=component)
     logger.info(
         "canary: rolled back from %d%% to 0%% (trigger=%s)",
         previous_weight,
         trigger,
-        extra={"component": "canary", "action": "rollback", "outcome": "ok", "trigger": trigger},
+        extra={
+            "component": "canary",
+            "action": "rollback",
+            "outcome": "ok",
+            "trigger": trigger,
+            "canary_component": component,
+        },
     )
     return CanaryResult(True, message)
 
@@ -904,12 +1278,20 @@ def rollback(
 __all__ = [
     "CanaryResult",
     "TrackHealth",
+    "ComponentSpec",
+    "COMPONENTS",
     "SERVICE_NAME",
     "STABLE_DEPLOYMENT",
     "CANARY_DEPLOYMENT",
     "IMAGE_REPOSITORY",
+    "WEB_SERVICE_NAME",
+    "WEB_STABLE_DEPLOYMENT",
+    "WEB_CANARY_DEPLOYMENT",
+    "WEB_IMAGE_REPOSITORY",
     "DEFAULT_NAMESPACE",
     "DEFAULT_TOTAL_REPLICAS",
+    "DEFAULT_WEB_TOTAL_REPLICAS",
+    "OLLAMA_UNSUPPORTED_REASON",
     "current_mode",
     "deployment_health",
     "metrics_snapshot",

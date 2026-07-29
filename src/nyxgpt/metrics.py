@@ -125,6 +125,50 @@ CANARY_TRACK_VERSION_INFO = Gauge(
     registry=REGISTRY,
 )
 
+# Per-component (api/web) canary metrics, additive since #3419 -- the four
+# CANARY_* metrics above stay api-only and unlabeled exactly as before, so
+# existing dashboards/alerts/tests querying them are unaffected. These add a
+# `component` label and are populated for every component (api included),
+# so a single query/panel can show all components at once.
+CANARY_COMPONENT_ROLLOUT_ACTIVE = Gauge(
+    "nyxgpt_canary_component_rollout_active",
+    "Whether a canary rollout is currently in progress (1) or idle (0), by component",
+    ["component"],
+    registry=REGISTRY,
+)
+
+CANARY_COMPONENT_WEIGHT_PERCENT = Gauge(
+    "nyxgpt_canary_component_weight_percent",
+    "Current canary traffic weight percentage (0-100), by component",
+    ["component"],
+    registry=REGISTRY,
+)
+
+CANARY_COMPONENT_EVALUATIONS_TOTAL = Counter(
+    "nyxgpt_canary_component_evaluations_total",
+    "Total canary metric evaluations, by component and result "
+    "(pass/insufficient_data/regression)",
+    ["component", "result"],
+    registry=REGISTRY,
+)
+
+CANARY_COMPONENT_EVENTS_TOTAL = Counter(
+    "nyxgpt_canary_component_events_total",
+    "Total canary rollout lifecycle events, by component, action, and outcome",
+    ["component", "action", "result"],
+    registry=REGISTRY,
+)
+
+CANARY_COMPONENT_TRACK_VERSION_INFO = Gauge(
+    "nyxgpt_canary_component_track_version_info",
+    "Info metric: 1 for the (component, track, version) currently observed on that "
+    "component's track Deployment image tag. Stale series from a prior deploy/promote "
+    "aren't cleared -- query with topk(1, ...) or a recent time range to see only the "
+    "current version.",
+    ["component", "track", "version"],
+    registry=REGISTRY,
+)
+
 RAG_INGESTS_TOTAL = Counter(
     "nyxgpt_rag_ingests_total",
     "Total RAG document ingestion attempts, by source and outcome",

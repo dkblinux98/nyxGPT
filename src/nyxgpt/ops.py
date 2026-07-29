@@ -255,17 +255,18 @@ def record_manual_restart(service: str, ok: bool, message: str = "") -> None:
     _record_ops_action("restart", service, "success" if ok else "failure", message)
 
 
-def record_canary_action(action: str, result: str, message: str = "") -> None:
+def record_canary_action(
+    action: str, result: str, message: str = "", *, component: str = "api"
+) -> None:
     """Record a canary lifecycle action (deploy/start/promote/rollback) per #3390.
 
     `canary.py` funnels every rollout action through here rather than calling
     `_record_ops_action` directly, keeping the "canary-<action>" command
     naming convention (mirroring "install"/"restart"/"down") in one place.
-    `service` is always "api" today -- canary only covers the api component
-    (see #3409); it'll gain a real component label if/when web/ollama
-    coverage lands.
+    `service` is `component` -- "api" by default (unchanged from before
+    #3419), or "web" for the web canary pair (see canary.py's `COMPONENTS`).
     """
-    _record_ops_action(f"canary-{action}", "api", result, message)
+    _record_ops_action(f"canary-{action}", component, result, message)
 
 
 def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
