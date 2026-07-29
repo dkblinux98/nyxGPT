@@ -161,6 +161,14 @@ def reciprocal_rank_fusion(
     # Sort by RRF score descending
     rrf_scores.sort(key=lambda x: x[1], reverse=True)
 
+    log.debug(
+        "RRF fusion completed",
+        extra={
+            "component": "rag",
+            "input_lists": len(rankings),
+            "unique_items": len(item_ranks),
+        },
+    )
     return rrf_scores
 
 
@@ -258,4 +266,14 @@ def weighted_fusion(
     # Sort by final score descending
     fused.sort(key=lambda x: x[1], reverse=True)
 
+    log.debug(
+        "Weighted fusion completed",
+        extra={
+            "component": "rag",
+            "vector_count": len(vector_results),
+            "keyword_count": len(keyword_results),
+            "unique_items": len(all_items),
+            "alpha": alpha,
+        },
+    )
     return fused

@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -286,6 +287,7 @@ class BM25Index:
             List of (doc_idx, score) tuples, sorted by score descending.
             Limited to top k results.
         """
+        start_time = time.perf_counter()
         query_tokens = tokenize(query)
         if not query_tokens:
             return []
@@ -299,4 +301,16 @@ class BM25Index:
 
         # Sort by score descending and return top k
         scores.sort(key=lambda x: x[1], reverse=True)
-        return scores[:k]
+        top = scores[:k]
+
+        log.debug(
+            "BM25 search completed",
+            extra={
+                "component": "rag",
+                "indexed_docs": self.doc_count,
+                "matched_count": len(scores),
+                "result_count": len(top),
+                "duration_ms": round((time.perf_counter() - start_time) * 1000, 1),
+            },
+        )
+        return top

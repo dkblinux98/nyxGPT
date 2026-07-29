@@ -329,7 +329,8 @@ class CassandraConnectionPool:
                 base_delay=1.0,
                 max_delay=60.0,
             )
-        except Exception:
+        except Exception as e:
+            log.debug("ExponentialReconnectionPolicy unavailable, using driver default: %s", e)
             reconnection_policy = None
 
         kwargs: dict = {
@@ -349,9 +350,9 @@ class CassandraConnectionPool:
                 self.cfg.pool_size * 2, 4
             )
             kwargs["pooling_options"] = pooling_opts
-        except Exception:
+        except Exception as e:
             # PoolingOptions not available or misconfigured — proceed without it
-            pass
+            log.debug("PoolingOptions unavailable, using driver default pool sizing: %s", e)
 
         return Cluster(self.cfg.hosts, **kwargs)
 
@@ -643,11 +644,17 @@ class CassandraVectorStore:
             self.session.execute(
                 f"CREATE INDEX IF NOT EXISTS {tbl}_model_idx ON {tbl}(embedding_model)"
             )
-        except Exception:
+        except Exception as e:
             # Migration might fail if table doesn't exist yet (first run)
             # or if columns already exist (race condition in concurrent access)
             # This is fine - actual operations will reveal any real problems
-            pass
+            log.debug(
+                "Schema migration check failed for %s.%s (likely first run or race with a "
+                "concurrent migration): %s",
+                ks,
+                tbl,
+                e,
+            )
 
     def close(self) -> None:
         """Release this store's reference to the shared pool session.
@@ -799,6 +806,7 @@ class CassandraVectorStore:
         if not self._keyspace_ready:
             self._ensure_keyspace_selected()
 
+        start_time = time.perf_counter()
         texts_l = list(texts)
         embs_l = list(embeddings)
         metas_l = list(metadatas) if metadatas is not None else [{} for _ in texts_l]
@@ -873,6 +881,17 @@ class CassandraVectorStore:
 
         _flush()
 
+        log.debug(
+            "Cassandra chunk upsert completed",
+            extra={
+                "component": "rag",
+                "collection": self.collection,
+                "doc_id": doc_id,
+                "chunk_count": len(texts_l),
+                "duration_ms": round((time.perf_counter() - start_time) * 1000, 1),
+            },
+        )
+
     # ----------------------------
     # Query
     # ----------------------------
@@ -915,6 +934,17 @@ class CassandraVectorStore:
             log.debug("Vector search skipped, RAG schema not created yet: %s", exc)
             rows = []
         out, scores = _filter_and_score_rows(rows, k, embedding_model, metadata_filter)
+
+        log.debug(
+            "Cassandra vector search completed",
+            extra={
+                "component": "rag",
+                "collection": self.collection,
+                "k": k,
+                "result_count": len(out),
+                "duration_ms": round((time.perf_counter() - start_time) * 1000, 1),
+            },
+        )
 
         if collect_metrics:
             elapsed_ms = (time.perf_counter() - start_time) * 1000.0

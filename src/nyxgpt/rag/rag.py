@@ -926,6 +926,7 @@ def ingest_document(
     # Compute content hash for change detection
     doc_hash = compute_document_hash(text)
 
+    start_time = time.perf_counter()
     store = CassandraVectorStore(collection=collection)
     try:
         if not ensure_schema and not store.schema_exists():
@@ -1021,7 +1022,17 @@ def ingest_document(
         )
 
         status = "updated" if is_update else "ingested"
-        log.info(f"Document {doc_id} {status}: {len(chunks)} chunks")
+        log.info(
+            f"Document {doc_id} {status}: {len(chunks)} chunks",
+            extra={
+                "component": "rag",
+                "doc_id": doc_id,
+                "collection": collection,
+                "status": status,
+                "chunks_ingested": len(chunks),
+                "duration_ms": round((time.perf_counter() - start_time) * 1000, 1),
+            },
+        )
 
         # Invalidate query result cache: the document set changed, so any
         # cached retrieval results may now be stale.
@@ -1033,6 +1044,20 @@ def ingest_document(
             "doc_hash": doc_hash,
             "previous_hash": previous_hash,
         }
+    except Exception as e:
+        log.error(
+            "Document ingestion failed",
+            extra={
+                "component": "rag",
+                "doc_id": doc_id,
+                "collection": collection,
+                "duration_ms": round((time.perf_counter() - start_time) * 1000, 1),
+                "error": str(e),
+                "error_type": type(e).__name__,
+            },
+            exc_info=True,
+        )
+        raise
     finally:
         store.close()
 
@@ -1116,7 +1141,11 @@ def expand_query(query: str, max_expansions: int = 3) -> list[str]:
             return [query] + valid[:max_expansions]
 
     except Exception as e:
-        log.warning("Query expansion failed, using original query only: %s", e)
+        log.warning(
+            "Query expansion failed, using original query only: %s",
+            e,
+            extra={"component": "rag", "error_type": type(e).__name__},
+        )
 
     return [query]
 
@@ -1230,6 +1259,22 @@ def retrieve_context(
     start_time = time.perf_counter()
     cfg = load_config(None)
 
+    def _log_retrieval_completed(out_results: list[dict], *, cache_hit: bool) -> None:
+        scores = [r["score"] for r in out_results if r.get("score") is not None]
+        log.info(
+            "RAG retrieval completed",
+            extra={
+                "component": "rag",
+                "collection": collection,
+                "top_k": k,
+                "cache_hit": cache_hit,
+                "result_count": len(out_results),
+                "score_min": min(scores) if scores else None,
+                "score_max": max(scores) if scores else None,
+                "duration_ms": round((time.perf_counter() - start_time) * 1000, 1),
+            },
+        )
+
     # Determine debug mode from parameter or config
     collect_debug = debug_mode if debug_mode is not None else get_rag_debug_mode(cfg)
 
@@ -1273,6 +1318,7 @@ def retrieve_context(
             # Returned by reference and shared across all callers of this
             # cache key; callers must treat the result as read-only.
             log.debug(f"Query result cache hit for query={query!r}")
+            _log_retrieval_completed(cached_results, cache_hit=True)
             return cached_results
 
     # Track debug metrics
@@ -1401,6 +1447,7 @@ def retrieve_context(
         # Build a mapping: chunk_idx -> result dict
         all_chunks: list[str] = []
         chunk_to_result: dict[int, dict] = {}
+        fetch_failed_count = 0
 
         for doc_info in all_docs:
             doc_id = doc_info["doc_id"]
@@ -1479,7 +1526,18 @@ def retrieve_context(
                     }
             except Exception as e:
                 log.warning("Failed to fetch chunks for doc %s: %s", doc_id, e)
+                fetch_failed_count += 1
                 continue
+
+        if fetch_failed_count:
+            log.warning(
+                "BM25 chunk fetch had failures",
+                extra={
+                    "component": "rag",
+                    "docs_total": len(all_docs),
+                    "docs_failed": fetch_failed_count,
+                },
+            )
 
         # Build BM25 index and search
         if all_chunks:
@@ -1602,6 +1660,7 @@ def retrieve_context(
     if not collect_debug:
         if cache_key is not None:
             query_cache.set(cache_key, filtered)
+        _log_retrieval_completed(filtered, cache_hit=False)
         return filtered
 
     # Build debug info
@@ -1660,6 +1719,7 @@ def retrieve_context(
         chunks_included=len(filtered),
     )
 
+    _log_retrieval_completed(filtered, cache_hit=False)
     return filtered, debug_info
 
 
