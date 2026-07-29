@@ -56,15 +56,18 @@ jobs:
             echo "pr=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout PR head (workflow_dispatch)
-        # workflow_dispatch has no pull_request context, so the initial checkout
-        # above just gets whatever branch/ref the run was manually dispatched
-        # against (e.g. v2.0.0). Without this, everything downstream - local
-        # lint/test runs, and the review action's own PR resolution - operates
-        # against the wrong ref, and post-steps that resolve the PR from the
-        # current branch fail with "no pull requests found for branch v2.0.0"
-        # (observed 2026-07-06, run 28809504157).
-        if: github.event_name == 'workflow_dispatch'
+      - name: Checkout PR head (workflow_dispatch / issue_comment)
+        # workflow_dispatch and issue_comment have no pull_request context, so
+        # the initial checkout above just gets the default branch (v2.0.0).
+        # Without this, everything downstream - local lint/test runs, and the
+        # review action's own PR resolution - operates against the wrong ref:
+        # workflow_dispatch runs failed PR resolution (observed 2026-07-06,
+        # run 28809504157), and @review-triggered re-reviews silently ran the
+        # entire lint/test/coverage gate against BASE v2.0.0 instead of the PR
+        # head - producing verdicts about code the PR didn't contain (observed
+        # 2026-07-29, run 30442477033, the #3420 escalation: four REQUEST_CHANGES
+        # cycles blocked on a coverage failure that lived in the base).
+        if: github.event_name == 'workflow_dispatch' || github.event_name == 'issue_comment'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
