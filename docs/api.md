@@ -2271,7 +2271,7 @@ Hit rate, size, and configuration details for the RAG query result cache (see `[
 - `backend` - `"memory"`, `"disk"`, or `"none"` if caching is disabled
 - `max_size` - Maximum number of cached entries (memory backend only, else `null`)
 - `ttl_seconds` - Cache entry time-to-live in seconds, `null` if disabled
-- `rag_enabled` - Whether RAG is enabled globally (`get_rag_enabled`). The query cache is only exercised by RAG retrievals, so `enabled=true` with `rag_enabled=false` means zero hits/misses is expected, not a broken cache -- RAG can still be enabled per-chat even when the global default is off.
+- `rag_enabled` - Whether RAG is enabled globally (`get_rag_enabled`). The query cache is only exercised by RAG retrievals, so `enabled=true` with `rag_enabled=false` typically means zero hits/misses, not a broken cache -- RAG can still be enabled per-chat even when the global default is off, in which case hits/misses may still be non-zero.
 
 When caching is disabled, all counters are zeroed and `enabled` is `false` rather than the request erroring. Similarly, `enabled=true` with `rag_enabled=false` is a valid state, not an error.
 

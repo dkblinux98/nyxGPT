@@ -70,7 +70,10 @@ function QueryCacheStatsBody({
     );
   }
 
-  if (!stats.rag_enabled) {
+  const ragDisabledAndUnused =
+    !stats.rag_enabled && stats.hits === 0 && stats.misses === 0 && stats.size === 0;
+
+  if (ragDisabledAndUnused) {
     return (
       <p style={{ margin: 0, fontSize: 14, color: 'var(--muted-foreground)' }}>
         RAG is disabled globally, so the query cache isn&apos;t exercised -- hits and misses will
@@ -82,6 +85,12 @@ function QueryCacheStatsBody({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {!stats.rag_enabled && (
+        <p style={{ margin: 0, fontSize: 13, color: 'var(--muted-foreground)' }}>
+          RAG is disabled globally, but these stats reflect activity from chats where RAG was
+          enabled per-chat.
+        </p>
+      )}
       <div
         style={{
           display: 'grid',

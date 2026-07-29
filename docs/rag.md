@@ -597,7 +597,7 @@ Get hit rate, size, and configuration details for the RAG query result cache.
 - `backend` - `"memory"`, `"disk"`, or `"none"` if disabled
 - `max_size` - maximum cached entries (memory backend only, else `null`)
 - `ttl_seconds` - cache entry TTL in seconds, `null` if disabled
-- `rag_enabled` - whether RAG is enabled globally (`get_rag_enabled` / `[rag] enable_chat_context`). The query cache is only exercised by RAG retrievals, so `enabled=true` with `rag_enabled=false` means zero hits/misses is expected -- not a misconfiguration. RAG can still be on for individual chats even when the global default is off.
+- `rag_enabled` - whether RAG is enabled globally (`get_rag_enabled` / `[rag] enable_chat_context`). The query cache is only exercised by RAG retrievals, so `enabled=true` with `rag_enabled=false` typically means zero hits/misses -- not a misconfiguration. RAG can still be on for individual chats even when the global default is off, in which case hits/misses may still be non-zero.
 
 Returns zeroed stats with `enabled=false, backend="none"` (not an error) if `query_cache_enabled = false`.
 
