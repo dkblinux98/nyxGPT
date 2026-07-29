@@ -96,7 +96,7 @@ its own duplicate copy:
 
 | Host directory                         | Container path                | Component  | Shared across |
 |-----------------------------------------|--------------------------------|------------|---------------|
-| `~/.nyxGPT/volumes/ollama`               | `/root/.ollama`                | Pulled Ollama models | Compose + Terraform |
+| `~/.nyxGPT/volumes/ollama`               | `/root/.ollama`                | Pulled Ollama models | Compose + Terraform + native `nyxgpt ops install` |
 | `~/.nyxGPT/volumes/cassandra`            | `/var/lib/cassandra`           | Cassandra's data directory (chats/RAG vectors) | Compose + Terraform + native `nyxgpt ops install` |
 | `~/.nyxGPT/volumes/nyxgpt-data`          | `/root/.nyxGPT` (in `api`)     | The containerized api's chat sessions/vector store/logs | Compose + Terraform |
 | `~/.nyxGPT/volumes/prometheus`           | `/prometheus`                  | `monitoring` profile's metrics | Compose only today |
@@ -105,17 +105,26 @@ its own duplicate copy:
 | `~/.nyxGPT/volumes/glitchtip-postgres`   | `/var/lib/postgresql/data`     | GlitchTip's database | Compose only today |
 | `~/.nyxGPT/volumes/glitchtip-uploads`    | `/code/uploads`                | GlitchTip's uploaded attachments | Compose only today |
 
-Native mode doesn't touch `ollama`/`nyxgpt-data` here at all: native Ollama is
-a plain Homebrew service with its own model store, and the native api process
+Native mode doesn't touch `nyxgpt-data` here at all: the native api process
 uses `~/.nyxGPT` directly (as itself, not `/root/.nyxGPT` in a container) --
-those are unrelated to this table. Cassandra is the one component native mode
-*does* share: `nyxgpt ops install`'s Cassandra container
-(`_ensure_cassandra_container` in `src/nyxgpt/ops.py`) binds the exact same
-`~/.nyxGPT/volumes/cassandra` directory, so chats survive switching between
-native, Compose, and Terraform. It refuses to start if the Terraform-managed
-Cassandra container is already running against that same directory (two
-writers on one Cassandra data directory would corrupt it) -- run
-`nyxgpt ops down --terraform` first if you hit that.
+that's unrelated to this table. `ollama` and `cassandra` are the two
+components native mode *does* share (see #3431 for `ollama`): `nyxgpt ops
+install` points native Ollama's `OLLAMA_MODELS` env var at
+`~/.nyxGPT/volumes/ollama/models` -- the same directory the container stores
+models in via this bind mount -- instead of native Ollama's own default
+`~/.ollama/models` (see `_ensure_ollama_service` in `src/nyxgpt/ops.py`; set
+via `launchctl setenv`, never a symlink). `nyxgpt ops install`'s Cassandra
+container (`_ensure_cassandra_container` in `src/nyxgpt/ops.py`) binds the
+exact same `~/.nyxGPT/volumes/cassandra` directory. Either way, a model or
+chat survives switching between native, Compose, and Terraform. Cassandra
+refuses to start if the Terraform-managed Cassandra container is already
+running against that same directory (two writers on one Cassandra data
+directory would corrupt it) -- run `nyxgpt ops down --terraform` first if you
+hit that.
+
+**Kubernetes** is out of scope for this unification (its own PVC, no
+bind-mount to the host's home directory possible) -- tracked separately, see
+issue #3431.
 
 **Backup guidance:** backing up `~/.nyxGPT` now captures all container state
 in addition to the native config/logs already there -- there's nothing left
@@ -138,6 +147,15 @@ Order matters here: bringing up the new bind-mount-based Compose file
 volume. If you see a `refusing to auto-migrate` message, your pre-upgrade
 data is still intact in the old named volume; follow the message's steps to
 merge it in by hand, then remove the old volume to clear the warning.
+
+**Migrating models from before #3431:** if you'd already pulled models
+natively (into Ollama's own default `~/.ollama/models`) before native mode
+started sharing `~/.nyxGPT/volumes/ollama/models`, `nyxgpt ops install`
+automatically merges anything under `~/.ollama/models` that isn't already in
+the shared store the first time it runs (it never overwrites a file already
+present at the destination). The old `~/.ollama/models` files are left in
+place afterwards -- safe to remove by hand once you've confirmed the shared
+store has everything you need.
 
 Run `nyxgpt ops down --volumes --yes-really` to discard all persisted state,
 including Cassandra data and pulled models -- see

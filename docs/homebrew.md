@@ -271,6 +271,28 @@ nyxgpt ops restart
 
 ---
 
+## Ollama model store
+
+`nyxgpt ops install` points native Ollama's model store at
+`~/.nyxGPT/volumes/ollama/models` -- the same directory
+Compose/Terraform's `ollama` container uses -- instead of Ollama's own
+default `~/.ollama/models`, via the `OLLAMA_MODELS` environment variable
+(never a symlink). This means a model pulled while running in any one local
+launch mode (native, `nyxgpt ops install --terraform --local`, or Compose)
+shows up in all of them, with no duplicate downloads.
+
+This is applied via `launchctl setenv OLLAMA_MODELS ...`, plus a
+`com.nyxgpt.ollama-env` LaunchAgent that reapplies it at every login (a bare
+`launchctl setenv` only lasts for the current session). If you ever pulled
+models natively before upgrading, `nyxgpt ops install` merges anything found
+in the old `~/.ollama/models` into the shared store automatically, the first
+time it runs, without overwriting anything already there.
+
+Kubernetes is out of scope for this unification (its own PVC, no bind-mount
+to the host's home directory possible) -- tracked separately.
+
+---
+
 ## Accessing the services
 
 After starting both services:
