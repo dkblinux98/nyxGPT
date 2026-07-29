@@ -505,5 +505,157 @@ describe('AdminDashboardPage', () => {
         vi.useRealTimers();
       }
     });
+
+    it('shows the error and re-enables Restart now when POST /infra/restart-required itself fails', async () => {
+      server.use(
+        http.get('/api/v1/infra/restart-status', () =>
+          HttpResponse.json({ pending: { api: { keys: ['api.port'], since: 1 } } })
+        ),
+        http.post('/api/v1/infra/restart-required', () =>
+          HttpResponse.json({ detail: 'no restart is currently pending' }, { status: 400 })
+        )
+      );
+
+      render(<AdminDashboardPage />);
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /restart now/i })).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /restart now/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('no restart is currently pending')).toBeInTheDocument();
+      });
+      // The failed POST never entered the poll loop -- the button reverts to
+      // its idle label/state instead of getting stuck on "Restarting...".
+      const button = screen.getByRole('button', { name: /restart now/i });
+      expect(button).not.toBeDisabled();
+      // A restart request that never started still leaves the underlying
+      // condition pending, so the banner stays up.
+      expect(screen.getByRole('alert', { name: /restart required/i })).toBeInTheDocument();
+    });
+
+    it('falls back to an HTTP status message when the restart-required error body has no detail field', async () => {
+      server.use(
+        http.get('/api/v1/infra/restart-status', () =>
+          HttpResponse.json({ pending: { api: { keys: ['api.port'], since: 1 } } })
+        ),
+        // A non-JSON body forces `res.json().catch(() => ({}))` to fall
+        // back to `{}`, so `data?.detail` is undefined and the handler
+        // must fall back to the raw HTTP status instead.
+        http.post('/api/v1/infra/restart-required', () => new HttpResponse('not json', { status: 500 }))
+      );
+
+      render(<AdminDashboardPage />);
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /restart now/i })).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /restart now/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('HTTP 500')).toBeInTheDocument();
+      });
+    });
+
+    it('shows a plain-text error when the restart-required request itself rejects with a non-Error value', async () => {
+      server.use(
+        http.get('/api/v1/infra/restart-status', () =>
+          HttpResponse.json({ pending: { api: { keys: ['api.port'], since: 1 } } })
+        )
+      );
+
+      render(<AdminDashboardPage />);
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /restart now/i })).toBeInTheDocument();
+      });
+
+      const realFetch = global.fetch;
+      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation((input, init) => {
+        const url = typeof input === 'string' ? input : (input as Request).url;
+        if (url.includes('/api/v1/infra/restart-required') && init?.method === 'POST') {
+          return Promise.reject('restart-boom');
+        }
+        return realFetch(input, init);
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /restart now/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('restart-boom')).toBeInTheDocument();
+      });
+      fetchSpy.mockRestore();
+    });
+
+    it('does not crash and leaves the banner state unchanged when the initial restart-status GET fails', async () => {
+      server.use(http.get('/api/v1/infra/restart-status', () => new HttpResponse(null, { status: 500 })));
+
+      render(<AdminDashboardPage />);
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: 'Admin Dashboard' })).toBeInTheDocument();
+      });
+      // The failed GET is best-effort -- pending state stays at its
+      // (empty) default rather than throwing, so no banner appears.
+      expect(screen.queryByRole('alert', { name: /restart required/i })).not.toBeInTheDocument();
+    });
+
+    it('treats a restart-status response without a pending field as nothing pending', async () => {
+      server.use(http.get('/api/v1/infra/restart-status', () => HttpResponse.json({})));
+
+      render(<AdminDashboardPage />);
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: 'Admin Dashboard' })).toBeInTheDocument();
+      });
+      expect(screen.queryByRole('alert', { name: /restart required/i })).not.toBeInTheDocument();
+    });
+
+    it('keeps polling through a mid-poll GET failure and clears the banner once a later poll omits pending', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        let getCount = 0;
+        server.use(
+          http.get('/api/v1/infra/restart-status', () => {
+            getCount += 1;
+            if (getCount === 1) {
+              return HttpResponse.json({ pending: { api: { keys: ['api.port'], since: 1 } } });
+            }
+            if (getCount === 2) {
+              // A transient failure mid-poll (e.g. the api component
+              // itself restarting) -- polling must continue past it.
+              return new HttpResponse(null, { status: 500 });
+            }
+            // Recovered, and the response omits `pending` entirely --
+            // exercises the `data.pending || {}` fallback, which clears
+            // the banner just like an explicit empty object would.
+            return HttpResponse.json({});
+          }),
+          http.post('/api/v1/infra/restart-required', () =>
+            HttpResponse.json({ targets: ['api'], status: 'running' })
+          )
+        );
+
+        render(<AdminDashboardPage />);
+        await waitFor(() => {
+          expect(screen.getByRole('button', { name: /restart now/i })).toBeInTheDocument();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: /restart now/i }));
+        await waitFor(() => {
+          expect(screen.getByRole('button', { name: /restarting/i })).toBeInTheDocument();
+        });
+
+        // First poll attempt (2s) hits the 500; second poll attempt (2s)
+        // succeeds via the missing-pending fallback.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(4000);
+        });
+
+        await waitFor(() => {
+          expect(screen.queryByRole('alert', { name: /restart required/i })).not.toBeInTheDocument();
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

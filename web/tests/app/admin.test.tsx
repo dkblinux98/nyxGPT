@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '../mocks/server';
 import { FULL_WIZARD_SCHEMA } from '../mocks/handlers';
@@ -512,6 +512,135 @@ describe('AdminPage Component', () => {
     expect(capturedBody?.error_tracking).not.toHaveProperty('dsn');
 
     location.restore();
+  });
+
+  it('Save changes on a non-final step persists and advances to the next step, without redirecting (#3407)', async () => {
+    let capturedBody: Record<string, Record<string, unknown>> | undefined;
+    server.use(
+      http.post('/api/v1/config/sections', async ({ request }) => {
+        capturedBody = (await request.json()) as Record<string, Record<string, unknown>>;
+        return HttpResponse.json({
+          applied: capturedBody,
+          sections: {
+            nyxgpt: {
+              default_model: 'llama3.1:8b',
+              chat_timeout_seconds: '120',
+              sessions_dir: '~/.nyxGPT/sessions',
+              vectorstore_dir: '~/.nyxGPT/vectorstore',
+            },
+            logging: { level: 'INFO', dir: '~/.nyxGPT/logs' },
+            ollama: { base_url: 'http://127.0.0.1:11434' },
+            api: { host: '127.0.0.1', port: '8000' },
+            auth: { enabled: 'false', header: 'X-API-Key', api_key: { set: false, masked: null } },
+            rate_limit: { enabled: 'false' },
+            rag: {
+              enable_chat_context: 'false',
+              cassandra_hosts: '127.0.0.1',
+              cassandra_port: '9042',
+              cassandra_keyspace: 'nyxgpt',
+              cassandra_table: 'rag_chunks',
+              embedding_model: 'nomic-embed-text',
+            },
+            tracing: { enabled: 'false', service_name: 'nyxgpt-api', otlp_endpoint: 'http://localhost:4318/v1/traces' },
+            error_tracking: { enabled: 'false', dsn: { set: false, masked: null }, environment: 'development' },
+            monitoring: { enabled: 'false' },
+            log_aggregation: { enabled: 'false' },
+          },
+          restart_required: [],
+          observability_reconciled: false,
+          observability_result: null,
+        });
+      })
+    );
+
+    const location = stubLocationHref();
+    render(<AdminPage />);
+    await waitFor(() => {
+      fireEvent.change(screen.getByLabelText('Default Model'), { target: { value: 'llama3.1:8b' } });
+    });
+
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'RAG Configuration' })).toBeInTheDocument();
+    });
+
+    expect(capturedBody?.nyxgpt.default_model).toBe('llama3.1:8b');
+    // A non-final Save advances in place -- it must not also fire the
+    // last-page redirect to the Admin Dashboard.
+    expect(location.setter).not.toHaveBeenCalled();
+
+    location.restore();
+  });
+
+  it('Summary falls back gracefully when a field secret flag disagrees with the hand-built form state', async () => {
+    // The Summary step trusts the schema's `secret` flag per field, not the
+    // hand-built step components' own assumptions -- if the backend ever
+    // marks a normally-secret field as non-secret (or vice versa) the
+    // Summary must still render something sane instead of crashing.
+    const weirdSchema = FULL_WIZARD_SCHEMA.map((spec) => {
+      if (spec.section === 'auth') {
+        return {
+          ...spec,
+          fields: spec.fields.map((f) => (f.key === 'api_key' ? { ...f, secret: false } : f)),
+        };
+      }
+      if (spec.section === 'rate_limit') {
+        return {
+          ...spec,
+          fields: spec.fields.map((f) => (f.key === 'enabled' ? { ...f, secret: true } : f)),
+        };
+      }
+      return spec;
+    });
+
+    server.use(
+      http.get('/api/v1/config/sections', () =>
+        HttpResponse.json({
+          sections: {
+            nyxgpt: { default_model: '', chat_timeout_seconds: '120', sessions_dir: '~/.nyxGPT/sessions', vectorstore_dir: '~/.nyxGPT/vectorstore' },
+            logging: { level: 'INFO', dir: '~/.nyxGPT/logs' },
+            ollama: { base_url: 'http://127.0.0.1:11434' },
+            api: { host: '127.0.0.1', port: '8000' },
+            auth: { enabled: 'false', header: 'X-API-Key', api_key: { set: false, masked: null } },
+            rate_limit: { enabled: 'false' },
+            rag: {
+              enable_chat_context: 'false',
+              cassandra_hosts: '127.0.0.1',
+              cassandra_port: '9042',
+              cassandra_keyspace: 'nyxgpt',
+              cassandra_table: 'rag_chunks',
+              embedding_model: 'nomic-embed-text',
+            },
+            tracing: { enabled: 'false', service_name: 'nyxgpt-api', otlp_endpoint: 'http://localhost:4318/v1/traces' },
+            error_tracking: { enabled: 'false', dsn: { set: false, masked: null }, environment: 'development' },
+            monitoring: { enabled: 'false' },
+            log_aggregation: { enabled: 'false' },
+          },
+          schema: weirdSchema,
+        })
+      )
+    );
+
+    render(<AdminPage />);
+    await selectModelAndClickNext(5);
+
+    // auth.api_key is schema-flagged non-secret here, but the hand-built
+    // form state never tracks its value outside the dedicated secret field
+    // -- the merged Summary value is missing, and formatSummaryValue must
+    // show "(empty)" rather than "undefined".
+    const authSection = screen.getByTestId('summary-section-auth');
+    expect(within(authSection).getByText('Api Key:')).toBeInTheDocument();
+    expect(within(authSection).getByText('(empty)')).toBeInTheDocument();
+
+    // rate_limit.enabled is schema-flagged secret here even though it's a
+    // hand-built (non-"Additional Settings") field with no entry in
+    // extraValues -- pendingSecretValue must fall back to '' instead of
+    // reading `undefined`.
+    const rateLimitSection = screen.getByTestId('summary-section-rate_limit');
+    expect(within(rateLimitSection).getByText('Not set')).toBeInTheDocument();
   });
 
   it('includes the api_key and dsn in the payload when the user types new values', async () => {
