@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nyxgpt-web
+  namespace: nyxgpt
+spec:
+  # Selects Pods from BOTH nyxgpt-web-stable and nyxgpt-web-canary (they share
+  # the app: nyxgpt-web-canary-pool label) -- the same selector as
+  # service-web-canary.yaml. This is the primary in-cluster entry point for
+  # the web UI; traffic split between stable/canary is managed by replica
+  # count via `nyxgpt canary start/promote/rollback --component web` (see
+  # docs/kubernetes.md), not by this selector. Mirrors service.yaml's model
+  # for the api component (#3409).
+  selector:
+    app: nyxgpt-web-canary-pool
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+  type: ClusterIP

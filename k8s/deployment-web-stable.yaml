@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nyxgpt-web-stable
+  namespace: nyxgpt
+  labels:
+    app: nyxgpt-web-canary-pool
+    track: stable
+spec:
+  # Managed by `nyxgpt canary start/promote/rollback --component web` (see
+  # docs/kubernetes.md). Do not attach an HPA to this Deployment -- autoscaling
+  # would fight the canary tool's replica-count-based traffic split.
+  replicas: 4
+  selector:
+    matchLabels:
+      app: nyxgpt-web-canary-pool
+      track: stable
+  template:
+    metadata:
+      labels:
+        app: nyxgpt-web-canary-pool
+        track: stable
+    spec:
+      containers:
+        - name: nyxgpt-web
+          image: nyxgpt-web:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            # Server-side base URL the Next.js proxy routes use to reach the
+            # api Service over the cluster network (see web/src/lib/apiProxy.ts)
+            # -- mirrors docker-compose.yml's `web` service env.
+            - name: NYXGPT_API_BASE_URL
+              value: "http://nyxgpt-api:8000"
+            - name: NYXGPT_AUTH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: nyxgpt-secrets
+                  key: api-key
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
