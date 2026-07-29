@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import LoadingSpinner from '../../../components/LoadingSpinner';
 import ErrorMessage from '../../../components/ErrorMessage';
 import QueryCacheStatsPanel from '../../../components/QueryCacheStatsPanel';
-import { ADMIN_NAV } from './nav';
+import { ADMIN_NAV, grafanaSreHomeUrl } from './nav';
 
 type OverviewData = {
   info: {
@@ -96,12 +96,17 @@ const inlineLinkStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-function NavTile({ dest }: { dest: { href: string; label: string; description: string } }) {
+function NavTile({
+  dest,
+}: {
+  dest: { href: string; label: string; description: string; external?: boolean };
+}) {
   return (
     <a
       href={dest.href}
       title={dest.description}
       style={navTileStyle}
+      {...(dest.external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
       onMouseEnter={(e) => {
         e.currentTarget.style.borderColor = 'var(--link)';
         e.currentTarget.style.background = 'var(--muted)';
@@ -111,7 +116,10 @@ function NavTile({ dest }: { dest: { href: string; label: string; description: s
         e.currentTarget.style.background = 'var(--background)';
       }}
     >
-      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--foreground)' }}>{dest.label}</span>
+      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--foreground)' }}>
+        {dest.label}
+        {dest.external ? ' ↗' : ''}
+      </span>
       <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>{dest.description}</span>
     </a>
   );
@@ -166,6 +174,23 @@ export default function AdminDashboardPage() {
     'idle'
   );
   const [restartActionError, setRestartActionError] = useState<string | null>(null);
+
+  // Grafana's own URL, used only to build the SRE Overview tile's target --
+  // it launches the Grafana single pane of glass in a new tab (#3411)
+  // instead of an in-app nyxGPT page. Falls back to nav.ts's same default
+  // (`grafana_ui_url` unconfigured) until this loads.
+  const [grafanaUiUrl, setGrafanaUiUrl] = useState<string | null>(null);
+
+  const loadMonitoring = useCallback(async () => {
+    try {
+      const res = await fetch('/api/v1/monitoring', { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.grafana_ui_url) setGrafanaUiUrl(data.grafana_ui_url);
+    } catch {
+      // Best-effort: the SRE Overview tile just keeps its default target.
+    }
+  }, []);
 
   const loadOverview = useCallback(async () => {
     setOverviewLoading(true);
@@ -229,7 +254,8 @@ export default function AdminDashboardPage() {
     loadActivity();
     loadAccess();
     loadRestartStatus();
-  }, [loadOverview, loadActivity, loadAccess, loadRestartStatus]);
+    loadMonitoring();
+  }, [loadOverview, loadActivity, loadAccess, loadRestartStatus, loadMonitoring]);
 
   /**
    * Triggers the mode-aware restart-required flow (#3407) and polls
@@ -392,7 +418,14 @@ export default function AdminDashboardPage() {
                     }}
                   >
                     {ADMIN_NAV.filter((dest) => dest.group === 'observation').map((dest) => (
-                      <NavTile key={dest.href} dest={dest} />
+                      <NavTile
+                        key={dest.label}
+                        dest={
+                          dest.external && grafanaUiUrl
+                            ? { ...dest, href: grafanaSreHomeUrl(grafanaUiUrl) }
+                            : dest
+                        }
+                      />
                     ))}
                   </div>
                 </div>
@@ -627,9 +660,6 @@ export default function AdminDashboardPage() {
               ))}
             </div>
           )}
-          <div style={{ marginTop: '1rem', fontSize: 13 }}>
-            <a href="/admin/observability" style={inlineLinkStyle}>View logs in Log Aggregation →</a>
-          </div>
         </section>
 
         {/* Query Cache Statistics */}

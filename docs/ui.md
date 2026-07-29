@@ -217,7 +217,7 @@ The web UI includes:
 - **Usage analytics dashboard** (`/admin/analytics`) — total/per-model/per-day request and token breakdowns from recorded chat usage, with JSON/CSV report export (see [API — Usage Analytics](api.md#usage-analytics))
 - **Model management** page (`/models`) for pulling, deleting, and viewing Ollama models
 - **Configuration wizard** (`/admin`) covering every `config.ini` section (core/model, RAG, API & auth, observability) with apply-on-save reload and a restart offer for settings that need one
-- **Log Aggregation** (`/admin/observability`) — curated Grafana/Loki queries and Explore links for searching application logs (see [Log Aggregation](docker-compose.md#log-aggregation))
+- **SRE Overview** tile (Admin Dashboard) — launches Grafana, the single pane of glass for every SRE signal (dashboards, logs, traces, errors), in a new browser tab; there is no in-app SRE Overview page (#3411, see [Observability — Grafana Single Pane of Glass](docker-compose.md#grafana-single-pane-of-glass))
 - **Mobile-responsive layout** — the session sidebar collapses into a dismissible overlay below the `useIsMobile` breakpoint (768px), chat controls grow to touch-friendly tap targets, and inputs use a 16px minimum font size to prevent iOS Safari's auto-zoom-on-focus
 - **Keyboard shortcuts** for productivity:
   - `Cmd/Ctrl+K` — Create new chat
@@ -352,13 +352,13 @@ Access the dashboard at `http://127.0.0.1:3000/admin/dashboard` for an at-a-glan
 
 - **Status badges** — Canary, self-heal, observability, and auth status render as pill badges with a colored dot and label. The "on"/healthy state uses green; the "off"/idle state uses a gray dot and text (`var(--muted-foreground)`) that meets WCAG AA contrast against the pill background. (The Deploy badge was removed along with blue/green -- see #3409.)
 - **Quick-nav tiles, split by observe vs operate** — the exported `ADMIN_NAV` list in `web/src/app/admin/dashboard/page.tsx` tags every destination with a `group` of `observation` or `operation`, and each section renders only its group:
-  - **System Status** shows the observation tiles: System Health, **Infrastructure Status**, SRE Overview, Usage Analytics, and Full Metrics — screens that only report state. Infrastructure moved here from Configuration when #3410 removed its Install/Destroy controls: `nyxgpt ops install|down --terraform|--kubernetes --local` are CLI-only now, so the page only reports the detected deployment mode, per-component status, and which instance is serving traffic (a single instance in native/Compose/Terraform mode, or the stable/canary weight and per-track health in kubernetes mode, sourced from `canary.status()`) — it doesn't change anything. Traffic *control* still lives on the Canary Operations page, linked from here.
-  - **Configuration** shows the operation tiles — **Canary Operations** and **Self-heal Operations** — alongside the **Configuration Wizard**, all in the same tile grid. These screens change something (deploy/gate/promote/roll back a canary, toggle or trigger self-heal), so they live under Configuration rather than System Status. (The **Deployment Operations** blue/green tile was retired -- canary is the sole deployment model, see #3409.) The "Operations" suffix on these tiles disambiguates them from the same-named Grafana dashboard links in the dashboard catalog on the SRE Overview page (`/admin/observability`), which observe the same subsystems rather than act on them.
+  - **System Status** shows the observation tiles: System Health, **Infrastructure Status**, SRE Overview, Usage Analytics, and Full Metrics — screens that only report state. Infrastructure moved here from Configuration when #3410 removed its Install/Destroy controls: `nyxgpt ops install|down --terraform|--kubernetes --local` are CLI-only now, so the page only reports the detected deployment mode, per-component status, and which instance is serving traffic (a single instance in native/Compose/Terraform mode, or the stable/canary weight and per-track health in kubernetes mode, sourced from `canary.status()`) — it doesn't change anything. Traffic *control* still lives on the Canary Operations page, linked from here. **SRE Overview** is the sanctioned exception to same-tab, in-app navigation (#3411): its tile opens the Grafana single pane of glass (the "SRE Home" dashboard, built from `grafana_ui_url`) in a new browser tab, marked with a `↗` decoration and `target="_blank"` — there is no in-app SRE Overview page.
+  - **Configuration** shows the operation tiles — **Canary Operations** and **Self-heal Operations** — alongside the **Configuration Wizard**, all in the same tile grid. These screens change something (deploy/gate/promote/roll back a canary, toggle or trigger self-heal), so they live under Configuration rather than System Status. (The **Deployment Operations** blue/green tile was retired -- canary is the sole deployment model, see #3409.) The "Operations" suffix on these tiles disambiguates them from the same-named Grafana dashboard links reachable from the SRE Home dashboard, which observe the same subsystems rather than act on them.
 
-  Every tile shows the destination name plus a one-line description of what that screen is for, with the same description as a hover tooltip. Tiles navigate in the same tab, carry no arrow decoration, and hover/highlight using the theme CSS variables so light and dark modes both work.
+  Every tile shows the destination name plus a one-line description of what that screen is for, with the same description as a hover tooltip. Tiles navigate in the same tab, carry no arrow decoration, and hover/highlight using the theme CSS variables so light and dark modes both work -- except the SRE Overview tile, described above.
 - **Restart-required banner** (#3407) — stacked directly above the Configuration card, same width, outside it, shown only when a Configuration Wizard save left one or more components (currently only `api`) pending a restart. Lists which component(s) and which `section.key` fields triggered it (from `GET /api/v1/infra/restart-status`). Clicking **Restart now** calls `POST /api/v1/infra/restart-required`, which restarts every pending component mode-aware (native/Compose/Terraform/Kubernetes, reusing the same dispatcher as self-heal's manual "Heal Now" — see [Self-Healing](self-healing.md)) — the wrapper rule: no raw command is ever shown. The button then polls restart-status every 2s (up to 10 attempts) and reports **Restarting…** → the banner disappearing on success, or a "did not complete in time" message (banner stays, retryable) if it times out.
 - **Access Management** — Masked API keys wrap within their pane instead of overflowing it; revealing a key shows the full value, also wrapped.
-- **Back to Chat / logs links** — "← Back to Chat" and "View logs in Log Aggregation →" use an underlined inline-link style (`inlineLinkStyle`) for clear affordance.
+- **Back to Chat link** — "← Back to Chat" uses an underlined inline-link style (`inlineLinkStyle`) for clear affordance. The Activity Log's former "View logs in Log Aggregation →" link was removed (#3411): it only pointed at the SRE Overview page, never at an actual log view -- use the SRE Overview tile to reach Grafana's Logs Drilldown instead.
 
 #### Configuration Wizard
 
@@ -444,12 +444,13 @@ dangling flag.
 #### Log Viewer (removed)
 
 The standalone raw-file log viewer (`/admin/logs`) has been removed now that the log aggregation
-stack is fixed (#3349) — it duplicated what the curated Grafana/Loki views already provide. Read
-application logs from the **Log Aggregation** panel at `/admin/observability` instead, which
-offers curated Loki queries and Explore links across all services (see
-[Log Aggregation](docker-compose.md#log-aggregation)). The chat/streaming endpoints log upstream
-Ollama errors (status, model, message) to `nyxgpt.log` before they reach the client, so that file
-under `~/.nyxGPT/logs` is still the first place to check if the aggregation stack itself is down.
+stack is fixed (#3349) — it duplicated what Grafana's own log views already provide. Read
+application logs in Grafana's **Logs Drilldown** app instead (reached via the SRE Overview tile on
+the Admin Dashboard, pre-filtered to `{job="nyxgpt"}` — see
+[Observability — Grafana Single Pane of Glass](docker-compose.md#grafana-single-pane-of-glass)).
+The chat/streaming endpoints log upstream Ollama errors (status, model, message) to `nyxgpt.log`
+before they reach the client, so that file under `~/.nyxGPT/logs` is still the first place to
+check if the aggregation stack itself is down.
 
 #### Virtual Scrolling (Performance Optimization)
 

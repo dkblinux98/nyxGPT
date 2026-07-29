@@ -5618,6 +5618,91 @@ def test_write_error_tracking_dsn_preserves_comments(tmp_path):
 
 
 @pytest.mark.unit
+def test_write_grafana_glitchtip_token_writes_and_chmods(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    changed, result = ops._write_grafana_glitchtip_token("tok-123")
+
+    assert changed is True
+    assert result.ok
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
+    assert token_path.read_text(encoding="utf-8") == "tok-123"
+    assert oct(token_path.stat().st_mode)[-3:] == "600"
+    assert oct(token_path.parent.stat().st_mode)[-3:] == "700"
+
+
+@pytest.mark.unit
+def test_write_grafana_glitchtip_token_is_a_noop_when_unchanged(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    first_changed, _ = ops._write_grafana_glitchtip_token("tok-123")
+    second_changed, second_result = ops._write_grafana_glitchtip_token("tok-123")
+
+    assert first_changed is True
+    assert second_changed is False
+    assert second_result.ok
+
+
+@pytest.mark.unit
+def test_write_grafana_glitchtip_token_detects_a_rotated_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    ops._write_grafana_glitchtip_token("tok-old")
+    changed, _ = ops._write_grafana_glitchtip_token("tok-new")
+
+    assert changed is True
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
+    assert token_path.read_text(encoding="utf-8") == "tok-new"
+
+
+@pytest.mark.unit
+def test_restart_grafana_if_running_skips_without_docker(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: False)
+    result = ops._restart_grafana_if_running()
+    assert result.ok
+    assert "Docker not found" in result.message
+
+
+@pytest.mark.unit
+def test_restart_grafana_if_running_skips_when_not_running(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "exited"})
+    result = ops._restart_grafana_if_running()
+    assert result.ok
+    assert "not running" in result.message
+
+
+@pytest.mark.unit
+def test_restart_grafana_if_running_restarts_when_running(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    captured_cmd = {}
+
+    def fake_run(cmd, check=False):
+        captured_cmd["cmd"] = cmd
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+    result = ops._restart_grafana_if_running()
+    assert result.ok
+    assert captured_cmd["cmd"][-2:] == ["restart", "grafana"]
+
+
+@pytest.mark.unit
+def test_restart_grafana_if_running_reports_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, check=False: SimpleNamespace(returncode=1, stdout="", stderr="boom"),
+    )
+    result = ops._restart_grafana_if_running()
+    assert not result.ok
+    assert "boom" in result.details
+
+
+@pytest.mark.unit
 def test_patch_ini_value_appends_missing_key():
     text = "[error_tracking]\nenvironment = docker\n"
     patched = ops._patch_ini_value(text, "error_tracking", "dsn", "http://key@localhost:8080/1")
@@ -5808,6 +5893,9 @@ def test_provision_glitchtip_full_happy_path(monkeypatch, tmp_path):
         "_glitchtip_ensure_project_key",
         lambda client, org, proj: ("http://key@localhost:8080/1", ops.OpsResult(True, "key")),
     )
+    # Grafana isn't actually running in this test -- avoid a real `docker
+    # compose ps` subprocess call from `_restart_grafana_if_running`.
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     results = ops._provision_glitchtip()
 
@@ -5824,6 +5912,12 @@ def test_provision_glitchtip_full_happy_path(monkeypatch, tmp_path):
     compose_parser.read(compose_cfg)
     assert compose_parser.get("error_tracking", "dsn") == "http://key@localhost:8080/1"
     assert compose_parser.get("error_tracking", "enabled") == "true"
+
+    # The Infinity datasource's GlitchTip token is minted alongside the DSN
+    # (#3411), never hand-pasted.
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
+    assert token_path.read_text(encoding="utf-8") == "tok"
+    assert oct(token_path.stat().st_mode)[-3:] == "600"
 
 
 @pytest.mark.unit

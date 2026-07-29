@@ -349,6 +349,16 @@ export const handlers = [
     });
   }),
 
+  // GET /api/v1/monitoring
+  http.get('/api/v1/monitoring', () => {
+    return HttpResponse.json({
+      enabled: true,
+      active: true,
+      grafana_ui_url: 'http://localhost:3001',
+      prometheus_ui_url: 'http://localhost:9090',
+    });
+  }),
+
   // GET /api/v1/infra/restart-status
   http.get('/api/v1/infra/restart-status', () => {
     return HttpResponse.json({ pending: {} });

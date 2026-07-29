@@ -202,10 +202,25 @@ services:
       # derive .env's value from it instead of editing .env by hand.
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # Grafana is the single pane of glass (#3411): guarantee the Logs
+      # Drilldown app and the Infinity datasource (GlitchTip panels) are
+      # present on a fresh install even if a given image build doesn't
+      # bundle them by default.
+      GF_INSTALL_PLUGINS: "grafana-lokiexplore-app,yesoreyeram-infinity-datasource"
+      # SRE Home (docker/grafana/dashboards/sre-home.json, uid
+      # nyxgpt-sre-home) is the landing page opened by the Admin Dashboard's
+      # SRE Overview tile.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/sre-home.json
     volumes:
       - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - ${HOME}/.nyxGPT/volumes/grafana:/var/lib/grafana
+      # GlitchTip API token for the Infinity datasource, minted by `nyxgpt
+      # ops glitchtip-init` -- see datasource.yml's `$__file{}` reference and
+      # docs/docker-compose.md#grafana-single-pane-of-glass. Read-only,
+      # outside grafana's own data dir so `nyxgpt ops down --volumes` never
+      # deletes it.
+      - ${HOME}/.nyxGPT/secrets:/etc/nyxgpt-secrets:ro
     ports:
       - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${GRAFANA_UI_PORT:-3001}:3000"
     depends_on:

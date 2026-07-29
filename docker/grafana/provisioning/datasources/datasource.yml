@@ -10,7 +10,12 @@ datasources:
     editable: false
 
   # Requires the opt-in `logging` Compose profile (Loki + promtail) --
-  # see docker/loki-config.yml and docker/promtail-config.yml.
+  # see docker/loki-config.yml and docker/promtail-config.yml. The
+  # derivedFields entry links a `trace_id` found in a log line straight to
+  # its trace in the Jaeger datasource below (#3411) -- it's inert until
+  # #3415 lands the correlation work that actually stamps `trace_id` into
+  # log lines; nothing matches the regex before that, so this has no effect
+  # today beyond being ready for it.
   - name: Loki
     uid: loki
     type: loki
@@ -18,3 +23,44 @@ datasources:
     url: http://loki:3100
     isDefault: false
     editable: false
+    jsonData:
+      derivedFields:
+        - name: TraceID
+          matcherRegex: 'trace_id=(\w+)'
+          datasourceUid: jaeger
+
+  # Requires the opt-in `tracing` Compose profile (otel-collector + jaeger)
+  # -- see docker-compose.yml's `jaeger` service. Grafana talks to Jaeger's
+  # own Query API on the same port the native Jaeger UI serves (16686), so
+  # this needs no separate query port published. The native Jaeger UI is a
+  # debug tool now (#3411) -- browse traces inside Grafana instead.
+  - name: Jaeger
+    uid: jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    isDefault: false
+    editable: false
+
+  # Requires the opt-in `errors` Compose profile (GlitchTip) plus the
+  # `yesoreyeram-infinity-datasource` plugin (see docker-compose.yml's
+  # grafana `GF_INSTALL_PLUGINS`). Queries GlitchTip's Sentry-compatible
+  # REST API for the SRE Home dashboard's error panels (#3411). The bearer
+  # token is minted by `nyxgpt ops glitchtip-init` (never hand-pasted) and
+  # read from the file below via Grafana's `$__file{}` provisioning
+  # expansion -- see docs/docker-compose.md#grafana-single-pane-of-glass and
+  # src/nyxgpt/ops.py's `_write_grafana_glitchtip_token`. Grafana only reads
+  # `$__file{}` targets at startup, so a freshly minted token needs a
+  # restart to take effect (glitchtip-init does this automatically).
+  - name: GlitchTip
+    uid: glitchtip-infinity
+    type: yesoreyeram-infinity-datasource
+    access: proxy
+    url: http://glitchtip:8080
+    isDefault: false
+    editable: false
+    jsonData:
+      datasource_mode: basic
+      auth_method: bearerToken
+    secureJsonData:
+      bearerToken: '$__file{/etc/nyxgpt-secrets/glitchtip-grafana-token}'

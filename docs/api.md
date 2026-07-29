@@ -196,10 +196,13 @@ not an operator surface — the web UI intentionally does not link to its
 raw text output. Pre-built Grafana dashboards over these metrics (system
 overview, RAG performance, API metrics, resource usage) are the metrics
 UI, available via the opt-in, local-only `monitoring` Compose profile — see
-[Monitoring Dashboards](docker-compose.md#monitoring-dashboards). The
-`/admin/observability` page ("SRE Overview") is the single entry point
-into all of them, plus curated Loki log queries, Jaeger trace views, and
-GlitchTip error tracking.
+[Monitoring Dashboards](docker-compose.md#monitoring-dashboards). Grafana
+is the single pane of glass for every SRE signal (#3411): the Admin
+Dashboard's SRE Overview tile opens Grafana's SRE Home dashboard in a new
+tab, which links to all of the above plus Logs Drilldown, traces (via a
+Jaeger datasource), and GlitchTip error panels (via the Infinity
+datasource) — see
+[docker-compose.md#grafana-single-pane-of-glass](docker-compose.md#grafana-single-pane-of-glass).
 
 ---
 
@@ -1162,11 +1165,10 @@ currently-known container.
 
 ### `GET /api/v1/self-heal/logs`
 
-Recent Docker Compose logs for one component. Backs the "View GlitchTip logs"
-button in the Error Tracking panel (`/admin/observability`) as well as
-`nyxgpt ops logs` -- both let an operator read a container's console output
-(e.g. GlitchTip's first-account confirmation link, printed there by its
-console email backend) without a raw `docker`/`docker compose` command.
+Recent Docker Compose logs for one component. Backs `nyxgpt ops logs`,
+letting an operator read a container's console output (e.g. GlitchTip's
+first-account confirmation link, printed there by its console email
+backend) without a raw `docker`/`docker compose` command.
 
 **Query parameters:** `service` (required, Compose service name, e.g.
 `glitchtip`, `api`), `tail` (optional, number of trailing lines, default 200).
@@ -2913,13 +2915,13 @@ automatically, in whichever mode Ollama is actually running:
 
 Either way, `~/.nyxGPT/logs/ollama.log` is picked up by promtail's existing
 `*.log*` glob (see [Centralized logs](#centralized-logs)) with no extra
-configuration, so it's searchable in Grafana Logs Explorer -- filter on
-Loki's auto-attached `filename` label to isolate it from the rest of the
-`job="nyxgpt"` stream. Ollama's own log lines don't match nyxGPT's
-`level`/`logger` extraction regex (that's for the app's own structured
-format), so -- like the existing Cassandra logs -- they won't populate the
-Operational Logs dashboard's per-component `$logger` dropdown; they're
-still fully text-searchable there and in Explore.
+configuration, so it's searchable in Grafana's Logs Drilldown app and Logs
+Explorer dashboard -- filter on Loki's auto-attached `filename` label to
+isolate it from the rest of the `job="nyxgpt"` stream. Ollama's own log
+lines don't match nyxGPT's `level`/`logger` extraction regex (that's for
+the app's own structured format), so -- like the existing Cassandra logs --
+they won't carry a `logger` label; they're still fully text-searchable in
+Drilldown/Explore.
 
 Verify:
 
@@ -3399,7 +3401,7 @@ curl http://127.0.0.1:8000/api/v1/tracing
 - `jaeger_ui_url` - URL of the local Jaeger UI for browsing traces
 - `active` - Whether tracing actually initialized for this running process (mirrors `enabled` unless startup failed)
 - `reachable` - Whether a live TCP connection to `otlp_endpoint`'s host/port succeeded, i.e. whether spans exported by this process actually have somewhere to land. `null` when `active` is `false` (nothing to probe). Distinguishes "active" (the SDK initialized) from "actually working" -- see [docker-compose.md#distributed-tracing](docker-compose.md#distributed-tracing) for the native-mode failure mode (#3350) this catches: the otel-collector container up but not publishing its port to the host, so every span is silently dropped and Jaeger stays empty despite `active: true`.
-- `curated_views` - Curated deep links into Jaeger's trace search for the main request flows (chat, RAG query/ingest, Ollama backend calls), each with a `hint` naming the operation(s) to pick from the dropdown. Surfaced by the `/admin/observability` ("SRE Overview") page.
+- `curated_views` - Curated deep links into Jaeger's trace search for the main request flows (chat, RAG query/ingest, Ollama backend calls), each with a `hint` naming the operation(s) to pick from the dropdown. No longer surfaced in-app (the retired SRE Overview page's Distributed Tracing panel used to render these) -- Grafana is the single pane of glass for traces now, see [docker-compose.md#grafana-single-pane-of-glass](docker-compose.md#grafana-single-pane-of-glass).
 
 **How it works:**
 
@@ -3429,8 +3431,11 @@ re-run it later (never a raw `docker compose` command):
 nyxgpt ops observability
 ```
 
-Browse traces at `http://localhost:16686` (also linked from the SRE/admin
-dashboard's Resource Usage step — see [`docs/configuration.md`](configuration.md)).
+Browse traces inside Grafana (#3411), reached via the Admin Dashboard's SRE
+Overview tile — see
+[docker-compose.md#grafana-single-pane-of-glass](docker-compose.md#grafana-single-pane-of-glass).
+The native Jaeger UI at `http://localhost:16686` still works but is a debug
+tool now, not primary navigation.
 
 ---
 
@@ -3499,8 +3504,11 @@ The endpoint distinguishes these two cases on purpose: a misconfigured DSN
 or a tracker nobody enabled must not look like a successfully delivered
 event. The web UI's fire-and-forget client error reporter
 (`ClientErrorReporter.tsx`) ignores the response either way, so it's safe
-to call whether or not tracking is active; the Error Tracking panel's "Send
-test event" button surfaces the real result to an operator.
+to call whether or not tracking is active. (The now-retired Error Tracking
+panel's "Send test event" button used to surface the real result to an
+operator directly; test it with the `curl` command above instead, or check
+issue counts in Grafana's GlitchTip panels -- see
+[docker-compose.md#grafana-single-pane-of-glass](docker-compose.md#grafana-single-pane-of-glass).)
 
 **How it works:**
 
@@ -3555,14 +3563,13 @@ with a DSN:
 
 Prefer to do it by hand instead? Register an account at
 `http://localhost:8080` (its confirmation email is printed to the
-`glitchtip` container's console — `EMAIL_URL=consolemail://` — read it
-with the "View GlitchTip logs" button on the Error Tracking panel or
+`glitchtip` container's console — `EMAIL_URL=consolemail://` — read it with
 `nyxgpt ops logs glitchtip`), create a project, and paste its DSN into
 config.ini yourself, same as above, then restart the API.
 
-Browse events at `http://localhost:8080` (also linked from the SRE/admin
-dashboard's Resource Usage step). See
-[`docs/ops.md`](ops.md#nyxgpt-ops-glitchtip-init) for the full
+Browse events at `http://localhost:8080`, or via Grafana's GlitchTip panels
+(click-through for detail) reached from the Admin Dashboard's SRE Overview
+tile. See [`docs/ops.md`](ops.md#nyxgpt-ops-glitchtip-init) for the full
 `glitchtip-init` reference.
 
 **Recommended alerting for the default project:** GlitchTip has no
@@ -3615,10 +3622,12 @@ Monitoring is Prometheus/Grafana-based, opt-in, and strictly local — there
 is no external/cloud monitoring service. System overview, RAG performance,
 API metrics, and resource usage dashboards are pre-provisioned in Grafana,
 backed by a Prometheus server that scrapes this API's
-[`/metrics`](#get-metrics) endpoint. The `/admin/observability` **SRE
-Overview** page (reachable from `/admin/dashboard`) is the single entry
-point into all of it — every Grafana dashboard, curated Loki queries,
-Jaeger trace views, and GlitchTip error tracking.
+[`/metrics`](#get-metrics) endpoint. The **SRE Overview** tile on
+`/admin/dashboard` opens Grafana's SRE Home dashboard in a new tab — the
+single entry point into all of it: every Grafana dashboard, Logs Drilldown,
+traces (via a Jaeger datasource), and GlitchTip error tracking (via the
+Infinity datasource). See
+[docker-compose.md#grafana-single-pane-of-glass](docker-compose.md#grafana-single-pane-of-glass).
 
 **Enabling monitoring:**
 
@@ -3637,9 +3646,9 @@ own or re-run it later (never a raw `docker compose` command):
 nyxgpt ops observability
 ```
 
-Browse dashboards at `http://localhost:3001` (also linked from the
-SRE/admin dashboard's Resource Usage step — see
-[`docs/docker-compose.md`](docker-compose.md#monitoring-dashboards)).
+Browse dashboards at `http://localhost:3001`, reached from the Admin
+Dashboard's SRE Overview tile — see
+[`docs/docker-compose.md`](docker-compose.md#monitoring-dashboards).
 
 ---
 
@@ -3677,7 +3686,7 @@ curl http://127.0.0.1:8000/api/v1/log-aggregation
 - `enabled` - Whether `[log_aggregation] enabled = true` in config.ini
 - `grafana_explore_url` - URL of the Grafana Explore view for searching logs
 - `active` - Mirrors `enabled` (the Loki/promtail stack itself runs outside this process, as Docker Compose services)
-- `curated_queries` - LogQL queries provisioned as code, mirroring the per-component panels in the Operational Logs dashboard (self-heal, canary, chat errors, RAG pipeline) -- each has a `label`, a `hint`, and the raw `query` text. The web UI turns each one into an "Open in Explore" deep link (Grafana has no file-based provisioning for Explore's own query library, but its state is URL-encodable, so the link opens Explore with the query already loaded against the `loki` datasource); the raw `query` text is also shown for copy/paste
+- `curated_queries` - LogQL queries provisioned as code for the key operational streams (self-heal, canary, chat errors, RAG pipeline) -- each has a `label`, a `hint`, and the raw `query` text. The self-heal and canary pages each turn their own query into an "Open in Explore" deep link (Grafana has no file-based provisioning for Explore's own query library, but its state is URL-encodable, so the link opens Explore with the query already loaded against the `loki` datasource). General log search now happens in Grafana's Logs Drilldown app instead (#3411) -- see [docker-compose.md#grafana-single-pane-of-glass](docker-compose.md#grafana-single-pane-of-glass); these curated queries are just the self-heal/canary pages' own event-stream shortcuts, unrelated to the retired Operational Logs dashboard and Log Aggregation panel.
 
 **How it works:**
 
@@ -3706,9 +3715,11 @@ the `monitoring` profile for Grafana, already start automatically with
 nyxgpt ops observability
 ```
 
-Search logs at `http://localhost:3001/explore` (also linked from the
-SRE/admin dashboard's Resource Usage step — see
-[`docs/docker-compose.md`](docker-compose.md#log-aggregation)).
+Search logs in Grafana's Logs Drilldown app, pre-filtered to
+`{job="nyxgpt"}` — reached via the Admin Dashboard's SRE Overview tile (see
+[`docs/docker-compose.md`](docker-compose.md#grafana-single-pane-of-glass)).
+`grafana_explore_url` above backs only the self-heal/canary pages' own
+curated per-component Explore links, not general search.
 
 ---
 
