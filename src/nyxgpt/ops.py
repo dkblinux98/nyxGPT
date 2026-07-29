@@ -2152,7 +2152,7 @@ def _ensure_k8s_secret(api_key: str | None) -> list[OpsResult]:
 
 
 def _kubectl_apply_kustomization() -> list[OpsResult]:
-    """Apply `k8s/`'s kustomization (namespace, RBAC, ConfigMap, Secret, Deployments, HPAs, Service)."""
+    """Apply `k8s/`'s kustomization (namespace, RBAC, ConfigMap, Secret, Deployments, Service)."""
     cp = _run(["kubectl", "apply", "-k", str(K8S_DIR)], check=False)
     if cp.returncode != 0:
         return [OpsResult(False, "kubectl apply -k k8s/ failed", _cp_details(cp))]
@@ -2160,10 +2160,12 @@ def _kubectl_apply_kustomization() -> list[OpsResult]:
 
 
 def _k8s_stack_health() -> list[OpsResult]:
-    """Snapshot of Pod/HPA/Service health in the `nyxgpt` namespace right after apply.
+    """Snapshot of Pod/Service health in the `nyxgpt` namespace right after apply.
 
     A one-shot snapshot, not a wait-until-ready loop -- Pods may still be
-    starting when this runs; re-check with `nyxgpt ops status`.
+    starting when this runs; re-check with `nyxgpt ops status`. No HPA check
+    here -- the stable/canary Deployments deliberately have none (autoscaling
+    would fight canary.py's replica-count-based traffic split; see #3409).
     """
     results: list[OpsResult] = []
 
@@ -2189,12 +2191,6 @@ def _k8s_stack_health() -> list[OpsResult]:
             name, _, phase = entry.partition("=")
             results.append(OpsResult(phase == "Running", f"pod {name}: {phase}"))
 
-    cp = _run(["kubectl", "-n", K8S_NAMESPACE, "get", "hpa", "--no-headers"], check=False)
-    hpa_lines = [line for line in (cp.stdout or "").splitlines() if line.strip()]
-    results.append(
-        OpsResult(cp.returncode == 0 and bool(hpa_lines), f"{len(hpa_lines)} HPA(s) found")
-    )
-
     cp = _run(
         ["kubectl", "-n", K8S_NAMESPACE, "get", "svc", "nyxgpt-api", "--no-headers"], check=False
     )
@@ -2213,7 +2209,7 @@ def _install_kubernetes_steps(api_key: str | None) -> list[OpsResult]:
     Prereq checks (cluster reachable, kubectl present), builds and loads
     `nyxgpt-api:local`, bootstraps k8s/secret.yaml (prompting for the API
     key, never committing it), applies the kustomization, and snapshots
-    Pod/HPA/Service health. Stops at the first failing step, same rationale
+    Pod/Service health. Stops at the first failing step, same rationale
     as `_install_terraform_steps`.
 
     Shared by the `nyxgpt ops install --kubernetes --local` CLI entrypoint

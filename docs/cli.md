@@ -7,7 +7,7 @@ documentation are linked out to instead of duplicated here:
 - Sessions (`nyxgpt sessions ...`) — see [Sessions](sessions.md)
 - RAG (`nyxgpt rag ...`) — see [RAG](rag.md)
 - Ops (`nyxgpt ops ...`) — see [Ops helpers](ops.md)
-- Deploy/canary (`nyxgpt deploy ...`, `nyxgpt canary ...`) — see [Kubernetes](kubernetes.md)
+- Canary (`nyxgpt canary ...`) — see [Kubernetes](kubernetes.md)
 - Configuration wizard (`nyxgpt wizard`) — see [Configuration](configuration.md)
 
 ---

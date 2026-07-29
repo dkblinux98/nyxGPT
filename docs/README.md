@@ -18,7 +18,7 @@ started, read [Configuration](configuration.md) and the root
 ## Operations & deployment
 
 - [Docker Compose](docker-compose.md) — the containerized stack + monitoring profiles
-- [Kubernetes](kubernetes.md) — local-cluster manifests, blue-green, canary
+- [Kubernetes](kubernetes.md) — local-cluster manifests, canary deploy/gate/promote
 - [Terraform](terraform.md) — local-first infrastructure-as-code
 - [Self-healing](self-healing.md) — the watchdog, healthchecks, and `/admin/self-heal`
 - [Deployment checklist](deployment-checklist.md) — pre-deploy security/perf/monitoring

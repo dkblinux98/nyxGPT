@@ -1,12 +1,10 @@
 import { apiFetch } from "@/lib/apiProxy";
 
-export async function POST(request: Request) {
+export async function POST() {
   try {
-    const body = await request.json().catch(() => ({}));
-    const res = await apiFetch(`/api/v1/deploy/switch`, {
+    const res = await apiFetch(`/api/v1/canary/deploy`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
       cache: "no-store",
     });
 
@@ -17,9 +15,9 @@ export async function POST(request: Request) {
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Failed to switch deployment color:", error);
+    console.error("Failed to deploy current version to canary:", error);
     return new Response(
-      JSON.stringify({ error: "Failed to switch deployment color" }),
+      JSON.stringify({ error: "Failed to deploy current version to canary" }),
       {
         status: 502,
         headers: { "Content-Type": "application/json" },

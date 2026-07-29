@@ -337,7 +337,6 @@ export const handlers = [
         latency: { avg_ms: 10, p50_ms: 8, p95_ms: 20, p99_ms: 30 },
         queue: { depth: 0, total_requests: 42 },
       },
-      deploy: { namespace: 'nyxgpt', active: 'blue', inactive: 'green' },
       canary: { namespace: 'nyxgpt', active: false },
       self_heal: { enabled: false, components: [], unhealthy_count: 0, events: [] },
       observability: {
@@ -385,7 +384,7 @@ export const handlers = [
     return HttpResponse.json({
       events: [
         { ts: 1768300800, action: 'config.updated', detail: 'log_level=DEBUG' },
-        { ts: 1768300900, action: 'deploy.switch', detail: 'blue -> green' },
+        { ts: 1768300900, action: 'canary.deploy', detail: 'Deployed nyxgpt-api:1.2.3-abcd123 to nyxgpt-api-canary' },
       ],
     });
   }),

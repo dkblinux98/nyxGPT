@@ -896,17 +896,6 @@ wait_time_ms = 50               # max wait to fill a batch
 
 ---
 
-## `[deploy]` section
-
-Local blue-green deployment (see `docs/kubernetes.md`, `/admin/deploy`).
-
-```ini
-[deploy]
-namespace = nyxgpt             # k8s namespace for blue/green switching
-```
-
----
-
 ## `[canary]` section
 
 Local canary rollout controls (see `/admin/canary`).

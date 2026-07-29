@@ -105,15 +105,13 @@ own snapshot/cron tooling:
 - [ ] For Kubernetes: `kubectl -n nyxgpt get pods` shows all pods `Ready`,
       and the readinessProbe backing `kubectl rollout status` is green (see
       [`docs/kubernetes.md`](kubernetes.md#4-verify))
-- [ ] For blue/green or canary rollouts: `nyxgpt deploy status` /
-      `nyxgpt canary status` confirm the target color/track is healthy
-      *before* cutting traffic over (see
-      [Blue/Green Deployment](kubernetes.md#bluegreen-deployment) and
+- [ ] For canary rollouts: `nyxgpt canary status` confirms the target track
+      is healthy *before* shifting traffic to it (see
       [Canary Deployment](kubernetes.md#canary-deployment))
 - [ ] For Docker Compose: `docker compose ps` shows all services `healthy`,
       not just `running` (see [`docs/docker-compose.md`](docker-compose.md))
-- [ ] A rollback path is confirmed working (`nyxgpt deploy rollback` /
-      `nyxgpt canary rollback`) before relying on it in an incident
+- [ ] A rollback path is confirmed working (`nyxgpt canary rollback`) before
+      relying on it in an incident
 
 ---
 
@@ -123,6 +121,6 @@ own snapshot/cron tooling:
 - [`docs/performance.md`](performance.md) — performance tuning guide
 - [`docs/ops.md`](ops.md) — local service management (`nyxgpt ops`)
 - [`docs/docker-compose.md`](docker-compose.md) — full-stack Docker Compose deployment
-- [`docs/kubernetes.md`](kubernetes.md) — Kubernetes deployment, blue/green and canary rollouts
+- [`docs/kubernetes.md`](kubernetes.md) — Kubernetes deployment and canary rollouts
 - [`docs/configuration.md`](configuration.md) — full configuration reference
 - [`docs/troubleshooting.md`](troubleshooting.md) — common issues

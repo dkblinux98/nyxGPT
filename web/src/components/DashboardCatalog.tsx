@@ -60,14 +60,9 @@ export const DASHBOARD_GROUPS: DashboardGroup[] = [
         description: 'Watchdog restarts and recovery events',
       },
       {
-        uid: 'nyxgpt-deployment',
-        label: 'Blue-Green Deployment',
-        description: 'Deploy switches and rollbacks',
-      },
-      {
         uid: 'nyxgpt-canary',
         label: 'Canary Rollout',
-        description: 'Rollout progress, evaluation, and promotion',
+        description: 'Deploy, rollout progress, evaluation, and promotion',
       },
     ],
   },

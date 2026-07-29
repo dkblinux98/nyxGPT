@@ -22,9 +22,8 @@ describe('AdminDashboardPage', () => {
   it('renders system status overview after loading', async () => {
     render(<AdminDashboardPage />);
     await waitFor(() => {
-      expect(screen.getByText(/Deploy: blue/)).toBeInTheDocument();
+      expect(screen.getByText(/Canary: idle/)).toBeInTheDocument();
     });
-    expect(screen.getByText(/Canary: idle/)).toBeInTheDocument();
     expect(screen.getByText(/Auth: disabled/)).toBeInTheDocument();
   });
 
@@ -42,7 +41,7 @@ describe('AdminDashboardPage', () => {
     await waitFor(() => {
       expect(screen.getByText('config.updated')).toBeInTheDocument();
     });
-    expect(screen.getByText('deploy.switch')).toBeInTheDocument();
+    expect(screen.getByText('canary.deploy')).toBeInTheDocument();
   });
 
   it('renders access management with masked key state', async () => {
@@ -66,7 +65,7 @@ describe('AdminDashboardPage', () => {
   it('renders the quick-nav tiles with descriptions, tooltips, and same-tab links', async () => {
     render(<AdminDashboardPage />);
     await waitFor(() => {
-      expect(screen.getByText(/Deploy: blue/)).toBeInTheDocument();
+      expect(screen.getByText(/Canary: idle/)).toBeInTheDocument();
     });
 
     for (const dest of ADMIN_NAV) {
@@ -85,7 +84,7 @@ describe('AdminDashboardPage', () => {
   it('groups observation tiles under System Status and operation tiles under Configuration', async () => {
     render(<AdminDashboardPage />);
     await waitFor(() => {
-      expect(screen.getByText(/Deploy: blue/)).toBeInTheDocument();
+      expect(screen.getByText(/Canary: idle/)).toBeInTheDocument();
     });
 
     const systemStatus = screen.getByRole('region', { name: 'System status overview' });
@@ -93,7 +92,6 @@ describe('AdminDashboardPage', () => {
 
     const observationLabels = ['System Health', 'SRE Overview', 'Usage Analytics', 'Full Metrics'];
     const operationLabels = [
-      'Deployment Operations',
       'Infrastructure Operations',
       'Canary Operations',
       'Self-heal Operations',
@@ -123,7 +121,7 @@ describe('AdminDashboardPage', () => {
   it('highlights a quick-nav tile on hover and restores it on leave', async () => {
     render(<AdminDashboardPage />);
     await waitFor(() => {
-      expect(screen.getByText(/Deploy: blue/)).toBeInTheDocument();
+      expect(screen.getByText(/Canary: idle/)).toBeInTheDocument();
     });
 
     const tile = screen.getByRole('link', { name: /System Health/ });
@@ -317,7 +315,6 @@ describe('AdminDashboardPage', () => {
         HttpResponse.json({
           info: { ollama_base_url: 'http://127.0.0.1:11434', default_model: '', rag_enabled: true },
           resource_metrics: null,
-          deploy: { namespace: 'nyxgpt' },
           canary: { active: true },
           self_heal: { enabled: true, unhealthy_count: 2 },
           observability: { monitoring: true, tracing: true, error_tracking: true, log_aggregation: true },
@@ -328,9 +325,8 @@ describe('AdminDashboardPage', () => {
 
     render(<AdminDashboardPage />);
     await waitFor(() => {
-      expect(screen.getByText(/Deploy: unknown/)).toBeInTheDocument();
+      expect(screen.getByText('Canary: active')).toBeInTheDocument();
     });
-    expect(screen.getByText('Canary: active')).toBeInTheDocument();
     expect(screen.getByText('Self-heal: on (2 unhealthy)')).toBeInTheDocument();
     expect(screen.getByText('Auth: enabled')).toBeInTheDocument();
     expect(screen.getAllByText('Not set').length).toBe(2);
@@ -391,7 +387,6 @@ describe('AdminDashboardPage', () => {
         HttpResponse.json({
           info: { ollama_base_url: 'http://127.0.0.1:11434', default_model: 'llama3.1:8b', rag_enabled: false },
           resource_metrics: null,
-          deploy: { active: 'blue', inactive: 'green' },
           canary: { active: false },
           self_heal: { enabled: true, unhealthy_count: 0 },
           observability: { monitoring: false, tracing: false, error_tracking: false, log_aggregation: false },

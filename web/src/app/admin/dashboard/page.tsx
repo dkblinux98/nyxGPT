@@ -17,7 +17,6 @@ type OverviewData = {
     cpu: { process_percent: number };
     queue: { depth: number };
   } | null;
-  deploy: { active?: string; inactive?: string; error?: string } & Record<string, unknown>;
   canary: { active?: boolean; error?: string } & Record<string, unknown>;
   self_heal: { enabled?: boolean; unhealthy_count?: number; error?: string } & Record<
     string,
@@ -358,7 +357,6 @@ export default function AdminDashboardPage() {
               return (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                    <StatusBadge ok={!ov.deploy.error} label={`Deploy: ${ov.deploy.active ?? 'unknown'}`} />
                     <StatusBadge ok={!!ov.canary.active} label={ov.canary.active ? 'Canary: active' : 'Canary: idle'} />
                     <StatusBadge
                       ok={!!ov.self_heal?.enabled && !ov.self_heal?.unhealthy_count}

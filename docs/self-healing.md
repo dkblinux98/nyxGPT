@@ -11,7 +11,6 @@ restart`/`brew services restart`/`kubectl delete pod` by hand.
 
 It's implemented in `src/nyxgpt/self_heal.py` and runs as a background
 thread inside the `api` process -- the same process that already hosts the
-[blue/green](api.md#deployment-bluegreen) and
 [canary](api.md#canary-deployment) deployment logic. In native/local-first
 mode (the default local deployment, `nyxgpt ops install`) that's the
 Homebrew-managed `nyxgpt-api` service; in a Compose or Terraform deployment
@@ -61,12 +60,12 @@ mode](#nativelocal-first-mode) below for how that's decided):
    nyxgpt-tf-<component>`, the same primitive as native/local-first mode's
    Cassandra container. See [Terraform mode](#terraform-mode) below.
 4. **Kubernetes** (`nyxgpt ops install --kubernetes --local`): every
-   `nyxgpt-api` Pod (blue/green/stable/canary — see `k8s/`) is checked via
+   `nyxgpt-api` Pod (stable/canary — see `k8s/`) is checked via
    `kubectl get pods -n nyxgpt` (**healthy** when `phase=Running` and its
    `Ready` condition is `True`) and healed via `kubectl delete pod`, which
    the owning Deployment's ReplicaSet then recreates. This is on top of, not
-   instead of, kubelet's own liveness-probe restarts and
-   `deploy.py`/`canary.py`'s blue/green + auto-rollback — see [Kubernetes
+   instead of, kubelet's own liveness-probe restarts and `canary.py`'s
+   metrics-gated rollout + auto-rollback — see [Kubernetes
    mode](#kubernetes-mode) below.
 
 Regardless of mode:
@@ -261,17 +260,17 @@ modes never double-heal (or collide on) the same component.
 ## Kubernetes mode
 
 `nyxgpt ops install --kubernetes --local` (see [kubernetes.md](kubernetes.md))
-deploys `nyxgpt-api` as one or more Deployments (blue/green/stable/canary --
-see `k8s/`); there's no Kubernetes manifest for `web`/`ollama`/`cassandra`,
-so this mode only covers `api`. `src/nyxgpt/self_heal.py` lists every Pod
-matching `app in (nyxgpt-api,nyxgpt-api-canary-pool)` in the `nyxgpt`
-namespace via `kubectl get pods` (the watchdog runs inside one of those Pods
-itself, using the same `nyxgpt-api` ServiceAccount `deploy.py`/`canary.py`
-already use -- see `k8s/rbac.yaml`, which now also grants `get`/`list`/
-`delete` on `pods`) and reports **one `ComponentStatus` per Pod** (not per
-Deployment: `stable` alone can run several replicas, each needing its own
-backoff/restart-count bookkeeping) -- **healthy** when `phase: Running` and
-its `Ready` condition is `True`.
+deploys `nyxgpt-api` as the stable/canary Deployment pair (see `k8s/`);
+there's no Kubernetes manifest for `web`/`ollama`/`cassandra`, so this mode
+only covers `api`. `src/nyxgpt/self_heal.py` lists every Pod matching
+`app=nyxgpt-api-canary-pool` in the `nyxgpt` namespace via `kubectl get
+pods` (the watchdog runs inside one of those Pods itself, using the same
+`nyxgpt-api` ServiceAccount `canary.py` already uses -- see
+`k8s/rbac.yaml`, which also grants `get`/`list`/`delete` on `pods`) and
+reports **one `ComponentStatus` per Pod** (not per Deployment: `stable`
+alone can run several replicas, each needing its own backoff/restart-count
+bookkeeping) -- **healthy** when `phase: Running` and its `Ready` condition
+is `True`.
 
 Healing deletes the Pod (`kubectl delete pod`); its Deployment's
 ReplicaSet then recreates it. This is **on top of, not instead of**:
@@ -279,8 +278,7 @@ ReplicaSet then recreates it. This is **on top of, not instead of**:
 - **kubelet's own liveness-probe restarts** (every `deployment-*.yaml`
   already has one -- see [Container healthchecks](#container-healthchecks)),
   which handle an in-place crash without self-heal's help at all.
-- **`deploy.py`'s blue/green switch and `canary.py`'s auto-rollback** (see
-  [api.md](api.md#deployment-bluegreen) and
+- **`canary.py`'s metrics-gated rollout and auto-rollback** (see
   [api.md#canary-deployment](api.md#canary-deployment)), which handle a
   systematically-broken *version* by cutting traffic away from it, not an
   individual Pod misbehaving.

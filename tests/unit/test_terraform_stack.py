@@ -66,8 +66,3 @@ def test_docs_reference_the_scope_reversal_rationale() -> None:
     docs = (REPO_ROOT / "docs" / "terraform.md").read_text()
     assert "No cloud provider modules" in docs
     assert "#2690" in docs
-
-
-def test_admin_deploy_page_references_terraform_docs() -> None:
-    page = (REPO_ROOT / "web" / "src" / "app" / "admin" / "deploy" / "page.tsx").read_text()
-    assert "docs/terraform.md" in page

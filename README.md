@@ -35,12 +35,11 @@ Your data stays on your machine. No cloud dependency is required.
 - Optional **API rate limiting** (disabled by default for localhost use)
 - Homebrew‑managed background services
 - Optional **Kubernetes deployment** for local clusters (kind/minikube/k3s)
-- **Local blue/green deployment** with health-checked cutover and instant rollback, operable from the SRE/admin dashboard (`nyxgpt deploy` CLI or `/admin/deploy`)
-- **Local canary deployment** with gradual weighted rollout, metrics-based promotion, and automatic rollback, operable from the SRE/admin dashboard (`nyxgpt canary` CLI or `/admin/canary`)
+- **Local canary deployment** — deploy a versioned build to canary only, gate a gradual weighted rollout on live metrics, then promote it to stable (or roll back) — operable from the SRE/admin dashboard (`nyxgpt canary` CLI or `/admin/canary`)
 - **System health dashboard** — service uptime, dependency reachability checks (Ollama, Cassandra), resource utilization, and threshold-based alert indicators, surfaced in the SRE/admin dashboard (`/admin/health`)
 - **Prometheus metrics** (`/metrics`) — request counts, latency histograms, error rates, and chat/RAG business metrics, surfaced in the SRE/admin dashboard (`/admin`)
 - **Monitoring dashboards** (Grafana) — local-only system overview, RAG performance (including ingest activity), API metrics, resource usage (CPU/mem/queue/cache/rate-limit), and self-healing dashboards backed by Prometheus, plus alerting rules, auto-started with `nyxgpt ops install` (`nyxgpt ops observability` to start/re-run standalone), linked from the SRE/admin dashboard (`/admin`)
-- **Log aggregation** (Loki + promtail) — local-only centralized search over `~/.nyxGPT/logs` (api, web, Ollama, Cassandra — Ollama captured automatically by `nyxgpt ops install` whether it's running natively or as a Compose container) with a retention policy, surfaced via a Grafana Logs Explorer dashboard and a curated Operational Logs dashboard (self-heal, deploy/canary, chat errors, per-component), auto-started with `nyxgpt ops install`, linked from the SRE/admin dashboard (`/admin`)
+- **Log aggregation** (Loki + promtail) — local-only centralized search over `~/.nyxGPT/logs` (api, web, Ollama, Cassandra — Ollama captured automatically by `nyxgpt ops install` whether it's running natively or as a Compose container) with a retention policy, surfaced via a Grafana Logs Explorer dashboard and a curated Operational Logs dashboard (self-heal, canary, chat errors, per-component), auto-started with `nyxgpt ops install`, linked from the SRE/admin dashboard (`/admin`)
 - **Distributed tracing** (OpenTelemetry) — local-only request/RAG/Ollama/Cassandra spans exported to a local Jaeger instance, with curated trace views for the main request flows, auto-started with `nyxgpt ops install`, linked from the SRE/admin dashboard (`/admin`)
 - **Error tracking** (self-hosted GlitchTip) — local-only backend exception and web UI client error reporting via the Sentry SDK protocol, auto-started and auto-provisioned (admin user, org, project, DSN) with `nyxgpt ops install` — zero-touch, no manual sign-in step — linked from the SRE/admin dashboard (`/admin`)
 - **SRE Overview** — a single entry point (`/admin/observability`, reachable from `/admin/dashboard`) that reaches every Grafana dashboard, Loki query, Jaeger trace view, and GlitchTip error tracker above, all provisioned as code
@@ -91,7 +90,7 @@ nyxgpt chat "Hello"
 `nyxgpt ops` also covers restarting, stopping, and tearing down every
 component — see [Ops helpers](docs/ops.md). Alternative deployment paths
 (a single-command containerized stack, a local Kubernetes cluster with
-blue/green and canary rollout, or Terraform-managed local infrastructure)
+canary rollout, or Terraform-managed local infrastructure)
 are documented in [Docker Compose](docs/docker-compose.md),
 [Kubernetes](docs/kubernetes.md), and [Terraform](docs/terraform.md) —
 each is driven through `nyxgpt`-wrapped commands, never a raw
