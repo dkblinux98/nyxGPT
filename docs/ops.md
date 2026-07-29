@@ -440,11 +440,13 @@ the `errors` Compose profile's `EMAIL_URL=consolemail://` prints outgoing
 email, confirmation link included, to the `glitchtip` container's stdout
 instead of sending it anywhere.
 
-The same logs are reachable without a terminal at all via the "View
-GlitchTip logs" button on the Error Tracking panel
-(`/admin/observability`), backed by `GET /api/v1/self-heal/logs` (see
+The same logs are reachable without a terminal via `GET
+/api/v1/self-heal/logs?service=glitchtip` (see
 [api.md](api.md#get-apiv1self-heallogs)) -- the CLI command above is the
-scriptable equivalent of that dashboard button.
+scriptable equivalent of that endpoint. (The in-app "View GlitchTip logs"
+button that called it lived on the now-retired Error Tracking panel --
+Grafana is the single pane of glass now, see
+[docker-compose.md](docker-compose.md#grafana-single-pane-of-glass).)
 
 ---
 
@@ -473,9 +475,9 @@ Behavior:
 - Skips (without failing) on a host with no Docker, since these tools have
   no native/Homebrew path -- see [docker-compose.md](docker-compose.md).
 - Once the profiles are up, flips `[monitoring]`, `[log_aggregation]`, and
-  `[tracing] enabled = true` in `~/.nyxGPT/config.ini` so the SRE/admin
-  dashboard (`/admin/observability`) immediately reflects that they're
-  live, instead of still showing "opt-in, not running".
+  `[tracing] enabled = true` in `~/.nyxGPT/config.ini` so the Admin
+  Dashboard's status badges immediately reflect that they're live, instead
+  of still showing "opt-in, not running".
 - Deliberately leaves `[error_tracking] enabled` and `dsn` untouched:
   GlitchTip isn't reachable until its container passes its health check,
   which takes a little while after `up -d` returns. `nyxgpt ops install`
@@ -483,10 +485,10 @@ Behavior:
   after this step, which waits for that health check and then flips those
   settings on once it has actually provisioned a DSN.
 
-Grafana dashboards, the Operational Logs curated Loki queries, and the
-curated Jaeger trace views are all pre-provisioned as code (see
-[docker-compose.md](docker-compose.md#monitoring-dashboards)) -- starting
-the stack is the only step needed to get a populated SRE view.
+Grafana dashboards, the Jaeger and Infinity/GlitchTip datasources, and the
+SRE Home landing dashboard are all pre-provisioned as code (see
+[docker-compose.md](docker-compose.md#grafana-single-pane-of-glass)) --
+starting the stack is the only step needed to get a populated SRE view.
 
 ---
 
