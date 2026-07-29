@@ -1593,6 +1593,7 @@ def test_ops_install_skip_observability_flag_parses(
         "_ensure_cassandra_container",
         "_install_cassandra_launchagent",
         "_install_ollama_launchagent",
+        "_install_ollama_env_launchagent",
         "_install_homebrew_api",
         "_install_homebrew_web",
         "_ensure_ollama_service",

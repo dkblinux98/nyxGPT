@@ -73,7 +73,14 @@ This command:
 - Registers and loads required LaunchAgents, including `com.nyxgpt.ollama-logs`
   (follows the `nyxgpt-ollama` container's docker logs into
   `~/.nyxGPT/logs/ollama.log` if/when Ollama is ever run via Compose instead
-  of natively — see [Ollama logs](api.md#ollama-logs))
+  of natively — see [Ollama logs](api.md#ollama-logs)) and
+  `com.nyxgpt.ollama-env` (reapplies native Ollama's `OLLAMA_MODELS` env var
+  at every login — see [Ollama model store](homebrew.md#ollama-model-store))
+- Points native Ollama's model store at the same
+  `~/.nyxGPT/volumes/ollama/models` directory Compose/Terraform's `ollama`
+  container uses, via `OLLAMA_MODELS` (never a symlink), merging in any
+  models already pulled natively so they aren't orphaned — see
+  [Ollama model store](homebrew.md#ollama-model-store)
 - Verifies Docker availability
 - Creates the local Cassandra container if it doesn't exist yet (name
   `nyxgpt-cassandra`, image `cassandra:5.0`, bound to
@@ -388,6 +395,11 @@ Checks include:
   host (the default native deployment's only path to it), which otherwise
   silently drops every span while the panel still reports "active" (see
   [docker-compose.md#distributed-tracing](docker-compose.md#distributed-tracing))
+- (once the shared Ollama store has been configured) whether native
+  Ollama's live `launchctl getenv OLLAMA_MODELS` still matches the expected
+  shared `~/.nyxGPT/volumes/ollama/models` path -- catches drift back to
+  Ollama's own default store (see
+  [homebrew.md#ollama-model-store](homebrew.md#ollama-model-store))
 
 Results are reported with clear PASS / FAIL indicators.
 

@@ -45,6 +45,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
         patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_env_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
@@ -78,6 +79,9 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_ensure_cassandra_container", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_cassandra_launchagent", return_value=mixed),
         patch.object(ops, "_install_ollama_launchagent", return_value=mixed),
+        patch.object(
+            ops, "_install_ollama_env_launchagent", return_value=[ops.OpsResult(True, "ok")]
+        ),
         patch.object(ops, "_install_homebrew_api", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_homebrew_web", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_ollama_service", return_value=[ops.OpsResult(True, "ok")]),
@@ -107,6 +111,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
         patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_env_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
@@ -153,6 +158,7 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         ),
         patch.object(ops, "_install_cassandra_launchagent", side_effect=_record("cassandra la")),
         patch.object(ops, "_install_ollama_launchagent", side_effect=_record("ollama la")),
+        patch.object(ops, "_install_ollama_env_launchagent", side_effect=_record("ollama env la")),
         patch.object(ops, "_install_homebrew_api", side_effect=_record("homebrew api")),
         patch.object(ops, "_install_homebrew_web", side_effect=_record("homebrew web")),
         patch.object(ops, "_ensure_ollama_service", side_effect=_record("ollama service")),
@@ -189,6 +195,7 @@ def test_ops_install_clears_intentional_stop_markers_for_core_components():
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
         patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_env_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
@@ -1993,6 +2000,23 @@ def test_persist_compose_file_path_skips_without_config(monkeypatch, tmp_path):
 # --- _ensure_ollama_service ---
 
 
+def _fake_run_recording(run_calls, *, fail_cmds=()):
+    """Build a fake `ops._run` that records every command and fails (rc=1,
+    stderr="boom") for any command whose argv starts with one of `fail_cmds`,
+    succeeding (rc=0) otherwise. Used across `_ensure_ollama_service` tests
+    to isolate a single subprocess call's failure without breaking the
+    `launchctl setenv`/migration calls that happen alongside it.
+    """
+
+    def _fake_run(cmd, **_k):
+        run_calls.append(cmd)
+        if any(cmd[: len(f)] == f for f in fail_cmds):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    return _fake_run
+
+
 @pytest.mark.unit
 def test_ensure_ollama_service_no_brew():
     with patch.object(ops, "_which", lambda _: None):
@@ -2002,70 +2026,369 @@ def test_ensure_ollama_service_no_brew():
 
 
 @pytest.mark.unit
-def test_ensure_ollama_service_already_running():
+def test_ensure_ollama_service_already_running_and_env_already_configured(monkeypatch, tmp_path):
+    """Once the shared store has been applied once (marker present), a
+    subsequent run against an already-running service must stay a no-op --
+    same idempotency contract as every other `nyxgpt ops install` reconciler.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    marker = home / ".nyxGPT" / ".migration-state" / "ollama-native-env.configured"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+
+    run_calls = []
     with (
         patch.object(ops, "_which", lambda _: "/opt/homebrew/bin/brew"),
         patch.object(ops, "_brew_services_snapshot", lambda: {"ollama": "started"}),
+        patch.object(ops, "_run", _fake_run_recording(run_calls)),
     ):
         results = ops._ensure_ollama_service()
-    assert results[0].ok is True
-    assert "already running" in results[0].message
+
+    assert all(r.ok for r in results)
+    assert "already running" in results[-1].message
+    assert ["brew", "services", "restart", "ollama"] not in run_calls
+    assert [
+        "launchctl",
+        "setenv",
+        "OLLAMA_MODELS",
+        str(home / ".nyxGPT/volumes/ollama/models"),
+    ] in (run_calls)
 
 
 @pytest.mark.unit
-def test_ensure_ollama_service_starts_stopped_service():
+def test_ensure_ollama_service_restarts_running_service_first_time_env_is_configured(
+    monkeypatch, tmp_path
+):
+    """The very first time the shared store is applied (no marker yet)
+    against an already-running service, `launchctl setenv` alone can't reach
+    the already-spawned `ollama serve` process -- a one-time restart is
+    needed so it actually picks up the new OLLAMA_MODELS.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+
+    run_calls = []
+    with (
+        patch.object(ops, "_which", lambda _: "/opt/homebrew/bin/brew"),
+        patch.object(ops, "_brew_services_snapshot", lambda: {"ollama": "started"}),
+        patch.object(ops, "_run", _fake_run_recording(run_calls)),
+    ):
+        results = ops._ensure_ollama_service()
+
+    assert all(r.ok for r in results)
+    assert "Restarted brew service: ollama" in results[-1].message
+    assert ["brew", "services", "restart", "ollama"] in run_calls
+    marker = home / ".nyxGPT" / ".migration-state" / "ollama-native-env.configured"
+    assert marker.exists()
+
+
+@pytest.mark.unit
+def test_ensure_ollama_service_starts_stopped_service(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
     run_calls = []
     with (
         patch.object(ops, "_which", lambda _: "/opt/homebrew/bin/brew"),
         patch.object(ops, "_brew_services_snapshot", lambda: {"ollama": "none"}),
-        patch.object(
-            ops,
-            "_run",
-            lambda cmd, **k: run_calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
-        ),
+        patch.object(ops, "_run", _fake_run_recording(run_calls)),
     ):
         results = ops._ensure_ollama_service()
-    assert [r.ok for r in results] == [True]
-    assert "Started brew service: ollama" in results[0].message
-    assert run_calls == [["brew", "services", "start", "ollama"]]
+    assert all(r.ok for r in results)
+    assert "Started brew service: ollama" in results[-1].message
+    assert run_calls[-1] == ["brew", "services", "start", "ollama"]
 
 
 @pytest.mark.unit
-def test_ensure_ollama_service_installs_formula_when_absent():
+def test_ensure_ollama_service_installs_formula_when_absent(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
     run_calls = []
     with (
         patch.object(ops, "_which", lambda _: "/opt/homebrew/bin/brew"),
         patch.object(ops, "_brew_services_snapshot", lambda: {}),
-        patch.object(
-            ops,
-            "_run",
-            lambda cmd, **k: run_calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
-        ),
+        patch.object(ops, "_run", _fake_run_recording(run_calls)),
     ):
         results = ops._ensure_ollama_service()
-    assert [r.ok for r in results] == [True, True]
-    assert "Installed ollama formula" in results[0].message
-    assert run_calls == [
-        ["brew", "install", "ollama"],
-        ["brew", "services", "start", "ollama"],
-    ]
+    assert all(r.ok for r in results)
+    assert any("Installed ollama formula" in r.message for r in results)
+    assert ["brew", "install", "ollama"] in run_calls
+    assert run_calls[-1] == ["brew", "services", "start", "ollama"]
 
 
 @pytest.mark.unit
-def test_ensure_ollama_service_start_failure_reports_details():
+def test_ensure_ollama_service_start_failure_reports_details(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    run_calls = []
     with (
         patch.object(ops, "_which", lambda _: "/opt/homebrew/bin/brew"),
         patch.object(ops, "_brew_services_snapshot", lambda: {"ollama": "none"}),
         patch.object(
-            ops,
-            "_run",
-            lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom"),
+            ops, "_run", _fake_run_recording(run_calls, fail_cmds=[["brew", "services", "start"]])
         ),
     ):
         results = ops._ensure_ollama_service()
+    fail_result = next(r for r in results if not r.ok)
+    assert "Failed to start brew service: ollama" in fail_result.message
+    assert "boom" in fail_result.details
+
+
+@pytest.mark.unit
+def test_ensure_ollama_service_points_native_ollama_at_shared_models_dir(monkeypatch, tmp_path):
+    """Direct check of issue #3431's core acceptance criterion: `nyxgpt ops
+    install` must configure native Ollama's `OLLAMA_MODELS` to the same
+    directory Compose/Terraform's `ollama` container stores models in.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    run_calls = []
+    with (
+        patch.object(ops, "_which", lambda _: "/opt/homebrew/bin/brew"),
+        patch.object(ops, "_brew_services_snapshot", lambda: {"ollama": "none"}),
+        patch.object(ops, "_run", _fake_run_recording(run_calls)),
+    ):
+        ops._ensure_ollama_service()
+
+    shared_models_dir = home / ".nyxGPT" / "volumes" / "ollama" / "models"
+    assert ["launchctl", "setenv", "OLLAMA_MODELS", str(shared_models_dir)] in run_calls
+    assert shared_models_dir.is_dir()
+
+
+# --- _shared_ollama_models_dir / _migrate_native_ollama_models / _set_native_ollama_models_env ---
+
+
+@pytest.mark.unit
+def test_shared_ollama_models_dir_is_models_subdir_of_shared_ollama_volume(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    d = ops._shared_ollama_models_dir()
+    assert d == home / ".nyxGPT" / "volumes" / "ollama" / "models"
+    assert d.is_dir()
+
+
+@pytest.mark.unit
+def test_migrate_native_ollama_models_no_native_store(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    dest = home / ".nyxGPT" / "volumes" / "ollama" / "models"
+    dest.mkdir(parents=True)
+
+    results = ops._migrate_native_ollama_models(dest)
+    assert results[0].ok is True
+    assert "nothing to migrate" in results[0].message
+    marker = home / ".nyxGPT" / ".migration-state" / "ollama-native-models.migrated"
+    assert marker.exists()
+
+
+@pytest.mark.unit
+def test_migrate_native_ollama_models_merges_missing_files_without_overwriting(
+    monkeypatch, tmp_path
+):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+
+    src = home / ".ollama" / "models"
+    (src / "blobs").mkdir(parents=True)
+    (src / "manifests" / "registry.ollama.ai" / "library" / "qwen3").mkdir(parents=True)
+    (src / "blobs" / "sha256-only-in-native").write_text("native blob data")
+    (src / "blobs" / "sha256-in-both").write_text("native copy")
+    (src / "manifests" / "registry.ollama.ai" / "library" / "qwen3" / "latest").write_text(
+        "native manifest"
+    )
+
+    dest = home / ".nyxGPT" / "volumes" / "ollama" / "models"
+    (dest / "blobs").mkdir(parents=True)
+    (dest / "blobs" / "sha256-in-both").write_text("shared store copy (authoritative)")
+
+    results = ops._migrate_native_ollama_models(dest)
+    assert results[0].ok is True
+    assert "Merged 2 native Ollama model file(s)" in results[0].message
+
+    # Missing files get copied in...
+    assert (dest / "blobs" / "sha256-only-in-native").read_text() == "native blob data"
+    assert (
+        dest / "manifests" / "registry.ollama.ai" / "library" / "qwen3" / "latest"
+    ).read_text() == "native manifest"
+    # ...but a file already present at the destination is never overwritten.
+    assert (dest / "blobs" / "sha256-in-both").read_text() == "shared store copy (authoritative)"
+
+    marker = home / ".nyxGPT" / ".migration-state" / "ollama-native-models.migrated"
+    assert marker.exists()
+
+    # Merged files are hardlinked (same inode), not copied, so multi-GB blobs
+    # merge instantly with no extra disk use.
+    assert (dest / "blobs" / "sha256-only-in-native").stat().st_ino == (
+        src / "blobs" / "sha256-only-in-native"
+    ).stat().st_ino
+
+
+@pytest.mark.unit
+def test_migrate_native_ollama_models_falls_back_to_copy_across_devices(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+
+    src = home / ".ollama" / "models" / "blobs"
+    src.mkdir(parents=True)
+    (src / "sha256-cross-device").write_text("native blob data")
+
+    dest = home / ".nyxGPT" / "volumes" / "ollama" / "models"
+    dest.mkdir(parents=True)
+
+    with patch.object(ops.os, "link", side_effect=OSError("cross-device link")):
+        results = ops._migrate_native_ollama_models(dest)
+
+    assert results[0].ok is True
+    assert (dest / "blobs" / "sha256-cross-device").read_text() == "native blob data"
+
+
+@pytest.mark.unit
+def test_migrate_native_ollama_models_marker_skips_rescan_on_later_runs(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    marker = home / ".nyxGPT" / ".migration-state" / "ollama-native-models.migrated"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+
+    src = home / ".ollama" / "models" / "blobs"
+    src.mkdir(parents=True)
+    (src / "sha256-should-be-ignored").write_text("should not be touched")
+
+    dest = home / ".nyxGPT" / "volumes" / "ollama" / "models"
+    dest.mkdir(parents=True)
+
+    results = ops._migrate_native_ollama_models(dest)
+    assert results[0].ok is True
+    assert "already reconciled" in results[0].message
+    assert not (dest / "blobs" / "sha256-should-be-ignored").exists()
+
+
+@pytest.mark.unit
+def test_set_native_ollama_models_env_success(tmp_path):
+    run_calls = []
+    with patch.object(
+        ops, "_run", lambda cmd, **k: run_calls.append(cmd) or subprocess.CompletedProcess(cmd, 0)
+    ):
+        result = ops._set_native_ollama_models_env(tmp_path / "models")
+    assert result.ok is True
+    assert str(tmp_path / "models") in result.message
+    assert run_calls == [["launchctl", "setenv", "OLLAMA_MODELS", str(tmp_path / "models")]]
+
+
+@pytest.mark.unit
+def test_set_native_ollama_models_env_failure_reports_details(tmp_path):
+    with patch.object(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no launchd"),
+    ):
+        result = ops._set_native_ollama_models_env(tmp_path / "models")
+    assert result.ok is False
+    assert "Failed to set OLLAMA_MODELS via launchctl setenv" in result.message
+    assert "no launchd" in result.details
+
+
+# --- _ollama_env_drift_issue ---
+
+
+@pytest.mark.unit
+def test_ollama_env_drift_issue_none_without_launchctl(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops, "_which", lambda prog: None)
+    assert ops._ollama_env_drift_issue() is None
+
+
+@pytest.mark.unit
+def test_ollama_env_drift_issue_none_when_never_configured(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/bin/launchctl")
+    assert ops._ollama_env_drift_issue() is None
+
+
+@pytest.mark.unit
+def test_ollama_env_drift_issue_none_when_env_matches(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/bin/launchctl")
+    marker = home / ".nyxGPT" / ".migration-state" / "ollama-native-env.configured"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+    expected = home / ".nyxGPT" / "volumes" / "ollama" / "models"
+    with patch.object(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout=f"{expected}\n"),
+    ):
+        assert ops._ollama_env_drift_issue() is None
+
+
+@pytest.mark.unit
+def test_ollama_env_drift_issue_flags_unset_env(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/bin/launchctl")
+    marker = home / ".nyxGPT" / ".migration-state" / "ollama-native-env.configured"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+    with patch.object(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="")):
+        issue = ops._ollama_env_drift_issue()
+    assert issue is not None
+    assert "not set for this login session" in issue
+
+
+@pytest.mark.unit
+def test_ollama_env_drift_issue_flags_mismatched_env(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_which", lambda prog: "/usr/bin/launchctl")
+    marker = home / ".nyxGPT" / ".migration-state" / "ollama-native-env.configured"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+    stale = home / ".ollama" / "models"
+    with patch.object(
+        ops,
+        "_run",
+        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout=f"{stale}\n"),
+    ):
+        issue = ops._ollama_env_drift_issue()
+    assert issue is not None
+    assert "not the shared store" in issue
+    assert str(stale) in issue
+
+
+# --- _install_ollama_env_launchagent ---
+
+
+@pytest.mark.unit
+def test_install_ollama_env_launchagent_missing_template(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_find_launchagent_template", lambda name: (None, [Path("/a"), Path("/b")])
+    )
+    results = ops._install_ollama_env_launchagent()
     assert results[0].ok is False
-    assert "Failed to start brew service: ollama" in results[0].message
-    assert "boom" in results[0].details
+    assert "Missing Ollama env LaunchAgent template" in results[0].message
+
+
+@pytest.mark.unit
+def test_install_ollama_env_launchagent_installs_when_template_found(monkeypatch, tmp_path):
+    tpl = tmp_path / "com.nyxgpt.ollama-env.plist"
+    tpl.write_text("<plist>__NYXGPT_HOME__/.nyxGPT/scripts/set-ollama-models-env.sh</plist>")
+    home = tmp_path / "home"
+
+    def fake_find(name):
+        assert name == "com.nyxgpt.ollama-env.plist"
+        return tpl, [tpl]
+
+    monkeypatch.setattr(ops, "_find_launchagent_template", fake_find)
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+    monkeypatch.setattr(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+
+    results = ops._install_ollama_env_launchagent()
+    assert results[0].ok is True
+    assert "Installed Ollama env LaunchAgent" in results[0].message
+    installed = home / "Library" / "LaunchAgents" / "com.nyxgpt.ollama-env.plist"
+    assert installed.exists()
+    assert str(home) in installed.read_text(encoding="utf-8")
 
 
 # --- _ensure_cassandra_container ---
@@ -3683,6 +4006,7 @@ def test_ops_install_catches_exception_from_a_step(capsys):
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
         patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_env_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
@@ -3989,6 +4313,7 @@ def test_ops_install_logs_start_and_summary(caplog):
         patch.object(ops, "_ensure_cassandra_container", return_value=ok_results),
         patch.object(ops, "_install_cassandra_launchagent", return_value=ok_results),
         patch.object(ops, "_install_ollama_launchagent", return_value=ok_results),
+        patch.object(ops, "_install_ollama_env_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
@@ -4014,6 +4339,7 @@ def test_ops_install_logs_error_when_step_raises(caplog):
         patch.object(ops, "_ensure_cassandra_container", return_value=[]),
         patch.object(ops, "_install_cassandra_launchagent", return_value=[]),
         patch.object(ops, "_install_ollama_launchagent", return_value=[]),
+        patch.object(ops, "_install_ollama_env_launchagent", return_value=[]),
         patch.object(ops, "_install_homebrew_api", return_value=[]),
         patch.object(ops, "_install_homebrew_web", return_value=[]),
         patch.object(ops, "_ensure_log_symlinks", return_value=[]),

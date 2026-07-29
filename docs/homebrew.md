@@ -271,6 +271,39 @@ nyxgpt ops restart
 
 ---
 
+## Ollama model store
+
+`nyxgpt ops install` points native Ollama's model store at
+`~/.nyxGPT/volumes/ollama/models` -- the same directory
+Compose/Terraform's `ollama` container uses -- instead of Ollama's own
+default `~/.ollama/models`, via the `OLLAMA_MODELS` environment variable
+(never a symlink). This means a model pulled while running in any one local
+launch mode (native, `nyxgpt ops install --terraform --local`, or Compose)
+shows up in all of them, with no duplicate downloads.
+
+This is applied via `launchctl setenv OLLAMA_MODELS ...`, plus a
+`com.nyxgpt.ollama-env` LaunchAgent that reapplies it at every login (a bare
+`launchctl setenv` only lasts for the current session). If you ever pulled
+models natively before upgrading, `nyxgpt ops install` merges anything found
+in the old `~/.ollama/models` into the shared store automatically, the first
+time it runs, without overwriting anything already there (via a hardlink
+when possible, so multi-GB blobs merge instantly with no extra disk use).
+
+Because `com.nyxgpt.ollama-env` and Homebrew's own `ollama` LaunchAgent are
+both `RunAtLoad`, launchd does not guarantee which runs first on a given
+login. So the env-setting script also force-restarts the `ollama` brew
+service every time it runs, closing the race regardless of ordering: if
+Homebrew's agent already started `ollama serve` with the wrong env, this
+restarts it with the right one; if it hasn't started yet, this just starts
+it. `nyxgpt ops doctor` also compares the live `launchctl getenv
+OLLAMA_MODELS` against the expected shared path, in case something else
+(e.g. a manual `launchctl unsetenv`) causes drift between logins.
+
+Kubernetes is out of scope for this unification (its own PVC, no bind-mount
+to the host's home directory possible) -- tracked separately.
+
+---
+
 ## Accessing the services
 
 After starting both services:
