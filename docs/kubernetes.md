@@ -176,8 +176,8 @@ configure, just `kubectl scale`/`kubectl set image` (wrapped by
 would fight the canary tool's replica-count-based traffic split (see
 [Scaling behavior](#scaling-behavior)).
 
-**Coverage**: `api` today. `web`/`ollama` canary coverage is tracked as
-follow-up work -- neither has Kubernetes manifests yet, so it's new
+**Coverage**: `api` today. `web`/`ollama` canary coverage is tracked in
+follow-up issue #3419 -- neither has Kubernetes manifests yet, so it's new
 infrastructure, not an extension of this pair. **Cassandra is explicitly out
 of scope**: two Cassandras behind a canary split would mean two divergent
 datasets, which is a data-migration problem, not a traffic-split problem. A
