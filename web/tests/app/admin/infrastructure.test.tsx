@@ -97,6 +97,41 @@ const mockStatusKubernetesServing = {
 };
 
 describe('InfrastructurePage', () => {
+  it('renders an inactive rollout with version-less tracks and an empty reachable cluster', async () => {
+    // Covers the serving box's no-active-rollout branch, the version-less
+    // track rendering, and the reachable-but-not-deployed kubernetes card
+    // (NOT DEPLOYED badge + empty-pods message).
+    const inactiveServing = {
+      ...mockStatusKubernetesServing,
+      kubernetes: {
+        available: true,
+        probe_available: true,
+        deployed: false,
+        namespace: 'nyxgpt',
+        pods: [],
+      },
+      serving: {
+        supported: true,
+        active: false,
+        weight_percent: 0,
+        stable: { state: 'healthy', message: 'nyxgpt-api-stable healthy (4/4 ready)', version: '' },
+        canary: { state: 'not_deployed', message: 'nyxgpt-api-canary not deployed', version: '' },
+      },
+    };
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(inactiveServing)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/No canary rollout active -- stable serves 100% of traffic\./)).toBeInTheDocument();
+    });
+    // Both the terraform card (undeployed in this fixture) and the kubernetes
+    // card carry the badge.
+    expect(screen.getAllByText('NOT DEPLOYED')).toHaveLength(2);
+    expect(screen.getByText(/No pods in the/)).toBeInTheDocument();
+    expect(screen.getByText(/nyxgpt-api-canary not deployed/)).toBeInTheDocument();
+  });
+
   it('renders the detected mode and terraform/kubernetes status when deployed', async () => {
     server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusTerraform)));
 

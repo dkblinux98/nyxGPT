@@ -368,6 +368,26 @@ describe('CanaryPage', () => {
     expect(deploySpy).not.toHaveBeenCalled();
   });
 
+  it('shows the canary error message as the hint when the canary track errors', async () => {
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+    // Stable healthy but canary in a genuine error state: pairNotReady flips
+    // via the canary side, so the hint must carry the canary's message.
+    const canaryErrorStatus = {
+      ...mockStatus,
+      stable: { state: 'healthy', message: 'nyxgpt-api-stable healthy (4/4 ready)', version: '1.0.0-abc1234' },
+      canary: { state: 'error', message: 'RBAC forbids reading nyxgpt-api-canary', version: '' },
+    };
+    server.use(http.get('/api/v1/canary/status', () => HttpResponse.json(canaryErrorStatus)));
+
+    render(<CanaryPage />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Rollout controls are disabled until the stable\/canary pair is up: RBAC forbids reading nyxgpt-api-canary/)
+      ).toBeInTheDocument();
+    });
+  });
+
   it('disables rollout controls with an explanatory hint when stable is not healthy', async () => {
     mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
     // A reachable cluster (available/mode_supported) but an unhealthy stable pair.
