@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
 import AdminDashboardPage from '../../../src/app/admin/dashboard/page';
@@ -403,6 +403,107 @@ describe('AdminDashboardPage', () => {
     render(<AdminDashboardPage />);
     await waitFor(() => {
       expect(screen.getByText('Self-heal: on')).toBeInTheDocument();
+    });
+  });
+
+  describe('restart-required banner (#3407)', () => {
+    it('does not render when nothing is pending', async () => {
+      render(<AdminDashboardPage />);
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: 'Admin Dashboard' })).toBeInTheDocument();
+      });
+      expect(screen.queryByRole('alert', { name: /restart required/i })).not.toBeInTheDocument();
+    });
+
+    it('renders the components and keys a wizard save flagged as pending', async () => {
+      server.use(
+        http.get('/api/v1/infra/restart-status', () =>
+          HttpResponse.json({ pending: { api: { keys: ['api.port'], since: 1 } } })
+        )
+      );
+
+      render(<AdminDashboardPage />);
+      await waitFor(() => {
+        expect(screen.getByRole('alert', { name: /restart required/i })).toBeInTheDocument();
+      });
+      expect(screen.getByText(/api \(api\.port\)/)).toBeInTheDocument();
+    });
+
+    it('clicking Restart now triggers the mode-aware restart and clears the banner once it succeeds', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        let getCount = 0;
+        server.use(
+          http.get('/api/v1/infra/restart-status', () => {
+            getCount += 1;
+            // First load: pending. After the restart is triggered, the next
+            // poll finds it cleared (the mode-aware restart succeeded).
+            return HttpResponse.json({
+              pending: getCount === 1 ? { api: { keys: ['api.port'], since: 1 } } : {},
+            });
+          }),
+          http.post('/api/v1/infra/restart-required', () =>
+            HttpResponse.json({ targets: ['api'], status: 'running' })
+          )
+        );
+
+        render(<AdminDashboardPage />);
+        await waitFor(() => {
+          expect(screen.getByRole('button', { name: /restart now/i })).toBeInTheDocument();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: /restart now/i }));
+        await waitFor(() => {
+          expect(screen.getByRole('button', { name: /restarting/i })).toBeInTheDocument();
+        });
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2000);
+        });
+
+        await waitFor(() => {
+          expect(screen.queryByRole('alert', { name: /restart required/i })).not.toBeInTheDocument();
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('reports failure if the restart has not cleared after the poll budget', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        server.use(
+          http.get('/api/v1/infra/restart-status', () =>
+            HttpResponse.json({ pending: { api: { keys: ['api.port'], since: 1 } } })
+          ),
+          http.post('/api/v1/infra/restart-required', () =>
+            HttpResponse.json({ targets: ['api'], status: 'running' })
+          )
+        );
+
+        render(<AdminDashboardPage />);
+        await waitFor(() => {
+          expect(screen.getByRole('button', { name: /restart now/i })).toBeInTheDocument();
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: /restart now/i }));
+        await waitFor(() => {
+          expect(screen.getByRole('button', { name: /restarting/i })).toBeInTheDocument();
+        });
+
+        // 10 poll attempts at 2s each -- still pending every time.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(20000);
+        });
+
+        await waitFor(() => {
+          expect(screen.getByText(/did not complete in time/i)).toBeInTheDocument();
+        });
+        // Still shown -- a restart that never clears must not silently disappear.
+        expect(screen.getByRole('alert', { name: /restart required/i })).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

@@ -350,6 +350,17 @@ export const handlers = [
     });
   }),
 
+  // GET /api/v1/infra/restart-status
+  http.get('/api/v1/infra/restart-status', () => {
+    return HttpResponse.json({ pending: {} });
+  }),
+
+  // POST /api/v1/infra/restart-required
+  http.post('/api/v1/infra/restart-required', async ({ request }) => {
+    const body = (await request.json().catch(() => ({}))) as { target?: string };
+    return HttpResponse.json({ targets: body.target ? [body.target] : ['api'], status: 'running' });
+  }),
+
   // GET /api/v1/admin/health
   http.get('/api/v1/admin/health', () => {
     return HttpResponse.json({
