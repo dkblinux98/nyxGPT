@@ -77,7 +77,7 @@ import subprocess
 import threading
 import time
 from configparser import ConfigParser
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -252,7 +252,13 @@ class HealResult:
 
 @dataclass(frozen=True)
 class HealEvent:
-    """A single recorded self-heal action, as shown in the dashboard event log."""
+    """A single recorded self-heal action, as shown in the dashboard event log.
+
+    `evidence` captures the raw probe data that triggered the decision
+    (source, state, health, threshold values at decision time) so an
+    operator can read *why* a heal fired from the event itself instead of
+    having to reproduce the failure (#3415 gap 7, see #3381).
+    """
 
     ts: float
     service: str
@@ -261,6 +267,7 @@ class HealEvent:
     ok: bool
     restart_count: int
     message: str = ""
+    evidence: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict suitable for JSON responses/state storage."""
@@ -272,6 +279,7 @@ class HealEvent:
             "ok": self.ok,
             "restart_count": self.restart_count,
             "message": self.message,
+            "evidence": self.evidence,
         }
 
 
@@ -1275,6 +1283,19 @@ def heal_now(
                     now
                 )
 
+            evidence = {
+                "probe_type": status.source,
+                "state": status.state,
+                "health": status.health,
+                "healthy_before": status.healthy,
+                "container": status.container,
+                "manual": manual,
+                "restart_count_before": count,
+                "max_consecutive_restarts": max_consecutive_restarts,
+                "backoff_seconds": backoff_seconds,
+                "heal_result_details": result.details,
+            }
+
             log = logger.info if result.ok else logger.error
             log(
                 "self-heal: restart of %s %s (restart_count=%d): %s",
@@ -1288,6 +1309,7 @@ def heal_now(
                     "ok": result.ok,
                     "restart_count": new_count,
                     "reason": reason,
+                    "evidence": evidence,
                 },
             )
 
@@ -1299,6 +1321,7 @@ def heal_now(
                 ok=result.ok,
                 restart_count=new_count,
                 message=result.message,
+                evidence=evidence,
             )
             events.append(event.to_dict())
             healed.append(event.to_dict())

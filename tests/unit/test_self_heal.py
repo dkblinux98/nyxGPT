@@ -646,6 +646,66 @@ def test_heal_now_restarts_unhealthy_component(monkeypatch):
 
 
 @pytest.mark.unit
+def test_heal_now_records_probe_evidence_on_event(monkeypatch):
+    # #3415 gap 7: the heal event must carry the raw probe evidence that
+    # triggered it, not just a human-readable `reason` string, so an
+    # operator can read *why* from the event instead of reproducing it.
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [
+            self_heal.ComponentStatus(
+                "web", "nyxgpt-web-1", "exited", "unhealthy", False, source="compose"
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "restart_component",
+        lambda service: self_heal.HealResult(False, f"Failed to restart {service}", "exit 1"),
+    )
+
+    result = self_heal.heal_now(max_consecutive_restarts=5, backoff_seconds=30.0)
+
+    event = result["healed"][0]
+    evidence = event["evidence"]
+    assert evidence["probe_type"] == "compose"
+    assert evidence["state"] == "exited"
+    assert evidence["health"] == "unhealthy"
+    assert evidence["healthy_before"] is False
+    assert evidence["container"] == "nyxgpt-web-1"
+    assert evidence["manual"] is False
+    assert evidence["restart_count_before"] == 0
+    assert evidence["max_consecutive_restarts"] == 5
+    assert evidence["backoff_seconds"] == 30.0
+    assert evidence["heal_result_details"] == "exit 1"
+
+    events = self_heal.recent_events()
+    assert events[0]["evidence"]["probe_type"] == "compose"
+
+
+@pytest.mark.unit
+def test_heal_now_logs_evidence_extra(monkeypatch, caplog):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False)],
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "restart_component",
+        lambda service: self_heal.HealResult(True, f"Restarted {service}"),
+    )
+
+    with caplog.at_level("INFO", logger="nyxgpt.self_heal"):
+        self_heal.heal_now()
+
+    records = [r for r in caplog.records if "restart of web succeeded" in r.getMessage()]
+    assert records
+    assert records[0].evidence["state"] == "exited"
+
+
+@pytest.mark.unit
 def test_heal_now_respects_backoff(monkeypatch):
     monkeypatch.setattr(
         self_heal,
