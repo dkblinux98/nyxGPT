@@ -5,8 +5,6 @@ import { http, HttpResponse } from 'msw';
 import { server } from '../../mocks/server';
 import PlaygroundPage from '../../../src/app/admin/playground/page';
 
-const API_BASE = 'http://127.0.0.1:8000';
-
 const sampleCollections = [
   { name: 'default', doc_count: 5, chunk_count: 40, embedding_models: [] },
 ];
@@ -245,7 +243,7 @@ describe('PlaygroundPage', () => {
       expect(screen.getByRole('button', { name: /run query/i })).toBeInTheDocument();
     });
 
-    server.use(http.post(`${API_BASE}/api/v1/rag/metrics/query`, () => HttpResponse.json(fullResponse)));
+    server.use(http.post('/api/v1/rag/metrics/query', () => HttpResponse.json(fullResponse)));
 
     await user.type(screen.getByPlaceholderText(/enter your search query/i), 'full query');
     await user.click(screen.getByRole('button', { name: /run query/i }));
@@ -297,7 +295,7 @@ describe('PlaygroundPage', () => {
     await user.click(screen.getByLabelText(/enable debug mode/i));
     await user.click(screen.getByLabelText(/collect evaluation metrics/i));
 
-    server.use(http.post(`${API_BASE}/api/v1/rag/query`, () => HttpResponse.json(minimalResponse)));
+    server.use(http.post('/api/v1/rag/query', () => HttpResponse.json(minimalResponse)));
 
     await user.type(screen.getByPlaceholderText(/enter your search query/i), 'minimal query');
     await user.click(screen.getByRole('button', { name: /run query/i }));
@@ -327,7 +325,7 @@ describe('PlaygroundPage', () => {
     fireEvent.change(sliders[1], { target: { value: '0.25' } });
     await user.selectOptions(screen.getByRole('combobox'), 'default');
 
-    server.use(http.post(`${API_BASE}/api/v1/rag/metrics/query`, () => HttpResponse.json(sparseResponse)));
+    server.use(http.post('/api/v1/rag/metrics/query', () => HttpResponse.json(sparseResponse)));
 
     await user.type(screen.getByPlaceholderText(/enter your search query/i), 'sparse query');
     await user.click(screen.getByRole('button', { name: /run query/i }));
@@ -356,7 +354,7 @@ describe('PlaygroundPage', () => {
     });
 
     server.use(
-      http.post(`${API_BASE}/api/v1/rag/metrics/query`, () =>
+      http.post('/api/v1/rag/metrics/query', () =>
         HttpResponse.json({ debug_info: null, evaluation_metrics: null })
       )
     );
@@ -382,7 +380,7 @@ describe('PlaygroundPage', () => {
 
     // errorData.detail branch
     server.use(
-      http.post(`${API_BASE}/api/v1/rag/metrics/query`, () =>
+      http.post('/api/v1/rag/metrics/query', () =>
         HttpResponse.json({ detail: 'bad request' }, { status: 400 })
       )
     );
@@ -393,7 +391,7 @@ describe('PlaygroundPage', () => {
 
     // errorData.error branch (detail absent)
     server.use(
-      http.post(`${API_BASE}/api/v1/rag/metrics/query`, () =>
+      http.post('/api/v1/rag/metrics/query', () =>
         HttpResponse.json({ error: 'index unavailable' }, { status: 500 })
       )
     );
@@ -403,7 +401,7 @@ describe('PlaygroundPage', () => {
     });
 
     // HTTP status fallback branch
-    server.use(http.post(`${API_BASE}/api/v1/rag/metrics/query`, () => HttpResponse.json({}, { status: 503 })));
+    server.use(http.post('/api/v1/rag/metrics/query', () => HttpResponse.json({}, { status: 503 })));
     await user.click(screen.getByRole('button', { name: /run query/i }));
     await waitFor(() => {
       expect(screen.getByText(/Query failed: HTTP 503/)).toBeInTheDocument();
@@ -411,7 +409,7 @@ describe('PlaygroundPage', () => {
 
     // Unparseable body branch
     server.use(
-      http.post(`${API_BASE}/api/v1/rag/metrics/query`, () => new HttpResponse(null, { status: 500 }))
+      http.post('/api/v1/rag/metrics/query', () => new HttpResponse(null, { status: 500 }))
     );
     await user.click(screen.getByRole('button', { name: /run query/i }));
     await waitFor(() => {
@@ -437,7 +435,7 @@ describe('PlaygroundPage', () => {
       expect(screen.getByRole('button', { name: /run query/i })).toBeInTheDocument();
     });
 
-    server.use(http.post(`${API_BASE}/api/v1/rag/metrics/query`, () => HttpResponse.json(fullResponse)));
+    server.use(http.post('/api/v1/rag/metrics/query', () => HttpResponse.json(fullResponse)));
     await user.type(screen.getByPlaceholderText(/enter your search query/i), 'first query');
     await user.click(screen.getByRole('button', { name: /run query/i }));
     await waitFor(() => {
@@ -445,7 +443,7 @@ describe('PlaygroundPage', () => {
     });
 
     await user.click(screen.getByLabelText(/collect evaluation metrics/i));
-    server.use(http.post(`${API_BASE}/api/v1/rag/query`, () => HttpResponse.json(sparseResponse)));
+    server.use(http.post('/api/v1/rag/query', () => HttpResponse.json(sparseResponse)));
     await user.clear(screen.getByPlaceholderText(/enter your search query/i));
     await user.type(screen.getByPlaceholderText(/enter your search query/i), 'second query');
     await user.click(screen.getByRole('button', { name: /run query/i }));
@@ -499,7 +497,7 @@ describe('PlaygroundPage', () => {
       expect(screen.getByRole('button', { name: /run query/i })).toBeInTheDocument();
     });
 
-    server.use(http.post(`${API_BASE}/api/v1/rag/metrics/query`, () => HttpResponse.json(fullResponse)));
+    server.use(http.post('/api/v1/rag/metrics/query', () => HttpResponse.json(fullResponse)));
     await user.type(screen.getByPlaceholderText(/enter your search query/i), 'keep me');
     await user.click(screen.getByRole('button', { name: /run query/i }));
     await waitFor(() => {
