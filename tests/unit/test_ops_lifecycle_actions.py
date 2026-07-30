@@ -311,7 +311,9 @@ def test_down_terraform_steps_records_success():
     before = _ops_actions_total("down", "terraform", "success")
     with (
         patch.object(ops, "_which", lambda prog: "/usr/local/bin/terraform"),
-        patch.object(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="destroyed")),
+        patch.object(
+            ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="destroyed")
+        ),
     ):
         results = ops.down_terraform()
     assert all(r.ok for r in results)
@@ -362,7 +364,7 @@ def test_down_kubernetes_steps_records_success():
     before = _ops_actions_total("down", "kubernetes", "success")
     with (
         patch.object(ops, "_which", lambda prog: "/usr/local/bin/kubectl"),
-        patch.object(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="deleted")),
+        patch.object(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="deleted")),
     ):
         results = ops.down_kubernetes()
     assert all(r.ok for r in results)

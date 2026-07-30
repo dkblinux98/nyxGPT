@@ -273,19 +273,25 @@ def record_canary_action(
     _record_ops_action(f"canary-{action}", component, result, message)
 
 
-def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _run(
+    cmd: list[str], *, check: bool = True, expected: bool = False
+) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text.
 
     Raises `subprocess.CalledProcessError` on non-zero exit unless `check=False`.
     Non-zero exits are always logged with the command and a stderr tail first,
     so the evidence reaches Loki even when a caller catches the exception (or
     passes `check=False`) without logging it itself (#3415 gap 5).
+    Pass `expected=True` for read-only probes where a non-zero exit is a normal
+    outcome (e.g. "not found"/"not running") to log at DEBUG instead of WARNING.
     """
     try:
         result = subprocess.run(cmd, check=check, text=True, capture_output=True)
     except subprocess.CalledProcessError as e:
-        logger.warning(
-            "Subprocess exited non-zero",
+        level = logging.DEBUG if expected else logging.WARNING
+        logger.log(
+            level,
+            f"Subprocess exited non-zero (rc={e.returncode}): {' '.join(cmd)}",
             extra={
                 "component": "ops",
                 "cmd": cmd,
@@ -295,8 +301,10 @@ def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[s
         )
         raise
     if result.returncode != 0:
-        logger.warning(
-            "Subprocess exited non-zero",
+        level = logging.DEBUG if expected else logging.WARNING
+        logger.log(
+            level,
+            f"Subprocess exited non-zero (rc={result.returncode}): {' '.join(cmd)}",
             extra={
                 "component": "ops",
                 "cmd": cmd,
@@ -391,7 +399,7 @@ def _brew_services_snapshot() -> dict[str, str]:
     """Return {brew_service_name: state} parsed from `brew services list`."""
     if _which("brew") is None:
         return {}
-    cp = _run(["brew", "services", "list"], check=False)
+    cp = _run(["brew", "services", "list"], check=False, expected=True)
     snapshot: dict[str, str] = {}
     for line in (cp.stdout or "").splitlines():
         parts = line.split()
@@ -407,6 +415,7 @@ def _docker_container_state(name: str) -> str:
     cp = _run(
         ["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.State}}"],
         check=False,
+        expected=True,
     )
     out = (cp.stdout or "").strip()
     return out.splitlines()[0].strip() if out else "absent"
@@ -943,7 +952,9 @@ def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir:
     decisions was made ("installed" / "reinstalled (source changed)" /
     "already up to date (skipped)"), for the caller to report.
     """
-    installed = _run(["brew", "list", "--versions", name], check=False).returncode == 0
+    installed = (
+        _run(["brew", "list", "--versions", name], check=False, expected=True).returncode == 0
+    )
     marker = marker_dir / f".{name}.sha256"
     previous_sha256 = marker.read_text(encoding="utf-8").strip() if marker.exists() else None
 
@@ -1039,7 +1050,9 @@ def _docker_build_if_needed(
     previous_fingerprint = marker.read_text(encoding="utf-8").strip() if marker.exists() else None
     fingerprint = _hash_paths(fingerprint_paths, excludes=excludes)
 
-    image_exists = _run(["docker", "image", "inspect", image], check=False).returncode == 0
+    image_exists = (
+        _run(["docker", "image", "inspect", image], check=False, expected=True).returncode == 0
+    )
     if image_exists and previous_fingerprint == fingerprint:
         return "already up to date (skipped rebuild)"
 
@@ -1846,7 +1859,7 @@ def _docker_volume_exists(name: str) -> bool:
     """Return whether a Docker volume named `name` currently exists."""
     if _which("docker") is None:
         return False
-    cp = _run(["docker", "volume", "inspect", name], check=False)
+    cp = _run(["docker", "volume", "inspect", name], check=False, expected=True)
     return cp.returncode == 0
 
 
@@ -2499,7 +2512,7 @@ def _ensure_kubectl_and_cluster() -> list[OpsResult]:
 
 def _kubectl_context() -> str:
     """Return kubectl's current context name (e.g. `kind-nyxgpt`, `docker-desktop`), or "" if unset."""
-    cp = _run(["kubectl", "config", "current-context"], check=False)
+    cp = _run(["kubectl", "config", "current-context"], check=False, expected=True)
     return (cp.stdout or "").strip()
 
 
@@ -2669,7 +2682,11 @@ def _k8s_stack_health() -> list[OpsResult]:
             results.append(OpsResult(phase == "Running", f"pod {name}: {phase}"))
 
     for svc in ("nyxgpt-api", "nyxgpt-web"):
-        cp = _run(["kubectl", "-n", K8S_NAMESPACE, "get", "svc", svc, "--no-headers"], check=False)
+        cp = _run(
+            ["kubectl", "-n", K8S_NAMESPACE, "get", "svc", svc, "--no-headers"],
+            check=False,
+            expected=True,
+        )
         results.append(
             OpsResult(
                 cp.returncode == 0,
@@ -2833,7 +2850,11 @@ def infra_status() -> dict[str, Any]:
     pods: list[str] = []
     kubernetes_probe_available = False
     if kubectl_available:
-        cp = _run(["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "--no-headers"], check=False)
+        cp = _run(
+            ["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "--no-headers"],
+            check=False,
+            expected=True,
+        )
         kubernetes_probe_available = cp.returncode == 0
         if kubernetes_probe_available:
             pods = [line for line in (cp.stdout or "").splitlines() if line.strip()]
@@ -3090,14 +3111,14 @@ def status(_args) -> int:
         print(f"\nConfig in use: {config_hint}")
 
     if _which("brew"):
-        cp = _run(["brew", "services", "list"], check=False)
+        cp = _run(["brew", "services", "list"], check=False, expected=True)
         print("\nHomebrew services:\n" + (cp.stdout or "").strip())
     else:
         print("\nHomebrew services: brew not found")
 
     label = "com.nyxgpt.cassandra-logs"
     try:
-        cp = _run(["launchctl", "list"], check=False)
+        cp = _run(["launchctl", "list"], check=False, expected=True)
         loaded = label in (cp.stdout or "")
         print(f"\nLaunchAgent {label}: {'LOADED' if loaded else 'NOT LOADED'}")
     except Exception as e:
@@ -3113,7 +3134,11 @@ def status(_args) -> int:
             print(f"  terraform {component}: {state}")
 
     if _which("kubectl") is not None:
-        cp = _run(["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "--no-headers"], check=False)
+        cp = _run(
+            ["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "--no-headers"],
+            check=False,
+            expected=True,
+        )
         pod_lines = [line for line in (cp.stdout or "").splitlines() if line.strip()]
         if cp.returncode == 0 and pod_lines:
             print(
@@ -3161,6 +3186,7 @@ def _promtail_container_id() -> str | None:
     cp = _run(
         ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "ps", "-q", "promtail"],
         check=False,
+        expected=True,
     )
     container_id = (cp.stdout or "").strip().splitlines()[0] if cp.stdout else ""
     return container_id or None
@@ -3178,6 +3204,7 @@ def _promtail_native_mount_missing(container_id: str) -> bool:
     cp = _run(
         ["docker", "inspect", "--format", "{{json .Mounts}}", container_id],
         check=False,
+        expected=True,
     )
     if cp.returncode != 0:
         return True
@@ -3323,7 +3350,7 @@ def _ollama_env_drift_issue() -> str | None:
         return None
 
     expected = _shared_ollama_models_dir()
-    cp = _run(["launchctl", "getenv", "OLLAMA_MODELS"], check=False)
+    cp = _run(["launchctl", "getenv", "OLLAMA_MODELS"], check=False, expected=True)
     actual = (cp.stdout or "").strip()
     if cp.returncode != 0 or not actual:
         return (
@@ -4261,7 +4288,7 @@ def _compose_available() -> bool:
     """Return True if both `docker` and `docker compose` are usable on this host."""
     if _which("docker") is None:
         return False
-    cp = _run(["docker", "compose", "version"], check=False)
+    cp = _run(["docker", "compose", "version"], check=False, expected=True)
     return cp.returncode == 0
 
 

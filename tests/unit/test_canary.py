@@ -1,4 +1,5 @@
 import json
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -49,14 +50,31 @@ def _healthy(namespace_unused=None):
 def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit(caplog):
     # #3415 gap 5: subprocess evidence must reach Loki even though canary's
     # `_run` never raises (always check=False).
-    with caplog.at_level("WARNING", logger="nyxgpt.canary"):
+    with caplog.at_level("DEBUG", logger="nyxgpt.canary"):
         cp = canary._run(["python3", "-c", "import sys; sys.stderr.write('boom'); sys.exit(3)"])
 
     assert cp.returncode == 3
-    records = [r for r in caplog.records if r.getMessage() == "Subprocess exited non-zero"]
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
     assert records, "Expected _run to log the non-zero exit"
+    assert records[0].levelno == logging.WARNING
+    assert "rc=3" in records[0].getMessage()
     assert records[0].returncode == 3
     assert "boom" in records[0].stderr_tail
+
+
+@pytest.mark.unit
+def test_run_expected_true_logs_debug_not_warning_on_nonzero_exit(caplog):
+    with caplog.at_level("DEBUG", logger="nyxgpt.canary"):
+        cp = canary._run(
+            ["python3", "-c", "import sys; sys.stderr.write('boom'); sys.exit(3)"],
+            expected=True,
+        )
+
+    assert cp.returncode == 3
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected _run to log the non-zero exit at DEBUG"
+    assert records[0].levelno == logging.DEBUG
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
 
 
 @pytest.mark.unit
@@ -74,7 +92,7 @@ def test_load_state_logs_and_falls_back_on_corrupt_state_file(tmp_path, monkeypa
 
 @pytest.mark.unit
 def test_deployment_health_healthy(monkeypatch):
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(stdout=_deployment_json()))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(stdout=_deployment_json()))
     result = canary.deployment_health("nyxgpt-api-stable", "nyxgpt")
     assert result.state == "healthy"
     assert "healthy" in result.message
@@ -83,7 +101,7 @@ def test_deployment_health_healthy(monkeypatch):
 
 @pytest.mark.unit
 def test_deployment_health_not_ready(monkeypatch):
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(stdout=_deployment_json(ready=0)))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(stdout=_deployment_json(ready=0)))
     result = canary.deployment_health("nyxgpt-api-canary", "nyxgpt")
     assert result.state == "unhealthy"
     assert "not healthy" in result.message
@@ -92,7 +110,7 @@ def test_deployment_health_not_ready(monkeypatch):
 @pytest.mark.unit
 def test_deployment_health_zero_replicas_is_not_deployed_not_an_alarm(monkeypatch):
     monkeypatch.setattr(
-        canary, "_run", lambda cmd: CP(stdout=_deployment_json(replicas=0, ready=0))
+        canary, "_run", lambda cmd, **_k: CP(stdout=_deployment_json(replicas=0, ready=0))
     )
     result = canary.deployment_health("nyxgpt-api-canary", "nyxgpt")
     assert result.state == "not_deployed"
@@ -101,7 +119,7 @@ def test_deployment_health_zero_replicas_is_not_deployed_not_an_alarm(monkeypatc
 
 @pytest.mark.unit
 def test_deployment_health_unparseable_status(monkeypatch):
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(stdout="not json"))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(stdout="not json"))
     result = canary.deployment_health("nyxgpt-api-stable", "nyxgpt")
     assert result.state == "error"
     assert "Could not parse status" in result.message
@@ -114,7 +132,7 @@ def test_deployment_health_not_found_is_not_deployed_with_install_pointer(monkey
     monkeypatch.setattr(
         canary,
         "_run",
-        lambda cmd: CP(
+        lambda cmd, **_k: CP(
             returncode=1, stderr='Error from server (NotFound): deployments.apps "x" not found'
         ),
     )
@@ -128,7 +146,7 @@ def test_deployment_health_cluster_unreachable_is_not_deployed(monkeypatch):
     monkeypatch.setattr(
         canary,
         "_run",
-        lambda cmd: CP(
+        lambda cmd, **_k: CP(
             returncode=1, stderr="Unable to connect to the server: dial tcp: no such host"
         ),
     )
@@ -144,7 +162,7 @@ def test_deployment_health_genuine_kubectl_error_is_distinguishable(monkeypatch)
     monkeypatch.setattr(
         canary,
         "_run",
-        lambda cmd: CP(returncode=1, stderr="Error from server (Forbidden): access denied"),
+        lambda cmd, **_k: CP(returncode=1, stderr="Error from server (Forbidden): access denied"),
     )
     result = canary.deployment_health("nyxgpt-api-stable", "nyxgpt")
     assert result.state == "error"
@@ -198,10 +216,10 @@ def test_set_image_success(monkeypatch):
 
 @pytest.mark.unit
 def test_wait_rollout_success_and_failure(monkeypatch):
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=0))
     assert canary._wait_rollout("nyxgpt-api-canary", "nyxgpt").ok
 
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=1, stderr="timed out"))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=1, stderr="timed out"))
     result = canary._wait_rollout("nyxgpt-api-canary", "nyxgpt", timeout_seconds=5)
     assert not result.ok
     assert "did not become healthy within 5s" in result.message
@@ -254,19 +272,21 @@ def test_current_mode_terraform(monkeypatch):
 
 @pytest.mark.unit
 def test_current_mode_kubernetes(monkeypatch):
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(stdout="nyxgpt-api-stable-abc 1/1 Running"))
+    monkeypatch.setattr(
+        canary, "_run", lambda cmd, **_k: CP(stdout="nyxgpt-api-stable-abc 1/1 Running")
+    )
     assert canary.current_mode() == "kubernetes"
 
 
 @pytest.mark.unit
 def test_current_mode_falls_back_to_native(monkeypatch):
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(stdout=""))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(stdout=""))
     assert canary.current_mode() == "native"
 
 
 @pytest.mark.unit
 def test_status_mode_message_when_not_kubernetes(monkeypatch):
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(stdout=""))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(stdout=""))
     data = canary.status("nyxgpt")
     assert data["mode"] == "native"
     assert data["mode_supported"] is False
@@ -325,7 +345,7 @@ def test_start_kubectl_missing_under_compose(monkeypatch):
 
 @pytest.mark.unit
 def test_start_returns_error_when_canary_scale_fails(monkeypatch):
-    def fake_run(cmd):
+    def fake_run(cmd, **_k):
         if "nyxgpt-api-canary" in cmd:
             return CP(returncode=1, stderr="canary scale boom")
         return CP(returncode=0)
@@ -343,7 +363,7 @@ def test_start_returns_error_when_canary_scale_fails(monkeypatch):
 
 @pytest.mark.unit
 def test_start_returns_error_when_stable_scale_fails(monkeypatch):
-    def fake_run(cmd):
+    def fake_run(cmd, **_k):
         if "nyxgpt-api-stable" in cmd:
             return CP(returncode=1, stderr="stable scale boom")
         return CP(returncode=0)
@@ -442,7 +462,7 @@ def test_evaluate_triggers_automatic_rollback_on_error_rate_breach(monkeypatch):
         "metrics_snapshot",
         lambda: {"total_requests": 50, "error_rate_percent": 12.0, "p95_latency_ms": 200.0},
     )
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=0))
 
     result = canary.evaluate(
         "nyxgpt", error_rate_threshold_percent=5.0, latency_p95_threshold_ms=2000.0, min_requests=20
@@ -463,7 +483,7 @@ def test_evaluate_triggers_automatic_rollback_on_latency_breach(monkeypatch):
         "metrics_snapshot",
         lambda: {"total_requests": 50, "error_rate_percent": 0.0, "p95_latency_ms": 5000.0},
     )
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=0))
 
     result = canary.evaluate(
         "nyxgpt", error_rate_threshold_percent=5.0, latency_p95_threshold_ms=2000.0, min_requests=20
@@ -550,7 +570,7 @@ def test_promote_finalize_stops_if_stable_rollout_fails(monkeypatch):
     canary._save_state({"active": True, "weight_percent": 90, "total_replicas": 4, "history": []})
     monkeypatch.setattr(canary, "deployment_health", _healthy())
 
-    def fake_run(cmd):
+    def fake_run(cmd, **_k):
         if cmd[:3] == ["kubectl", "rollout", "status"]:
             return CP(returncode=1, stderr="timed out")
         return CP(returncode=0)
@@ -592,7 +612,7 @@ def test_promote_returns_error_when_canary_scale_fails(monkeypatch):
     canary._save_state({"active": True, "weight_percent": 10, "total_replicas": 4, "history": []})
     monkeypatch.setattr(canary, "deployment_health", _healthy())
 
-    def fake_run(cmd):
+    def fake_run(cmd, **_k):
         if "nyxgpt-api-canary" in cmd:
             return CP(returncode=1, stderr="boom")
         return CP(returncode=0)
@@ -613,7 +633,7 @@ def test_promote_returns_error_when_stable_scale_fails(monkeypatch):
     canary._save_state({"active": True, "weight_percent": 10, "total_replicas": 4, "history": []})
     monkeypatch.setattr(canary, "deployment_health", _healthy())
 
-    def fake_run(cmd):
+    def fake_run(cmd, **_k):
         if "nyxgpt-api-stable" in cmd:
             return CP(returncode=1, stderr="boom")
         return CP(returncode=0)
@@ -673,7 +693,7 @@ def test_rollback_kubectl_missing(monkeypatch):
 @pytest.mark.unit
 def test_rollback_returns_error_when_canary_scale_fails(monkeypatch):
     canary._save_state({"active": True, "weight_percent": 50, "total_replicas": 4, "history": []})
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=1, stderr="boom"))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=1, stderr="boom"))
 
     result = canary.rollback(namespace="nyxgpt")
 
@@ -689,7 +709,7 @@ def test_rollback_returns_error_when_canary_scale_fails(monkeypatch):
 def test_rollback_reports_partial_failure_but_still_cuts_canary_traffic(monkeypatch):
     canary._save_state({"active": True, "weight_percent": 50, "total_replicas": 4, "history": []})
 
-    def fake_run(cmd):
+    def fake_run(cmd, **_k):
         if "nyxgpt-api-canary" in cmd:
             return CP(returncode=0)
         return CP(returncode=1, stderr="boom")
@@ -784,7 +804,7 @@ def test_deploy_rollout_failure_leaves_stable_untouched(monkeypatch):
         lambda image: [canary.CanaryResult(True, "built")],
     )
 
-    def fake_run(cmd):
+    def fake_run(cmd, **_k):
         if cmd[:3] == ["kubectl", "rollout", "status"]:
             return CP(returncode=1, stderr="timed out")
         return CP(returncode=0)
@@ -799,7 +819,7 @@ def test_deploy_rollout_failure_leaves_stable_untouched(monkeypatch):
 
 @pytest.mark.unit
 def test_start_logs_and_records_metrics(monkeypatch, caplog):
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=0))
 
     with caplog.at_level("INFO"):
         result = canary.start(namespace="nyxgpt", weight_percent=10, total_replicas=4)
@@ -814,7 +834,7 @@ def test_start_logs_and_records_metrics(monkeypatch, caplog):
 
 @pytest.mark.unit
 def test_start_logs_and_records_metric_on_scale_failure(monkeypatch, caplog):
-    def fake_run(cmd):
+    def fake_run(cmd, **_k):
         if "nyxgpt-api-canary" in cmd:
             return CP(returncode=1, stderr="boom")
         return CP(returncode=0)
@@ -871,7 +891,7 @@ def test_evaluate_regression_logs_and_triggers_auto_rollback(monkeypatch, caplog
         "metrics_snapshot",
         lambda: {"total_requests": 50, "error_rate_percent": 12.0, "p95_latency_ms": 200.0},
     )
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=0))
 
     with caplog.at_level("INFO"):
         result = canary.evaluate(
@@ -892,7 +912,7 @@ def test_evaluate_regression_logs_and_triggers_auto_rollback(monkeypatch, caplog
 def test_promote_logs_and_records_metrics(monkeypatch, caplog):
     canary._save_state({"active": True, "weight_percent": 10, "total_replicas": 4, "history": []})
     monkeypatch.setattr(canary, "deployment_health", _healthy())
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=0))
 
     with caplog.at_level("INFO"):
         result = canary.promote(namespace="nyxgpt", step_percent=25)
@@ -907,7 +927,7 @@ def test_promote_logs_and_records_metrics(monkeypatch, caplog):
 def test_promote_fully_promoted_logs_and_clears_active_gauge(monkeypatch, caplog):
     canary._save_state({"active": True, "weight_percent": 90, "total_replicas": 4, "history": []})
     monkeypatch.setattr(canary, "deployment_health", _healthy())
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=0))
 
     with caplog.at_level("INFO"):
         result = canary.promote(namespace="nyxgpt", step_percent=25)
@@ -920,7 +940,7 @@ def test_promote_fully_promoted_logs_and_clears_active_gauge(monkeypatch, caplog
 @pytest.mark.unit
 def test_rollback_logs_and_records_metric_manual_trigger(monkeypatch, caplog):
     canary._save_state({"active": True, "weight_percent": 50, "total_replicas": 4, "history": []})
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=0))
 
     with caplog.at_level("INFO"):
         result = canary.rollback(namespace="nyxgpt")
@@ -936,7 +956,7 @@ def test_rollback_logs_and_records_metric_manual_trigger(monkeypatch, caplog):
 @pytest.mark.unit
 def test_rollback_logs_and_records_metric_on_canary_scale_failure(monkeypatch, caplog):
     canary._save_state({"active": True, "weight_percent": 50, "total_replicas": 4, "history": []})
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=1, stderr="boom"))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=1, stderr="boom"))
 
     with caplog.at_level("ERROR"):
         result = canary.rollback(namespace="nyxgpt")
@@ -950,7 +970,7 @@ def test_rollback_logs_and_records_metric_on_canary_scale_failure(monkeypatch, c
 def test_rollback_logs_partial_failure_metric(monkeypatch, caplog):
     canary._save_state({"active": True, "weight_percent": 50, "total_replicas": 4, "history": []})
 
-    def fake_run(cmd):
+    def fake_run(cmd, **_k):
         if "nyxgpt-api-canary" in cmd:
             return CP(returncode=0)
         return CP(returncode=1, stderr="boom")
@@ -985,7 +1005,7 @@ def test_status_updates_rollout_gauges(monkeypatch):
 @pytest.mark.unit
 def test_canary_lifecycle_actions_recorded_via_ops_module(monkeypatch):
     """Deploy/start/promote/rollback must funnel through ops._record_ops_action per #3390."""
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=0))
 
     canary.start(namespace="nyxgpt", weight_percent=10, total_replicas=4)
 
@@ -1126,7 +1146,7 @@ def test_start_web_component_scales_web_deployments_and_uses_own_state(monkeypat
 
 @pytest.mark.unit
 def test_web_and_api_rollout_state_do_not_collide(monkeypatch):
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=0))
 
     canary.start(namespace="nyxgpt", weight_percent=20, total_replicas=4, component="api")
     canary.start(namespace="nyxgpt", weight_percent=50, total_replicas=4, component="web")
@@ -1191,7 +1211,7 @@ def test_rollback_web_component_scales_web_deployments(monkeypatch):
 
 @pytest.mark.unit
 def test_web_component_records_ops_action_with_web_service_label(monkeypatch):
-    monkeypatch.setattr(canary, "_run", lambda cmd: CP(returncode=0))
+    monkeypatch.setattr(canary, "_run", lambda cmd, **_k: CP(returncode=0))
 
     canary.start(namespace="nyxgpt", weight_percent=10, total_replicas=4, component="web")
 

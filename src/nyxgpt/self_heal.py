@@ -301,17 +301,22 @@ def _which(prog: str) -> str | None:
     return shutil.which(prog)
 
 
-def _run(cmd: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
+def _run(
+    cmd: list[str], timeout: float = 30.0, *, expected: bool = False
+) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text instead of raising on failure.
 
     Non-zero exits are logged with the command and a stderr tail so a failed
     probe/restart action is visible in Loki even when the caller only checks
-    `returncode` (#3415 gap 5).
+    `returncode` (#3415 gap 5). Pass `expected=True` for read-only probes where
+    a non-zero exit is a normal outcome, to log at DEBUG instead of WARNING.
     """
     result = subprocess.run(cmd, check=False, text=True, capture_output=True, timeout=timeout)
     if result.returncode != 0:
-        logger.warning(
-            "Subprocess exited non-zero",
+        level = logging.DEBUG if expected else logging.WARNING
+        logger.log(
+            level,
+            f"Subprocess exited non-zero (rc={result.returncode}): {' '.join(cmd)}",
             extra={
                 "component": "self_heal",
                 "cmd": cmd,
@@ -470,7 +475,7 @@ def _brew_services_snapshot() -> dict[str, str]:
     if _which("brew") is None:
         return {}
     try:
-        cp = _run(["brew", "services", "list"])
+        cp = _run(["brew", "services", "list"], expected=True)
     except Exception as e:
         logger.warning("self-heal: failed to query brew services list: %s", e)
         return {}
@@ -489,7 +494,10 @@ def _native_container_state(name: str) -> str:
     if _which("docker") is None:
         return "absent"
     try:
-        cp = _run(["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.State}}"])
+        cp = _run(
+            ["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.State}}"],
+            expected=True,
+        )
     except Exception as e:
         logger.warning("self-heal: failed to query docker state for %s: %s", name, e)
         return "absent"
@@ -511,7 +519,8 @@ def _native_container_health(name: str) -> str:
                 "-f",
                 "{{if .State.Health}}{{.State.Health.Status}}{{end}}",
                 name,
-            ]
+            ],
+            expected=True,
         )
     except Exception as e:
         logger.warning("self-heal: failed to query docker health for %s: %s", name, e)
@@ -599,6 +608,7 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
                 "json",
             ],
             timeout=15.0,
+            expected=True,
         )
     except Exception as e:
         logger.warning("self-heal: failed to query kubernetes pods: %s", e)
@@ -754,7 +764,7 @@ def _desired_compose_services(profiles: set[str], *, exclude_one_shot: bool = Tr
     for profile in sorted(profiles):
         cmd += ["--profile", profile]
     try:
-        cp = _run(cmd + ["config", "--services"])
+        cp = _run(cmd + ["config", "--services"], expected=True)
     except Exception as e:
         logger.warning("self-heal: failed to resolve desired compose services: %s", e)
         return set()
@@ -957,7 +967,10 @@ def _list_compose_component_status() -> list[ComponentStatus]:
     if _which("docker") is None:
         return []
     try:
-        cp = _run(["docker", "compose", "-f", str(COMPOSE_FILE), "ps", "-a", "--format", "json"])
+        cp = _run(
+            ["docker", "compose", "-f", str(COMPOSE_FILE), "ps", "-a", "--format", "json"],
+            expected=True,
+        )
     except Exception as e:
         logger.warning("self-heal: failed to query docker compose ps: %s", e)
         return []
