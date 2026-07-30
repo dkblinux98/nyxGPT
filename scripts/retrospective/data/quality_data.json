@@ -1,0 +1,1093 @@
+{
+ "weeks": [
+  {
+   "w": "2025-12-29",
+   "cause": {
+    "defect": 22,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 22,
+    "Feature": 89,
+    "Release Management": 14,
+    "Improvement": 4,
+    "Documentation": 9
+   },
+   "module": {
+    "web-ui": 25,
+    "api": 52,
+    "observability": 12,
+    "testing": 14,
+    "cli": 12,
+    "rag": 9,
+    "tui": 6,
+    "other": 8
+   }
+  },
+  {
+   "w": "2026-01-05",
+   "cause": {
+    "defect": 31,
+    "spec": 1,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 32,
+    "Feature": 3,
+    "Release Management": 2,
+    "Improvement": 9,
+    "Documentation": 2
+   },
+   "module": {
+    "web-ui": 19,
+    "api": 17,
+    "observability": 2,
+    "testing": 3,
+    "cli": 2,
+    "rag": 2,
+    "tui": 1,
+    "other": 1
+   }
+  },
+  {
+   "w": "2026-01-12",
+   "cause": {
+    "defect": 19,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 19,
+    "Feature": 0,
+    "Release Management": 2,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 1,
+    "api": 8,
+    "observability": 0,
+    "testing": 10,
+    "cli": 0,
+    "rag": 0,
+    "tui": 1,
+    "other": 1
+   }
+  },
+  {
+   "w": "2026-01-19",
+   "cause": {
+    "defect": 1,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 1,
+    "Feature": 3,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 1,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 2,
+    "tui": 1,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-01-26",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-02-02",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-02-09",
+   "cause": {
+    "defect": 1,
+    "spec": 0,
+    "workflow": 2
+   },
+   "label": {
+    "Acceptance Failure": 3,
+    "Feature": 2,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 1,
+    "api": 2,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 2,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-02-16",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-02-23",
+   "cause": {
+    "defect": 1,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 1,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 1,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-03-02",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 5,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 5,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-03-09",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-03-16",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-03-23",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-03-30",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-04-06",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-04-13",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-04-20",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-04-27",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-05-04",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-05-11",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-05-18",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-05-25",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-06-01",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-06-08",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-06-15",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-06-22",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-06-29",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 0,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-07-06",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 1
+   },
+   "label": {
+    "Acceptance Failure": 1,
+    "Feature": 2,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 2,
+    "api": 0,
+    "observability": 1,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   }
+  },
+  {
+   "w": "2026-07-13",
+   "cause": {
+    "defect": 24,
+    "spec": 1,
+    "workflow": 2
+   },
+   "label": {
+    "Acceptance Failure": 27,
+    "Feature": 7,
+    "Release Management": 31,
+    "Improvement": 0,
+    "Documentation": 2
+   },
+   "module": {
+    "web-ui": 23,
+    "api": 4,
+    "observability": 11,
+    "testing": 17,
+    "cli": 5,
+    "rag": 2,
+    "tui": 0,
+    "other": 5
+   }
+  },
+  {
+   "w": "2026-07-20",
+   "cause": {
+    "defect": 11,
+    "spec": 7,
+    "workflow": 5
+   },
+   "label": {
+    "Acceptance Failure": 23,
+    "Feature": 5,
+    "Release Management": 3,
+    "Improvement": 3,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 14,
+    "api": 8,
+    "observability": 7,
+    "testing": 1,
+    "cli": 3,
+    "rag": 0,
+    "tui": 0,
+    "other": 1
+   }
+  },
+  {
+   "w": "2026-07-27",
+   "cause": {
+    "defect": 29,
+    "spec": 9,
+    "workflow": 1
+   },
+   "label": {
+    "Acceptance Failure": 39,
+    "Feature": 2,
+    "Release Management": 3,
+    "Improvement": 8,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 25,
+    "api": 2,
+    "observability": 16,
+    "testing": 0,
+    "cli": 5,
+    "rag": 3,
+    "tui": 1,
+    "other": 0
+   }
+  }
+ ],
+ "milestones": [
+  {
+   "name": "Phase 0",
+   "cause": {
+    "defect": 2,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 2,
+    "Feature": 7,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 2
+   },
+   "module": {
+    "web-ui": 2,
+    "api": 3,
+    "observability": 0,
+    "testing": 3,
+    "cli": 1,
+    "rag": 1,
+    "tui": 0,
+    "other": 1
+   },
+   "total": 11,
+   "af": 2
+  },
+  {
+   "name": "Phase 1",
+   "cause": {
+    "defect": 20,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 20,
+    "Feature": 11,
+    "Release Management": 0,
+    "Improvement": 4,
+    "Documentation": 6
+   },
+   "module": {
+    "web-ui": 1,
+    "api": 16,
+    "observability": 6,
+    "testing": 10,
+    "cli": 1,
+    "rag": 0,
+    "tui": 0,
+    "other": 6
+   },
+   "total": 40,
+   "af": 20
+  },
+  {
+   "name": "Phase 2",
+   "cause": {
+    "defect": 46,
+    "spec": 1,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 47,
+    "Feature": 31,
+    "Release Management": 2,
+    "Improvement": 9,
+    "Documentation": 1
+   },
+   "module": {
+    "web-ui": 34,
+    "api": 29,
+    "observability": 1,
+    "testing": 12,
+    "cli": 6,
+    "rag": 3,
+    "tui": 4,
+    "other": 1
+   },
+   "total": 90,
+   "af": 47
+  },
+  {
+   "name": "Phase 3",
+   "cause": {
+    "defect": 1,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 1,
+    "Feature": 28,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 4,
+    "api": 14,
+    "observability": 1,
+    "testing": 0,
+    "cli": 0,
+    "rag": 5,
+    "tui": 5,
+    "other": 0
+   },
+   "total": 29,
+   "af": 1
+  },
+  {
+   "name": "Phase 3.5",
+   "cause": {
+    "defect": 4,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 4,
+    "Feature": 0,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 2,
+    "observability": 0,
+    "testing": 1,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 1
+   },
+   "total": 4,
+   "af": 4
+  },
+  {
+   "name": "Phase 4",
+   "cause": {
+    "defect": 2,
+    "spec": 0,
+    "workflow": 2
+   },
+   "label": {
+    "Acceptance Failure": 4,
+    "Feature": 23,
+    "Release Management": 0,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 3,
+    "api": 16,
+    "observability": 1,
+    "testing": 0,
+    "cli": 1,
+    "rag": 6,
+    "tui": 0,
+    "other": 0
+   },
+   "total": 27,
+   "af": 4
+  },
+  {
+   "name": "Phase 5",
+   "cause": {
+    "defect": 24,
+    "spec": 1,
+    "workflow": 3
+   },
+   "label": {
+    "Acceptance Failure": 28,
+    "Feature": 14,
+    "Release Management": 48,
+    "Improvement": 0,
+    "Documentation": 4
+   },
+   "module": {
+    "web-ui": 31,
+    "api": 9,
+    "observability": 17,
+    "testing": 18,
+    "cli": 10,
+    "rag": 2,
+    "tui": 0,
+    "other": 7
+   },
+   "total": 94,
+   "af": 28
+  },
+  {
+   "name": "Phase 5.5",
+   "cause": {
+    "defect": 40,
+    "spec": 16,
+    "workflow": 6
+   },
+   "label": {
+    "Acceptance Failure": 62,
+    "Feature": 4,
+    "Release Management": 3,
+    "Improvement": 11,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 37,
+    "api": 7,
+    "observability": 23,
+    "testing": 1,
+    "cli": 8,
+    "rag": 3,
+    "tui": 1,
+    "other": 0
+   },
+   "total": 80,
+   "af": 62
+  },
+  {
+   "name": "(none)",
+   "cause": {
+    "defect": 0,
+    "spec": 0,
+    "workflow": 0
+   },
+   "label": {
+    "Acceptance Failure": 0,
+    "Feature": 0,
+    "Release Management": 2,
+    "Improvement": 0,
+    "Documentation": 0
+   },
+   "module": {
+    "web-ui": 0,
+    "api": 2,
+    "observability": 0,
+    "testing": 0,
+    "cli": 0,
+    "rag": 0,
+    "tui": 0,
+    "other": 0
+   },
+   "total": 2,
+   "af": 0
+  }
+ ],
+ "gate": [
+  {
+   "m": "Jan",
+   "merged": 153,
+   "rejected": 62
+  },
+  {
+   "m": "Feb",
+   "merged": 15,
+   "rejected": 26
+  },
+  {
+   "m": "Mar",
+   "merged": 7,
+   "rejected": 5
+  },
+  {
+   "m": "Apr",
+   "merged": 0,
+   "rejected": 0
+  },
+  {
+   "m": "May",
+   "merged": 0,
+   "rejected": 0
+  },
+  {
+   "m": "Jun",
+   "merged": 0,
+   "rejected": 0
+  },
+  {
+   "m": "Jul",
+   "merged": 168,
+   "rejected": 67
+  }
+ ],
+ "qtotals": {
+  "issues": 377,
+  "af": 168,
+  "defect": 139,
+  "spec": 18,
+  "workflow": 11,
+  "production": 0
+ },
+ "lens": {
+  "causes": [
+   "defect",
+   "spec",
+   "workflow"
+  ],
+  "labels": [
+   "Acceptance Failure",
+   "Feature",
+   "Release Management",
+   "Improvement",
+   "Documentation"
+  ],
+  "modules": [
+   "web-ui",
+   "api",
+   "observability",
+   "testing",
+   "cli",
+   "rag",
+   "tui",
+   "other"
+  ]
+ }
+}
