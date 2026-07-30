@@ -1,0 +1,99 @@
+name: Retro Dashboard - Dump Project Fields
+
+# Dumps per-issue Project v2 field assignments (Sprint, Module, Status) plus the
+# Sprint iteration calendar to scripts/retrospective/data/project_fields.json and
+# commits the file back to the dispatching branch. Read-only against the Project;
+# writes only the JSON snapshot. Used by the owner's retrospective dashboard.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Dump project fields
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          PROJECT_OWNER: ${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER: ${{ vars.PROJECT_NUMBER }}
+        run: |
+          set -euo pipefail
+          mkdir -p scripts/retrospective/data
+
+          FIELDS_Q='query($login:String!,$number:Int!){
+            user(login:$login){ projectV2(number:$number){
+              fields(first:30){ nodes{
+                ... on ProjectV2IterationField { name configuration {
+                  iterations { title startDate duration }
+                  completedIterations { title startDate duration } } }
+              } }
+            } } }'
+          gh api graphql -f query="$FIELDS_Q" \
+            -F login="$PROJECT_OWNER" -F number="$PROJECT_NUMBER" \
+            --jq '{sprints: [.data.user.projectV2.fields.nodes[]
+                    | select(.name == "Sprint")
+                    | (.configuration.completedIterations + .configuration.iterations)[]
+                    | {title, startDate, duration}]}' > /tmp/sprints.json
+
+          ITEMS_Q='query($login:String!,$number:Int!,$after:String){
+            user(login:$login){ projectV2(number:$number){
+              items(first:100, after:$after){
+                pageInfo{ hasNextPage endCursor }
+                nodes{
+                  type
+                  content{ ... on Issue { number } ... on PullRequest { number } }
+                  fieldValues(first:20){ nodes{
+                    ... on ProjectV2ItemFieldSingleSelectValue {
+                      name field { ... on ProjectV2SingleSelectField { name } } }
+                    ... on ProjectV2ItemFieldIterationValue {
+                      title startDate field { ... on ProjectV2IterationField { name } } }
+                  } }
+                }
+              }
+            } } }'
+          after=""
+          : > /tmp/items.ndjson
+          while :; do
+            if [ -n "$after" ]; then
+              resp="$(gh api graphql -f query="$ITEMS_Q" -F login="$PROJECT_OWNER" -F number="$PROJECT_NUMBER" -F after="$after")"
+            else
+              resp="$(gh api graphql -f query="$ITEMS_Q" -F login="$PROJECT_OWNER" -F number="$PROJECT_NUMBER")"
+            fi
+            echo "$resp" | jq -c '.data.user.projectV2.items.nodes[]
+              | select(.content.number != null)
+              | {type, number: .content.number,
+                 fields: [.fieldValues.nodes[] | select(.field.name != null)
+                          | {field: .field.name, value: (.name // .title), start: (.startDate // null)}]}' \
+              >> /tmp/items.ndjson
+            has_next="$(echo "$resp" | jq -r '.data.user.projectV2.items.pageInfo.hasNextPage')"
+            after="$(echo "$resp" | jq -r '.data.user.projectV2.items.pageInfo.endCursor')"
+            [ "$has_next" = "true" ] || break
+          done
+
+          jq -s --slurpfile cal /tmp/sprints.json \
+            '{generated_at: (now | todate), sprints: $cal[0].sprints, items: .}' \
+            /tmp/items.ndjson > scripts/retrospective/data/project_fields.json
+          jq '{items: (.items | length), sprints: (.sprints | length)}' \
+            scripts/retrospective/data/project_fields.json
+
+      - name: Commit snapshot
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/retrospective/data/project_fields.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore(retro): refresh project fields snapshot"
+            git push origin "HEAD:${{ github.ref_name }}"
+          fi
