@@ -40,6 +40,7 @@ from nyxgpt.config import (
     get_tracing_config,
     get_tracing_enabled,
 )
+from nyxgpt.logging import get_correlation_id
 
 logger = logging.getLogger(__name__)
 
@@ -224,14 +225,22 @@ def _record_ops_action(command: str, service: str, result: str, message: str = "
     SRE/admin dashboard's equivalent API calls funnel through, so a metrics gap
     can be attributed to a deliberate `ops down` rather than reading as an
     unexplained outage.
+
+    `correlation_id` (#3430) is `get_correlation_id()`'s resolution: the
+    active HTTP request's `request_id` for dashboard-triggered actions, or
+    `NYXGPT_CORRELATION_ID` from the environment for CLI-triggered ones (see
+    `mint_correlation_id`) -- lets an operator join this event to the
+    subprocess it drove, or the request that triggered it.
     """
+    correlation_id = get_correlation_id()
     prom_metrics.OPS_ACTIONS_TOTAL.labels(command=command, service=service, result=result).inc()
     log = logger.info if result == "success" else logger.warning
     log(
-        "ops: lifecycle action command=%s service=%s result=%s%s",
+        "ops: lifecycle action command=%s service=%s result=%s correlation_id=%s%s",
         command,
         service,
         result,
+        correlation_id,
         f": {message}" if message else "",
         extra={
             "component": "ops",
@@ -240,6 +249,7 @@ def _record_ops_action(command: str, service: str, result: str, message: str = "
             "service": service,
             "result": result,
             "result_message": message,
+            "correlation_id": correlation_id,
         },
     )
 

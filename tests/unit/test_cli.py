@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -3198,3 +3199,45 @@ def test_cli_unknown_command_prints_help_and_exits_2(
     assert exit_code == 2
     captured = capsys.readouterr()
     assert "usage" in captured.out.lower()
+
+
+# --- correlation id minted per CLI invocation (#3390 <-> subprocess env, #3430) ---
+
+
+def test_cli_ops_dispatch_mints_correlation_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nyxgpt import ops as ops_mod
+
+    monkeypatch.delenv("NYXGPT_CORRELATION_ID", raising=False)
+    monkeypatch.setattr(ops_mod, "status", lambda args: 0)
+
+    exit_code = cli(["ops", "status"])
+
+    assert exit_code == 0
+    assert os.environ.get("NYXGPT_CORRELATION_ID")
+
+
+def test_cli_ops_dispatch_does_not_override_existing_correlation_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A correlation id set by a wrapper script (or a nested nyxgpt-in-nyxgpt
+    invocation) must survive -- os.environ.setdefault, not a blind assign."""
+    from nyxgpt import ops as ops_mod
+
+    monkeypatch.setenv("NYXGPT_CORRELATION_ID", "already-set")
+    monkeypatch.setattr(ops_mod, "status", lambda args: 0)
+
+    cli(["ops", "status"])
+
+    assert os.environ["NYXGPT_CORRELATION_ID"] == "already-set"
+
+
+def test_cli_canary_dispatch_mints_correlation_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    from nyxgpt import cli as cli_module
+
+    monkeypatch.delenv("NYXGPT_CORRELATION_ID", raising=False)
+    monkeypatch.setattr(cli_module, "cmd_canary_status", lambda *a, **k: 0)
+
+    exit_code = cli(["canary", "status"])
+
+    assert exit_code == 0
+    assert os.environ.get("NYXGPT_CORRELATION_ID")

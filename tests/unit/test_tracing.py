@@ -162,6 +162,7 @@ def test_init_tracing_enables_and_instruments_when_enabled(
 
     instrumented_apps = []
     cassandra_instrumented = []
+    urllib_instrumented = []
     exporter_endpoints = []
     provider_resources = []
     tracer_providers_set = []
@@ -174,6 +175,10 @@ def test_init_tracing_enables_and_instruments_when_enabled(
     class FakeCassandraInstrumentor:
         def instrument(self) -> None:
             cassandra_instrumented.append(True)
+
+    class FakeURLLibInstrumentor:
+        def instrument(self) -> None:
+            urllib_instrumented.append(True)
 
     class FakeExporter:
         def __init__(self, endpoint: str) -> None:
@@ -193,6 +198,7 @@ def test_init_tracing_enables_and_instruments_when_enabled(
 
     monkeypatch.setattr(tracing, "FastAPIInstrumentor", FakeInstrumentor)
     monkeypatch.setattr(tracing, "CassandraInstrumentor", FakeCassandraInstrumentor)
+    monkeypatch.setattr(tracing, "URLLibInstrumentor", FakeURLLibInstrumentor)
     monkeypatch.setattr(tracing, "OTLPSpanExporter", FakeExporter)
     monkeypatch.setattr(tracing, "TracerProvider", FakeProvider)
     monkeypatch.setattr(tracing, "BatchSpanProcessor", FakeProcessor)
@@ -211,6 +217,7 @@ def test_init_tracing_enables_and_instruments_when_enabled(
     assert tracing.is_tracing_enabled() is True
     assert instrumented_apps == [fake_app]
     assert cassandra_instrumented == [True]
+    assert urllib_instrumented == [True]
     assert exporter_endpoints == ["http://collector:4318/v1/traces"]
     assert len(provider_resources) == 1
     assert provider_resources[0].attributes[SERVICE_NAME] == "my-service"
@@ -324,6 +331,25 @@ def test_otlp_endpoint_reachable_false_when_connection_refused(
     monkeypatch.setattr(tracing.socket, "create_connection", _raise)
 
     assert tracing.otlp_endpoint_reachable("http://localhost:4318/v1/traces") is False
+
+
+def test_current_trace_id_is_none_without_active_span() -> None:
+    """No active span (tracing disabled, or simply no span right now)."""
+    assert tracing.current_trace_id() is None
+
+
+def test_current_trace_id_returns_hex_trace_id_for_active_span() -> None:
+    from opentelemetry.sdk.trace import TracerProvider
+
+    provider = TracerProvider()
+    tracer = provider.get_tracer("test")
+
+    with tracer.start_as_current_span("test-span"):
+        trace_id = tracing.current_trace_id()
+
+    assert trace_id is not None
+    assert len(trace_id) == 32
+    int(trace_id, 16)  # must be valid hex
 
 
 def test_otlp_endpoint_reachable_parses_host_and_port(

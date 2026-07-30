@@ -115,6 +115,59 @@ def test_record_manual_restart_records_failure():
     assert after == before + 1
 
 
+# --- correlation id (#3390 <-> subprocess env, #3430) ---
+
+
+def test_mint_correlation_id_returns_distinct_hex_ids():
+    from nyxgpt.logging import mint_correlation_id
+
+    a = mint_correlation_id()
+    b = mint_correlation_id()
+    assert a != b
+    int(a, 16)  # must be valid hex
+    assert len(a) == 32
+
+
+def test_record_ops_action_includes_correlation_id_from_env(caplog, monkeypatch):
+    monkeypatch.setenv("NYXGPT_CORRELATION_ID", "env-corr-id")
+    with caplog.at_level("INFO", logger="nyxgpt.ops"):
+        ops._record_ops_action("restart", "api", "success", "Restarted api")
+
+    record = next(r for r in caplog.records if "lifecycle action" in r.message)
+    assert record.correlation_id == "env-corr-id"
+    assert "correlation_id=env-corr-id" in record.message
+
+
+def test_record_ops_action_prefers_request_id_over_env_correlation_id(caplog, monkeypatch):
+    from nyxgpt.logging import request_id_var
+
+    monkeypatch.setenv("NYXGPT_CORRELATION_ID", "env-corr-id")
+    token = request_id_var.set("dashboard-request-id")
+    try:
+        with caplog.at_level("INFO", logger="nyxgpt.ops"):
+            ops._record_ops_action("restart", "web", "success", "Restarted web")
+    finally:
+        request_id_var.reset(token)
+
+    record = next(r for r in caplog.records if "lifecycle action" in r.message)
+    assert record.correlation_id == "dashboard-request-id"
+
+
+def test_record_ops_action_defaults_correlation_id_when_unset(caplog, monkeypatch):
+    from nyxgpt.logging import request_id_var
+
+    monkeypatch.delenv("NYXGPT_CORRELATION_ID", raising=False)
+    token = request_id_var.set(None)
+    try:
+        with caplog.at_level("INFO", logger="nyxgpt.ops"):
+            ops._record_ops_action("restart", "api", "success", "Restarted api")
+    finally:
+        request_id_var.reset(token)
+
+    record = next(r for r in caplog.records if "lifecycle action" in r.message)
+    assert record.correlation_id == "-"
+
+
 # --- install() ---
 
 

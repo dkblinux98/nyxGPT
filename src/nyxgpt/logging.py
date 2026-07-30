@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from configparser import ConfigParser
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -48,6 +49,18 @@ def get_correlation_id() -> str:
     `#3390` event and the subprocess it triggered can be joined by this id.
     """
     return request_id_var.get() or os.environ.get("NYXGPT_CORRELATION_ID", "") or "-"
+
+
+def mint_correlation_id() -> str:
+    """Generate a fresh correlation id for a new CLI invocation or heal attempt.
+
+    Callers set the result onto `NYXGPT_CORRELATION_ID` in `os.environ`
+    (never pass it around explicitly) so every subsequent `subprocess.run`
+    call in the same process -- none of which pass an explicit `env=`, so
+    they inherit the parent's environment as-is -- carries it into
+    docker/brew/kubectl automatically (#3390 cause->effect joins, #3430).
+    """
+    return uuid.uuid4().hex
 
 
 class StructuredFormatter(logging.Formatter):

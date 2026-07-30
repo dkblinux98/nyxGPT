@@ -104,7 +104,7 @@ def test_promtail_regex_matches_canonical_default_fmt_line() -> None:
     instead of silently blanking every curated Grafana query (#3349)."""
     expression = _promtail_regex()
     formatter = logging.Formatter(
-        fmt=DEFAULT_FMT, datefmt=DEFAULT_DATEFMT, defaults={"request_id": "-"}
+        fmt=DEFAULT_FMT, datefmt=DEFAULT_DATEFMT, defaults={"request_id": "-", "trace_suffix": ""}
     )
     record = logging.LogRecord(
         name="nyxgpt.self_heal",
@@ -124,6 +124,35 @@ def test_promtail_regex_matches_canonical_default_fmt_line() -> None:
     assert match.group("level") == "INFO"
     assert match.group("request_id") == "req-abc"
     assert match.group("message") == "restart succeeded"
+
+
+def test_promtail_regex_matches_line_with_trace_context_suffix() -> None:
+    """A line produced while a span is active carries a trailing `trace_id=
+    <hex> span_id=<hex>` suffix (#3430, `TraceContextFilter`) -- the regex
+    must still match and the suffix must land inside `message`, since that's
+    exactly where Grafana's Loki derived field (`matcherRegex:
+    'trace_id=(\\w+)'`) looks for it."""
+    expression = _promtail_regex()
+    formatter = logging.Formatter(
+        fmt=DEFAULT_FMT, datefmt=DEFAULT_DATEFMT, defaults={"request_id": "-", "trace_suffix": ""}
+    )
+    record = logging.LogRecord(
+        name="nyxgpt.chat",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="chat request handled",
+        args=(),
+        exc_info=None,
+    )
+    record.request_id = "req-abc"
+    record.trace_suffix = " trace_id=" + "a" * 32 + " span_id=" + "b" * 16
+    line = formatter.format(record)
+
+    match = re.match(expression, line)
+    assert match is not None
+    assert match.group("logger") == "nyxgpt.chat"
+    assert "trace_id=" + "a" * 32 in match.group("message")
 
 
 def test_promtail_regex_matches_millisecond_no_bracket_variant() -> None:

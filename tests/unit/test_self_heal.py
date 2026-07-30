@@ -7,6 +7,7 @@ mocked out, so no docker daemon or actual compose stack is needed.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from configparser import ConfigParser
@@ -682,6 +683,54 @@ def test_heal_now_records_probe_evidence_on_event(monkeypatch):
 
     events = self_heal.recent_events()
     assert events[0]["evidence"]["probe_type"] == "compose"
+
+
+@pytest.mark.unit
+def test_heal_now_stamps_correlation_id_on_event_and_env(monkeypatch):
+    """An autonomous heal (no CLI env var, no dashboard request) mints its
+    own correlation id and sets it onto the process env, so the restart
+    subprocess it drives (inherited env, no explicit env= anywhere) and the
+    HealEvent it records can be joined after the fact (#3390, #3430)."""
+    monkeypatch.delenv("NYXGPT_CORRELATION_ID", raising=False)
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False)],
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "restart_component",
+        lambda service: self_heal.HealResult(True, f"Restarted {service}"),
+    )
+
+    result = self_heal.heal_now()
+
+    event = result["healed"][0]
+    assert event["correlation_id"]
+    assert event["correlation_id"] == os.environ["NYXGPT_CORRELATION_ID"]
+
+
+@pytest.mark.unit
+def test_heal_now_reuses_ambient_correlation_id_when_present(monkeypatch):
+    """A CLI-triggered heal (`nyxgpt self-heal heal`) already has
+    NYXGPT_CORRELATION_ID set by the CLI dispatch -- the heal event must
+    reuse that id rather than minting a new, disconnected one."""
+    monkeypatch.setenv("NYXGPT_CORRELATION_ID", "cli-corr-id")
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus("web", "nyxgpt-web-1", "exited", "", False)],
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "restart_component",
+        lambda service: self_heal.HealResult(True, f"Restarted {service}"),
+    )
+
+    result = self_heal.heal_now()
+
+    event = result["healed"][0]
+    assert event["correlation_id"] == "cli-corr-id"
 
 
 @pytest.mark.unit
