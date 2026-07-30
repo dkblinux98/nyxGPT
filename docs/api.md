@@ -3701,8 +3701,9 @@ Log aggregation is Loki/promtail-based, opt-in, and strictly local — there
 is no external/cloud log service, and it's a reduced footprint compared to
 a full ELK stack. Promtail tails this API's log files under
 `~/.nyxGPT/logs` and ships them into Loki, which applies a retention
-policy (14 days by default) and is searched via a Grafana Logs Explorer
-dashboard, pre-provisioned alongside the Prometheus dashboards from
+policy (14 days by default) and is searched via Grafana's Logs Drilldown
+app and a featured queryless logs panel on the SRE Home dashboard,
+pre-provisioned alongside the Prometheus dashboards from
 [Monitoring Dashboards](#monitoring-dashboards).
 
 **Enabling log aggregation:**

@@ -292,24 +292,31 @@ Grafana is the single pane of glass for every SRE signal (#3411) — there is
 no in-app SRE Overview page. The Admin Dashboard's **SRE Overview** tile
 opens Grafana's **SRE Home** dashboard (`nyxgpt-sre-home`, set as the org
 default/home dashboard) in a new browser tab, built from `grafana_ui_url`.
-From there:
+SRE Home is a real overview, not a link list — its content is laid out
+top to bottom in a fixed order:
 
-- **Dashboards** — every provisioned dashboard under `docker/grafana/dashboards`
-  (see [Monitoring Dashboards](#monitoring-dashboards) below), linked from the
-  SRE Home dashboard.
-- **Logs** — Grafana's **Logs Drilldown** app
-  (`/a/grafana-lokiexplore-app`), pre-filtered to `{job="nyxgpt"}`. No
-  saved/curated Explore queries needed for general log search — Drilldown's
-  own label filtering (`level`, `logger`) replaces them. See
-  [Log Aggregation](#log-aggregation) below.
-- **Traces** — a Jaeger datasource is provisioned in Grafana alongside
-  Prometheus and Loki, so traces render inside Grafana; the native Jaeger UI
-  is demoted to a debug tool (no primary-navigation link to it from nyxGPT).
-  See [Distributed Tracing](#distributed-tracing) below.
-- **Errors** — GlitchTip's Sentry-compatible REST API, queried through the
-  Infinity datasource plugin, surfaces issue counts and recent errors as
-  Grafana panels with click-through to the GlitchTip UI for detail. See
-  [Error Tracking](#error-tracking) below.
+1. **Above the fold: health and metrics graphs** — request rate, 5xx error
+   rate, request latency (p50/p95/p99), RAG query/ingest activity, chat
+   request rate, resource usage (memory/CPU/cache hit rate), self-heal
+   status (unhealthy components, restarts, backoff state), and canary state
+   (active/idle, traffic split, rollbacks) — pulled from the same metrics as
+   [System Overview, API Metrics, RAG Performance, Resource Usage,
+   Self-Healing, and Canary Rollout](#monitoring-dashboards) below, plus
+   stat tiles and links to each dashboard for the full drill-down.
+2. **Logs** — a featured, queryless `{job="nyxgpt"}` logs panel rendered
+   directly on SRE Home, plus a link to Grafana's **Logs Drilldown** app
+   (`/a/grafana-lokiexplore-app`) for filtering, search, and patterns. No
+   saved/curated Explore queries needed for general log search — Drilldown's
+   own label filtering (`level`, `logger`) replaces them. See
+   [Log Aggregation](#log-aggregation) below.
+3. **Traces** — a Jaeger datasource is provisioned in Grafana alongside
+   Prometheus and Loki, so a live traces panel renders inline; the native
+   Jaeger UI is demoted to a debug tool (no primary-navigation link to it
+   from nyxGPT). See [Distributed Tracing](#distributed-tracing) below.
+4. **Errors** — GlitchTip's Sentry-compatible REST API, queried through the
+   Infinity datasource plugin, surfaces an open-issues count and a recent-
+   errors table as Grafana panels with click-through to the GlitchTip UI for
+   detail. See [Error Tracking](#error-tracking) below.
 
 The Prometheus and Jaeger native UIs remain reachable directly (their ports
 are still published to the host) but are debug tools now, not primary
@@ -338,10 +345,9 @@ rules in `docker/prometheus-alerts.yml`) and `grafana` (UI at
 [http://localhost:3001](http://localhost:3001), reachable via the Admin
 Dashboard's SRE Overview tile). Grafana is pre-provisioned on first boot
 with a Prometheus datasource, a Jaeger datasource, an Infinity datasource
-(queries GlitchTip's REST API), and eight dashboards under
+(queries GlitchTip's REST API), and seven dashboards under
 `docker/grafana/dashboards`, plus the SRE Home landing dashboard described
-above (a further Loki-only dashboard is listed under
-[Log Aggregation](#log-aggregation) below):
+above:
 
 - **System Overview** — request rate, error rate, request latency
   (p50/p95/p99), total requests, and API up/down status.
@@ -460,9 +466,11 @@ The primary way to search logs (#3411) is Grafana's **Logs Drilldown** app
 install), reached via the Admin Dashboard's SRE Overview tile → SRE Home
 dashboard, pre-filtered to `{job="nyxgpt"}`. Drilldown's own label filtering
 (`level`, `logger`) replaces the older curated per-component saved queries,
-so the standalone **Operational Logs** dashboard was retired. A **Logs
-Explorer** dashboard remains under `docker/grafana/dashboards` for free-text
-search across all shipped logs, linked from the SRE Home dashboard.
+so the standalone **Operational Logs** dashboard was retired. SRE Home also
+renders a featured, queryless `{job="nyxgpt"}` logs panel directly on the
+page (not a buried link) for at-a-glance recent activity before jumping
+into Drilldown for filtering; the older standalone **Logs Explorer**
+dashboard was retired in favor of that panel plus Drilldown.
 
 The Loki datasource also carries a derived-field extraction for `trace_id`
 that links a log line straight to its trace in the Jaeger datasource (see
