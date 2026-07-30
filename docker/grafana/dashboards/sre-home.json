@@ -4,7 +4,7 @@
   "tags": ["nyxgpt", "sre", "home"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "1m",
   "time": { "from": "now-1h", "to": "now" },
   "panels": [
@@ -12,18 +12,403 @@
       "id": 1,
       "title": "nyxGPT SRE Home -- single pane of glass",
       "type": "text",
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 0 },
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
       "options": {
         "mode": "markdown",
-        "content": "This is the single pane of glass for nyxGPT SRE work (#3411) -- there is no separate in-app SRE Overview page anymore.\n\n- **Logs** -- [Logs Drilldown, filtered to this app](/a/grafana-lokiexplore-app/explore/job/nyxgpt/logs?from=now-15m&to=now&var-ds=loki&var-filters=job%7C%3D%7Cnyxgpt&patterns=%5B%5D&var-fields=&var-levels=&var-metadata=&var-patterns=&var-lineFilterV2=&var-lineFilters=&timezone=browser&var-lineFormat=&var-jsonFields=&var-all-fields=&urlColumns=%5B%5D&visualizationType=%22logs%22&displayedFields=%5B%5D&userDisplayedFields=false&sortOrder=%22Ascending%22&wrapLogMessage=false&prettifyLogMessage=false)\n- **Traces** -- the panel below, backed by the Jaeger datasource\n- **Errors** -- the GlitchTip panels below, backed by the Infinity datasource; click through to the [GlitchTip UI](http://localhost:8080) for detail\n- **Dashboards** -- [System Overview](/d/nyxgpt-system-overview), [API Metrics](/d/nyxgpt-api-metrics), [RAG Performance](/d/nyxgpt-rag-performance), [Resource Usage](/d/nyxgpt-resource-usage), [Self-Healing](/d/nyxgpt-self-healing), [Canary Rollout](/d/nyxgpt-canary), [Logs Explorer](/d/nyxgpt-logs-explorer)\n\nPrometheus and Jaeger's own native UIs are debug tools now, not primary navigation -- look here first."
+        "content": "Live health and metrics below, then full log search, then traces and errors. Deep-dive dashboards: [System Overview](/d/nyxgpt-system-overview) · [API Metrics](/d/nyxgpt-api-metrics) · [RAG Performance](/d/nyxgpt-rag-performance) · [Resource Usage](/d/nyxgpt-resource-usage) · [Self-Healing](/d/nyxgpt-self-healing) · [Canary Rollout](/d/nyxgpt-canary). GlitchTip UI: [localhost:8080](http://localhost:8080)."
       }
     },
     {
       "id": 2,
+      "title": "API up",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 3 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } },
+            { "type": "value", "options": { "1": { "text": "UP", "color": "green" } } }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "up{job=\"nyxgpt-api\"}",
+          "legendFormat": "up",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Unhealthy components (now)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 4, "y": 3 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "nyxgpt_selfheal_unhealthy_components",
+          "legendFormat": "unhealthy",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Self-heal restarts (24h)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 8, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(nyxgpt_selfheal_restarts_total[24h]))",
+          "legendFormat": "restarts",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Canary rollout active",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 12, "y": 3 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "idle" }, "1": { "text": "active" } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "nyxgpt_canary_rollout_active",
+          "legendFormat": "active",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Canary rollbacks (24h)",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 16, "y": 3 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(increase(nyxgpt_canary_events_total{action=\"rollback\"}[24h]))",
+          "legendFormat": "rollbacks",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Total requests handled",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 4, "x": 20, "y": 3 },
+      "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(nyxgpt_http_requests_total)",
+          "legendFormat": "requests",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Request rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(nyxgpt_http_requests_total[5m])) by (status)",
+          "legendFormat": "status {{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Error rate (5xx)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(nyxgpt_http_errors_total[5m]))",
+          "legendFormat": "5xx errors/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Request latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(nyxgpt_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(nyxgpt_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.99, sum(rate(nyxgpt_http_request_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "RAG query rate by source",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(nyxgpt_rag_queries_total[5m])) by (source)",
+          "legendFormat": "{{source}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "RAG ingest rate by source and outcome",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(nyxgpt_rag_ingests_total[5m])) by (source, result)",
+          "legendFormat": "{{source}} ({{result}})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Chat request rate (streaming vs. non-streaming)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 17 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(nyxgpt_chat_requests_total[5m])) by (streaming)",
+          "legendFormat": "streaming={{streaming}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Memory (RSS)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "decmbytes" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "nyxgpt_resource_memory_rss_mb",
+          "legendFormat": "RSS",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "CPU usage",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "percent" }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "nyxgpt_resource_cpu_percent",
+          "legendFormat": "CPU %",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "Cache hit rate by cache",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 25 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(rate(nyxgpt_cache_requests_total{result=\"hit\"}[5m])) by (cache) / sum(rate(nyxgpt_cache_requests_total[5m])) by (cache)",
+          "legendFormat": "{{cache}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "title": "Canary traffic split",
+      "type": "gauge",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 25 },
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100 },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "nyxgpt_canary_weight_percent",
+          "legendFormat": "weight",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "title": "Consecutive restart count by service (backoff state)",
+      "type": "bargauge",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 33 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "nyxgpt_selfheal_restart_count",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "title": "Canary traffic split over time",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 33 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "nyxgpt_canary_weight_percent",
+          "legendFormat": "canary weight",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "title": "Logs -- nyxGPT (open Logs Drilldown for filters, search, and patterns)",
+      "type": "logs",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 39 },
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessages": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{job=\"nyxgpt\"}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 21,
       "title": "Recent nyxgpt traces",
       "type": "traces",
       "datasource": { "type": "jaeger", "uid": "jaeger" },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 6 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 49 },
       "targets": [
         {
           "datasource": { "type": "jaeger", "uid": "jaeger" },
@@ -37,13 +422,13 @@
       ]
     },
     {
-      "id": 3,
+      "id": 22,
       "title": "GlitchTip: open issues (nyxgpt-backend)",
       "type": "stat",
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 16 },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 59 },
       "fieldConfig": { "defaults": { "unit": "none" }, "overrides": [] },
-      "options": { "reduceOptions": { "calcs": ["count"] } },
+      "options": { "reduceOptions": { "calcs": ["count"], "fields": "/.*/" } },
       "targets": [
         {
           "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
@@ -59,11 +444,11 @@
       ]
     },
     {
-      "id": 4,
+      "id": 23,
       "title": "GlitchTip: recent errors (nyxgpt-backend)",
       "type": "table",
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },
-      "gridPos": { "h": 10, "w": 18, "x": 6, "y": 16 },
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 59 },
       "targets": [
         {
           "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "glitchtip-infinity" },

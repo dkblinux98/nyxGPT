@@ -164,6 +164,7 @@ def _referenced_metric_names(expr: str) -> set[str]:
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "self-healing.json",
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "canary.json",
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "resource-usage.json",
+        REPO_ROOT / "docker" / "grafana" / "dashboards" / "sre-home.json",
     ],
 )
 def test_promql_expressions_only_reference_known_metrics(config_path: Path) -> None:
@@ -188,7 +189,6 @@ def test_grafana_dashboards_are_provisioned() -> None:
     assert dashboard_files == [
         "api-metrics.json",
         "canary.json",
-        "logs-explorer.json",
         "rag-performance.json",
         "resource-usage.json",
         "self-healing.json",
@@ -211,6 +211,72 @@ def test_grafana_dashboards_are_provisioned() -> None:
     datasource = datasource_config["datasources"][0]
     assert datasource["type"] == "prometheus"
     assert datasource["url"] == "http://prometheus:9090"
+
+
+def _iter_panel_datasource_refs(obj: object):
+    if isinstance(obj, dict):
+        if "uid" in obj and "type" in obj and set(obj) <= {"uid", "type"}:
+            yield obj
+        for value in obj.values():
+            yield from _iter_panel_datasource_refs(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _iter_panel_datasource_refs(item)
+
+
+@pytest.mark.parametrize(
+    "dashboard_path",
+    sorted((REPO_ROOT / "docker" / "grafana" / "dashboards").glob("*.json")),
+)
+def test_dashboard_datasource_uids_are_all_provisioned(dashboard_path: Path) -> None:
+    """Every `{"type": ..., "uid": ...}` datasource reference in a dashboard
+    must resolve to a uid actually declared in datasource.yml -- catches a
+    dashboard referencing a renamed/typo'd/removed datasource before it ships
+    as a silent "Datasource was not found" in Grafana (#3424)."""
+    datasource_config = yaml.safe_load(
+        (
+            REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources" / "datasource.yml"
+        ).read_text()
+    )
+    provisioned_uids = {ds["uid"] for ds in datasource_config["datasources"]}
+
+    dashboard = json.loads(dashboard_path.read_text())
+    refs = list(_iter_panel_datasource_refs(dashboard))
+    assert refs, f"expected at least one datasource reference in {dashboard_path.name}"
+    for ref in refs:
+        assert (
+            ref["uid"] in provisioned_uids
+        ), f"{dashboard_path.name} references undeclared datasource uid {ref['uid']!r}"
+
+
+@pytest.mark.parametrize(
+    "dashboard_path",
+    sorted((REPO_ROOT / "docker" / "grafana" / "dashboards").glob("*.json")),
+)
+def test_dashboard_json_has_no_forbidden_strings(dashboard_path: Path) -> None:
+    """No GitHub issue references and no dangling "Logs Explorer" mentions
+    in dashboard text (#3424 acceptance criteria) -- dashboards are
+    user-facing product surface, not commit history."""
+    text = dashboard_path.read_text()
+    assert not re.search(
+        r"#\d{3,5}", text
+    ), f"{dashboard_path.name} references a GitHub issue number in dashboard text"
+    assert "Logs Explorer" not in text, f"{dashboard_path.name} still references Logs Explorer"
+
+
+def test_sre_home_glitchtip_open_issues_stat_panel_reduces_over_all_fields() -> None:
+    """Regression test for #3424: the Infinity table result's only column
+    (`id`) is typed `string`, and a Stat panel's default `reduceOptions`
+    only reduces over numeric fields -- with none, it silently renders "No
+    data" even though the paired table panel querying the exact same URL
+    populates fine. `reduceOptions.fields` must be widened past the numeric
+    default so the count actually renders."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / "sre-home.json").read_text()
+    )
+    panel = next(p for p in dashboard["panels"] if p["title"].startswith("GlitchTip: open issues"))
+    assert panel["type"] == "stat"
+    assert panel["options"]["reduceOptions"]["fields"] != ""
 
 
 def _cfg(**monitoring_options: str) -> ConfigParser:
