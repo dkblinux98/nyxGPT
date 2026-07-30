@@ -46,7 +46,7 @@ Quick reference of all 77 available endpoints:
 | `/api/v1/self-heal/status` | GET | Self-heal watchdog status (per-component health, recent events) |
 | `/api/v1/self-heal/toggle` | POST | Enable/disable automatic self-healing |
 | `/api/v1/self-heal/heal` | POST | Manually restart one or every unhealthy component |
-| `/api/v1/self-heal/logs` | GET | Recent Compose logs for one component (e.g. GlitchTip's registration link) |
+| `/api/v1/self-heal/logs` | GET | Recent logs for one component, mode-dispatched (e.g. GlitchTip's registration link) |
 | `/api/v1/models` | GET | List Ollama models |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
@@ -1200,13 +1200,16 @@ currently-known container.
 
 ### `GET /api/v1/self-heal/logs`
 
-Recent Docker Compose logs for one component. Backs `nyxgpt ops logs`,
-letting an operator read a container's console output (e.g. GlitchTip's
-first-account confirmation link, printed there by its console email
-backend) without a raw `docker`/`docker compose` command.
+Recent logs for one component, from whichever source it's actually running
+under (Compose container, native log file, Terraform/Kubernetes container --
+see [`nyxgpt ops logs`](ops.md#nyxgpt-ops-logs) for the full per-mode
+dispatch table). Backs `nyxgpt ops logs`, letting an operator read a
+component's console output (e.g. GlitchTip's first-account confirmation
+link, printed there by its console email backend) without a raw
+`docker`/`docker compose`/`kubectl` command.
 
-**Query parameters:** `service` (required, Compose service name, e.g.
-`glitchtip`, `api`), `tail` (optional, number of trailing lines, default 200).
+**Query parameters:** `service` (required, component name, e.g.
+`glitchtip`, `api`, `web`), `tail` (optional, number of trailing lines, default 200).
 
 **Response:**
 

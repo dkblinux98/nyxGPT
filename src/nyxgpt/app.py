@@ -1975,12 +1975,15 @@ def self_heal_heal(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]
 
 @api.get("/self-heal/logs")
 def self_heal_logs(service: str, tail: int = Query(default=200, ge=1, le=2000)) -> dict[str, Any]:
-    """Recent Docker Compose logs for one component, from the SRE/admin dashboard.
+    """Recent logs for one component, from the SRE/admin dashboard.
 
-    Lets an operator read a container's console output (e.g. the GlitchTip
-    container's first-account registration confirmation link, printed there by
-    its console email backend) without running a raw `docker`/`docker compose`
-    command themselves.
+    Dispatched by the component's actual deployment mode (Compose/native/
+    Terraform/Kubernetes -- see `self_heal.component_logs`), so this reads
+    the real source (e.g. a native API's own log file) rather than only ever
+    checking Docker Compose. Lets an operator read a component's output
+    (e.g. the GlitchTip container's first-account registration confirmation
+    link, printed there by its console email backend) without running a raw
+    `docker`/`docker compose`/`kubectl` command themselves.
     """
     result = self_heal_module.component_logs(service, tail=tail)
     if not result.ok:

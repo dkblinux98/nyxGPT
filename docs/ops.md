@@ -433,9 +433,29 @@ config.ini, before `docker compose up`.
 
 ## `nyxgpt ops logs`
 
-Prints recent logs for a single Docker Compose service — a wrapped
-`docker compose logs`, so reading a container's output never requires a raw
-`docker`/`docker compose` command.
+Prints recent logs for a single component — a wrapped `docker compose
+logs`/`docker logs`/`kubectl logs`/native log file read, so reading a
+component's output never requires a raw `docker`/`docker compose`/`kubectl`
+command, or knowing where its native log file lives.
+
+The command detects which deployment mode the requested component is
+actually running under (the same detection `nyxgpt ops status` uses) and
+reads the matching source:
+
+| Mode | Source |
+| --- | --- |
+| Docker Compose | `docker compose logs <service>` |
+| Native (`api`) | `~/.nyxGPT/logs/api.log` |
+| Native (`ollama`) | `~/.nyxGPT/logs/ollama.log` (see [Ollama logs](api.md#ollama-logs)) |
+| Native (`web`) | Homebrew's own `nyxgpt-web.log`/`.err.log` (see [homebrew.md](homebrew.md#web-ui-logs)) |
+| Native (`cassandra`) | `docker logs nyxgpt-cassandra` |
+| Terraform | `docker logs <nyxgpt-tf-* container>` |
+| Kubernetes | `kubectl logs <pod>` |
+
+A component that's enabled but has no running container/process at all
+(e.g. an observability profile enabled in config.ini but torn down via
+`nyxgpt ops down`) fails explicitly rather than reporting a hollow success
+with no output.
 
 Usage:
 
@@ -447,6 +467,7 @@ nyxgpt ops logs <service> [--tail N]
 nyxgpt ops logs glitchtip
 nyxgpt ops logs glitchtip --tail 50
 nyxgpt ops logs api
+nyxgpt ops logs web
 ```
 
 `--tail` defaults to 200 lines. This is how to find the GlitchTip
