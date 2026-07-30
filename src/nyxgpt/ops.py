@@ -1115,18 +1115,29 @@ def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
 
 
 def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResult]:
-    """Build and install the `nyxgpt-web` Homebrew formula into `tap`, then start the service.
+    """Build and install the `nyxgpt-web` Homebrew formula into `tap`, then (re)start the service.
 
     Generates a dist tarball vendoring the `web/` source tree (minus
     gitignored build artifacts -- see `_WEB_VENDOR_EXCLUDES`), substitutes
     its `file://` URL and sha256 into the formula template, writes the
     formula into the tap's Formula/ dir, and installs/reinstalls it only if
     the vendored source actually changed since the last install (see
-    `_brew_install_or_reinstall`), then requests `brew services start`. The
-    formula itself runs `npm ci`/`npm run build` inside the Cellar keg from
-    that vendored source -- the installed app never depends on the repo
-    checkout (#3406). Returns a list of OpsResult; fails early if brew isn't
-    installed or the formula template is missing.
+    `_brew_install_or_reinstall`). The formula itself runs `npm ci`/`npm run
+    build` inside the Cellar keg from that vendored source -- the installed
+    app never depends on the repo checkout (#3406).
+
+    When a rebuild actually happened (`decision` is "installed" or
+    "reinstalled ..."), this restarts the service (`brew services restart`)
+    instead of just starting it: `brew services start` on an already-running
+    service is a no-op, so a rebuild-while-serving would otherwise leave the
+    old `next start` process running against the *old* in-memory build
+    manifest while the on-disk `.next` chunks are already the new build's --
+    every served page then references chunk hashes that no longer exist,
+    404ing (#3445). When nothing changed, a plain `start` is used so an
+    already-up-to-date install doesn't bounce a healthy running service.
+
+    Returns a list of OpsResult; fails early if brew isn't installed or the
+    formula template is missing.
     """
     results: list[OpsResult] = []
     if _which("brew") is None:
@@ -1158,8 +1169,15 @@ def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     decision = _brew_install_or_reinstall(
         f"{tap}/nyxgpt-web", "nyxgpt-web", sha256=sha, marker_dir=tap_dir / "dist"
     )
-    _run(["brew", "services", "start", "nyxgpt-web"], check=False)
-    results.append(OpsResult(True, f"nyxgpt-web: {decision}; requested service start", ""))
+    if decision == "already up to date (skipped reinstall)":
+        _run(["brew", "services", "start", "nyxgpt-web"], check=False)
+        results.append(OpsResult(True, f"nyxgpt-web: {decision}; requested service start", ""))
+    else:
+        # A new keg (and new `.next` build output) was just installed --
+        # restart, not start, so the running process actually picks it up
+        # instead of continuing to serve the old build's chunk manifest.
+        results.append(OpsResult(True, f"nyxgpt-web: {decision}", ""))
+        results.extend(_restart_brew_service("nyxgpt-web"))
 
     return results
 

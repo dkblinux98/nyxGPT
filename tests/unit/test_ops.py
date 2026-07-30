@@ -3345,7 +3345,48 @@ def test_install_homebrew_web_success(monkeypatch, tmp_path):
     assert "__NYXGPT_WEB_SHA256__" not in content
     assert "__VERSION__" not in content
     assert any(cmd[:2] in (["brew", "install"], ["brew", "reinstall"]) for cmd in run_calls)
+    # A fresh install/reinstall must restart (not merely start) the service so
+    # the running `next start` process actually picks up the newly built
+    # `.next` output instead of continuing to serve the old build's chunk
+    # manifest against the new on-disk chunks (#3445).
+    assert any(cmd[:3] == ["brew", "services", "restart"] for cmd in run_calls)
+    assert not any(cmd[:3] == ["brew", "services", "start"] for cmd in run_calls)
+
+
+@pytest.mark.unit
+def test_install_homebrew_web_already_up_to_date_uses_start_not_restart(monkeypatch, tmp_path):
+    """When the vendored web source hasn't changed since the last install,
+    `_brew_install_or_reinstall` skips the rebuild entirely -- and this must
+    only `start` (idempotent) the service rather than bounce an
+    already-healthy running process for no reason (#3445)."""
+    repo_root = _make_fake_web_repo_root(tmp_path)
+    (repo_root / "homebrew").mkdir(parents=True)
+    (repo_root / "homebrew" / "nyxgpt-web.rb").write_text(
+        'url "__NYXGPT_WEB_URL__"\nsha256 "__NYXGPT_WEB_SHA256__"\nversion "__VERSION__"\n',
+        encoding="utf-8",
+    )
+    tap_dir = tmp_path / "tap"
+
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/brew")
+    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
+    monkeypatch.setattr(ops, "_tap_repo", lambda tap: tap_dir)
+    monkeypatch.setattr(ops, "_read_project_version", lambda: "2.0.0")
+    monkeypatch.setattr(
+        ops,
+        "_brew_install_or_reinstall",
+        lambda *a, **k: "already up to date (skipped reinstall)",
+    )
+    run_calls = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: run_calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+
+    results = ops._install_homebrew_web()
+    assert all(r.ok for r in results)
     assert any(cmd[:3] == ["brew", "services", "start"] for cmd in run_calls)
+    assert not any(cmd[:3] == ["brew", "services", "restart"] for cmd in run_calls)
 
 
 # --- real formula invariants (regression guards for launchd error 78, #3406) ---
