@@ -240,15 +240,19 @@ def _iter_panel_datasource_refs(obj: object):
 )
 def test_dashboard_datasource_uids_are_all_provisioned(dashboard_path: Path) -> None:
     """Every `{"type": ..., "uid": ...}` datasource reference in a dashboard
-    must resolve to a uid actually declared in datasource.yml -- catches a
-    dashboard referencing a renamed/typo'd/removed datasource before it ships
-    as a silent "Datasource was not found" in Grafana (#3424)."""
-    datasource_config = yaml.safe_load(
-        (
-            REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources" / "datasource.yml"
-        ).read_text()
-    )
-    provisioned_uids = {ds["uid"] for ds in datasource_config["datasources"]}
+    must resolve to a uid actually declared across the datasources
+    provisioning dir -- catches a dashboard referencing a
+    renamed/typo'd/removed datasource before it ships as a silent
+    "Datasource was not found" in Grafana (#3424). Scans every `*.yml` in
+    the dir, not just datasource.yml: GlitchTip lives in its own
+    glitchtip.yml (#3432) so a bad `$__file{}` token interpolation can't
+    take Prometheus/Loki/Jaeger down with it."""
+    datasources_dir = REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources"
+    provisioned_uids = {
+        ds["uid"]
+        for path in sorted(datasources_dir.glob("*.yml"))
+        for ds in yaml.safe_load(path.read_text())["datasources"]
+    }
 
     dashboard = json.loads(dashboard_path.read_text())
     refs = list(_iter_panel_datasource_refs(dashboard))
