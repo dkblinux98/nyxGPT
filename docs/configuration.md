@@ -970,12 +970,17 @@ correlation backbone (#3430) added alongside the `[tracing]`/
 | `NYXGPT_ERROR_TRACKING_DSN` | server (runtime env) | unset (disabled) | Same DSN for the Next.js server-side Sentry init (`instrumentation.ts`'s `onRequestError` hook) -- can differ in principle from the build-time browser one, but should normally match it. |
 | `NYXGPT_ERROR_TRACKING_ENVIRONMENT` / `NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_ENVIRONMENT` | server / build arg | `development` | Sentry `environment` tag, mirroring `[error_tracking] environment`. |
 
-Because `NEXT_PUBLIC_*` values are inlined at build time, changing them
-requires rebuilding the web image (`docker compose build web`) or Homebrew
-formula (`nyxgpt ops install`) -- there's no hot-reload equivalent to
-`config.ini`'s for these. There's also no automatic sync from `config.ini`
-into these build args yet (a known follow-up) -- set them by hand to match
-your `[tracing]`/`[error_tracking]` config.ini values.
+Because `NEXT_PUBLIC_*` values are inlined at build time, changing them only
+takes effect after the web build is redone -- there's no hot-reload
+equivalent to `config.ini`'s for these. `nyxgpt ops install` reconciles this
+for the native-mode Homebrew formula. The Compose deployment path doesn't yet
+have an equivalent `nyxgpt`-wrapped rebuild command (tracked as a follow-up,
+alongside the pre-existing raw-command references in
+[docker-compose.md](docker-compose.md)) -- until then, rebuild the web
+service through whatever Compose tooling you used to deploy it. There's also
+no automatic sync from `config.ini` into these build args yet (a known
+follow-up) -- set them by hand to match your `[tracing]`/`[error_tracking]`
+config.ini values.
 
 ---
 

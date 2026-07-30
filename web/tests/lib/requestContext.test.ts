@@ -1,4 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { context as otelContext, trace } from '@opentelemetry/api';
+
+const ACTIVE_SPAN_CONTEXT = {
+  traceId: '0af7651916cd43dd8448eb211c80319c',
+  spanId: 'b7ad6b7169203331',
+  traceFlags: 1,
+};
 
 describe('getRequestId / withRequestId', () => {
   beforeEach(() => {
@@ -56,5 +63,17 @@ describe('resolveRequestId', () => {
     const { resolveRequestId } = await import('../../src/lib/requestContext');
     expect(() => resolveRequestId()).not.toThrow();
     expect(resolveRequestId()).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('derives the id from the active OTel trace when no header is present', async () => {
+    const { resolveRequestId } = await import('../../src/lib/requestContext');
+    const request = new Request('http://localhost/api/v1/models');
+
+    const id = otelContext.with(
+      trace.setSpanContext(otelContext.active(), ACTIVE_SPAN_CONTEXT),
+      () => resolveRequestId(request)
+    );
+
+    expect(id).toBe(ACTIVE_SPAN_CONTEXT.traceId);
   });
 });

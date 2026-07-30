@@ -2,6 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { context as otelContext, trace } from '@opentelemetry/api';
+
+const ACTIVE_SPAN_CONTEXT = {
+  traceId: '0af7651916cd43dd8448eb211c80319c',
+  spanId: 'b7ad6b7169203331',
+  traceFlags: 1,
+};
 
 describe('logger', () => {
   const originalLogDir = process.env.NYXGPT_LOG_DIR;
@@ -76,6 +83,54 @@ describe('logger', () => {
 
     const line = spy.mock.calls[0][0] as string;
     expect(line).not.toContain('trace_id=');
+  });
+
+  it('appends a trace_id/span_id suffix when a valid span is active', async () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { logger } = await import('../../src/lib/logger');
+
+    otelContext.with(trace.setSpanContext(otelContext.active(), ACTIVE_SPAN_CONTEXT), () => {
+      logger.info('inside a traced span');
+    });
+
+    const line = spy.mock.calls[0][0] as string;
+    expect(line).toContain(
+      `trace_id=${ACTIVE_SPAN_CONTEXT.traceId} span_id=${ACTIVE_SPAN_CONTEXT.spanId}`
+    );
+  });
+
+  it('falls back to the bare error message when the Error has no stack', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { logger } = await import('../../src/lib/logger');
+    const error = new Error('no stack here');
+    delete error.stack;
+
+    logger.error('upstream failed', error);
+
+    const line = spy.mock.calls[0][0] as string;
+    expect(line).toContain('upstream failed: no stack here');
+    expect(line).not.toContain('\n');
+  });
+
+  it('stringifies a non-Error, non-undefined error value', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { logger } = await import('../../src/lib/logger');
+
+    logger.error('upstream failed', 'plain-string-detail');
+
+    const line = spy.mock.calls[0][0] as string;
+    expect(line).toContain('upstream failed: plain-string-detail');
+  });
+
+  it('supports debug-level logging via console.log', async () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { logger } = await import('../../src/lib/logger');
+
+    logger.debug('debug detail');
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const line = spy.mock.calls[0][0] as string;
+    expect(line).toContain('DEBUG [-] nyxgpt.web: debug detail');
   });
 
   it('matches the promtail regex nyxgpt.logging.DEFAULT_FMT lines match', async () => {

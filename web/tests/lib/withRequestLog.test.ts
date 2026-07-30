@@ -73,4 +73,18 @@ describe('withRequestLog', () => {
 
     expect(response.headers.get('X-Request-Id')).toMatch(/^[0-9a-f-]{36}$/);
   });
+
+  it('logs "route handler" (not a URL) when the wrapped handler throws with no request', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { withRequestLog } = await import('../../src/lib/withRequestLog');
+
+    const handler = withRequestLog(async () => {
+      throw new Error('handler exploded');
+    });
+
+    await expect(
+      (handler as (req?: Request) => Promise<Response>)()
+    ).rejects.toThrow('handler exploded');
+    expect(errorSpy.mock.calls[0][0] as string).toContain('Unhandled error in route handler');
+  });
 });
