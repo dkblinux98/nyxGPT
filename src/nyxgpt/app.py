@@ -245,7 +245,7 @@ async def lifespan(_app: FastAPI):
     # Initialize centralized logging once for the API process
     cfg = load_config(None)
     try:
-        configure_logging(cfg, console=False)
+        configure_logging(cfg, console=False, filename="api.log")
         log.info("Centralized logging initialized", extra={"component": "startup"})
     except Exception as e:
         # Logging should not prevent API startup
@@ -504,7 +504,7 @@ async def load_cfg_and_refresh_logging(request: Request, call_next):
     # configure_logging() is expected to be idempotent and cheap.
     # Never block request handling on logging reconfiguration.
     with suppress(Exception):
-        configure_logging(cfg, console=False)
+        configure_logging(cfg, console=False, filename="api.log")
 
     return await call_next(request)
 
@@ -879,7 +879,7 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     # Hot-apply logging changes immediately
     try:
         cfg = load_config(None)
-        configure_logging(cfg, console=False)
+        configure_logging(cfg, console=False, filename="api.log")
     except Exception:
         # Do not fail the request if logging reconfig fails
         pass
@@ -1505,7 +1505,7 @@ def config_sections_update(request: Request, payload: dict[str, Any] = Body(...)
     cfg = _req_cfg(request)
 
     with suppress(Exception):
-        configure_logging(cfg, console=False)
+        configure_logging(cfg, console=False, filename="api.log")
 
     observability_result = _reconcile_observability(cfg) if needs_observability else None
 

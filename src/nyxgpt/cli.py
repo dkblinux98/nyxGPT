@@ -2103,7 +2103,7 @@ def cli(argv: list[str] | None = None) -> int:
     # Initialize centralized logging as early as possible.
     try:
         cfg0 = load_config(args.config)
-        configure_logging(cfg0, console=True)
+        configure_logging(cfg0, console=True, filename="cli.log")
     except Exception:
         # Logging should never prevent the CLI from running.
         pass
