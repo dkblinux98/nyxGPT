@@ -2309,6 +2309,22 @@ def terraform_stack_state() -> dict[str, str]:
     }
 
 
+def _terraform_state_has_resources() -> bool:
+    """True if terraform.tfstate records any managed resources.
+
+    ``terraform destroy`` (what ``nyxgpt ops down --terraform`` runs) always
+    leaves ``terraform.tfstate`` in place with an empty ``resources`` list --
+    that's a clean post-destroy state, not stale state. Only a tfstate that
+    still records resources (with no matching containers running) is stale.
+    """
+    tfstate = TERRAFORM_DIR / "terraform.tfstate"
+    try:
+        data = json.loads(tfstate.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    return bool(data.get("resources"))
+
+
 def _terraform_stack_health() -> list[OpsResult]:
     """Report each Terraform-managed container's state, plus the stack's output URLs."""
     results = [
@@ -3581,8 +3597,10 @@ def doctor(_args) -> int:
 
     issues += _glitchtip_secrets_doctor_issues()
 
-    if TERRAFORM_DIR.joinpath("terraform.tfstate").exists() and all(
-        state == "absent" for state in terraform_stack_state().values()
+    if (
+        TERRAFORM_DIR.joinpath("terraform.tfstate").exists()
+        and _terraform_state_has_resources()
+        and all(state == "absent" for state in terraform_stack_state().values())
     ):
         issues.append(
             "Terraform state exists but no nyxgpt-tf-* containers are running "
