@@ -8831,6 +8831,7 @@ def test_doctor_does_not_flag_terraform_state_after_clean_destroy(monkeypatch, t
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     rc = ops.doctor(MagicMock())
     out = capsys.readouterr().out
