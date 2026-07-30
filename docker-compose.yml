@@ -132,6 +132,11 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+        # Browser-side OTel/error-tracking correlation backbone (#3430) --
+        # see web/Dockerfile for why these are build args, not env vars.
+        NEXT_PUBLIC_NYXGPT_OTLP_ENDPOINT: ${NEXT_PUBLIC_NYXGPT_OTLP_ENDPOINT:-http://localhost:4318/v1/traces}
+        NEXT_PUBLIC_NYXGPT_TRACING_ENABLED: ${NEXT_PUBLIC_NYXGPT_TRACING_ENABLED:-true}
+        NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_DSN: ${NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_DSN:-}
     image: nyxgpt-web:${NYXGPT_WEB_IMAGE_TAG:-local}
     restart: unless-stopped
     networks:
@@ -147,6 +152,14 @@ services:
       # Same shared secret as the api service, so the proxy routes can
       # attach X-API-Key on every backend call (see docker/config.docker.ini).
       NYXGPT_AUTH_API_KEY: ${NYXGPT_AUTH_API_KEY:-}
+      # Next.js server-side OTel correlation backbone (#3430, src/instrumentation.ts):
+      # the container-network hostname for the same otel-collector the api
+      # service's [tracing] otlp_endpoint points at -- "localhost" here would
+      # mean the web container itself, not otel-collector next to it (same
+      # reasoning as error_tracking.py's GlitchTip DSN host rewrite). Unused
+      # (and harmless) whenever NYXGPT_TRACING_ENABLED is "false".
+      NYXGPT_OTLP_ENDPOINT: http://otel-collector:4318/v1/traces
+      NYXGPT_TRACING_ENABLED: ${NYXGPT_TRACING_ENABLED:-true}
     depends_on:
       api:
         condition: service_healthy
