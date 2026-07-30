@@ -116,6 +116,14 @@ export default withPWA({
       // connectivity returns, instead of just failing the request. These
       // routes are safe to queue because the UI already applies optimistic
       // updates and the requests are small, idempotent-ish state changes.
+      //
+      // Each `backgroundSync` entry below gets its own Workbox `Queue`
+      // instance (one per runtimeCaching route, keyed on `method` since a
+      // Route only matches one HTTP method), and Workbox throws
+      // `duplicate-queue-name` if two `Queue`s in the same generated
+      // service-worker share a `name` -- it happened here (#3445) because
+      // both the POST and DELETE routes used "session-mutations-queue". The
+      // queue names must stay distinct.
       {
         urlPattern: /^\/api\/sessions\/[^/]+\/(rename|title|pin|unpin|delete|sync-filename)$/i,
         method: "POST",
@@ -135,7 +143,7 @@ export default withPWA({
         handler: "NetworkOnly",
         options: {
           backgroundSync: {
-            name: "session-mutations-queue",
+            name: "document-mutations-queue",
             options: {
               maxRetentionTime: 24 * 60, // 24 hours in minutes
             },
