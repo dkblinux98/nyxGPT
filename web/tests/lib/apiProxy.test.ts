@@ -75,4 +75,39 @@ describe('apiFetch', () => {
     expect(headers.get('Content-Type')).toBe('application/json');
     expect(headers.get('X-API-Key')).toBe('secret-key');
   });
+
+  it('forwards the ambient request id as X-Request-Id (#3430)', async () => {
+    global.fetch = vi.fn().mockResolvedValueOnce({ ok: true, status: 200 });
+    const { apiFetch } = await import('../../src/lib/apiProxy');
+    const { withRequestId } = await import('../../src/lib/requestContext');
+
+    await withRequestId('req-abc', () => apiFetch('/api/v1/models'));
+
+    const [, init] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const headers = init.headers as Headers;
+    expect(headers.get('X-Request-Id')).toBe('req-abc');
+  });
+
+  it('does not set X-Request-Id when there is no ambient request context', async () => {
+    global.fetch = vi.fn().mockResolvedValueOnce({ ok: true, status: 200 });
+    const { apiFetch } = await import('../../src/lib/apiProxy');
+    await apiFetch('/api/v1/models');
+    const [, init] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const headers = init.headers as Headers;
+    expect(headers.has('X-Request-Id')).toBe(false);
+  });
+
+  it('does not override a caller-supplied X-Request-Id', async () => {
+    global.fetch = vi.fn().mockResolvedValueOnce({ ok: true, status: 200 });
+    const { apiFetch } = await import('../../src/lib/apiProxy');
+    const { withRequestId } = await import('../../src/lib/requestContext');
+
+    await withRequestId('ambient-id', () =>
+      apiFetch('/api/v1/models', { headers: { 'X-Request-Id': 'explicit-id' } })
+    );
+
+    const [, init] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const headers = init.headers as Headers;
+    expect(headers.get('X-Request-Id')).toBe('explicit-id');
+  });
 });

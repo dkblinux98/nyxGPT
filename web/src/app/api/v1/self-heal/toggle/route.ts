@@ -1,6 +1,8 @@
 import { apiFetch } from "@/lib/apiProxy";
+import { logger } from "@/lib/logger";
+import { withRequestLog } from "@/lib/withRequestLog";
 
-export async function POST(request: Request) {
+export const POST = withRequestLog(async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
     const res = await apiFetch(`/api/v1/self-heal/toggle`, {
@@ -17,7 +19,7 @@ export async function POST(request: Request) {
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Failed to toggle self-heal:", error);
+    logger.error("Failed to toggle self-heal:", error);
     return new Response(
       JSON.stringify({ error: "Failed to toggle self-heal" }),
       {
@@ -26,4 +28,4 @@ export async function POST(request: Request) {
       }
     );
   }
-}
+});

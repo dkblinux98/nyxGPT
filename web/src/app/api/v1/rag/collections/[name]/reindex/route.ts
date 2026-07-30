@@ -1,6 +1,8 @@
 import { apiFetch } from "@/lib/apiProxy";
+import { logger } from "@/lib/logger";
+import { withRequestLog } from "@/lib/withRequestLog";
 
-export async function POST(
+export const POST = withRequestLog(async function POST(
   request: Request,
   { params }: { params: Promise<{ name: string }> }
 ) {
@@ -31,7 +33,7 @@ export async function POST(
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Failed to re-index collection:", error);
+    logger.error("Failed to re-index collection:", error);
     return new Response(
       JSON.stringify({ error: "Failed to re-index collection" }),
       {
@@ -40,4 +42,4 @@ export async function POST(
       }
     );
   }
-}
+});
