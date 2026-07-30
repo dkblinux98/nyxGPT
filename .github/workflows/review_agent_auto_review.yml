@@ -28,7 +28,9 @@ jobs:
        github.event.issue.pull_request &&
        (contains(github.event.comment.body, '@approve-merge') ||
         contains(github.event.comment.body, '@request-changes') ||
-        contains(github.event.comment.body, '@send-to-developer')))
+        contains(github.event.comment.body, '@send-to-developer') ||
+        (contains(github.event.comment.body, 'nyxgpt-structured-review') &&
+         github.event.comment.user.login == vars.REVIEW_AGENT)))
     runs-on: ubuntu-latest
 
     permissions:
@@ -158,7 +160,43 @@ jobs:
           ${{ github.event.comment.body }}
           COMMENT_EOF
           )
-            if echo "$COMMENT" | grep -qE '^\s*@approve-merge\s*$'; then
+            if echo "$COMMENT" | grep -q 'nyxgpt-structured-review'; then
+              # Fallback trigger: the structured-review comment the review
+              # workflow persists after every review. The primary trigger is
+              # the pull_request_review event, but that event only fires when
+              # the review submission propagates (reviews posted under the
+              # workflow's own GITHUB_TOKEN never trigger downstream
+              # workflows) -- several stalled cycles came from exactly that.
+              DECISION=$(echo "$COMMENT" | grep -o '"decision":"[A-Z_]*"' | head -1 | cut -d'"' -f4 || true)
+              TRIGGER_TYPE="auto"
+              if [[ "$DECISION" != "APPROVE" && "$DECISION" != "REQUEST_CHANGES" ]]; then
+                echo "::error::Structured review comment carried unexpected decision: '$DECISION'"
+                exit 1
+              fi
+              # Dedup against the primary path: if the pull_request_review
+              # event DID fire for this same review, it executes the same
+              # decision in parallel. Give it a head start, then check for
+              # its footprint; if found, no-op (ALREADY_HANDLED matches no
+              # downstream step condition).
+              sleep 75
+              PR="${{ steps.get_pr.outputs.pr_number }}"
+              COMMENT_CREATED="${{ github.event.comment.created_at }}"
+              if [[ "$DECISION" == "APPROVE" ]]; then
+                STATE=$(gh pr view "$PR" --json state -q .state || echo "")
+                if [[ "$STATE" == "MERGED" ]]; then
+                  DECISION="ALREADY_HANDLED"
+                  echo "::notice::PR #$PR already merged by the pull_request_review path; skipping"
+                fi
+              else
+                HANDLED=$(gh pr view "$PR" --json comments --jq \
+                  "[.comments[] | select((.createdAt > \"$COMMENT_CREATED\") and ((.body | contains(\"review loop\")) or (.body | contains(\"Escalated after 3 review cycles\"))))] | length" || echo 0)
+                if [[ "${HANDLED:-0}" -gt 0 ]]; then
+                  DECISION="ALREADY_HANDLED"
+                  echo "::notice::REQUEST_CHANGES for PR #$PR already executed by the pull_request_review path; skipping"
+                fi
+              fi
+              echo "::notice::Structured-review comment fallback path (decision: $DECISION)"
+            elif echo "$COMMENT" | grep -qE '^\s*@approve-merge\s*$'; then
               DECISION="APPROVE"
               TRIGGER_TYPE="manual"
               echo "::notice::Human approved merge"

@@ -3,15 +3,33 @@ name: Developer Agent Auto-Implement
 on:
   issues:
     types: [assigned]
+  # RETRY_IMPLEMENTATION comments: the failure handler posts an auto-retry
+  # comment ending in RETRY_IMPLEMENTATION, and the escalation comments tell
+  # a human to "comment RETRY_IMPLEMENTATION to retry" -- but until this
+  # trigger existed, those comments could never start anything (the job body
+  # always supported issue_comment; the `on:` block just never subscribed).
+  # Restarting a crashed run required manually cycling the assignee.
+  issue_comment:
+    types: [created]
 
 jobs:
   implement:
-    # Triggers on assignment to DEV_AGENT
+    # Triggers on assignment to DEV_AGENT, or on a RETRY_IMPLEMENTATION
+    # comment on an issue (not a PR) from the owner (manual retry per the
+    # failure-comment instructions) or the dev agent itself (bounded
+    # auto-retry -- the retry-count scan over prior RETRY_IMPLEMENTATION
+    # comments caps the loop).
     # Developer agent reads issue history to determine if this is new work or a retry
     # Status verification will exit early if not "In Progress"
     if: >-
       ${{ vars.AGENTS_ENABLED == 'true'
-          && github.event.assignee.login == vars.DEV_AGENT }}
+          && ((github.event_name == 'issues'
+               && github.event.assignee.login == vars.DEV_AGENT)
+              || (github.event_name == 'issue_comment'
+                  && !github.event.issue.pull_request
+                  && contains(github.event.comment.body, 'RETRY_IMPLEMENTATION')
+                  && (github.event.comment.author_association == 'OWNER'
+                      || github.event.comment.user.login == vars.DEV_AGENT))) }}
     runs-on: ubuntu-latest
 
     permissions:

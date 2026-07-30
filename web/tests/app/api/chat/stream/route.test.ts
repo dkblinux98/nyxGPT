@@ -1,51 +1,67 @@
 /**
  * Tests for the /api/chat/stream Next.js proxy route.
  *
- * Issue #3245: raise web/ vitest coverage to 100% with real behavioral
- * tests. This route had zero coverage. It:
- *  - parses the request JSON body (400 on invalid JSON)
- *  - forwards to the backend chat stream endpoint via apiFetch()
- *  - returns 502 when the upstream fetch throws
- *  - returns 502 with a `detail` string when the upstream response is not
- *    ok or has no body (and swallows a throwing upstream.text())
- *  - otherwise re-streams upstream.body chunk by chunk through a wrapping
- *    ReadableStream, including pull()/cancel() error handling.
+ * #3440: this route used to drive its upstream call through Next's built-in
+ * `fetch` with a `dispatcher` built from the `undici` package pinned in
+ * package.json. Next 16 bundles its own (newer-major) undici for global
+ * fetch, so that dispatcher was rejected with `UND_ERR_INVALID_ARG` before
+ * any network I/O — every chat request 502'd instantly. The route now
+ * drives the upstream call through undici's own `request()` instead, so
+ * these tests mock the `undici` module's `request` export directly (not
+ * `global.fetch`, which this route no longer calls at all).
+ *
+ * See route.real-dispatch.test.ts for a companion suite that exercises the
+ * real (unmocked) undici transport against a real local HTTP server — the
+ * kind of test that would have caught the original dispatcher bug, since
+ * mocking `global.fetch` never touched the real dispatch machinery.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { Agent } from 'undici';
 
 const ROUTE_PATH = '../../../../../src/app/api/chat/stream/route';
 
-type MockUpstreamReader = {
-  read: ReturnType<typeof vi.fn>;
-  cancel: ReturnType<typeof vi.fn>;
-};
+vi.mock('undici', async () => {
+  const actual = await vi.importActual<typeof import('undici')>('undici');
+  return {
+    ...actual,
+    request: vi.fn(),
+  };
+});
 
-function makeReaderFromChunks(chunks: Uint8Array[]): MockUpstreamReader {
+import { request as undiciRequest } from 'undici';
+
+const mockedRequest = vi.mocked(undiciRequest);
+
+type Step = { done: boolean; value?: Uint8Array };
+
+function makeBody(
+  steps: Step[],
+  overrides: { text?: () => Promise<string>; destroy?: () => void } = {}
+) {
   let i = 0;
-  const read = vi.fn(async () => {
-    if (i < chunks.length) {
-      return { done: false, value: chunks[i++] };
-    }
+  const next = vi.fn(async () => {
+    if (i < steps.length) return steps[i++];
     return { done: true, value: undefined };
   });
-  const cancel = vi.fn().mockResolvedValue(undefined);
-  return { read, cancel };
+  const destroy = overrides.destroy ?? vi.fn();
+  return {
+    [Symbol.asyncIterator]() {
+      return { next };
+    },
+    text: overrides.text ?? vi.fn().mockResolvedValue(''),
+    destroy,
+    __next: next,
+  };
 }
 
-function mockUpstream(overrides: {
-  ok: boolean;
-  status: number;
-  body?: unknown;
-  text?: ReturnType<typeof vi.fn>;
-}) {
-  global.fetch = vi.fn().mockResolvedValueOnce({
-    ok: overrides.ok,
-    status: overrides.status,
-    body: overrides.body ?? null,
-    text: overrides.text ?? vi.fn().mockResolvedValue(''),
-    headers: new Headers(),
-  });
+function mockUpstream(statusCode: number, body: ReturnType<typeof makeBody>) {
+  mockedRequest.mockResolvedValueOnce({
+    statusCode,
+    headers: {},
+    body: body as never,
+    trailers: {},
+    opaque: undefined,
+    context: {},
+  } as never);
 }
 
 function makeRequest(body: string) {
@@ -76,10 +92,11 @@ async function drainStream(response: Response): Promise<Uint8Array> {
 
 describe('/api/chat/stream POST route', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockedRequest.mockReset();
     vi.resetModules();
     delete process.env.NYXGPT_API_BASE_URL;
     delete process.env.NYXGPT_AUTH_API_KEY;
+    delete process.env.NYXGPT_CHAT_STREAM_HEADERS_TIMEOUT_MS;
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
   });
@@ -89,7 +106,6 @@ describe('/api/chat/stream POST route', () => {
   });
 
   it('returns 400 with "Invalid JSON" when the request body cannot be parsed', async () => {
-    global.fetch = vi.fn();
     const { POST } = await import(ROUTE_PATH);
     const req = makeRequest('{not valid json');
 
@@ -98,11 +114,11 @@ describe('/api/chat/stream POST route', () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: 'Invalid JSON' });
     // Must fail before ever attempting to reach the backend.
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(mockedRequest).not.toHaveBeenCalled();
   });
 
   it('handles a request body with no prompt field (logs prompt_len as empty)', async () => {
-    global.fetch = vi.fn().mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    mockedRequest.mockRejectedValueOnce(new Error('ECONNREFUSED'));
 
     const { POST } = await import(ROUTE_PATH);
     const req = makeRequest(JSON.stringify({ session: 's1' }));
@@ -112,8 +128,8 @@ describe('/api/chat/stream POST route', () => {
     expect(response.status).toBe(502);
   });
 
-  it('returns 502 "Upstream unreachable" when apiFetch throws', async () => {
-    global.fetch = vi.fn().mockRejectedValueOnce(new Error('ECONNREFUSED'));
+  it('returns 502 "Upstream unreachable" when the upstream request throws', async () => {
+    mockedRequest.mockRejectedValueOnce(new Error('ECONNREFUSED'));
 
     const { POST } = await import(ROUTE_PATH);
     const req = makeRequest(JSON.stringify({ session: 's1', prompt: 'hi' }));
@@ -124,60 +140,34 @@ describe('/api/chat/stream POST route', () => {
     expect(await response.json()).toEqual({ error: 'Upstream unreachable' });
   });
 
-  it('returns 502 with detail text when upstream response is not ok', async () => {
-    mockUpstream({
-      ok: false,
-      status: 500,
-      body: null,
-      text: vi.fn().mockResolvedValue('backend exploded'),
-    });
+  it('passes through the real upstream status and detail text when the response is not 2xx', async () => {
+    mockUpstream(500, makeBody([], { text: vi.fn().mockResolvedValue('backend exploded') }));
 
     const { POST } = await import(ROUTE_PATH);
     const req = makeRequest(JSON.stringify({ prompt: 'hi' }));
 
     const response = (await POST(req as never)) as Response;
 
-    expect(response.status).toBe(502);
+    // No more flattening to a generic 502 — the real status reaches the browser.
+    expect(response.status).toBe(500);
     expect(await response.json()).toEqual({
       error: 'Upstream chat stream failed',
       detail: 'backend exploded',
     });
   });
 
-  it('returns 502 when upstream response is ok but has no body', async () => {
-    mockUpstream({
-      ok: true,
-      status: 200,
-      body: null,
-      text: vi.fn().mockResolvedValue(''),
-    });
+  it('returns the real upstream status with empty detail when body.text() itself throws', async () => {
+    mockUpstream(
+      503,
+      makeBody([], { text: vi.fn().mockRejectedValue(new Error('text() blew up')) })
+    );
 
     const { POST } = await import(ROUTE_PATH);
     const req = makeRequest(JSON.stringify({ prompt: 'hi' }));
 
     const response = (await POST(req as never)) as Response;
 
-    expect(response.status).toBe(502);
-    expect(await response.json()).toEqual({
-      error: 'Upstream chat stream failed',
-      detail: '',
-    });
-  });
-
-  it('returns 502 with empty detail when upstream.text() itself throws', async () => {
-    mockUpstream({
-      ok: false,
-      status: 500,
-      body: null,
-      text: vi.fn().mockRejectedValue(new Error('text() blew up')),
-    });
-
-    const { POST } = await import(ROUTE_PATH);
-    const req = makeRequest(JSON.stringify({ prompt: 'hi' }));
-
-    const response = (await POST(req as never)) as Response;
-
-    expect(response.status).toBe(502);
+    expect(response.status).toBe(503);
     expect(await response.json()).toEqual({
       error: 'Upstream chat stream failed',
       detail: '',
@@ -188,15 +178,11 @@ describe('/api/chat/stream POST route', () => {
     const encoder = new TextEncoder();
     const chunk1 = encoder.encode('data: hello\n\n');
     const chunk2 = encoder.encode('data: world\n\n');
-    const mockReader = makeReaderFromChunks([chunk1, chunk2]);
-
-    global.fetch = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      body: { getReader: () => mockReader },
-      text: vi.fn(),
-      headers: new Headers(),
-    });
+    const body = makeBody([
+      { done: false, value: chunk1 },
+      { done: false, value: chunk2 },
+    ]);
+    mockUpstream(200, body);
 
     const { POST } = await import(ROUTE_PATH);
     const req = makeRequest(JSON.stringify({ session: 's1', prompt: 'hi' }));
@@ -217,31 +203,14 @@ describe('/api/chat/stream POST route', () => {
     expect(new TextDecoder().decode(bytes)).toBe(
       'data: hello\n\ndata: world\n\n'
     );
-    expect(mockReader.read).toHaveBeenCalledTimes(3); // 2 chunks + final done
+    expect(body.__next).toHaveBeenCalledTimes(3); // 2 chunks + final done
   });
 
-  it('tolerates a read() result with done:false and an empty value', async () => {
-    // Defensive branch: `if (value)` inside pull() guards against a reader
-    // that reports not-done with no value.
-    let call = 0;
-    const mockReader: MockUpstreamReader = {
-      read: vi.fn(async () => {
-        call += 1;
-        if (call === 1) {
-          return { done: false, value: undefined };
-        }
-        return { done: true, value: undefined };
-      }),
-      cancel: vi.fn().mockResolvedValue(undefined),
-    };
-
-    global.fetch = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      body: { getReader: () => mockReader },
-      text: vi.fn(),
-      headers: new Headers(),
-    });
+  it('tolerates a next() result with done:false and an empty value', async () => {
+    // Defensive branch: `if (value)` inside pull() guards against an
+    // iterator that reports not-done with no value.
+    const body = makeBody([{ done: false, value: undefined }]);
+    mockUpstream(200, body);
 
     const { POST } = await import(ROUTE_PATH);
     const req = makeRequest(JSON.stringify({ prompt: 'hi' }));
@@ -254,18 +223,9 @@ describe('/api/chat/stream POST route', () => {
 
   it('propagates a read error from pull() to the response stream', async () => {
     const readError = new Error('upstream read boom');
-    const mockReader: MockUpstreamReader = {
-      read: vi.fn().mockRejectedValue(readError),
-      cancel: vi.fn().mockResolvedValue(undefined),
-    };
-
-    global.fetch = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      body: { getReader: () => mockReader },
-      text: vi.fn(),
-      headers: new Headers(),
-    });
+    const body = makeBody([]);
+    body.__next.mockRejectedValue(readError);
+    mockUpstream(200, body);
 
     const { POST } = await import(ROUTE_PATH);
     const req = makeRequest(JSON.stringify({ prompt: 'hi' }));
@@ -283,20 +243,12 @@ describe('/api/chat/stream POST route', () => {
     await expect(reader.read()).rejects.toThrow('upstream read boom');
   });
 
-  it('cancels the upstream reader when the client cancels the response stream', async () => {
-    const mockReader: MockUpstreamReader = {
-      // Never resolves on its own; we cancel before it would.
-      read: vi.fn(() => new Promise(() => {})),
-      cancel: vi.fn().mockResolvedValue(undefined),
-    };
-
-    global.fetch = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      body: { getReader: () => mockReader },
-      text: vi.fn(),
-      headers: new Headers(),
-    });
+  it('destroys the upstream body when the client cancels the response stream', async () => {
+    const destroy = vi.fn();
+    const body = makeBody([], { destroy });
+    // Never resolves on its own; we cancel before it would.
+    body.__next.mockImplementation(() => new Promise(() => {}));
+    mockUpstream(200, body);
 
     const { POST } = await import(ROUTE_PATH);
     const req = makeRequest(JSON.stringify({ prompt: 'hi' }));
@@ -305,16 +257,12 @@ describe('/api/chat/stream POST route', () => {
     const reader = response.body!.getReader();
     await reader.cancel('client went away');
 
-    expect(mockReader.cancel).toHaveBeenCalledTimes(1);
+    expect(destroy).toHaveBeenCalledTimes(1);
   });
 
-  it('forwards the JSON body and SSE headers to the upstream fetch call', async () => {
-    mockUpstream({
-      ok: true,
-      status: 200,
-      body: null,
-      text: vi.fn().mockResolvedValue(''),
-    });
+  it('forwards the JSON body, SSE headers, auth key, and timeout options to undici request()', async () => {
+    process.env.NYXGPT_AUTH_API_KEY = 'secret-key';
+    mockUpstream(200, makeBody([]));
 
     const { POST } = await import(ROUTE_PATH);
     const payload = {
@@ -327,36 +275,46 @@ describe('/api/chat/stream POST route', () => {
 
     await POST(req as never);
 
-    expect(global.fetch).toHaveBeenCalledTimes(1);
-    const [calledUrl, calledOptions] = (
-      global.fetch as ReturnType<typeof vi.fn>
-    ).mock.calls[0];
+    expect(mockedRequest).toHaveBeenCalledTimes(1);
+    const [calledUrl, calledOptions] = mockedRequest.mock.calls[0];
 
     expect(calledUrl).toBe('http://127.0.0.1:8000/api/v1/chat/stream');
-    expect(calledOptions.method).toBe('POST');
-    expect(JSON.parse(calledOptions.body)).toEqual(payload);
-    expect(calledOptions.cache).toBe('no-store');
-    expect(calledOptions.dispatcher).toBeInstanceOf(Agent);
+    expect(calledOptions?.method).toBe('POST');
+    expect(JSON.parse(calledOptions?.body as string)).toEqual(payload);
+    expect(calledOptions?.headersTimeout).toBe(300_000);
+    expect(calledOptions?.bodyTimeout).toBe(0);
+    // No dispatcher/Agent — this route no longer feeds a foreign undici
+    // Agent into anything (see #3440).
+    expect(calledOptions).not.toHaveProperty('dispatcher');
 
-    const headers = calledOptions.headers as Headers;
-    expect(headers.get('Content-Type')).toBe('application/json');
-    expect(headers.get('Accept')).toBe('text/event-stream');
-    expect(headers.get('X-Client-Supports-SSE')).toBe('true');
-    expect(headers.get('X-Client-Supports-Structured-Events')).toBe('true');
-    expect(headers.get('X-Client-Supports-Streaming')).toBe('true');
-    expect(headers.get('X-Client-Version')).toBe('web-ui/1.0.0');
-    expect(headers.get('X-Client-Max-Event-Size')).toBe('0');
+    // Object.fromEntries(new Headers(...).entries()) preserves whatever
+    // casing this runtime's Headers implementation normalizes to — do a
+    // case-insensitive lookup rather than coupling the assertion to it.
+    const headers = new Headers(calledOptions?.headers as HeadersInit);
+    expect(headers.get('content-type')).toBe('application/json');
+    expect(headers.get('accept')).toBe('text/event-stream');
+    expect(headers.get('x-client-supports-sse')).toBe('true');
+    expect(headers.get('x-client-supports-structured-events')).toBe('true');
+    expect(headers.get('x-client-supports-streaming')).toBe('true');
+    expect(headers.get('x-client-version')).toBe('web-ui/1.0.0');
+    expect(headers.get('x-client-max-event-size')).toBe('0');
+    expect(headers.get('x-api-key')).toBe('secret-key');
+  });
+
+  it('honors NYXGPT_CHAT_STREAM_HEADERS_TIMEOUT_MS to accommodate cold model loads', async () => {
+    process.env.NYXGPT_CHAT_STREAM_HEADERS_TIMEOUT_MS = '900000';
+    mockUpstream(200, makeBody([]));
+
+    const { POST } = await import(ROUTE_PATH);
+    const req = makeRequest(JSON.stringify({ prompt: 'hi' }));
+    await POST(req as never);
+
+    const [, calledOptions] = mockedRequest.mock.calls[0];
+    expect(calledOptions?.headersTimeout).toBe(900_000);
   });
 
   it('falls back to Date.now() when performance.now is unavailable', async () => {
-    const mockReader = makeReaderFromChunks([]);
-    global.fetch = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      body: { getReader: () => mockReader },
-      text: vi.fn(),
-      headers: new Headers(),
-    });
+    mockUpstream(200, makeBody([]));
     const originalNow = performance.now;
     // Shadow the prototype's now() with a non-function own property to
     // simulate a runtime where performance exists but lacks now().
@@ -376,19 +334,13 @@ describe('/api/chat/stream POST route', () => {
 
   it('uses NYXGPT_API_BASE_URL when set to build the upstream URL', async () => {
     process.env.NYXGPT_API_BASE_URL = 'http://custom-backend:9000';
-    mockUpstream({
-      ok: true,
-      status: 200,
-      body: null,
-      text: vi.fn().mockResolvedValue(''),
-    });
+    mockUpstream(200, makeBody([]));
 
     const { POST } = await import(ROUTE_PATH);
     const req = makeRequest(JSON.stringify({ prompt: 'hi' }));
     await POST(req as never);
 
-    const calledUrl: string = (global.fetch as ReturnType<typeof vi.fn>).mock
-      .calls[0][0];
+    const [calledUrl] = mockedRequest.mock.calls[0];
     expect(calledUrl).toBe('http://custom-backend:9000/api/v1/chat/stream');
   });
 });

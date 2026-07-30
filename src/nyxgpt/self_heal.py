@@ -93,7 +93,7 @@ from nyxgpt.config import (
     get_tracing_enabled,
     load_config,
 )
-from nyxgpt.logging import get_correlation_id, mint_correlation_id
+from nyxgpt.logging import get_correlation_id, get_log_dir, mint_correlation_id
 
 logger = logging.getLogger(__name__)
 
@@ -304,17 +304,22 @@ def _which(prog: str) -> str | None:
     return shutil.which(prog)
 
 
-def _run(cmd: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess[str]:
+def _run(
+    cmd: list[str], timeout: float = 30.0, *, expected: bool = False
+) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text instead of raising on failure.
 
     Non-zero exits are logged with the command and a stderr tail so a failed
     probe/restart action is visible in Loki even when the caller only checks
-    `returncode` (#3415 gap 5).
+    `returncode` (#3415 gap 5). Pass `expected=True` for read-only probes where
+    a non-zero exit is a normal outcome, to log at DEBUG instead of WARNING.
     """
     result = subprocess.run(cmd, check=False, text=True, capture_output=True, timeout=timeout)
     if result.returncode != 0:
-        logger.warning(
-            "Subprocess exited non-zero",
+        level = logging.DEBUG if expected else logging.WARNING
+        logger.log(
+            level,
+            f"Subprocess exited non-zero (rc={result.returncode}): {' '.join(cmd)}",
             extra={
                 "component": "self_heal",
                 "cmd": cmd,
@@ -473,7 +478,7 @@ def _brew_services_snapshot() -> dict[str, str]:
     if _which("brew") is None:
         return {}
     try:
-        cp = _run(["brew", "services", "list"])
+        cp = _run(["brew", "services", "list"], expected=True)
     except Exception as e:
         logger.warning("self-heal: failed to query brew services list: %s", e)
         return {}
@@ -492,7 +497,10 @@ def _native_container_state(name: str) -> str:
     if _which("docker") is None:
         return "absent"
     try:
-        cp = _run(["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.State}}"])
+        cp = _run(
+            ["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.State}}"],
+            expected=True,
+        )
     except Exception as e:
         logger.warning("self-heal: failed to query docker state for %s: %s", name, e)
         return "absent"
@@ -514,7 +522,8 @@ def _native_container_health(name: str) -> str:
                 "-f",
                 "{{if .State.Health}}{{.State.Health.Status}}{{end}}",
                 name,
-            ]
+            ],
+            expected=True,
         )
     except Exception as e:
         logger.warning("self-heal: failed to query docker health for %s: %s", name, e)
@@ -602,6 +611,7 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
                 "json",
             ],
             timeout=15.0,
+            expected=True,
         )
     except Exception as e:
         logger.warning("self-heal: failed to query kubernetes pods: %s", e)
@@ -757,7 +767,7 @@ def _desired_compose_services(profiles: set[str], *, exclude_one_shot: bool = Tr
     for profile in sorted(profiles):
         cmd += ["--profile", profile]
     try:
-        cp = _run(cmd + ["config", "--services"])
+        cp = _run(cmd + ["config", "--services"], expected=True)
     except Exception as e:
         logger.warning("self-heal: failed to resolve desired compose services: %s", e)
         return set()
@@ -960,7 +970,10 @@ def _list_compose_component_status() -> list[ComponentStatus]:
     if _which("docker") is None:
         return []
     try:
-        cp = _run(["docker", "compose", "-f", str(COMPOSE_FILE), "ps", "-a", "--format", "json"])
+        cp = _run(
+            ["docker", "compose", "-f", str(COMPOSE_FILE), "ps", "-a", "--format", "json"],
+            expected=True,
+        )
     except Exception as e:
         logger.warning("self-heal: failed to query docker compose ps: %s", e)
         return []
@@ -1216,13 +1229,14 @@ def heal_kubernetes_pod(pod_name: str) -> HealResult:
     return HealResult(True, f"Deleted pod {pod_name} for recreation")
 
 
-def component_logs(service: str, *, tail: int = 200) -> HealResult:
-    """Fetch recent logs for a single Compose service: `docker compose logs <service>`.
+def _compose_component_logs(service: str, *, tail: int = 200) -> HealResult:
+    """Fetch recent logs for a Compose service: `docker compose logs <service>`.
 
-    Backs `nyxgpt ops logs` -- the wrapped way to read a container's output
-    (e.g. the GlitchTip registration confirmation link the `errors` profile
-    prints to stdout via its console email backend) without the user needing
-    to run a raw `docker`/`docker compose` command themselves.
+    The fallback (and, for any service `component_logs` doesn't recognize as
+    native/Terraform/Kubernetes-managed -- e.g. an observability container
+    like `glitchtip`/`grafana`/`loki` -- the primary) path for reading a
+    container's output without the user needing to run a raw `docker`/
+    `docker compose` command themselves.
     """
     if _which("docker") is None:
         return HealResult(False, "docker not found; cannot fetch logs")
@@ -1251,6 +1265,171 @@ def component_logs(service: str, *, tail: int = 200) -> HealResult:
     return HealResult(
         True, f"Fetched last {tail} log line(s) for {service}", (cp.stdout or "").strip()
     )
+
+
+def _tail_text_file(path: Path, tail: int) -> str:
+    """Return the last `tail` lines of `path`, or "" if it's missing/unreadable."""
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as e:
+        logger.warning("self-heal: failed to read log file %s: %s", path, e)
+        return ""
+    return "\n".join(lines[-tail:]) if tail > 0 else ""
+
+
+def _brew_prefix() -> str | None:
+    """Resolve Homebrew's install prefix (e.g. `/opt/homebrew`), or None if it can't be found.
+
+    Tries `brew --prefix` first, falling back to the two conventional
+    locations (Apple Silicon/Intel) -- mirrors
+    `scripts/follow-ollama-logs.sh`'s own `native_ollama_log()` resolution.
+    """
+    if _which("brew") is not None:
+        try:
+            cp = _run(["brew", "--prefix"], expected=True)
+        except Exception as e:
+            logger.warning("self-heal: failed to resolve brew --prefix: %s", e)
+            cp = None
+        if cp is not None and cp.returncode == 0:
+            prefix = (cp.stdout or "").strip()
+            if prefix:
+                return prefix
+    for candidate in ("/opt/homebrew", "/usr/local"):
+        if Path(candidate, "var", "log").is_dir():
+            return candidate
+    return None
+
+
+def _docker_container_logs(container: str, *, tail: int) -> HealResult:
+    """Fetch recent logs for a plain (non-Compose) Docker container: `docker logs <container>`.
+
+    Backs the native `nyxgpt-cassandra` container and any Terraform-managed
+    (`nyxgpt-tf-*`) component -- both plain `docker run`/Terraform-created
+    containers rather than Compose services, so `docker compose logs` can't
+    see them at all.
+    """
+    if _which("docker") is None:
+        return HealResult(False, "docker not found; cannot fetch logs")
+    try:
+        cp = _run(["docker", "logs", "--tail", str(tail), container], timeout=30.0)
+    except Exception as e:
+        return HealResult(
+            False, f"Failed to fetch logs for {container}", f"{type(e).__name__}: {e}"
+        )
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return HealResult(False, f"Failed to fetch logs for {container}", details.strip())
+    output = (cp.stdout or "").strip()
+    if (cp.stderr or "").strip():
+        output = (output + "\n" + cp.stderr.strip()).strip()
+    return HealResult(True, f"Fetched last {tail} log line(s) for {container}", output)
+
+
+def _kubernetes_pod_logs(pod_name: str, *, tail: int) -> HealResult:
+    """Fetch recent logs for a Kubernetes-managed Pod: `kubectl logs <pod>`."""
+    if _which("kubectl") is None:
+        return HealResult(False, f"kubectl not found; cannot fetch logs for {pod_name}")
+    try:
+        cp = _run(
+            ["kubectl", "logs", "-n", K8S_NAMESPACE, "--tail", str(tail), pod_name],
+            timeout=30.0,
+        )
+    except Exception as e:
+        return HealResult(False, f"Failed to fetch logs for {pod_name}", f"{type(e).__name__}: {e}")
+    if cp.returncode != 0:
+        details = (cp.stdout or "").strip() + (
+            "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
+        )
+        return HealResult(False, f"Failed to fetch logs for {pod_name}", details.strip())
+    return HealResult(
+        True, f"Fetched last {tail} log line(s) for {pod_name}", (cp.stdout or "").strip()
+    )
+
+
+def _native_component_logs(service: str, *, tail: int) -> HealResult:
+    """Fetch recent logs for a native/local-first core component from its real source.
+
+    `cassandra` is the plain `nyxgpt-cassandra` Docker container, read via
+    `_docker_container_logs` just like a Terraform component. `api`'s own
+    structured logs and `ollama`'s aggregated logs (written regardless of
+    mode by the `com.nyxgpt.ollama-logs` LaunchAgent -- see
+    docs/api.md#ollama-logs) are both plain files under `~/.nyxGPT/logs`
+    (`api.log`/`ollama.log`). `web` has no structured logging of its own yet
+    (#3430), so it's read from Homebrew's own launchd stdout/stderr
+    (`nyxgpt-web.log`/`.err.log` -- see docs/homebrew.md#web-ui-logs).
+    """
+    if service == "cassandra":
+        return _docker_container_logs(NATIVE_CASSANDRA_CONTAINER, tail=tail)
+
+    if service in ("api", "ollama"):
+        log_file = get_log_dir() / f"{service}.log"
+        if not log_file.exists():
+            return HealResult(False, f"No log file found for {service}: {log_file}")
+        return HealResult(
+            True,
+            f"Fetched last {tail} log line(s) for {service}",
+            _tail_text_file(log_file, tail),
+        )
+
+    if service == "web":
+        prefix = _brew_prefix()
+        if prefix is None:
+            return HealResult(False, "Homebrew not found; cannot locate web service logs")
+        out_file = Path(prefix, "var", "log", "nyxgpt-web.log")
+        err_file = Path(prefix, "var", "log", "nyxgpt-web.err.log")
+        if not out_file.exists() and not err_file.exists():
+            return HealResult(False, f"No log files found for web: {out_file}, {err_file}")
+        sections = []
+        if out_file.exists():
+            sections.append(f"--- stdout ({out_file}) ---\n{_tail_text_file(out_file, tail)}")
+        if err_file.exists():
+            sections.append(f"--- stderr ({err_file}) ---\n{_tail_text_file(err_file, tail)}")
+        return HealResult(True, f"Fetched last {tail} log line(s) for web", "\n".join(sections))
+
+    return HealResult(False, f"Unknown native component: {service}")
+
+
+def component_logs(service: str, *, tail: int = 200) -> HealResult:
+    """Fetch recent logs for a component, dispatched by its actual deployment mode.
+
+    Backs `nyxgpt ops logs` -- the wrapped way to read a component's output
+    without the user needing to run a raw `docker`/`docker compose`/`brew`/
+    `kubectl` command themselves. `docker compose logs` only ever sees
+    Compose containers, so a Compose-only implementation is blind in native/
+    Terraform/Kubernetes deployments: it reports a hollow success (an empty
+    `docker compose logs` on a service Compose never created) instead of the
+    real log content, or an error (#3442).
+
+    Resolves the requesting `service`'s actual source the same way `ops
+    status`/self-heal already do (`list_component_status`) and dispatches
+    accordingly: native components read their real log files/containers
+    (`_native_component_logs`), Terraform/Kubernetes components read their
+    plain Docker container/Pod logs directly. A `state="absent"` match (e.g.
+    an observability profile enabled in config.ini but torn down) has no log
+    source at all, so it fails explicitly rather than returning a hollow
+    success. Anything `list_component_status` doesn't recognize (an
+    observability container like `glitchtip`, or a genuinely unknown service
+    name) falls through to `_compose_component_logs`, which already reports
+    a clear failure for a nonexistent service.
+    """
+    status = next((s for s in list_component_status() if s.service == service), None)
+    if status is not None:
+        if status.state == "absent":
+            return HealResult(
+                False,
+                f"{service} is not currently running; no logs to show",
+                "state=absent -- no container/process exists to read logs from",
+            )
+        if status.source == "native":
+            return _native_component_logs(service, tail=tail)
+        if status.source == "terraform":
+            return _docker_container_logs(status.container, tail=tail)
+        if status.source == "kubernetes":
+            return _kubernetes_pod_logs(status.container, tail=tail)
+
+    return _compose_component_logs(service, tail=tail)
 
 
 def heal_now(

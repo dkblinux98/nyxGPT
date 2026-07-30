@@ -95,19 +95,26 @@ brew services stop nyxgpt-api
 
 ### API logs
 
-Service logs are written to:
+The application's own structured logs (requests, self-heal, canary, RAG, ...) are written to:
 
 ```
-~/.nyxGPT/logs/nyxgpt.log
+~/.nyxGPT/logs/api.log
 ```
 
 Tail logs in real time:
 
 ```bash
-tail -f ~/.nyxGPT/logs/nyxgpt.log
+tail -f ~/.nyxGPT/logs/api.log
 ```
 
-If the service fails to start, check these logs first.
+If the service fails to start (e.g. a crash before Python logging is even
+configured), check Homebrew's own service log instead -- it captures the
+process's raw stdout/stderr from the moment it launches:
+
+```bash
+tail -f "$(brew --prefix)/var/log/nyxgpt-api.log"
+tail -f "$(brew --prefix)/var/log/nyxgpt-api.err.log"
+```
 
 ---
 
@@ -145,21 +152,22 @@ brew services stop nyxgpt-web
 
 ### Web UI logs
 
-Service logs are written to:
+The web UI has no structured `nyxgpt.logging`-based logging yet (tracked by
+#3430), so Homebrew's own service log is the only place to look. Written to:
 
 ```
-~/.nyxGPT/logs/nyxgpt-web.log
-~/.nyxGPT/logs/nyxgpt-web.err.log
+$(brew --prefix)/var/log/nyxgpt-web.log
+$(brew --prefix)/var/log/nyxgpt-web.err.log
 ```
 
 Tail logs in real time:
 
 ```bash
 # Standard output logs
-tail -f ~/.nyxGPT/logs/nyxgpt-web.log
+tail -f "$(brew --prefix)/var/log/nyxgpt-web.log"
 
 # Error logs
-tail -f ~/.nyxGPT/logs/nyxgpt-web.err.log
+tail -f "$(brew --prefix)/var/log/nyxgpt-web.err.log"
 ```
 
 ---
@@ -330,7 +338,7 @@ After starting both services:
 
 2. Check API logs:
    ```bash
-   tail -f ~/.nyxGPT/logs/nyxgpt.log
+   tail -f ~/.nyxGPT/logs/api.log
    ```
 
 3. Restart API service:
@@ -344,10 +352,12 @@ After starting both services:
 
 **Solutions**:
 
-1. Check logs for errors:
+1. Check logs for errors -- Homebrew's own service logs capture a crash
+   before the process even reaches Python/Node logging setup, so check
+   these first regardless of which service failed:
    ```bash
-   tail -f ~/.nyxGPT/logs/nyxgpt.log
-   tail -f ~/.nyxGPT/logs/nyxgpt-web.err.log
+   tail -f "$(brew --prefix)/var/log/nyxgpt-api.err.log"
+   tail -f "$(brew --prefix)/var/log/nyxgpt-web.err.log"
    ```
 
 2. Verify configuration is valid:

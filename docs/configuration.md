@@ -245,7 +245,11 @@ dir = ~/.nyxGPT/logs
 | `level` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, etc.) |
 | `dir` | Directory where logs are written (default: `~/.nyxGPT/logs`) |
 
-All components (CLI, API, tests) use this centralized configuration. Logs are written to `{dir}/nyxgpt.log` with automatic rotation.
+All components use this centralized configuration, each writing to its own rotated file under
+`{dir}`: the API process writes `api.log`, and every `nyxgpt` CLI invocation (including
+`nyxgpt ops ...`) writes `cli.log` -- kept separate so Loki's `service_name` label (see
+[docker-compose.md#log-aggregation](docker-compose.md#log-aggregation)) is accurate per line
+instead of guessed.
 
 **Note:** Changes to the logging `level` are **applied at runtime without restart**.
 

@@ -254,6 +254,11 @@ see [`nyxgpt ops stop`](ops.md#nyxgpt-ops-stop) and
     proxy routes also forward `NYXGPT_AUTH_API_KEY` as the `X-API-Key`
     header on every backend call, since `docker/config.docker.ini` enables
     auth for exactly this reason (see the `[auth]` section).
+  - `NYXGPT_CHAT_STREAM_HEADERS_TIMEOUT_MS` (optional, default `300000` — 5
+    minutes) overrides how long the `chat/stream` proxy route waits for the
+    api to send response headers before giving up. Raise it if a cold local
+    model load (first chat after a restart) regularly takes longer than the
+    default (#3440).
 
 ## Network binding
 
@@ -434,8 +439,22 @@ different places, so promtail is wired to tail both:
   separately bind-mounts that host directory read-only at
   `/var/log/nyxgpt-native`.
 
-`docker/promtail-config.yml` scrapes both paths under the same `job`
-label, so log streams from either mode are indistinguishable in Grafana.
+`docker/promtail-config.yml` scrapes both paths under the same `job` label
+(`nyxgpt`), so a query filtering only on `job` still spans both deployment
+modes. Each target additionally carries an explicit `service_name` label
+from a fixed, bounded set -- `api`, `cli`, `ollama`, `cassandra` (`web`
+joins once #3430 lands) -- so Grafana's Logs Drilldown service breakdown
+shows the real services instead of one flat, undifferentiated bucket
+(#3441). The API process writes `api.log` and every `nyxgpt` CLI invocation
+writes `cli.log` (see [configuration.md](configuration.md#logging-section)),
+so those two are distinguishable even though both can appear in either
+directory. Ollama and Cassandra are never nyxgpt Python processes -- their
+logs only ever land in the native-mode directory, written as real files by
+the `follow-ollama-logs.sh`/`follow-cassandra-logs.sh` LaunchAgents
+(never a symlink -- a symlink whose target lives outside
+`~/.nyxGPT/logs` is unreachable from inside promtail's own bind-mounted
+container view, see [api.md#ollama-logs](api.md#ollama-logs)).
+
 If you're running native mode and don't see logs in Grafana, run `nyxgpt
 ops doctor` first -- it flags a missing native-log bind mount by
 inspecting the *running* promtail container's mounts (`docker inspect`,
@@ -445,6 +464,24 @@ silently-empty dashboard. `nyxgpt ops doctor` also reports a per-component
 log volume for the last 24h (via Loki), so an idle curated component
 (e.g. canary on a native install that's never run a k8s operation)
 isn't mistaken for a broken pipeline.
+
+That log-volume check queries Loki through Grafana's datasource-proxy API
+(`/api/datasources/proxy/uid/loki/...`), which requires authentication. It
+does **not** use the shared `[monitoring] grafana_admin_password` for this
+-- that password lives in config.ini and can drift from whatever a
+long-running Grafana container's own database actually has (a regenerated
+config.ini, a hand-edited `.env`, ...), which used to make the check 401 on
+an otherwise-healthy stack (#3438). Instead, `nyxgpt ops install`/
+`nyxgpt ops observability` mint a dedicated Viewer-scoped Grafana
+service-account token the first time they run and write it to
+`~/.nyxGPT/secrets/grafana-doctor-token` (0600, git-ignored) -- the same
+`~/.nyxGPT/secrets` pattern the GlitchTip→Grafana token uses (see
+[Error Tracking](#error-tracking) below), just read by this process
+directly instead of by Grafana's own provisioning. If that file is missing,
+or Grafana rejects the token (401), `nyxgpt ops doctor` reports it as an
+actionable finding instead of silently omitting the log-volume line; fix
+either case by re-running `nyxgpt ops install` (delete the token file first
+if Grafana rejected it, to force minting a fresh one).
 
 nyxgpt logs timestamps in UTC (see `nyxgpt.logging.configure_logging`) and
 `docker/promtail-config.yml`'s `timestamp` stage is told the same
@@ -689,6 +726,24 @@ config.ini and rebuild the web image/formula to enable it -- see
 [configuration.md](configuration.md#web-tier-environment-variables). This
 manual sync (there's no automatic config.ini → build-arg pipeline yet) is
 a known follow-up.
+
+**Linux note (#3432):** `nyxgpt ops install` creates `~/.nyxGPT/secrets`
+itself, before Grafana's bind mount can touch it, so the token write above
+just works. If you ever see `nyxgpt ops glitchtip-init` fail with a
+permission error on that directory, it means something (usually a raw
+`docker compose up` run outside `nyxgpt ops`, or a pre-fix install) let
+Docker create `~/.nyxGPT/secrets` as root first -- `docker`'s daemon runs
+as root on Linux and auto-creates a missing bind-mount source directory
+owned by root the first time a container starts, which then blocks this
+(non-root) write. `nyxgpt ops doctor` flags this (secrets dir not writable,
+or the token file missing while the observability stack is up); fix with
+`sudo chown -R $(whoami) ~/.nyxGPT/secrets` and re-run
+`nyxgpt ops install`. The GlitchTip datasource also lives in its own
+provisioning file (`docker/grafana/provisioning/datasources/glitchtip.yml`,
+separate from `datasource.yml`'s Prometheus/Loki/Jaeger) so a missing token
+never takes those other datasources down with it -- only the GlitchTip
+panels are affected until the token is fixed. This doesn't affect macOS:
+Docker Desktop's VM handles bind-mount ownership differently.
 
 ## Self-Healing
 

@@ -246,7 +246,7 @@ async def lifespan(_app: FastAPI):
     # Initialize centralized logging once for the API process
     cfg = load_config(None)
     try:
-        configure_logging(cfg, console=False)
+        configure_logging(cfg, console=False, filename="api.log")
         log.info("Centralized logging initialized", extra={"component": "startup"})
     except Exception as e:
         # Logging should not prevent API startup
@@ -505,7 +505,7 @@ async def load_cfg_and_refresh_logging(request: Request, call_next):
     # configure_logging() is expected to be idempotent and cheap.
     # Never block request handling on logging reconfiguration.
     with suppress(Exception):
-        configure_logging(cfg, console=False)
+        configure_logging(cfg, console=False, filename="api.log")
 
     return await call_next(request)
 
@@ -885,7 +885,7 @@ def _apply_hot_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
     # Hot-apply logging changes immediately
     try:
         cfg = load_config(None)
-        configure_logging(cfg, console=False)
+        configure_logging(cfg, console=False, filename="api.log")
     except Exception:
         # Do not fail the request if logging reconfig fails
         pass
@@ -1511,7 +1511,7 @@ def config_sections_update(request: Request, payload: dict[str, Any] = Body(...)
     cfg = _req_cfg(request)
 
     with suppress(Exception):
-        configure_logging(cfg, console=False)
+        configure_logging(cfg, console=False, filename="api.log")
 
     observability_result = _reconcile_observability(cfg) if needs_observability else None
 
@@ -1981,12 +1981,15 @@ def self_heal_heal(payload: dict[str, Any] = Body(default={})) -> dict[str, Any]
 
 @api.get("/self-heal/logs")
 def self_heal_logs(service: str, tail: int = Query(default=200, ge=1, le=2000)) -> dict[str, Any]:
-    """Recent Docker Compose logs for one component, from the SRE/admin dashboard.
+    """Recent logs for one component, from the SRE/admin dashboard.
 
-    Lets an operator read a container's console output (e.g. the GlitchTip
-    container's first-account registration confirmation link, printed there by
-    its console email backend) without running a raw `docker`/`docker compose`
-    command themselves.
+    Dispatched by the component's actual deployment mode (Compose/native/
+    Terraform/Kubernetes -- see `self_heal.component_logs`), so this reads
+    the real source (e.g. a native API's own log file) rather than only ever
+    checking Docker Compose. Lets an operator read a component's output
+    (e.g. the GlitchTip container's first-account registration confirmation
+    link, printed there by its console email backend) without running a raw
+    `docker`/`docker compose`/`kubectl` command themselves.
     """
     result = self_heal_module.component_logs(service, tail=tail)
     if not result.ok:
@@ -3304,7 +3307,7 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                 # failure: once the response has started, FastAPI/uvicorn have no
                 # request context left to log with, so if we don't log here the
                 # upstream Ollama/model-runtime detail (status, model, message) is
-                # never written to nyxgpt.log and is invisible in the log viewer.
+                # never written to api.log and is invisible in the log viewer.
                 log.error(
                     "Chat stream failed",
                     extra={

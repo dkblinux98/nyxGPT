@@ -1,15 +1,21 @@
 import { NextRequest } from "next/server";
-import { Agent } from "undici";
-import { apiFetch } from "@/lib/apiProxy";
+import { request as undiciRequest } from "undici";
+import { apiUrl, attachApiKey } from "@/lib/apiProxy";
 import { logger } from "@/lib/logger";
 import { resolveRequestId, withRequestId } from "@/lib/requestContext";
 
-// Undici defaults can abort long-lived streaming responses.
-// Configure a local agent with no body timeout.
-const agent = new Agent({
-  bodyTimeout: 0, // 0 disables the body timeout entirely
-  headersTimeout: 60_000,
-});
+// This route drives the upstream call through the `undici` package's own
+// request() rather than Next's built-in `fetch`. Next 16 bundles its own
+// (newer-major) undici for global fetch; handing that fetch a dispatcher
+// built from the `undici` version pinned in package.json broke instantly
+// with UND_ERR_INVALID_ARG (the v7-bundled fetch's dispatch-handler
+// interface renamed the v6 Agent's `onError` callback) — see #3440. Calling
+// this package's own request() sidesteps the coupling entirely: the HTTP
+// client and every option it understands come from the exact same undici
+// major version, regardless of what Next/Node happen to bundle for global
+// fetch. Do not resurrect a `dispatcher`/Agent passed into `fetch()` here.
+const HEADERS_TIMEOUT_MS =
+  Number(process.env.NYXGPT_CHAT_STREAM_HEADERS_TIMEOUT_MS) || 300_000; // 5 min: must outlast a cold local-model load, not just a warm one
 
 // High-resolution timer compatible with browsers and Node.js
 function nowMs(): number {
@@ -34,7 +40,7 @@ export async function POST(req: NextRequest) {
   // withRequestLog's ambient AsyncLocalStorage context) because this
   // handler's ReadableStream `pull`/`cancel` callbacks fire long after the
   // handler itself has returned -- logging from them needs the same request
-  // id apiFetch already attached as X-Request-Id on the upstream call.
+  // id this handler attached as X-Request-Id on the upstream call.
   const requestId = resolveRequestId(req);
   const log = {
     info: (message: string) => withRequestId(requestId, () => logger.info(message)),
@@ -62,27 +68,36 @@ export async function POST(req: NextRequest) {
     `chat/stream: start session=${session ?? ""} prompt_len=${promptLen ?? ""} upstream=${upstreamPath}`
   );
 
-  let upstream: Response;
+  let statusCode: number;
+  let upstreamBody: Awaited<ReturnType<typeof undiciRequest>>["body"];
   try {
-    upstream = await withRequestId(requestId, () =>
-      apiFetch(upstreamPath, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          // Client capability hints for content negotiation
-          "Accept": "text/event-stream",
-          "X-Client-Supports-SSE": "true",
-          "X-Client-Supports-Structured-Events": "true",
-          "X-Client-Supports-Streaming": "true",
-          "X-Client-Version": "web-ui/1.0.0",
-          "X-Client-Max-Event-Size": "0",  // 0 = unlimited
-        },
-        body: JSON.stringify(body),
-        // @ts-expect-error - Next/undici fetch supports dispatcher
-        dispatcher: agent,
-        cache: "no-store",
+    const headers = attachApiKey(
+      new Headers({
+        "Content-Type": "application/json",
+        // Client capability hints for content negotiation
+        "Accept": "text/event-stream",
+        "X-Client-Supports-SSE": "true",
+        "X-Client-Supports-Structured-Events": "true",
+        "X-Client-Supports-Streaming": "true",
+        "X-Client-Version": "web-ui/1.0.0",
+        "X-Client-Max-Event-Size": "0", // 0 = unlimited
       })
     );
+    // This route bypasses apiFetch (fetch-based), so forward the correlation
+    // id explicitly -- same header apiFetch attaches ambiently (#3430).
+    if (!headers.has("X-Request-Id")) {
+      headers.set("X-Request-Id", requestId);
+    }
+
+    const result = await undiciRequest(apiUrl(upstreamPath), {
+      method: "POST",
+      headers: Object.fromEntries(headers.entries()),
+      body: JSON.stringify(body),
+      headersTimeout: HEADERS_TIMEOUT_MS,
+      bodyTimeout: 0, // a long-lived SSE stream must never time out on an idle gap between chunks
+    });
+    statusCode = result.statusCode;
+    upstreamBody = result.body;
   } catch (e) {
     log.error(`chat/stream: upstream fetch failed after ${nowMs() - startMs}ms`, e);
     return new Response(JSON.stringify({ error: "Upstream unreachable" }), {
@@ -91,12 +106,14 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  log.info(`chat/stream: upstream status=${upstream.status} after ${nowMs() - startMs}ms`);
+  log.info(`chat/stream: upstream status=${statusCode} after ${nowMs() - startMs}ms`);
 
-  if (!upstream.ok || !upstream.body) {
+  // undici's request() only resolves with the final response — informational
+  // (1xx) statuses are consumed internally, so statusCode is always >= 200.
+  if (statusCode >= 300) {
     let detail = "";
     try {
-      detail = await upstream.text();
+      detail = await upstreamBody.text();
     } catch {
       // ignore
     }
@@ -105,17 +122,20 @@ export async function POST(req: NextRequest) {
       `chat/stream: upstream not ok after ${nowMs() - startMs}ms detail_len=${detail.length}`
     );
 
+    // Pass the real upstream status through instead of flattening every
+    // failure to a generic 502 — the browser needs to tell "backend down"
+    // apart from "backend rejected the request" / "model runtime error".
     return new Response(
       JSON.stringify({ error: "Upstream chat stream failed", detail }),
       {
-        status: 502,
+        status: statusCode,
         headers: { "Content-Type": "application/json", "X-Request-Id": requestId },
       }
     );
   }
 
   // Wrap the upstream stream so we can log “time to first byte” and end-of-stream.
-  const reader = upstream.body.getReader();
+  const iterator = upstreamBody[Symbol.asyncIterator]();
   const encoder = new TextEncoder();
 
   let sawFirst = false;
@@ -124,7 +144,7 @@ export async function POST(req: NextRequest) {
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
-        const { done, value } = await reader.read();
+        const { done, value } = await iterator.next();
         if (done) {
           log.info(`chat/stream: end after ${nowMs() - startMs}ms bytes=${totalBytes}`);
           controller.close();
@@ -152,7 +172,7 @@ export async function POST(req: NextRequest) {
     },
     async cancel() {
       try {
-        await reader.cancel();
+        upstreamBody.destroy();
       } catch {
         // ignore
       }

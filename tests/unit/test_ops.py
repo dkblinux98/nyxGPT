@@ -1,4 +1,6 @@
 import hashlib
+import json
+import logging
 import subprocess
 import tarfile
 from configparser import ConfigParser
@@ -49,9 +51,10 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
-        patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok_results),
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok_results) as obs,
         patch.object(ops, "_provision_glitchtip", return_value=ok_results),
     ):
@@ -85,9 +88,12 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_install_homebrew_api", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_homebrew_web", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_ollama_service", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "sync_env_from_config", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_persist_compose_file_path", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(
+            ops, "_ensure_glitchtip_secrets_dir", return_value=[ops.OpsResult(True, "ok")]
+        ),
         patch.object(
             ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "ok")]
         ),
@@ -117,7 +123,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
-        patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops, "_reconcile_grafana_provisioning") as obs,
@@ -164,7 +170,9 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         patch.object(ops, "_install_homebrew_api", side_effect=_record("homebrew api")),
         patch.object(ops, "_install_homebrew_web", side_effect=_record("homebrew web")),
         patch.object(ops, "_ensure_ollama_service", side_effect=_record("ollama service")),
-        patch.object(ops, "_ensure_log_symlinks", side_effect=_record("log symlinks")),
+        patch.object(
+            ops, "_cleanup_stale_log_symlinks", side_effect=_record("stale log symlink cleanup")
+        ),
         patch.object(ops, "sync_env_from_config", side_effect=_record("env sync")),
         patch.object(ops, "_persist_compose_file_path", side_effect=_record("compose file path")),
     ):
@@ -201,7 +209,7 @@ def test_ops_install_clears_intentional_stop_markers_for_core_components():
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
-        patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
@@ -423,7 +431,7 @@ def test_restart_docker_container_recovers_previously_running_container(monkeypa
         # container is down). 3rd call: post-recovery check (True, back up).
         return "running" if state_calls["n"] in (1, 3) else "exited"
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:2] == ["docker", "restart"]:
             return CP(returncode=1, stderr="port is already allocated")
         if cmd[:2] == ["docker", "start"]:
@@ -455,7 +463,7 @@ def test_restart_docker_container_reports_down_when_unrecoverable(monkeypatch):
 
     fake_docker_container_state.n = 0
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:2] == ["docker", "restart"]:
             return CP(returncode=1, stderr="port is already allocated")
         if cmd[:2] == ["docker", "start"]:
@@ -558,7 +566,7 @@ def test_ops_status_smoke(monkeypatch, capsys):
             self.stderr = ""
             self.returncode = 0
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:3] == ["brew", "services", "list"]:
             return CP(stdout="Name Status User File\nnyxgpt-web started user plist\n")
         if cmd[:2] == ["launchctl", "list"]:
@@ -908,7 +916,7 @@ def test_ops_doctor_flags_missing_promtail_native_mount(monkeypatch, capsys, tmp
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
     monkeypatch.setattr(ops, "_promtail_container_id", lambda: "abc123")
     monkeypatch.setattr(ops, "_promtail_native_mount_missing", lambda container_id: True)
-    monkeypatch.setattr(ops, "_loki_recent_volume_by_logger", lambda *a, **kw: None)
+    monkeypatch.setattr(ops, "_loki_recent_volume_by_logger", lambda *a, **kw: (None, None))
 
     rc = ops.doctor(MagicMock())
     assert rc == 2
@@ -934,7 +942,10 @@ def test_ops_doctor_prints_loki_volume_by_logger_when_available(monkeypatch, cap
     monkeypatch.setattr(
         ops,
         "_loki_recent_volume_by_logger",
-        lambda *a, **kw: {"self_heal": 0, "deploy": 0, "canary": 0, "chat": 142, "rag": 8},
+        lambda *a, **kw: (
+            {"self_heal": 0, "deploy": 0, "canary": 0, "chat": 142, "rag": 8},
+            None,
+        ),
     )
 
     rc = ops.doctor(MagicMock())
@@ -960,7 +971,7 @@ def test_ops_doctor_omits_loki_volume_when_unreachable(monkeypatch, capsys, tmp_
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
-    monkeypatch.setattr(ops, "_loki_recent_volume_by_logger", lambda *a, **kw: None)
+    monkeypatch.setattr(ops, "_loki_recent_volume_by_logger", lambda *a, **kw: (None, None))
 
     rc = ops.doctor(MagicMock())
     assert rc == 0
@@ -969,8 +980,87 @@ def test_ops_doctor_omits_loki_volume_when_unreachable(monkeypatch, capsys, tmp_
 
 
 @pytest.mark.unit
-def test_loki_recent_volume_by_logger_returns_counts(monkeypatch):
+def test_ops_doctor_flags_missing_grafana_doctor_token(monkeypatch, capsys, tmp_path):
+    """#3438: a missing token is reported as an actionable issue, not a
+    silent skip -- no `~/.nyxGPT/secrets/grafana-doctor-token` written."""
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    _write_log_aggregation_config(cfg_dir / "config.ini")
+    with (cfg_dir / "config.ini").open("a", encoding="utf-8") as f:
+        f.write("\n[tracing]\nenabled = false\n")
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+
+    rc = ops.doctor(MagicMock())
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "grafana-doctor-token" in out
+    assert "nyxgpt ops install" in out
+
+
+@pytest.mark.unit
+def test_ops_doctor_flags_grafana_401_rejected_token(monkeypatch, capsys, tmp_path):
+    """#3438: Grafana rejecting doctor's token (401) is reported as an
+    actionable issue, not a silent `logger.warning` + skip."""
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    _write_log_aggregation_config(cfg_dir / "config.ini")
+    with (cfg_dir / "config.ini").open("a", encoding="utf-8") as f:
+        f.write("\n[tracing]\nenabled = false\n")
+
+    secrets_dir = cfg_dir / "secrets"
+    secrets_dir.mkdir()
+    (secrets_dir / "grafana-doctor-token").write_text("stale-token")
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+
     class _FakeResponse:
+        status_code = 401
+
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError("401", request=None, response=self)
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, params=None):
+            return _FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", _FakeClient)
+
+    rc = ops.doctor(MagicMock())
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "rejected" in out
+    assert "401" in out
+    assert "nyxgpt ops install" in out
+
+
+@pytest.mark.unit
+def test_loki_recent_volume_by_logger_returns_counts(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    (secrets_dir / "grafana-doctor-token").write_text("a-token")
+
+    class _FakeResponse:
+        status_code = 200
+
         def __init__(self, value):
             self._value = value
 
@@ -995,21 +1085,68 @@ def test_loki_recent_volume_by_logger_returns_counts(monkeypatch):
 
     monkeypatch.setattr(ops.httpx, "Client", _FakeClient)
 
-    volumes = ops._loki_recent_volume_by_logger("http://localhost:3001", "secret")
+    volumes, issue = ops._loki_recent_volume_by_logger("http://localhost:3001")
+    assert issue is None
     assert volumes["self_heal"] == 7
     assert volumes["chat"] == 0
     assert set(volumes) == set(ops.LOKI_CURATED_LOGGERS)
 
 
 @pytest.mark.unit
-def test_loki_recent_volume_by_logger_returns_none_on_error(monkeypatch):
+def test_loki_recent_volume_by_logger_returns_none_on_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    (secrets_dir / "grafana-doctor-token").write_text("a-token")
+
     class _FailingClient:
         def __init__(self, *a, **kw):
             raise httpx.ConnectError("refused")
 
     monkeypatch.setattr(ops.httpx, "Client", _FailingClient)
 
-    assert ops._loki_recent_volume_by_logger("http://localhost:3001", "secret") is None
+    assert ops._loki_recent_volume_by_logger("http://localhost:3001") == (None, None)
+
+
+@pytest.mark.unit
+def test_loki_recent_volume_by_logger_missing_token_is_actionable(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    volumes, issue = ops._loki_recent_volume_by_logger("http://localhost:3001")
+    assert volumes is None
+    assert "grafana-doctor-token" in issue
+    assert "nyxgpt ops install" in issue
+
+
+@pytest.mark.unit
+def test_loki_recent_volume_by_logger_401_is_actionable_not_silent(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    (secrets_dir / "grafana-doctor-token").write_text("stale-token")
+
+    class _FakeResponse:
+        status_code = 401
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, params=None):
+            return _FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", _FakeClient)
+
+    volumes, issue = ops._loki_recent_volume_by_logger("http://localhost:3001")
+    assert volumes is None
+    assert "401" in issue
+    assert "rejected" in issue
 
 
 def _write_config(path, *, api_key="", grafana_password="", auth_enabled="false"):
@@ -1255,13 +1392,16 @@ def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit_when_check_false(caplog):
         run.return_value = subprocess.CompletedProcess(
             args=["false"], returncode=1, stdout="", stderr="boom\n"
         )
-        with caplog.at_level("WARNING", logger="nyxgpt.ops"):
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
             cp = ops._run(["false"], check=False)
 
     assert cp.returncode == 1
-    records = [r for r in caplog.records if r.getMessage() == "Subprocess exited non-zero"]
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
     assert records, "Expected _run to log the non-zero exit"
     record = records[0]
+    assert record.levelno == logging.WARNING
+    assert "rc=1" in record.getMessage()
+    assert "false" in record.getMessage()
     assert record.cmd == ["false"]
     assert record.returncode == 1
     assert "boom" in record.stderr_tail
@@ -1270,15 +1410,50 @@ def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit_when_check_false(caplog):
 @pytest.mark.unit
 def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit_when_check_true(caplog):
     with (
-        caplog.at_level("WARNING", logger="nyxgpt.ops"),
+        caplog.at_level("DEBUG", logger="nyxgpt.ops"),
         pytest.raises(subprocess.CalledProcessError),
     ):
         ops._run(["python3", "-c", "import sys; sys.stderr.write('boom'); sys.exit(1)"])
 
-    records = [r for r in caplog.records if r.getMessage() == "Subprocess exited non-zero"]
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
     assert records, "Expected _run to log the non-zero exit before raising"
+    assert records[0].levelno == logging.WARNING
+    assert "rc=1" in records[0].getMessage()
     assert records[0].returncode == 1
     assert "boom" in records[0].stderr_tail
+
+
+@pytest.mark.unit
+def test_run_expected_true_logs_debug_not_warning_on_nonzero_exit_check_false(caplog):
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["false"], returncode=1, stdout="", stderr="boom\n"
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            cp = ops._run(["false"], check=False, expected=True)
+
+    assert cp.returncode == 1
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected _run to log the non-zero exit at DEBUG"
+    assert records[0].levelno == logging.DEBUG
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_run_expected_true_logs_debug_not_warning_on_nonzero_exit_check_true(caplog):
+    with (
+        caplog.at_level("DEBUG", logger="nyxgpt.ops"),
+        pytest.raises(subprocess.CalledProcessError),
+    ):
+        ops._run(
+            ["python3", "-c", "import sys; sys.stderr.write('boom'); sys.exit(1)"],
+            expected=True,
+        )
+
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected _run to log the non-zero exit at DEBUG before raising"
+    assert records[0].levelno == logging.DEBUG
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
 
 
 @pytest.mark.unit
@@ -1431,25 +1606,6 @@ def test_sha256_file_matches_hashlib(tmp_path):
 
     expected = hashlib.sha256(p.read_bytes()).hexdigest()
     assert ops._sha256_file(p) == expected
-
-
-@pytest.mark.unit
-def test_brew_prefix_returns_run_output(monkeypatch):
-    monkeypatch.setattr(
-        ops,
-        "_run",
-        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="/opt/homebrew\n"),
-    )
-    assert ops._brew_prefix() == Path("/opt/homebrew")
-
-
-@pytest.mark.unit
-def test_brew_prefix_falls_back_on_exception(monkeypatch):
-    def raise_run(cmd, **k):
-        raise FileNotFoundError("no brew")
-
-    monkeypatch.setattr(ops, "_run", raise_run)
-    assert ops._brew_prefix() == Path("/opt/homebrew")
 
 
 @pytest.mark.unit
@@ -2883,135 +3039,88 @@ def test_reconcile_phantom_compose_app_containers_reports_per_service_failure():
     assert "conflict" in results[0].details
 
 
-# --- _ensure_log_symlinks ---
+# --- _cleanup_stale_log_symlinks ---
 
 
 @pytest.mark.unit
-def test_ensure_log_symlinks_creates_new_links(monkeypatch, tmp_path):
+def test_cleanup_stale_log_symlinks_removes_existing_symlinks(monkeypatch, tmp_path):
     home = tmp_path / "home"
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
-
-    results = ops._ensure_log_symlinks()
-    assert all(r.ok for r in results)
-    assert len(results) == 5
-    for base in ("nyxgpt-api", "nyxgpt-web"):
-        for ext in (".log", ".err.log"):
-            link = home / ".nyxGPT" / "logs" / f"{base}{ext}"
-            assert link.is_symlink()
-    ollama_link = home / ".nyxGPT" / "logs" / "ollama.log"
-    assert ollama_link.is_symlink()
-    assert ollama_link.resolve() == (tmp_path / "brew" / "var" / "log" / "ollama.log").resolve()
-
-
-@pytest.mark.unit
-def test_ensure_log_symlinks_replaces_existing_link(monkeypatch, tmp_path):
-    home = tmp_path / "home"
-    (home / ".nyxGPT" / "logs").mkdir(parents=True)
-    stale_target = tmp_path / "stale.log"
+    log_dir = home / ".nyxGPT" / "logs"
+    log_dir.mkdir(parents=True)
+    stale_target = tmp_path / "brew-nyxgpt-api.log"
     stale_target.write_text("stale", encoding="utf-8")
-    (home / ".nyxGPT" / "logs" / "nyxgpt-api.log").symlink_to(stale_target)
+    for name in ops._STALE_LOG_SYMLINK_NAMES:
+        (log_dir / name).symlink_to(stale_target)
 
     monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
 
-    results = ops._ensure_log_symlinks()
+    results = ops._cleanup_stale_log_symlinks()
     assert all(r.ok for r in results)
-    new_target = (home / ".nyxGPT" / "logs" / "nyxgpt-api.log").resolve()
-    assert new_target != stale_target.resolve()
+    assert len(results) == len(ops._STALE_LOG_SYMLINK_NAMES)
+    for name in ops._STALE_LOG_SYMLINK_NAMES:
+        assert not (log_dir / name).exists()
+        assert not (log_dir / name).is_symlink()
 
 
 @pytest.mark.unit
-def test_ensure_log_symlinks_reports_failure_on_exception(monkeypatch, tmp_path):
+def test_cleanup_stale_log_symlinks_leaves_real_files_and_missing_names_alone(
+    monkeypatch, tmp_path
+):
     home = tmp_path / "home"
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
-
-    def raise_symlink_to(self, target):
-        raise OSError("cannot symlink")
-
-    monkeypatch.setattr(ops.Path, "symlink_to", raise_symlink_to)
-
-    results = ops._ensure_log_symlinks()
-    assert all(r.ok is False for r in results)
-    assert all("Failed to symlink" in r.message for r in results)
-
-
-@pytest.mark.unit
-def test_ensure_log_symlinks_skips_ollama_when_compose_container_present(monkeypatch, tmp_path):
-    """Compose mode: `follow-ollama-logs.sh` owns ollama.log, so this must leave it alone.
-
-    Regression test for the #3276 review finding: previously this
-    unconditionally replaced ollama.log with a (dangling, in Compose mode)
-    symlink, clobbering the file the log-follower LaunchAgent was actively
-    appending to.
-    """
-    home = tmp_path / "home"
-    (home / ".nyxGPT" / "logs").mkdir(parents=True)
-    real_log = home / ".nyxGPT" / "logs" / "ollama.log"
-    real_log.write_text("existing ollama container logs\n", encoding="utf-8")
+    log_dir = home / ".nyxGPT" / "logs"
+    log_dir.mkdir(parents=True)
+    # A real (non-symlink) file at one of the names must be left in place --
+    # only symlinks are considered stale.
+    real_file = log_dir / ops._STALE_LOG_SYMLINK_NAMES[0]
+    real_file.write_text("real content\n", encoding="utf-8")
 
     monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
-    monkeypatch.setattr(
-        ops,
-        "_docker_container_state",
-        lambda name: "running" if name == ops.OLLAMA_CONTAINER_NAME else "absent",
-    )
 
-    results = ops._ensure_log_symlinks()
+    results = ops._cleanup_stale_log_symlinks()
     assert all(r.ok for r in results)
-    ollama_result = next(r for r in results if "ollama.log" in r.message)
-    assert "Skipped" in ollama_result.message
-
-    assert not real_log.is_symlink()
-    assert real_log.read_text(encoding="utf-8") == "existing ollama container logs\n"
+    assert real_file.read_text(encoding="utf-8") == "real content\n"
 
 
 @pytest.mark.unit
-def test_ensure_log_symlinks_symlinks_ollama_when_no_compose_container(monkeypatch, tmp_path):
+def test_cleanup_stale_log_symlinks_reports_failure_on_exception(monkeypatch, tmp_path):
     home = tmp_path / "home"
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    log_dir = home / ".nyxGPT" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / ops._STALE_LOG_SYMLINK_NAMES[0]).symlink_to(tmp_path / "missing-target.log")
 
-    results = ops._ensure_log_symlinks()
-    assert all(r.ok for r in results)
-    ollama_link = home / ".nyxGPT" / "logs" / "ollama.log"
-    assert ollama_link.is_symlink()
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+
+    def raise_unlink(self):
+        raise OSError("cannot unlink")
+
+    monkeypatch.setattr(ops.Path, "unlink", raise_unlink)
+
+    results = ops._cleanup_stale_log_symlinks()
+    failed = next(r for r in results if ops._STALE_LOG_SYMLINK_NAMES[0] in r.message)
+    assert failed.ok is False
+    assert "Failed to remove stale log symlink" in failed.message
 
 
 @pytest.mark.unit
-def test_install_step_order_does_not_clobber_compose_ollama_log(monkeypatch, tmp_path):
-    """Integration-style check of the two steps in `install()`'s actual order.
+def test_follow_ollama_logs_script_never_hard_requires_docker():
+    """Regression guard for #3441: the old script `exit 1`'d immediately if
+    `docker` wasn't on PATH, which would kill the LaunchAgent on a host
+    that's never installed Docker Compose-mode tooling even though native
+    Ollama log tailing needs no docker at all."""
+    script = (ops.REPO_ROOT / "scripts" / "follow-ollama-logs.sh").read_text(encoding="utf-8")
+    assert "exit 1" not in script
 
-    Runs `_install_ollama_launchagent()` followed by `_ensure_log_symlinks()`
-    -- the order `install()` uses -- against a fake home dir with a
-    pre-existing real ollama.log (simulating an already-running Compose
-    follower), which is exactly the scenario the #3276 review found broken.
-    """
-    tpl = tmp_path / "com.nyxgpt.ollama-logs.plist"
-    tpl.write_text("<plist/>", encoding="utf-8")
-    home = tmp_path / "home"
-    (home / ".nyxGPT" / "logs").mkdir(parents=True)
-    real_log = home / ".nyxGPT" / "logs" / "ollama.log"
-    real_log.write_text("existing ollama container logs\n", encoding="utf-8")
 
-    monkeypatch.setattr(ops, "_find_launchagent_template", lambda name: (tpl, [tpl]))
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
-    monkeypatch.setattr(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
-    monkeypatch.setattr(
-        ops,
-        "_docker_container_state",
-        lambda name: "running" if name == ops.OLLAMA_CONTAINER_NAME else "absent",
-    )
-
-    ops._install_ollama_launchagent()
-    ops._ensure_log_symlinks()
-
-    assert not real_log.is_symlink()
-    assert real_log.read_text(encoding="utf-8") == "existing ollama container logs\n"
+@pytest.mark.unit
+def test_follow_ollama_logs_script_tails_native_homebrew_log():
+    """The script must fall back to tailing Homebrew's own ollama.log
+    directly (never a symlink into it) when no Compose container exists --
+    a symlink target outside ~/.nyxGPT/logs is unreachable from inside
+    promtail's container, which only bind-mounts that one directory (#3441)."""
+    script = (ops.REPO_ROOT / "scripts" / "follow-ollama-logs.sh").read_text(encoding="utf-8")
+    assert "brew --prefix" in script
+    assert "var/log/ollama.log" in script
+    assert "-L" in script  # detects (and removes) a stale symlink
 
 
 # --- _create_dist_tarball ---
@@ -4011,7 +4120,7 @@ def test_ops_install_catches_exception_from_a_step(capsys):
         patch.object(ops, "_install_ollama_env_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
-        patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
     ):
         rc = ops.install(MagicMock(terraform=False, kubernetes=False))
         assert rc == 2
@@ -4073,7 +4182,7 @@ def test_ops_status_launchctl_error(monkeypatch, capsys):
             self.stderr = ""
             self.returncode = 0
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:2] == ["launchctl", "list"]:
             raise OSError("launchctl missing")
         return CP(stdout="")
@@ -4319,7 +4428,7 @@ def test_ops_install_logs_start_and_summary(caplog):
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
-        patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         caplog.at_level("INFO", logger="nyxgpt.ops"),
     ):
         rc = ops.install(MagicMock(terraform=False, kubernetes=False))
@@ -4344,7 +4453,7 @@ def test_ops_install_logs_error_when_step_raises(caplog):
         patch.object(ops, "_install_ollama_env_launchagent", return_value=[]),
         patch.object(ops, "_install_homebrew_api", return_value=[]),
         patch.object(ops, "_install_homebrew_web", return_value=[]),
-        patch.object(ops, "_ensure_log_symlinks", return_value=[]),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=[]),
         caplog.at_level("INFO", logger="nyxgpt.ops"),
     ):
         rc = ops.install(MagicMock(terraform=False, kubernetes=False))
@@ -4404,6 +4513,7 @@ def test_ops_doctor_logs_ok_at_info(caplog, monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     with caplog.at_level("INFO", logger="nyxgpt.ops"):
         rc = ops.doctor(MagicMock())
@@ -4538,7 +4648,7 @@ _ALL_COMPOSE_SERVICES = (
 
 
 def _fake_run_resolving_services(calls, *, up_rc=0):
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         calls.append(cmd)
         if cmd[-2:] == ["config", "--services"]:
             return subprocess.CompletedProcess(cmd, 0, stdout=_ALL_COMPOSE_SERVICES)
@@ -4753,6 +4863,41 @@ def test_grafana_provisioned_datasource_uids_parses_declared_uids(tmp_path, monk
 
 
 @pytest.mark.unit
+def test_grafana_provisioned_datasource_uids_spans_every_file_in_the_dir(tmp_path, monkeypatch):
+    """#3432: GlitchTip lives in its own glitchtip.yml, split out of
+    datasource.yml so a bad `$__file{}` interpolation in one can't take the
+    other's datasources down -- uid scraping must still see both files."""
+    datasource_path, _ = _write_grafana_fixture(
+        tmp_path,
+        monkeypatch,
+        datasource_yml="datasources:\n  - name: Prometheus\n    uid: prometheus\n",
+    )
+    (datasource_path.parent / "glitchtip.yml").write_text(
+        "datasources:\n  - name: GlitchTip\n    uid: glitchtip-infinity\n", encoding="utf-8"
+    )
+
+    assert set(ops._grafana_provisioned_datasource_uids()) == {"prometheus", "glitchtip-infinity"}
+
+
+@pytest.mark.unit
+def test_grafana_provisioning_fingerprint_changes_when_glitchtip_yml_changes(tmp_path, monkeypatch):
+    """A change to glitchtip.yml alone (e.g. the GlitchTip datasource being
+    added/edited) must be detected as drift even though datasource.yml is
+    untouched -- otherwise `_reconcile_grafana_provisioning` would never
+    recreate Grafana to pick it up."""
+    datasource_path, _ = _write_grafana_fixture(
+        tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML
+    )
+    glitchtip_path = datasource_path.parent / "glitchtip.yml"
+    glitchtip_path.write_text("datasources: []\n", encoding="utf-8")
+    ops._record_grafana_provisioning_fingerprint()
+    assert ops._grafana_provisioning_drifted() is False
+
+    glitchtip_path.write_text("datasources:\n  - name: GlitchTip\n    uid: glitchtip-infinity\n")
+    assert ops._grafana_provisioning_drifted() is True
+
+
+@pytest.mark.unit
 def test_grafana_provisioned_datasource_uids_empty_when_file_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     assert ops._grafana_provisioned_datasource_uids() == []
@@ -4813,7 +4958,7 @@ def test_recreate_grafana_force_recreates_when_drifted_and_running(monkeypatch):
     monkeypatch.setattr(ops, "_grafana_provisioning_drifted", lambda: True)
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0)
 
@@ -5029,6 +5174,124 @@ def test_verify_grafana_plugins_installed_fails_when_plugin_missing(monkeypatch)
 
 
 @pytest.mark.unit
+def test_provision_grafana_doctor_token_reuses_existing_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    (secrets_dir / "grafana-doctor-token").write_text("existing-token")
+
+    def _boom(*a, **kw):
+        raise AssertionError("should not call Grafana when a token file already exists")
+
+    monkeypatch.setattr(ops.httpx, "Client", _boom)
+
+    result = ops._provision_grafana_doctor_token("http://localhost:3001", "admin")
+
+    assert result.ok is True
+    assert "already holds" in result.message
+
+
+@pytest.mark.unit
+def test_provision_grafana_doctor_token_mints_new_service_account(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, params=None):
+            calls.append(("get", path, params))
+            return FakeResponse({"serviceAccounts": []})
+
+        def post(self, path, json=None):
+            calls.append(("post", path, json))
+            if path == "/api/serviceaccounts":
+                return FakeResponse({"id": 7})
+            return FakeResponse({"key": "glsa_minted_token"})
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._provision_grafana_doctor_token("http://localhost:3001", "admin")
+
+    assert result.ok is True
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "grafana-doctor-token"
+    assert token_path.read_text() == "glsa_minted_token"
+    assert calls[1] == (
+        "post",
+        "/api/serviceaccounts",
+        {"name": "nyxgpt-ops-doctor", "role": "Viewer"},
+    )
+    assert calls[2] == ("post", "/api/serviceaccounts/7/tokens", {"name": "nyxgpt-ops-doctor"})
+
+
+@pytest.mark.unit
+def test_provision_grafana_doctor_token_reuses_existing_service_account(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, params=None):
+            return FakeResponse({"serviceAccounts": [{"id": 3, "name": "nyxgpt-ops-doctor"}]})
+
+        def post(self, path, json=None):
+            assert path == "/api/serviceaccounts/3/tokens"
+            return FakeResponse({"key": "glsa_reused_sa_token"})
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._provision_grafana_doctor_token("http://localhost:3001", "admin")
+
+    assert result.ok is True
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "grafana-doctor-token"
+    assert token_path.read_text() == "glsa_reused_sa_token"
+
+
+@pytest.mark.unit
+def test_provision_grafana_doctor_token_fails_when_grafana_unreachable(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    class FailingClient:
+        def __init__(self, *a, **kw):
+            raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(ops.httpx, "Client", FailingClient)
+
+    result = ops._provision_grafana_doctor_token("http://localhost:3001", "admin")
+
+    assert result.ok is False
+    assert not (tmp_path / ".nyxGPT" / "secrets" / "grafana-doctor-token").exists()
+
+
+@pytest.mark.unit
 def test_reconcile_grafana_provisioning_records_fingerprint_and_verifies(tmp_path, monkeypatch):
     _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
     monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
@@ -5076,12 +5339,19 @@ def test_reconcile_grafana_provisioning_verifies_when_config_exists(tmp_path, mo
         "_verify_grafana_datasources_resolve",
         lambda url, pw: verify_calls.append((url, pw)) or ops.OpsResult(True, "verified"),
     )
+    token_calls = []
+    monkeypatch.setattr(
+        ops,
+        "_provision_grafana_doctor_token",
+        lambda url, pw: token_calls.append((url, pw)) or ops.OpsResult(True, "token ready"),
+    )
 
     results = ops._reconcile_grafana_provisioning()
 
     assert all(r.ok for r in results)
     assert plugin_verify_calls == [("http://localhost:3001", "secret")]
     assert verify_calls == [("http://localhost:3001", "secret")]
+    assert token_calls == [("http://localhost:3001", "secret")]
 
 
 @pytest.mark.unit
@@ -6202,7 +6472,7 @@ def test_wait_for_glitchtip_healthy_absent_but_enabled_returns_false_without_sle
     monkeypatch.setattr(ops.self_heal, "load_config", lambda: cfg)
     monkeypatch.setattr(ops.self_heal, "_which", lambda prog: "/usr/bin/docker")
 
-    def fake_run(cmd, timeout=30.0):
+    def fake_run(cmd, timeout=30.0, **_k):
         if "config" in cmd and "--services" in cmd:
             return subprocess.CompletedProcess(cmd, 0, stdout="glitchtip\n")
         return subprocess.CompletedProcess(cmd, 0, stdout="")  # `ps -a`: nothing running
@@ -6701,6 +6971,149 @@ def test_write_grafana_glitchtip_token_detects_a_rotated_token(tmp_path, monkeyp
     assert token_path.read_text(encoding="utf-8") == "tok-new"
 
 
+# --- Linux bind-mount ownership: ~/.nyxGPT/secrets preflight (#3432) ---
+
+
+@pytest.mark.unit
+def test_write_grafana_glitchtip_token_reports_actionable_error_on_permission_denied(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    # r-x only -- no write bit -- simulates a root-owned dir left behind by
+    # Docker auto-creating the bind-mount source on Linux.
+    secrets_dir.chmod(0o500)
+    try:
+        changed, result = ops._write_grafana_glitchtip_token("tok-123")
+    finally:
+        secrets_dir.chmod(0o700)
+
+    assert changed is False
+    assert result.ok is False
+    assert "Cannot write GlitchTip token" in result.message
+    assert "sudo chown" in result.details
+    assert "PermissionError" in result.details
+
+
+@pytest.mark.unit
+def test_ensure_glitchtip_secrets_dir_creates_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    results = ops._ensure_glitchtip_secrets_dir()
+
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert "Created" in results[0].message
+    assert secrets_dir.is_dir()
+    assert oct(secrets_dir.stat().st_mode)[-3:] == "700"
+
+
+@pytest.mark.unit
+def test_ensure_glitchtip_secrets_dir_ok_when_already_writable(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True, mode=0o700)
+
+    results = ops._ensure_glitchtip_secrets_dir()
+
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert "writable" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_glitchtip_secrets_dir_reports_actionable_error_when_unwritable(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    secrets_dir.chmod(0o500)
+    try:
+        results = ops._ensure_glitchtip_secrets_dir()
+    finally:
+        secrets_dir.chmod(0o700)
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "not writable" in results[0].message
+    assert "sudo chown" in results[0].details
+    assert str(secrets_dir) in results[0].details
+
+
+@pytest.mark.unit
+def test_glitchtip_secrets_doctor_issues_empty_on_a_fresh_host(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+
+    assert ops._glitchtip_secrets_doctor_issues() == []
+
+
+@pytest.mark.unit
+def test_glitchtip_secrets_doctor_issues_flags_unwritable_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    secrets_dir.chmod(0o500)
+    try:
+        issues = ops._glitchtip_secrets_doctor_issues()
+    finally:
+        secrets_dir.chmod(0o700)
+
+    assert len(issues) == 1
+    assert "not writable" in issues[0]
+
+
+@pytest.mark.unit
+def test_glitchtip_secrets_doctor_issues_flags_missing_token_when_grafana_running(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+
+    issues = ops._glitchtip_secrets_doctor_issues()
+
+    assert len(issues) == 1
+    assert "glitchtip-grafana-token" in issues[0]
+    assert "nyxgpt ops glitchtip-init" in issues[0]
+
+
+@pytest.mark.unit
+def test_glitchtip_secrets_doctor_issues_ok_when_token_present_and_grafana_running(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("tok", encoding="utf-8")
+
+    assert ops._glitchtip_secrets_doctor_issues() == []
+
+
+@pytest.mark.unit
+def test_ops_doctor_flags_glitchtip_secrets_issues(monkeypatch, capsys, tmp_path):
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    cfg_dir.joinpath("config.ini").write_text(
+        "[project]\nname=nyxGPT\n\n[tracing]\nenabled = false\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+
+    rc = ops.doctor(MagicMock())
+
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "glitchtip-grafana-token" in out
+
+
 @pytest.mark.unit
 def test_restart_grafana_if_running_skips_without_docker(monkeypatch):
     monkeypatch.setattr(ops, "_compose_available", lambda: False)
@@ -7150,7 +7563,7 @@ def test_ensure_terraform_binary_installs_via_hashicorp_tap(monkeypatch):
 
     run_calls = []
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         run_calls.append(cmd)
         return CP(returncode=0)
 
@@ -7168,7 +7581,9 @@ def test_ensure_terraform_binary_tap_failure(monkeypatch):
     monkeypatch.setattr(
         ops, "_which", lambda prog: "/opt/homebrew/bin/brew" if prog == "brew" else None
     )
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="tap failed"))
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="tap failed")
+    )
     results = ops._ensure_terraform_binary()
     assert results[0].ok is False
     assert "brew tap" in results[0].message
@@ -7224,7 +7639,7 @@ def test_ensure_terraform_tfvars_bootstraps_from_example(monkeypatch, tmp_path):
 
 
 def _fake_terraform_run(*, init_rc=0, plan_rc=0, apply_rc=0):
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         assert cmd[0] == "terraform"
         assert cmd[1].startswith("-chdir=")
         if cmd[2] == "init":
@@ -7289,7 +7704,7 @@ def test_terraform_stack_health_reports_outputs(monkeypatch):
     monkeypatch.setattr(
         ops,
         "_run",
-        lambda cmd, check=True: CP(stdout='{"api_url": {"value": "http://localhost:8000"}}'),
+        lambda cmd, check=True, **_k: CP(stdout='{"api_url": {"value": "http://localhost:8000"}}'),
     )
     results = ops._terraform_stack_health()
     assert results[0].ok is True
@@ -7330,6 +7745,7 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "_generate_compose_config", return_value=ok) as c,
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok) as a,
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok) as o,
         patch.object(ops, "_provision_glitchtip", return_value=ok) as g,
         patch.object(ops, "_terraform_stack_health", return_value=ok) as h,
@@ -7384,6 +7800,7 @@ def test_install_terraform_clears_intentional_stop_markers(monkeypatch, capsys):
         patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
         patch.object(ops, "_terraform_stack_health", return_value=ok),
@@ -7411,7 +7828,7 @@ def test_down_terraform_no_binary(monkeypatch, capsys):
 def test_down_terraform_destroy_success(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda prog: "/opt/homebrew/bin/terraform")
     monkeypatch.setattr(
-        ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="Destroy complete")
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="Destroy complete")
     )
     rc = ops._down_terraform(SimpleNamespace())
     assert rc == 0
@@ -7420,7 +7837,7 @@ def test_down_terraform_destroy_success(monkeypatch):
 @pytest.mark.unit
 def test_down_terraform_destroy_failure(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda prog: "/opt/homebrew/bin/terraform")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="boom"))
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="boom"))
     rc = ops._down_terraform(SimpleNamespace())
     assert rc == 2
 
@@ -7431,7 +7848,7 @@ def test_down_terraform_prunes_docker_build_cache(monkeypatch):
     accumulate (17GB+ across repeated local deploys), AFTER terraform destroy."""
     calls = []
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         calls.append(cmd)
         if cmd[:3] == ["docker", "builder", "prune"]:
             return CP(returncode=0, stdout="Total reclaimed space: 12.3GB")
@@ -7452,7 +7869,7 @@ def test_down_terraform_prunes_docker_build_cache(monkeypatch):
 def test_down_terraform_cache_prune_failure_is_non_fatal(monkeypatch):
     """A build-cache prune failure is best-effort and never fails the teardown."""
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:3] == ["docker", "builder", "prune"]:
             return CP(returncode=1, stderr="prune boom")
         return CP(returncode=0, stdout="ok")
@@ -7477,7 +7894,9 @@ def test_ensure_kubectl_and_cluster_missing_kubectl(monkeypatch):
 @pytest.mark.unit
 def test_ensure_kubectl_and_cluster_unreachable(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="refused"))
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="refused")
+    )
     results = ops._ensure_kubectl_and_cluster()
     assert results[0].ok is False
     assert "No reachable" in results[0].message
@@ -7486,7 +7905,7 @@ def test_ensure_kubectl_and_cluster_unreachable(monkeypatch):
 @pytest.mark.unit
 def test_ensure_kubectl_and_cluster_reachable(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0))
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0))
     results = ops._ensure_kubectl_and_cluster()
     assert results[0].ok is True
 
@@ -7507,7 +7926,7 @@ def test_build_and_load_k8s_image_build_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/docker")
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:3] == ["docker", "image", "inspect"]:
             return CP(returncode=1)
         if cmd[:2] == ["docker", "build"]:
@@ -7525,7 +7944,7 @@ def test_build_and_load_k8s_image_skips_load_on_docker_desktop(monkeypatch, tmp_
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/docker")
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:3] == ["docker", "image", "inspect"]:
             return CP(returncode=1)
         if cmd[:2] == ["docker", "build"]:
@@ -7548,7 +7967,7 @@ def test_build_and_load_k8s_image_loads_into_kind(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
     run_calls = []
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         run_calls.append(cmd)
         if cmd[:3] == ["docker", "image", "inspect"]:
             return CP(returncode=1)
@@ -7573,7 +7992,7 @@ def test_build_and_load_k8s_image_unrecognized_context(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:3] == ["docker", "image", "inspect"]:
             return CP(returncode=1)
         if cmd[:2] == ["docker", "build"]:
@@ -7600,7 +8019,7 @@ def test_build_and_load_k8s_image_skips_rebuild_when_source_unchanged(monkeypatc
 
     run_calls = []
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         run_calls.append(cmd)
         if cmd[:3] == ["docker", "image", "inspect"]:
             return CP(returncode=0)
@@ -7664,7 +8083,7 @@ def test_build_and_load_k8s_web_image_builds_web_context_with_build_arg(monkeypa
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
     run_calls = []
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         run_calls.append(cmd)
         if cmd[:3] == ["docker", "image", "inspect"]:
             return CP(returncode=1)
@@ -7717,21 +8136,23 @@ def test_ensure_k8s_secret_bootstraps_from_example(monkeypatch, tmp_path):
 
 @pytest.mark.unit
 def test_kubectl_apply_kustomization_success(monkeypatch):
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="applied"))
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="applied")
+    )
     results = ops._kubectl_apply_kustomization()
     assert results[0].ok is True
 
 
 @pytest.mark.unit
 def test_kubectl_apply_kustomization_failure(monkeypatch):
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="boom"))
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="boom"))
     results = ops._kubectl_apply_kustomization()
     assert results[0].ok is False
 
 
 @pytest.mark.unit
 def test_k8s_stack_health_reports_pods_service(monkeypatch):
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[4] == "pods":
             return CP(
                 returncode=0,
@@ -7756,7 +8177,7 @@ def test_k8s_stack_health_reports_web_service_alongside_api(monkeypatch):
     """#3419: the post-apply health snapshot must check nyxgpt-web too, distinguishing
     found from not-found per service rather than reporting one combined result."""
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[4] == "pods":
             return CP(returncode=0, stdout="nyxgpt-web-stable-abc=Running;")
         if cmd[4] == "svc":
@@ -7875,7 +8296,9 @@ def test_down_kubernetes_no_kubectl(monkeypatch, capsys):
 @pytest.mark.unit
 def test_down_kubernetes_delete_success(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="deleted"))
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="deleted")
+    )
     rc = ops._down_kubernetes(SimpleNamespace())
     assert rc == 0
 
@@ -7883,7 +8306,7 @@ def test_down_kubernetes_delete_success(monkeypatch):
 @pytest.mark.unit
 def test_down_kubernetes_delete_failure(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="boom"))
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="boom"))
     rc = ops._down_kubernetes(SimpleNamespace())
     assert rc == 2
 
@@ -7902,6 +8325,7 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
         patch.object(ops, "_terraform_stack_health", return_value=ok),
@@ -7922,7 +8346,9 @@ def test_install_terraform_local_reports_port_collision(monkeypatch):
 @pytest.mark.unit
 def test_down_terraform_returns_results_without_printing(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/terraform")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="destroyed"))
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="destroyed")
+    )
     # Observability teardown runs before the destroy; stub it so this test
     # exercises only the terraform-destroy result shape.
     monkeypatch.setattr(
@@ -7947,7 +8373,7 @@ def test_down_terraform_tears_down_observability_before_destroy(monkeypatch):
         lambda: (order.append("obs-down"), [ops.OpsResult(True, "obs down")])[1],
     )
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if "destroy" in cmd:
             order.append("destroy")
         return CP(returncode=0, stdout="ok")
@@ -7984,7 +8410,9 @@ def test_install_kubernetes_local_reports_port_collision(monkeypatch):
 @pytest.mark.unit
 def test_down_kubernetes_returns_results_without_printing(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="deleted"))
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="deleted")
+    )
     results = ops.down_kubernetes()
     assert len(results) == 1
     assert results[0].ok is True
@@ -8003,7 +8431,7 @@ def test_infra_status_reports_terraform_and_kubernetes(monkeypatch):
     def fake_which(prog):
         return "/usr/local/bin/x" if prog in ("kubectl", "docker") else None
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         return CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n")
 
     monkeypatch.setattr(ops, "_which", fake_which)
@@ -8051,7 +8479,7 @@ def test_infra_status_reports_cannot_determine_when_docker_probe_unavailable(mon
         lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
     )
     monkeypatch.setattr(ops, "_which", lambda prog: None)
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stdout=""))
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stdout=""))
 
     result = ops.infra_status()
     assert result["terraform"]["probe_available"] is False
@@ -8121,7 +8549,7 @@ def test_infra_status_serving_delegates_to_canary_status_in_kubernetes_mode(monk
     monkeypatch.setattr(
         ops,
         "_run",
-        lambda cmd, check=True: CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n"),
+        lambda cmd, check=True, **_k: CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n"),
     )
 
     fake_statuses = {
@@ -8225,7 +8653,7 @@ def test_status_shows_kubernetes_pods_when_present(monkeypatch, capsys):
     def fake_which(prog):
         return "/usr/local/bin/kubectl" if prog == "kubectl" else None
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
             return CP(returncode=0, stdout="nyxgpt-api-stable-abc   1/1   Running\n")
         return CP(stdout="")
@@ -8254,7 +8682,7 @@ def test_status_shows_per_component_canary_when_kubernetes_pods_present(monkeypa
     def fake_which(prog):
         return "/usr/local/bin/kubectl" if prog == "kubectl" else None
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
             return CP(returncode=0, stdout="nyxgpt-api-stable-abc   1/1   Running\n")
         return CP(stdout="")
@@ -8296,9 +8724,13 @@ def test_status_shows_per_component_canary_when_kubernetes_pods_present(monkeypa
 
 @pytest.mark.unit
 def test_doctor_flags_stale_terraform_state(monkeypatch, tmp_path, capsys):
+    """Genuinely stale: tfstate still records resources but no containers are running."""
     tf_dir = tmp_path / "terraform"
     tf_dir.mkdir()
-    (tf_dir / "terraform.tfstate").write_text("{}", encoding="utf-8")
+    (tf_dir / "terraform.tfstate").write_text(
+        json.dumps({"resources": [{"type": "docker_container", "name": "api"}]}),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(ops, "TERRAFORM_DIR", tf_dir)
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent", "web": "absent"})
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/fake")
@@ -8309,6 +8741,39 @@ def test_doctor_flags_stale_terraform_state(monkeypatch, tmp_path, capsys):
     assert rc == 2
     out = capsys.readouterr().out
     assert "Terraform state exists but no nyxgpt-tf-* containers are running" in out
+
+
+@pytest.mark.unit
+def test_doctor_does_not_flag_terraform_state_after_clean_destroy(monkeypatch, tmp_path, capsys):
+    """terraform destroy leaves terraform.tfstate in place with an empty resources
+    list -- that's a clean post-destroy state, not stale state, and must not FAIL.
+    Repro from #3439: install --terraform --local, down --terraform, install
+    (native), doctor should report PASS with no terraform finding."""
+    # Pretend config exists at ~/.nyxGPT/config.ini (as ops.doctor expects)
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    cfg = cfg_dir / "config.ini"
+    cfg.write_text("[project]\nname=nyxGPT\n\n[tracing]\nenabled = false\n", encoding="utf-8")
+
+    tf_dir = tmp_path / "terraform"
+    tf_dir.mkdir()
+    (tf_dir / "terraform.tfstate").write_text(
+        json.dumps({"resources": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ops, "TERRAFORM_DIR", tf_dir)
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent", "web": "absent"})
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+
+    rc = ops.doctor(MagicMock())
+    out = capsys.readouterr().out
+    assert "Terraform state exists but no nyxgpt-tf-* containers are running" not in out
+    assert rc == 0
+    assert "doctor: OK" in out
 
 
 @pytest.mark.unit

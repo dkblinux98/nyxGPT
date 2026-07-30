@@ -187,9 +187,10 @@ def test_install_records_success_action():
         patch.object(ops, "_install_homebrew_api", return_value=ok),
         patch.object(ops, "_install_homebrew_web", return_value=ok),
         patch.object(ops, "_ensure_ollama_service", return_value=ok),
-        patch.object(ops, "_ensure_log_symlinks", return_value=ok),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok),
         patch.object(ops, "sync_env_from_config", return_value=ok),
         patch.object(ops, "_persist_compose_file_path", return_value=ok),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
     ):
@@ -216,9 +217,10 @@ def test_install_records_failure_action():
         patch.object(ops, "_install_homebrew_api", return_value=ok),
         patch.object(ops, "_install_homebrew_web", return_value=ok),
         patch.object(ops, "_ensure_ollama_service", return_value=ok),
-        patch.object(ops, "_ensure_log_symlinks", return_value=ok),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok),
         patch.object(ops, "sync_env_from_config", return_value=ok),
         patch.object(ops, "_persist_compose_file_path", return_value=ok),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
     ):
@@ -337,6 +339,7 @@ def test_install_terraform_steps_records_success():
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
         patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
         patch.object(ops, "_terraform_stack_health", return_value=ok),
@@ -361,7 +364,9 @@ def test_down_terraform_steps_records_success():
     before = _ops_actions_total("down", "terraform", "success")
     with (
         patch.object(ops, "_which", lambda prog: "/usr/local/bin/terraform"),
-        patch.object(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="destroyed")),
+        patch.object(
+            ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="destroyed")
+        ),
     ):
         results = ops.down_terraform()
     assert all(r.ok for r in results)
@@ -412,7 +417,7 @@ def test_down_kubernetes_steps_records_success():
     before = _ops_actions_total("down", "kubernetes", "success")
     with (
         patch.object(ops, "_which", lambda prog: "/usr/local/bin/kubectl"),
-        patch.object(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="deleted")),
+        patch.object(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="deleted")),
     ):
         results = ops.down_kubernetes()
     assert all(r.ok for r in results)

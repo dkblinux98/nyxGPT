@@ -393,7 +393,7 @@ stack is fixed (#3349) — it duplicated what Grafana's own log views already pr
 application logs in Grafana's **Logs Drilldown** app instead (reached via the SRE Overview tile on
 the Admin Dashboard, pre-filtered to `{job="nyxgpt"}` — see
 [Observability — Grafana Single Pane of Glass](docker-compose.md#grafana-single-pane-of-glass)).
-The chat/streaming endpoints log upstream Ollama errors (status, model, message) to `nyxgpt.log`
+The chat/streaming endpoints log upstream Ollama errors (status, model, message) to `api.log`
 before they reach the client, so that file under `~/.nyxGPT/logs` is still the first place to
 check if the aggregation stack itself is down.
 

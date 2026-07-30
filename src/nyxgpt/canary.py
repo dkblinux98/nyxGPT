@@ -197,17 +197,21 @@ def _kubectl_missing_message(fallback: str) -> str:
     return NOT_SUPPORTED_UNDER_COMPOSE if _compose_mode() else fallback
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+def _run(cmd: list[str], *, expected: bool = False) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text without raising on non-zero exit.
 
     Non-zero exits are logged with the command and a stderr tail so failed
     kubectl/rollout invocations show up in Loki instead of only reaching the
-    caller via the returned `CompletedProcess` (#3415 gap 5).
+    caller via the returned `CompletedProcess` (#3415 gap 5). Pass `expected=True`
+    for read-only probes where a non-zero exit is a normal outcome, to log at
+    DEBUG instead of WARNING.
     """
     result = subprocess.run(cmd, check=False, text=True, capture_output=True)
     if result.returncode != 0:
-        logger.warning(
-            "Subprocess exited non-zero",
+        level = logging.DEBUG if expected else logging.WARNING
+        logger.log(
+            level,
+            f"Subprocess exited non-zero (rc={result.returncode}): {' '.join(cmd)}",
             extra={
                 "component": "canary",
                 "cmd": cmd,
@@ -326,7 +330,7 @@ def deployment_health(name: str, namespace: str = DEFAULT_NAMESPACE) -> TrackHea
             _kubectl_missing_message("kubectl not found; cannot check deployment health"),
         )
 
-    cp = _run(["kubectl", "get", "deployment", name, "-n", namespace, "-o", "json"])
+    cp = _run(["kubectl", "get", "deployment", name, "-n", namespace, "-o", "json"], expected=True)
     if cp.returncode != 0:
         stderr = (cp.stderr or "").strip()
         lowered = stderr.lower()
@@ -388,7 +392,9 @@ def current_mode() -> str:
     except Exception:
         pass
     if _which("kubectl") is not None:
-        cp = _run(["kubectl", "-n", DEFAULT_NAMESPACE, "get", "pods", "--no-headers"])
+        cp = _run(
+            ["kubectl", "-n", DEFAULT_NAMESPACE, "get", "pods", "--no-headers"], expected=True
+        )
         if cp.returncode == 0 and (cp.stdout or "").strip():
             return "kubernetes"
     return "native"
@@ -472,7 +478,7 @@ def _git_short_sha() -> str:
     """Return the current commit's short SHA, or "" if git/the repo isn't available."""
     if _which("git") is None:
         return ""
-    cp = _run(["git", "rev-parse", "--short", "HEAD"])
+    cp = _run(["git", "rev-parse", "--short", "HEAD"], expected=True)
     return (cp.stdout or "").strip() if cp.returncode == 0 else ""
 
 

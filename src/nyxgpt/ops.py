@@ -10,6 +10,7 @@ can warn about -- and refuse to create -- port collisions between the two.
 
 from __future__ import annotations
 
+import contextlib
 import getpass
 import hashlib
 import json
@@ -80,11 +81,6 @@ COMPOSE_CONFIG_FILE = REPO_ROOT / "docker" / "config.docker.ini"
 # terraform-managed network (`nyxgpt-terraform`) so they interoperate with the
 # terraform-managed core containers -- used by `install --terraform --local`.
 TERRAFORM_NET_OVERRIDE = REPO_ROOT / "docker" / "docker-compose.terraform-net.yml"
-
-# Referenced by `_ensure_log_symlinks` to detect Compose mode and avoid
-# clobbering the file `follow-ollama-logs.sh`/its LaunchAgent is actively
-# writing to (see #3276 review).
-OLLAMA_CONTAINER_NAME = "nyxgpt-ollama"
 
 # Placeholder substituted with the installing user's home directory when a
 # LaunchAgent plist template is copied into ~/Library/LaunchAgents -- the
@@ -282,19 +278,25 @@ def record_canary_action(
     _record_ops_action(f"canary-{action}", component, result, message)
 
 
-def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _run(
+    cmd: list[str], *, check: bool = True, expected: bool = False
+) -> subprocess.CompletedProcess[str]:
     """Run `cmd`, capturing stdout/stderr as text.
 
     Raises `subprocess.CalledProcessError` on non-zero exit unless `check=False`.
     Non-zero exits are always logged with the command and a stderr tail first,
     so the evidence reaches Loki even when a caller catches the exception (or
     passes `check=False`) without logging it itself (#3415 gap 5).
+    Pass `expected=True` for read-only probes where a non-zero exit is a normal
+    outcome (e.g. "not found"/"not running") to log at DEBUG instead of WARNING.
     """
     try:
         result = subprocess.run(cmd, check=check, text=True, capture_output=True)
     except subprocess.CalledProcessError as e:
-        logger.warning(
-            "Subprocess exited non-zero",
+        level = logging.DEBUG if expected else logging.WARNING
+        logger.log(
+            level,
+            f"Subprocess exited non-zero (rc={e.returncode}): {' '.join(cmd)}",
             extra={
                 "component": "ops",
                 "cmd": cmd,
@@ -304,8 +306,10 @@ def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[s
         )
         raise
     if result.returncode != 0:
-        logger.warning(
-            "Subprocess exited non-zero",
+        level = logging.DEBUG if expected else logging.WARNING
+        logger.log(
+            level,
+            f"Subprocess exited non-zero (rc={result.returncode}): {' '.join(cmd)}",
             extra={
                 "component": "ops",
                 "cmd": cmd,
@@ -373,20 +377,6 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _brew_prefix() -> Path:
-    """Return Homebrew's install prefix (`brew --prefix`), or `/opt/homebrew` if unavailable."""
-    try:
-        cp = _run(["brew", "--prefix"])
-        return Path((cp.stdout or "").strip())
-    except Exception as e:
-        logger.warning(
-            "brew --prefix failed, using default /opt/homebrew: %s",
-            e,
-            extra={"component": "ops"},
-        )
-        return Path("/opt/homebrew")
-
-
 def _tap_repo(tap: str) -> Path:
     """Return the local checkout path of Homebrew tap `tap` (`brew --repo <tap>`)."""
     cp = _run(["brew", "--repo", tap])
@@ -400,7 +390,7 @@ def _brew_services_snapshot() -> dict[str, str]:
     """Return {brew_service_name: state} parsed from `brew services list`."""
     if _which("brew") is None:
         return {}
-    cp = _run(["brew", "services", "list"], check=False)
+    cp = _run(["brew", "services", "list"], check=False, expected=True)
     snapshot: dict[str, str] = {}
     for line in (cp.stdout or "").splitlines():
         parts = line.split()
@@ -416,6 +406,7 @@ def _docker_container_state(name: str) -> str:
     cp = _run(
         ["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.State}}"],
         check=False,
+        expected=True,
     )
     out = (cp.stdout or "").strip()
     return out.splitlines()[0].strip() if out else "absent"
@@ -741,12 +732,12 @@ def _install_ollama_launchagent() -> list[OpsResult]:
     copies it into ~/Library/LaunchAgents, then boots it out and back in via
     `launchctl bootout`/`bootstrap`/`kickstart`. Installed unconditionally by
     `nyxgpt ops install` regardless of deployment mode, same as the Cassandra
-    LaunchAgent -- in native mode there's no `nyxgpt-ollama` Docker container
-    yet, so `follow-ollama-logs.sh` just idles waiting for one (Ollama's
-    native-mode logs instead reach ~/.nyxGPT/logs via the Homebrew log
-    symlink in `_ensure_log_symlinks`). Returns a single-element list of
-    OpsResult; fails if the template can't be found among the candidate
-    paths.
+    LaunchAgent -- `follow-ollama-logs.sh` (which this LaunchAgent runs)
+    handles both Compose mode (follows the `nyxgpt-ollama` container's
+    `docker logs`) and native mode (tails Homebrew's own ollama.log
+    directly), switching between them on its own (see #3441). Returns a
+    single-element list of OpsResult; fails if the template can't be found
+    among the candidate paths.
     """
     results: list[OpsResult] = []
     tpl, checked = _find_launchagent_template("com.nyxgpt.ollama-logs.plist")
@@ -805,57 +796,42 @@ def _install_ollama_env_launchagent() -> list[OpsResult]:
     return results
 
 
-def _ensure_log_symlinks() -> list[OpsResult]:
-    """Symlink each Homebrew-managed service log into ~/.nyxGPT/logs for convenient access.
+_STALE_LOG_SYMLINK_NAMES: tuple[str, ...] = (
+    "nyxgpt-api.log",
+    "nyxgpt-api.err.log",
+    "nyxgpt-web.log",
+    "nyxgpt-web.err.log",
+)
 
-    Replaces any existing file/symlink at the destination. Returns one
-    OpsResult per (component, extension) log symlink attempted.
 
-    Ollama gets only `.log` (no `.err.log`): its Homebrew formula's service
-    block points both StandardOutPath and StandardErrorPath at the same
-    file, unlike nyxgpt-api/nyxgpt-web which get separate error logs. In
-    Compose mode Ollama isn't a Homebrew service at all -- `nyxgpt-ollama-logs`
-    (see `_install_ollama_launchagent`) follows the container's docker logs
-    into this same `ollama.log` path instead.
+def _cleanup_stale_log_symlinks() -> list[OpsResult]:
+    """Remove leftover ~/.nyxGPT/logs symlinks from the pre-#3441 symlink mechanism.
 
-    Skips the `ollama.log` entry entirely when a `nyxgpt-ollama` Docker
-    container exists: in that case `follow-ollama-logs.sh` (via its
-    LaunchAgent) owns that path and is actively appending to it, so
-    replacing it with a (likely dangling, since there's no Homebrew Ollama
-    log in Compose mode) symlink here would silently cut off Loki's view of
-    Ollama's logs on every `nyxgpt ops install` re-run (see #3276 review).
+    A prior nyxgpt version's `_ensure_log_symlinks` pointed these names at
+    Homebrew's var/log dir. That target lives outside ~/.nyxGPT/logs, which
+    is all promtail's container actually bind-mounts, so those symlinks were
+    never reachable from inside it and never shipped a single line to Loki
+    (#3441) -- nyxgpt-api/nyxgpt-web's own structured logs already land
+    directly in ~/.nyxGPT/logs as real files (`api.log`, see
+    `nyxgpt.logging.configure_logging`), and Ollama's log now reaches
+    ~/.nyxGPT/logs/ollama.log as a real file too, written by
+    `follow-ollama-logs.sh` itself. Reconciles on every `nyxgpt ops install`
+    so a leftover symlink from before this fix doesn't linger.
+
+    Returns one OpsResult per name considered.
     """
     results: list[OpsResult] = []
     home_logs = Path.home() / ".nyxGPT" / "logs"
-    _ensure_dir(home_logs)
-
-    brew_logs = _brew_prefix() / "var" / "log"
-    targets: list[tuple[str, tuple[str, ...]]] = [
-        ("nyxgpt-api", (".log", ".err.log")),
-        ("nyxgpt-web", (".log", ".err.log")),
-        ("ollama", (".log",)),
-    ]
-    for base, exts in targets:
-        for ext in exts:
-            dst = home_logs / f"{base}{ext}"
-            if base == "ollama" and _docker_container_state(OLLAMA_CONTAINER_NAME) != "absent":
-                results.append(
-                    OpsResult(
-                        True,
-                        f"Skipped {dst.name} symlink (Compose-mode {OLLAMA_CONTAINER_NAME} "
-                        "container owns this file via follow-ollama-logs.sh)",
-                        str(dst),
-                    )
-                )
-                continue
-            src = brew_logs / f"{base}{ext}"
-            try:
-                if dst.exists() or dst.is_symlink():
-                    dst.unlink()
-                dst.symlink_to(src)
-                results.append(OpsResult(True, f"Symlinked {dst.name}", f"{dst} -> {src}"))
-            except Exception as e:
-                results.append(OpsResult(False, f"Failed to symlink {dst.name}", str(e)))
+    for name in _STALE_LOG_SYMLINK_NAMES:
+        dst = home_logs / name
+        try:
+            if dst.is_symlink():
+                dst.unlink()
+                results.append(OpsResult(True, f"Removed stale log symlink {name}", str(dst)))
+            else:
+                results.append(OpsResult(True, f"No stale log symlink for {name}"))
+        except Exception as e:
+            results.append(OpsResult(False, f"Failed to remove stale log symlink {name}", str(e)))
     return results
 
 
@@ -952,7 +928,9 @@ def _brew_install_or_reinstall(spec: str, name: str, *, sha256: str, marker_dir:
     decisions was made ("installed" / "reinstalled (source changed)" /
     "already up to date (skipped)"), for the caller to report.
     """
-    installed = _run(["brew", "list", "--versions", name], check=False).returncode == 0
+    installed = (
+        _run(["brew", "list", "--versions", name], check=False, expected=True).returncode == 0
+    )
     marker = marker_dir / f".{name}.sha256"
     previous_sha256 = marker.read_text(encoding="utf-8").strip() if marker.exists() else None
 
@@ -1048,7 +1026,9 @@ def _docker_build_if_needed(
     previous_fingerprint = marker.read_text(encoding="utf-8").strip() if marker.exists() else None
     fingerprint = _hash_paths(fingerprint_paths, excludes=excludes)
 
-    image_exists = _run(["docker", "image", "inspect", image], check=False).returncode == 0
+    image_exists = (
+        _run(["docker", "image", "inspect", image], check=False, expected=True).returncode == 0
+    )
     if image_exists and previous_fingerprint == fingerprint:
         return "already up to date (skipped rebuild)"
 
@@ -1855,7 +1835,7 @@ def _docker_volume_exists(name: str) -> bool:
     """Return whether a Docker volume named `name` currently exists."""
     if _which("docker") is None:
         return False
-    cp = _run(["docker", "volume", "inspect", name], check=False)
+    cp = _run(["docker", "volume", "inspect", name], check=False, expected=True)
     return cp.returncode == 0
 
 
@@ -2305,6 +2285,22 @@ def terraform_stack_state() -> dict[str, str]:
     }
 
 
+def _terraform_state_has_resources() -> bool:
+    """True if terraform.tfstate records any managed resources.
+
+    ``terraform destroy`` (what ``nyxgpt ops down --terraform`` runs) always
+    leaves ``terraform.tfstate`` in place with an empty ``resources`` list --
+    that's a clean post-destroy state, not stale state. Only a tfstate that
+    still records resources (with no matching containers running) is stale.
+    """
+    tfstate = TERRAFORM_DIR / "terraform.tfstate"
+    try:
+        data = json.loads(tfstate.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    return bool(data.get("resources"))
+
+
 def _terraform_stack_health() -> list[OpsResult]:
     """Report each Terraform-managed container's state, plus the stack's output URLs."""
     results = [
@@ -2371,6 +2367,10 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
         # instead of doing the work again.
         ("docker images (source-change detection)", _build_terraform_docker_images),
         ("terraform init/plan/apply", _terraform_init_plan_apply),
+        # Must run before the observability stack starts: Grafana's Compose
+        # bind-mount auto-creates a missing ~/.nyxGPT/secrets root-owned on
+        # Linux (#3432), which then blocks the token write below.
+        ("glitchtip secrets dir", _ensure_glitchtip_secrets_dir),
         # After apply (network + core containers exist): bring the observability
         # stack up on the terraform network and auto-provision GlitchTip, so the
         # terraform deploy has the same full SRE view as the native install.
@@ -2504,7 +2504,7 @@ def _ensure_kubectl_and_cluster() -> list[OpsResult]:
 
 def _kubectl_context() -> str:
     """Return kubectl's current context name (e.g. `kind-nyxgpt`, `docker-desktop`), or "" if unset."""
-    cp = _run(["kubectl", "config", "current-context"], check=False)
+    cp = _run(["kubectl", "config", "current-context"], check=False, expected=True)
     return (cp.stdout or "").strip()
 
 
@@ -2674,7 +2674,11 @@ def _k8s_stack_health() -> list[OpsResult]:
             results.append(OpsResult(phase == "Running", f"pod {name}: {phase}"))
 
     for svc in ("nyxgpt-api", "nyxgpt-web"):
-        cp = _run(["kubectl", "-n", K8S_NAMESPACE, "get", "svc", svc, "--no-headers"], check=False)
+        cp = _run(
+            ["kubectl", "-n", K8S_NAMESPACE, "get", "svc", svc, "--no-headers"],
+            check=False,
+            expected=True,
+        )
         results.append(
             OpsResult(
                 cp.returncode == 0,
@@ -2838,7 +2842,11 @@ def infra_status() -> dict[str, Any]:
     pods: list[str] = []
     kubernetes_probe_available = False
     if kubectl_available:
-        cp = _run(["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "--no-headers"], check=False)
+        cp = _run(
+            ["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "--no-headers"],
+            check=False,
+            expected=True,
+        )
         kubernetes_probe_available = cp.returncode == 0
         if kubernetes_probe_available:
             pods = [line for line in (cp.stdout or "").splitlines() if line.strip()]
@@ -3001,12 +3009,16 @@ def install(args) -> int:
         ("homebrew api", _install_homebrew_api),
         ("homebrew web", _install_homebrew_web),
         ("ollama service", _ensure_ollama_service),
-        ("log symlinks", _ensure_log_symlinks),
+        ("stale log symlink cleanup", _cleanup_stale_log_symlinks),
         ("env sync", sync_env_from_config),
         ("compose config (derive from native)", _generate_compose_config),
         ("compose file path", _persist_compose_file_path),
     ]
     if not getattr(args, "skip_observability", False):
+        # Must run before the observability stack starts: Grafana's Compose
+        # bind-mount auto-creates a missing ~/.nyxGPT/secrets root-owned on
+        # Linux (#3432), which then blocks the token write below.
+        steps.append(("glitchtip secrets dir", _ensure_glitchtip_secrets_dir))
         steps.append(("observability stack", _reconcile_grafana_provisioning))
         steps.append(("glitchtip auto-provisioning", _provision_glitchtip))
     for step_name, fn in steps:
@@ -3091,14 +3103,14 @@ def status(_args) -> int:
         print(f"\nConfig in use: {config_hint}")
 
     if _which("brew"):
-        cp = _run(["brew", "services", "list"], check=False)
+        cp = _run(["brew", "services", "list"], check=False, expected=True)
         print("\nHomebrew services:\n" + (cp.stdout or "").strip())
     else:
         print("\nHomebrew services: brew not found")
 
     label = "com.nyxgpt.cassandra-logs"
     try:
-        cp = _run(["launchctl", "list"], check=False)
+        cp = _run(["launchctl", "list"], check=False, expected=True)
         loaded = label in (cp.stdout or "")
         print(f"\nLaunchAgent {label}: {'LOADED' if loaded else 'NOT LOADED'}")
     except Exception as e:
@@ -3114,7 +3126,11 @@ def status(_args) -> int:
             print(f"  terraform {component}: {state}")
 
     if _which("kubectl") is not None:
-        cp = _run(["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "--no-headers"], check=False)
+        cp = _run(
+            ["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "--no-headers"],
+            check=False,
+            expected=True,
+        )
         pod_lines = [line for line in (cp.stdout or "").splitlines() if line.strip()]
         if cp.returncode == 0 and pod_lines:
             print(
@@ -3162,6 +3178,7 @@ def _promtail_container_id() -> str | None:
     cp = _run(
         ["docker", "compose", "-f", str(self_heal.COMPOSE_FILE), "ps", "-q", "promtail"],
         check=False,
+        expected=True,
     )
     container_id = (cp.stdout or "").strip().splitlines()[0] if cp.stdout else ""
     return container_id or None
@@ -3179,6 +3196,7 @@ def _promtail_native_mount_missing(container_id: str) -> bool:
     cp = _run(
         ["docker", "inspect", "--format", "{{json .Mounts}}", container_id],
         check=False,
+        expected=True,
     )
     if cp.returncode != 0:
         return True
@@ -3324,7 +3342,7 @@ def _ollama_env_drift_issue() -> str | None:
         return None
 
     expected = _shared_ollama_models_dir()
-    cp = _run(["launchctl", "getenv", "OLLAMA_MODELS"], check=False)
+    cp = _run(["launchctl", "getenv", "OLLAMA_MODELS"], check=False, expected=True)
     actual = (cp.stdout or "").strip()
     if cp.returncode != 0 or not actual:
         return (
@@ -3357,19 +3375,52 @@ LOKI_CURATED_LOGGERS: dict[str, str] = {
 }
 
 
-def _loki_recent_volume_by_logger(
-    grafana_ui_url: str, grafana_admin_password: str, *, hours: int = 24
-) -> dict[str, int] | None:
-    """Query Loki (via Grafana's provisioned datasource proxy) for each curated
-    logger's line count over the last `hours`. Returns None if Grafana/Loki
-    can't be reached or queried at all -- that's not itself a failure here,
-    just nothing to report (other doctor checks cover stack reachability).
+def _grafana_doctor_token_path() -> Path:
+    """Where the Grafana service-account token for doctor's Loki log-volume
+    check is written -- see `_provision_grafana_doctor_token`.
+
+    A dedicated Viewer-scoped service account, not the shared `admin`
+    credential the rest of this module's Grafana calls use: that password
+    lives in config.ini and can drift from whatever a long-running Grafana
+    container's own database actually has (a regenerated config.ini, a
+    hand-edited `.env`, ...), which is what let the datasource-proxy query
+    below 401 on an otherwise-healthy stack (#3438). A token minted once and
+    read straight off disk sidesteps that drift entirely -- same pattern as
+    `_glitchtip_grafana_token_path`'s token file, just consumed by this
+    process instead of by Grafana itself.
     """
+    return Path.home() / ".nyxGPT" / "secrets" / "grafana-doctor-token"
+
+
+def _loki_recent_volume_by_logger(
+    grafana_ui_url: str, *, hours: int = 24
+) -> tuple[dict[str, int] | None, str | None]:
+    """Query Loki (via Grafana's provisioned datasource proxy, authenticated
+    with the service-account token `_provision_grafana_doctor_token` mints)
+    for each curated logger's line count over the last `hours`.
+
+    Returns `(volumes, issue)`. `volumes` is None when nothing could be
+    queried. `issue` is set to an actionable `doctor` finding only for the
+    fixable auth failure modes (token file missing, or Grafana rejects the
+    token) -- #3438 was specifically about that case degrading into a
+    debug-level log line no operator would see. Any other failure (Grafana
+    or Loki simply unreachable) still returns `issue=None`: that's not
+    itself a failure here, since the rest of `doctor` already covers overall
+    stack reachability.
+    """
+    token_path = _grafana_doctor_token_path()
+    token = token_path.read_text().strip() if token_path.exists() else ""
+    if not token:
+        return None, (
+            f"Missing Grafana service-account token at {token_path} -- the Loki "
+            "log-volume check can't authenticate (run: nyxgpt ops install)"
+        )
+
     volumes: dict[str, int] = {}
     try:
         with httpx.Client(
             base_url=grafana_ui_url,
-            auth=("admin", grafana_admin_password),
+            headers={"Authorization": f"Bearer {token}"},
             timeout=5.0,
         ) as client:
             for name, logger_name in LOKI_CURATED_LOGGERS.items():
@@ -3378,6 +3429,12 @@ def _loki_recent_volume_by_logger(
                     "/api/datasources/proxy/uid/loki/loki/api/v1/query",
                     params={"query": query},
                 )
+                if resp.status_code == 401:
+                    return None, (
+                        f"Grafana rejected the doctor service-account token at {token_path} "
+                        "(401) -- delete the file and re-run `nyxgpt ops install` to mint a "
+                        "fresh one"
+                    )
                 resp.raise_for_status()
                 result = resp.json().get("data", {}).get("result", [])
                 volumes[name] = int(float(result[0]["value"][1])) if result else 0
@@ -3388,8 +3445,8 @@ def _loki_recent_volume_by_logger(
             e,
             extra={"component": "ops"},
         )
-        return None
-    return volumes
+        return None, None
+    return volumes, None
 
 
 def doctor(_args) -> int:
@@ -3401,12 +3458,17 @@ def doctor(_args) -> int:
     (when log aggregation is enabled and native logs exist) whether
     promtail is actually wired to see native-mode host logs, (when tracing
     is enabled) whether the configured OTLP endpoint actually has something
-    listening on it, and (once the shared Ollama store has been configured)
-    whether native Ollama's OLLAMA_MODELS env has drifted from it (#3431).
+    listening on it, (once the shared Ollama store has been configured)
+    whether native Ollama's OLLAMA_MODELS env has drifted from it (#3431),
+    and whether `~/.nyxGPT/secrets` is writable / holds the GlitchTip
+    Grafana token when the observability stack is up (#3432).
     Also prints a per-logger recent log volume
     (last 24h, via Loki) when log aggregation
     and the monitoring stack are both up, so idle curated components aren't
-    mistaken for a broken pipeline. Prints each issue found.
+    mistaken for a broken pipeline -- and, if that check's Grafana
+    service-account token is missing or rejected, reports it as an issue
+    rather than silently omitting the log volume line (#3438). Prints each
+    issue found.
 
     Returns 0 if no issues were found, else 2.
     """
@@ -3438,12 +3500,11 @@ def doctor(_args) -> int:
         and _compose_stack_snapshot().get("promtail") == "running"
     ):
         monitoring_config = get_monitoring_config(cfg_parser)
-        volumes = _loki_recent_volume_by_logger(
-            monitoring_config["grafana_ui_url"],
-            get_monitoring_grafana_admin_password(cfg_parser),
-        )
+        volumes, loki_issue = _loki_recent_volume_by_logger(monitoring_config["grafana_ui_url"])
         if volumes is not None:
             volume_info = ", ".join(f"{k}={v}" for k, v in volumes.items())
+        if loki_issue is not None:
+            issues.append(loki_issue)
 
     for name in (
         "run-web.sh",
@@ -3510,8 +3571,12 @@ def doctor(_args) -> int:
     if ollama_env_issue:
         issues.append(ollama_env_issue)
 
-    if TERRAFORM_DIR.joinpath("terraform.tfstate").exists() and all(
-        state == "absent" for state in terraform_stack_state().values()
+    issues += _glitchtip_secrets_doctor_issues()
+
+    if (
+        TERRAFORM_DIR.joinpath("terraform.tfstate").exists()
+        and _terraform_state_has_resources()
+        and all(state == "absent" for state in terraform_stack_state().values())
     ):
         issues.append(
             "Terraform state exists but no nyxgpt-tf-* containers are running "
@@ -4176,12 +4241,15 @@ def down(args) -> int:
 
 
 def logs(args) -> int:
-    """Print recent logs for a single Docker Compose service.
+    """Print recent logs for a single component, in whichever mode it's actually running.
 
-    Wraps `docker compose logs` so operators never need to run a raw
-    `docker`/`docker compose` command themselves -- e.g. to read the
-    `errors` profile's GlitchTip container output for the first-account
-    registration confirmation link its console email backend prints there.
+    Wraps `docker compose logs`/`docker logs`/`kubectl logs`/the component's
+    own log files so operators never need to run a raw `docker`/`docker
+    compose`/`kubectl` command (or hunt for a native log path) themselves --
+    e.g. to read the `errors` profile's GlitchTip container output for the
+    first-account registration confirmation link its console email backend
+    prints there, or the native API's own log file. See
+    `self_heal.component_logs` for the per-mode dispatch (#3442).
     """
     service = args.service
     tail = getattr(args, "tail", None)
@@ -4258,7 +4326,7 @@ def _compose_available() -> bool:
     """Return True if both `docker` and `docker compose` are usable on this host."""
     if _which("docker") is None:
         return False
-    cp = _run(["docker", "compose", "version"], check=False)
+    cp = _run(["docker", "compose", "version"], check=False, expected=True)
     return cp.returncode == 0
 
 
@@ -4295,9 +4363,18 @@ def _enable_observability_config(cfg_path: Path | None = None) -> None:
     os.chmod(cfg_path, 0o600)
 
 
+def _grafana_datasources_dir() -> Path:
+    """`docker/grafana/provisioning/datasources/` -- one YAML file per
+    datasource group (GlitchTip lives in its own file, `glitchtip.yml`,
+    separate from `datasource.yml`'s Prometheus/Loki/Jaeger -- #3432 -- so a
+    `$__file{}` interpolation failure in one file can't take the others
+    down; see `docker/grafana/provisioning/datasources/glitchtip.yml`)."""
+    return REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources"
+
+
 def _grafana_provisioning_fingerprint() -> str:
     """sha256 over everything that only takes effect when the `grafana`
-    container is recreated: the datasource provisioning file (new/changed
+    container is recreated: every datasource provisioning file (new/changed
     datasources) and the Compose file itself (image tag, `GF_INSTALL_PLUGINS`,
     any other env). `docker compose up -d` alone does NOT pick up an env or
     image change on an already-running container -- it needs
@@ -4306,10 +4383,9 @@ def _grafana_provisioning_fingerprint() -> str:
     silently pointed at a stale container missing a plugin or datasource.
     """
     digest = hashlib.sha256()
-    for path in (
-        REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources" / "datasource.yml",
-        self_heal.COMPOSE_FILE,
-    ):
+    datasources_dir = _grafana_datasources_dir()
+    paths = sorted(datasources_dir.glob("*.yml")) if datasources_dir.exists() else []
+    for path in (*paths, self_heal.COMPOSE_FILE):
         if path.exists():
             digest.update(path.read_bytes())
     return digest.hexdigest()
@@ -4346,17 +4422,21 @@ def _record_grafana_provisioning_fingerprint() -> None:
 
 
 def _grafana_provisioned_datasource_uids() -> list[str]:
-    """Datasource `uid`s declared in `docker/grafana/provisioning/datasources/datasource.yml`.
+    """Datasource `uid`s declared across every file in
+    `docker/grafana/provisioning/datasources/`.
 
     Deliberately regex-scraped rather than parsed with PyYAML: PyYAML isn't a
-    runtime dependency of this package (only a test-suite one), and this file
-    is repo-controlled config, not user input, so a targeted regex over its
-    known `uid: <value>` shape is sufficient.
+    runtime dependency of this package (only a test-suite one), and these
+    files are repo-controlled config, not user input, so a targeted regex
+    over their known `uid: <value>` shape is sufficient.
     """
-    path = REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources" / "datasource.yml"
-    if not path.exists():
+    datasources_dir = _grafana_datasources_dir()
+    if not datasources_dir.exists():
         return []
-    return re.findall(r"^\s*uid:\s*(\S+)\s*$", path.read_text(), re.MULTILINE)
+    uids: list[str] = []
+    for path in sorted(datasources_dir.glob("*.yml")):
+        uids += re.findall(r"^\s*uid:\s*(\S+)\s*$", path.read_text(), re.MULTILINE)
+    return uids
 
 
 def _verify_grafana_datasources_resolve(
@@ -4403,7 +4483,7 @@ def _verify_grafana_datasources_resolve(
             return OpsResult(
                 False,
                 f"Grafana datasource(s) failed to provision: {', '.join(sorted(missing))}",
-                "Declared in docker/grafana/provisioning/datasources/datasource.yml but not "
+                "Declared in docker/grafana/provisioning/datasources/*.yml but not "
                 "returned by GET /api/datasources -- check `nyxgpt ops logs grafana` for a "
                 "provisioning error (bad plugin id, YAML syntax, unreachable datasource type) "
                 "near 'inserting datasource from configuration'.",
@@ -4491,6 +4571,84 @@ def _verify_grafana_plugins_installed(
         "Could not reach Grafana to verify installed plugins",
         str(last_error) if last_error else "",
     )
+
+
+# Grafana service account minted for `nyxgpt ops doctor`'s Loki log-volume
+# check -- see `_grafana_doctor_token_path` and `_provision_grafana_doctor_token`.
+GRAFANA_DOCTOR_SA_NAME = "nyxgpt-ops-doctor"
+GRAFANA_DOCTOR_TOKEN_NAME = "nyxgpt-ops-doctor"
+
+
+def _provision_grafana_doctor_token(grafana_ui_url: str, grafana_admin_password: str) -> OpsResult:
+    """Mint a Viewer-scoped Grafana service-account token for doctor's Loki
+    check, so it authenticates without depending on the shared admin
+    password at query time (#3438).
+
+    Grafana only returns a service-account token's secret at creation time
+    (like a GitHub PAT) -- it can't be re-fetched later even to confirm it
+    still works -- so this only mints a fresh one when
+    `_grafana_doctor_token_path()` doesn't already hold one. A token that's
+    since been revoked/gone stale is instead caught (and reported as an
+    actionable `doctor` finding, not a silent skip) by
+    `_loki_recent_volume_by_logger` at query time.
+    """
+    token_path = _grafana_doctor_token_path()
+    if token_path.exists() and token_path.read_text().strip():
+        return OpsResult(True, f"{token_path} already holds a Grafana service-account token")
+
+    try:
+        with httpx.Client(
+            base_url=grafana_ui_url,
+            auth=("admin", grafana_admin_password),
+            timeout=5.0,
+        ) as client:
+            sa_id: Any = None
+            resp = client.get(
+                "/api/serviceaccounts/search", params={"query": GRAFANA_DOCTOR_SA_NAME}
+            )
+            resp.raise_for_status()
+            for sa in resp.json().get("serviceAccounts", []):
+                if isinstance(sa, dict) and sa.get("name") == GRAFANA_DOCTOR_SA_NAME:
+                    sa_id = sa.get("id")
+                    break
+            if sa_id is None:
+                resp = client.post(
+                    "/api/serviceaccounts",
+                    json={"name": GRAFANA_DOCTOR_SA_NAME, "role": "Viewer"},
+                )
+                resp.raise_for_status()
+                sa_id = resp.json().get("id")
+
+            resp = client.post(
+                f"/api/serviceaccounts/{sa_id}/tokens",
+                json={"name": GRAFANA_DOCTOR_TOKEN_NAME},
+            )
+            resp.raise_for_status()
+            token: Any = resp.json().get("key")
+    except Exception as e:
+        return OpsResult(
+            False,
+            "Failed to provision Grafana service-account token for doctor's Loki check",
+            f"{type(e).__name__}: {e}",
+        )
+
+    if not token:
+        return OpsResult(
+            False,
+            "Grafana service-account token response missing a key",
+            "Check `nyxgpt ops logs grafana` for a /api/serviceaccounts error.",
+        )
+
+    try:
+        token_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        token_path.write_text(str(token))
+        token_path.chmod(0o600)
+    except OSError as e:
+        return OpsResult(
+            False, f"Failed to write Grafana service-account token to {token_path}", str(e)
+        )
+
+    return OpsResult(True, f"Provisioned Grafana service-account token for doctor at {token_path}")
 
 
 def _recreate_grafana_if_provisioning_drifted() -> OpsResult | None:
@@ -4645,7 +4803,8 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
     """Bring the observability stack up AND make Grafana's provisioning
     state deterministic: recreate on drift before starting, then verify the
     declared datasources and GF_INSTALL_PLUGINS plugins actually resolve
-    afterward (#3424).
+    afterward (#3424), and mint doctor's Loki service-account token if it
+    doesn't already have one (#3438).
 
     This is the entrypoint `nyxgpt ops install` / `nyxgpt ops observability`
     / wizard toggles use instead of calling `_start_observability_stack`
@@ -4680,6 +4839,7 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
             results.append(
                 _verify_grafana_datasources_resolve(grafana_ui_url, grafana_admin_password)
             )
+            results.append(_provision_grafana_doctor_token(grafana_ui_url, grafana_admin_password))
         except Exception as e:
             logger.warning(
                 "Failed to verify Grafana plugins/datasources, skipping: %s",
@@ -4942,7 +5102,7 @@ GLITCHTIP_DEFAULT_ADMIN_EMAIL = "admin@nyxgpt.local"
 def _glitchtip_grafana_token_path() -> Path:
     """Where the GlitchTip API token is written for Grafana's Infinity
     datasource to read (#3411) -- see
-    docker/grafana/provisioning/datasources/datasource.yml's `$__file{}`
+    docker/grafana/provisioning/datasources/glitchtip.yml's `$__file{}`
     reference and docs/docker-compose.md#grafana-single-pane-of-glass. Lives
     outside `~/.nyxGPT/volumes/grafana` (Grafana's own data dir) so it isn't
     swept by `nyxgpt ops down --volumes`, which deletes volume_dir()
@@ -4953,6 +5113,92 @@ def _glitchtip_grafana_token_path() -> Path:
     monkeypatch `Path.home`.
     """
     return Path.home() / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
+
+
+def _glitchtip_secrets_dir_unwritable_result(path: Path) -> OpsResult:
+    """Actionable failure for a `~/.nyxGPT/secrets` that exists but this
+    process can't write to -- shared by the install preflight and the token
+    writer itself so both report the same guidance (#3432)."""
+    return OpsResult(
+        False,
+        f"{path} exists but is not writable by {getpass.getuser()!r}",
+        f"On Linux, dockerd runs as root and auto-creates a missing Docker bind-mount "
+        f"source directory as root:root the first time a container starts -- if "
+        f"Grafana started before this directory existed, that's almost certainly what "
+        f"happened here. Fix with: sudo chown -R $(whoami) {path} && chmod 700 {path}, "
+        "then re-run `nyxgpt ops install` (or `nyxgpt ops glitchtip-init`).",
+    )
+
+
+def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
+    """Ensure `~/.nyxGPT/secrets` exists and is writable by the invoking user
+    *before* anything bind-mounts it (#3432).
+
+    On Linux, dockerd runs as root and auto-creates a missing bind-mount
+    source directory as root:root the first time a container starts. Since
+    `docker-compose.yml` mounts this directory read-only into Grafana
+    (`${HOME}/.nyxGPT/secrets:/etc/nyxgpt-secrets:ro`), if Grafana starts
+    (via `_reconcile_grafana_provisioning`/`_start_observability_stack_terraform`)
+    before this directory exists, Docker creates it root-owned and every
+    later attempt by this (non-root) process to write the GlitchTip token
+    into it -- `_write_grafana_glitchtip_token` -- fails with a raw
+    `PermissionError`. Running this as an early install step, ahead of
+    those, means Docker always finds the directory already present and
+    never touches its ownership. macOS (Docker Desktop) doesn't hit this:
+    its VM handles bind-mount ownership differently.
+
+    Run as a best-effort preflight step (`install()` / `_install_terraform_steps`
+    catch and log any exception a step raises), so it never needs to raise
+    itself -- it just reports whether the directory is now usable.
+    """
+    path = _glitchtip_grafana_token_path().parent
+    if not path.exists():
+        try:
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as e:
+            return [OpsResult(False, f"Failed to create {path}", f"{type(e).__name__}: {e}")]
+        return [OpsResult(True, f"Created {path}")]
+
+    if not os.access(path, os.W_OK | os.X_OK):
+        return [_glitchtip_secrets_dir_unwritable_result(path)]
+
+    # Owned-and-writable is what matters; a chmod that fails here is harmless.
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o700)
+    return [OpsResult(True, f"{path} exists and is writable")]
+
+
+def _glitchtip_secrets_doctor_issues() -> list[str]:
+    """`nyxgpt ops doctor` checks for the #3432 Linux bind-mount ownership
+    failure mode: a `~/.nyxGPT/secrets` that exists but isn't writable by
+    the current user (see `_ensure_glitchtip_secrets_dir`), and -- once the
+    observability stack is actually up -- a missing GlitchTip token file,
+    which leaves Grafana's GlitchTip datasource (glitchtip.yml) unable to
+    authenticate even though Prometheus/Loki/Jaeger are fine.
+
+    The second check only queries `_compose_stack_snapshot()` when Docker is
+    on PATH, same guard `doctor()` already uses for the Cassandra container
+    check -- avoids an unnecessary `docker compose ps` on a host without
+    Docker at all.
+    """
+    issues: list[str] = []
+
+    secrets_dir = _glitchtip_grafana_token_path().parent
+    if secrets_dir.exists() and not os.access(secrets_dir, os.W_OK | os.X_OK):
+        issues.append(
+            f"{secrets_dir} exists but is not writable by {getpass.getuser()!r} "
+            f"(run: sudo chown -R $(whoami) {secrets_dir} && nyxgpt ops install)"
+        )
+
+    if _which("docker") is not None and _compose_stack_snapshot().get("grafana") == "running":
+        token_path = _glitchtip_grafana_token_path()
+        if not token_path.exists():
+            issues.append(
+                f"Observability stack is up but {token_path} is missing -- Grafana's "
+                "GlitchTip datasource can't authenticate (run: nyxgpt ops glitchtip-init)"
+            )
+
+    return issues
 
 
 def _glitchtip_container_healthy() -> bool:
@@ -5441,14 +5687,30 @@ def _write_grafana_glitchtip_token(token: str) -> tuple[bool, OpsResult]:
     holds this exact token, which callers use to skip an unnecessary Grafana
     restart (Grafana only re-reads provisioning files, including `$__file{}`
     targets, at startup).
+
+    `_ensure_glitchtip_secrets_dir` runs earlier in `install()`/
+    `_install_terraform_steps` specifically so this doesn't hit a
+    root-owned bind-mount directory (#3432), but this still guards the
+    write with its own try/except -- e.g. a standalone `nyxgpt ops
+    glitchtip-init` run skips that preflight -- so a permission problem
+    surfaces as this actionable `OpsResult` instead of an uncaught
+    `PermissionError` traceback bubbling up through `_provision_glitchtip`.
     """
     path = _glitchtip_grafana_token_path()
-    if path.exists() and path.read_text(encoding="utf-8").strip() == token:
-        return False, OpsResult(True, f"{path} already holds the current GlitchTip token")
+    try:
+        if path.exists() and path.read_text(encoding="utf-8").strip() == token:
+            return False, OpsResult(True, f"{path} already holds the current GlitchTip token")
 
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.write_text(token, encoding="utf-8")
-    os.chmod(path, 0o600)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.write_text(token, encoding="utf-8")
+        os.chmod(path, 0o600)
+    except OSError as e:
+        result = _glitchtip_secrets_dir_unwritable_result(path.parent)
+        return False, OpsResult(
+            False,
+            f"Cannot write GlitchTip token to {path}",
+            f"{result.details}\n{type(e).__name__}: {e}",
+        )
     return True, OpsResult(True, f"Wrote GlitchTip API token for Grafana to {path}")
 
 

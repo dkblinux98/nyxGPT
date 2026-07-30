@@ -46,7 +46,7 @@ Quick reference of all 77 available endpoints:
 | `/api/v1/self-heal/status` | GET | Self-heal watchdog status (per-component health, recent events) |
 | `/api/v1/self-heal/toggle` | POST | Enable/disable automatic self-healing |
 | `/api/v1/self-heal/heal` | POST | Manually restart one or every unhealthy component |
-| `/api/v1/self-heal/logs` | GET | Recent Compose logs for one component (e.g. GlitchTip's registration link) |
+| `/api/v1/self-heal/logs` | GET | Recent logs for one component, mode-dispatched (e.g. GlitchTip's registration link) |
 | `/api/v1/models` | GET | List Ollama models |
 | `/api/v1/models/pull` | POST | Pull model from Ollama |
 | `/api/v1/models/{model_name}` | DELETE | Delete model |
@@ -1200,13 +1200,16 @@ currently-known container.
 
 ### `GET /api/v1/self-heal/logs`
 
-Recent Docker Compose logs for one component. Backs `nyxgpt ops logs`,
-letting an operator read a container's console output (e.g. GlitchTip's
-first-account confirmation link, printed there by its console email
-backend) without a raw `docker`/`docker compose` command.
+Recent logs for one component, from whichever source it's actually running
+under (Compose container, native log file, Terraform/Kubernetes container --
+see [`nyxgpt ops logs`](ops.md#nyxgpt-ops-logs) for the full per-mode
+dispatch table). Backs `nyxgpt ops logs`, letting an operator read a
+component's console output (e.g. GlitchTip's first-account confirmation
+link, printed there by its console email backend) without a raw
+`docker`/`docker compose`/`kubectl` command.
 
-**Query parameters:** `service` (required, Compose service name, e.g.
-`glitchtip`, `api`), `tail` (optional, number of trailing lines, default 200).
+**Query parameters:** `service` (required, component name, e.g.
+`glitchtip`, `api`, `web`), `tail` (optional, number of trailing lines, default 200).
 
 **Response:**
 
@@ -2584,7 +2587,7 @@ All authentication failures include a request ID in the error response and logs,
 Check logs for details:
 
 ```bash
-grep "550e8400-e29b-41d4-a716-446655440000" ~/.nyxGPT/logs/nyxgpt.log
+grep "550e8400-e29b-41d4-a716-446655440000" ~/.nyxGPT/logs/api.log
 ```
 
 #### Exempt Endpoints
@@ -2706,7 +2709,7 @@ These features are beyond the scope of nyxGPT's current design but can be layere
 
 3. Check API logs for authentication status:
    ```bash
-   tail -f ~/.nyxGPT/logs/nyxgpt.log | grep auth
+   tail -f ~/.nyxGPT/logs/api.log | grep auth
    ```
 
 #### Can't Access API After Enabling Auth
@@ -2938,27 +2941,36 @@ nyxgpt ops restart
 ### Ollama logs
 
 `nyxgpt ops install` captures Ollama's logs into `~/.nyxGPT/logs/ollama.log`
-automatically, in whichever mode Ollama is actually running:
+automatically, in whichever mode Ollama is actually running. The
+`com.nyxgpt.ollama-logs` LaunchAgent runs `scripts/follow-ollama-logs.sh`,
+which decides its source on its own and always writes a real file (never a
+symlink -- see below):
 
-- **Native mode** (Ollama as a Homebrew service): `_ensure_log_symlinks`
-  symlinks Homebrew's `ollama.log` into `~/.nyxGPT/logs/ollama.log`.
-- **Compose mode** (Ollama as the `ollama`/`nyxgpt-ollama` container): the
-  `com.nyxgpt.ollama-logs` LaunchAgent runs `scripts/follow-ollama-logs.sh`,
-  which tails `docker logs -f nyxgpt-ollama` into the same
-  `~/.nyxGPT/logs/ollama.log` path -- mirroring how the
+- **Compose mode** (Ollama as the `ollama`/`nyxgpt-ollama` container): tails
+  `docker logs -f nyxgpt-ollama` into `~/.nyxGPT/logs/ollama.log` --
+  mirroring how the
   [Cassandra log follower](#cassandra-logs-via-docker-launchagent) works.
-  It replaces any leftover symlink from the native-mode path the first time
-  it sees the container, so the two mechanisms never collide.
+- **Native mode** (Ollama as a Homebrew service): tails Homebrew's own
+  `ollama.log` (resolved via `brew --prefix`) directly into the same
+  `~/.nyxGPT/logs/ollama.log` path.
 
-Either way, `~/.nyxGPT/logs/ollama.log` is picked up by promtail's existing
-`*.log*` glob (see [Centralized logs](#centralized-logs)) with no extra
-configuration, so it's searchable in Grafana's Logs Drilldown app and Logs
-Explorer dashboard -- filter on Loki's auto-attached `filename` label to
-isolate it from the rest of the `job="nyxgpt"` stream. Ollama's own log
-lines don't match nyxGPT's `level`/`logger` extraction regex (that's for
-the app's own structured format), so -- like the existing Cassandra logs --
-they won't carry a `logger` label; they're still fully text-searchable in
-Drilldown/Explore.
+A prior nyxgpt version instead *symlinked* native-mode logs into
+`~/.nyxGPT/logs/ollama.log`. That never actually worked: promtail reads
+`~/.nyxGPT/logs` from inside its own container via a read-only bind mount,
+and a symlink whose target lives outside that mount (Homebrew's `var/log`
+dir) is unreachable from inside the container -- so promtail could never see
+those lines, and spammed `stat failed` errors for the dangling path every
+poll interval (#3441). `nyxgpt ops install` cleans up any such leftover
+symlink automatically; you don't need to remove it by hand.
+
+Either way, `~/.nyxGPT/logs/ollama.log` is picked up by promtail with a
+`service_name="ollama"` label (see [Centralized logs](#centralized-logs)),
+so it's searchable in Grafana's Logs Drilldown app filtered to the Ollama
+service, or via `{job="nyxgpt", service_name="ollama"}` in Explore. Ollama's
+own log lines don't match nyxGPT's `level`/`logger` extraction regex (that's
+for the app's own structured format), so -- like the existing Cassandra
+logs -- they won't carry a `logger` label; they're still fully
+text-searchable in Drilldown/Explore.
 
 Verify:
 
@@ -2971,20 +2983,6 @@ If you don't see output, confirm Ollama is actually running:
 ```bash
 brew services info ollama
 curl -s http://127.0.0.1:11434/api/tags | head
-```
-
-**Manual fallback** (e.g. troubleshooting, or a non-Homebrew Ollama
-install) -- symlink whichever Homebrew log path exists:
-
-```bash
-mkdir -p ~/.nyxGPT/logs
-for p in /usr/local/var/log/ollama.log /opt/homebrew/var/log/ollama.log; do
-  if [[ -f "$p" ]]; then
-    ln -sf "$p" ~/.nyxGPT/logs/ollama.log
-    echo "linked $p -> ~/.nyxGPT/logs/ollama.log"
-    break
-  fi
-done
 ```
 
 ---
@@ -3045,11 +3043,17 @@ Start manually if needed:
 brew services start nyxgpt-web
 ```
 
-Logs are written to:
+Homebrew writes this service's stdout/stderr directly to its own log
+directory (not `~/.nyxGPT/logs` -- the web UI has no structured
+`nyxgpt.logging`-based logging yet, tracked by #3430):
 
 ```
-~/.nyxGPT/logs/nyxgpt-web.log
-~/.nyxGPT/logs/nyxgpt-web.err.log
+$(brew --prefix)/var/log/nyxgpt-web.log
+$(brew --prefix)/var/log/nyxgpt-web.err.log
+```
+
+```bash
+tail -f "$(brew --prefix)/var/log/nyxgpt-web.log"
 ```
 
 ---
@@ -3768,7 +3772,7 @@ curated per-component Explore links, not general search.
 
 - All errors return JSON
 - HTTP status codes are used consistently
-- Internal errors are logged to `~/.nyxGPT/logs/nyxgpt.log`
+- Internal errors are logged to `~/.nyxGPT/logs/api.log`
 
 ---
 

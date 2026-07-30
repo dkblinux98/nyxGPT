@@ -71,9 +71,9 @@ This command:
   up` or a previous mixed-mode install, reporting what it stopped
 - Installs Homebrew formulas (`nyxgpt-api`, `nyxgpt-web`) if missing
 - Registers and loads required LaunchAgents, including `com.nyxgpt.ollama-logs`
-  (follows the `nyxgpt-ollama` container's docker logs into
-  `~/.nyxGPT/logs/ollama.log` if/when Ollama is ever run via Compose instead
-  of natively — see [Ollama logs](api.md#ollama-logs)) and
+  (tails Ollama's logs into `~/.nyxGPT/logs/ollama.log`, from the
+  `nyxgpt-ollama` container's docker logs in Compose mode or Homebrew's own
+  ollama.log natively — see [Ollama logs](api.md#ollama-logs)) and
   `com.nyxgpt.ollama-env` (reapplies native Ollama's `OLLAMA_MODELS` env var
   at every login — see [Ollama model store](homebrew.md#ollama-model-store))
 - Points native Ollama's model store at the same
@@ -387,7 +387,10 @@ Checks include:
 - (when log aggregation is enabled) whether the *running* promtail
   container actually has the native-logs bind mount, via `docker inspect`
   -- and, when Loki is reachable, a per-component log volume for the last
-  24h so an idle curated component isn't mistaken for a broken pipeline
+  24h so an idle curated component isn't mistaken for a broken pipeline;
+  flags a missing or Grafana-rejected doctor service-account token
+  (`~/.nyxGPT/secrets/grafana-doctor-token`) instead of silently omitting
+  that log volume
   (see [docker-compose.md#log-aggregation](docker-compose.md#log-aggregation))
 - (when tracing is enabled) whether something is actually listening on the
   configured `[tracing] otlp_endpoint`, via a live TCP connect -- catches
@@ -430,9 +433,29 @@ config.ini, before `docker compose up`.
 
 ## `nyxgpt ops logs`
 
-Prints recent logs for a single Docker Compose service — a wrapped
-`docker compose logs`, so reading a container's output never requires a raw
-`docker`/`docker compose` command.
+Prints recent logs for a single component — a wrapped `docker compose
+logs`/`docker logs`/`kubectl logs`/native log file read, so reading a
+component's output never requires a raw `docker`/`docker compose`/`kubectl`
+command, or knowing where its native log file lives.
+
+The command detects which deployment mode the requested component is
+actually running under (the same detection `nyxgpt ops status` uses) and
+reads the matching source:
+
+| Mode | Source |
+| --- | --- |
+| Docker Compose | `docker compose logs <service>` |
+| Native (`api`) | `~/.nyxGPT/logs/api.log` |
+| Native (`ollama`) | `~/.nyxGPT/logs/ollama.log` (see [Ollama logs](api.md#ollama-logs)) |
+| Native (`web`) | Homebrew's own `nyxgpt-web.log`/`.err.log` (see [homebrew.md](homebrew.md#web-ui-logs)) |
+| Native (`cassandra`) | `docker logs nyxgpt-cassandra` |
+| Terraform | `docker logs <nyxgpt-tf-* container>` |
+| Kubernetes | `kubectl logs <pod>` |
+
+A component that's enabled but has no running container/process at all
+(e.g. an observability profile enabled in config.ini but torn down via
+`nyxgpt ops down`) fails explicitly rather than reporting a hollow success
+with no output.
 
 Usage:
 
@@ -444,6 +467,7 @@ nyxgpt ops logs <service> [--tail N]
 nyxgpt ops logs glitchtip
 nyxgpt ops logs glitchtip --tail 50
 nyxgpt ops logs api
+nyxgpt ops logs web
 ```
 
 `--tail` defaults to 200 lines. This is how to find the GlitchTip
@@ -626,12 +650,22 @@ All nyxGPT-managed services write logs under:
 
 Typical files include:
 
-- `nyxgpt-api.log`
-- `nyxgpt-api.err.log`
-- `nyxgpt-web.log`
-- `nyxgpt-web.err.log`
-- `cassandra-logfollower.out.log`
-- `cassandra-logfollower.err.log`
+- `api.log` -- the API process's own structured logs (see
+  [configuration.md](configuration.md#logging-section))
+- `cli.log` -- every `nyxgpt` CLI invocation's own structured logs
+- `ollama.log` -- Ollama's logs, tailed in by `follow-ollama-logs.sh`
+  (Compose mode: from `docker logs`; native mode: from Homebrew's own
+  ollama.log -- see [Ollama logs](api.md#ollama-logs))
+- `cassandra.log` -- Cassandra's container logs, tailed in by
+  `follow-cassandra-logs.sh`
+- `cassandra-logfollower.out.log` / `.err.log`, `ollama-logfollower.out.log`
+  / `.err.log` -- the log-follower LaunchAgents' own stdout/stderr, not the
+  service logs themselves (useful only for debugging the follower)
+
+Homebrew's own per-service `nyxgpt-api.log`/`.err.log`/`nyxgpt-web.log`/
+`.err.log` (raw process stdout/stderr, useful for a crash before Python/Node
+logging is even configured) live under Homebrew's own `var/log`, not here --
+see [homebrew.md](homebrew.md#api-logs).
 
 ### Structured `nyxgpt ops` activity logging
 
@@ -655,7 +689,7 @@ Every `nyxgpt ops` command (`install`, `status`, `restart`, `stop`, `down`, `log
 
 `nyxgpt ops logs` logs the fetch outcome (service, tail, ok/fail) but not
 the tailed log body itself, to avoid duplicating the target service's own
-logs into `~/.nyxGPT/logs/nyxgpt.log`.
+logs into `~/.nyxGPT/logs/cli.log`.
 
 ---
 

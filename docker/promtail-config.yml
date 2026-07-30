@@ -9,34 +9,80 @@ clients:
   - url: http://loki:3100/loki/api/v1/push
 
 scrape_configs:
-  # Three static_configs entries, not one glob: Compose-mode API logs
-  # (written by the api container into ~/.nyxGPT/volumes/nyxgpt-data on the
-  # host, bind-mounted read-only at /var/log/nyxgpt), native-mode logs
-  # (written on the host to ~/.nyxGPT/logs, bind-mounted at
-  # /var/log/nyxgpt-native), and Compose-mode web logs (written by the web
-  # container into ~/.nyxGPT/volumes/nyxgpt-web-logs, bind-mounted at
-  # /var/log/nyxgpt-web -- see web/src/lib/logger.ts and docker-compose.yml's
-  # web service) live in different directories. All three carry the same
-  # `job` label and pipeline_stages so they're indistinguishable in Grafana
-  # regardless of which mode/tier produced them (#3430) -- native-mode web
-  # logs already land under /var/log/nyxgpt-native/logs (brew's
-  # StandardOutPath for nyxgpt-web), so no separate native web path is needed.
+  # Every target below carries a fixed, bounded `service_name` label (api,
+  # cli, web, ollama, cassandra) so Grafana's Logs
+  # Drilldown service breakdown reflects the real services instead of one
+  # flat, undifferentiated `job=nyxgpt` bucket (#3441). `job: nyxgpt` stays
+  # on every target unchanged, so #3349's pipeline and the curated Explore
+  # links (which filter on `job="nyxgpt"` alone) keep working.
+  #
+  # api/cli each get two targets -- Compose-mode (written inside the api
+  # container into ~/.nyxGPT/volumes/nyxgpt-data, bind-mounted read-only at
+  # /var/log/nyxgpt) and native-mode (written on the host to ~/.nyxGPT/logs,
+  # bind-mounted at /var/log/nyxgpt-native -- see docker-compose.yml's
+  # promtail service) -- since `nyxgpt.logging.configure_logging` now writes
+  # api.py's process to api.log and every CLI invocation (`nyxgpt ops ...`)
+  # to cli.log (previously both shared one `nyxgpt.log`, making them
+  # indistinguishable). ollama/cassandra are never nyxgpt Python processes,
+  # so they only ever appear in the native-mode directory, written as real
+  # files (never symlinks -- see scripts/follow-ollama-logs.sh and
+  # scripts/follow-cassandra-logs.sh, the only things that ever put them
+  # there).
   - job_name: nyxgpt
     static_configs:
       - targets:
           - localhost
         labels:
           job: nyxgpt
-          __path__: /var/log/nyxgpt/logs/*.log*
+          service_name: api
+          __path__: /var/log/nyxgpt/logs/api.log*
       - targets:
           - localhost
         labels:
           job: nyxgpt
-          __path__: /var/log/nyxgpt-native/logs/*.log*
+          service_name: cli
+          __path__: /var/log/nyxgpt/logs/cli.log*
       - targets:
           - localhost
         labels:
           job: nyxgpt
+          service_name: api
+          __path__: /var/log/nyxgpt-native/logs/api.log*
+      - targets:
+          - localhost
+        labels:
+          job: nyxgpt
+          service_name: cli
+          __path__: /var/log/nyxgpt-native/logs/cli.log*
+      - targets:
+          - localhost
+        labels:
+          job: nyxgpt
+          service_name: ollama
+          __path__: /var/log/nyxgpt-native/logs/ollama.log*
+      - targets:
+          - localhost
+        labels:
+          job: nyxgpt
+          service_name: cassandra
+          __path__: /var/log/nyxgpt-native/logs/cassandra.log*
+      # Web tier (#3430): native mode's run-web.sh redirects the Next.js
+      # process's stdout to ~/.nyxGPT/logs/nyxgpt-web.log (a real file, no
+      # symlink); Compose mode's web container writes the same structured
+      # lines into ~/.nyxGPT/volumes/nyxgpt-web-logs, bind-mounted at
+      # /var/log/nyxgpt-web (see web/src/lib/logger.ts and
+      # docker-compose.yml's web + promtail services).
+      - targets:
+          - localhost
+        labels:
+          job: nyxgpt
+          service_name: web
+          __path__: /var/log/nyxgpt-native/logs/nyxgpt-web.log*
+      - targets:
+          - localhost
+        labels:
+          job: nyxgpt
+          service_name: web
           __path__: /var/log/nyxgpt-web/*.log*
     pipeline_stages:
       # nyxgpt's default text log format (see nyxgpt.logging.DEFAULT_FMT):
@@ -53,6 +99,13 @@ scrape_configs:
       # otherwise be invisible to every curated query, which filters on
       # those labels (see #3349). Keep this expression's contract in sync
       # with tests/unit/test_log_aggregation_stack.py.
+      #
+      # Ollama/Cassandra lines don't match nyxGPT's own format (they're
+      # upstream binary log output, not `nyxgpt.logging` records) -- this
+      # stage simply fails to extract `level`/`logger` for them, and the
+      # `timestamp` stage below no-ops, falling back to promtail's
+      # ingestion time. Both are still fully text-searchable in
+      # Drilldown/Explore via their `service_name` label.
       - regex:
           expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:,\d{3})? (?P<level>\w+) (?:\[(?P<request_id>[^\]]*)\] )?(?P<logger>\S+): (?P<message>.*)$'
       - labels:
