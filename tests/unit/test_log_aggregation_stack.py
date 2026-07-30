@@ -46,6 +46,39 @@ def test_compose_defines_opt_in_logging_profile() -> None:
     )
 
 
+def test_compose_wires_web_tier_log_shipping() -> None:
+    """Compose-mode web logs (#3430, web/src/lib/logger.ts) must reach the
+    same promtail instance the api service's logs do -- a dedicated volume
+    on both the web service (write) and promtail (read) sides, plus
+    NYXGPT_LOG_DIR telling the Next.js structured logger where to append."""
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    services = compose["services"]
+
+    web_env = services["web"]["environment"]
+    assert web_env["NYXGPT_LOG_DIR"] == "/var/log/nyxgpt-web"
+    web_volumes = services["web"]["volumes"]
+    assert any(
+        v.endswith(".nyxGPT/volumes/nyxgpt-web-logs:/var/log/nyxgpt-web") for v in web_volumes
+    )
+
+    promtail_volumes = services["promtail"]["volumes"]
+    assert any(
+        v.endswith(".nyxGPT/volumes/nyxgpt-web-logs:/var/log/nyxgpt-web:ro")
+        for v in promtail_volumes
+    )
+
+
+def test_compose_wires_web_tier_otel_endpoint() -> None:
+    """The web service's server-side OTel exporter (#3430,
+    src/instrumentation.ts) must point at the otel-collector Compose service
+    by its container-network hostname -- "localhost" there would mean the
+    web container itself, not the collector next to it."""
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    web_env = compose["services"]["web"]["environment"]
+
+    assert web_env["NYXGPT_OTLP_ENDPOINT"] == "http://otel-collector:4318/v1/traces"
+
+
 def test_loki_config_has_retention_enabled() -> None:
     loki_config = yaml.safe_load((REPO_ROOT / "docker" / "loki-config.yml").read_text())
 
@@ -62,6 +95,20 @@ def test_promtail_scrapes_nyxgpt_log_files_and_ships_to_loki() -> None:
     labels = scrape_config["static_configs"][0]["labels"]
     assert labels["job"] == "nyxgpt"
     assert labels["__path__"].endswith("logs/*.log*")
+
+
+def test_promtail_scrapes_compose_mode_web_tier_logs() -> None:
+    """The web-tier log path (#3430) must scrape into the same `job=nyxgpt`
+    stream, with the same pipeline_stages, as the api's Compose/native paths
+    -- so web logs are filterable by level/logger like everything else."""
+    promtail_config = yaml.safe_load((REPO_ROOT / "docker" / "promtail-config.yml").read_text())
+    scrape_config = promtail_config["scrape_configs"][0]
+
+    static_configs = scrape_config["static_configs"]
+    paths = [sc["labels"]["__path__"] for sc in static_configs]
+    assert "/var/log/nyxgpt-web/*.log*" in paths
+    for sc in static_configs:
+        assert sc["labels"]["job"] == "nyxgpt"
 
 
 def test_promtail_extracts_logger_as_a_label() -> None:

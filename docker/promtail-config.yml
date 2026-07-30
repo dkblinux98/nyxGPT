@@ -9,13 +9,18 @@ clients:
   - url: http://loki:3100/loki/api/v1/push
 
 scrape_configs:
-  # Two static_configs entries, not one glob: Compose-mode logs (written by
-  # the api container into ~/.nyxGPT/volumes/nyxgpt-data on the host, bind-mounted
-  # read-only at /var/log/nyxgpt) and native-mode logs (written on the host to
-  # ~/.nyxGPT/logs, bind-mounted at /var/log/nyxgpt-native -- see
-  # docker-compose.yml's promtail service) live in different directories.
-  # Both carry the same `job` label and pipeline_stages so they're
-  # indistinguishable in Grafana regardless of which mode produced them.
+  # Three static_configs entries, not one glob: Compose-mode API logs
+  # (written by the api container into ~/.nyxGPT/volumes/nyxgpt-data on the
+  # host, bind-mounted read-only at /var/log/nyxgpt), native-mode logs
+  # (written on the host to ~/.nyxGPT/logs, bind-mounted at
+  # /var/log/nyxgpt-native), and Compose-mode web logs (written by the web
+  # container into ~/.nyxGPT/volumes/nyxgpt-web-logs, bind-mounted at
+  # /var/log/nyxgpt-web -- see web/src/lib/logger.ts and docker-compose.yml's
+  # web service) live in different directories. All three carry the same
+  # `job` label and pipeline_stages so they're indistinguishable in Grafana
+  # regardless of which mode/tier produced them (#3430) -- native-mode web
+  # logs already land under /var/log/nyxgpt-native/logs (brew's
+  # StandardOutPath for nyxgpt-web), so no separate native web path is needed.
   - job_name: nyxgpt
     static_configs:
       - targets:
@@ -28,6 +33,11 @@ scrape_configs:
         labels:
           job: nyxgpt
           __path__: /var/log/nyxgpt-native/logs/*.log*
+      - targets:
+          - localhost
+        labels:
+          job: nyxgpt
+          __path__: /var/log/nyxgpt-web/*.log*
     pipeline_stages:
       # nyxgpt's default text log format (see nyxgpt.logging.DEFAULT_FMT):
       # "<timestamp> <LEVEL> [<request_id>] <logger>: <message>". Extract

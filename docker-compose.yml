@@ -160,6 +160,12 @@ services:
       # (and harmless) whenever NYXGPT_TRACING_ENABLED is "false".
       NYXGPT_OTLP_ENDPOINT: http://otel-collector:4318/v1/traces
       NYXGPT_TRACING_ENABLED: ${NYXGPT_TRACING_ENABLED:-true}
+      # Structured web logs also get appended here (src/lib/logger.ts), not
+      # just stdout -- promtail's Compose-mode scrape path tails files under
+      # this mount, not `docker logs` output (#3430; see docs/docker-compose.md#log-aggregation).
+      NYXGPT_LOG_DIR: /var/log/nyxgpt-web
+    volumes:
+      - ${HOME}/.nyxGPT/volumes/nyxgpt-web-logs:/var/log/nyxgpt-web
     depends_on:
       api:
         condition: service_healthy
@@ -293,6 +299,10 @@ services:
       # already resolves paths natively); a fresh install with no native
       # logs yet just means this mounts (and scrapes) an empty directory.
       - ${HOME}/.nyxGPT/logs:/var/log/nyxgpt-native/logs:ro
+      # Compose-mode web logs (#3430) -- see the web service's NYXGPT_LOG_DIR
+      # and web/src/lib/logger.ts. A fresh install with the web service not
+      # yet started just means this mounts (and scrapes) an empty directory.
+      - ${HOME}/.nyxGPT/volumes/nyxgpt-web-logs:/var/log/nyxgpt-web:ro
     command: -config.file=/etc/promtail/config.yml
     depends_on:
       - loki
