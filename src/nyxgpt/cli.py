@@ -18,7 +18,7 @@ from typing import Any, cast
 # Canary and ops implementations live in separate modules for testability.
 # (blue/green lived in nyxgpt.deploy; retired in favor of canary -- see #3409.)
 from nyxgpt import canary as canary_mod
-from nyxgpt import models, sessions, tools_fs
+from nyxgpt import models, sessions
 from nyxgpt import ops as ops_mod
 from nyxgpt import self_heal as self_heal_mod
 from nyxgpt.chat import chat, chat_stream
@@ -37,12 +37,6 @@ from nyxgpt.config import (
 from nyxgpt.logging import configure_logging
 from nyxgpt.rag.rag import ingest_document, retrieve_context
 from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
-
-# NOTE: nyxgpt.tui is imported lazily inside the `tui` command (below), not at
-# module top -- it pulls in `textual` (a `ui` extra), and importing it here
-# made the ENTIRE CLI, incl. `nyxgpt ops`, fail with ModuleNotFoundError on an
-# install without the extra (e.g. the Docker/terraform smoke). Only `nyxgpt
-# tui` actually needs it.
 from nyxgpt.wizard import run_wizard
 
 
@@ -796,41 +790,6 @@ def cmd_sessions(
         return 0
 
     print(f"Unknown sessions action: {action}", file=sys.stderr)
-    return 2
-
-
-def cmd_tools(
-    action: str,
-    path: Path,
-    pattern: str | None,
-    head: int | None,
-    tail: int | None,
-    max_matches: int,
-) -> int:
-    """Run a local filesystem tool (`ls`, `cat`, or `grep`) on `path`.
-
-    Args:
-        action: Which tool to run: "ls", "cat", or "grep".
-        path: File or directory to operate on.
-        pattern: Regex pattern to search for (required for `grep`).
-        head: Print only the first N lines (`cat` only).
-        tail: Print only the last N lines (`cat` only).
-        max_matches: Maximum number of matches to print (`grep` only).
-
-    Returns:
-        The invoked tool's exit code, 2 if `action` is invalid or `grep` is
-        missing a pattern.
-    """
-    if action == "ls":
-        return tools_fs.ls(path)
-    if action == "cat":
-        return tools_fs.cat(path, head=head, tail=tail)
-    if action == "grep":
-        if not pattern:
-            print("ERROR: pattern is required for grep", file=sys.stderr)
-            return 2
-        return tools_fs.grep(pattern, path, max_matches=max_matches)
-    print(f"Unknown tools action: {action}", file=sys.stderr)
     return 2
 
 
@@ -1593,8 +1552,8 @@ def cmd_self_heal_heal(service: str | None) -> int:
 def cli(argv: list[str] | None = None) -> int:
     """Entry point for the `nyxgpt` command-line tool.
 
-    Builds the full argparse parser (chat, sessions, tools, rag, models, mcp,
-    tui, wizard, ops, deploy, canary, self-heal subcommands), parses `argv`,
+    Builds the full argparse parser (chat, sessions, rag, models, mcp,
+    wizard, ops, deploy, canary, self-heal subcommands), parses `argv`,
     initializes logging, and dispatches to the matching `cmd_*` handler. If
     no subcommand is given, defaults to `info`. Prints help and returns 2 if
     the resolved command/subcommand combination isn't recognized.
@@ -1615,10 +1574,6 @@ def cli(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command")
 
     sub.add_parser("info", help="Show config-derived defaults (base_url, model)")
-
-    tui_p = sub.add_parser("tui", help="Launch the terminal UI")
-    tui_p.add_argument("--session", default="default", help="Session name")
-    tui_p.add_argument("--api-url", dest="api_url", help="Override API base URL")
 
     chat_p = sub.add_parser("chat", help="Chat with the configured Ollama model")
     chat_p.add_argument("prompt", nargs="?", help="Optional single prompt (otherwise interactive)")
@@ -1708,16 +1663,6 @@ def cli(argv: list[str] | None = None) -> int:
         default=False,
         dest="force_include",
         help="Force-include attached document in every RAG query (attach only)",
-    )
-
-    tools_p = sub.add_parser("tools", help="Explicit local filesystem tools")
-    tools_p.add_argument("action", choices=["ls", "cat", "grep"], help="Tool to run")
-    tools_p.add_argument("pattern", nargs="?", help="Regex pattern (grep)")
-    tools_p.add_argument("path", type=Path, help="File or directory path")
-    tools_p.add_argument("--head", type=int, help="Print first N lines (cat)")
-    tools_p.add_argument("--tail", type=int, help="Print last N lines (cat)")
-    tools_p.add_argument(
-        "--max", dest="max_matches", type=int, default=50, help="Max matches (grep)"
     )
 
     rag_p = sub.add_parser("rag", help="Retrieval-Augmented Generation commands")
@@ -2166,20 +2111,6 @@ def cli(argv: list[str] | None = None) -> int:
     if cmd == "info":
         return cmd_info(args.config)
 
-    if cmd == "tui":
-        try:
-            from nyxgpt.tui import NyxGPTTUI
-        except ModuleNotFoundError as e:
-            print(
-                f"The terminal UI needs the 'ui' extra ({e.name} missing). "
-                "Install it with: pip install 'nyxgpt[ui]'",
-                file=sys.stderr,
-            )
-            return 1
-        app = NyxGPTTUI(session=args.session, api_base_url=args.api_url)
-        app.run()
-        return 0
-
     if cmd == "chat":
         return cmd_chat(
             cfg_path=args.config,
@@ -2208,16 +2139,6 @@ def cli(argv: list[str] | None = None) -> int:
             model=getattr(args, "model", None),
             rag_enabled=getattr(args, "rag_enabled", None),
             force_include=getattr(args, "force_include", False),
-        )
-
-    if cmd == "tools":
-        return cmd_tools(
-            action=args.action,
-            path=args.path,
-            pattern=args.pattern,
-            head=getattr(args, "head", None),
-            tail=getattr(args, "tail", None),
-            max_matches=getattr(args, "max_matches", 50),
         )
 
     if cmd == "rag":

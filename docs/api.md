@@ -3,7 +3,7 @@
 nyxGPT provides a local FastAPI backend that exposes chat, RAG, session, and health endpoints. The API is intended for:
 
 - the CLI (primary consumer today)
-- future local TUI and web UI
+- the local web UI
 - debugging and integration testing
 
 The API is designed to run **locally only** by default.
@@ -12,7 +12,7 @@ The API is designed to run **locally only** by default.
 
 ## API Endpoint Reference
 
-Quick reference of all 85 available endpoints:
+Quick reference of all 77 available endpoints:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -77,9 +77,6 @@ Quick reference of all 85 available endpoints:
 | `/api/v1/sessions/{name}/export` | GET | Export session (markdown/json/html) |
 | `/api/v1/chat` | POST | Send chat message |
 | `/api/v1/chat/stream` | POST | Stream chat response |
-| `/api/v1/tools/ls` | POST | List files |
-| `/api/v1/tools/cat` | POST | Read file |
-| `/api/v1/tools/grep` | POST | Search files |
 | `/api/v1/rag/config` | GET | Get RAG configuration (score thresholds) |
 | `/api/v1/rag/collections` | GET | List all RAG collections with statistics |
 | `/api/v1/rag/collections` | POST | Create a new RAG collection |
@@ -1821,7 +1818,7 @@ These controls allow you to balance answer quality, latency, and prompt size. Se
 
 Stream a chat response incrementally using Server-Sent Events (SSE) format.
 
-This endpoint is functionally equivalent to `/api/v1/chat` but returns the assistant response incrementally as it is generated, providing a much better user experience for interactive clients such as a TUI or web UI.
+This endpoint is functionally equivalent to `/api/v1/chat` but returns the assistant response incrementally as it is generated, providing a much better user experience for interactive clients such as the web UI.
 
 **Request:**
 

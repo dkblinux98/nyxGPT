@@ -315,20 +315,6 @@ def get_api_port(cfg: ConfigParser) -> int:
         return 8000
 
 
-def get_tools_root(cfg: ConfigParser) -> Path:
-    """Root directory the /api/v1/tools/{ls,cat,grep} endpoints are confined to.
-
-    Defense in depth for a network-reachable deployment: even though the API
-    is loopback-only and unauthenticated by default (see docs/security.md),
-    a caller that does reach it should not be able to read arbitrary files
-    (SSH keys, /etc/passwd, ...) via these filesystem tools. Defaults to the
-    user's home directory; override with `[api] tools_root` to widen or
-    narrow it.
-    """
-    val = cfg.get("api", "tools_root", fallback=str(Path.home())).strip()
-    return _expand_path(val or str(Path.home()))
-
-
 def get_canary_namespace(cfg: ConfigParser) -> str:
     """Return the Kubernetes namespace used for canary rollouts (``[canary] namespace``).
 
@@ -1389,7 +1375,6 @@ __all__ = [
     "get_vectorstore_dir",
     "get_api_host",
     "get_api_port",
-    "get_tools_root",
     "get_rag_enabled",
     "get_rag_chat_top_k",
     "get_rag_min_score",

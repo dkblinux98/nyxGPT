@@ -175,7 +175,6 @@ def _ensure_test_logging_works():
         "nyxgpt.chat",
         "nyxgpt.config",
         "nyxgpt.sessions",
-        "nyxgpt.tui",
     ]:
         logger = logging.getLogger(logger_name)
         logger.setLevel(logging.DEBUG)

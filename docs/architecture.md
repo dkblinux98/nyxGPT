@@ -24,7 +24,7 @@ the root `ARCHITECTURE.md`; this section is now the single source of truth).
 ### Core invariants
 - CLI remains functional and is a first-class interface.
 - FastAPI is the stable integration surface for UIs/automation.
-- UIs (web/TUI) are clients; they must not become required for core operation.
+- UIs (web) are clients; they must not become required for core operation.
 - Model runtime is pluggable behind stable interfaces.
 - Persistence is explicit and configurable.
 
@@ -245,21 +245,6 @@ The Next.js web UI provides:
 - Runs as background service via Homebrew
 
 Access at `http://127.0.0.1:3000` after starting the service.
-
-### Terminal UI (TUI)
-
-**Status:** Fully implemented using Textual framework.
-
-The TUI provides:
-- Rich terminal-based interface
-- Keyboard-driven navigation
-- Real-time streaming chat
-- Session management
-- RAG toggle (Ctrl+R)
-- Markdown rendering
-- Works entirely in the terminal
-
-Launch with `nyxgpt tui`.
 
 ---
 ## Proposed / future architecture

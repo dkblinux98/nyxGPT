@@ -15,7 +15,7 @@ Covers:
 - `_ollama_url` (the shared `get_json`/`post_json` Ollama HTTP helpers it's
   paired with now live in `nyxgpt.ollama_client` -- see
   `test_ollama_client_completeness.py` / `test_ollama_http_methods.py`).
-- `_maybe_kw` / `_capture_stdout`.
+- `_maybe_kw`.
 - `batch_metrics` / `resource_metrics` endpoints (processor/monitor unset vs set).
 - `config_update`'s `default_model` / `rag_enabled` field branches.
 """
@@ -36,7 +36,6 @@ from nyxgpt.app import (
     ClientCapabilities,
     _apply_auth_config_updates,
     _apply_hot_config_updates,
-    _capture_stdout,
     _mask_api_key,
     _maybe_kw,
     _ollama_url,
@@ -554,25 +553,6 @@ def test_maybe_kw_false_on_introspection_failure():
     # A plain non-callable object makes inspect.signature() raise, hitting
     # the `except Exception: return False` branch.
     assert _maybe_kw(object(), "anything") is False
-
-
-# ----------------------------
-# _capture_stdout
-# ----------------------------
-
-
-def test_capture_stdout_captures_streams_and_return_code():
-    import sys as _sys
-
-    def noisy(x):
-        print(f"out:{x}")
-        print("err-line", file=_sys.stderr)
-        return 0
-
-    rc, out, err = _capture_stdout(noisy, "hello")
-    assert rc == 0
-    assert "out:hello" in out
-    assert "err-line" in err
 
 
 # ----------------------------

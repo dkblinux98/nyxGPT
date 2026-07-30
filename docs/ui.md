@@ -1,17 +1,16 @@
 # UI
 
-This document describes the local UI surfaces provided by **nyxGPT**:
+This document describes the local UI surface provided by **nyxGPT**:
 
-- **Terminal UI (TUI)** — a rich terminal-based chat interface
 - **Local Web UI** — a lightweight Next.js application backed by FastAPI
 
-Both UIs depend on the FastAPI backend and its streaming chat endpoints.
+The web UI depends on the FastAPI backend and its streaming chat endpoints.
 
 ---
 
 ## Backend requirement (FastAPI)
 
-Both UIs require the FastAPI backend to be running.
+The web UI requires the FastAPI backend to be running.
 
 The backend is normally managed via the `nyxgpt ops` command:
 
@@ -41,57 +40,11 @@ open http://127.0.0.1:8000/docs
 
 ---
 
-## Terminal UI (TUI)
-
-Start the terminal UI with:
-
-```bash
-nyxgpt tui
-```
-
-The TUI:
-
-- streams assistant responses token-by-token
-- persists conversations via the Sessions API
-- defaults to the `default` session
-- supports RAG-assisted chat if enabled
-- displays a status bar showing session name, message count, active model, and RAG status
-
-### TUI Keyboard Shortcuts
-
-- **Ctrl+H** / **F1** — Show help overlay with all shortcuts
-- **Ctrl+P** — Command palette (quick command access with search)
-- **Tab** — Navigate to next pane
-- **Shift+Tab** — Navigate to previous pane
-- **Ctrl+S** — Open session picker (browse and switch sessions)
-- **Ctrl+F** — Search messages across sessions
-- **Ctrl+R** — Toggle RAG for current session
-- **Ctrl+M** — Manage models
-- **Ctrl+N** — Rename current session
-- **Ctrl+D** — Delete current session (with confirmation)
-- **Ctrl+A** — Open the [document attachment manager](sessions.md#force-include-document-attachment) for the current session
-- **Ctrl+L** — Clear output buffer
-- **Ctrl+C** — Quit
-
-**Commands:**
-- `/clear` — Clear the output buffer
-
-### Session Picker
-
-Press **Ctrl+S** to open the interactive session picker which allows you to:
-
-- Browse all available sessions
-- Search sessions by name, title, summary, or tags
-- View session metadata (message count, last modified, tags, summary)
-- Navigate with arrow keys (Up/Down) or keyboard search
-- Press **Enter** to switch to the selected session
-- Press **Escape** or **Ctrl+C** to cancel
-
-### RAG Controls (Web UI and TUI)
+### RAG Controls (Web UI)
 
 The underlying RAG mechanics (config, filters, ingestion, citations export)
 are documented in [RAG](rag.md) and [RAG — Per-Session RAG Control](rag.md#per-session-rag-control);
-this section covers the UI surfaces specifically.
+this section covers the UI surface specifically.
 
 **Web UI** — RAG controls sit left of the message input in the chat interface:
 - **RAG Toggle** button to enable/disable RAG for the current session
@@ -100,17 +53,13 @@ this section covers the UI surfaces specifically.
 - **Document Filters** button (available when RAG is enabled) to narrow which documents are searched: select specific documents by checkbox, filter by filename (partial match, case-insensitive) or ingestion date range. Filters persist across page reloads via session storage, with an active-filter indicator when applied.
 - **RAG Citations** displayed inline with responses: retrieved source chunks with click-to-expand for full text, relevance scores with quality indicators (High/Medium/Low), document IDs and chunk numbers, and export to separate files (JSON, Markdown)
 
-**Terminal UI (TUI)** — press `Ctrl+R` to toggle RAG on/off for the current session (status shown in the UI). RAG citations display inline when enabled: a compact citation summary (number of sources retrieved), document IDs, chunk references, and confidence scores with color-coded quality indicators (green/yellow/red based on score).
-
 Pinned sessions are displayed with a 📌 icon and appear at the top of the list.
-
-If the FastAPI backend is not running, the TUI will fail to connect.
 
 ---
 
 ## Sessions API (UI-critical)
 
-Both UIs depend on session primitives for listing and persisting conversations.
+The web UI depends on session primitives for listing and persisting conversations.
 
 - **List sessions**
 
@@ -147,7 +96,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/sessions \
 
 ## Streaming chat (UI-critical)
 
-Both the TUI and the web UI rely on the streaming endpoint:
+The web UI relies on the streaming endpoint:
 
 ```
 POST /api/v1/chat/stream
