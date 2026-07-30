@@ -336,7 +336,7 @@ level = DEBUG
 
 Then check logs:
 ```bash
-tail -f ~/.nyxGPT/logs/nyxgpt.log | grep -i cache
+tail -f ~/.nyxGPT/logs/api.log | grep -i cache
 ```
 
 Look for:
@@ -682,7 +682,7 @@ embedding_timeout_seconds = 120    # Default
 1. **Response time**:
    ```bash
    # Enable request ID logging
-   tail -f ~/.nyxGPT/logs/nyxgpt.log | grep "request_id"
+   tail -f ~/.nyxGPT/logs/api.log | grep "request_id"
    ```
 
 2. **Resource usage**:
@@ -715,7 +715,7 @@ level = DEBUG
 Then check logs:
 
 ```bash
-tail -f ~/.nyxGPT/logs/nyxgpt.log
+tail -f ~/.nyxGPT/logs/api.log
 ```
 
 Look for:

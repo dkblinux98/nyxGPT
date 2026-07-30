@@ -1019,8 +1019,8 @@ def chat_stream(
     except Exception as e:
         # Log the upstream Ollama/model-runtime failure here too, so callers
         # that don't go through the API's streaming endpoint (CLI, MCP tool,
-        # tests) still get actionable detail in nyxgpt.log instead of a bare
-        # re-raise.
+        # tests) still get actionable detail in the caller's own log file
+        # (api.log/cli.log) instead of a bare re-raise.
         logger.error(
             "Chat request failed",
             extra={

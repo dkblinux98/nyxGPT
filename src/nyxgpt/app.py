@@ -3298,7 +3298,7 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
                 # failure: once the response has started, FastAPI/uvicorn have no
                 # request context left to log with, so if we don't log here the
                 # upstream Ollama/model-runtime detail (status, model, message) is
-                # never written to nyxgpt.log and is invisible in the log viewer.
+                # never written to api.log and is invisible in the log viewer.
                 log.error(
                     "Chat stream failed",
                     extra={

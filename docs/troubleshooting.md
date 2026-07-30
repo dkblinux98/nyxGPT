@@ -169,7 +169,7 @@ This command verifies:
 
 4. **Review logs for specific validation errors:**
    ```bash
-   grep WARNING ~/.nyxGPT/logs/nyxgpt.log | grep config
+   grep WARNING ~/.nyxGPT/logs/api.log | grep config
    ```
 
 5. **Verify file permissions:**
@@ -307,7 +307,7 @@ This command verifies:
 
 3. **Review API logs:**
    ```bash
-   grep ERROR ~/.nyxGPT/logs/nyxgpt.log
+   grep ERROR ~/.nyxGPT/logs/api.log
    ```
 
 4. **Increase worker processes (production):**
@@ -450,18 +450,18 @@ level = DEBUG  # Most verbose
 
 **Default location:**
 ```bash
-~/.nyxGPT/logs/nyxgpt.log
+~/.nyxGPT/logs/api.log
 ```
 
 **View recent logs:**
 ```bash
-tail -f ~/.nyxGPT/logs/nyxgpt.log
+tail -f ~/.nyxGPT/logs/api.log
 ```
 
 **Search for errors:**
 ```bash
-grep ERROR ~/.nyxGPT/logs/nyxgpt.log
-grep WARNING ~/.nyxGPT/logs/nyxgpt.log
+grep ERROR ~/.nyxGPT/logs/api.log
+grep WARNING ~/.nyxGPT/logs/api.log
 ```
 
 **Grafana logs show nothing (native mode):** the `logging` Compose
@@ -552,17 +552,17 @@ WARNING nyxgpt.app: Invalid API key from 192.168.1.100
 
 1. **Find failing request ID:**
    ```bash
-   grep ERROR ~/.nyxGPT/logs/nyxgpt.log | grep "request_id"
+   grep ERROR ~/.nyxGPT/logs/api.log | grep "request_id"
    ```
 
 2. **Trace full request lifecycle:**
    ```bash
-   grep "request_id=abc123" ~/.nyxGPT/logs/nyxgpt.log
+   grep "request_id=abc123" ~/.nyxGPT/logs/api.log
    ```
 
 3. **Analyze timing:**
    ```bash
-   grep "request_id=abc123" ~/.nyxGPT/logs/nyxgpt.log | awk '{print $1, $2, $NF}'
+   grep "request_id=abc123" ~/.nyxGPT/logs/api.log | awk '{print $1, $2, $NF}'
    ```
 
 ---
@@ -678,7 +678,7 @@ nyxGPT uses atomic writes to prevent corruption during concurrent access, but:
 
 1. **Check API logs:**
    ```bash
-   grep ERROR ~/.nyxGPT/logs/nyxgpt.log | tail -20
+   grep ERROR ~/.nyxGPT/logs/api.log | tail -20
    ```
 
 2. **Common causes:**
@@ -694,7 +694,7 @@ nyxGPT uses atomic writes to prevent corruption during concurrent access, but:
 
    Then search logs:
    ```bash
-   grep "abc123" ~/.nyxGPT/logs/nyxgpt.log
+   grep "abc123" ~/.nyxGPT/logs/api.log
    ```
 
 ### 502 Bad Gateway (chat)
@@ -747,7 +747,7 @@ If you're still stuck after following this guide:
 2. **Gather diagnostic info:**
    ```bash
    nyxgpt ops doctor > diagnostic.txt
-   tail -100 ~/.nyxGPT/logs/nyxgpt.log >> diagnostic.txt
+   tail -100 ~/.nyxGPT/logs/api.log >> diagnostic.txt
    ```
 
 3. **Create an issue:**

@@ -71,9 +71,9 @@ This command:
   up` or a previous mixed-mode install, reporting what it stopped
 - Installs Homebrew formulas (`nyxgpt-api`, `nyxgpt-web`) if missing
 - Registers and loads required LaunchAgents, including `com.nyxgpt.ollama-logs`
-  (follows the `nyxgpt-ollama` container's docker logs into
-  `~/.nyxGPT/logs/ollama.log` if/when Ollama is ever run via Compose instead
-  of natively — see [Ollama logs](api.md#ollama-logs)) and
+  (tails Ollama's logs into `~/.nyxGPT/logs/ollama.log`, from the
+  `nyxgpt-ollama` container's docker logs in Compose mode or Homebrew's own
+  ollama.log natively — see [Ollama logs](api.md#ollama-logs)) and
   `com.nyxgpt.ollama-env` (reapplies native Ollama's `OLLAMA_MODELS` env var
   at every login — see [Ollama model store](homebrew.md#ollama-model-store))
 - Points native Ollama's model store at the same
@@ -629,12 +629,22 @@ All nyxGPT-managed services write logs under:
 
 Typical files include:
 
-- `nyxgpt-api.log`
-- `nyxgpt-api.err.log`
-- `nyxgpt-web.log`
-- `nyxgpt-web.err.log`
-- `cassandra-logfollower.out.log`
-- `cassandra-logfollower.err.log`
+- `api.log` -- the API process's own structured logs (see
+  [configuration.md](configuration.md#logging-section))
+- `cli.log` -- every `nyxgpt` CLI invocation's own structured logs
+- `ollama.log` -- Ollama's logs, tailed in by `follow-ollama-logs.sh`
+  (Compose mode: from `docker logs`; native mode: from Homebrew's own
+  ollama.log -- see [Ollama logs](api.md#ollama-logs))
+- `cassandra.log` -- Cassandra's container logs, tailed in by
+  `follow-cassandra-logs.sh`
+- `cassandra-logfollower.out.log` / `.err.log`, `ollama-logfollower.out.log`
+  / `.err.log` -- the log-follower LaunchAgents' own stdout/stderr, not the
+  service logs themselves (useful only for debugging the follower)
+
+Homebrew's own per-service `nyxgpt-api.log`/`.err.log`/`nyxgpt-web.log`/
+`.err.log` (raw process stdout/stderr, useful for a crash before Python/Node
+logging is even configured) live under Homebrew's own `var/log`, not here --
+see [homebrew.md](homebrew.md#api-logs).
 
 ### Structured `nyxgpt ops` activity logging
 
@@ -658,7 +668,7 @@ Every `nyxgpt ops` command (`install`, `status`, `restart`, `stop`, `down`, `log
 
 `nyxgpt ops logs` logs the fetch outcome (service, tail, ok/fail) but not
 the tailed log body itself, to avoid duplicating the target service's own
-logs into `~/.nyxGPT/logs/nyxgpt.log`.
+logs into `~/.nyxGPT/logs/cli.log`.
 
 ---
 
