@@ -445,6 +445,24 @@ log volume for the last 24h (via Loki), so an idle curated component
 (e.g. canary on a native install that's never run a k8s operation)
 isn't mistaken for a broken pipeline.
 
+That log-volume check queries Loki through Grafana's datasource-proxy API
+(`/api/datasources/proxy/uid/loki/...`), which requires authentication. It
+does **not** use the shared `[monitoring] grafana_admin_password` for this
+-- that password lives in config.ini and can drift from whatever a
+long-running Grafana container's own database actually has (a regenerated
+config.ini, a hand-edited `.env`, ...), which used to make the check 401 on
+an otherwise-healthy stack (#3438). Instead, `nyxgpt ops install`/
+`nyxgpt ops observability` mint a dedicated Viewer-scoped Grafana
+service-account token the first time they run and write it to
+`~/.nyxGPT/secrets/grafana-doctor-token` (0600, git-ignored) -- the same
+`~/.nyxGPT/secrets` pattern the GlitchTip→Grafana token uses (see
+[Error Tracking](#error-tracking) below), just read by this process
+directly instead of by Grafana's own provisioning. If that file is missing,
+or Grafana rejects the token (401), `nyxgpt ops doctor` reports it as an
+actionable finding instead of silently omitting the log-volume line; fix
+either case by re-running `nyxgpt ops install` (delete the token file first
+if Grafana rejected it, to force minting a fresh one).
+
 nyxgpt logs timestamps in UTC (see `nyxgpt.logging.configure_logging`) and
 `docker/promtail-config.yml`'s `timestamp` stage is told the same
 (`location: UTC`) -- both sides must agree, or a non-UTC host's promtail

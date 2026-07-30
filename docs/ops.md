@@ -387,7 +387,10 @@ Checks include:
 - (when log aggregation is enabled) whether the *running* promtail
   container actually has the native-logs bind mount, via `docker inspect`
   -- and, when Loki is reachable, a per-component log volume for the last
-  24h so an idle curated component isn't mistaken for a broken pipeline
+  24h so an idle curated component isn't mistaken for a broken pipeline;
+  flags a missing or Grafana-rejected doctor service-account token
+  (`~/.nyxGPT/secrets/grafana-doctor-token`) instead of silently omitting
+  that log volume
   (see [docker-compose.md#log-aggregation](docker-compose.md#log-aggregation))
 - (when tracing is enabled) whether something is actually listening on the
   configured `[tracing] otlp_endpoint`, via a live TCP connect -- catches
