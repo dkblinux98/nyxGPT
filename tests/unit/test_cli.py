@@ -1547,7 +1547,7 @@ def test_ops_observability_dispatches_to_ops_module(
 
     monkeypatch.setattr(
         cli_mod.ops_mod,
-        "_start_observability_stack",
+        "_reconcile_grafana_provisioning",
         lambda: [OpsResult(True, "Observability stack up")],
     )
 
@@ -1602,7 +1602,9 @@ def test_ops_install_skip_observability_flag_parses(
         monkeypatch.setattr(cli_mod.ops_mod, step, lambda: ok)
 
     called = []
-    monkeypatch.setattr(cli_mod.ops_mod, "_start_observability_stack", lambda: called.append(True))
+    monkeypatch.setattr(
+        cli_mod.ops_mod, "_reconcile_grafana_provisioning", lambda: called.append(True)
+    )
     monkeypatch.setattr(cli_mod.ops_mod, "_provision_glitchtip", lambda: called.append(True))
 
     exit_code = cli(["ops", "install", "--skip-observability"])
