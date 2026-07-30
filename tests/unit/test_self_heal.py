@@ -65,7 +65,7 @@ def _isolated_state(tmp_path, monkeypatch):
     # pods` call) would pick those up too and report spurious extra
     # components. Tests exercising either override the relevant stub
     # themselves (see e.g. test_list_terraform_component_status_* below).
-    monkeypatch.setattr(self_heal, "_list_terraform_component_status", lambda already_managed: [])
+    monkeypatch.setattr(self_heal, "_list_terraform_component_status", lambda: [])
     monkeypatch.setattr(self_heal, "_list_kubernetes_component_status", lambda already_managed: [])
 
 
@@ -1672,7 +1672,7 @@ def test_list_terraform_component_status_reports_running_and_healthy(monkeypatch
     monkeypatch.setattr(self_heal, "_native_container_state", lambda name: states[name])
     monkeypatch.setattr(self_heal, "_native_container_health", lambda name: healths.get(name, ""))
 
-    statuses = _real_list_terraform_component_status(set())
+    statuses = _real_list_terraform_component_status()
     by_service = {s.service: s for s in statuses}
 
     assert by_service["ollama"].source == "terraform"
@@ -1688,17 +1688,24 @@ def test_list_terraform_component_status_reports_running_and_healthy(monkeypatch
 def test_list_terraform_component_status_skips_absent_containers(monkeypatch):
     monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "absent")
 
-    assert _real_list_terraform_component_status(set()) == []
+    assert _real_list_terraform_component_status() == []
 
 
 @pytest.mark.unit
-def test_list_terraform_component_status_skips_already_managed(monkeypatch):
+def test_list_terraform_component_status_reports_even_when_another_mode_also_present(
+    monkeypatch,
+):
+    # Cross-mode exclusion is no longer this probe's job -- it always reports
+    # every present Terraform container; `_resolve_core_component_conflicts`
+    # (see list_component_status) is what decides which mode's entry wins
+    # when more than one is present for the same component (#3428).
     monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "running")
     monkeypatch.setattr(self_heal, "_native_container_health", lambda name: "")
 
-    statuses = _real_list_terraform_component_status({"api", "web", "ollama", "cassandra"})
+    statuses = _real_list_terraform_component_status()
 
-    assert statuses == []
+    assert {s.service for s in statuses} == {"api", "web", "ollama", "cassandra"}
+    assert all(s.source == "terraform" for s in statuses)
 
 
 @pytest.mark.unit
@@ -1737,6 +1744,237 @@ def test_heal_now_dispatches_terraform_restart_for_terraform_source(monkeypatch)
 
     restart_mock.assert_called_once_with("api")
     assert result["healed"][0]["service"] == "api"
+
+
+# --- Leftover-artifact shadowing across mode switches (#3428) ---
+#
+# Bug: `nyxgpt-cassandra` (native) is deliberately kept around, stopped, as
+# the path back to native mode while Terraform is the active deployment (see
+# the issue's owner-confirmation comment) -- but the old exclusion chain let
+# whichever mode was checked *first* claim the "cassandra" row just because
+# its container/service existed, regardless of whether it was actually
+# running. These tests exercise `_resolve_core_component_conflicts` (via
+# `list_component_status`) for every mode pairing, not just the one the
+# owner hit.
+
+
+@pytest.mark.unit
+def test_resolve_core_component_conflicts_running_beats_stopped_leftover():
+    running = self_heal.ComponentStatus(
+        "cassandra", "nyxgpt-tf-cassandra", "running", "", True, source="terraform"
+    )
+    stopped_leftover = self_heal.ComponentStatus(
+        "cassandra", "nyxgpt-cassandra", "exited", "", False, source="native"
+    )
+
+    resolved = self_heal._resolve_core_component_conflicts([stopped_leftover, running])
+
+    assert len(resolved) == 1
+    winner = resolved[0]
+    assert winner.source == "terraform"
+    assert winner.healthy is True
+    assert "inert native leftover" in winner.note
+    assert "nyxgpt-cassandra" in winner.note
+    assert "exited" in winner.note
+
+
+@pytest.mark.unit
+def test_resolve_core_component_conflicts_ties_break_by_priority_when_none_running():
+    native_stopped = self_heal.ComponentStatus(
+        "cassandra", "nyxgpt-cassandra", "exited", "", False, source="native"
+    )
+    terraform_stopped = self_heal.ComponentStatus(
+        "cassandra", "nyxgpt-tf-cassandra", "exited", "", False, source="terraform"
+    )
+
+    resolved = self_heal._resolve_core_component_conflicts([terraform_stopped, native_stopped])
+
+    assert len(resolved) == 1
+    # Neither is running -- historical compose > native > terraform priority
+    # decides, so native still outranks terraform here, preserving prior
+    # behavior for the fully-down case.
+    assert resolved[0].source == "native"
+    assert "inert terraform leftover" in resolved[0].note
+
+
+@pytest.mark.unit
+def test_resolve_core_component_conflicts_single_candidate_passes_through_unchanged():
+    only = self_heal.ComponentStatus(
+        "web", "nyxgpt-tf-web", "running", "", True, source="terraform"
+    )
+    resolved = self_heal._resolve_core_component_conflicts([only])
+    assert resolved == [only]
+    assert resolved[0].note == ""
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "active_mode,leftover_mode",
+    [
+        ("terraform", "native"),  # the exact scenario reported in #3428
+        ("native", "terraform"),
+        ("compose", "native"),
+        ("compose", "terraform"),
+        ("native", "compose"),
+        ("terraform", "compose"),
+    ],
+)
+def test_cassandra_active_mode_wins_over_stopped_leftover_from_other_mode(
+    monkeypatch, active_mode, leftover_mode
+):
+    """Whichever mode actually has Cassandra running claims the row; a
+    stopped leftover from an inactive mode never claims it (or even appears
+    as a second row) instead."""
+    monkeypatch.setattr(
+        self_heal, "_list_terraform_component_status", _real_list_terraform_component_status
+    )
+    monkeypatch.setattr(self_heal, "_native_container_health", lambda name: "")
+    monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {})
+
+    docker_states = {"nyxgpt-cassandra": "absent", "nyxgpt-tf-cassandra": "absent"}
+    compose_present = {"present": False, "state": "absent"}
+
+    for mode, running in ((active_mode, True), (leftover_mode, False)):
+        state = "running" if running else "exited"
+        if mode == "native":
+            docker_states["nyxgpt-cassandra"] = state
+        elif mode == "terraform":
+            docker_states["nyxgpt-tf-cassandra"] = state
+        elif mode == "compose":
+            compose_present["present"] = True
+            compose_present["state"] = state
+
+    monkeypatch.setattr(
+        self_heal, "_native_container_state", lambda name: docker_states.get(name, "absent")
+    )
+    stdout = (
+        _ps_line("cassandra", state=compose_present["state"]) if compose_present["present"] else ""
+    )
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=stdout))
+
+    statuses = self_heal.list_component_status()
+    cassandra_entries = [s for s in statuses if s.service == "cassandra"]
+
+    assert len(cassandra_entries) == 1, "leftover must not appear as a separate row"
+    winner = cassandra_entries[0]
+    assert winner.source == active_mode
+    assert winner.healthy is True
+    assert winner.state == "running"
+    assert leftover_mode in winner.note
+    assert "inert" in winner.note
+
+
+@pytest.mark.unit
+def test_heal_now_auto_pass_heals_terraform_cassandra_not_native_leftover(monkeypatch):
+    """#3428 regression at the desired-state level: an unhealthy Terraform
+    Cassandra (health check failing, container still running) must be what
+    auto-heal restarts, even with a stopped native leftover present -- never
+    the leftover, and never both (no flapping between the two)."""
+    monkeypatch.setattr(
+        self_heal, "_list_terraform_component_status", _real_list_terraform_component_status
+    )
+    monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {})
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+
+    docker_states = {"nyxgpt-cassandra": "exited", "nyxgpt-tf-cassandra": "running"}
+    healths = {"nyxgpt-tf-cassandra": "unhealthy"}
+    monkeypatch.setattr(
+        self_heal, "_native_container_state", lambda name: docker_states.get(name, "absent")
+    )
+    monkeypatch.setattr(self_heal, "_native_container_health", lambda name: healths.get(name, ""))
+
+    terraform_restart = MagicMock(return_value=self_heal.HealResult(True, "Restarted"))
+    native_restart = MagicMock(return_value=self_heal.HealResult(True, "Restarted"))
+    monkeypatch.setattr(self_heal, "restart_terraform_component", terraform_restart)
+    monkeypatch.setattr(self_heal, "restart_native_component", native_restart)
+
+    first = self_heal.heal_now()
+    second = self_heal.heal_now()
+
+    terraform_restart.assert_called_once_with("cassandra")
+    native_restart.assert_not_called()
+    assert [e["service"] for e in first["healed"]] == ["cassandra"]
+    # Second pass (immediately after, well inside the backoff window) must
+    # not flap onto the native leftover -- it just backs off, same target.
+    assert second["healed"] == []
+
+
+@pytest.mark.unit
+def test_restart_native_component_cassandra_refuses_when_terraform_running(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "_native_container_state",
+        lambda name: "running" if name == "nyxgpt-tf-cassandra" else "absent",
+    )
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    restart_mock = MagicMock()
+    monkeypatch.setattr(self_heal, "_restart_native_container", restart_mock)
+
+    result = self_heal.restart_native_component("cassandra")
+
+    assert not result.ok
+    assert "Refused to restart native Cassandra" in result.message
+    assert "nyxgpt-tf-cassandra" in result.details
+    restart_mock.assert_not_called()
+
+
+@pytest.mark.unit
+def test_restart_native_component_cassandra_refuses_when_compose_running(monkeypatch):
+    monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "absent")
+    monkeypatch.setattr(
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0: CP(stdout=_ps_line("cassandra", state="running")),
+    )
+    restart_mock = MagicMock()
+    monkeypatch.setattr(self_heal, "_restart_native_container", restart_mock)
+
+    result = self_heal.restart_native_component("cassandra")
+
+    assert not result.ok
+    assert "Refused to restart native Cassandra" in result.message
+    restart_mock.assert_not_called()
+
+
+@pytest.mark.unit
+def test_restart_native_component_cassandra_proceeds_when_nothing_else_running(monkeypatch):
+    monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "absent")
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    restart_mock = MagicMock(return_value=self_heal.HealResult(True, "Restarted nyxgpt-cassandra"))
+    monkeypatch.setattr(self_heal, "_restart_native_container", restart_mock)
+
+    result = self_heal.restart_native_component("cassandra")
+
+    assert result.ok
+    restart_mock.assert_called_once_with(self_heal.NATIVE_CASSANDRA_CONTAINER)
+
+
+@pytest.mark.unit
+def test_heal_now_records_refused_cassandra_collision_as_heal_event(monkeypatch):
+    """The refusal must be a recorded heal-event outcome (ok=False), not a
+    silent skip -- so an operator sees *why* nothing happened."""
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [
+            self_heal.ComponentStatus(
+                "cassandra", "nyxgpt-cassandra", "exited", "", False, source="native"
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "_cassandra_active_elsewhere",
+        lambda: "nyxgpt-tf-cassandra",
+    )
+
+    result = self_heal.heal_now(service="cassandra")
+
+    assert len(result["healed"]) == 1
+    event = result["healed"][0]
+    assert event["service"] == "cassandra"
+    assert event["ok"] is False
+    assert "Refused" in event["message"]
 
 
 # --- Kubernetes mode (#3406) ---

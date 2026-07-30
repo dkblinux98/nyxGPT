@@ -29,10 +29,14 @@ Four deployment modes are covered:
   the same "torn-down/stuck" recovery + unified dashboard visibility the
   other three modes get.
 
-A component already reported by one mode is presumed to be that component's
-active deployment and is not also monitored by another, so no two modes
-double-heal (or collide on) the same component -- see the `already_managed`
-exclusion threaded through `list_component_status`.
+A component reported by more than one mode at once -- e.g. a stopped native
+`nyxgpt-cassandra` container deliberately left in place after switching to
+Terraform mode, see #3428 -- is resolved to whichever mode is actually
+running it; only when none of them is running does a fixed mode priority
+break the tie. This is `_resolve_core_component_conflicts` (see
+`list_component_status`), so no two modes double-heal (or collide on) the
+same component, and an inactive mode's leftover container/service never
+shadows the active mode's real one.
 
 **Desired state for the observability profiles**: `docker compose ps`
 only reports containers that exist -- a profile that was torn down
@@ -218,6 +222,13 @@ class ComponentStatus:
     is exactly what makes it desired) -- `heal_now` skips automatic (not
     manual) healing for `desired=False` components, so a deliberate
     feature-flag disable isn't undone by the next auto-heal pass.
+
+    `note` is an informational annotation, empty unless another mode's
+    entry for this same component was shadowed by this one (see
+    `_resolve_core_component_conflicts` / #3428) -- e.g. a stopped native
+    `nyxgpt-cassandra` container left in place while Terraform mode is
+    actually running Cassandra. It never affects `healthy`/`state`/`source`,
+    which always describe the winning (active) entry only.
     """
 
     service: str
@@ -227,6 +238,7 @@ class ComponentStatus:
     healthy: bool
     source: str = "compose"
     desired: bool = True
+    note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict suitable for JSON responses."""
@@ -238,6 +250,7 @@ class ComponentStatus:
             "healthy": self.healthy,
             "source": self.source,
             "desired": self.desired,
+            "note": self.note,
         }
 
 
@@ -508,16 +521,23 @@ def _native_container_health(name: str) -> str:
     return (cp.stdout or "").strip()
 
 
-def _list_terraform_component_status(already_managed: set[str]) -> list[ComponentStatus]:
+def _list_terraform_component_status() -> list[ComponentStatus]:
     """Health-check the Terraform-managed core containers (`nyxgpt-tf-*`) directly via Docker.
 
     Mirrors `_list_native_component_status`'s native-Cassandra check, applied
     to all four core components: Terraform (`nyxgpt ops install --terraform
     --local`) runs `ollama`/`cassandra`/`api`/`web` as plain (non-Compose)
     Docker containers (see `terraform/main.tf`), invisible to both `docker
-    compose ps` and `brew services list`. `already_managed` excludes any
-    component already reported by Compose or native/local-first, so the same
-    component is never checked/healed by two modes at once.
+    compose ps` and `brew services list`.
+
+    Returns every present component unconditionally -- deciding which mode
+    actually owns a component that Compose/native also reports is
+    `_resolve_core_component_conflicts`'s job (see `list_component_status`),
+    not this probe's: a stopped leftover from another mode still needs to be
+    seen here so the conflict resolver can compare it against Terraform's own
+    state rather than being blind to it (#3428 -- a leftover reported first,
+    unconditionally, used to shadow the real Terraform container instead of
+    losing to it).
 
     Only reports a component whose container actually exists -- before
     `terraform apply` (or after `terraform destroy`), there's nothing to
@@ -525,8 +545,6 @@ def _list_terraform_component_status(already_managed: set[str]) -> list[Componen
     """
     statuses: list[ComponentStatus] = []
     for component, container in TERRAFORM_CONTAINERS.items():
-        if component in already_managed:
-            continue
         state = _native_container_state(container)
         if state == "absent":
             continue
@@ -560,9 +578,10 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
     Returns an empty list (never raises) if `kubectl` isn't on PATH, there's
     no reachable cluster, or the namespace/Pods don't exist yet -- the same
     "can't tell, so report nothing" fallback the rest of this module uses.
-    `already_managed` is accepted for symmetry with
-    `_list_terraform_component_status`, though Pod names never collide with
-    the native/Compose/Terraform component names it carries.
+    `already_managed` guards against a Pod name coincidentally matching
+    something `_resolve_core_component_conflicts` already resolved, though in
+    practice Pod names never collide with the native/Compose/Terraform
+    component names it carries.
     """
     if _which("kubectl") is None:
         return []
@@ -615,18 +634,25 @@ def _list_kubernetes_component_status(already_managed: set[str]) -> list[Compone
     return statuses
 
 
-def _list_native_component_status(compose_managed: set[str]) -> list[ComponentStatus]:
-    """Health-check the native/local-first core components not already served by Compose.
+def _list_native_component_status() -> list[ComponentStatus]:
+    """Health-check the native/local-first core components directly.
 
     In the default local-first deployment, `nyxgpt-api`/`nyxgpt-web`/`ollama` run as
     Homebrew services and `nyxgpt-cassandra` is a plain (non-Compose) Docker
     container -- none of that is visible to `docker compose ps`, which is why
     self-heal previously reported zero core components outside a Compose
-    deployment (see #3348). A component name already present in
-    `compose_managed` is skipped here: Compose is presumed to be that
-    component's active deployment (it's already monitored/healed via
-    `_list_compose_component_status`/`restart_component`), so checking it
-    natively too would risk restarting a second, non-serving process.
+    deployment (see #3348).
+
+    Returns every present component unconditionally, even one Compose or
+    Terraform also reports -- deciding which mode actually owns a
+    double-reported component is `_resolve_core_component_conflicts`'s job
+    (see `list_component_status`), not this probe's. In particular, a
+    *stopped* native container/service left in place after switching to
+    another deployment mode (e.g. a deliberately-kept-around
+    `nyxgpt-cassandra` -- see #3428) must still be visible here so the
+    conflict resolver can see it's not running and let the active mode win,
+    rather than this function silently hiding it and losing the comparison
+    entirely.
 
     Only reports a component that's actually installed/created -- a brew
     service never set up via `nyxgpt ops install`, or a not-yet-created
@@ -637,8 +663,6 @@ def _list_native_component_status(compose_managed: set[str]) -> list[ComponentSt
 
     brew_snapshot = _brew_services_snapshot()
     for component, brew_name in NATIVE_BREW_SERVICES.items():
-        if component in compose_managed:
-            continue
         state = brew_snapshot.get(brew_name)
         if state is None:
             continue
@@ -653,19 +677,18 @@ def _list_native_component_status(compose_managed: set[str]) -> list[ComponentSt
             )
         )
 
-    if "cassandra" not in compose_managed:
-        state = _native_container_state(NATIVE_CASSANDRA_CONTAINER)
-        if state != "absent":
-            statuses.append(
-                ComponentStatus(
-                    service="cassandra",
-                    container=NATIVE_CASSANDRA_CONTAINER,
-                    state=state,
-                    health="",
-                    healthy=state == "running",
-                    source="native",
-                )
+    state = _native_container_state(NATIVE_CASSANDRA_CONTAINER)
+    if state != "absent":
+        statuses.append(
+            ComponentStatus(
+                service="cassandra",
+                container=NATIVE_CASSANDRA_CONTAINER,
+                state=state,
+                health="",
+                healthy=state == "running",
+                source="native",
             )
+        )
 
     return statuses
 
@@ -804,6 +827,68 @@ def _mark_disabled_present_services(
     ]
 
 
+# Priority among core-component sources when more than one reports the same
+# component and *none* of the candidates is actually running (e.g. two
+# stopped leftovers with no active deployment at all) -- preserves the
+# historical compose > native > terraform preference for that ambiguous
+# edge case. Whenever at least one candidate IS running, `_resolve_core_
+# component_conflicts` picks that one regardless of this order.
+_CORE_SOURCE_PRIORITY: dict[str, int] = {"compose": 0, "native": 1, "terraform": 2}
+
+
+def _resolve_core_component_conflicts(
+    statuses: list[ComponentStatus],
+) -> list[ComponentStatus]:
+    """Pick one authoritative status per core component out of Compose/native/Terraform entries.
+
+    Native and Terraform mode default to the same host ports and share
+    Cassandra's `~/.nyxGPT/volumes/cassandra` data directory, and an operator
+    may deliberately keep a *stopped* leftover from an inactive mode around
+    (e.g. the native `nyxgpt-cassandra` container as the path back to native
+    mode -- see #3428). Simply excluding a component from a later mode's
+    probe as soon as an earlier mode reports *any* entry for it (the old
+    behavior) let that stopped leftover permanently shadow the real, running
+    container from a mode checked later -- reporting the wrong health and,
+    worse, making `heal_now` eligible to "restart" the leftover instead of
+    the container actually serving traffic.
+
+    Instead: whichever candidate is actually running (`state` in `("running",
+    "started")`) wins outright, regardless of which mode reported it or in
+    what order. Only when *no* candidate is running (e.g. every mode's entry
+    for this component is stopped) does `_CORE_SOURCE_PRIORITY` break the
+    tie, preserving prior behavior for that fully-down edge case. Every
+    losing candidate is folded into the winner's `note` as an "inert
+    leftover" annotation -- visible for troubleshooting, but never able to
+    affect `healthy`/`state`/`source`, and never a target `heal_now` can
+    dispatch to (see `restart_native_component`'s own belt-and-suspenders
+    guard for Cassandra specifically).
+    """
+    by_component: dict[str, list[ComponentStatus]] = {}
+    for s in statuses:
+        by_component.setdefault(s.service, []).append(s)
+
+    resolved: list[ComponentStatus] = []
+    for candidates in by_component.values():
+        if len(candidates) == 1:
+            resolved.append(candidates[0])
+            continue
+
+        ranked = sorted(
+            candidates,
+            key=lambda s: (
+                0 if s.state in ("running", "started") else 1,
+                _CORE_SOURCE_PRIORITY.get(s.source, 99),
+            ),
+        )
+        winner, leftovers = ranked[0], ranked[1:]
+        note = "; ".join(
+            f"inert {s.source} leftover: {s.container or s.service} (state={s.state})"
+            for s in leftovers
+        )
+        resolved.append(replace(winner, note=note) if note else winner)
+    return resolved
+
+
 def list_component_status() -> list[ComponentStatus]:
     """Health-check every monitored component across every deployment mode.
 
@@ -811,14 +896,15 @@ def list_component_status() -> list[ComponentStatus]:
     under Docker Compose, with any component whose observability profile is
     currently disabled flagged `desired=False` -- see
     `_mark_disabled_present_services`), `_list_native_component_status()`
-    (the core native/local-first components not already covered by Compose),
-    `_list_terraform_component_status()`/`_list_kubernetes_component_status()`
-    (the Terraform-/Kubernetes-managed core components not already covered by
-    an earlier mode), and `_absent_desired_statuses()` (enabled observability
-    profiles with no running containers at all), so the same call surfaces
-    the right set regardless of which deployment mode -- or mix of modes --
-    is actually running, and regardless of whether a desired component
-    currently exists at all.
+    (native/local-first's core components) and `_list_terraform_component_status()`
+    (Terraform's), reconciled by `_resolve_core_component_conflicts` into one
+    authoritative entry per core component (see that function for why a
+    stopped leftover from an inactive mode must never win), plus
+    `_list_kubernetes_component_status()` (Pods, which never collide by name
+    with the other three) and `_absent_desired_statuses()` (enabled
+    observability profiles with no running containers at all) -- so the same
+    call surfaces the right set regardless of which deployment mode -- or mix
+    of modes, including inactive-mode leftovers -- is actually present.
 
     Finally, any component an operator deliberately stopped (`nyxgpt ops
     down`/`stop` -- see `list_intentionally_stopped`) is flagged
@@ -829,23 +915,20 @@ def list_component_status() -> list[ComponentStatus]:
     """
     compose_statuses = _list_compose_component_status()
     compose_managed = {s.service for s in compose_statuses}
-    native_statuses = _list_native_component_status(compose_managed)
-    native_managed = compose_managed | {s.service for s in native_statuses}
-    terraform_statuses = _list_terraform_component_status(native_managed)
-    terraform_managed = native_managed | {s.service for s in terraform_statuses}
-    kubernetes_statuses = _list_kubernetes_component_status(terraform_managed)
 
     desired_services = _desired_compose_services(_enabled_observability_profiles())
     compose_statuses = _mark_disabled_present_services(compose_statuses, desired_services)
     absent_statuses = _absent_desired_statuses(compose_managed, desired_services)
 
-    all_statuses = (
-        compose_statuses
-        + native_statuses
-        + terraform_statuses
-        + kubernetes_statuses
-        + absent_statuses
+    native_statuses = _list_native_component_status()
+    terraform_statuses = _list_terraform_component_status()
+    core_statuses = _resolve_core_component_conflicts(
+        compose_statuses + native_statuses + terraform_statuses
     )
+    core_managed = {s.service for s in core_statuses}
+    kubernetes_statuses = _list_kubernetes_component_status(core_managed)
+
+    all_statuses = core_statuses + kubernetes_statuses + absent_statuses
 
     stopped = set(list_intentionally_stopped())
     if stopped:
@@ -1040,6 +1123,31 @@ def _restart_native_container(name: str) -> HealResult:
     return HealResult(True, f"Restarted docker container: {name}")
 
 
+def _cassandra_active_elsewhere() -> str | None:
+    """Name the container/service actively running Cassandra outside native mode, if any.
+
+    Guards `restart_native_component("cassandra")` against `docker restart`ing
+    (which starts, if stopped) the native `nyxgpt-cassandra` container while
+    Terraform's `nyxgpt-tf-cassandra` (or a Compose `cassandra` service) is
+    already bound to the same host port (9042) and the same shared
+    `~/.nyxGPT/volumes/cassandra` data directory -- a heal action that would
+    *create* the exact outage it's meant to fix (#3193, #3428).
+    `list_component_status`'s `_resolve_core_component_conflicts` already
+    keeps `heal_now` from choosing this dispatch path in that situation (the
+    conflict resolver reports the running Terraform/Compose entry instead of
+    a native one), so this is a last-resort check for `restart_native_component`
+    called directly, or a race between listing status and issuing the
+    restart. Returns `None` (no collision) if neither is running.
+    """
+    terraform_container = TERRAFORM_CONTAINERS["cassandra"]
+    if _native_container_state(terraform_container) == "running":
+        return terraform_container
+    for s in _list_compose_component_status():
+        if s.service == "cassandra" and s.state == "running":
+            return s.container or "cassandra (compose)"
+    return None
+
+
 def restart_native_component(component: str) -> HealResult:
     """Restart a native/local-first core component.
 
@@ -1047,8 +1155,23 @@ def restart_native_component(component: str) -> HealResult:
     `cassandra` (the one Docker-managed piece of a native install) restarts
     via `docker restart <container>` -- the same mechanisms `nyxgpt ops
     restart` uses, so the user never needs a raw `brew`/`docker` command.
+
+    Refuses (rather than silently skipping) to touch the native Cassandra
+    container if `_cassandra_active_elsewhere` finds Terraform or Compose
+    already running it -- see that function's docstring.
     """
     if component == "cassandra":
+        collision = _cassandra_active_elsewhere()
+        if collision is not None:
+            return HealResult(
+                False,
+                "Refused to restart native Cassandra: port/volume collision",
+                f"{collision} is already running Cassandra -- starting "
+                f"{NATIVE_CASSANDRA_CONTAINER} too would collide on port 9042 and the "
+                "shared ~/.nyxGPT/volumes/cassandra data directory (see #3193, #3428). "
+                "Leave the native container stopped until you deliberately switch back "
+                "to native mode.",
+            )
         return _restart_native_container(NATIVE_CASSANDRA_CONTAINER)
     brew_name = NATIVE_BREW_SERVICES.get(component)
     if brew_name is None:
@@ -1427,10 +1550,10 @@ def detected_mode(components: list[ComponentStatus]) -> str:
     extended to terraform/kubernetes -- lets the Self-Heal page state its
     detected mode explicitly instead of leaving Kubernetes mode looking
     like "no components found" (#3410). Core components are normally all
-    reported by a single mode at once (mixing modes for the same
-    component is exactly what `list_component_status`'s `already_managed`
-    exclusion prevents), so the first source found among the core services
-    below is reported.
+    reported by a single mode at once (mixing modes for the same component
+    is exactly what `list_component_status`'s `_resolve_core_component_
+    conflicts` prevents, see #3428), so the first source found among the
+    core services below is reported.
     """
     core_sources = {c.source for c in components if c.service in CORE_APP_SERVICES}
     for source in ("terraform", "kubernetes", "compose", "native"):
