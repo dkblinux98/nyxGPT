@@ -7,6 +7,7 @@ mocked out, so no docker daemon or actual compose stack is needed.
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import time
 from configparser import ConfigParser
@@ -79,14 +80,31 @@ def test_resolve_compose_file_uses_env_override(monkeypatch):
 def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit(caplog):
     # #3415 gap 5: subprocess evidence (probe/restart failures) must reach
     # Loki even though self_heal's `_run` never raises (always check=False).
-    with caplog.at_level("WARNING", logger="nyxgpt.self_heal"):
+    with caplog.at_level("DEBUG", logger="nyxgpt.self_heal"):
         cp = self_heal._run(["python3", "-c", "import sys; sys.stderr.write('boom'); sys.exit(2)"])
 
     assert cp.returncode == 2
-    records = [r for r in caplog.records if r.getMessage() == "Subprocess exited non-zero"]
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
     assert records, "Expected _run to log the non-zero exit"
+    assert records[0].levelno == logging.WARNING
+    assert "rc=2" in records[0].getMessage()
     assert records[0].returncode == 2
     assert "boom" in records[0].stderr_tail
+
+
+@pytest.mark.unit
+def test_run_expected_true_logs_debug_not_warning_on_nonzero_exit(caplog):
+    with caplog.at_level("DEBUG", logger="nyxgpt.self_heal"):
+        cp = self_heal._run(
+            ["python3", "-c", "import sys; sys.stderr.write('boom'); sys.exit(2)"],
+            expected=True,
+        )
+
+    assert cp.returncode == 2
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected _run to log the non-zero exit at DEBUG"
+    assert records[0].levelno == logging.DEBUG
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
 
 
 @pytest.mark.unit
@@ -153,7 +171,7 @@ def test_list_component_status_parses_ps_json(monkeypatch):
             _ps_line("glitchtip-migrate", state="exited", health=""),
         ]
     )
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=stdout))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=stdout))
     # Isolate from the tracing-enabled-by-default desired-state check (#3415):
     # this test is only about ps-json parsing, not observability profiles.
     monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
@@ -174,7 +192,7 @@ def test_list_compose_component_status_one_shot_exited_zero_is_skipped(monkeypat
     monkeypatch.setattr(
         self_heal,
         "_run",
-        lambda cmd, timeout=30.0: CP(
+        lambda cmd, timeout=30.0, **_k: CP(
             stdout=_ps_line("glitchtip-migrate", state="exited", exit_code=0)
         ),
     )
@@ -189,7 +207,7 @@ def test_list_compose_component_status_one_shot_exited_nonzero_reported_unhealth
     monkeypatch.setattr(
         self_heal,
         "_run",
-        lambda cmd, timeout=30.0: CP(
+        lambda cmd, timeout=30.0, **_k: CP(
             stdout=_ps_line("glitchtip-migrate", state="exited", exit_code=1)
         ),
     )
@@ -205,7 +223,7 @@ def test_list_component_status_unhealthy_container(monkeypatch):
     monkeypatch.setattr(
         self_heal,
         "_run",
-        lambda cmd, timeout=30.0: CP(
+        lambda cmd, timeout=30.0, **_k: CP(
             stdout=_ps_line("prometheus", state="running", health="unhealthy")
         ),
     )
@@ -225,7 +243,9 @@ def test_list_component_status_starting_container_is_not_unhealthy(monkeypatch):
     monkeypatch.setattr(
         self_heal,
         "_run",
-        lambda cmd, timeout=30.0: CP(stdout=_ps_line("api", state="running", health="starting")),
+        lambda cmd, timeout=30.0, **_k: CP(
+            stdout=_ps_line("api", state="running", health="starting")
+        ),
     )
     statuses = self_heal.list_component_status()
     assert statuses[0].health == "starting"
@@ -234,7 +254,7 @@ def test_list_component_status_starting_container_is_not_unhealthy(monkeypatch):
 
 @pytest.mark.unit
 def test_list_component_status_run_raises(monkeypatch, caplog):
-    def _boom(cmd, timeout=30.0):
+    def _boom(cmd, timeout=30.0, **_k):
         raise OSError("docker daemon not reachable")
 
     monkeypatch.setattr(self_heal, "_run", _boom)
@@ -256,7 +276,7 @@ def test_list_component_status_skips_blank_and_invalid_lines(monkeypatch):
             _ps_line("api", state="running", health="healthy"),
         ]
     )
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=stdout))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=stdout))
     # Isolate from the tracing-enabled-by-default desired-state check (#3415):
     # this test is only about ps-json parsing, not observability profiles.
     monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
@@ -277,7 +297,7 @@ def test_list_component_status_no_docker(monkeypatch):
 @pytest.mark.unit
 def test_list_component_status_compose_failure(monkeypatch):
     monkeypatch.setattr(
-        self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1, stderr="boom")
+        self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=1, stderr="boom")
     )
     assert self_heal.list_component_status() == []
 
@@ -287,7 +307,7 @@ def test_brew_services_snapshot_parses_output(monkeypatch):
     monkeypatch.setattr(
         self_heal,
         "_run",
-        lambda cmd, timeout=30.0: CP(
+        lambda cmd, timeout=30.0, **_k: CP(
             stdout="nyxgpt-api started user ~/foo\nollama stopped user ~/bar\n"
         ),
     )
@@ -304,13 +324,13 @@ def test_brew_services_snapshot_no_brew(monkeypatch):
 
 @pytest.mark.unit
 def test_brew_services_snapshot_run_failure(monkeypatch):
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=1))
     assert _real_brew_services_snapshot() == {}
 
 
 @pytest.mark.unit
 def test_brew_services_snapshot_run_raises(monkeypatch, caplog):
-    def _boom(cmd, timeout=30.0):
+    def _boom(cmd, timeout=30.0, **_k):
         raise OSError("brew not reachable")
 
     monkeypatch.setattr(self_heal, "_run", _boom)
@@ -322,13 +342,13 @@ def test_brew_services_snapshot_run_raises(monkeypatch, caplog):
 
 @pytest.mark.unit
 def test_native_container_state_running(monkeypatch):
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout="running\n"))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout="running\n"))
     assert _real_native_container_state("nyxgpt-cassandra") == "running"
 
 
 @pytest.mark.unit
 def test_native_container_state_absent_when_no_output(monkeypatch):
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=""))
     assert _real_native_container_state("nyxgpt-cassandra") == "absent"
 
 
@@ -340,7 +360,7 @@ def test_native_container_state_no_docker(monkeypatch):
 
 @pytest.mark.unit
 def test_native_container_state_run_raises(monkeypatch, caplog):
-    def _boom(cmd, timeout=30.0):
+    def _boom(cmd, timeout=30.0, **_k):
         raise OSError("docker daemon not reachable")
 
     monkeypatch.setattr(self_heal, "_run", _boom)
@@ -352,7 +372,7 @@ def test_native_container_state_run_raises(monkeypatch, caplog):
 
 @pytest.mark.unit
 def test_list_native_component_status_reports_brew_and_cassandra(monkeypatch):
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=""))
     monkeypatch.setattr(
         self_heal,
         "_brew_services_snapshot",
@@ -377,7 +397,7 @@ def test_list_native_component_status_reports_brew_and_cassandra(monkeypatch):
 
 @pytest.mark.unit
 def test_list_native_component_status_skips_absent_cassandra(monkeypatch):
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=""))
     monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {})
     monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "absent")
 
@@ -387,7 +407,9 @@ def test_list_native_component_status_skips_absent_cassandra(monkeypatch):
 @pytest.mark.unit
 def test_list_component_status_compose_managed_component_skips_native_duplicate(monkeypatch):
     monkeypatch.setattr(
-        self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=_ps_line("api", state="running"))
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0, **_k: CP(stdout=_ps_line("api", state="running")),
     )
     monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {"nyxgpt-api": "started"})
     monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "running")
@@ -417,7 +439,7 @@ def test_restart_component_success(monkeypatch):
 @pytest.mark.unit
 def test_restart_component_failure(monkeypatch):
     monkeypatch.setattr(
-        self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1, stderr="boom")
+        self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=1, stderr="boom")
     )
     result = self_heal.restart_component("api")
     assert not result.ok
@@ -426,7 +448,7 @@ def test_restart_component_failure(monkeypatch):
 
 @pytest.mark.unit
 def test_restart_component_run_raises(monkeypatch):
-    def _boom(cmd, timeout=30.0):
+    def _boom(cmd, timeout=30.0, **_k):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
     monkeypatch.setattr(self_heal, "_run", _boom)
@@ -462,7 +484,7 @@ def test_restart_native_component_brew_service_success(monkeypatch):
 @pytest.mark.unit
 def test_restart_native_component_brew_service_failure(monkeypatch):
     monkeypatch.setattr(
-        self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1, stderr="boom")
+        self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=1, stderr="boom")
     )
     result = self_heal.restart_native_component("web")
     assert not result.ok
@@ -471,7 +493,7 @@ def test_restart_native_component_brew_service_failure(monkeypatch):
 
 @pytest.mark.unit
 def test_restart_native_component_brew_service_run_raises(monkeypatch):
-    def _boom(cmd, timeout=30.0):
+    def _boom(cmd, timeout=30.0, **_k):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
     monkeypatch.setattr(self_heal, "_run", _boom)
@@ -509,7 +531,7 @@ def test_restart_native_component_cassandra_success(monkeypatch):
 @pytest.mark.unit
 def test_restart_native_component_cassandra_failure(monkeypatch):
     monkeypatch.setattr(
-        self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1, stderr="boom")
+        self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=1, stderr="boom")
     )
     result = self_heal.restart_native_component("cassandra")
     assert not result.ok
@@ -551,7 +573,9 @@ def test_component_logs_success(monkeypatch):
 @pytest.mark.unit
 def test_component_logs_failure(monkeypatch):
     monkeypatch.setattr(
-        self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1, stderr="no such service")
+        self_heal,
+        "_run",
+        lambda cmd, timeout=30.0, **_k: CP(returncode=1, stderr="no such service"),
     )
     result = self_heal.component_logs("glitchtip")
     assert not result.ok
@@ -560,7 +584,7 @@ def test_component_logs_failure(monkeypatch):
 
 @pytest.mark.unit
 def test_component_logs_run_raises(monkeypatch):
-    def _boom(cmd, timeout=30.0):
+    def _boom(cmd, timeout=30.0, **_k):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
     monkeypatch.setattr(self_heal, "_run", _boom)
@@ -1125,7 +1149,7 @@ def test_desired_compose_services_resolves_and_excludes_core_services(monkeypatc
     monkeypatch.setattr(
         self_heal,
         "_run",
-        lambda cmd, timeout=30.0: CP(stdout="grafana\nprometheus\napi\nweb\n"),
+        lambda cmd, timeout=30.0, **_k: CP(stdout="grafana\nprometheus\napi\nweb\n"),
     )
     services = self_heal._desired_compose_services({"monitoring"})
     assert services == {"grafana", "prometheus"}
@@ -1140,7 +1164,7 @@ def test_desired_compose_services_excludes_one_shot_services(monkeypatch):
     monkeypatch.setattr(
         self_heal,
         "_run",
-        lambda cmd, timeout=30.0: CP(stdout="glitchtip\nglitchtip-migrate\n"),
+        lambda cmd, timeout=30.0, **_k: CP(stdout="glitchtip\nglitchtip-migrate\n"),
     )
     services = self_heal._desired_compose_services({"errors"})
     assert services == {"glitchtip"}
@@ -1156,7 +1180,7 @@ def test_desired_compose_services_exclude_one_shot_false_keeps_one_shot(monkeypa
     monkeypatch.setattr(
         self_heal,
         "_run",
-        lambda cmd, timeout=30.0: CP(stdout="glitchtip\nglitchtip-migrate\n"),
+        lambda cmd, timeout=30.0, **_k: CP(stdout="glitchtip\nglitchtip-migrate\n"),
     )
     services = self_heal._desired_compose_services({"errors"}, exclude_one_shot=False)
     assert services == {"glitchtip", "glitchtip-migrate"}
@@ -1165,14 +1189,14 @@ def test_desired_compose_services_exclude_one_shot_false_keeps_one_shot(monkeypa
 @pytest.mark.unit
 def test_desired_compose_services_command_failure_returns_empty(monkeypatch):
     monkeypatch.setattr(
-        self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1, stderr="boom")
+        self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=1, stderr="boom")
     )
     assert self_heal._desired_compose_services({"monitoring"}) == set()
 
 
 @pytest.mark.unit
 def test_desired_compose_services_run_raises(monkeypatch, caplog):
-    def _boom(cmd, timeout=30.0):
+    def _boom(cmd, timeout=30.0, **_k):
         raise OSError("docker daemon not reachable")
 
     monkeypatch.setattr(self_heal, "_run", _boom)
@@ -1281,7 +1305,7 @@ def test_mark_disabled_present_services_flags_failed_one_shot_service(monkeypatc
     monkeypatch.setattr(
         self_heal,
         "_run",
-        lambda cmd, timeout=30.0: CP(stdout="glitchtip\nglitchtip-migrate\n"),
+        lambda cmd, timeout=30.0, **_k: CP(stdout="glitchtip\nglitchtip-migrate\n"),
     )
 
     result = self_heal._mark_disabled_present_services(statuses, desired_services=set())
@@ -1336,7 +1360,7 @@ def test_list_component_status_reports_torn_down_monitoring_profile(monkeypatch)
     # docker compose ps -a: the stack is fully down, nothing at all is reported
     # -- this is the exact reported scenario (#3356): monitoring was enabled,
     # then `nyxgpt ops down` removed every container.
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=""))
     monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: {"monitoring"})
     monkeypatch.setattr(self_heal, "_desired_compose_services", lambda profiles: {"grafana"})
 
@@ -1355,7 +1379,7 @@ def test_list_component_status_one_shot_service_not_reported_absent(monkeypatch)
     # one-shot `glitchtip-migrate` migration job; only `glitchtip` is
     # actually running (the migration already exited 0 and is gone). The
     # migration job must not show up as an absent/unhealthy component.
-    def _run_stub(cmd, timeout=30.0):
+    def _run_stub(cmd, timeout=30.0, **_k):
         if "config" in cmd:
             return CP(stdout="glitchtip\nglitchtip-migrate\n")
         return CP(stdout=_ps_line("glitchtip", state="running", health="healthy"))
@@ -1375,7 +1399,7 @@ def test_list_component_status_desired_service_already_present_not_duplicated(mo
     monkeypatch.setattr(
         self_heal,
         "_run",
-        lambda cmd, timeout=30.0: CP(stdout=_ps_line("grafana", state="running")),
+        lambda cmd, timeout=30.0, **_k: CP(stdout=_ps_line("grafana", state="running")),
     )
     monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: {"monitoring"})
     monkeypatch.setattr(self_heal, "_desired_compose_services", lambda profiles: {"grafana"})
@@ -1390,7 +1414,7 @@ def test_list_component_status_desired_service_already_present_not_duplicated(mo
 @pytest.mark.unit
 def test_list_component_status_disabled_profile_reports_nothing(monkeypatch):
     # monitoring disabled in config -- absence is expected, not a heal target.
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=""))
     monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
     monkeypatch.setattr(self_heal, "_desired_compose_services", lambda profiles: set())
 
@@ -1405,7 +1429,7 @@ def test_list_component_status_flags_present_but_disabled_profile(monkeypatch):
     monkeypatch.setattr(
         self_heal,
         "_run",
-        lambda cmd, timeout=30.0: CP(stdout=_ps_line("grafana", state="exited")),
+        lambda cmd, timeout=30.0, **_k: CP(stdout=_ps_line("grafana", state="exited")),
     )
     monkeypatch.setattr(self_heal, "_enabled_observability_profiles", lambda: set())
     monkeypatch.setattr(
@@ -1432,7 +1456,7 @@ def test_list_component_status_flags_failed_one_shot_after_profile_disabled(monk
     # `desired=False` -- not left `desired=True` forever -- so the automatic
     # watchdog doesn't keep trying to restart a container the user
     # deliberately walked away from.
-    def _run_stub(cmd, timeout=30.0):
+    def _run_stub(cmd, timeout=30.0, **_k):
         if "config" in cmd:
             return CP(stdout="glitchtip\nglitchtip-migrate\n")
         return CP(stdout=_ps_line("glitchtip-migrate", state="exited", exit_code=1))
@@ -1475,7 +1499,7 @@ def test_bring_up_compose_service_failure(monkeypatch):
 
 @pytest.mark.unit
 def test_bring_up_compose_service_run_raises(monkeypatch):
-    def _boom(cmd, timeout=120.0):
+    def _boom(cmd, timeout=120.0, **_k):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
     monkeypatch.setattr(self_heal, "_run", _boom)
@@ -1566,7 +1590,7 @@ def test_clear_intentionally_stopped_never_marked_is_noop():
 
 @pytest.mark.unit
 def test_list_component_status_marks_intentionally_stopped_component_desired_false(monkeypatch):
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=""))
     monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {"nyxgpt-api": "stopped"})
     self_heal.mark_intentionally_stopped("api")
 
@@ -1579,7 +1603,7 @@ def test_list_component_status_marks_intentionally_stopped_component_desired_fal
 
 @pytest.mark.unit
 def test_list_component_status_leaves_other_components_desired_true(monkeypatch):
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=""))
     monkeypatch.setattr(
         self_heal,
         "_brew_services_snapshot",
@@ -1596,7 +1620,7 @@ def test_list_component_status_leaves_other_components_desired_true(monkeypatch)
 
 @pytest.mark.unit
 def test_heal_now_skips_intentionally_stopped_component_automatically(monkeypatch):
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=""))
     monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {"nyxgpt-api": "stopped"})
     self_heal.mark_intentionally_stopped("api")
     restart_mock = MagicMock()
@@ -1610,7 +1634,7 @@ def test_heal_now_skips_intentionally_stopped_component_automatically(monkeypatc
 
 @pytest.mark.unit
 def test_heal_now_manual_heal_overrides_intentional_stop(monkeypatch):
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=""))
     monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {"nyxgpt-api": "stopped"})
     self_heal.mark_intentionally_stopped("api")
     restart_mock = MagicMock(return_value=self_heal.HealResult(True, "Restarted api"))
@@ -1627,13 +1651,13 @@ def test_heal_now_manual_heal_overrides_intentional_stop(monkeypatch):
 
 @pytest.mark.unit
 def test_native_container_health_reports_status(monkeypatch):
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout="healthy\n"))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout="healthy\n"))
     assert self_heal._native_container_health("nyxgpt-tf-api") == "healthy"
 
 
 @pytest.mark.unit
 def test_native_container_health_no_healthcheck_is_blank(monkeypatch):
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=""))
     assert self_heal._native_container_health("nyxgpt-tf-web") == ""
 
 
@@ -1645,13 +1669,13 @@ def test_native_container_health_no_docker(monkeypatch):
 
 @pytest.mark.unit
 def test_native_container_health_run_failure(monkeypatch):
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(returncode=1))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(returncode=1))
     assert self_heal._native_container_health("nyxgpt-tf-api") == ""
 
 
 @pytest.mark.unit
 def test_native_container_health_run_raises(monkeypatch, caplog):
-    def _boom(cmd, timeout=30.0):
+    def _boom(cmd, timeout=30.0, **_k):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
     monkeypatch.setattr(self_heal, "_run", _boom)
@@ -1850,7 +1874,7 @@ def test_cassandra_active_mode_wins_over_stopped_leftover_from_other_mode(
     stdout = (
         _ps_line("cassandra", state=compose_present["state"]) if compose_present["present"] else ""
     )
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=stdout))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=stdout))
 
     statuses = self_heal.list_component_status()
     cassandra_entries = [s for s in statuses if s.service == "cassandra"]
@@ -1874,7 +1898,7 @@ def test_heal_now_auto_pass_heals_terraform_cassandra_not_native_leftover(monkey
         self_heal, "_list_terraform_component_status", _real_list_terraform_component_status
     )
     monkeypatch.setattr(self_heal, "_brew_services_snapshot", lambda: {})
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=""))
 
     docker_states = {"nyxgpt-cassandra": "exited", "nyxgpt-tf-cassandra": "running"}
     healths = {"nyxgpt-tf-cassandra": "unhealthy"}
@@ -1906,7 +1930,7 @@ def test_restart_native_component_cassandra_refuses_when_terraform_running(monke
         "_native_container_state",
         lambda name: "running" if name == "nyxgpt-tf-cassandra" else "absent",
     )
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=""))
     restart_mock = MagicMock()
     monkeypatch.setattr(self_heal, "_restart_native_container", restart_mock)
 
@@ -1924,7 +1948,7 @@ def test_restart_native_component_cassandra_refuses_when_compose_running(monkeyp
     monkeypatch.setattr(
         self_heal,
         "_run",
-        lambda cmd, timeout=30.0: CP(stdout=_ps_line("cassandra", state="running")),
+        lambda cmd, timeout=30.0, **_k: CP(stdout=_ps_line("cassandra", state="running")),
     )
     restart_mock = MagicMock()
     monkeypatch.setattr(self_heal, "_restart_native_container", restart_mock)
@@ -1939,7 +1963,7 @@ def test_restart_native_component_cassandra_refuses_when_compose_running(monkeyp
 @pytest.mark.unit
 def test_restart_native_component_cassandra_proceeds_when_nothing_else_running(monkeypatch):
     monkeypatch.setattr(self_heal, "_native_container_state", lambda name: "absent")
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0: CP(stdout=""))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=30.0, **_k: CP(stdout=""))
     restart_mock = MagicMock(return_value=self_heal.HealResult(True, "Restarted nyxgpt-cassandra"))
     monkeypatch.setattr(self_heal, "_restart_native_container", restart_mock)
 
@@ -2000,7 +2024,7 @@ def test_list_kubernetes_component_status_parses_pods(monkeypatch):
         _k8s_pod("nyxgpt-api-blue-abc"),
         _k8s_pod("nyxgpt-api-stable-def", ready=False),
     )
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0: CP(stdout=stdout))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0, **_k: CP(stdout=stdout))
 
     statuses = _real_list_kubernetes_component_status(set())
     by_service = {s.service: s for s in statuses}
@@ -2014,7 +2038,7 @@ def test_list_kubernetes_component_status_parses_pods(monkeypatch):
 @pytest.mark.unit
 def test_list_kubernetes_component_status_not_running_phase_is_unhealthy(monkeypatch):
     stdout = _k8s_pods_json(_k8s_pod("nyxgpt-api-canary-xyz", phase="Pending", ready=False))
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0: CP(stdout=stdout))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0, **_k: CP(stdout=stdout))
 
     statuses = _real_list_kubernetes_component_status(set())
 
@@ -2025,7 +2049,7 @@ def test_list_kubernetes_component_status_not_running_phase_is_unhealthy(monkeyp
 @pytest.mark.unit
 def test_list_kubernetes_component_status_skips_already_managed(monkeypatch):
     stdout = _k8s_pods_json(_k8s_pod("nyxgpt-api-blue-abc"))
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0: CP(stdout=stdout))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0, **_k: CP(stdout=stdout))
 
     statuses = _real_list_kubernetes_component_status({"nyxgpt-api-blue-abc"})
 
@@ -2040,13 +2064,13 @@ def test_list_kubernetes_component_status_no_kubectl(monkeypatch):
 
 @pytest.mark.unit
 def test_list_kubernetes_component_status_run_failure(monkeypatch):
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0: CP(returncode=1))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0, **_k: CP(returncode=1))
     assert _real_list_kubernetes_component_status(set()) == []
 
 
 @pytest.mark.unit
 def test_list_kubernetes_component_status_run_raises(monkeypatch, caplog):
-    def _boom(cmd, timeout=15.0):
+    def _boom(cmd, timeout=15.0, **_k):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
     monkeypatch.setattr(self_heal, "_run", _boom)
@@ -2057,7 +2081,7 @@ def test_list_kubernetes_component_status_run_raises(monkeypatch, caplog):
 
 @pytest.mark.unit
 def test_list_kubernetes_component_status_invalid_json(monkeypatch, caplog):
-    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0: CP(stdout="not json"))
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, timeout=15.0, **_k: CP(stdout="not json"))
     with caplog.at_level("WARNING"):
         assert _real_list_kubernetes_component_status(set()) == []
     assert "failed to parse kubectl get pods output" in caplog.text
@@ -2088,7 +2112,7 @@ def test_heal_kubernetes_pod_failure(monkeypatch):
 
 @pytest.mark.unit
 def test_heal_kubernetes_pod_run_raises(monkeypatch):
-    def _boom(cmd, timeout=60.0):
+    def _boom(cmd, timeout=60.0, **_k):
         raise subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
 
     monkeypatch.setattr(self_heal, "_run", _boom)

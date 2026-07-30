@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import subprocess
 import tarfile
 from configparser import ConfigParser
@@ -427,7 +428,7 @@ def test_restart_docker_container_recovers_previously_running_container(monkeypa
         # container is down). 3rd call: post-recovery check (True, back up).
         return "running" if state_calls["n"] in (1, 3) else "exited"
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:2] == ["docker", "restart"]:
             return CP(returncode=1, stderr="port is already allocated")
         if cmd[:2] == ["docker", "start"]:
@@ -459,7 +460,7 @@ def test_restart_docker_container_reports_down_when_unrecoverable(monkeypatch):
 
     fake_docker_container_state.n = 0
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:2] == ["docker", "restart"]:
             return CP(returncode=1, stderr="port is already allocated")
         if cmd[:2] == ["docker", "start"]:
@@ -562,7 +563,7 @@ def test_ops_status_smoke(monkeypatch, capsys):
             self.stderr = ""
             self.returncode = 0
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:3] == ["brew", "services", "list"]:
             return CP(stdout="Name Status User File\nnyxgpt-web started user plist\n")
         if cmd[:2] == ["launchctl", "list"]:
@@ -1259,13 +1260,16 @@ def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit_when_check_false(caplog):
         run.return_value = subprocess.CompletedProcess(
             args=["false"], returncode=1, stdout="", stderr="boom\n"
         )
-        with caplog.at_level("WARNING", logger="nyxgpt.ops"):
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
             cp = ops._run(["false"], check=False)
 
     assert cp.returncode == 1
-    records = [r for r in caplog.records if r.getMessage() == "Subprocess exited non-zero"]
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
     assert records, "Expected _run to log the non-zero exit"
     record = records[0]
+    assert record.levelno == logging.WARNING
+    assert "rc=1" in record.getMessage()
+    assert "false" in record.getMessage()
     assert record.cmd == ["false"]
     assert record.returncode == 1
     assert "boom" in record.stderr_tail
@@ -1274,15 +1278,50 @@ def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit_when_check_false(caplog):
 @pytest.mark.unit
 def test_run_logs_cmd_rc_stderr_tail_on_nonzero_exit_when_check_true(caplog):
     with (
-        caplog.at_level("WARNING", logger="nyxgpt.ops"),
+        caplog.at_level("DEBUG", logger="nyxgpt.ops"),
         pytest.raises(subprocess.CalledProcessError),
     ):
         ops._run(["python3", "-c", "import sys; sys.stderr.write('boom'); sys.exit(1)"])
 
-    records = [r for r in caplog.records if r.getMessage() == "Subprocess exited non-zero"]
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
     assert records, "Expected _run to log the non-zero exit before raising"
+    assert records[0].levelno == logging.WARNING
+    assert "rc=1" in records[0].getMessage()
     assert records[0].returncode == 1
     assert "boom" in records[0].stderr_tail
+
+
+@pytest.mark.unit
+def test_run_expected_true_logs_debug_not_warning_on_nonzero_exit_check_false(caplog):
+    with patch.object(ops.subprocess, "run") as run:
+        run.return_value = subprocess.CompletedProcess(
+            args=["false"], returncode=1, stdout="", stderr="boom\n"
+        )
+        with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+            cp = ops._run(["false"], check=False, expected=True)
+
+    assert cp.returncode == 1
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected _run to log the non-zero exit at DEBUG"
+    assert records[0].levelno == logging.DEBUG
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_run_expected_true_logs_debug_not_warning_on_nonzero_exit_check_true(caplog):
+    with (
+        caplog.at_level("DEBUG", logger="nyxgpt.ops"),
+        pytest.raises(subprocess.CalledProcessError),
+    ):
+        ops._run(
+            ["python3", "-c", "import sys; sys.stderr.write('boom'); sys.exit(1)"],
+            expected=True,
+        )
+
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected _run to log the non-zero exit at DEBUG before raising"
+    assert records[0].levelno == logging.DEBUG
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
 
 
 @pytest.mark.unit
@@ -4077,7 +4116,7 @@ def test_ops_status_launchctl_error(monkeypatch, capsys):
             self.stderr = ""
             self.returncode = 0
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:2] == ["launchctl", "list"]:
             raise OSError("launchctl missing")
         return CP(stdout="")
@@ -4543,7 +4582,7 @@ _ALL_COMPOSE_SERVICES = (
 
 
 def _fake_run_resolving_services(calls, *, up_rc=0):
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         calls.append(cmd)
         if cmd[-2:] == ["config", "--services"]:
             return subprocess.CompletedProcess(cmd, 0, stdout=_ALL_COMPOSE_SERVICES)
@@ -4853,7 +4892,7 @@ def test_recreate_grafana_force_recreates_when_drifted_and_running(monkeypatch):
     monkeypatch.setattr(ops, "_grafana_provisioning_drifted", lambda: True)
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0)
 
@@ -6242,7 +6281,7 @@ def test_wait_for_glitchtip_healthy_absent_but_enabled_returns_false_without_sle
     monkeypatch.setattr(ops.self_heal, "load_config", lambda: cfg)
     monkeypatch.setattr(ops.self_heal, "_which", lambda prog: "/usr/bin/docker")
 
-    def fake_run(cmd, timeout=30.0):
+    def fake_run(cmd, timeout=30.0, **_k):
         if "config" in cmd and "--services" in cmd:
             return subprocess.CompletedProcess(cmd, 0, stdout="glitchtip\n")
         return subprocess.CompletedProcess(cmd, 0, stdout="")  # `ps -a`: nothing running
@@ -7333,7 +7372,7 @@ def test_ensure_terraform_binary_installs_via_hashicorp_tap(monkeypatch):
 
     run_calls = []
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         run_calls.append(cmd)
         return CP(returncode=0)
 
@@ -7351,7 +7390,9 @@ def test_ensure_terraform_binary_tap_failure(monkeypatch):
     monkeypatch.setattr(
         ops, "_which", lambda prog: "/opt/homebrew/bin/brew" if prog == "brew" else None
     )
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="tap failed"))
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="tap failed")
+    )
     results = ops._ensure_terraform_binary()
     assert results[0].ok is False
     assert "brew tap" in results[0].message
@@ -7407,7 +7448,7 @@ def test_ensure_terraform_tfvars_bootstraps_from_example(monkeypatch, tmp_path):
 
 
 def _fake_terraform_run(*, init_rc=0, plan_rc=0, apply_rc=0):
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         assert cmd[0] == "terraform"
         assert cmd[1].startswith("-chdir=")
         if cmd[2] == "init":
@@ -7472,7 +7513,7 @@ def test_terraform_stack_health_reports_outputs(monkeypatch):
     monkeypatch.setattr(
         ops,
         "_run",
-        lambda cmd, check=True: CP(stdout='{"api_url": {"value": "http://localhost:8000"}}'),
+        lambda cmd, check=True, **_k: CP(stdout='{"api_url": {"value": "http://localhost:8000"}}'),
     )
     results = ops._terraform_stack_health()
     assert results[0].ok is True
@@ -7596,7 +7637,7 @@ def test_down_terraform_no_binary(monkeypatch, capsys):
 def test_down_terraform_destroy_success(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda prog: "/opt/homebrew/bin/terraform")
     monkeypatch.setattr(
-        ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="Destroy complete")
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="Destroy complete")
     )
     rc = ops._down_terraform(SimpleNamespace())
     assert rc == 0
@@ -7605,7 +7646,7 @@ def test_down_terraform_destroy_success(monkeypatch):
 @pytest.mark.unit
 def test_down_terraform_destroy_failure(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda prog: "/opt/homebrew/bin/terraform")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="boom"))
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="boom"))
     rc = ops._down_terraform(SimpleNamespace())
     assert rc == 2
 
@@ -7616,7 +7657,7 @@ def test_down_terraform_prunes_docker_build_cache(monkeypatch):
     accumulate (17GB+ across repeated local deploys), AFTER terraform destroy."""
     calls = []
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         calls.append(cmd)
         if cmd[:3] == ["docker", "builder", "prune"]:
             return CP(returncode=0, stdout="Total reclaimed space: 12.3GB")
@@ -7637,7 +7678,7 @@ def test_down_terraform_prunes_docker_build_cache(monkeypatch):
 def test_down_terraform_cache_prune_failure_is_non_fatal(monkeypatch):
     """A build-cache prune failure is best-effort and never fails the teardown."""
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:3] == ["docker", "builder", "prune"]:
             return CP(returncode=1, stderr="prune boom")
         return CP(returncode=0, stdout="ok")
@@ -7662,7 +7703,9 @@ def test_ensure_kubectl_and_cluster_missing_kubectl(monkeypatch):
 @pytest.mark.unit
 def test_ensure_kubectl_and_cluster_unreachable(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="refused"))
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="refused")
+    )
     results = ops._ensure_kubectl_and_cluster()
     assert results[0].ok is False
     assert "No reachable" in results[0].message
@@ -7671,7 +7714,7 @@ def test_ensure_kubectl_and_cluster_unreachable(monkeypatch):
 @pytest.mark.unit
 def test_ensure_kubectl_and_cluster_reachable(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0))
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0))
     results = ops._ensure_kubectl_and_cluster()
     assert results[0].ok is True
 
@@ -7692,7 +7735,7 @@ def test_build_and_load_k8s_image_build_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/docker")
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:3] == ["docker", "image", "inspect"]:
             return CP(returncode=1)
         if cmd[:2] == ["docker", "build"]:
@@ -7710,7 +7753,7 @@ def test_build_and_load_k8s_image_skips_load_on_docker_desktop(monkeypatch, tmp_
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/docker")
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:3] == ["docker", "image", "inspect"]:
             return CP(returncode=1)
         if cmd[:2] == ["docker", "build"]:
@@ -7733,7 +7776,7 @@ def test_build_and_load_k8s_image_loads_into_kind(monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
     run_calls = []
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         run_calls.append(cmd)
         if cmd[:3] == ["docker", "image", "inspect"]:
             return CP(returncode=1)
@@ -7758,7 +7801,7 @@ def test_build_and_load_k8s_image_unrecognized_context(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:3] == ["docker", "image", "inspect"]:
             return CP(returncode=1)
         if cmd[:2] == ["docker", "build"]:
@@ -7785,7 +7828,7 @@ def test_build_and_load_k8s_image_skips_rebuild_when_source_unchanged(monkeypatc
 
     run_calls = []
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         run_calls.append(cmd)
         if cmd[:3] == ["docker", "image", "inspect"]:
             return CP(returncode=0)
@@ -7849,7 +7892,7 @@ def test_build_and_load_k8s_web_image_builds_web_context_with_build_arg(monkeypa
     monkeypatch.setattr(ops, "DOCKER_IMAGE_MARKER_DIR", tmp_path)
     run_calls = []
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         run_calls.append(cmd)
         if cmd[:3] == ["docker", "image", "inspect"]:
             return CP(returncode=1)
@@ -7902,21 +7945,23 @@ def test_ensure_k8s_secret_bootstraps_from_example(monkeypatch, tmp_path):
 
 @pytest.mark.unit
 def test_kubectl_apply_kustomization_success(monkeypatch):
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="applied"))
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="applied")
+    )
     results = ops._kubectl_apply_kustomization()
     assert results[0].ok is True
 
 
 @pytest.mark.unit
 def test_kubectl_apply_kustomization_failure(monkeypatch):
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="boom"))
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="boom"))
     results = ops._kubectl_apply_kustomization()
     assert results[0].ok is False
 
 
 @pytest.mark.unit
 def test_k8s_stack_health_reports_pods_service(monkeypatch):
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[4] == "pods":
             return CP(
                 returncode=0,
@@ -7941,7 +7986,7 @@ def test_k8s_stack_health_reports_web_service_alongside_api(monkeypatch):
     """#3419: the post-apply health snapshot must check nyxgpt-web too, distinguishing
     found from not-found per service rather than reporting one combined result."""
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[4] == "pods":
             return CP(returncode=0, stdout="nyxgpt-web-stable-abc=Running;")
         if cmd[4] == "svc":
@@ -8060,7 +8105,9 @@ def test_down_kubernetes_no_kubectl(monkeypatch, capsys):
 @pytest.mark.unit
 def test_down_kubernetes_delete_success(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="deleted"))
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="deleted")
+    )
     rc = ops._down_kubernetes(SimpleNamespace())
     assert rc == 0
 
@@ -8068,7 +8115,7 @@ def test_down_kubernetes_delete_success(monkeypatch):
 @pytest.mark.unit
 def test_down_kubernetes_delete_failure(monkeypatch):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stderr="boom"))
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stderr="boom"))
     rc = ops._down_kubernetes(SimpleNamespace())
     assert rc == 2
 
@@ -8108,7 +8155,9 @@ def test_install_terraform_local_reports_port_collision(monkeypatch):
 @pytest.mark.unit
 def test_down_terraform_returns_results_without_printing(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/terraform")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="destroyed"))
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="destroyed")
+    )
     # Observability teardown runs before the destroy; stub it so this test
     # exercises only the terraform-destroy result shape.
     monkeypatch.setattr(
@@ -8133,7 +8182,7 @@ def test_down_terraform_tears_down_observability_before_destroy(monkeypatch):
         lambda: (order.append("obs-down"), [ops.OpsResult(True, "obs down")])[1],
     )
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if "destroy" in cmd:
             order.append("destroy")
         return CP(returncode=0, stdout="ok")
@@ -8170,7 +8219,9 @@ def test_install_kubernetes_local_reports_port_collision(monkeypatch):
 @pytest.mark.unit
 def test_down_kubernetes_returns_results_without_printing(monkeypatch, capsys):
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/kubectl")
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=0, stdout="deleted"))
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, check=True, **_k: CP(returncode=0, stdout="deleted")
+    )
     results = ops.down_kubernetes()
     assert len(results) == 1
     assert results[0].ok is True
@@ -8189,7 +8240,7 @@ def test_infra_status_reports_terraform_and_kubernetes(monkeypatch):
     def fake_which(prog):
         return "/usr/local/bin/x" if prog in ("kubectl", "docker") else None
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         return CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n")
 
     monkeypatch.setattr(ops, "_which", fake_which)
@@ -8237,7 +8288,7 @@ def test_infra_status_reports_cannot_determine_when_docker_probe_unavailable(mon
         lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
     )
     monkeypatch.setattr(ops, "_which", lambda prog: None)
-    monkeypatch.setattr(ops, "_run", lambda cmd, check=True: CP(returncode=1, stdout=""))
+    monkeypatch.setattr(ops, "_run", lambda cmd, check=True, **_k: CP(returncode=1, stdout=""))
 
     result = ops.infra_status()
     assert result["terraform"]["probe_available"] is False
@@ -8307,7 +8358,7 @@ def test_infra_status_serving_delegates_to_canary_status_in_kubernetes_mode(monk
     monkeypatch.setattr(
         ops,
         "_run",
-        lambda cmd, check=True: CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n"),
+        lambda cmd, check=True, **_k: CP(returncode=0, stdout="nyxgpt-api-abc   1/1   Running\n"),
     )
 
     fake_statuses = {
@@ -8411,7 +8462,7 @@ def test_status_shows_kubernetes_pods_when_present(monkeypatch, capsys):
     def fake_which(prog):
         return "/usr/local/bin/kubectl" if prog == "kubectl" else None
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
             return CP(returncode=0, stdout="nyxgpt-api-stable-abc   1/1   Running\n")
         return CP(stdout="")
@@ -8440,7 +8491,7 @@ def test_status_shows_per_component_canary_when_kubernetes_pods_present(monkeypa
     def fake_which(prog):
         return "/usr/local/bin/kubectl" if prog == "kubectl" else None
 
-    def fake_run(cmd, check=True):
+    def fake_run(cmd, check=True, **_k):
         if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"] and "pods" in cmd:
             return CP(returncode=0, stdout="nyxgpt-api-stable-abc   1/1   Running\n")
         return CP(stdout="")
