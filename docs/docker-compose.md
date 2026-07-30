@@ -253,6 +253,11 @@ see [`nyxgpt ops stop`](ops.md#nyxgpt-ops-stop) and
     proxy routes also forward `NYXGPT_AUTH_API_KEY` as the `X-API-Key`
     header on every backend call, since `docker/config.docker.ini` enables
     auth for exactly this reason (see the `[auth]` section).
+  - `NYXGPT_CHAT_STREAM_HEADERS_TIMEOUT_MS` (optional, default `300000` — 5
+    minutes) overrides how long the `chat/stream` proxy route waits for the
+    api to send response headers before giving up. Raise it if a cold local
+    model load (first chat after a restart) regularly takes longer than the
+    default (#3440).
 
 ## Network binding
 
