@@ -4,6 +4,7 @@ import "./globals.css";
 import { ThemeProvider } from "../contexts/ThemeContext";
 import { ToastProvider } from "../contexts/ToastContext";
 import ClientErrorReporter from "../components/ClientErrorReporter";
+import AppUpdateBanner from "../components/AppUpdateBanner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -56,6 +57,7 @@ export default function RootLayout({
         <ThemeProvider>
           <ToastProvider>
             <ClientErrorReporter />
+            <AppUpdateBanner />
             {children}
           </ToastProvider>
         </ThemeProvider>
