@@ -4326,6 +4326,79 @@ def _verify_grafana_datasources_resolve(
     )
 
 
+def _grafana_expected_plugin_ids() -> list[str]:
+    """Plugin ids declared in `docker-compose.yml`'s `GF_INSTALL_PLUGINS`.
+
+    Regex-scraped for the same reason as `_grafana_provisioned_datasource_uids`
+    -- no PyYAML runtime dependency, and this is repo-controlled config.
+    """
+    if not self_heal.COMPOSE_FILE.exists():
+        return []
+    match = re.search(r'GF_INSTALL_PLUGINS:\s*"([^"]*)"', self_heal.COMPOSE_FILE.read_text())
+    if not match:
+        return []
+    return [p.strip() for p in match.group(1).split(",") if p.strip()]
+
+
+def _verify_grafana_plugins_installed(
+    grafana_ui_url: str,
+    grafana_admin_password: str,
+    *,
+    attempts: int = 5,
+    delay_s: float = 2.0,
+) -> OpsResult:
+    """Confirm every plugin listed in `GF_INSTALL_PLUGINS` is actually
+    installed and enabled, rather than assuming a successful env-var-driven
+    download (#3424's "plugin installation is confirmed... rather than
+    assumed from GF_INSTALL_PLUGINS" AC). `GF_INSTALL_PLUGINS` downloads
+    each plugin from the network at container startup and fails silently
+    (a logged error, not a crash) if that download fails -- e.g. no network
+    access, registry outage, or a renamed/typo'd plugin id.
+    """
+    expected = _grafana_expected_plugin_ids()
+    if not expected:
+        return OpsResult(True, "No plugins declared in GF_INSTALL_PLUGINS -- nothing to verify")
+
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            missing: list[str] = []
+            with httpx.Client(
+                base_url=grafana_ui_url,
+                auth=("admin", grafana_admin_password),
+                timeout=5.0,
+            ) as client:
+                for plugin_id in expected:
+                    resp = client.get(f"/api/plugins/{plugin_id}/settings")
+                    if resp.status_code != 200 or not resp.json().get("enabled"):
+                        missing.append(plugin_id)
+            if not missing:
+                return OpsResult(
+                    True, f"Verified {len(expected)} GF_INSTALL_PLUGINS plugin(s) installed"
+                )
+            if attempt < attempts - 1:
+                time.sleep(delay_s)
+                continue
+            return OpsResult(
+                False,
+                f"Grafana plugin(s) failed to install: {', '.join(missing)}",
+                "Listed in docker-compose.yml's GF_INSTALL_PLUGINS but not enabled per "
+                "GET /api/plugins/<id>/settings -- check `nyxgpt ops logs grafana` for a "
+                "plugin download error (no network access, registry outage, renamed/typo'd "
+                "plugin id).",
+            )
+        except Exception as e:
+            last_error = e
+            if attempt < attempts - 1:
+                time.sleep(delay_s)
+                continue
+    return OpsResult(
+        False,
+        "Could not reach Grafana to verify installed plugins",
+        str(last_error) if last_error else "",
+    )
+
+
 def _recreate_grafana_if_provisioning_drifted() -> OpsResult | None:
     """Force-recreate just the `grafana` Compose container when provisioning
     or env has drifted since this tool last reconciled it.
@@ -4477,7 +4550,8 @@ def _start_observability_stack(
 def _reconcile_grafana_provisioning() -> list[OpsResult]:
     """Bring the observability stack up AND make Grafana's provisioning
     state deterministic: recreate on drift before starting, then verify the
-    declared datasources actually resolve afterward (#3424).
+    declared datasources and GF_INSTALL_PLUGINS plugins actually resolve
+    afterward (#3424).
 
     This is the entrypoint `nyxgpt ops install` / `nyxgpt ops observability`
     / wizard toggles use instead of calling `_start_observability_stack`
@@ -4504,15 +4578,17 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
             cfg_parser = ConfigParser()
             cfg_parser.read(cfg_path)
             monitoring_config = get_monitoring_config(cfg_parser)
+            grafana_ui_url = monitoring_config["grafana_ui_url"]
+            grafana_admin_password = get_monitoring_grafana_admin_password(cfg_parser)
             results.append(
-                _verify_grafana_datasources_resolve(
-                    monitoring_config["grafana_ui_url"],
-                    get_monitoring_grafana_admin_password(cfg_parser),
-                )
+                _verify_grafana_plugins_installed(grafana_ui_url, grafana_admin_password)
+            )
+            results.append(
+                _verify_grafana_datasources_resolve(grafana_ui_url, grafana_admin_password)
             )
         except Exception as e:
             logger.warning(
-                "Failed to verify Grafana datasources, skipping: %s",
+                "Failed to verify Grafana plugins/datasources, skipping: %s",
                 e,
                 extra={"component": "ops"},
             )

@@ -4941,6 +4941,94 @@ def test_verify_grafana_datasources_resolve_fails_when_unreachable(monkeypatch):
 
 
 @pytest.mark.unit
+def test_grafana_expected_plugin_ids_parses_gf_install_plugins(tmp_path, monkeypatch):
+    compose_path = tmp_path / "docker-compose.yml"
+    compose_path.write_text(
+        'GF_INSTALL_PLUGINS: "grafana-lokiexplore-app,yesoreyeram-infinity-datasource"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ops.self_heal, "COMPOSE_FILE", compose_path)
+
+    assert ops._grafana_expected_plugin_ids() == [
+        "grafana-lokiexplore-app",
+        "yesoreyeram-infinity-datasource",
+    ]
+
+
+@pytest.mark.unit
+def test_grafana_expected_plugin_ids_empty_when_not_declared(tmp_path, monkeypatch):
+    compose_path = tmp_path / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr(ops.self_heal, "COMPOSE_FILE", compose_path)
+
+    assert ops._grafana_expected_plugin_ids() == []
+
+
+@pytest.mark.unit
+def test_verify_grafana_plugins_installed_ok_when_all_enabled(monkeypatch):
+    monkeypatch.setattr(ops, "_grafana_expected_plugin_ids", lambda: ["grafana-lokiexplore-app"])
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"enabled": True}
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._verify_grafana_plugins_installed("http://localhost:3001", "admin")
+
+    assert result.ok is True
+
+
+@pytest.mark.unit
+def test_verify_grafana_plugins_installed_no_plugins_declared_is_ok(monkeypatch):
+    monkeypatch.setattr(ops, "_grafana_expected_plugin_ids", lambda: [])
+    result = ops._verify_grafana_plugins_installed("http://localhost:3001", "admin")
+    assert result.ok is True
+
+
+@pytest.mark.unit
+def test_verify_grafana_plugins_installed_fails_when_plugin_missing(monkeypatch):
+    monkeypatch.setattr(ops, "_grafana_expected_plugin_ids", lambda: ["grafana-lokiexplore-app"])
+    monkeypatch.setattr(ops.time, "sleep", lambda _: None)
+
+    class FakeResponse:
+        status_code = 404
+
+        def json(self):
+            return {"message": "Plugin not found"}
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._verify_grafana_plugins_installed("http://localhost:3001", "admin", attempts=2)
+
+    assert result.ok is False
+    assert "grafana-lokiexplore-app" in result.message
+    assert "nyxgpt ops logs grafana" in result.details
+
+
+@pytest.mark.unit
 def test_reconcile_grafana_provisioning_records_fingerprint_and_verifies(tmp_path, monkeypatch):
     _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
     monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
@@ -4976,6 +5064,12 @@ def test_reconcile_grafana_provisioning_verifies_when_config_exists(tmp_path, mo
     monkeypatch.setattr(
         ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "stack up")]
     )
+    plugin_verify_calls = []
+    monkeypatch.setattr(
+        ops,
+        "_verify_grafana_plugins_installed",
+        lambda url, pw: plugin_verify_calls.append((url, pw)) or ops.OpsResult(True, "verified"),
+    )
     verify_calls = []
     monkeypatch.setattr(
         ops,
@@ -4986,6 +5080,7 @@ def test_reconcile_grafana_provisioning_verifies_when_config_exists(tmp_path, mo
     results = ops._reconcile_grafana_provisioning()
 
     assert all(r.ok for r in results)
+    assert plugin_verify_calls == [("http://localhost:3001", "secret")]
     assert verify_calls == [("http://localhost:3001", "secret")]
 
 
