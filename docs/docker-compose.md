@@ -438,8 +438,22 @@ different places, so promtail is wired to tail both:
   separately bind-mounts that host directory read-only at
   `/var/log/nyxgpt-native`.
 
-`docker/promtail-config.yml` scrapes both paths under the same `job`
-label, so log streams from either mode are indistinguishable in Grafana.
+`docker/promtail-config.yml` scrapes both paths under the same `job` label
+(`nyxgpt`), so a query filtering only on `job` still spans both deployment
+modes. Each target additionally carries an explicit `service_name` label
+from a fixed, bounded set -- `api`, `cli`, `ollama`, `cassandra` (`web`
+joins once #3430 lands) -- so Grafana's Logs Drilldown service breakdown
+shows the real services instead of one flat, undifferentiated bucket
+(#3441). The API process writes `api.log` and every `nyxgpt` CLI invocation
+writes `cli.log` (see [configuration.md](configuration.md#logging-section)),
+so those two are distinguishable even though both can appear in either
+directory. Ollama and Cassandra are never nyxgpt Python processes -- their
+logs only ever land in the native-mode directory, written as real files by
+the `follow-ollama-logs.sh`/`follow-cassandra-logs.sh` LaunchAgents
+(never a symlink -- a symlink whose target lives outside
+`~/.nyxGPT/logs` is unreachable from inside promtail's own bind-mounted
+container view, see [api.md#ollama-logs](api.md#ollama-logs)).
+
 If you're running native mode and don't see logs in Grafana, run `nyxgpt
 ops doctor` first -- it flags a missing native-log bind mount by
 inspecting the *running* promtail container's mounts (`docker inspect`,

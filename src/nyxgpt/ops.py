@@ -81,11 +81,6 @@ COMPOSE_CONFIG_FILE = REPO_ROOT / "docker" / "config.docker.ini"
 # terraform-managed core containers -- used by `install --terraform --local`.
 TERRAFORM_NET_OVERRIDE = REPO_ROOT / "docker" / "docker-compose.terraform-net.yml"
 
-# Referenced by `_ensure_log_symlinks` to detect Compose mode and avoid
-# clobbering the file `follow-ollama-logs.sh`/its LaunchAgent is actively
-# writing to (see #3276 review).
-OLLAMA_CONTAINER_NAME = "nyxgpt-ollama"
-
 # Placeholder substituted with the installing user's home directory when a
 # LaunchAgent plist template is copied into ~/Library/LaunchAgents -- the
 # templates in ops/launchagents/ must never hard-code a real account's home
@@ -370,20 +365,6 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
-
-
-def _brew_prefix() -> Path:
-    """Return Homebrew's install prefix (`brew --prefix`), or `/opt/homebrew` if unavailable."""
-    try:
-        cp = _run(["brew", "--prefix"])
-        return Path((cp.stdout or "").strip())
-    except Exception as e:
-        logger.warning(
-            "brew --prefix failed, using default /opt/homebrew: %s",
-            e,
-            extra={"component": "ops"},
-        )
-        return Path("/opt/homebrew")
 
 
 def _tap_repo(tap: str) -> Path:
@@ -741,12 +722,12 @@ def _install_ollama_launchagent() -> list[OpsResult]:
     copies it into ~/Library/LaunchAgents, then boots it out and back in via
     `launchctl bootout`/`bootstrap`/`kickstart`. Installed unconditionally by
     `nyxgpt ops install` regardless of deployment mode, same as the Cassandra
-    LaunchAgent -- in native mode there's no `nyxgpt-ollama` Docker container
-    yet, so `follow-ollama-logs.sh` just idles waiting for one (Ollama's
-    native-mode logs instead reach ~/.nyxGPT/logs via the Homebrew log
-    symlink in `_ensure_log_symlinks`). Returns a single-element list of
-    OpsResult; fails if the template can't be found among the candidate
-    paths.
+    LaunchAgent -- `follow-ollama-logs.sh` (which this LaunchAgent runs)
+    handles both Compose mode (follows the `nyxgpt-ollama` container's
+    `docker logs`) and native mode (tails Homebrew's own ollama.log
+    directly), switching between them on its own (see #3441). Returns a
+    single-element list of OpsResult; fails if the template can't be found
+    among the candidate paths.
     """
     results: list[OpsResult] = []
     tpl, checked = _find_launchagent_template("com.nyxgpt.ollama-logs.plist")
@@ -805,57 +786,42 @@ def _install_ollama_env_launchagent() -> list[OpsResult]:
     return results
 
 
-def _ensure_log_symlinks() -> list[OpsResult]:
-    """Symlink each Homebrew-managed service log into ~/.nyxGPT/logs for convenient access.
+_STALE_LOG_SYMLINK_NAMES: tuple[str, ...] = (
+    "nyxgpt-api.log",
+    "nyxgpt-api.err.log",
+    "nyxgpt-web.log",
+    "nyxgpt-web.err.log",
+)
 
-    Replaces any existing file/symlink at the destination. Returns one
-    OpsResult per (component, extension) log symlink attempted.
 
-    Ollama gets only `.log` (no `.err.log`): its Homebrew formula's service
-    block points both StandardOutPath and StandardErrorPath at the same
-    file, unlike nyxgpt-api/nyxgpt-web which get separate error logs. In
-    Compose mode Ollama isn't a Homebrew service at all -- `nyxgpt-ollama-logs`
-    (see `_install_ollama_launchagent`) follows the container's docker logs
-    into this same `ollama.log` path instead.
+def _cleanup_stale_log_symlinks() -> list[OpsResult]:
+    """Remove leftover ~/.nyxGPT/logs symlinks from the pre-#3441 symlink mechanism.
 
-    Skips the `ollama.log` entry entirely when a `nyxgpt-ollama` Docker
-    container exists: in that case `follow-ollama-logs.sh` (via its
-    LaunchAgent) owns that path and is actively appending to it, so
-    replacing it with a (likely dangling, since there's no Homebrew Ollama
-    log in Compose mode) symlink here would silently cut off Loki's view of
-    Ollama's logs on every `nyxgpt ops install` re-run (see #3276 review).
+    A prior nyxgpt version's `_ensure_log_symlinks` pointed these names at
+    Homebrew's var/log dir. That target lives outside ~/.nyxGPT/logs, which
+    is all promtail's container actually bind-mounts, so those symlinks were
+    never reachable from inside it and never shipped a single line to Loki
+    (#3441) -- nyxgpt-api/nyxgpt-web's own structured logs already land
+    directly in ~/.nyxGPT/logs as real files (`api.log`, see
+    `nyxgpt.logging.configure_logging`), and Ollama's log now reaches
+    ~/.nyxGPT/logs/ollama.log as a real file too, written by
+    `follow-ollama-logs.sh` itself. Reconciles on every `nyxgpt ops install`
+    so a leftover symlink from before this fix doesn't linger.
+
+    Returns one OpsResult per name considered.
     """
     results: list[OpsResult] = []
     home_logs = Path.home() / ".nyxGPT" / "logs"
-    _ensure_dir(home_logs)
-
-    brew_logs = _brew_prefix() / "var" / "log"
-    targets: list[tuple[str, tuple[str, ...]]] = [
-        ("nyxgpt-api", (".log", ".err.log")),
-        ("nyxgpt-web", (".log", ".err.log")),
-        ("ollama", (".log",)),
-    ]
-    for base, exts in targets:
-        for ext in exts:
-            dst = home_logs / f"{base}{ext}"
-            if base == "ollama" and _docker_container_state(OLLAMA_CONTAINER_NAME) != "absent":
-                results.append(
-                    OpsResult(
-                        True,
-                        f"Skipped {dst.name} symlink (Compose-mode {OLLAMA_CONTAINER_NAME} "
-                        "container owns this file via follow-ollama-logs.sh)",
-                        str(dst),
-                    )
-                )
-                continue
-            src = brew_logs / f"{base}{ext}"
-            try:
-                if dst.exists() or dst.is_symlink():
-                    dst.unlink()
-                dst.symlink_to(src)
-                results.append(OpsResult(True, f"Symlinked {dst.name}", f"{dst} -> {src}"))
-            except Exception as e:
-                results.append(OpsResult(False, f"Failed to symlink {dst.name}", str(e)))
+    for name in _STALE_LOG_SYMLINK_NAMES:
+        dst = home_logs / name
+        try:
+            if dst.is_symlink():
+                dst.unlink()
+                results.append(OpsResult(True, f"Removed stale log symlink {name}", str(dst)))
+            else:
+                results.append(OpsResult(True, f"No stale log symlink for {name}"))
+        except Exception as e:
+            results.append(OpsResult(False, f"Failed to remove stale log symlink {name}", str(e)))
     return results
 
 
@@ -3033,7 +2999,7 @@ def install(args) -> int:
         ("homebrew api", _install_homebrew_api),
         ("homebrew web", _install_homebrew_web),
         ("ollama service", _ensure_ollama_service),
-        ("log symlinks", _ensure_log_symlinks),
+        ("stale log symlink cleanup", _cleanup_stale_log_symlinks),
         ("env sync", sync_env_from_config),
         ("compose config (derive from native)", _generate_compose_config),
         ("compose file path", _persist_compose_file_path),

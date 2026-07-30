@@ -51,7 +51,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
-        patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok_results),
@@ -88,7 +88,7 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_install_homebrew_api", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_install_homebrew_web", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_ensure_ollama_service", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "sync_env_from_config", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_persist_compose_file_path", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(
@@ -123,7 +123,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
-        patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops, "_reconcile_grafana_provisioning") as obs,
@@ -170,7 +170,9 @@ def test_ops_install_step_order_reconciles_before_creating(capsys):
         patch.object(ops, "_install_homebrew_api", side_effect=_record("homebrew api")),
         patch.object(ops, "_install_homebrew_web", side_effect=_record("homebrew web")),
         patch.object(ops, "_ensure_ollama_service", side_effect=_record("ollama service")),
-        patch.object(ops, "_ensure_log_symlinks", side_effect=_record("log symlinks")),
+        patch.object(
+            ops, "_cleanup_stale_log_symlinks", side_effect=_record("stale log symlink cleanup")
+        ),
         patch.object(ops, "sync_env_from_config", side_effect=_record("env sync")),
         patch.object(ops, "_persist_compose_file_path", side_effect=_record("compose file path")),
     ):
@@ -207,7 +209,7 @@ def test_ops_install_clears_intentional_stop_markers_for_core_components():
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
-        patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
         patch.object(ops.self_heal, "clear_intentionally_stopped") as clear_stopped,
@@ -1604,25 +1606,6 @@ def test_sha256_file_matches_hashlib(tmp_path):
 
     expected = hashlib.sha256(p.read_bytes()).hexdigest()
     assert ops._sha256_file(p) == expected
-
-
-@pytest.mark.unit
-def test_brew_prefix_returns_run_output(monkeypatch):
-    monkeypatch.setattr(
-        ops,
-        "_run",
-        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, stdout="/opt/homebrew\n"),
-    )
-    assert ops._brew_prefix() == Path("/opt/homebrew")
-
-
-@pytest.mark.unit
-def test_brew_prefix_falls_back_on_exception(monkeypatch):
-    def raise_run(cmd, **k):
-        raise FileNotFoundError("no brew")
-
-    monkeypatch.setattr(ops, "_run", raise_run)
-    assert ops._brew_prefix() == Path("/opt/homebrew")
 
 
 @pytest.mark.unit
@@ -3056,135 +3039,88 @@ def test_reconcile_phantom_compose_app_containers_reports_per_service_failure():
     assert "conflict" in results[0].details
 
 
-# --- _ensure_log_symlinks ---
+# --- _cleanup_stale_log_symlinks ---
 
 
 @pytest.mark.unit
-def test_ensure_log_symlinks_creates_new_links(monkeypatch, tmp_path):
+def test_cleanup_stale_log_symlinks_removes_existing_symlinks(monkeypatch, tmp_path):
     home = tmp_path / "home"
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
-
-    results = ops._ensure_log_symlinks()
-    assert all(r.ok for r in results)
-    assert len(results) == 5
-    for base in ("nyxgpt-api", "nyxgpt-web"):
-        for ext in (".log", ".err.log"):
-            link = home / ".nyxGPT" / "logs" / f"{base}{ext}"
-            assert link.is_symlink()
-    ollama_link = home / ".nyxGPT" / "logs" / "ollama.log"
-    assert ollama_link.is_symlink()
-    assert ollama_link.resolve() == (tmp_path / "brew" / "var" / "log" / "ollama.log").resolve()
-
-
-@pytest.mark.unit
-def test_ensure_log_symlinks_replaces_existing_link(monkeypatch, tmp_path):
-    home = tmp_path / "home"
-    (home / ".nyxGPT" / "logs").mkdir(parents=True)
-    stale_target = tmp_path / "stale.log"
+    log_dir = home / ".nyxGPT" / "logs"
+    log_dir.mkdir(parents=True)
+    stale_target = tmp_path / "brew-nyxgpt-api.log"
     stale_target.write_text("stale", encoding="utf-8")
-    (home / ".nyxGPT" / "logs" / "nyxgpt-api.log").symlink_to(stale_target)
+    for name in ops._STALE_LOG_SYMLINK_NAMES:
+        (log_dir / name).symlink_to(stale_target)
 
     monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
 
-    results = ops._ensure_log_symlinks()
+    results = ops._cleanup_stale_log_symlinks()
     assert all(r.ok for r in results)
-    new_target = (home / ".nyxGPT" / "logs" / "nyxgpt-api.log").resolve()
-    assert new_target != stale_target.resolve()
+    assert len(results) == len(ops._STALE_LOG_SYMLINK_NAMES)
+    for name in ops._STALE_LOG_SYMLINK_NAMES:
+        assert not (log_dir / name).exists()
+        assert not (log_dir / name).is_symlink()
 
 
 @pytest.mark.unit
-def test_ensure_log_symlinks_reports_failure_on_exception(monkeypatch, tmp_path):
+def test_cleanup_stale_log_symlinks_leaves_real_files_and_missing_names_alone(
+    monkeypatch, tmp_path
+):
     home = tmp_path / "home"
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
-
-    def raise_symlink_to(self, target):
-        raise OSError("cannot symlink")
-
-    monkeypatch.setattr(ops.Path, "symlink_to", raise_symlink_to)
-
-    results = ops._ensure_log_symlinks()
-    assert all(r.ok is False for r in results)
-    assert all("Failed to symlink" in r.message for r in results)
-
-
-@pytest.mark.unit
-def test_ensure_log_symlinks_skips_ollama_when_compose_container_present(monkeypatch, tmp_path):
-    """Compose mode: `follow-ollama-logs.sh` owns ollama.log, so this must leave it alone.
-
-    Regression test for the #3276 review finding: previously this
-    unconditionally replaced ollama.log with a (dangling, in Compose mode)
-    symlink, clobbering the file the log-follower LaunchAgent was actively
-    appending to.
-    """
-    home = tmp_path / "home"
-    (home / ".nyxGPT" / "logs").mkdir(parents=True)
-    real_log = home / ".nyxGPT" / "logs" / "ollama.log"
-    real_log.write_text("existing ollama container logs\n", encoding="utf-8")
+    log_dir = home / ".nyxGPT" / "logs"
+    log_dir.mkdir(parents=True)
+    # A real (non-symlink) file at one of the names must be left in place --
+    # only symlinks are considered stale.
+    real_file = log_dir / ops._STALE_LOG_SYMLINK_NAMES[0]
+    real_file.write_text("real content\n", encoding="utf-8")
 
     monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
-    monkeypatch.setattr(
-        ops,
-        "_docker_container_state",
-        lambda name: "running" if name == ops.OLLAMA_CONTAINER_NAME else "absent",
-    )
 
-    results = ops._ensure_log_symlinks()
+    results = ops._cleanup_stale_log_symlinks()
     assert all(r.ok for r in results)
-    ollama_result = next(r for r in results if "ollama.log" in r.message)
-    assert "Skipped" in ollama_result.message
-
-    assert not real_log.is_symlink()
-    assert real_log.read_text(encoding="utf-8") == "existing ollama container logs\n"
+    assert real_file.read_text(encoding="utf-8") == "real content\n"
 
 
 @pytest.mark.unit
-def test_ensure_log_symlinks_symlinks_ollama_when_no_compose_container(monkeypatch, tmp_path):
+def test_cleanup_stale_log_symlinks_reports_failure_on_exception(monkeypatch, tmp_path):
     home = tmp_path / "home"
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
-    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "absent")
+    log_dir = home / ".nyxGPT" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / ops._STALE_LOG_SYMLINK_NAMES[0]).symlink_to(tmp_path / "missing-target.log")
 
-    results = ops._ensure_log_symlinks()
-    assert all(r.ok for r in results)
-    ollama_link = home / ".nyxGPT" / "logs" / "ollama.log"
-    assert ollama_link.is_symlink()
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+
+    def raise_unlink(self):
+        raise OSError("cannot unlink")
+
+    monkeypatch.setattr(ops.Path, "unlink", raise_unlink)
+
+    results = ops._cleanup_stale_log_symlinks()
+    failed = next(r for r in results if ops._STALE_LOG_SYMLINK_NAMES[0] in r.message)
+    assert failed.ok is False
+    assert "Failed to remove stale log symlink" in failed.message
 
 
 @pytest.mark.unit
-def test_install_step_order_does_not_clobber_compose_ollama_log(monkeypatch, tmp_path):
-    """Integration-style check of the two steps in `install()`'s actual order.
+def test_follow_ollama_logs_script_never_hard_requires_docker():
+    """Regression guard for #3441: the old script `exit 1`'d immediately if
+    `docker` wasn't on PATH, which would kill the LaunchAgent on a host
+    that's never installed Docker Compose-mode tooling even though native
+    Ollama log tailing needs no docker at all."""
+    script = (ops.REPO_ROOT / "scripts" / "follow-ollama-logs.sh").read_text(encoding="utf-8")
+    assert "exit 1" not in script
 
-    Runs `_install_ollama_launchagent()` followed by `_ensure_log_symlinks()`
-    -- the order `install()` uses -- against a fake home dir with a
-    pre-existing real ollama.log (simulating an already-running Compose
-    follower), which is exactly the scenario the #3276 review found broken.
-    """
-    tpl = tmp_path / "com.nyxgpt.ollama-logs.plist"
-    tpl.write_text("<plist/>", encoding="utf-8")
-    home = tmp_path / "home"
-    (home / ".nyxGPT" / "logs").mkdir(parents=True)
-    real_log = home / ".nyxGPT" / "logs" / "ollama.log"
-    real_log.write_text("existing ollama container logs\n", encoding="utf-8")
 
-    monkeypatch.setattr(ops, "_find_launchagent_template", lambda name: (tpl, [tpl]))
-    monkeypatch.setattr(ops.Path, "home", lambda: home)
-    monkeypatch.setattr(ops, "_brew_prefix", lambda: tmp_path / "brew")
-    monkeypatch.setattr(ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
-    monkeypatch.setattr(
-        ops,
-        "_docker_container_state",
-        lambda name: "running" if name == ops.OLLAMA_CONTAINER_NAME else "absent",
-    )
-
-    ops._install_ollama_launchagent()
-    ops._ensure_log_symlinks()
-
-    assert not real_log.is_symlink()
-    assert real_log.read_text(encoding="utf-8") == "existing ollama container logs\n"
+@pytest.mark.unit
+def test_follow_ollama_logs_script_tails_native_homebrew_log():
+    """The script must fall back to tailing Homebrew's own ollama.log
+    directly (never a symlink into it) when no Compose container exists --
+    a symlink target outside ~/.nyxGPT/logs is unreachable from inside
+    promtail's container, which only bind-mounts that one directory (#3441)."""
+    script = (ops.REPO_ROOT / "scripts" / "follow-ollama-logs.sh").read_text(encoding="utf-8")
+    assert "brew --prefix" in script
+    assert "var/log/ollama.log" in script
+    assert "-L" in script  # detects (and removes) a stale symlink
 
 
 # --- _create_dist_tarball ---
@@ -4184,7 +4120,7 @@ def test_ops_install_catches_exception_from_a_step(capsys):
         patch.object(ops, "_install_ollama_env_launchagent", return_value=ok_results),
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
-        patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
     ):
         rc = ops.install(MagicMock(terraform=False, kubernetes=False))
         assert rc == 2
@@ -4492,7 +4428,7 @@ def test_ops_install_logs_start_and_summary(caplog):
         patch.object(ops, "_install_homebrew_api", return_value=ok_results),
         patch.object(ops, "_install_homebrew_web", return_value=ok_results),
         patch.object(ops, "_ensure_ollama_service", return_value=ok_results),
-        patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=ok_results),
         caplog.at_level("INFO", logger="nyxgpt.ops"),
     ):
         rc = ops.install(MagicMock(terraform=False, kubernetes=False))
@@ -4517,7 +4453,7 @@ def test_ops_install_logs_error_when_step_raises(caplog):
         patch.object(ops, "_install_ollama_env_launchagent", return_value=[]),
         patch.object(ops, "_install_homebrew_api", return_value=[]),
         patch.object(ops, "_install_homebrew_web", return_value=[]),
-        patch.object(ops, "_ensure_log_symlinks", return_value=[]),
+        patch.object(ops, "_cleanup_stale_log_symlinks", return_value=[]),
         caplog.at_level("INFO", logger="nyxgpt.ops"),
     ):
         rc = ops.install(MagicMock(terraform=False, kubernetes=False))

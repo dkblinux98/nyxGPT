@@ -59,9 +59,47 @@ def test_promtail_scrapes_nyxgpt_log_files_and_ships_to_loki() -> None:
     assert promtail_config["clients"][0]["url"] == "http://loki:3100/loki/api/v1/push"
 
     scrape_config = promtail_config["scrape_configs"][0]
-    labels = scrape_config["static_configs"][0]["labels"]
-    assert labels["job"] == "nyxgpt"
-    assert labels["__path__"].endswith("logs/*.log*")
+    static_configs = scrape_config["static_configs"]
+    assert static_configs, "promtail must scrape at least one target"
+    for target in static_configs:
+        labels = target["labels"]
+        assert labels["job"] == "nyxgpt"
+        assert labels["__path__"].endswith(".log*")
+
+
+def test_promtail_static_configs_carry_bounded_service_name_labels() -> None:
+    """Per-service `service_name` labels (#3441) so Grafana Logs Drilldown's
+    service breakdown shows the real services instead of one flat
+    `job=nyxgpt` bucket. The set is fixed/bounded to keep label cardinality
+    safe -- web joins once #3430 lands."""
+    promtail_config = yaml.safe_load((REPO_ROOT / "docker" / "promtail-config.yml").read_text())
+    static_configs = promtail_config["scrape_configs"][0]["static_configs"]
+
+    service_names = {target["labels"]["service_name"] for target in static_configs}
+    assert service_names == {"api", "cli", "ollama", "cassandra"}
+
+    # api/cli must be scraped from both the Compose-mode api-container
+    # directory and the native-mode host directory, since either deployment
+    # mode can be the one actually writing them.
+    for service in ("api", "cli"):
+        paths = {
+            target["labels"]["__path__"]
+            for target in static_configs
+            if target["labels"]["service_name"] == service
+        }
+        assert any(p.startswith("/var/log/nyxgpt/logs/") for p in paths)
+        assert any(p.startswith("/var/log/nyxgpt-native/logs/") for p in paths)
+
+    # ollama/cassandra are never nyxgpt Python processes -- they only ever
+    # land in the native-mode directory (written by the log-follower
+    # LaunchAgents, never a symlink -- see scripts/follow-ollama-logs.sh).
+    for service in ("ollama", "cassandra"):
+        paths = {
+            target["labels"]["__path__"]
+            for target in static_configs
+            if target["labels"]["service_name"] == service
+        }
+        assert paths == {f"/var/log/nyxgpt-native/logs/{service}.log*"}
 
 
 def test_promtail_extracts_logger_as_a_label() -> None:
