@@ -10,6 +10,7 @@ builds the argument parser and dispatches to the matching handler.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,7 +35,7 @@ from nyxgpt.config import (
     get_sessions_dir,
     load_config,
 )
-from nyxgpt.logging import configure_logging
+from nyxgpt.logging import configure_logging, mint_correlation_id
 from nyxgpt.rag.rag import ingest_document, retrieve_context
 from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 from nyxgpt.wizard import run_wizard
@@ -2204,6 +2205,13 @@ def cli(argv: list[str] | None = None) -> int:
         return run_wizard(output_path=args.output)
 
     if cmd == "ops":
+        # Mint a correlation id once per CLI invocation (#3430): every
+        # subprocess.run() call made while handling this command inherits it
+        # via the process environment (none pass an explicit env=), and
+        # _record_ops_action reads it back for the #3390 event -- so a
+        # dashboard-invisible `nyxgpt ops` action can still be joined to the
+        # docker/brew/kubectl command it drove.
+        os.environ.setdefault("NYXGPT_CORRELATION_ID", mint_correlation_id())
         if args.ops_cmd == "install":
             return ops_mod.install(args)
         if args.ops_cmd == "status":
@@ -2228,6 +2236,10 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.migrate_volumes_cmd(args)
 
     if cmd == "canary":
+        # Same per-invocation correlation id as the `ops` dispatch above --
+        # canary.py's record_canary_action funnels through the same
+        # _record_ops_action (#3390/#3430).
+        os.environ.setdefault("NYXGPT_CORRELATION_ID", mint_correlation_id())
         if args.canary_cmd == "status":
             return cmd_canary_status(args.config, args.namespace, args.component)
         if args.canary_cmd == "deploy":
@@ -2242,6 +2254,10 @@ def cli(argv: list[str] | None = None) -> int:
             return cmd_canary_rollback(args.config, args.namespace, args.component)
 
     if cmd == "self-heal":
+        # Same per-invocation correlation id as `ops`/`canary` above -- so a
+        # CLI-triggered `nyxgpt self-heal heal` restart's HealEvent and the
+        # subprocess it drove share one id (#3430).
+        os.environ.setdefault("NYXGPT_CORRELATION_ID", mint_correlation_id())
         if args.self_heal_cmd == "status":
             return cmd_self_heal_status(args.config)
         if args.self_heal_cmd == "enable":

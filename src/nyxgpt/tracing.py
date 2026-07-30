@@ -22,6 +22,7 @@ from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.cassandra import CassandraInstrumentor
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.urllib import URLLibInstrumentor
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -39,9 +40,12 @@ def init_tracing(app: FastAPI, tracing_config: dict[str, Any]) -> None:
     """Set up the OTel SDK and instrument the app, if tracing is enabled.
 
     Registers a TracerProvider that batches spans to a local OTLP collector,
-    then instruments the FastAPI app (one span per request) and the
-    Cassandra driver (one span per query) so chat/RAG traffic and its
-    storage calls show up in Jaeger without call-site changes.
+    then instruments the FastAPI app (one span per request), the Cassandra
+    driver (one span per query), and `urllib.request` (one client span per
+    outbound Ollama call, with a W3C `traceparent` header injected
+    automatically) so chat/RAG traffic, its storage calls, and its Ollama
+    calls all show up in Jaeger without call-site changes -- the
+    browser/Next -> FastAPI -> Ollama correlation backbone (#3430).
     """
     global _enabled
 
@@ -57,6 +61,7 @@ def init_tracing(app: FastAPI, tracing_config: dict[str, Any]) -> None:
 
     FastAPIInstrumentor.instrument_app(app)
     CassandraInstrumentor().instrument()
+    URLLibInstrumentor().instrument()
 
     _enabled = True
     logger.info(
@@ -72,6 +77,22 @@ def init_tracing(app: FastAPI, tracing_config: dict[str, Any]) -> None:
 def is_tracing_enabled() -> bool:
     """Whether tracing was actually initialized for this process."""
     return _enabled
+
+
+def current_trace_id() -> str | None:
+    """The active span's trace id as 32 lowercase hex chars, or None.
+
+    Used to derive `request_id` from the trace context (#3430) when a
+    request arrives with no `X-Request-Id` header of its own -- ties the
+    human-facing request id to the same trace Jaeger already has, instead
+    of a disconnected UUID. Returns None whenever there's no valid active
+    span (tracing disabled, not yet initialized, or genuinely no span),
+    same no-op-by-default contract as the rest of this module.
+    """
+    span_context = trace.get_current_span().get_span_context()
+    if not span_context.is_valid:
+        return None
+    return format(span_context.trace_id, "032x")
 
 
 def otlp_endpoint_reachable(otlp_endpoint: str, timeout: float = 2.0) -> bool:

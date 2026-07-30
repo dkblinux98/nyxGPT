@@ -1,6 +1,8 @@
 import { apiFetch } from "@/lib/apiProxy";
+import { logger } from "@/lib/logger";
+import { withRequestLog } from "@/lib/withRequestLog";
 
-export async function GET(
+export const GET = withRequestLog(async function GET(
   request: Request,
   { params }: { params: Promise<{ name: string }> }
 ) {
@@ -30,7 +32,7 @@ export async function GET(
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Failed to fetch collection settings:", error);
+    logger.error("Failed to fetch collection settings:", error);
     return new Response(
       JSON.stringify({ error: "Failed to fetch settings from backend" }),
       {
@@ -39,9 +41,9 @@ export async function GET(
       }
     );
   }
-}
+});
 
-export async function PUT(
+export const PUT = withRequestLog(async function PUT(
   request: Request,
   { params }: { params: Promise<{ name: string }> }
 ) {
@@ -72,7 +74,7 @@ export async function PUT(
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Failed to update collection settings:", error);
+    logger.error("Failed to update collection settings:", error);
     return new Response(
       JSON.stringify({ error: "Failed to update settings" }),
       {
@@ -81,4 +83,4 @@ export async function PUT(
       }
     );
   }
-}
+});

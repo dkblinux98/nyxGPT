@@ -1,6 +1,8 @@
 import { apiFetch } from "@/lib/apiProxy";
+import { logger } from "@/lib/logger";
+import { withRequestLog } from "@/lib/withRequestLog";
 
-export async function DELETE(
+export const DELETE = withRequestLog(async function DELETE(
   _request: Request,
   { params }: { params: Promise<{ name: string }> }
 ) {
@@ -29,7 +31,7 @@ export async function DELETE(
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error(`Failed to delete collection '${name}':`, error);
+    logger.error(`Failed to delete collection '${name}':`, error);
     return new Response(
       JSON.stringify({ error: "Failed to delete collection from backend" }),
       {
@@ -38,4 +40,4 @@ export async function DELETE(
       }
     );
   }
-}
+});

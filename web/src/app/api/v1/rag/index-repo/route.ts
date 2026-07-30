@@ -1,6 +1,8 @@
 import { apiFetch } from "@/lib/apiProxy";
+import { logger } from "@/lib/logger";
+import { withRequestLog } from "@/lib/withRequestLog";
 
-export async function POST(request: Request) {
+export const POST = withRequestLog(async function POST(request: Request) {
   try {
     const body = await request.json();
 
@@ -92,7 +94,7 @@ export async function POST(request: Request) {
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Failed to index repository:", error);
+    logger.error("Failed to index repository:", error);
     return new Response(
       JSON.stringify({ detail: "Failed to index repository via backend" }),
       {
@@ -101,4 +103,4 @@ export async function POST(request: Request) {
       }
     );
   }
-}
+});

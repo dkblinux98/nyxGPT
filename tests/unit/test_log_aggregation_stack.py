@@ -46,6 +46,39 @@ def test_compose_defines_opt_in_logging_profile() -> None:
     )
 
 
+def test_compose_wires_web_tier_log_shipping() -> None:
+    """Compose-mode web logs (#3430, web/src/lib/logger.ts) must reach the
+    same promtail instance the api service's logs do -- a dedicated volume
+    on both the web service (write) and promtail (read) sides, plus
+    NYXGPT_LOG_DIR telling the Next.js structured logger where to append."""
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    services = compose["services"]
+
+    web_env = services["web"]["environment"]
+    assert web_env["NYXGPT_LOG_DIR"] == "/var/log/nyxgpt-web"
+    web_volumes = services["web"]["volumes"]
+    assert any(
+        v.endswith(".nyxGPT/volumes/nyxgpt-web-logs:/var/log/nyxgpt-web") for v in web_volumes
+    )
+
+    promtail_volumes = services["promtail"]["volumes"]
+    assert any(
+        v.endswith(".nyxGPT/volumes/nyxgpt-web-logs:/var/log/nyxgpt-web:ro")
+        for v in promtail_volumes
+    )
+
+
+def test_compose_wires_web_tier_otel_endpoint() -> None:
+    """The web service's server-side OTel exporter (#3430,
+    src/instrumentation.ts) must point at the otel-collector Compose service
+    by its container-network hostname -- "localhost" there would mean the
+    web container itself, not the collector next to it."""
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    web_env = compose["services"]["web"]["environment"]
+
+    assert web_env["NYXGPT_OTLP_ENDPOINT"] == "http://otel-collector:4318/v1/traces"
+
+
 def test_loki_config_has_retention_enabled() -> None:
     loki_config = yaml.safe_load((REPO_ROOT / "docker" / "loki-config.yml").read_text())
 
@@ -71,12 +104,12 @@ def test_promtail_static_configs_carry_bounded_service_name_labels() -> None:
     """Per-service `service_name` labels (#3441) so Grafana Logs Drilldown's
     service breakdown shows the real services instead of one flat
     `job=nyxgpt` bucket. The set is fixed/bounded to keep label cardinality
-    safe -- web joins once #3430 lands."""
+    safe -- web is included since #3430's web-tier structured logging."""
     promtail_config = yaml.safe_load((REPO_ROOT / "docker" / "promtail-config.yml").read_text())
     static_configs = promtail_config["scrape_configs"][0]["static_configs"]
 
     service_names = {target["labels"]["service_name"] for target in static_configs}
-    assert service_names == {"api", "cli", "ollama", "cassandra"}
+    assert service_names == {"api", "cli", "web", "ollama", "cassandra"}
 
     # api/cli must be scraped from both the Compose-mode api-container
     # directory and the native-mode host directory, since either deployment
@@ -100,6 +133,20 @@ def test_promtail_static_configs_carry_bounded_service_name_labels() -> None:
             if target["labels"]["service_name"] == service
         }
         assert paths == {f"/var/log/nyxgpt-native/logs/{service}.log*"}
+
+
+def test_promtail_scrapes_compose_mode_web_tier_logs() -> None:
+    """The web-tier log path (#3430) must scrape into the same `job=nyxgpt`
+    stream, with the same pipeline_stages, as the api's Compose/native paths
+    -- so web logs are filterable by level/logger like everything else."""
+    promtail_config = yaml.safe_load((REPO_ROOT / "docker" / "promtail-config.yml").read_text())
+    scrape_config = promtail_config["scrape_configs"][0]
+
+    static_configs = scrape_config["static_configs"]
+    paths = [sc["labels"]["__path__"] for sc in static_configs]
+    assert "/var/log/nyxgpt-web/*.log*" in paths
+    for sc in static_configs:
+        assert sc["labels"]["job"] == "nyxgpt"
 
 
 def test_promtail_extracts_logger_as_a_label() -> None:
@@ -142,7 +189,7 @@ def test_promtail_regex_matches_canonical_default_fmt_line() -> None:
     instead of silently blanking every curated Grafana query (#3349)."""
     expression = _promtail_regex()
     formatter = logging.Formatter(
-        fmt=DEFAULT_FMT, datefmt=DEFAULT_DATEFMT, defaults={"request_id": "-"}
+        fmt=DEFAULT_FMT, datefmt=DEFAULT_DATEFMT, defaults={"request_id": "-", "trace_suffix": ""}
     )
     record = logging.LogRecord(
         name="nyxgpt.self_heal",
@@ -162,6 +209,35 @@ def test_promtail_regex_matches_canonical_default_fmt_line() -> None:
     assert match.group("level") == "INFO"
     assert match.group("request_id") == "req-abc"
     assert match.group("message") == "restart succeeded"
+
+
+def test_promtail_regex_matches_line_with_trace_context_suffix() -> None:
+    """A line produced while a span is active carries a trailing `trace_id=
+    <hex> span_id=<hex>` suffix (#3430, `TraceContextFilter`) -- the regex
+    must still match and the suffix must land inside `message`, since that's
+    exactly where Grafana's Loki derived field (`matcherRegex:
+    'trace_id=(\\w+)'`) looks for it."""
+    expression = _promtail_regex()
+    formatter = logging.Formatter(
+        fmt=DEFAULT_FMT, datefmt=DEFAULT_DATEFMT, defaults={"request_id": "-", "trace_suffix": ""}
+    )
+    record = logging.LogRecord(
+        name="nyxgpt.chat",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="chat request handled",
+        args=(),
+        exc_info=None,
+    )
+    record.request_id = "req-abc"
+    record.trace_suffix = " trace_id=" + "a" * 32 + " span_id=" + "b" * 16
+    line = formatter.format(record)
+
+    match = re.match(expression, line)
+    assert match is not None
+    assert match.group("logger") == "nyxgpt.chat"
+    assert "trace_id=" + "a" * 32 in match.group("message")
 
 
 def test_promtail_regex_matches_millisecond_no_bracket_variant() -> None:

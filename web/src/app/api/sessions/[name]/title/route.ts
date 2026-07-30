@@ -1,6 +1,8 @@
 import { apiFetch } from "@/lib/apiProxy";
+import { logger } from "@/lib/logger";
+import { withRequestLog } from "@/lib/withRequestLog";
 
-export async function POST(
+export const POST = withRequestLog(async function POST(
   request: Request,
   { params }: { params: Promise<{ name: string }> }
 ) {
@@ -30,10 +32,10 @@ export async function POST(
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Failed to proxy session title request:", error);
+    logger.error("Failed to proxy session title request:", error);
     return new Response(JSON.stringify({ error: { message: "Backend service unavailable" } }), {
       status: 503,
       headers: { "Content-Type": "application/json" },
     });
   }
-}
+});
