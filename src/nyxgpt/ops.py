@@ -4231,12 +4231,15 @@ def down(args) -> int:
 
 
 def logs(args) -> int:
-    """Print recent logs for a single Docker Compose service.
+    """Print recent logs for a single component, in whichever mode it's actually running.
 
-    Wraps `docker compose logs` so operators never need to run a raw
-    `docker`/`docker compose` command themselves -- e.g. to read the
-    `errors` profile's GlitchTip container output for the first-account
-    registration confirmation link its console email backend prints there.
+    Wraps `docker compose logs`/`docker logs`/`kubectl logs`/the component's
+    own log files so operators never need to run a raw `docker`/`docker
+    compose`/`kubectl` command (or hunt for a native log path) themselves --
+    e.g. to read the `errors` profile's GlitchTip container output for the
+    first-account registration confirmation link its console email backend
+    prints there, or the native API's own log file. See
+    `self_heal.component_logs` for the per-mode dispatch (#3442).
     """
     service = args.service
     tail = getattr(args, "tail", None)

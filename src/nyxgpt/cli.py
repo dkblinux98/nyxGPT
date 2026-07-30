@@ -1969,9 +1969,11 @@ def cli(argv: list[str] | None = None) -> int:
 
     ops_logs = ops_sub.add_parser(
         "logs",
-        help="Show recent logs for a Docker Compose service (e.g. glitchtip)",
+        help="Show recent logs for a component, in whichever mode it's actually running",
     )
-    ops_logs.add_argument("service", help="Compose service name, e.g. glitchtip, api, ollama")
+    ops_logs.add_argument(
+        "service", help="Component name, e.g. glitchtip, api, web, ollama, cassandra"
+    )
     ops_logs.add_argument(
         "--tail", type=int, default=200, help="Number of trailing log lines to show (default: 200)"
     )
