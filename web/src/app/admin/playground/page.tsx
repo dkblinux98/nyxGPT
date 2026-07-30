@@ -153,7 +153,6 @@ export default function PlaygroundPage() {
 
     try {
       const endpoint = collectMetrics ? '/api/v1/rag/metrics/query' : '/api/v1/rag/query';
-      const baseUrl = process.env.NEXT_PUBLIC_NYXGPT_API_BASE_URL ?? 'http://127.0.0.1:8000';
 
       const payload: any = {
         query: query.trim(),
@@ -165,7 +164,7 @@ export default function PlaygroundPage() {
         payload.collect_metrics = true;
       }
 
-      const res = await fetch(`${baseUrl}${endpoint}`, {
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
