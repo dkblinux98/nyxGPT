@@ -913,7 +913,7 @@ def test_ops_doctor_flags_missing_promtail_native_mount(monkeypatch, capsys, tmp
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
     monkeypatch.setattr(ops, "_promtail_container_id", lambda: "abc123")
     monkeypatch.setattr(ops, "_promtail_native_mount_missing", lambda container_id: True)
-    monkeypatch.setattr(ops, "_loki_recent_volume_by_logger", lambda *a, **kw: None)
+    monkeypatch.setattr(ops, "_loki_recent_volume_by_logger", lambda *a, **kw: (None, None))
 
     rc = ops.doctor(MagicMock())
     assert rc == 2
@@ -939,7 +939,10 @@ def test_ops_doctor_prints_loki_volume_by_logger_when_available(monkeypatch, cap
     monkeypatch.setattr(
         ops,
         "_loki_recent_volume_by_logger",
-        lambda *a, **kw: {"self_heal": 0, "deploy": 0, "canary": 0, "chat": 142, "rag": 8},
+        lambda *a, **kw: (
+            {"self_heal": 0, "deploy": 0, "canary": 0, "chat": 142, "rag": 8},
+            None,
+        ),
     )
 
     rc = ops.doctor(MagicMock())
@@ -965,7 +968,7 @@ def test_ops_doctor_omits_loki_volume_when_unreachable(monkeypatch, capsys, tmp_
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
     monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
-    monkeypatch.setattr(ops, "_loki_recent_volume_by_logger", lambda *a, **kw: None)
+    monkeypatch.setattr(ops, "_loki_recent_volume_by_logger", lambda *a, **kw: (None, None))
 
     rc = ops.doctor(MagicMock())
     assert rc == 0
@@ -974,8 +977,87 @@ def test_ops_doctor_omits_loki_volume_when_unreachable(monkeypatch, capsys, tmp_
 
 
 @pytest.mark.unit
-def test_loki_recent_volume_by_logger_returns_counts(monkeypatch):
+def test_ops_doctor_flags_missing_grafana_doctor_token(monkeypatch, capsys, tmp_path):
+    """#3438: a missing token is reported as an actionable issue, not a
+    silent skip -- no `~/.nyxGPT/secrets/grafana-doctor-token` written."""
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    _write_log_aggregation_config(cfg_dir / "config.ini")
+    with (cfg_dir / "config.ini").open("a", encoding="utf-8") as f:
+        f.write("\n[tracing]\nenabled = false\n")
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+
+    rc = ops.doctor(MagicMock())
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "grafana-doctor-token" in out
+    assert "nyxgpt ops install" in out
+
+
+@pytest.mark.unit
+def test_ops_doctor_flags_grafana_401_rejected_token(monkeypatch, capsys, tmp_path):
+    """#3438: Grafana rejecting doctor's token (401) is reported as an
+    actionable issue, not a silent `logger.warning` + skip."""
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    _write_log_aggregation_config(cfg_dir / "config.ini")
+    with (cfg_dir / "config.ini").open("a", encoding="utf-8") as f:
+        f.write("\n[tracing]\nenabled = false\n")
+
+    secrets_dir = cfg_dir / "secrets"
+    secrets_dir.mkdir()
+    (secrets_dir / "grafana-doctor-token").write_text("stale-token")
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"promtail": "running"})
+
     class _FakeResponse:
+        status_code = 401
+
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError("401", request=None, response=self)
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, params=None):
+            return _FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", _FakeClient)
+
+    rc = ops.doctor(MagicMock())
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert "rejected" in out
+    assert "401" in out
+    assert "nyxgpt ops install" in out
+
+
+@pytest.mark.unit
+def test_loki_recent_volume_by_logger_returns_counts(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    (secrets_dir / "grafana-doctor-token").write_text("a-token")
+
+    class _FakeResponse:
+        status_code = 200
+
         def __init__(self, value):
             self._value = value
 
@@ -1000,21 +1082,68 @@ def test_loki_recent_volume_by_logger_returns_counts(monkeypatch):
 
     monkeypatch.setattr(ops.httpx, "Client", _FakeClient)
 
-    volumes = ops._loki_recent_volume_by_logger("http://localhost:3001", "secret")
+    volumes, issue = ops._loki_recent_volume_by_logger("http://localhost:3001")
+    assert issue is None
     assert volumes["self_heal"] == 7
     assert volumes["chat"] == 0
     assert set(volumes) == set(ops.LOKI_CURATED_LOGGERS)
 
 
 @pytest.mark.unit
-def test_loki_recent_volume_by_logger_returns_none_on_error(monkeypatch):
+def test_loki_recent_volume_by_logger_returns_none_on_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    (secrets_dir / "grafana-doctor-token").write_text("a-token")
+
     class _FailingClient:
         def __init__(self, *a, **kw):
             raise httpx.ConnectError("refused")
 
     monkeypatch.setattr(ops.httpx, "Client", _FailingClient)
 
-    assert ops._loki_recent_volume_by_logger("http://localhost:3001", "secret") is None
+    assert ops._loki_recent_volume_by_logger("http://localhost:3001") == (None, None)
+
+
+@pytest.mark.unit
+def test_loki_recent_volume_by_logger_missing_token_is_actionable(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    volumes, issue = ops._loki_recent_volume_by_logger("http://localhost:3001")
+    assert volumes is None
+    assert "grafana-doctor-token" in issue
+    assert "nyxgpt ops install" in issue
+
+
+@pytest.mark.unit
+def test_loki_recent_volume_by_logger_401_is_actionable_not_silent(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    (secrets_dir / "grafana-doctor-token").write_text("stale-token")
+
+    class _FakeResponse:
+        status_code = 401
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, params=None):
+            return _FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", _FakeClient)
+
+    volumes, issue = ops._loki_recent_volume_by_logger("http://localhost:3001")
+    assert volumes is None
+    assert "401" in issue
+    assert "rejected" in issue
 
 
 def _write_config(path, *, api_key="", grafana_password="", auth_enabled="false"):
@@ -5108,6 +5237,124 @@ def test_verify_grafana_plugins_installed_fails_when_plugin_missing(monkeypatch)
 
 
 @pytest.mark.unit
+def test_provision_grafana_doctor_token_reuses_existing_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    (secrets_dir / "grafana-doctor-token").write_text("existing-token")
+
+    def _boom(*a, **kw):
+        raise AssertionError("should not call Grafana when a token file already exists")
+
+    monkeypatch.setattr(ops.httpx, "Client", _boom)
+
+    result = ops._provision_grafana_doctor_token("http://localhost:3001", "admin")
+
+    assert result.ok is True
+    assert "already holds" in result.message
+
+
+@pytest.mark.unit
+def test_provision_grafana_doctor_token_mints_new_service_account(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, params=None):
+            calls.append(("get", path, params))
+            return FakeResponse({"serviceAccounts": []})
+
+        def post(self, path, json=None):
+            calls.append(("post", path, json))
+            if path == "/api/serviceaccounts":
+                return FakeResponse({"id": 7})
+            return FakeResponse({"key": "glsa_minted_token"})
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._provision_grafana_doctor_token("http://localhost:3001", "admin")
+
+    assert result.ok is True
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "grafana-doctor-token"
+    assert token_path.read_text() == "glsa_minted_token"
+    assert calls[1] == (
+        "post",
+        "/api/serviceaccounts",
+        {"name": "nyxgpt-ops-doctor", "role": "Viewer"},
+    )
+    assert calls[2] == ("post", "/api/serviceaccounts/7/tokens", {"name": "nyxgpt-ops-doctor"})
+
+
+@pytest.mark.unit
+def test_provision_grafana_doctor_token_reuses_existing_service_account(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._payload
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, params=None):
+            return FakeResponse({"serviceAccounts": [{"id": 3, "name": "nyxgpt-ops-doctor"}]})
+
+        def post(self, path, json=None):
+            assert path == "/api/serviceaccounts/3/tokens"
+            return FakeResponse({"key": "glsa_reused_sa_token"})
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._provision_grafana_doctor_token("http://localhost:3001", "admin")
+
+    assert result.ok is True
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "grafana-doctor-token"
+    assert token_path.read_text() == "glsa_reused_sa_token"
+
+
+@pytest.mark.unit
+def test_provision_grafana_doctor_token_fails_when_grafana_unreachable(monkeypatch, tmp_path):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    class FailingClient:
+        def __init__(self, *a, **kw):
+            raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(ops.httpx, "Client", FailingClient)
+
+    result = ops._provision_grafana_doctor_token("http://localhost:3001", "admin")
+
+    assert result.ok is False
+    assert not (tmp_path / ".nyxGPT" / "secrets" / "grafana-doctor-token").exists()
+
+
+@pytest.mark.unit
 def test_reconcile_grafana_provisioning_records_fingerprint_and_verifies(tmp_path, monkeypatch):
     _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
     monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
@@ -5155,12 +5402,19 @@ def test_reconcile_grafana_provisioning_verifies_when_config_exists(tmp_path, mo
         "_verify_grafana_datasources_resolve",
         lambda url, pw: verify_calls.append((url, pw)) or ops.OpsResult(True, "verified"),
     )
+    token_calls = []
+    monkeypatch.setattr(
+        ops,
+        "_provision_grafana_doctor_token",
+        lambda url, pw: token_calls.append((url, pw)) or ops.OpsResult(True, "token ready"),
+    )
 
     results = ops._reconcile_grafana_provisioning()
 
     assert all(r.ok for r in results)
     assert plugin_verify_calls == [("http://localhost:3001", "secret")]
     assert verify_calls == [("http://localhost:3001", "secret")]
+    assert token_calls == [("http://localhost:3001", "secret")]
 
 
 @pytest.mark.unit

@@ -3383,19 +3383,52 @@ LOKI_CURATED_LOGGERS: dict[str, str] = {
 }
 
 
-def _loki_recent_volume_by_logger(
-    grafana_ui_url: str, grafana_admin_password: str, *, hours: int = 24
-) -> dict[str, int] | None:
-    """Query Loki (via Grafana's provisioned datasource proxy) for each curated
-    logger's line count over the last `hours`. Returns None if Grafana/Loki
-    can't be reached or queried at all -- that's not itself a failure here,
-    just nothing to report (other doctor checks cover stack reachability).
+def _grafana_doctor_token_path() -> Path:
+    """Where the Grafana service-account token for doctor's Loki log-volume
+    check is written -- see `_provision_grafana_doctor_token`.
+
+    A dedicated Viewer-scoped service account, not the shared `admin`
+    credential the rest of this module's Grafana calls use: that password
+    lives in config.ini and can drift from whatever a long-running Grafana
+    container's own database actually has (a regenerated config.ini, a
+    hand-edited `.env`, ...), which is what let the datasource-proxy query
+    below 401 on an otherwise-healthy stack (#3438). A token minted once and
+    read straight off disk sidesteps that drift entirely -- same pattern as
+    `_glitchtip_grafana_token_path`'s token file, just consumed by this
+    process instead of by Grafana itself.
     """
+    return Path.home() / ".nyxGPT" / "secrets" / "grafana-doctor-token"
+
+
+def _loki_recent_volume_by_logger(
+    grafana_ui_url: str, *, hours: int = 24
+) -> tuple[dict[str, int] | None, str | None]:
+    """Query Loki (via Grafana's provisioned datasource proxy, authenticated
+    with the service-account token `_provision_grafana_doctor_token` mints)
+    for each curated logger's line count over the last `hours`.
+
+    Returns `(volumes, issue)`. `volumes` is None when nothing could be
+    queried. `issue` is set to an actionable `doctor` finding only for the
+    fixable auth failure modes (token file missing, or Grafana rejects the
+    token) -- #3438 was specifically about that case degrading into a
+    debug-level log line no operator would see. Any other failure (Grafana
+    or Loki simply unreachable) still returns `issue=None`: that's not
+    itself a failure here, since the rest of `doctor` already covers overall
+    stack reachability.
+    """
+    token_path = _grafana_doctor_token_path()
+    token = token_path.read_text().strip() if token_path.exists() else ""
+    if not token:
+        return None, (
+            f"Missing Grafana service-account token at {token_path} -- the Loki "
+            "log-volume check can't authenticate (run: nyxgpt ops install)"
+        )
+
     volumes: dict[str, int] = {}
     try:
         with httpx.Client(
             base_url=grafana_ui_url,
-            auth=("admin", grafana_admin_password),
+            headers={"Authorization": f"Bearer {token}"},
             timeout=5.0,
         ) as client:
             for name, logger_name in LOKI_CURATED_LOGGERS.items():
@@ -3404,6 +3437,12 @@ def _loki_recent_volume_by_logger(
                     "/api/datasources/proxy/uid/loki/loki/api/v1/query",
                     params={"query": query},
                 )
+                if resp.status_code == 401:
+                    return None, (
+                        f"Grafana rejected the doctor service-account token at {token_path} "
+                        "(401) -- delete the file and re-run `nyxgpt ops install` to mint a "
+                        "fresh one"
+                    )
                 resp.raise_for_status()
                 result = resp.json().get("data", {}).get("result", [])
                 volumes[name] = int(float(result[0]["value"][1])) if result else 0
@@ -3414,8 +3453,8 @@ def _loki_recent_volume_by_logger(
             e,
             extra={"component": "ops"},
         )
-        return None
-    return volumes
+        return None, None
+    return volumes, None
 
 
 def doctor(_args) -> int:
@@ -3434,7 +3473,10 @@ def doctor(_args) -> int:
     Also prints a per-logger recent log volume
     (last 24h, via Loki) when log aggregation
     and the monitoring stack are both up, so idle curated components aren't
-    mistaken for a broken pipeline. Prints each issue found.
+    mistaken for a broken pipeline -- and, if that check's Grafana
+    service-account token is missing or rejected, reports it as an issue
+    rather than silently omitting the log volume line (#3438). Prints each
+    issue found.
 
     Returns 0 if no issues were found, else 2.
     """
@@ -3466,12 +3508,11 @@ def doctor(_args) -> int:
         and _compose_stack_snapshot().get("promtail") == "running"
     ):
         monitoring_config = get_monitoring_config(cfg_parser)
-        volumes = _loki_recent_volume_by_logger(
-            monitoring_config["grafana_ui_url"],
-            get_monitoring_grafana_admin_password(cfg_parser),
-        )
+        volumes, loki_issue = _loki_recent_volume_by_logger(monitoring_config["grafana_ui_url"])
         if volumes is not None:
             volume_info = ", ".join(f"{k}={v}" for k, v in volumes.items())
+        if loki_issue is not None:
+            issues.append(loki_issue)
 
     for name in (
         "run-web.sh",
@@ -4535,6 +4576,84 @@ def _verify_grafana_plugins_installed(
     )
 
 
+# Grafana service account minted for `nyxgpt ops doctor`'s Loki log-volume
+# check -- see `_grafana_doctor_token_path` and `_provision_grafana_doctor_token`.
+GRAFANA_DOCTOR_SA_NAME = "nyxgpt-ops-doctor"
+GRAFANA_DOCTOR_TOKEN_NAME = "nyxgpt-ops-doctor"
+
+
+def _provision_grafana_doctor_token(grafana_ui_url: str, grafana_admin_password: str) -> OpsResult:
+    """Mint a Viewer-scoped Grafana service-account token for doctor's Loki
+    check, so it authenticates without depending on the shared admin
+    password at query time (#3438).
+
+    Grafana only returns a service-account token's secret at creation time
+    (like a GitHub PAT) -- it can't be re-fetched later even to confirm it
+    still works -- so this only mints a fresh one when
+    `_grafana_doctor_token_path()` doesn't already hold one. A token that's
+    since been revoked/gone stale is instead caught (and reported as an
+    actionable `doctor` finding, not a silent skip) by
+    `_loki_recent_volume_by_logger` at query time.
+    """
+    token_path = _grafana_doctor_token_path()
+    if token_path.exists() and token_path.read_text().strip():
+        return OpsResult(True, f"{token_path} already holds a Grafana service-account token")
+
+    try:
+        with httpx.Client(
+            base_url=grafana_ui_url,
+            auth=("admin", grafana_admin_password),
+            timeout=5.0,
+        ) as client:
+            sa_id: Any = None
+            resp = client.get(
+                "/api/serviceaccounts/search", params={"query": GRAFANA_DOCTOR_SA_NAME}
+            )
+            resp.raise_for_status()
+            for sa in resp.json().get("serviceAccounts", []):
+                if isinstance(sa, dict) and sa.get("name") == GRAFANA_DOCTOR_SA_NAME:
+                    sa_id = sa.get("id")
+                    break
+            if sa_id is None:
+                resp = client.post(
+                    "/api/serviceaccounts",
+                    json={"name": GRAFANA_DOCTOR_SA_NAME, "role": "Viewer"},
+                )
+                resp.raise_for_status()
+                sa_id = resp.json().get("id")
+
+            resp = client.post(
+                f"/api/serviceaccounts/{sa_id}/tokens",
+                json={"name": GRAFANA_DOCTOR_TOKEN_NAME},
+            )
+            resp.raise_for_status()
+            token: Any = resp.json().get("key")
+    except Exception as e:
+        return OpsResult(
+            False,
+            "Failed to provision Grafana service-account token for doctor's Loki check",
+            f"{type(e).__name__}: {e}",
+        )
+
+    if not token:
+        return OpsResult(
+            False,
+            "Grafana service-account token response missing a key",
+            "Check `nyxgpt ops logs grafana` for a /api/serviceaccounts error.",
+        )
+
+    try:
+        token_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        token_path.write_text(str(token))
+        token_path.chmod(0o600)
+    except OSError as e:
+        return OpsResult(
+            False, f"Failed to write Grafana service-account token to {token_path}", str(e)
+        )
+
+    return OpsResult(True, f"Provisioned Grafana service-account token for doctor at {token_path}")
+
+
 def _recreate_grafana_if_provisioning_drifted() -> OpsResult | None:
     """Force-recreate just the `grafana` Compose container when provisioning
     or env has drifted since this tool last reconciled it.
@@ -4687,7 +4806,8 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
     """Bring the observability stack up AND make Grafana's provisioning
     state deterministic: recreate on drift before starting, then verify the
     declared datasources and GF_INSTALL_PLUGINS plugins actually resolve
-    afterward (#3424).
+    afterward (#3424), and mint doctor's Loki service-account token if it
+    doesn't already have one (#3438).
 
     This is the entrypoint `nyxgpt ops install` / `nyxgpt ops observability`
     / wizard toggles use instead of calling `_start_observability_stack`
@@ -4722,6 +4842,7 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
             results.append(
                 _verify_grafana_datasources_resolve(grafana_ui_url, grafana_admin_password)
             )
+            results.append(_provision_grafana_doctor_token(grafana_ui_url, grafana_admin_password))
         except Exception as e:
             logger.warning(
                 "Failed to verify Grafana plugins/datasources, skipping: %s",
