@@ -1,13 +1,19 @@
 import { NextRequest } from "next/server";
-import { Agent } from "undici";
-import { apiFetch } from "@/lib/apiProxy";
+import { request as undiciRequest } from "undici";
+import { apiUrl, attachApiKey } from "@/lib/apiProxy";
 
-// Undici defaults can abort long-lived streaming responses.
-// Configure a local agent with no body timeout.
-const agent = new Agent({
-  bodyTimeout: 0, // 0 disables the body timeout entirely
-  headersTimeout: 60_000,
-});
+// This route drives the upstream call through the `undici` package's own
+// request() rather than Next's built-in `fetch`. Next 16 bundles its own
+// (newer-major) undici for global fetch; handing that fetch a dispatcher
+// built from the `undici` version pinned in package.json broke instantly
+// with UND_ERR_INVALID_ARG (the v7-bundled fetch's dispatch-handler
+// interface renamed the v6 Agent's `onError` callback) — see #3440. Calling
+// this package's own request() sidesteps the coupling entirely: the HTTP
+// client and every option it understands come from the exact same undici
+// major version, regardless of what Next/Node happen to bundle for global
+// fetch. Do not resurrect a `dispatcher`/Agent passed into `fetch()` here.
+const HEADERS_TIMEOUT_MS =
+  Number(process.env.NYXGPT_CHAT_STREAM_HEADERS_TIMEOUT_MS) || 300_000; // 5 min: must outlast a cold local-model load, not just a warm one
 
 function ts(): string {
   // ISO timestamp for log readability
@@ -58,11 +64,11 @@ export async function POST(req: NextRequest) {
     } upstream=${upstreamPath}`
   );
 
-  let upstream: Response;
+  let statusCode: number;
+  let upstreamBody: Awaited<ReturnType<typeof undiciRequest>>["body"];
   try {
-    upstream = await apiFetch(upstreamPath, {
-      method: "POST",
-      headers: {
+    const headers = attachApiKey(
+      new Headers({
         "Content-Type": "application/json",
         // Client capability hints for content negotiation
         "Accept": "text/event-stream",
@@ -70,13 +76,19 @@ export async function POST(req: NextRequest) {
         "X-Client-Supports-Structured-Events": "true",
         "X-Client-Supports-Streaming": "true",
         "X-Client-Version": "web-ui/1.0.0",
-        "X-Client-Max-Event-Size": "0",  // 0 = unlimited
-      },
+        "X-Client-Max-Event-Size": "0", // 0 = unlimited
+      })
+    );
+
+    const result = await undiciRequest(apiUrl(upstreamPath), {
+      method: "POST",
+      headers: Object.fromEntries(headers.entries()),
       body: JSON.stringify(body),
-      // @ts-expect-error - Next/undici fetch supports dispatcher
-      dispatcher: agent,
-      cache: "no-store",
+      headersTimeout: HEADERS_TIMEOUT_MS,
+      bodyTimeout: 0, // a long-lived SSE stream must never time out on an idle gap between chunks
     });
+    statusCode = result.statusCode;
+    upstreamBody = result.body;
   } catch (e) {
     console.error(
       `[${ts()}] [web] [chat/stream] [${reqId}] upstream fetch failed after ${nowMs() - startMs}ms:`,
@@ -89,13 +101,15 @@ export async function POST(req: NextRequest) {
   }
 
   console.log(
-    `[${ts()}] [web] [chat/stream] [${reqId}] upstream status=${upstream.status} after ${nowMs() - startMs}ms`
+    `[${ts()}] [web] [chat/stream] [${reqId}] upstream status=${statusCode} after ${nowMs() - startMs}ms`
   );
 
-  if (!upstream.ok || !upstream.body) {
+  // undici's request() only resolves with the final response — informational
+  // (1xx) statuses are consumed internally, so statusCode is always >= 200.
+  if (statusCode >= 300) {
     let detail = "";
     try {
-      detail = await upstream.text();
+      detail = await upstreamBody.text();
     } catch {
       // ignore
     }
@@ -104,14 +118,17 @@ export async function POST(req: NextRequest) {
       `[${ts()}] [web] [chat/stream] [${reqId}] upstream not ok after ${nowMs() - startMs}ms detail_len=${detail.length}`
     );
 
+    // Pass the real upstream status through instead of flattening every
+    // failure to a generic 502 — the browser needs to tell "backend down"
+    // apart from "backend rejected the request" / "model runtime error".
     return new Response(
       JSON.stringify({ error: "Upstream chat stream failed", detail }),
-      { status: 502, headers: { "Content-Type": "application/json" } }
+      { status: statusCode, headers: { "Content-Type": "application/json" } }
     );
   }
 
   // Wrap the upstream stream so we can log “time to first byte” and end-of-stream.
-  const reader = upstream.body.getReader();
+  const iterator = upstreamBody[Symbol.asyncIterator]();
   const encoder = new TextEncoder();
 
   let sawFirst = false;
@@ -120,7 +137,7 @@ export async function POST(req: NextRequest) {
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
-        const { done, value } = await reader.read();
+        const { done, value } = await iterator.next();
         if (done) {
           console.log(
             `[${ts()}] [web] [chat/stream] [${reqId}] end after ${nowMs() - startMs}ms bytes=${totalBytes}`
@@ -155,7 +172,7 @@ export async function POST(req: NextRequest) {
     },
     async cancel() {
       try {
-        await reader.cancel();
+        upstreamBody.destroy();
       } catch {
         // ignore
       }

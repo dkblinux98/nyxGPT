@@ -54,6 +54,17 @@ header (from `NYXGPT_AUTH_API_KEY`) on every call — hand-rolling either of
 those per route is exactly how #3178 (web UI couldn't reach or authenticate
 to the API) happened.
 
+**Exception:** `web/src/app/api/chat/stream/route.ts` does not use `apiFetch()`.
+Next 16 bundles its own (newer-major) `undici` for global `fetch`, and handing
+that fetch a dispatcher/Agent built from the `undici` version pinned in
+`web/package.json` breaks with `UND_ERR_INVALID_ARG` (#3440) — the two undici
+majors disagree on the dispatch-handler interface. That route instead calls
+the pinned `undici` package's own `request()` directly (still resolving the
+base URL via `apiUrl()` and attaching auth via `attachApiKey()`, both from
+`@/lib/apiProxy`), so its HTTP client and its options come from the same
+undici major regardless of what Next/Node bundle for global fetch. Do not
+"fix" it back to `apiFetch()`/`fetch()` with a custom dispatcher.
+
 ```typescript
 import { apiFetch } from "@/lib/apiProxy";
 

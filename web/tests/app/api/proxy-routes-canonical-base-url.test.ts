@@ -35,6 +35,15 @@ const FORBIDDEN_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
   { name: 'hardcoded localhost:8000', pattern: /localhost:8000/ },
 ];
 
+// #3440: chat/stream drives the upstream call through undici's own
+// request() instead of apiFetch()/fetch(), because Next 16's bundled fetch
+// rejects a dispatcher built from the pinned (older-major) `undici`
+// dependency. It still must resolve the backend URL and attach the auth
+// header the same way every other route does — via apiUrl()/attachApiKey()
+// from @/lib/apiProxy — so it's checked against an equivalent, not exempted
+// from the requirement outright.
+const SANCTIONED_NON_APIFETCH_ROUTE = join(API_DIR, 'chat/stream/route.ts');
+
 describe('API proxy routes use the canonical base URL and auth helper', () => {
   const routeFiles = findRouteFiles(API_DIR);
 
@@ -42,13 +51,22 @@ describe('API proxy routes use the canonical base URL and auth helper', () => {
     expect(routeFiles.length).toBeGreaterThan(0);
   });
 
-  it.each(routeFiles)('%s uses apiFetch and no non-canonical base URL', (file) => {
+  it.each(routeFiles)('%s uses apiFetch (or the sanctioned equivalent) and no non-canonical base URL', (file) => {
     const source = readFileSync(file, 'utf-8');
     const relativePath = file.replace(process.cwd(), '');
 
-    expect(source, `${relativePath} must import/use apiFetch from @/lib/apiProxy`).toMatch(
-      /apiFetch\(/
-    );
+    if (file === SANCTIONED_NON_APIFETCH_ROUTE) {
+      expect(source, `${relativePath} must import/use apiUrl() from @/lib/apiProxy`).toMatch(
+        /apiUrl\(/
+      );
+      expect(source, `${relativePath} must import/use attachApiKey() from @/lib/apiProxy`).toMatch(
+        /attachApiKey\(/
+      );
+    } else {
+      expect(source, `${relativePath} must import/use apiFetch from @/lib/apiProxy`).toMatch(
+        /apiFetch\(/
+      );
+    }
 
     for (const { name, pattern } of FORBIDDEN_PATTERNS) {
       expect(
