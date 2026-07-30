@@ -604,6 +604,231 @@ def test_component_logs_no_docker(monkeypatch):
     assert "docker not found" in result.message
 
 
+def _status(service, *, source="compose", state="running", container=""):
+    return self_heal.ComponentStatus(
+        service=service,
+        container=container or service,
+        state=state,
+        health="",
+        healthy=state in ("running", "started"),
+        source=source,
+    )
+
+
+@pytest.mark.unit
+def test_component_logs_native_api_tails_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        self_heal, "list_component_status", lambda: [_status("api", source="native")]
+    )
+    monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+    (tmp_path / "api.log").write_text("line1\nline2\nline3\n", encoding="utf-8")
+
+    result = self_heal.component_logs("api", tail=2)
+
+    assert result.ok
+    assert "api" in result.message
+    assert result.details == "line2\nline3"
+
+
+@pytest.mark.unit
+def test_component_logs_native_api_missing_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        self_heal, "list_component_status", lambda: [_status("api", source="native")]
+    )
+    monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+
+    result = self_heal.component_logs("api")
+
+    assert not result.ok
+    assert "No log file found for api" in result.message
+
+
+@pytest.mark.unit
+def test_component_logs_compose_api_uses_compose_logs(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "list_component_status", lambda: [_status("api", source="compose")]
+    )
+    run_mock = MagicMock(return_value=CP(stdout="api-1  | starting up\n"))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.component_logs("api", tail=75)
+
+    assert result.ok
+    assert "starting up" in result.details
+    cmd = run_mock.call_args[0][0]
+    assert cmd[:3] == ["docker", "compose", "-f"]
+    assert cmd[-5:] == ["logs", "--no-color", "--tail", "75", "api"]
+
+
+@pytest.mark.unit
+def test_component_logs_native_web_reads_launchd_files(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        self_heal, "list_component_status", lambda: [_status("web", source="native")]
+    )
+    monkeypatch.setattr(self_heal, "_brew_prefix", lambda: str(tmp_path))
+    log_dir = tmp_path / "var" / "log"
+    log_dir.mkdir(parents=True)
+    (log_dir / "nyxgpt-web.log").write_text("web starting\n", encoding="utf-8")
+    (log_dir / "nyxgpt-web.err.log").write_text("a warning\n", encoding="utf-8")
+
+    result = self_heal.component_logs("web")
+
+    assert result.ok
+    assert "web starting" in result.details
+    assert "a warning" in result.details
+
+
+@pytest.mark.unit
+def test_component_logs_native_web_no_brew(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "list_component_status", lambda: [_status("web", source="native")]
+    )
+    monkeypatch.setattr(self_heal, "_brew_prefix", lambda: None)
+
+    result = self_heal.component_logs("web")
+
+    assert not result.ok
+    assert "Homebrew not found" in result.message
+
+
+@pytest.mark.unit
+def test_component_logs_native_cassandra_uses_docker_logs(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [_status("cassandra", source="native", container="nyxgpt-cassandra")],
+    )
+    run_mock = MagicMock(return_value=CP(stdout="Cassandra starting up\n"))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.component_logs("cassandra", tail=30)
+
+    assert result.ok
+    assert "Cassandra starting up" in result.details
+    assert run_mock.call_args[0][0] == ["docker", "logs", "--tail", "30", "nyxgpt-cassandra"]
+
+
+@pytest.mark.unit
+def test_component_logs_native_ollama_tails_aggregated_file(monkeypatch, tmp_path):
+    # ~/.nyxGPT/logs/ollama.log is kept up to date regardless of mode by the
+    # com.nyxgpt.ollama-logs LaunchAgent (scripts/follow-ollama-logs.sh) --
+    # see docs/api.md#ollama-logs.
+    monkeypatch.setattr(
+        self_heal, "list_component_status", lambda: [_status("ollama", source="native")]
+    )
+    monkeypatch.setattr(self_heal, "get_log_dir", lambda: tmp_path)
+    (tmp_path / "ollama.log").write_text("llama runner started\n", encoding="utf-8")
+
+    result = self_heal.component_logs("ollama")
+
+    assert result.ok
+    assert "llama runner started" in result.details
+
+
+@pytest.mark.unit
+def test_component_logs_terraform_uses_docker_logs(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [_status("api", source="terraform", container="nyxgpt-tf-api")],
+    )
+    run_mock = MagicMock(return_value=CP(stdout="uvicorn running\n"))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.component_logs("api")
+
+    assert result.ok
+    assert run_mock.call_args[0][0] == ["docker", "logs", "--tail", "200", "nyxgpt-tf-api"]
+
+
+@pytest.mark.unit
+def test_component_logs_kubernetes_uses_kubectl_logs(monkeypatch):
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [
+            _status(
+                "nyxgpt-api-stable-abc123",
+                source="kubernetes",
+                container="nyxgpt-api-stable-abc123",
+            )
+        ],
+    )
+    monkeypatch.setattr(self_heal, "_which", lambda prog: f"/usr/bin/{prog}")
+    run_mock = MagicMock(return_value=CP(stdout="pod log line\n"))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.component_logs("nyxgpt-api-stable-abc123")
+
+    assert result.ok
+    assert run_mock.call_args[0][0] == [
+        "kubectl",
+        "logs",
+        "-n",
+        self_heal.K8S_NAMESPACE,
+        "--tail",
+        "200",
+        "nyxgpt-api-stable-abc123",
+    ]
+
+
+@pytest.mark.unit
+def test_component_logs_absent_service_explicit_error(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "list_component_status", lambda: [_status("grafana", state="absent")]
+    )
+    run_mock = MagicMock(return_value=CP(stdout="should never be called"))
+    monkeypatch.setattr(self_heal, "_run", run_mock)
+
+    result = self_heal.component_logs("grafana")
+
+    assert not result.ok
+    assert "not currently running" in result.message
+    run_mock.assert_not_called()
+
+
+@pytest.mark.unit
+def test_component_logs_unknown_service_explicit_error(monkeypatch):
+    monkeypatch.setattr(self_heal, "list_component_status", lambda: [])
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+
+    result = self_heal.component_logs("totally-unknown-service")
+
+    assert not result.ok
+    assert "docker not found" in result.message
+
+
+@pytest.mark.unit
+def test_tail_text_file_returns_last_n_lines(tmp_path):
+    path = tmp_path / "x.log"
+    path.write_text("\n".join(f"line{i}" for i in range(1, 11)) + "\n", encoding="utf-8")
+
+    assert self_heal._tail_text_file(path, 3) == "line8\nline9\nline10"
+
+
+@pytest.mark.unit
+def test_tail_text_file_missing_file_returns_empty(tmp_path):
+    assert self_heal._tail_text_file(tmp_path / "missing.log", 10) == ""
+
+
+@pytest.mark.unit
+def test_brew_prefix_uses_brew_output(monkeypatch):
+    monkeypatch.setattr(
+        self_heal, "_which", lambda prog: "/usr/bin/brew" if prog == "brew" else None
+    )
+    monkeypatch.setattr(self_heal, "_run", lambda cmd, **_k: CP(stdout="/opt/homebrew\n"))
+
+    assert self_heal._brew_prefix() == "/opt/homebrew"
+
+
+@pytest.mark.unit
+def test_brew_prefix_no_brew_no_conventional_dir(monkeypatch):
+    monkeypatch.setattr(self_heal, "_which", lambda _: None)
+    monkeypatch.setattr(self_heal.Path, "is_dir", lambda self: False)
+
+    assert self_heal._brew_prefix() is None
+
+
 @pytest.mark.unit
 def test_is_enabled_defaults_false():
     assert self_heal.is_enabled() is False
