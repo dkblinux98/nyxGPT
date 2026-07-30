@@ -947,6 +947,38 @@ api_base_url = http://127.0.0.1:8000    # API the web app proxies to
 
 ---
 
+## Web tier environment variables
+
+The Next.js process doesn't read `config.ini` directly (only the Python API
+does) -- it's configured through process environment variables and, for
+anything inlined into the browser bundle, Next.js build args (`ARG`/`ENV` in
+`web/Dockerfile`, `build.args` in `docker-compose.yml`). These cover the
+correlation backbone (#3430) added alongside the `[tracing]`/
+`[error_tracking]` sections above:
+
+| Variable | Where it applies | Default | Purpose |
+| --- | --- | --- | --- |
+| `NYXGPT_API_BASE_URL` | server (runtime env) | `http://127.0.0.1:8000` | Base URL `apiProxy.ts`'s `apiFetch` proxies to (existing, pre-#3430). |
+| `NYXGPT_AUTH_API_KEY` | server (runtime env) | unset | `X-API-Key` attached to proxied requests (existing, pre-#3430). |
+| `NYXGPT_OTLP_ENDPOINT` | server (runtime env) | `http://localhost:4318/v1/traces` | Where `instrumentation.ts`'s `@vercel/otel` exports spans -- same collector as `[tracing] otlp_endpoint`. In Compose mode this must be the `otel-collector` service hostname (already set in `docker-compose.yml`), since "localhost" would mean the web container itself. |
+| `NYXGPT_TRACING_ENABLED` | server (runtime env) | `true` | Set to `false` to disable the web tier's OTel setup entirely (matches the API's tracing-on-by-default, #3415/#3427). |
+| `NYXGPT_LOG_DIR` | server (runtime env) | unset | Directory `web/src/lib/logger.ts` also appends structured log lines to (in addition to stdout) -- set in Compose mode so promtail can tail a file (native mode needs no equivalent; brew already redirects stdout to a file). |
+| `NEXT_PUBLIC_API_BASE_URL` | build arg | `http://localhost:8000` | Base URL baked into the *browser* bundle (existing, pre-#3430; distinct from the server-side `NYXGPT_API_BASE_URL` above). |
+| `NEXT_PUBLIC_NYXGPT_OTLP_ENDPOINT` | build arg | `http://localhost:4318/v1/traces` | Where `instrumentation-client.ts`'s browser `WebTracerProvider` exports spans. The default already matches the collector's host-published port, so no override is usually needed. |
+| `NEXT_PUBLIC_NYXGPT_TRACING_ENABLED` | build arg | `true` | Disables the browser-side OTel setup when `false`. |
+| `NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_DSN` | build arg | unset (disabled) | GlitchTip DSN for browser error capture (`@sentry/nextjs`, see [docker-compose.md#error-tracking](docker-compose.md#error-tracking)) -- set to match `[error_tracking] dsn`. Sentry DSNs aren't secrets (designed for client-side embedding), unlike `NYXGPT_AUTH_API_KEY`. |
+| `NYXGPT_ERROR_TRACKING_DSN` | server (runtime env) | unset (disabled) | Same DSN for the Next.js server-side Sentry init (`instrumentation.ts`'s `onRequestError` hook) -- can differ in principle from the build-time browser one, but should normally match it. |
+| `NYXGPT_ERROR_TRACKING_ENVIRONMENT` / `NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_ENVIRONMENT` | server / build arg | `development` | Sentry `environment` tag, mirroring `[error_tracking] environment`. |
+
+Because `NEXT_PUBLIC_*` values are inlined at build time, changing them
+requires rebuilding the web image (`docker compose build web`) or Homebrew
+formula (`nyxgpt ops install`) -- there's no hot-reload equivalent to
+`config.ini`'s for these. There's also no automatic sync from `config.ini`
+into these build args yet (a known follow-up) -- set them by hand to match
+your `[tracing]`/`[error_tracking]` config.ini values.
+
+---
+
 ## Hot-reloadable settings
 
 - `nyxgpt.default_model`
