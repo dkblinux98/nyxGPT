@@ -20,10 +20,12 @@ from nyxgpt.logging import (
     DEFAULT_DATEFMT,
     DEFAULT_FMT,
     DEFAULT_LOGGER_NAME,
+    LOG_DIR_OVERRIDE_ENV,
     AccessLogNoiseFilter,
     RequestIdFilter,
     StructuredFormatter,
     configure_logging,
+    get_log_dir,
     get_logger,
     refresh_logging,
     request_id_var,
@@ -348,3 +350,41 @@ def test_configure_logging_attaches_access_log_noise_filter_once(tmp_path: Path)
     access_logger = logging.getLogger("uvicorn.access")
     filters = [f for f in access_logger.filters if isinstance(f, AccessLogNoiseFilter)]
     assert len(filters) == 1
+
+
+def test_get_log_dir_prefers_explicit_cfg_dir_over_env_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cfg that explicitly sets [logging] dir always wins (see #3443) --
+    otherwise tests like this one that build their own tmp_path config would
+    break under the test-suite-wide NYXGPT_LOG_DIR override."""
+    explicit_dir = tmp_path / "cfg-dir"
+    cfg = _make_cfg(explicit_dir)
+    monkeypatch.setenv(LOG_DIR_OVERRIDE_ENV, str(tmp_path / "env-dir"))
+
+    assert get_log_dir(cfg) == explicit_dir
+
+
+def test_get_log_dir_falls_back_to_env_override_when_cfg_omits_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When [logging] dir isn't set at all (e.g. a bare/isolated test config),
+    NYXGPT_LOG_DIR is used instead of the hardcoded ~/.nyxGPT/logs default
+    (see #3443) -- this is what protects tests that swap in their own minimal
+    config with no logging section."""
+    cfg = ConfigParser()
+    env_dir = tmp_path / "env-dir"
+    monkeypatch.setenv(LOG_DIR_OVERRIDE_ENV, str(env_dir))
+
+    assert get_log_dir(cfg) == env_dir
+
+
+def test_get_log_dir_default_is_unchanged_without_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The test suite itself sets NYXGPT_LOG_DIR session-wide (see
+    # tests/conftest.py); unset it here to exercise the true default.
+    monkeypatch.delenv(LOG_DIR_OVERRIDE_ENV, raising=False)
+    cfg = ConfigParser()
+
+    assert get_log_dir(cfg) == Path.home() / ".nyxGPT" / "logs"
