@@ -1,4 +1,5 @@
 import hashlib
+import json
 import logging
 import subprocess
 import tarfile
@@ -8787,9 +8788,13 @@ def test_status_shows_per_component_canary_when_kubernetes_pods_present(monkeypa
 
 @pytest.mark.unit
 def test_doctor_flags_stale_terraform_state(monkeypatch, tmp_path, capsys):
+    """Genuinely stale: tfstate still records resources but no containers are running."""
     tf_dir = tmp_path / "terraform"
     tf_dir.mkdir()
-    (tf_dir / "terraform.tfstate").write_text("{}", encoding="utf-8")
+    (tf_dir / "terraform.tfstate").write_text(
+        json.dumps({"resources": [{"type": "docker_container", "name": "api"}]}),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(ops, "TERRAFORM_DIR", tf_dir)
     monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent", "web": "absent"})
     monkeypatch.setattr(ops, "_which", lambda prog: "/usr/local/bin/fake")
@@ -8800,6 +8805,38 @@ def test_doctor_flags_stale_terraform_state(monkeypatch, tmp_path, capsys):
     assert rc == 2
     out = capsys.readouterr().out
     assert "Terraform state exists but no nyxgpt-tf-* containers are running" in out
+
+
+@pytest.mark.unit
+def test_doctor_does_not_flag_terraform_state_after_clean_destroy(monkeypatch, tmp_path, capsys):
+    """terraform destroy leaves terraform.tfstate in place with an empty resources
+    list -- that's a clean post-destroy state, not stale state, and must not FAIL.
+    Repro from #3439: install --terraform --local, down --terraform, install
+    (native), doctor should report PASS with no terraform finding."""
+    # Pretend config exists at ~/.nyxGPT/config.ini (as ops.doctor expects)
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    cfg = cfg_dir / "config.ini"
+    cfg.write_text("[project]\nname=nyxGPT\n\n[tracing]\nenabled = false\n", encoding="utf-8")
+
+    tf_dir = tmp_path / "terraform"
+    tf_dir.mkdir()
+    (tf_dir / "terraform.tfstate").write_text(
+        json.dumps({"resources": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ops, "TERRAFORM_DIR", tf_dir)
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent", "web": "absent"})
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+
+    rc = ops.doctor(MagicMock())
+    out = capsys.readouterr().out
+    assert "Terraform state exists but no nyxgpt-tf-* containers are running" not in out
+    assert rc == 0
+    assert "doctor: OK" in out
 
 
 @pytest.mark.unit
