@@ -24,7 +24,7 @@ import urllib.error
 import urllib.request
 import uuid
 from configparser import ConfigParser
-from contextlib import asynccontextmanager, redirect_stderr, redirect_stdout, suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,7 +47,7 @@ from starlette.status import HTTP_401_UNAUTHORIZED
 
 import nyxgpt.config
 from nyxgpt import admin_activity as admin_activity_module
-from nyxgpt import api_models, config_wizard, models, sessions, tools_fs
+from nyxgpt import api_models, config_wizard, models, sessions
 from nyxgpt import canary as canary_module
 from nyxgpt import chat as chat_module
 from nyxgpt import error_tracking as error_tracking_module
@@ -92,10 +92,6 @@ from nyxgpt.api_models import (
     SessionsListResponse,
     TagsRequest,
     TitleRequest,
-    ToolCatRequest,
-    ToolGrepRequest,
-    ToolLsRequest,
-    ToolTextResponse,
 )
 from nyxgpt.batch_processor import BatchProcessor, RequestPriority
 from nyxgpt.chat import chat as run_chat
@@ -124,7 +120,6 @@ from nyxgpt.config import (
     get_self_heal_default_enabled,
     get_self_heal_max_consecutive_restarts,
     get_sessions_dir,
-    get_tools_root,
     get_tracing_config,
     load_config,
     log_effective_config,
@@ -161,7 +156,7 @@ class ClientCapabilities:
         supports_sse: Client supports Server-Sent Events (text/event-stream)
         supports_structured_events: Client supports structured event types (metadata, text, done, error)
         supports_streaming: Client supports streaming responses
-        client_version: Optional client version string (e.g., "web-ui/1.0.0", "tui/1.0.0")
+        client_version: Optional client version string (e.g., "web-ui/1.0.0")
         max_event_size: Maximum event payload size in bytes (0 = unlimited)
     """
 
@@ -1001,22 +996,6 @@ def _sessions_dir_from_str(s: str | None) -> Path | None:
     if not s:
         return None
     return Path(s).expanduser()
-
-
-def _capture_stdout(fn, *args, **kwargs) -> tuple[int, str, str]:
-    """Call `fn(*args, **kwargs)`, capturing its stdout/stderr writes.
-
-    Used to adapt the CLI-style `tools_fs` functions (which print output
-    and return an int exit code) into API responses without changing them.
-
-    Returns:
-        Tuple of `(return_code, captured_stdout, captured_stderr)`.
-    """
-    out = io.StringIO()
-    err = io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        rc = fn(*args, **kwargs)
-    return int(rc), out.getvalue(), err.getvalue()
 
 
 # ----------------------------
@@ -3390,62 +3369,6 @@ def chat_stream_api_legacy(request: Request, req: ChatRequest):
     Delegates to shared streaming response helper.
     """
     return _create_streaming_response(request, req)
-
-
-def _tools_error_status(message: str) -> int:
-    """403 for the root-confinement guard, 400 for everything else (bad path,
-    invalid regex, no matches, ...)."""
-    return 403 if "escapes allowed root" in message else 400
-
-
-@api.post("/tools/ls", response_model=ToolTextResponse)
-def tool_ls(request: Request, req: ToolLsRequest) -> ToolTextResponse:
-    """List a directory's contents, confined to the configured tools root.
-
-    Raises `403` if `req.path` would escape the configured tools root, or
-    `400` for any other failure (e.g. path not found).
-    """
-    tools_root = get_tools_root(_req_cfg(request))
-    rc, out, err = _capture_stdout(tools_fs.ls, Path(req.path), root=tools_root)
-    if rc != 0:
-        message = err.strip() or out.strip() or "ls failed"
-        raise HTTPException(status_code=_tools_error_status(message), detail=message)
-    return ToolTextResponse(output=out)
-
-
-@api.post("/tools/cat", response_model=ToolTextResponse)
-def tool_cat(request: Request, req: ToolCatRequest) -> ToolTextResponse:
-    """Read a file's contents (optionally limited to `head`/`tail` lines), confined to the tools root.
-
-    Raises `403` if `req.path` would escape the configured tools root, or
-    `400` for any other failure (e.g. file not found).
-    """
-    tools_root = get_tools_root(_req_cfg(request))
-    rc, out, err = _capture_stdout(
-        tools_fs.cat, Path(req.path), head=req.head, tail=req.tail, root=tools_root
-    )
-    if rc != 0:
-        message = err.strip() or out.strip() or "cat failed"
-        raise HTTPException(status_code=_tools_error_status(message), detail=message)
-    return ToolTextResponse(output=out)
-
-
-@api.post("/tools/grep", response_model=ToolTextResponse)
-def tool_grep(request: Request, req: ToolGrepRequest) -> ToolTextResponse:
-    """Search for a regex pattern within a file or directory, confined to the tools root.
-
-    Raises `403` if `req.path` would escape the configured tools root, or
-    `400` for any other failure (e.g. invalid regex, no matches, path not
-    found).
-    """
-    tools_root = get_tools_root(_req_cfg(request))
-    rc, out, err = _capture_stdout(
-        tools_fs.grep, req.pattern, Path(req.path), max_matches=req.max, root=tools_root
-    )
-    if rc != 0:
-        message = err.strip() or out.strip() or "grep failed"
-        raise HTTPException(status_code=_tools_error_status(message), detail=message)
-    return ToolTextResponse(output=out)
 
 
 @api.post("/rag/ingest", response_model=RagIngestResponse)

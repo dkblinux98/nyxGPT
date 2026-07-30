@@ -375,16 +375,14 @@ def run_wizard(output_path: Path | None = None) -> int:
         print("     nyxgpt info")
         print("  2. Start chatting:")
         print("     nyxgpt chat")
-        print("  3. Launch the TUI:")
-        print("     nyxgpt tui")
-        print("  4. Start services:")
+        print("  3. Start services:")
         print("     nyxgpt ops install")
 
         if rag_config.get("enable_chat_context"):
             print("\nRAG is enabled. To use RAG features:")
             print("  1. Start Cassandra: nyxgpt ops restart cassandra")
             print("  2. Ingest documents: nyxgpt rag ingest <doc_id> <file>")
-            print("  3. Enable RAG in chat: Ctrl+R (TUI) or use WebUI toggle")
+            print("  3. Enable RAG in chat: use the WebUI toggle")
 
         print(
             "\nUsing Docker Compose instead? config.ini is still the source of "

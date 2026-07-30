@@ -2363,69 +2363,6 @@ def test_sessions_stats_just_now_activity(
     assert "< 1 minute" in captured.out
 
 
-# --- cmd_tools ---
-
-
-def test_tools_ls(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    (tmp_path / "a.txt").write_text("hello")
-
-    exit_code = cli(["tools", "ls", str(tmp_path)])
-
-    assert exit_code == 0
-    captured = capsys.readouterr()
-    assert "a.txt" in captured.out
-
-
-def test_tools_cat(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    f = tmp_path / "a.txt"
-    f.write_text("line1\nline2\nline3\n")
-
-    exit_code = cli(["tools", "cat", str(f), "--head", "2"])
-
-    assert exit_code == 0
-    captured = capsys.readouterr()
-    assert "line1" in captured.out
-    assert "line3" not in captured.out
-
-
-def test_tools_grep(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    f = tmp_path / "a.txt"
-    f.write_text("apple\nbanana\ncherry\n")
-
-    exit_code = cli(["tools", "grep", "banana", str(f)])
-
-    assert exit_code == 0
-    captured = capsys.readouterr()
-    assert "banana" in captured.out
-
-
-def test_tools_grep_missing_pattern(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    exit_code = cli(["tools", "grep", "", str(tmp_path)])
-
-    assert exit_code == 2
-    captured = capsys.readouterr()
-    assert "pattern is required for grep" in captured.err
-
-
-def test_cmd_tools_unknown_action_direct(capsys: pytest.CaptureFixture[str]) -> None:
-    """The 'unknown tools action' fallback is unreachable via argparse (choices=
-    ls/cat/grep), so exercise cmd_tools directly."""
-    from nyxgpt.cli import cmd_tools
-
-    exit_code = cmd_tools(
-        action="bogus",
-        path=Path("."),
-        pattern=None,
-        head=None,
-        tail=None,
-        max_matches=50,
-    )
-
-    assert exit_code == 2
-    captured = capsys.readouterr()
-    assert "Unknown tools action: bogus" in captured.err
-
-
 # --- models command error branches ---
 
 
@@ -2652,7 +2589,7 @@ def test_cmd_mcp_generic_exception(
     assert "ERROR: MCP server failed: mcp boom" in captured.err
 
 
-# --- wizard and tui dispatch ---
+# --- wizard dispatch ---
 
 
 def test_cli_wizard_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -2671,29 +2608,6 @@ def test_cli_wizard_dispatch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
 
     assert exit_code == 0
     assert calls == [output]
-
-
-def test_cli_tui_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
-    import nyxgpt.tui as tui_mod
-
-    calls: list[dict] = []
-
-    class FakeTUI:
-        def __init__(self, session, api_base_url):
-            calls.append({"session": session, "api_base_url": api_base_url})
-
-        def run(self) -> None:
-            calls.append({"ran": True})
-
-    # NyxGPTTUI is imported lazily inside the `tui` command now, so patch it on
-    # its source module rather than on nyxgpt.cli.
-    monkeypatch.setattr(tui_mod, "NyxGPTTUI", FakeTUI)
-
-    exit_code = cli(["tui", "--session", "my-session"])
-
-    assert exit_code == 0
-    assert calls[0]["session"] == "my-session"
-    assert calls[1] == {"ran": True}
 
 
 # --- ops command dispatch (status/doctor/restart/env-sync/logs) ---

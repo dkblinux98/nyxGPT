@@ -184,46 +184,6 @@ class ChatResponse(BaseModel):
 
 
 # ----------------------------
-# Tools API models
-# ----------------------------
-
-
-class ToolTextResponse(BaseModel):
-    """Generic response model wrapping the plain-text output of a tool call."""
-
-    output: str
-
-
-class ToolLsRequest(BaseModel):
-    """Request model for listing the contents of a directory."""
-
-    path: str
-
-
-class ToolCatRequest(BaseModel):
-    """Request model for reading a file's contents.
-
-    `head`/`tail` optionally limit the response to the first/last N lines
-    instead of returning the whole file.
-    """
-
-    path: str
-    head: int | None = None
-    tail: int | None = None
-
-
-class ToolGrepRequest(BaseModel):
-    """Request model for searching a file or directory for a text pattern.
-
-    `max` caps the number of matching lines returned.
-    """
-
-    pattern: str
-    path: str
-    max: int = 20
-
-
-# ----------------------------
 # RAG API models
 # ----------------------------
 
