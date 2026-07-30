@@ -575,6 +575,24 @@ once the token is written (if it's already running); re-run
 `nyxgpt ops glitchtip-init` if the GlitchTip panels in the SRE Home
 dashboard show an auth error.
 
+**Linux note (#3432):** `nyxgpt ops install` creates `~/.nyxGPT/secrets`
+itself, before Grafana's bind mount can touch it, so the token write above
+just works. If you ever see `nyxgpt ops glitchtip-init` fail with a
+permission error on that directory, it means something (usually a raw
+`docker compose up` run outside `nyxgpt ops`, or a pre-fix install) let
+Docker create `~/.nyxGPT/secrets` as root first -- `docker`'s daemon runs
+as root on Linux and auto-creates a missing bind-mount source directory
+owned by root the first time a container starts, which then blocks this
+(non-root) write. `nyxgpt ops doctor` flags this (secrets dir not writable,
+or the token file missing while the observability stack is up); fix with
+`sudo chown -R $(whoami) ~/.nyxGPT/secrets` and re-run
+`nyxgpt ops install`. The GlitchTip datasource also lives in its own
+provisioning file (`docker/grafana/provisioning/datasources/glitchtip.yml`,
+separate from `datasource.yml`'s Prometheus/Loki/Jaeger) so a missing token
+never takes those other datasources down with it -- only the GlitchTip
+panels are affected until the token is fixed. This doesn't affect macOS:
+Docker Desktop's VM handles bind-mount ownership differently.
+
 ## Self-Healing
 
 Every core service (`ollama`, `cassandra`, `api`, `web`) and most opt-in

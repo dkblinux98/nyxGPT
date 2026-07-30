@@ -10,6 +10,7 @@ can warn about -- and refuse to create -- port collisions between the two.
 
 from __future__ import annotations
 
+import contextlib
 import getpass
 import hashlib
 import json
@@ -2361,6 +2362,10 @@ def _install_terraform_steps(api_key: str | None) -> list[OpsResult]:
         # instead of doing the work again.
         ("docker images (source-change detection)", _build_terraform_docker_images),
         ("terraform init/plan/apply", _terraform_init_plan_apply),
+        # Must run before the observability stack starts: Grafana's Compose
+        # bind-mount auto-creates a missing ~/.nyxGPT/secrets root-owned on
+        # Linux (#3432), which then blocks the token write below.
+        ("glitchtip secrets dir", _ensure_glitchtip_secrets_dir),
         # After apply (network + core containers exist): bring the observability
         # stack up on the terraform network and auto-provision GlitchTip, so the
         # terraform deploy has the same full SRE view as the native install.
@@ -2997,6 +3002,10 @@ def install(args) -> int:
         ("compose file path", _persist_compose_file_path),
     ]
     if not getattr(args, "skip_observability", False):
+        # Must run before the observability stack starts: Grafana's Compose
+        # bind-mount auto-creates a missing ~/.nyxGPT/secrets root-owned on
+        # Linux (#3432), which then blocks the token write below.
+        steps.append(("glitchtip secrets dir", _ensure_glitchtip_secrets_dir))
         steps.append(("observability stack", _reconcile_grafana_provisioning))
         steps.append(("glitchtip auto-provisioning", _provision_glitchtip))
     for step_name, fn in steps:
@@ -3391,8 +3400,10 @@ def doctor(_args) -> int:
     (when log aggregation is enabled and native logs exist) whether
     promtail is actually wired to see native-mode host logs, (when tracing
     is enabled) whether the configured OTLP endpoint actually has something
-    listening on it, and (once the shared Ollama store has been configured)
-    whether native Ollama's OLLAMA_MODELS env has drifted from it (#3431).
+    listening on it, (once the shared Ollama store has been configured)
+    whether native Ollama's OLLAMA_MODELS env has drifted from it (#3431),
+    and whether `~/.nyxGPT/secrets` is writable / holds the GlitchTip
+    Grafana token when the observability stack is up (#3432).
     Also prints a per-logger recent log volume
     (last 24h, via Loki) when log aggregation
     and the monitoring stack are both up, so idle curated components aren't
@@ -3499,6 +3510,8 @@ def doctor(_args) -> int:
     ollama_env_issue = _ollama_env_drift_issue()
     if ollama_env_issue:
         issues.append(ollama_env_issue)
+
+    issues += _glitchtip_secrets_doctor_issues()
 
     if TERRAFORM_DIR.joinpath("terraform.tfstate").exists() and all(
         state == "absent" for state in terraform_stack_state().values()
@@ -4285,9 +4298,18 @@ def _enable_observability_config(cfg_path: Path | None = None) -> None:
     os.chmod(cfg_path, 0o600)
 
 
+def _grafana_datasources_dir() -> Path:
+    """`docker/grafana/provisioning/datasources/` -- one YAML file per
+    datasource group (GlitchTip lives in its own file, `glitchtip.yml`,
+    separate from `datasource.yml`'s Prometheus/Loki/Jaeger -- #3432 -- so a
+    `$__file{}` interpolation failure in one file can't take the others
+    down; see `docker/grafana/provisioning/datasources/glitchtip.yml`)."""
+    return REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources"
+
+
 def _grafana_provisioning_fingerprint() -> str:
     """sha256 over everything that only takes effect when the `grafana`
-    container is recreated: the datasource provisioning file (new/changed
+    container is recreated: every datasource provisioning file (new/changed
     datasources) and the Compose file itself (image tag, `GF_INSTALL_PLUGINS`,
     any other env). `docker compose up -d` alone does NOT pick up an env or
     image change on an already-running container -- it needs
@@ -4296,10 +4318,9 @@ def _grafana_provisioning_fingerprint() -> str:
     silently pointed at a stale container missing a plugin or datasource.
     """
     digest = hashlib.sha256()
-    for path in (
-        REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources" / "datasource.yml",
-        self_heal.COMPOSE_FILE,
-    ):
+    datasources_dir = _grafana_datasources_dir()
+    paths = sorted(datasources_dir.glob("*.yml")) if datasources_dir.exists() else []
+    for path in (*paths, self_heal.COMPOSE_FILE):
         if path.exists():
             digest.update(path.read_bytes())
     return digest.hexdigest()
@@ -4336,17 +4357,21 @@ def _record_grafana_provisioning_fingerprint() -> None:
 
 
 def _grafana_provisioned_datasource_uids() -> list[str]:
-    """Datasource `uid`s declared in `docker/grafana/provisioning/datasources/datasource.yml`.
+    """Datasource `uid`s declared across every file in
+    `docker/grafana/provisioning/datasources/`.
 
     Deliberately regex-scraped rather than parsed with PyYAML: PyYAML isn't a
-    runtime dependency of this package (only a test-suite one), and this file
-    is repo-controlled config, not user input, so a targeted regex over its
-    known `uid: <value>` shape is sufficient.
+    runtime dependency of this package (only a test-suite one), and these
+    files are repo-controlled config, not user input, so a targeted regex
+    over their known `uid: <value>` shape is sufficient.
     """
-    path = REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources" / "datasource.yml"
-    if not path.exists():
+    datasources_dir = _grafana_datasources_dir()
+    if not datasources_dir.exists():
         return []
-    return re.findall(r"^\s*uid:\s*(\S+)\s*$", path.read_text(), re.MULTILINE)
+    uids: list[str] = []
+    for path in sorted(datasources_dir.glob("*.yml")):
+        uids += re.findall(r"^\s*uid:\s*(\S+)\s*$", path.read_text(), re.MULTILINE)
+    return uids
 
 
 def _verify_grafana_datasources_resolve(
@@ -4393,7 +4418,7 @@ def _verify_grafana_datasources_resolve(
             return OpsResult(
                 False,
                 f"Grafana datasource(s) failed to provision: {', '.join(sorted(missing))}",
-                "Declared in docker/grafana/provisioning/datasources/datasource.yml but not "
+                "Declared in docker/grafana/provisioning/datasources/*.yml but not "
                 "returned by GET /api/datasources -- check `nyxgpt ops logs grafana` for a "
                 "provisioning error (bad plugin id, YAML syntax, unreachable datasource type) "
                 "near 'inserting datasource from configuration'.",
@@ -4932,7 +4957,7 @@ GLITCHTIP_DEFAULT_ADMIN_EMAIL = "admin@nyxgpt.local"
 def _glitchtip_grafana_token_path() -> Path:
     """Where the GlitchTip API token is written for Grafana's Infinity
     datasource to read (#3411) -- see
-    docker/grafana/provisioning/datasources/datasource.yml's `$__file{}`
+    docker/grafana/provisioning/datasources/glitchtip.yml's `$__file{}`
     reference and docs/docker-compose.md#grafana-single-pane-of-glass. Lives
     outside `~/.nyxGPT/volumes/grafana` (Grafana's own data dir) so it isn't
     swept by `nyxgpt ops down --volumes`, which deletes volume_dir()
@@ -4943,6 +4968,92 @@ def _glitchtip_grafana_token_path() -> Path:
     monkeypatch `Path.home`.
     """
     return Path.home() / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
+
+
+def _glitchtip_secrets_dir_unwritable_result(path: Path) -> OpsResult:
+    """Actionable failure for a `~/.nyxGPT/secrets` that exists but this
+    process can't write to -- shared by the install preflight and the token
+    writer itself so both report the same guidance (#3432)."""
+    return OpsResult(
+        False,
+        f"{path} exists but is not writable by {getpass.getuser()!r}",
+        f"On Linux, dockerd runs as root and auto-creates a missing Docker bind-mount "
+        f"source directory as root:root the first time a container starts -- if "
+        f"Grafana started before this directory existed, that's almost certainly what "
+        f"happened here. Fix with: sudo chown -R $(whoami) {path} && chmod 700 {path}, "
+        "then re-run `nyxgpt ops install` (or `nyxgpt ops glitchtip-init`).",
+    )
+
+
+def _ensure_glitchtip_secrets_dir() -> list[OpsResult]:
+    """Ensure `~/.nyxGPT/secrets` exists and is writable by the invoking user
+    *before* anything bind-mounts it (#3432).
+
+    On Linux, dockerd runs as root and auto-creates a missing bind-mount
+    source directory as root:root the first time a container starts. Since
+    `docker-compose.yml` mounts this directory read-only into Grafana
+    (`${HOME}/.nyxGPT/secrets:/etc/nyxgpt-secrets:ro`), if Grafana starts
+    (via `_reconcile_grafana_provisioning`/`_start_observability_stack_terraform`)
+    before this directory exists, Docker creates it root-owned and every
+    later attempt by this (non-root) process to write the GlitchTip token
+    into it -- `_write_grafana_glitchtip_token` -- fails with a raw
+    `PermissionError`. Running this as an early install step, ahead of
+    those, means Docker always finds the directory already present and
+    never touches its ownership. macOS (Docker Desktop) doesn't hit this:
+    its VM handles bind-mount ownership differently.
+
+    Run as a best-effort preflight step (`install()` / `_install_terraform_steps`
+    catch and log any exception a step raises), so it never needs to raise
+    itself -- it just reports whether the directory is now usable.
+    """
+    path = _glitchtip_grafana_token_path().parent
+    if not path.exists():
+        try:
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as e:
+            return [OpsResult(False, f"Failed to create {path}", f"{type(e).__name__}: {e}")]
+        return [OpsResult(True, f"Created {path}")]
+
+    if not os.access(path, os.W_OK | os.X_OK):
+        return [_glitchtip_secrets_dir_unwritable_result(path)]
+
+    # Owned-and-writable is what matters; a chmod that fails here is harmless.
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o700)
+    return [OpsResult(True, f"{path} exists and is writable")]
+
+
+def _glitchtip_secrets_doctor_issues() -> list[str]:
+    """`nyxgpt ops doctor` checks for the #3432 Linux bind-mount ownership
+    failure mode: a `~/.nyxGPT/secrets` that exists but isn't writable by
+    the current user (see `_ensure_glitchtip_secrets_dir`), and -- once the
+    observability stack is actually up -- a missing GlitchTip token file,
+    which leaves Grafana's GlitchTip datasource (glitchtip.yml) unable to
+    authenticate even though Prometheus/Loki/Jaeger are fine.
+
+    The second check only queries `_compose_stack_snapshot()` when Docker is
+    on PATH, same guard `doctor()` already uses for the Cassandra container
+    check -- avoids an unnecessary `docker compose ps` on a host without
+    Docker at all.
+    """
+    issues: list[str] = []
+
+    secrets_dir = _glitchtip_grafana_token_path().parent
+    if secrets_dir.exists() and not os.access(secrets_dir, os.W_OK | os.X_OK):
+        issues.append(
+            f"{secrets_dir} exists but is not writable by {getpass.getuser()!r} "
+            f"(run: sudo chown -R $(whoami) {secrets_dir} && nyxgpt ops install)"
+        )
+
+    if _which("docker") is not None and _compose_stack_snapshot().get("grafana") == "running":
+        token_path = _glitchtip_grafana_token_path()
+        if not token_path.exists():
+            issues.append(
+                f"Observability stack is up but {token_path} is missing -- Grafana's "
+                "GlitchTip datasource can't authenticate (run: nyxgpt ops glitchtip-init)"
+            )
+
+    return issues
 
 
 def _glitchtip_container_healthy() -> bool:
@@ -5431,14 +5542,30 @@ def _write_grafana_glitchtip_token(token: str) -> tuple[bool, OpsResult]:
     holds this exact token, which callers use to skip an unnecessary Grafana
     restart (Grafana only re-reads provisioning files, including `$__file{}`
     targets, at startup).
+
+    `_ensure_glitchtip_secrets_dir` runs earlier in `install()`/
+    `_install_terraform_steps` specifically so this doesn't hit a
+    root-owned bind-mount directory (#3432), but this still guards the
+    write with its own try/except -- e.g. a standalone `nyxgpt ops
+    glitchtip-init` run skips that preflight -- so a permission problem
+    surfaces as this actionable `OpsResult` instead of an uncaught
+    `PermissionError` traceback bubbling up through `_provision_glitchtip`.
     """
     path = _glitchtip_grafana_token_path()
-    if path.exists() and path.read_text(encoding="utf-8").strip() == token:
-        return False, OpsResult(True, f"{path} already holds the current GlitchTip token")
+    try:
+        if path.exists() and path.read_text(encoding="utf-8").strip() == token:
+            return False, OpsResult(True, f"{path} already holds the current GlitchTip token")
 
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.write_text(token, encoding="utf-8")
-    os.chmod(path, 0o600)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.write_text(token, encoding="utf-8")
+        os.chmod(path, 0o600)
+    except OSError as e:
+        result = _glitchtip_secrets_dir_unwritable_result(path.parent)
+        return False, OpsResult(
+            False,
+            f"Cannot write GlitchTip token to {path}",
+            f"{result.details}\n{type(e).__name__}: {e}",
+        )
     return True, OpsResult(True, f"Wrote GlitchTip API token for Grafana to {path}")
 
 

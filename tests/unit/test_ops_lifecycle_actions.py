@@ -137,6 +137,7 @@ def test_install_records_success_action():
         patch.object(ops, "_ensure_log_symlinks", return_value=ok),
         patch.object(ops, "sync_env_from_config", return_value=ok),
         patch.object(ops, "_persist_compose_file_path", return_value=ok),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
     ):
@@ -166,6 +167,7 @@ def test_install_records_failure_action():
         patch.object(ops, "_ensure_log_symlinks", return_value=ok),
         patch.object(ops, "sync_env_from_config", return_value=ok),
         patch.object(ops, "_persist_compose_file_path", return_value=ok),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
     ):
@@ -284,6 +286,7 @@ def test_install_terraform_steps_records_success():
         patch.object(ops, "_ensure_terraform_tfvars", return_value=ok),
         patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
         patch.object(ops, "_terraform_stack_health", return_value=ok),

@@ -1,0 +1,30 @@
+apiVersion: 1
+
+# Kept in its own file, separate from datasource.yml (#3432): Grafana 13
+# fails an entire provisioning file when one datasource in it can't
+# interpolate -- e.g. the `$__file{}` token path below being missing --
+# which would otherwise take Prometheus/Loki/Jaeger down with it too.
+#
+# Requires the opt-in `errors` Compose profile (GlitchTip) plus the
+# `yesoreyeram-infinity-datasource` plugin (see docker-compose.yml's
+# grafana `GF_INSTALL_PLUGINS`). Queries GlitchTip's Sentry-compatible
+# REST API for the SRE Home dashboard's error panels (#3411). The bearer
+# token is minted by `nyxgpt ops glitchtip-init` (never hand-pasted) and
+# read from the file below via Grafana's `$__file{}` provisioning
+# expansion -- see docs/docker-compose.md#grafana-single-pane-of-glass and
+# src/nyxgpt/ops.py's `_write_grafana_glitchtip_token`. Grafana only reads
+# `$__file{}` targets at startup, so a freshly minted token needs a
+# restart to take effect (glitchtip-init does this automatically).
+datasources:
+  - name: GlitchTip
+    uid: glitchtip-infinity
+    type: yesoreyeram-infinity-datasource
+    access: proxy
+    url: http://glitchtip:8080
+    isDefault: false
+    editable: false
+    jsonData:
+      datasource_mode: basic
+      auth_method: bearerToken
+    secureJsonData:
+      bearerToken: '$__file{/etc/nyxgpt-secrets/glitchtip-grafana-token}'

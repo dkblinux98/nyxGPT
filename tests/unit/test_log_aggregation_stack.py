@@ -248,10 +248,14 @@ def test_grafana_has_glitchtip_infinity_datasource() -> None:
     """GlitchTip is queried via its Sentry-compatible REST API through the
     Infinity datasource plugin (#3411, owner-selected option), authenticated
     with the token `nyxgpt ops glitchtip-init` mints -- never a hand-pasted
-    token."""
+    token. Lives in its own provisioning file, glitchtip.yml, separate from
+    datasource.yml (#3432): Grafana 13 fails an entire provisioning file
+    when one datasource in it can't interpolate, so keeping GlitchTip's
+    `$__file{}` token reference isolated means Prometheus/Loki/Jaeger in
+    datasource.yml survive even if the token file is missing."""
     datasource_config = yaml.safe_load(
         (
-            REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources" / "datasource.yml"
+            REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources" / "glitchtip.yml"
         ).read_text()
     )
     glitchtip_datasource = next(
@@ -260,6 +264,19 @@ def test_grafana_has_glitchtip_infinity_datasource() -> None:
     assert glitchtip_datasource["type"] == "yesoreyeram-infinity-datasource"
     assert glitchtip_datasource["jsonData"]["auth_method"] == "bearerToken"
     assert "glitchtip-grafana-token" in glitchtip_datasource["secureJsonData"]["bearerToken"]
+
+
+def test_datasource_yml_no_longer_declares_glitchtip() -> None:
+    """Regression guard for #3432: GlitchTip must stay out of datasource.yml
+    so a missing/broken token can never take Prometheus/Loki/Jaeger down
+    with it (Grafana 13 fails per-file, not per-datasource-entry)."""
+    datasource_config = yaml.safe_load(
+        (
+            REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources" / "datasource.yml"
+        ).read_text()
+    )
+    names = {ds["name"] for ds in datasource_config["datasources"]}
+    assert names == {"Prometheus", "Loki", "Jaeger"}
 
 
 def test_grafana_mounts_the_glitchtip_token_secret_read_only() -> None:

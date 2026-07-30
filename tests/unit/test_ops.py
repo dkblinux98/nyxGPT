@@ -52,6 +52,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok_results),
         patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok_results) as obs,
         patch.object(ops, "_provision_glitchtip", return_value=ok_results),
     ):
@@ -88,6 +89,9 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "sync_env_from_config", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_persist_compose_file_path", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(
+            ops, "_ensure_glitchtip_secrets_dir", return_value=[ops.OpsResult(True, "ok")]
+        ),
         patch.object(
             ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "ok")]
         ),
@@ -4404,6 +4408,7 @@ def test_ops_doctor_logs_ok_at_info(caplog, monkeypatch, tmp_path):
     monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
     monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
 
     with caplog.at_level("INFO", logger="nyxgpt.ops"):
         rc = ops.doctor(MagicMock())
@@ -4750,6 +4755,41 @@ def test_grafana_provisioned_datasource_uids_parses_declared_uids(tmp_path, monk
         "jaeger",
         "glitchtip-infinity",
     }
+
+
+@pytest.mark.unit
+def test_grafana_provisioned_datasource_uids_spans_every_file_in_the_dir(tmp_path, monkeypatch):
+    """#3432: GlitchTip lives in its own glitchtip.yml, split out of
+    datasource.yml so a bad `$__file{}` interpolation in one can't take the
+    other's datasources down -- uid scraping must still see both files."""
+    datasource_path, _ = _write_grafana_fixture(
+        tmp_path,
+        monkeypatch,
+        datasource_yml="datasources:\n  - name: Prometheus\n    uid: prometheus\n",
+    )
+    (datasource_path.parent / "glitchtip.yml").write_text(
+        "datasources:\n  - name: GlitchTip\n    uid: glitchtip-infinity\n", encoding="utf-8"
+    )
+
+    assert set(ops._grafana_provisioned_datasource_uids()) == {"prometheus", "glitchtip-infinity"}
+
+
+@pytest.mark.unit
+def test_grafana_provisioning_fingerprint_changes_when_glitchtip_yml_changes(tmp_path, monkeypatch):
+    """A change to glitchtip.yml alone (e.g. the GlitchTip datasource being
+    added/edited) must be detected as drift even though datasource.yml is
+    untouched -- otherwise `_reconcile_grafana_provisioning` would never
+    recreate Grafana to pick it up."""
+    datasource_path, _ = _write_grafana_fixture(
+        tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML
+    )
+    glitchtip_path = datasource_path.parent / "glitchtip.yml"
+    glitchtip_path.write_text("datasources: []\n", encoding="utf-8")
+    ops._record_grafana_provisioning_fingerprint()
+    assert ops._grafana_provisioning_drifted() is False
+
+    glitchtip_path.write_text("datasources:\n  - name: GlitchTip\n    uid: glitchtip-infinity\n")
+    assert ops._grafana_provisioning_drifted() is True
 
 
 @pytest.mark.unit
@@ -6701,6 +6741,149 @@ def test_write_grafana_glitchtip_token_detects_a_rotated_token(tmp_path, monkeyp
     assert token_path.read_text(encoding="utf-8") == "tok-new"
 
 
+# --- Linux bind-mount ownership: ~/.nyxGPT/secrets preflight (#3432) ---
+
+
+@pytest.mark.unit
+def test_write_grafana_glitchtip_token_reports_actionable_error_on_permission_denied(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    # r-x only -- no write bit -- simulates a root-owned dir left behind by
+    # Docker auto-creating the bind-mount source on Linux.
+    secrets_dir.chmod(0o500)
+    try:
+        changed, result = ops._write_grafana_glitchtip_token("tok-123")
+    finally:
+        secrets_dir.chmod(0o700)
+
+    assert changed is False
+    assert result.ok is False
+    assert "Cannot write GlitchTip token" in result.message
+    assert "sudo chown" in result.details
+    assert "PermissionError" in result.details
+
+
+@pytest.mark.unit
+def test_ensure_glitchtip_secrets_dir_creates_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    results = ops._ensure_glitchtip_secrets_dir()
+
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert "Created" in results[0].message
+    assert secrets_dir.is_dir()
+    assert oct(secrets_dir.stat().st_mode)[-3:] == "700"
+
+
+@pytest.mark.unit
+def test_ensure_glitchtip_secrets_dir_ok_when_already_writable(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True, mode=0o700)
+
+    results = ops._ensure_glitchtip_secrets_dir()
+
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert "writable" in results[0].message
+
+
+@pytest.mark.unit
+def test_ensure_glitchtip_secrets_dir_reports_actionable_error_when_unwritable(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    secrets_dir.chmod(0o500)
+    try:
+        results = ops._ensure_glitchtip_secrets_dir()
+    finally:
+        secrets_dir.chmod(0o700)
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert "not writable" in results[0].message
+    assert "sudo chown" in results[0].details
+    assert str(secrets_dir) in results[0].details
+
+
+@pytest.mark.unit
+def test_glitchtip_secrets_doctor_issues_empty_on_a_fresh_host(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+
+    assert ops._glitchtip_secrets_doctor_issues() == []
+
+
+@pytest.mark.unit
+def test_glitchtip_secrets_doctor_issues_flags_unwritable_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {})
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    secrets_dir.chmod(0o500)
+    try:
+        issues = ops._glitchtip_secrets_doctor_issues()
+    finally:
+        secrets_dir.chmod(0o700)
+
+    assert len(issues) == 1
+    assert "not writable" in issues[0]
+
+
+@pytest.mark.unit
+def test_glitchtip_secrets_doctor_issues_flags_missing_token_when_grafana_running(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+
+    issues = ops._glitchtip_secrets_doctor_issues()
+
+    assert len(issues) == 1
+    assert "glitchtip-grafana-token" in issues[0]
+    assert "nyxgpt ops glitchtip-init" in issues[0]
+
+
+@pytest.mark.unit
+def test_glitchtip_secrets_doctor_issues_ok_when_token_present_and_grafana_running(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    token_path = tmp_path / ".nyxGPT" / "secrets" / "glitchtip-grafana-token"
+    token_path.parent.mkdir(parents=True)
+    token_path.write_text("tok", encoding="utf-8")
+
+    assert ops._glitchtip_secrets_doctor_issues() == []
+
+
+@pytest.mark.unit
+def test_ops_doctor_flags_glitchtip_secrets_issues(monkeypatch, capsys, tmp_path):
+    cfg_dir = tmp_path / ".nyxGPT"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    cfg_dir.joinpath("config.ini").write_text(
+        "[project]\nname=nyxGPT\n\n[tracing]\nenabled = false\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/fake")
+    monkeypatch.setattr(ops, "_docker_container_state", lambda name: "running")
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+
+    rc = ops.doctor(MagicMock())
+
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "glitchtip-grafana-token" in out
+
+
 @pytest.mark.unit
 def test_restart_grafana_if_running_skips_without_docker(monkeypatch):
     monkeypatch.setattr(ops, "_compose_available", lambda: False)
@@ -7330,6 +7513,7 @@ def test_install_terraform_success_runs_all_steps(monkeypatch, capsys):
         patch.object(ops, "_generate_compose_config", return_value=ok) as c,
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok) as a,
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok) as o,
         patch.object(ops, "_provision_glitchtip", return_value=ok) as g,
         patch.object(ops, "_terraform_stack_health", return_value=ok) as h,
@@ -7384,6 +7568,7 @@ def test_install_terraform_clears_intentional_stop_markers(monkeypatch, capsys):
         patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
         patch.object(ops, "_terraform_stack_health", return_value=ok),
@@ -7902,6 +8087,7 @@ def test_install_terraform_local_runs_steps_and_returns_results(monkeypatch):
         patch.object(ops, "_generate_compose_config", return_value=ok),
         patch.object(ops, "_build_terraform_docker_images", return_value=ok),
         patch.object(ops, "_terraform_init_plan_apply", return_value=ok),
+        patch.object(ops, "_ensure_glitchtip_secrets_dir", return_value=ok),
         patch.object(ops, "_start_observability_stack_terraform", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
         patch.object(ops, "_terraform_stack_health", return_value=ok),
