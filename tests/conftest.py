@@ -113,8 +113,29 @@ def _isolate_test_log_dir(tmp_path_factory, _ensure_test_config):
     of the above and writes to the prod dir directly (e.g. a hardcoded
     ``~/.nyxGPT/logs`` path) fails the suite instead of silently shipping
     test noise to Loki again.
+
+    Crash safety: before overwriting config.ini, the pre-redirect content is
+    also written to a sibling ``config.ini.pytest-bak`` backup. If the
+    process is killed mid-session (OOM, `kill -9`, CI eviction) the teardown
+    below never runs and the real config.ini is left pointing at a tmp dir
+    that will eventually be cleaned up -- silently misdirecting the
+    developer's real logs away from Loki, which is exactly the failure mode
+    this fixture exists to prevent. On the *next* session, an orphaned
+    backup is detected and restored before anything else reads config.ini,
+    so the corruption self-heals instead of persisting (or perpetuating,
+    since a naive restore would otherwise re-snapshot the corrupted file as
+    "original").
     """
     config_path = Path.home() / ".nyxGPT" / "config.ini"
+    backup_path = config_path.with_name(config_path.name + ".pytest-bak")
+
+    if backup_path.exists():
+        # A prior session crashed before restoring config.ini -- recover the
+        # real content now, before anything else (including this fixture)
+        # reads or snapshots it.
+        config_path.write_text(backup_path.read_text())
+        backup_path.unlink()
+
     original_text = config_path.read_text()
 
     prod_log_dir = get_log_dir(load_config(None))
@@ -136,6 +157,11 @@ def _isolate_test_log_dir(tmp_path_factory, _ensure_test_config):
     if not redirected_cfg.has_section("logging"):
         redirected_cfg.add_section("logging")
     redirected_cfg.set("logging", "dir", str(tmp_log_dir))
+
+    # Persist the pre-redirect content as a recovery backup *before*
+    # overwriting config.ini, so a hard-killed process leaves behind
+    # something the next session can recover from.
+    backup_path.write_text(original_text)
     with config_path.open("w", encoding="utf-8") as fh:
         redirected_cfg.write(fh)
 
@@ -146,6 +172,7 @@ def _isolate_test_log_dir(tmp_path_factory, _ensure_test_config):
 
     monkeypatch.undo()
     config_path.write_text(original_text)
+    backup_path.unlink(missing_ok=True)
 
     after = _snapshot()
     changed = sorted(p for p in after if before.get(p) != after.get(p))
