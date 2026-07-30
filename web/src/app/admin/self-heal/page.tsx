@@ -13,6 +13,7 @@ type Component = {
   healthy: boolean;
   source: string;
   desired?: boolean;
+  note?: string;
 };
 
 type HealEvent = {
@@ -447,6 +448,18 @@ export default function SelfHealPage() {
                             ? 'enabled in config, no container running'
                             : `state=${c.state}${c.health ? ` health=${c.health}` : ''}`}
                       </span>
+                      {c.note && (
+                        <div
+                          style={{
+                            marginTop: '0.25rem',
+                            fontSize: '0.7rem',
+                            color: 'var(--foreground-muted)',
+                            fontStyle: 'italic',
+                          }}
+                        >
+                          {c.note}
+                        </div>
+                      )}
                     </div>
                     <button
                       onClick={() => handleHealNow(c.service)}

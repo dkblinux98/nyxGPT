@@ -628,6 +628,40 @@ describe('SelfHealPage', () => {
     expect(screen.getByText(/profile disabled in config, not auto-healed/)).toBeInTheDocument();
   });
 
+  it('surfaces an inert-leftover note on a component that shadowed another mode', async () => {
+    server.use(
+      http.get('/api/v1/self-heal/status', () =>
+        HttpResponse.json({
+          enabled: true,
+          mode: 'terraform',
+          components: [
+            {
+              service: 'cassandra',
+              container: 'nyxgpt-tf-cassandra',
+              state: 'running',
+              health: 'healthy',
+              healthy: true,
+              source: 'terraform',
+              note: 'inert native leftover: nyxgpt-cassandra (state=exited)',
+            },
+          ],
+          unhealthy_count: 0,
+          events: [],
+        })
+      )
+    );
+    mockObservability(mockMonitoringDisabled, mockLogAggregationDisabled);
+
+    render(<SelfHealPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('cassandra')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByText('inert native leftover: nyxgpt-cassandra (state=exited)')
+    ).toBeInTheDocument();
+  });
+
   it('brings an absent-but-desired component up via "Heal now"', async () => {
     server.use(
       http.get('/api/v1/self-heal/status', () =>

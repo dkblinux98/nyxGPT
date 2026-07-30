@@ -20,8 +20,11 @@ whichever `nyxgpt-api` Pod happens to be running it.
 ## How it works
 
 Four deployment modes are covered, and a given component is only ever
-monitored/healed by one of them at a time (see [Native/local-first
-mode](#nativelocal-first-mode) below for how that's decided):
+monitored/healed by whichever one is actually running it -- see [Leftover
+artifacts across mode switches](#leftover-artifacts-across-mode-switches)
+below for how that's decided when more than one mode has *something*
+present for a component (e.g. a deliberately-kept-around, stopped leftover
+from a mode you've since switched away from).
 
 1. **Docker Compose**: every `check_interval_seconds` (default 15s), the
    watchdog runs `docker compose -f <compose file> ps -a --format json` to
@@ -217,12 +220,12 @@ A component is only reported once it's actually installed/created (a brew
 service never set up via `nyxgpt ops install`, or a not-yet-created
 Cassandra container, is out of scope rather than "down").
 
-**Mode awareness**: if a component is already reported by `docker compose
-ps` (i.e. it's deployed via Compose), it is *not* also checked/healed
-natively — Compose is presumed to be that component's active deployment.
-This mirrors `nyxgpt ops`'s own native/Compose conflict detection (`nyxgpt
-ops status`) and means self-heal never starts a competing native service or
-restarts a container that isn't actually serving traffic.
+**Mode awareness**: if a component is also reported by Compose or Terraform,
+whichever mode has it *actually running* wins the row -- see [Leftover
+artifacts across mode switches](#leftover-artifacts-across-mode-switches)
+for the full rule. This mirrors `nyxgpt ops`'s own native/Compose conflict
+detection (`nyxgpt ops status`) and means self-heal never starts a competing
+native service or restarts a container that isn't actually serving traffic.
 
 Each component's status carries a `source` field (`"native"`, `"compose"`,
 `"terraform"`, or `"kubernetes"`) through `GET /api/v1/self-heal/status` and
@@ -253,9 +256,51 @@ access from inside the `api`
 container](#docker-access-from-inside-the-api-container) for the security
 tradeoffs, which apply identically here.
 
-**Mode awareness**: same rule as native mode -- a component already reported
-by Compose or native/local-first is not also checked here, so the three
-modes never double-heal (or collide on) the same component.
+**Mode awareness**: same rule as native mode -- see [Leftover artifacts
+across mode switches](#leftover-artifacts-across-mode-switches) for how a
+component reported by more than one mode is resolved, so the three modes
+never double-heal (or collide on) the same component.
+
+## Leftover artifacts across mode switches
+
+Native and Terraform mode default to the same host ports, and Cassandra
+specifically also shares the same `~/.nyxGPT/volumes/cassandra` data
+directory between them. An operator who's switched modes (e.g. installed
+Terraform mode after previously running native/local-first) may deliberately
+keep the inactive mode's containers/services around, stopped, as an intact
+path back to it -- **this is expected, first-class state, not something
+self-heal or `nyxgpt ops` cleans up on its own.**
+
+`list_component_status()` handles this via `_resolve_core_component_
+conflicts` (`src/nyxgpt/self_heal.py`): when Compose, native, and/or
+Terraform each report an entry for the same core component, whichever entry
+is actually **running** wins the row outright, regardless of which mode it
+came from or which was checked first. Only when *none* of them is running
+(the whole stack is down) does a fixed priority (Compose, then native, then
+Terraform) break the tie, preserving the historical behavior for that
+fully-down case. Every losing entry is folded into the winner's `note` field
+as an "inert leftover" annotation (visible via `GET
+/api/v1/self-heal/status`) -- informational only, and never able to affect
+the row's `healthy`/`state`/`source`, and never a target `heal_now` can
+restart.
+
+Before this (#3428), whichever mode's probe ran first claimed a component's
+row as soon as *any* container/service existed for it, even a stopped
+leftover -- so a stopped native `nyxgpt-cassandra` container could shadow a
+healthy, actively-running Terraform `nyxgpt-tf-cassandra`, showing the
+dashboard `native, Unhealthy` for a component that was actually fine. Worse,
+clicking "Heal now" on that row would have tried to *start* the stopped
+native container while Terraform's held the same port and data directory --
+a heal action that creates an outage instead of fixing one.
+
+As defense in depth on top of the attribution fix,
+`restart_native_component("cassandra")` itself refuses (rather than
+silently no-op'ing) to `docker restart` the native Cassandra container if
+Terraform's or Compose's Cassandra is currently running -- reusing the same
+port-collision concern as the `nyxgpt ops install --terraform --local`
+preflight check (#3193). The refusal is recorded as a normal heal event
+(`ok: false`) rather than a silent skip, so an operator watching the event
+log sees *why* nothing happened.
 
 ## Kubernetes mode
 
