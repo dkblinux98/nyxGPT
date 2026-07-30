@@ -13,6 +13,7 @@
 // diag logger, which is a no-op unless explicitly configured -- so nothing
 // here spams stderr per-request); this file only ever logs once, at boot.
 import { OTLPHttpJsonTraceExporter, registerOTel } from "@vercel/otel";
+import { logger } from "./lib/logger";
 
 const OTLP_ENDPOINT = process.env.NYXGPT_OTLP_ENDPOINT ?? "http://localhost:4318/v1/traces";
 const TRACING_ENABLED = process.env.NYXGPT_TRACING_ENABLED !== "false";
@@ -28,19 +29,12 @@ export async function register(): Promise<void> {
         serviceName: "nyxgpt-web",
         traceExporter: new OTLPHttpJsonTraceExporter({ url: OTLP_ENDPOINT }),
       });
-      // eslint-disable-next-line no-console
-      console.log(
-        `${new Date().toISOString()} INFO [-] nyxgpt.web: distributed tracing enabled ` +
-          `(otlp_endpoint=${OTLP_ENDPOINT})`
-      );
+      logger.info(`distributed tracing enabled (otlp_endpoint=${OTLP_ENDPOINT})`);
     } catch (error) {
       // Never let a tracing setup failure (e.g. a malformed endpoint URL)
       // take down the web server -- same no-op-on-failure contract as
       // nyxgpt.tracing.init_tracing.
-      // eslint-disable-next-line no-console
-      console.error(
-        `${new Date().toISOString()} WARN [-] nyxgpt.web: failed to initialize distributed tracing: ${error}`
-      );
+      logger.warn("failed to initialize distributed tracing", error);
     }
   }
 
