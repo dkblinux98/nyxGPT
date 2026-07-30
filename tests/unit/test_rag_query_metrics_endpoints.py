@@ -194,6 +194,25 @@ def test_rag_metrics_query_success_computes_evaluation_metrics() -> None:
     assert "timestamp" in eval_metrics
 
 
+def test_rag_metrics_query_increments_rag_queries_total_metric() -> None:
+    """Regression test for #3424: the RAG Playground's "Collect Metrics"
+    checkbox defaults on, routing every playground query through this
+    endpoint instead of /rag/query -- which meant nyxgpt_rag_queries_total
+    never moved for playground traffic and the RAG Performance dashboard
+    stayed empty even under active use. This endpoint must increment the
+    same counter/label /rag/query does."""
+    debug_info = _fake_debug_info()
+    with patch("nyxgpt.app.retrieve_context", return_value=(_fake_rows(), debug_info)):
+        response = client.post(
+            "/api/v1/rag/metrics/query",
+            json={"query": "test query"},
+        )
+
+    assert response.status_code == 200
+    metrics_text = client.get("/metrics").text
+    assert 'nyxgpt_rag_queries_total{source="rag_query"}' in metrics_text.replace(" ", "")
+
+
 def test_rag_metrics_query_retrieval_failure_returns_400() -> None:
     with patch("nyxgpt.app.retrieve_context", side_effect=RuntimeError("embedding backend down")):
         response = client.post(

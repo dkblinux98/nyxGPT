@@ -137,7 +137,7 @@ def test_install_records_success_action():
         patch.object(ops, "_ensure_log_symlinks", return_value=ok),
         patch.object(ops, "sync_env_from_config", return_value=ok),
         patch.object(ops, "_persist_compose_file_path", return_value=ok),
-        patch.object(ops, "_start_observability_stack", return_value=ok),
+        patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
     ):
         rc = ops.install(MagicMock(skip_observability=False, terraform=False, kubernetes=False))
@@ -166,7 +166,7 @@ def test_install_records_failure_action():
         patch.object(ops, "_ensure_log_symlinks", return_value=ok),
         patch.object(ops, "sync_env_from_config", return_value=ok),
         patch.object(ops, "_persist_compose_file_path", return_value=ok),
-        patch.object(ops, "_start_observability_stack", return_value=ok),
+        patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok),
         patch.object(ops, "_provision_glitchtip", return_value=ok),
     ):
         rc = ops.install(MagicMock(skip_observability=False, terraform=False, kubernetes=False))
@@ -372,7 +372,9 @@ def test_down_kubernetes_steps_records_success():
 
 def test_observability_cli_records_success_action():
     before = _ops_actions_total("observability", "observability", "success")
-    with patch.object(ops, "_start_observability_stack", return_value=[ops.OpsResult(True, "up")]):
+    with patch.object(
+        ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
+    ):
         rc = ops.observability(MagicMock())
     assert rc == 0
     after = _ops_actions_total("observability", "observability", "success")
@@ -381,7 +383,9 @@ def test_observability_cli_records_success_action():
 
 def test_reconcile_observability_enable_records_observability_command():
     before = _ops_actions_total("observability", "observability", "success")
-    with patch.object(ops, "_start_observability_stack", return_value=[ops.OpsResult(True, "up")]):
+    with patch.object(
+        ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
+    ):
         results = ops.reconcile_observability(True)
     assert all(r.ok for r in results)
     after = _ops_actions_total("observability", "observability", "success")

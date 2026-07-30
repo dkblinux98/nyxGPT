@@ -1,7 +1,7 @@
 """Unit tests for the opt-in Loki/promtail log aggregation stack.
 
 Validates the Docker Compose wiring, Loki retention config, promtail scrape
-config, and the Grafana Loki datasource + Logs Explorer dashboard.
+config, and the Grafana Loki datasource + SRE Home's featured logs panel.
 """
 
 from __future__ import annotations
@@ -161,17 +161,27 @@ def test_grafana_has_loki_datasource() -> None:
     assert loki_datasource["url"] == "http://loki:3100"
 
 
-def test_logs_explorer_dashboard_is_provisioned() -> None:
+def test_logs_explorer_dashboard_is_retired() -> None:
+    """Superseded by Grafana's Logs Drilldown app plus a featured, queryless
+    logs panel on SRE Home itself (#3424) -- the standalone dashboard is
+    gone, same as the earlier Operational Logs retirement above."""
     dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
-    dashboard = json.loads((dashboards_dir / "logs-explorer.json").read_text())
+    assert not (dashboards_dir / "logs-explorer.json").exists()
 
-    assert dashboard["uid"] == "nyxgpt-logs-explorer"
-    panel_types = {panel["type"] for panel in dashboard["panels"]}
-    assert "logs" in panel_types
 
-    for panel in dashboard["panels"]:
+def test_sre_home_features_a_queryless_logs_panel() -> None:
+    """Owner acceptance (#3424): logs must be a featured, queryless
+    `{job="nyxgpt"}` panel on SRE Home itself, not just a link out to
+    Logs Drilldown."""
+    dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
+    dashboard = json.loads((dashboards_dir / "sre-home.json").read_text())
+
+    logs_panels = [p for p in dashboard["panels"] if p["type"] == "logs"]
+    assert logs_panels, "SRE Home must render a featured logs panel, not just a link"
+    for panel in logs_panels:
         for target in panel["targets"]:
             assert target["datasource"]["type"] == "loki"
+            assert target["expr"] == '{job="nyxgpt"}'
 
 
 def test_sre_home_dashboard_is_provisioned_and_is_the_landing_page() -> None:

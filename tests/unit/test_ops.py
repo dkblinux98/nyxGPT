@@ -52,7 +52,7 @@ def test_ops_install_returns_zero_when_all_ok(capsys):
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
-        patch.object(ops, "_start_observability_stack", return_value=ok_results) as obs,
+        patch.object(ops, "_reconcile_grafana_provisioning", return_value=ok_results) as obs,
         patch.object(ops, "_provision_glitchtip", return_value=ok_results),
     ):
         rc = ops.install(MagicMock(skip_observability=False, terraform=False, kubernetes=False))
@@ -88,7 +88,9 @@ def test_ops_install_returns_nonzero_when_any_fail(capsys):
         patch.object(ops, "_ensure_log_symlinks", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "sync_env_from_config", return_value=[ops.OpsResult(True, "ok")]),
         patch.object(ops, "_persist_compose_file_path", return_value=[ops.OpsResult(True, "ok")]),
-        patch.object(ops, "_start_observability_stack", return_value=[ops.OpsResult(True, "ok")]),
+        patch.object(
+            ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "ok")]
+        ),
         patch.object(ops, "_provision_glitchtip", return_value=[ops.OpsResult(True, "ok")]),
     ):
         rc = ops.install(MagicMock(skip_observability=False, terraform=False, kubernetes=False))
@@ -118,7 +120,7 @@ def test_ops_install_skip_observability_flag_skips_the_step(capsys):
         patch.object(ops, "_ensure_log_symlinks", return_value=ok_results),
         patch.object(ops, "sync_env_from_config", return_value=ok_results),
         patch.object(ops, "_persist_compose_file_path", return_value=ok_results),
-        patch.object(ops, "_start_observability_stack") as obs,
+        patch.object(ops, "_reconcile_grafana_provisioning") as obs,
     ):
         rc = ops.install(MagicMock(skip_observability=True, terraform=False, kubernetes=False))
         assert rc == 0
@@ -4707,9 +4709,428 @@ def test_enable_observability_config_missing_file_is_a_noop(tmp_path):
     assert not cfg_path.exists()
 
 
+# --- Grafana provisioning drift detection / datasource verification (#3424) ---
+
+
+def _write_grafana_fixture(tmp_path, monkeypatch, *, datasource_yml: str, compose_yml: str = "x"):
+    datasource_path = (
+        tmp_path / "docker" / "grafana" / "provisioning" / "datasources" / "datasource.yml"
+    )
+    datasource_path.parent.mkdir(parents=True)
+    datasource_path.write_text(datasource_yml, encoding="utf-8")
+
+    compose_path = tmp_path / "docker-compose.yml"
+    compose_path.write_text(compose_yml, encoding="utf-8")
+
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(ops.self_heal, "COMPOSE_FILE", compose_path)
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    return datasource_path, compose_path
+
+
+_SAMPLE_DATASOURCE_YML = """
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+  - name: Jaeger
+    uid: jaeger
+    type: jaeger
+  - name: GlitchTip
+    uid: glitchtip-infinity
+    type: yesoreyeram-infinity-datasource
+"""
+
+
+@pytest.mark.unit
+def test_grafana_provisioned_datasource_uids_parses_declared_uids(tmp_path, monkeypatch):
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    assert set(ops._grafana_provisioned_datasource_uids()) == {
+        "prometheus",
+        "jaeger",
+        "glitchtip-infinity",
+    }
+
+
+@pytest.mark.unit
+def test_grafana_provisioned_datasource_uids_empty_when_file_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops, "REPO_ROOT", tmp_path)
+    assert ops._grafana_provisioned_datasource_uids() == []
+
+
+@pytest.mark.unit
+def test_grafana_provisioning_drifted_true_without_a_prior_marker(tmp_path, monkeypatch):
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    assert ops._grafana_provisioning_drifted() is True
+
+
+@pytest.mark.unit
+def test_grafana_provisioning_drifted_false_once_fingerprint_recorded(tmp_path, monkeypatch):
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    ops._record_grafana_provisioning_fingerprint()
+    assert ops._grafana_provisioning_drifted() is False
+
+
+@pytest.mark.unit
+def test_grafana_provisioning_drifted_true_after_datasource_yml_changes(tmp_path, monkeypatch):
+    datasource_path, _ = _write_grafana_fixture(
+        tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML
+    )
+    ops._record_grafana_provisioning_fingerprint()
+    assert ops._grafana_provisioning_drifted() is False
+
+    datasource_path.write_text(_SAMPLE_DATASOURCE_YML + "\n# an added datasource\n")
+    assert ops._grafana_provisioning_drifted() is True
+
+
+@pytest.mark.unit
+def test_recreate_grafana_skipped_without_docker(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: False)
+    assert ops._recreate_grafana_if_provisioning_drifted() is None
+
+
+@pytest.mark.unit
+def test_recreate_grafana_skipped_when_not_drifted(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_grafana_provisioning_drifted", lambda: False)
+    assert ops._recreate_grafana_if_provisioning_drifted() is None
+
+
+@pytest.mark.unit
+def test_recreate_grafana_skipped_when_not_yet_running(monkeypatch):
+    """Nothing stale to recreate if grafana was never up -- the caller's own
+    `up -d` creates it fresh with current provisioning already."""
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_grafana_provisioning_drifted", lambda: True)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "exited"})
+    assert ops._recreate_grafana_if_provisioning_drifted() is None
+
+
+@pytest.mark.unit
+def test_recreate_grafana_force_recreates_when_drifted_and_running(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_grafana_provisioning_drifted", lambda: True)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+
+    def fake_run(cmd, check=True):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops._recreate_grafana_if_provisioning_drifted()
+
+    assert result is not None
+    assert result.ok is True
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert cmd[:2] == ["docker", "compose"]
+    assert "--force-recreate" in cmd
+    assert cmd[-1] == "grafana"
+
+
+@pytest.mark.unit
+def test_recreate_grafana_reports_compose_failure(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(ops, "_grafana_provisioning_drifted", lambda: True)
+    monkeypatch.setattr(ops, "_compose_stack_snapshot", lambda: {"grafana": "running"})
+    monkeypatch.setattr(
+        ops, "_run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 1, stderr="boom")
+    )
+
+    result = ops._recreate_grafana_if_provisioning_drifted()
+
+    assert result is not None
+    assert result.ok is False
+    assert "boom" in result.details
+
+
+@pytest.mark.unit
+def test_verify_grafana_datasources_resolve_ok_when_all_present(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_grafana_provisioned_datasource_uids", lambda: ["prometheus", "jaeger"]
+    )
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [{"uid": "prometheus"}, {"uid": "jaeger"}, {"uid": "glitchtip-infinity"}]
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._verify_grafana_datasources_resolve("http://localhost:3001", "admin")
+
+    assert result.ok is True
+    assert "2" in result.message
+
+
+@pytest.mark.unit
+def test_verify_grafana_datasources_resolve_no_datasources_declared_is_ok(monkeypatch):
+    monkeypatch.setattr(ops, "_grafana_provisioned_datasource_uids", lambda: [])
+    result = ops._verify_grafana_datasources_resolve("http://localhost:3001", "admin")
+    assert result.ok is True
+
+
+@pytest.mark.unit
+def test_verify_grafana_datasources_resolve_fails_when_uid_missing(monkeypatch):
+    monkeypatch.setattr(
+        ops, "_grafana_provisioned_datasource_uids", lambda: ["prometheus", "jaeger"]
+    )
+    monkeypatch.setattr(ops.time, "sleep", lambda _: None)
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [{"uid": "prometheus"}]
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._verify_grafana_datasources_resolve("http://localhost:3001", "admin", attempts=2)
+
+    assert result.ok is False
+    assert "jaeger" in result.message
+    assert "nyxgpt ops logs grafana" in result.details
+
+
+@pytest.mark.unit
+def test_verify_grafana_datasources_resolve_fails_when_unreachable(monkeypatch):
+    monkeypatch.setattr(ops, "_grafana_provisioned_datasource_uids", lambda: ["prometheus"])
+    monkeypatch.setattr(ops.time, "sleep", lambda _: None)
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._verify_grafana_datasources_resolve("http://localhost:3001", "admin", attempts=2)
+
+    assert result.ok is False
+    assert "Could not reach Grafana" in result.message
+
+
+@pytest.mark.unit
+def test_grafana_expected_plugin_ids_parses_gf_install_plugins(tmp_path, monkeypatch):
+    compose_path = tmp_path / "docker-compose.yml"
+    compose_path.write_text(
+        'GF_INSTALL_PLUGINS: "grafana-lokiexplore-app,yesoreyeram-infinity-datasource"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ops.self_heal, "COMPOSE_FILE", compose_path)
+
+    assert ops._grafana_expected_plugin_ids() == [
+        "grafana-lokiexplore-app",
+        "yesoreyeram-infinity-datasource",
+    ]
+
+
+@pytest.mark.unit
+def test_grafana_expected_plugin_ids_empty_when_not_declared(tmp_path, monkeypatch):
+    compose_path = tmp_path / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr(ops.self_heal, "COMPOSE_FILE", compose_path)
+
+    assert ops._grafana_expected_plugin_ids() == []
+
+
+@pytest.mark.unit
+def test_verify_grafana_plugins_installed_ok_when_all_enabled(monkeypatch):
+    monkeypatch.setattr(ops, "_grafana_expected_plugin_ids", lambda: ["grafana-lokiexplore-app"])
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"enabled": True}
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._verify_grafana_plugins_installed("http://localhost:3001", "admin")
+
+    assert result.ok is True
+
+
+@pytest.mark.unit
+def test_verify_grafana_plugins_installed_no_plugins_declared_is_ok(monkeypatch):
+    monkeypatch.setattr(ops, "_grafana_expected_plugin_ids", lambda: [])
+    result = ops._verify_grafana_plugins_installed("http://localhost:3001", "admin")
+    assert result.ok is True
+
+
+@pytest.mark.unit
+def test_verify_grafana_plugins_installed_fails_when_plugin_missing(monkeypatch):
+    monkeypatch.setattr(ops, "_grafana_expected_plugin_ids", lambda: ["grafana-lokiexplore-app"])
+    monkeypatch.setattr(ops.time, "sleep", lambda _: None)
+
+    class FakeResponse:
+        status_code = 404
+
+        def json(self):
+            return {"message": "Plugin not found"}
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._verify_grafana_plugins_installed("http://localhost:3001", "admin", attempts=2)
+
+    assert result.ok is False
+    assert "grafana-lokiexplore-app" in result.message
+    assert "nyxgpt ops logs grafana" in result.details
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_provisioning_records_fingerprint_and_verifies(tmp_path, monkeypatch):
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+    monkeypatch.setattr(
+        ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "stack up")]
+    )
+    verify_calls = []
+    monkeypatch.setattr(
+        ops,
+        "_verify_grafana_datasources_resolve",
+        lambda *a, **k: verify_calls.append((a, k)) or ops.OpsResult(True, "verified"),
+    )
+
+    # No config.ini in this tmp home -- verification is skipped, not attempted.
+    results = ops._reconcile_grafana_provisioning()
+
+    assert all(r.ok for r in results)
+    assert verify_calls == []
+    assert not ops._grafana_provisioning_drifted()
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_provisioning_verifies_when_config_exists(tmp_path, monkeypatch):
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    (tmp_path / ".nyxGPT").mkdir()
+    cfg_path = tmp_path / ".nyxGPT" / "config.ini"
+    cfg_path.write_text(
+        "[monitoring]\ngrafana_ui_url = http://localhost:3001\ngrafana_admin_password = secret\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+    monkeypatch.setattr(
+        ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "stack up")]
+    )
+    plugin_verify_calls = []
+    monkeypatch.setattr(
+        ops,
+        "_verify_grafana_plugins_installed",
+        lambda url, pw: plugin_verify_calls.append((url, pw)) or ops.OpsResult(True, "verified"),
+    )
+    verify_calls = []
+    monkeypatch.setattr(
+        ops,
+        "_verify_grafana_datasources_resolve",
+        lambda url, pw: verify_calls.append((url, pw)) or ops.OpsResult(True, "verified"),
+    )
+
+    results = ops._reconcile_grafana_provisioning()
+
+    assert all(r.ok for r in results)
+    assert plugin_verify_calls == [("http://localhost:3001", "secret")]
+    assert verify_calls == [("http://localhost:3001", "secret")]
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_provisioning_skips_start_when_recreate_fails(tmp_path, monkeypatch):
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    monkeypatch.setattr(
+        ops,
+        "_recreate_grafana_if_provisioning_drifted",
+        lambda: ops.OpsResult(False, "recreate failed", "boom"),
+    )
+    start_calls = []
+    monkeypatch.setattr(ops, "_start_observability_stack", lambda: start_calls.append(True) or [])
+
+    results = ops._reconcile_grafana_provisioning()
+
+    assert len(results) == 1
+    assert results[0].ok is False
+    assert start_calls == []
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_provisioning_skips_verification_when_start_fails(tmp_path, monkeypatch):
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+    monkeypatch.setattr(
+        ops,
+        "_start_observability_stack",
+        lambda: [ops.OpsResult(False, "start failed", "boom")],
+    )
+    verify_calls = []
+    monkeypatch.setattr(
+        ops,
+        "_verify_grafana_datasources_resolve",
+        lambda *a, **k: verify_calls.append(True) or ops.OpsResult(True, "verified"),
+    )
+
+    results = ops._reconcile_grafana_provisioning()
+
+    assert any(not r.ok for r in results)
+    assert verify_calls == []
+    # A failed start must not be recorded as a successfully-applied fingerprint.
+    assert ops._grafana_provisioning_drifted()
+
+
 @pytest.mark.unit
 def test_observability_cli_entrypoint_returns_zero_on_success(capsys):
-    with patch.object(ops, "_start_observability_stack", return_value=[ops.OpsResult(True, "up")]):
+    with patch.object(
+        ops, "_reconcile_grafana_provisioning", return_value=[ops.OpsResult(True, "up")]
+    ):
         rc = ops.observability(MagicMock())
         assert rc == 0
         assert "[OK]" in capsys.readouterr().out
@@ -4719,7 +5140,7 @@ def test_observability_cli_entrypoint_returns_zero_on_success(capsys):
 def test_observability_cli_entrypoint_returns_nonzero_on_failure(capsys):
     with patch.object(
         ops,
-        "_start_observability_stack",
+        "_reconcile_grafana_provisioning",
         return_value=[ops.OpsResult(False, "down", "boom")],
     ):
         rc = ops.observability(MagicMock())

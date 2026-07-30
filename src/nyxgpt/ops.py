@@ -2997,7 +2997,7 @@ def install(args) -> int:
         ("compose file path", _persist_compose_file_path),
     ]
     if not getattr(args, "skip_observability", False):
-        steps.append(("observability stack", _start_observability_stack))
+        steps.append(("observability stack", _reconcile_grafana_provisioning))
         steps.append(("glitchtip auto-provisioning", _provision_glitchtip))
     for step_name, fn in steps:
         try:
@@ -4285,6 +4285,251 @@ def _enable_observability_config(cfg_path: Path | None = None) -> None:
     os.chmod(cfg_path, 0o600)
 
 
+def _grafana_provisioning_fingerprint() -> str:
+    """sha256 over everything that only takes effect when the `grafana`
+    container is recreated: the datasource provisioning file (new/changed
+    datasources) and the Compose file itself (image tag, `GF_INSTALL_PLUGINS`,
+    any other env). `docker compose up -d` alone does NOT pick up an env or
+    image change on an already-running container -- it needs
+    `--force-recreate`. This fingerprint lets `_start_observability_stack`
+    detect that drift deterministically (#3424) instead of leaving dashboards
+    silently pointed at a stale container missing a plugin or datasource.
+    """
+    digest = hashlib.sha256()
+    for path in (
+        REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources" / "datasource.yml",
+        self_heal.COMPOSE_FILE,
+    ):
+        if path.exists():
+            digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _grafana_provisioning_fingerprint_marker() -> Path:
+    """Host-side marker recording the provisioning fingerprint last applied.
+
+    Stored outside Grafana's own bind-mounted data dir (like
+    `_migration_marker_path`) so it survives independently of the
+    container/volume lifecycle and reflects what THIS tool last reconciled,
+    not what the container happens to contain.
+    """
+    state_dir = Path.home() / ".nyxGPT" / ".migration-state"
+    _ensure_dir(state_dir)
+    return state_dir / "grafana-provisioning.fingerprint"
+
+
+def _grafana_provisioning_drifted() -> bool:
+    """True if the datasource provisioning file or Compose grafana config
+    changed since the last time this tool recreated the container for it."""
+    marker = _grafana_provisioning_fingerprint_marker()
+    if not marker.exists():
+        return True
+    try:
+        return marker.read_text().strip() != _grafana_provisioning_fingerprint()
+    except OSError:
+        return True
+
+
+def _record_grafana_provisioning_fingerprint() -> None:
+    """Persist the current provisioning fingerprint as "already applied"."""
+    _grafana_provisioning_fingerprint_marker().write_text(_grafana_provisioning_fingerprint())
+
+
+def _grafana_provisioned_datasource_uids() -> list[str]:
+    """Datasource `uid`s declared in `docker/grafana/provisioning/datasources/datasource.yml`.
+
+    Deliberately regex-scraped rather than parsed with PyYAML: PyYAML isn't a
+    runtime dependency of this package (only a test-suite one), and this file
+    is repo-controlled config, not user input, so a targeted regex over its
+    known `uid: <value>` shape is sufficient.
+    """
+    path = REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources" / "datasource.yml"
+    if not path.exists():
+        return []
+    return re.findall(r"^\s*uid:\s*(\S+)\s*$", path.read_text(), re.MULTILINE)
+
+
+def _verify_grafana_datasources_resolve(
+    grafana_ui_url: str,
+    grafana_admin_password: str,
+    *,
+    attempts: int = 5,
+    delay_s: float = 2.0,
+) -> OpsResult:
+    """Confirm every datasource declared in provisioning actually resolves in
+    the running Grafana instance -- i.e. `GET /api/datasources` lists it.
+
+    This directly targets the #3424 failure mode: a provisioning/plugin/env
+    change that silently fails to apply (stale container, broken plugin
+    download, a provisioning YAML error for one entry) leaves a declared
+    datasource unreachable, and every panel that queries it shows "Datasource
+    was not found" instead of a clear ops-level error. Retries briefly since
+    Grafana may still be inside its startup/provisioning window right after
+    `up -d`.
+    """
+    expected = set(_grafana_provisioned_datasource_uids())
+    if not expected:
+        return OpsResult(True, "No datasources declared in provisioning -- nothing to verify")
+
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            with httpx.Client(
+                base_url=grafana_ui_url,
+                auth=("admin", grafana_admin_password),
+                timeout=5.0,
+            ) as client:
+                resp = client.get("/api/datasources")
+                resp.raise_for_status()
+                actual = {ds.get("uid") for ds in resp.json()}
+            missing = expected - actual
+            if not missing:
+                return OpsResult(
+                    True, f"Verified {len(expected)} provisioned Grafana datasource(s) resolve"
+                )
+            if attempt < attempts - 1:
+                time.sleep(delay_s)
+                continue
+            return OpsResult(
+                False,
+                f"Grafana datasource(s) failed to provision: {', '.join(sorted(missing))}",
+                "Declared in docker/grafana/provisioning/datasources/datasource.yml but not "
+                "returned by GET /api/datasources -- check `nyxgpt ops logs grafana` for a "
+                "provisioning error (bad plugin id, YAML syntax, unreachable datasource type) "
+                "near 'inserting datasource from configuration'.",
+            )
+        except Exception as e:
+            last_error = e
+            if attempt < attempts - 1:
+                time.sleep(delay_s)
+                continue
+    return OpsResult(
+        False,
+        "Could not reach Grafana to verify provisioned datasources",
+        str(last_error) if last_error else "",
+    )
+
+
+def _grafana_expected_plugin_ids() -> list[str]:
+    """Plugin ids declared in `docker-compose.yml`'s `GF_INSTALL_PLUGINS`.
+
+    Regex-scraped for the same reason as `_grafana_provisioned_datasource_uids`
+    -- no PyYAML runtime dependency, and this is repo-controlled config.
+    """
+    if not self_heal.COMPOSE_FILE.exists():
+        return []
+    match = re.search(r'GF_INSTALL_PLUGINS:\s*"([^"]*)"', self_heal.COMPOSE_FILE.read_text())
+    if not match:
+        return []
+    return [p.strip() for p in match.group(1).split(",") if p.strip()]
+
+
+def _verify_grafana_plugins_installed(
+    grafana_ui_url: str,
+    grafana_admin_password: str,
+    *,
+    attempts: int = 5,
+    delay_s: float = 2.0,
+) -> OpsResult:
+    """Confirm every plugin listed in `GF_INSTALL_PLUGINS` is actually
+    installed and enabled, rather than assuming a successful env-var-driven
+    download (#3424's "plugin installation is confirmed... rather than
+    assumed from GF_INSTALL_PLUGINS" AC). `GF_INSTALL_PLUGINS` downloads
+    each plugin from the network at container startup and fails silently
+    (a logged error, not a crash) if that download fails -- e.g. no network
+    access, registry outage, or a renamed/typo'd plugin id.
+    """
+    expected = _grafana_expected_plugin_ids()
+    if not expected:
+        return OpsResult(True, "No plugins declared in GF_INSTALL_PLUGINS -- nothing to verify")
+
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            missing: list[str] = []
+            with httpx.Client(
+                base_url=grafana_ui_url,
+                auth=("admin", grafana_admin_password),
+                timeout=5.0,
+            ) as client:
+                for plugin_id in expected:
+                    resp = client.get(f"/api/plugins/{plugin_id}/settings")
+                    if resp.status_code != 200 or not resp.json().get("enabled"):
+                        missing.append(plugin_id)
+            if not missing:
+                return OpsResult(
+                    True, f"Verified {len(expected)} GF_INSTALL_PLUGINS plugin(s) installed"
+                )
+            if attempt < attempts - 1:
+                time.sleep(delay_s)
+                continue
+            return OpsResult(
+                False,
+                f"Grafana plugin(s) failed to install: {', '.join(missing)}",
+                "Listed in docker-compose.yml's GF_INSTALL_PLUGINS but not enabled per "
+                "GET /api/plugins/<id>/settings -- check `nyxgpt ops logs grafana` for a "
+                "plugin download error (no network access, registry outage, renamed/typo'd "
+                "plugin id).",
+            )
+        except Exception as e:
+            last_error = e
+            if attempt < attempts - 1:
+                time.sleep(delay_s)
+                continue
+    return OpsResult(
+        False,
+        "Could not reach Grafana to verify installed plugins",
+        str(last_error) if last_error else "",
+    )
+
+
+def _recreate_grafana_if_provisioning_drifted() -> OpsResult | None:
+    """Force-recreate just the `grafana` Compose container when provisioning
+    or env has drifted since this tool last reconciled it.
+
+    `docker compose up -d` is a no-op for a container whose image/env didn't
+    change from Compose's point of view even when the datasource YAML it
+    mounts read-only did -- and env vars like `GF_INSTALL_PLUGINS` only take
+    effect at container start. Recreating (not merely restarting) guarantees
+    both are picked up on the next boot. Returns None if there's nothing to
+    do (not drifted, Docker unavailable, or grafana isn't running yet -- the
+    normal `up -d` right after this call handles first-boot).
+    """
+    if not _compose_available():
+        return None
+    if not _grafana_provisioning_drifted():
+        return None
+    if _compose_stack_snapshot().get("grafana") != "running":
+        # Nothing running yet to be stale -- the normal `up -d` below will
+        # create it fresh with current provisioning/env already.
+        return None
+
+    cmd = [
+        "docker",
+        "compose",
+        "-f",
+        str(self_heal.COMPOSE_FILE),
+        "--profile",
+        "monitoring",
+        "up",
+        "-d",
+        "--force-recreate",
+        "grafana",
+    ]
+    cp = _run(cmd, check=False)
+    if cp.returncode != 0:
+        return OpsResult(
+            False,
+            "Failed to recreate Grafana for provisioning/env drift",
+            (cp.stderr or cp.stdout or "").strip(),
+        )
+    return OpsResult(
+        True,
+        "Recreated Grafana (provisioning/env drift detected) so plugin installs and "
+        "datasource changes actually take effect",
+    )
+
+
 def _start_observability_stack(
     extra_compose_files: list[Path] | None = None, force_recreate: bool = False
 ) -> list[OpsResult]:
@@ -4386,6 +4631,55 @@ def _start_observability_stack(
     ]
 
 
+def _reconcile_grafana_provisioning() -> list[OpsResult]:
+    """Bring the observability stack up AND make Grafana's provisioning
+    state deterministic: recreate on drift before starting, then verify the
+    declared datasources and GF_INSTALL_PLUGINS plugins actually resolve
+    afterward (#3424).
+
+    This is the entrypoint `nyxgpt ops install` / `nyxgpt ops observability`
+    / wizard toggles use instead of calling `_start_observability_stack`
+    directly, so the extra drift/verification steps apply everywhere the
+    stack gets (re)started but stay out of `_start_observability_stack`
+    itself (which several other call sites -- including the terraform-network
+    variant and tests -- use as a narrower "just run compose up" primitive).
+    """
+    drift_result = _recreate_grafana_if_provisioning_drifted()
+    results = [drift_result] if drift_result is not None else []
+    if drift_result is not None and not drift_result.ok:
+        return results
+
+    start_results = _start_observability_stack()
+    results += start_results
+    if not all(r.ok for r in start_results):
+        return results
+
+    _record_grafana_provisioning_fingerprint()
+
+    cfg_path = Path.home() / ".nyxGPT" / "config.ini"
+    if cfg_path.exists():
+        try:
+            cfg_parser = ConfigParser()
+            cfg_parser.read(cfg_path)
+            monitoring_config = get_monitoring_config(cfg_parser)
+            grafana_ui_url = monitoring_config["grafana_ui_url"]
+            grafana_admin_password = get_monitoring_grafana_admin_password(cfg_parser)
+            results.append(
+                _verify_grafana_plugins_installed(grafana_ui_url, grafana_admin_password)
+            )
+            results.append(
+                _verify_grafana_datasources_resolve(grafana_ui_url, grafana_admin_password)
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to verify Grafana plugins/datasources, skipping: %s",
+                e,
+                extra={"component": "ops"},
+            )
+
+    return results
+
+
 def _start_observability_stack_terraform() -> list[OpsResult]:
     """Start the observability Compose profiles on the terraform network.
 
@@ -4457,7 +4751,7 @@ def observability(_args) -> int:
     logger.info(
         "ops: observability starting", extra={"component": "ops", "action": "observability"}
     )
-    results = _start_observability_stack()
+    results = _reconcile_grafana_provisioning()
     ok = _emit_results("observability", results)
     logger.info(
         "ops: observability %s",
@@ -4483,7 +4777,7 @@ def reconcile_observability(enable: bool) -> list[OpsResult]:
     unlike `restart()`/`stop()`, this is the entrypoint the dashboard calls
     directly rather than going through the CLI-facing `observability()`.
     """
-    results = _start_observability_stack() if enable else _stop_observability_stack()
+    results = _reconcile_grafana_provisioning() if enable else _stop_observability_stack()
     result, message = _ops_action_outcome(results)
     _record_ops_action("observability" if enable else "stop", "observability", result, message)
     return results

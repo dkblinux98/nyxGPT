@@ -4262,6 +4262,7 @@ def rag_metrics_query(_request: Request, req: RagMetricsQueryRequest) -> RagMetr
             )
             for r in results
         ]
+        prom_metrics.RAG_QUERIES_TOTAL.labels(source="rag_query").inc()
 
         return RagMetricsQueryResponse(
             results=out,
