@@ -585,6 +585,34 @@ setup-time failure can't crash the web server or the browser bundle. Point
 same collector the API uses -- see
 [configuration.md](configuration.md#web-tier-environment-variables).
 
+### Verifying the backbone end to end
+
+Reproducible on a fresh `nyxgpt ops install` (which brings up the
+`tracing`/`logging`/`monitoring` profiles automatically):
+
+1. Open the web UI and send one chat message.
+2. **Loki → Jaeger**: open Grafana's Logs Drilldown (Admin Dashboard → SRE
+   Overview → SRE Home), filter to `{job="nyxgpt", logger="nyxgpt.web"}`,
+   find the `chat/stream: start ...` line for that request, and click its
+   trace-id derived-field link -- it opens the matching trace in the
+   Jaeger datasource.
+3. **Jaeger → Loki**: from that trace, note its `trace_id`; back in
+   Drilldown, query `{job="nyxgpt"} |= "<trace_id>"` -- it returns every
+   log line from every hop (web, api, and any RAG/Cassandra spans) for that
+   one request.
+4. **Single trace, multiple hops**: the trace itself should show a root
+   span from the browser's `fetch` (or the Next.js server span if browser
+   tracing didn't start one), a child span for the Next.js → FastAPI call,
+   and a further child span for the FastAPI → Ollama call --
+   `service.name` distinguishes `nyxgpt-web-browser`, `nyxgpt-web`, and
+   `nyxgpt-api`.
+
+If step 2's derived-field link is missing or step 4 shows disconnected
+traces instead of one, `nyxgpt ops doctor`'s OTLP-reachability check
+(#3350) is the first thing to check -- it flags `[tracing] enabled` but
+nothing listening on `otlp_endpoint`, the most common reason spans go
+missing silently.
+
 ## Error Tracking
 
 Self-hosted error tracking (GlitchTip) is local-only — no exception data is
