@@ -114,8 +114,9 @@ API Cache:       50 entries, 5 minutes
    or "failed" toast) — instead you should see an info toast noting the
    change will complete once you're back online
 4. Open DevTools > Application > Background Services > Background Sync (or
-   inspect the `session-mutations-queue` IndexedDB store) to see the queued
-   request
+   inspect the `session-mutations-queue`/`document-mutations-queue`
+   IndexedDB store, matching whichever action you triggered) to see the
+   queued request
 5. Go back online and confirm the queued request fires automatically
    (visible in the Network tab or by reloading and seeing the change
    persisted server-side)
