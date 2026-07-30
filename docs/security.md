@@ -194,26 +194,6 @@ directory. They are not encrypted at rest.
 
 ---
 
-## Filesystem tools (`/api/v1/tools/*`)
-
-`ls`, `cat`, and `grep` (see [`docs/api.md`](api.md)) read files from the
-server's filesystem on request, so they're confined to a root directory —
-defense in depth in case the API is ever reached over the network, since
-these endpoints are otherwise unauthenticated by default like the rest of
-`/api/v1/*`:
-
-```ini
-[api]
-# Defaults to the server process's home directory if unset.
-tools_root = /home/youruser
-```
-
-A request for a path outside `tools_root` (including `..` traversal) gets
-`403 Forbidden`. Narrow this further (e.g. to a single project directory) if
-you don't need the tools to reach your whole home directory.
-
----
-
 ## Rate limiting configuration
 
 The API includes optional token-bucket rate limiting per client IP, disabled

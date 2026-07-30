@@ -212,7 +212,6 @@ nyxgpt sessions title default "Python Debugging Session"
 ### Manual rename
 
 - **Web UI**: Click the "✏️ Rename" button in the chat interface
-- **TUI**: Press `Ctrl+N` to rename the current session
 - **API**: `POST /api/v1/sessions/{name}/rename` — see [API — Session Metadata Management](api.md#post-apiv1sessionsnamerename)
 
 ### Filename sync
@@ -393,10 +392,6 @@ nyxgpt sessions list-attachments research
 # Attached documents for session 'research':
 #   - report-2025.pdf
 ```
-
-### TUI (Terminal UI)
-
-Press **Ctrl+A** to open the document attachment manager for the current session. The modal lets you attach new documents (by entering a `doc_id`) and detach existing ones. The status bar at the bottom of the screen shows a `Docs:<count>` indicator whenever one or more documents are attached to the current session.
 
 ### Web UI
 

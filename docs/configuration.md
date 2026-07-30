@@ -221,14 +221,12 @@ FastAPI backend configuration.
 [api]
 host = 127.0.0.1
 port = 8000
-tools_root = ~
 ```
 
 | Key | Description |
 |---|---|
 | `host` | Bind address for the API server (default: `127.0.0.1`) |
 | `port` | Port for the API server (default: `8000`) |
-| `tools_root` | Root directory `/api/v1/tools/{ls,cat,grep}` are confined to — defense in depth against arbitrary file reads (see [security.md](security.md#filesystem-tools-apiv1tools)). Defaults to your home directory if unset or blank. |
 
 ---
 

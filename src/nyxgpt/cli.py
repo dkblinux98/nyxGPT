@@ -37,7 +37,6 @@ from nyxgpt.config import (
 from nyxgpt.logging import configure_logging
 from nyxgpt.rag.rag import ingest_document, retrieve_context
 from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
-
 from nyxgpt.wizard import run_wizard
 
 

@@ -2,7 +2,7 @@
 
 **nyxGPT** is a local-first, private, extensible ChatGPT-style system designed to run entirely on your own machine.
 
-It uses **Ollama** for local LLM inference, supports persistent **conversation sessions**, optional **Retrieval‑Augmented Generation (RAG)** backed by **Apache Cassandra**, a powerful **CLI**, a **FastAPI backend**, a rich **terminal UI (TUI)**, and a lightweight **local web UI** built with Next.js.
+It uses **Ollama** for local LLM inference, supports persistent **conversation sessions**, optional **Retrieval‑Augmented Generation (RAG)** backed by **Apache Cassandra**, a powerful **CLI**, a **FastAPI backend**, and a lightweight **local web UI** built with Next.js.
 
 Your data stays on your machine. No cloud dependency is required.
 
@@ -27,10 +27,10 @@ Your data stays on your machine. No cloud dependency is required.
 - **Automatic session naming** with LLM‑generated titles and smart filename sync
 - **Session management** with right-click context menus, rename, export, delete, and pin
 - Optional **RAG** using Cassandra 5.0 native vector search
-- **Per‑session RAG controls** via WebUI, TUI, and API
+- **Per‑session RAG controls** via WebUI and API
 - Config‑driven RAG context pruning and prompt optimization
 - **Optimized embedding generation** with async processing, GPU utilization, and adaptive batching
-- Streaming responses (CLI, TUI, API, Web UI)
+- Streaming responses (CLI, API, Web UI)
 - Unified core shared between CLI and FastAPI
 - Optional **API rate limiting** (disabled by default for localhost use)
 - Homebrew‑managed background services
@@ -78,8 +78,7 @@ nyxgpt ops install    # installs and starts API, web UI, Cassandra helpers, obse
 nyxgpt ops doctor      # verify everything is healthy
 ```
 
-Then chat from the CLI, the [terminal UI](docs/ui.md#terminal-ui-tui)
-(`nyxgpt tui`), or the [local web UI](docs/ui.md#local-web-ui-nextjs)
+Then chat from the CLI or the [local web UI](docs/ui.md#local-web-ui-nextjs)
 (`http://127.0.0.1:3000`, started by `nyxgpt ops install` or
 `nyxgpt ops restart web`):
 
@@ -127,7 +126,7 @@ Common starting points:
 - **Configuration** – [`docs/configuration.md`](docs/configuration.md)
 - **CLI** – [`docs/cli.md`](docs/cli.md)
 - **API** – [`docs/api.md`](docs/api.md)
-- **UI (TUI + Web)** – [`docs/ui.md`](docs/ui.md)
+- **UI (Web)** – [`docs/ui.md`](docs/ui.md)
 - **RAG** – [`docs/rag.md`](docs/rag.md)
 - **Sessions & Memory** – [`docs/sessions.md`](docs/sessions.md)
 - **Docker Compose** – [`docs/docker-compose.md`](docs/docker-compose.md)
@@ -162,7 +161,7 @@ and [AGENTS.md](AGENTS.md) for agent roles and permissions.
 
 ## Status
 
-The core architecture, ops tooling, streaming, TUI, web UI, and RAG foundations are complete.
+The core architecture, ops tooling, streaming, web UI, and RAG foundations are complete.
 
 Future work focuses on:
 - UX refinement
