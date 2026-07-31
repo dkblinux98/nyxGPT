@@ -155,15 +155,31 @@ describe('CollectionsPage', () => {
 
     await user.click(screen.getByRole('button', { name: /clear collection/i }));
 
-    // errorData.error branch
+    // errorData.error.message branch (the real API error envelope shape --
+    // see http_exception_handler in src/nyxgpt/app.py)
     server.use(
       http.delete('/api/v1/rag/collections/notes', () =>
-        HttpResponse.json({ error: 'Collection is in use' }, { status: 400 })
+        HttpResponse.json(
+          { error: { code: 'http_error', message: 'Collection is in use', details: null, request_id: 'req-1' } },
+          { status: 400 }
+        )
       )
     );
     await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
     await waitFor(() => {
       expect(screen.getByText(/Failed to delete collection: Collection is in use/)).toBeInTheDocument();
+    });
+
+    // errorData.error string branch (the Next.js proxy route's own catch-block
+    // shape, e.g. on a network failure between the proxy and the backend)
+    server.use(
+      http.delete('/api/v1/rag/collections/notes', () =>
+        HttpResponse.json({ error: 'Backend returned 502' }, { status: 502 })
+      )
+    );
+    await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to delete collection: Backend returned 502/)).toBeInTheDocument();
     });
 
     // errorData.detail branch (error absent)
@@ -302,9 +318,15 @@ describe('CollectionsPage', () => {
     await user.click(screen.getByRole('button', { name: /create collection/i }));
     await user.type(screen.getByLabelText(/collection name/i), 'my_collection');
 
-    // errorData.error branch
+    // errorData.error.message branch (the real API error envelope shape --
+    // e.g. a 409 duplicate-collection-name rejection)
     server.use(
-      http.post('/api/v1/rag/collections', () => HttpResponse.json({ error: 'name taken' }, { status: 409 }))
+      http.post('/api/v1/rag/collections', () =>
+        HttpResponse.json(
+          { error: { code: 'http_error', message: 'name taken', details: null, request_id: 'req-2' } },
+          { status: 409 }
+        )
+      )
     );
     await user.click(within(createModal()).getByRole('button', { name: 'Create Collection' }));
     await waitFor(() => {
@@ -453,10 +475,13 @@ describe('CollectionsPage', () => {
     });
     const viewSettingsButtons = screen.getAllByRole('button', { name: /view settings/i });
 
-    // errorData.error branch
+    // errorData.error.message branch (the real API error envelope shape)
     server.use(
       http.get('/api/v1/rag/collections/notes/settings', () =>
-        HttpResponse.json({ error: 'settings unavailable' }, { status: 500 })
+        HttpResponse.json(
+          { error: { code: 'http_error', message: 'settings unavailable', details: null, request_id: 'req-3' } },
+          { status: 500 }
+        )
       )
     );
     await user.click(viewSettingsButtons[1]);
@@ -512,10 +537,13 @@ describe('CollectionsPage', () => {
       expect(screen.getByRole('heading', { name: 'Collection Settings: notes' })).toBeInTheDocument();
     });
 
-    // errorData.error branch
+    // errorData.error.message branch (the real API error envelope shape)
     server.use(
       http.put('/api/v1/rag/collections/notes/settings', () =>
-        HttpResponse.json({ error: 'invalid chunk size' }, { status: 400 })
+        HttpResponse.json(
+          { error: { code: 'http_error', message: 'invalid chunk size', details: null, request_id: 'req-4' } },
+          { status: 400 }
+        )
       )
     );
     await user.click(screen.getByRole('button', { name: /save settings/i }));

@@ -318,7 +318,7 @@ def max_collection_name_length(base_table: str | None = None) -> int:
     """
     if base_table is None:
         base_table = _cassandra_cfg().table
-    return CASSANDRA_IDENTIFIER_MAX_LEN - len(base_table) - 1
+    return max(0, CASSANDRA_IDENTIFIER_MAX_LEN - len(base_table) - 1)
 
 
 class CassandraConnectionPool:

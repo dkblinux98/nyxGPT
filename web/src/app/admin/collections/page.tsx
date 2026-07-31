@@ -34,6 +34,26 @@ function validateCollectionName(name: string): string | null {
   return null;
 }
 
+// The API's error envelope (see `http_exception_handler` in src/nyxgpt/app.py)
+// nests the human-readable message under `error.message`; a plain string
+// `error` (from the Next.js proxy route's own catch block, e.g. on a network
+// failure) or a top-level `detail` are also handled as fallbacks.
+function extractErrorMessage(errorData: unknown, fallback: string): string {
+  if (errorData && typeof errorData === 'object') {
+    const { error, detail } = errorData as { error?: unknown; detail?: unknown };
+    if (typeof error === 'string') {
+      return error;
+    }
+    if (error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string') {
+      return (error as { message: string }).message;
+    }
+    if (typeof detail === 'string') {
+      return detail;
+    }
+  }
+  return fallback;
+}
+
 export default function CollectionsPage() {
   const [collections, setCollections] = useState<CollectionInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -83,7 +103,7 @@ export default function CollectionsPage() {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(errorData.error || errorData.detail || `HTTP ${res.status}`);
+        throw new Error(extractErrorMessage(errorData, `HTTP ${res.status}`));
       }
 
       // Reload collections after successful delete
@@ -126,7 +146,7 @@ export default function CollectionsPage() {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(errorData.error || errorData.detail || `HTTP ${res.status}`);
+        throw new Error(extractErrorMessage(errorData, `HTTP ${res.status}`));
       }
 
       // Reload collections and close modal
@@ -154,7 +174,7 @@ export default function CollectionsPage() {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(errorData.error || errorData.detail || `HTTP ${res.status}`);
+        throw new Error(extractErrorMessage(errorData, `HTTP ${res.status}`));
       }
 
       const data = await res.json();
@@ -192,7 +212,7 @@ export default function CollectionsPage() {
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(errorData.error || errorData.detail || `HTTP ${res.status}`);
+        throw new Error(extractErrorMessage(errorData, `HTTP ${res.status}`));
       }
 
       const data = await res.json();
