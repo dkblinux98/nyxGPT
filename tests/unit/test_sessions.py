@@ -2190,14 +2190,15 @@ def test_export_markdown_includes_rag_citations(tmp_path: Path) -> None:
     ok, content = sessions.export_session_markdown("citations-md-test", sessions_dir)
     assert ok
 
-    # Verify citations are included
+    # Verify citations are included. chunk_id is the zero-based internal key;
+    # citations display the human-readable 1-based position instead.
     assert "### RAG Sources" in content
     assert "**[1] rag-guide.md**" in content
-    assert "(chunk 1)" in content
+    assert "(chunk 2)" in content
     assert "Confidence: 0.950" in content
     assert "RAG enhances LLM responses" in content
     assert "**[2] vector-search.md**" in content
-    assert "(chunk 3)" in content
+    assert "(chunk 4)" in content
     assert "Confidence: 0.880" in content
 
 
@@ -2243,7 +2244,8 @@ def test_export_session_html_with_citations(tmp_path: Path) -> None:
     assert '<div class="citations">' in content
     assert '<div class="citation-header">RAG Sources</div>' in content
     assert '<div class="citation-item">' in content
-    assert '<div class="citation-title">[1] source.md (chunk 2)</div>' in content
+    # chunk_id=2 is the zero-based internal key; displayed as 1-based "chunk 3".
+    assert '<div class="citation-title">[1] source.md (chunk 3)</div>' in content
     assert '<div class="citation-score">Confidence: 0.920</div>' in content
     assert '<div class="citation-text">Citation content here</div>' in content
 
@@ -2251,6 +2253,26 @@ def test_export_session_html_with_citations(tmp_path: Path) -> None:
     assert ".citations" in content
     assert ".citation-header" in content
     assert ".citation-item" in content
+
+
+def test_format_chunk_ref_prefers_chunk_number_and_total() -> None:
+    assert sessions.format_chunk_ref({"chunk_number": 2, "total_chunks": 5}) == "chunk 2 of 5"
+
+
+def test_format_chunk_ref_chunk_number_without_total() -> None:
+    assert sessions.format_chunk_ref({"chunk_number": 1, "total_chunks": None}) == "chunk 1"
+
+
+def test_format_chunk_ref_falls_back_to_chunk_id_plus_one() -> None:
+    """Citations persisted before chunk_number/total_chunks were tracked
+    fall back to the zero-based chunk_id + 1 -- this is what turns
+    "(chunk 0)" into the correct "(chunk 1)"."""
+    assert sessions.format_chunk_ref({"chunk_id": 0}) == "chunk 1"
+    assert sessions.format_chunk_ref({"chunk_id": 3}) == "chunk 4"
+
+
+def test_format_chunk_ref_no_chunk_info_falls_back_to_source() -> None:
+    assert sessions.format_chunk_ref({}) == "source"
 
 
 def test_export_markdown_no_citations(tmp_path: Path) -> None:

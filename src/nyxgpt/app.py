@@ -126,6 +126,7 @@ from nyxgpt.config import (
 from nyxgpt.logging import configure_logging, request_id_var
 from nyxgpt.ollama_client import ModelRuntimeError, get_json, post_json
 from nyxgpt.rag.rag import (
+    annotate_chunk_numbering,
     clear_query_cache,
     get_query_cache_stats,
     ingest_document,
@@ -2699,6 +2700,9 @@ def export_session_citations(
                             "text": chunk.get("text"),
                             "score": chunk.get("score"),
                             "similarity_score": chunk.get("similarity_score"),
+                            "collection": chunk.get("collection"),
+                            "chunk_number": chunk.get("chunk_number"),
+                            "total_chunks": chunk.get("total_chunks"),
                         }
                     )
 
@@ -2716,15 +2720,16 @@ def export_session_citations(
 
         for idx, citation in enumerate(citations, 1):
             doc_id = _escape_markdown(citation.get("doc_id", "Unknown"))
-            chunk_id = citation.get("chunk_id")
             # Use explicit None checking to avoid treating 0.0 as falsy
             score = citation.get("similarity_score")
             if score is None:
                 score = citation.get("score", 0.0)
             text = _escape_markdown(citation.get("text", ""))
 
-            chunk_ref = f"chunk {chunk_id}" if chunk_id is not None else "source"
-            lines.append(f"## [{idx}] {doc_id} ({chunk_ref})\n")
+            chunk_ref = sessions.format_chunk_ref(citation)
+            collection = citation.get("collection")
+            collection_suffix = f", {collection}" if collection and collection != "default" else ""
+            lines.append(f"## [{idx}] {doc_id} ({chunk_ref}{collection_suffix})\n")
             lines.append(f"**Confidence:** {score:.3f}")
             lines.append(f"**Message:** {citation['message_index']}\n")
 
@@ -2895,6 +2900,10 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
         rag_enabled = d["rag_enabled"] if rag_val is None else bool(rag_val)
         rag_filters = getattr(req, "rag_filters", None)
         rag_filters_dict = rag_filters.model_dump() if rag_filters else None
+        if rag_filters_dict and rag_filters_dict.get("collection"):
+            rag_filters_dict["collection"] = _resolve_and_validate_collection(
+                rag_filters_dict["collection"]
+            )
 
         # If batching is enabled, route through batch processor
         if _batch_processor is not None:
@@ -3034,6 +3043,9 @@ def chat(request: Request, req: ChatRequest) -> ChatResponse:
                         doc_id=chunk_data.get("doc_id"),
                         chunk_id=chunk_data.get("chunk_id"),
                         similarity_score=chunk_data.get("similarity_score"),
+                        collection=chunk_data.get("collection"),
+                        chunk_number=chunk_data.get("chunk_number"),
+                        total_chunks=chunk_data.get("total_chunks"),
                     )
                 )
 
@@ -3108,6 +3120,13 @@ def _create_streaming_response(request: Request, req: ChatRequest) -> StreamingR
             validate_session_name(req.session)
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e)) from e
+
+        # Validate the requested RAG collection (if any) before streaming starts,
+        # so an unknown collection surfaces as a clean 400 instead of a mid-stream error.
+        if req.rag_filters and req.rag_filters.collection:
+            req.rag_filters.collection = _resolve_and_validate_collection(
+                req.rag_filters.collection
+            )
 
         # Parse client capabilities for content negotiation
         capabilities = _parse_client_capabilities(request)
@@ -3403,6 +3422,7 @@ def rag_ingest(_request: Request, req: RagIngestRequest) -> RagIngestResponse:
             status=result["status"],
             doc_hash=result["doc_hash"],
             previous_hash=result["previous_hash"],
+            collection=req.collection,
         )
     except Exception as e:
         prom_metrics.RAG_INGESTS_TOTAL.labels(source="document", result="failure").inc()
@@ -4035,20 +4055,49 @@ def rag_documents_list(
         store.close()
 
 
+def _resolve_and_validate_collection(collection: str | None) -> str:
+    """Normalize a user-supplied collection name and confirm it exists.
+
+    "default" is always valid (it's automatically managed). Any other name
+    must already exist (created via the admin collections API) -- this
+    catches a typo'd collection name before it silently queries/creates an
+    unrelated empty table.
+
+    Raises:
+        HTTPException 400: The named collection does not exist.
+    """
+    name = (collection or "default").strip() or "default"
+    if name == "default":
+        return name
+
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+    store = CassandraVectorStore()
+    try:
+        if name not in store.list_collections():
+            raise HTTPException(status_code=400, detail=f"Unknown collection '{name}'.")
+    finally:
+        store.close()
+    return name
+
+
 @api.post("/rag/query", response_model=RagQueryResponse)
 def rag_query(_request: Request, req: RagQueryRequest) -> RagQueryResponse:
     """Run a RAG similarity search and return the matching chunks.
 
     Supports optional metadata filtering (`doc_ids`, `filename`, `tags`,
-    `date_from`/`date_to`). When `req.debug_mode` is set, the response also
-    includes a `debug_info` breakdown of per-stage timings and score
-    distribution. Raises `400` on any retrieval failure (e.g. malformed
-    date filters, vector store errors).
+    `date_from`/`date_to`) and an optional `collection` to scope the search
+    (defaults to the "default" collection). When `req.debug_mode` is set,
+    the response also includes a `debug_info` breakdown of per-stage timings
+    and score distribution. Raises `400` on any retrieval failure (e.g.
+    malformed date filters, unknown collection, vector store errors).
     """
     try:
         from datetime import datetime
 
         from nyxgpt.rag.vectorstore_cassandra import MetadataFilter
+
+        collection = _resolve_and_validate_collection(req.collection)
 
         # Build metadata filter if any filter params are provided
         metadata_filter = None
@@ -4069,6 +4118,7 @@ def rag_query(_request: Request, req: RagQueryRequest) -> RagQueryResponse:
             req.query,
             top_k=req.top_k,
             debug_mode=req.debug_mode,
+            collection=collection,
             metadata_filter=metadata_filter,
         )
 
@@ -4110,6 +4160,7 @@ def rag_query(_request: Request, req: RagQueryRequest) -> RagQueryResponse:
             results = cast(list[dict], result)
             api_debug_info = None
 
+        results = annotate_chunk_numbering(results, collection=collection)
         out = [
             RagQueryResult(
                 doc_id=str(r.get("doc_id", "")),
@@ -4117,6 +4168,9 @@ def rag_query(_request: Request, req: RagQueryRequest) -> RagQueryResponse:
                 text=str(r.get("text", "")),
                 score=float(r.get("score", 0.0)),
                 similarity_score=r.get("similarity_score"),
+                collection=r.get("collection"),
+                chunk_number=r.get("chunk_number"),
+                total_chunks=r.get("total_chunks"),
             )
             for r in results
         ]
@@ -4140,8 +4194,12 @@ def rag_metrics_query(_request: Request, req: RagMetricsQueryRequest) -> RagMetr
     try:
         from nyxgpt.config import get_rag_min_score
 
+        collection = _resolve_and_validate_collection(req.collection)
+
         # Force debug mode to collect metrics
-        result = retrieve_context(req.query, top_k=req.top_k, debug_mode=True)
+        result = retrieve_context(
+            req.query, top_k=req.top_k, debug_mode=True, collection=collection
+        )
 
         # Type narrowing: debug_mode=True means result is tuple[list[dict], RAGDebugInfo]
         from nyxgpt.rag.rag import RAGDebugInfo, compute_evaluation_metrics
@@ -4224,6 +4282,7 @@ def rag_metrics_query(_request: Request, req: RagMetricsQueryRequest) -> RagMetr
                 timestamp=eval_metrics.timestamp,
             )
 
+        results = annotate_chunk_numbering(results, collection=collection)
         out = [
             RagQueryResult(
                 doc_id=str(r.get("doc_id", "")),
@@ -4231,6 +4290,9 @@ def rag_metrics_query(_request: Request, req: RagMetricsQueryRequest) -> RagMetr
                 text=str(r.get("text", "")),
                 score=float(r.get("score", 0.0)),
                 similarity_score=r.get("similarity_score"),
+                collection=r.get("collection"),
+                chunk_number=r.get("chunk_number"),
+                total_chunks=r.get("total_chunks"),
             )
             for r in results
         ]
@@ -4393,8 +4455,15 @@ def detach_document_from_session(name: str, doc_id: str) -> SessionDocumentsResp
 async def rag_upload_file(
     file: UploadFile = File(...),
     doc_id: str | None = None,
+    collection: str | None = None,
 ) -> RagIngestResponse:
-    """Upload and ingest a document for RAG with proper markdown parsing."""
+    """Upload and ingest a document for RAG with proper markdown parsing.
+
+    `collection` selects the target collection (defaults to "default" when
+    omitted); it must already exist (see `POST /rag/collections`).
+    """
+    resolved_collection = _resolve_and_validate_collection(collection)
+
     # Validate file type
     allowed_types = {".txt", ".md", ".json", ".pdf", ".pptx", ".docx", ".epub", ".html", ".htm"}
     file_ext = Path(file.filename or "").suffix.lower()
@@ -5116,7 +5185,7 @@ async def rag_upload_file(
 
     # Ingest
     try:
-        result = ingest_document(doc_id=final_doc_id, text=text)
+        result = ingest_document(doc_id=final_doc_id, text=text, collection=resolved_collection)
         prom_metrics.RAG_INGESTS_TOTAL.labels(source="upload", result="success").inc()
         return RagIngestResponse(
             doc_id=final_doc_id,
@@ -5124,6 +5193,7 @@ async def rag_upload_file(
             status=result["status"],
             doc_hash=result["doc_hash"],
             previous_hash=result["previous_hash"],
+            collection=resolved_collection,
         )
     except Exception as e:
         prom_metrics.RAG_INGESTS_TOTAL.labels(source="upload", result="failure").inc()

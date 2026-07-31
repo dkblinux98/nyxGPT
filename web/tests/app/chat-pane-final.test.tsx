@@ -423,6 +423,31 @@ describe('regenerate includes rag_filters, and assistant-message highlight backg
     await waitFor(() => expect(capturedBody?.rag_filters).toEqual({ doc_ids: ['d1'] }));
   });
 
+  it('includes rag_filters in the regenerate request body when only collection is set', async () => {
+    let capturedBody: any = null;
+    const seed = [
+      { role: 'user', content: 'Q' },
+      { role: 'assistant', content: 'old answer' },
+    ];
+    global.fetch = makeFetchMock({
+      '/api/v1/sessions/': () => ({ ok: true, status: 200, json: () => Promise.resolve({ messages: seed, total: 2 }) }),
+      '/metadata': () => ({ ok: true, status: 200, json: () => Promise.resolve({ rag_enabled: true, title: '', model: '' }) }),
+      '/api/chat/stream': (_url: string, init?: RequestInit) => {
+        capturedBody = init?.body ? JSON.parse(init.body as string) : null;
+        return sseResponse('event: done\ndata: {}\n\n');
+      },
+    }) as unknown as typeof fetch;
+    sessionStorage.setItem('rag_filters_regencollection1', JSON.stringify({ collection: 'docs2' }));
+
+    render(<ChatPane sessionName="regencollection1" />);
+    await screen.findByText('old answer');
+    await waitFor(() => expect(screen.getByText('RAG: ON')).toBeInTheDocument());
+    const user = userEvent.setup();
+    await user.click(screen.getByTitle('Regenerate response'));
+
+    await waitFor(() => expect(capturedBody?.rag_filters).toEqual({ collection: 'docs2' }));
+  });
+
   it('highlights an assistant-role message (the non-user background ternary branch)', async () => {
     vi.useFakeTimers();
     const seed = Array.from({ length: 4 }, (_, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content: `m${i}` }));

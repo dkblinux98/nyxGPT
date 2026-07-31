@@ -283,7 +283,9 @@ def test_export_session_citations_markdown_includes_chunk_ref_and_text(tmp_path:
     )
 
     assert response.status_code == 200
-    assert "chunk 3" in response.text
+    # chunk_id=3 is the zero-based internal key; citations display the
+    # human-readable 1-based position ("chunk 4"), not the raw chunk_id.
+    assert "chunk 4" in response.text
     assert r"report\.pdf" in response.text  # "." is markdown-escaped
     assert r"\*emphasized\*" in response.text
     assert 'filename="citations-md-test-citations.md"' in response.headers["content-disposition"]

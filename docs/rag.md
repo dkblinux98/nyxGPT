@@ -1856,4 +1856,6 @@ The field is absent when no documents are attached (it is not initialised to an 
 
 ### Interaction with RAG Filters
 
-Force-include retrieval always uses the attached doc IDs as its filter and **ignores** any `rag_filters` passed to the chat endpoint. Normal RAG retrieval respects `rag_filters` as usual.
+Force-include retrieval always uses the attached doc IDs as its filter and **ignores** the `doc_ids`/`filename`/`tags`/`date_from`/`date_to` fields of any `rag_filters` passed to the chat endpoint. Normal RAG retrieval respects those fields as usual.
+
+The one exception is `collection`: force-include retrieval searches the **same** collection as the request's `rag_filters.collection` (or `"default"` if unset). A document only gets force-included while the chat's collection scope matches the collection it was actually ingested into — a collection selector currently supports one collection per query, not fan-out across collections, so there is no way to search "wherever the doc happens to live."

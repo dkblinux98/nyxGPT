@@ -48,10 +48,10 @@ this section covers the UI surface specifically.
 
 **Web UI** — RAG controls sit left of the message input in the chat interface:
 - **RAG Toggle** button to enable/disable RAG for the current session
-- **File Upload** to ingest documents into the RAG database
+- **File Upload** to ingest documents into the RAG database. The document is ingested into whichever collection is currently selected in **Document Filters** (see below); with nothing selected, that's the `"default"` collection — the same one `nyxgpt rag ingest`/`nyxgpt rag upload` and pre-#3463 uploads always used.
 - RAG status displays current state (ON/OFF)
-- **Document Filters** button (available when RAG is enabled) to narrow which documents are searched: select specific documents by checkbox, filter by filename (partial match, case-insensitive) or ingestion date range. Filters persist across page reloads via session storage, with an active-filter indicator when applied.
-- **RAG Citations** displayed inline with responses: retrieved source chunks with click-to-expand for full text, relevance scores with quality indicators (High/Medium/Low), document IDs and chunk numbers, and export to separate files (JSON, Markdown)
+- **Document Filters** button (available when RAG is enabled) to narrow which documents are searched: select specific documents by checkbox, filter by filename (partial match, case-insensitive) or ingestion date range, and pick a **Collection** to scope both retrieval and file uploads (populated from [RAG Collections management](rag.md#collections-management-ui); defaults to `"default"` when none is picked). The button label always shows the effective collection (e.g. `Filters · default`) so it's never implicit. Filters persist across page reloads via session storage, with an active-filter indicator when applied.
+- **RAG Citations** displayed inline with responses: retrieved source chunks with click-to-expand for full text, relevance scores with quality indicators (High/Medium/Low), document IDs, human-readable chunk position ("chunk 2 of 5", not the internal zero-based index), and source collection (shown when it isn't `"default"`), plus export to separate files (JSON, Markdown)
 
 Pinned sessions are displayed with a 📌 icon and appear at the top of the list.
 

@@ -1168,6 +1168,63 @@ def test_compose_context_empty_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.unit
+def test_annotate_chunk_numbering_adds_1_based_number_and_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """chunk_number must be 1-based (chunk_id is the internal zero-based
+    Cassandra clustering key), and every row is stamped with the collection
+    it was retrieved from -- the fix for the "(chunk 0)" citation bug."""
+    from nyxgpt.rag.rag import annotate_chunk_numbering
+
+    mock_store = Mock()
+    mock_store.get_document_info.return_value = {"chunks": 5}
+    monkeypatch.setattr("nyxgpt.rag.rag.CassandraVectorStore", lambda **_k: mock_store)
+
+    rows = [
+        {"doc_id": "doc-1", "chunk_id": 0, "text": "a"},
+        {"doc_id": "doc-1", "chunk_id": 4, "text": "b"},
+    ]
+    result = annotate_chunk_numbering(rows, collection="research-notes")
+
+    assert result[0]["chunk_number"] == 1
+    assert result[0]["total_chunks"] == 5
+    assert result[0]["collection"] == "research-notes"
+    assert result[1]["chunk_number"] == 5
+    # get_document_info looked up once per unique doc_id, not once per row
+    mock_store.get_document_info.assert_called_once_with("doc-1")
+    mock_store.close.assert_called_once()
+
+
+@pytest.mark.unit
+def test_annotate_chunk_numbering_degrades_gracefully_when_lookup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed total-chunks lookup (e.g. Cassandra unreachable) must not
+    fail the whole chat/query response -- collection and chunk_number (which
+    need no DB access) still get set."""
+    from nyxgpt.rag.rag import annotate_chunk_numbering
+
+    def boom(**_k: Any) -> Any:
+        raise RuntimeError("vector store unreachable")
+
+    monkeypatch.setattr("nyxgpt.rag.rag.CassandraVectorStore", boom)
+
+    rows = [{"doc_id": "doc-1", "chunk_id": 0, "text": "a"}]
+    result = annotate_chunk_numbering(rows, collection="default")
+
+    assert result[0]["chunk_number"] == 1
+    assert result[0]["collection"] == "default"
+    assert result[0].get("total_chunks") is None
+
+
+@pytest.mark.unit
+def test_annotate_chunk_numbering_empty_rows_is_a_noop() -> None:
+    from nyxgpt.rag.rag import annotate_chunk_numbering
+
+    assert annotate_chunk_numbering([], collection="default") == []
+
+
+@pytest.mark.unit
 def test_retrieve_context_empty_query(monkeypatch: pytest.MonkeyPatch) -> None:
     """retrieve_context should handle empty query string."""
     cfg = ConfigParser()

@@ -10,6 +10,7 @@ and a query-result cache to avoid repeating identical retrievals.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -1740,6 +1741,58 @@ def retrieve_context(
 
     _log_retrieval_completed(filtered, cache_hit=False)
     return filtered, debug_info
+
+
+def annotate_chunk_numbering(rows: list[dict], *, collection: str = "default") -> list[dict]:
+    """Stamp human-readable chunk position and source collection onto retrieval rows.
+
+    Mutates each row in place, adding:
+    - ``collection``: the collection the row was retrieved from
+    - ``chunk_number``: 1-based chunk position (the raw ``chunk_id`` is a
+      zero-based Cassandra clustering key, not meant for display), when
+      ``chunk_id`` is present and numeric
+    - ``total_chunks``: total chunk count for that row's document, or None
+      if the lookup fails or a doc lookup errors (citation display should
+      never fail a chat/query response just because this best-effort count
+      is unavailable)
+
+    Looks up each unique ``doc_id`` at most once via ``get_document_info``.
+
+    Args:
+        rows: Retrieval result dicts, each with ``doc_id`` and ``chunk_id``
+        collection: Collection all rows were retrieved from
+
+    Returns:
+        The same list, with rows mutated in place
+    """
+    if not rows:
+        return rows
+
+    for row in rows:
+        row["collection"] = collection
+        chunk_id = row.get("chunk_id")
+        if chunk_id is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                row["chunk_number"] = int(chunk_id) + 1
+
+    store = None
+    total_chunks_by_doc: dict[str, int | None] = {}
+    try:
+        store = CassandraVectorStore(collection=collection)
+        for row in rows:
+            doc_id = row.get("doc_id")
+            if doc_id is None:
+                continue
+            if doc_id not in total_chunks_by_doc:
+                info = store.get_document_info(doc_id)
+                total_chunks_by_doc[doc_id] = info["chunks"] if info else None
+            row["total_chunks"] = total_chunks_by_doc[doc_id]
+    except Exception:
+        log.warning("Failed to look up total chunk counts for citations", exc_info=True)
+    finally:
+        if store is not None:
+            store.close()
+    return rows
 
 
 def compute_evaluation_metrics(

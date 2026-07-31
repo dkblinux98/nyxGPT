@@ -1851,6 +1851,7 @@ This endpoint is functionally equivalent to `/api/v1/chat` but returns the assis
   - `tags` (list[str]) - Filter by tags (must have ALL tags)
   - `date_from` (str) - Filter by ingestion date >= (ISO format)
   - `date_to` (str) - Filter by ingestion date <= (ISO format)
+  - `collection` (str) - Collection to search (default: `"default"`). Must already exist (see `POST /api/v1/rag/collections`); an unknown name returns `400`. See [Interaction with RAG Filters](rag.md#interaction-with-rag-filters) for how this interacts with force-included attached documents.
 - `attachments` (optional) - List of inline file attachments (see `AttachmentBlock` schema below)
 
 #### `AttachmentBlock` Schema

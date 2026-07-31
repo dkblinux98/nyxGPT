@@ -15,8 +15,26 @@ function mockCollections(collections = sampleCollections) {
 
 const fullResponse = {
   results: [
-    { doc_id: 'doc-1', chunk_id: 0, text: 'green result', score: 0.91, similarity_score: 0.91 },
-    { doc_id: 'doc-2', chunk_id: 1, text: 'yellow result', score: 0.5, similarity_score: 0.5 },
+    {
+      doc_id: 'doc-1',
+      chunk_id: 0,
+      text: 'green result',
+      score: 0.91,
+      similarity_score: 0.91,
+      chunk_number: 1,
+      total_chunks: 3,
+      collection: 'alt-collection',
+    },
+    {
+      doc_id: 'doc-2',
+      chunk_id: 1,
+      text: 'yellow result',
+      score: 0.5,
+      similarity_score: 0.5,
+      chunk_number: 2,
+      total_chunks: null,
+      collection: 'default',
+    },
     { doc_id: 'doc-3', chunk_id: 2, text: 'red result', score: 0.1, similarity_score: 0.1 },
   ],
   debug_info: {
@@ -256,6 +274,13 @@ describe('PlaygroundPage', () => {
     expect(screen.getByText('0.5000')).toBeInTheDocument();
     expect(screen.getByText('0.1000')).toBeInTheDocument();
 
+    // chunk_number + total_chunks -> "1 of 3", plus the non-default collection suffix.
+    expect(screen.getByText(/doc-1 • Chunk 1 of 3 • alt-collection/)).toBeInTheDocument();
+    // chunk_number without total_chunks -> bare chunk_number; collection "default" is never suffixed.
+    expect(screen.getByText(/doc-2 • Chunk 2$/)).toBeInTheDocument();
+    // Neither chunk_number nor collection -> falls back to chunk_id + 1, no collection suffix.
+    expect(screen.getByText(/doc-3 • Chunk 3$/)).toBeInTheDocument();
+
     // Metrics tab
     await user.click(screen.getByRole('button', { name: 'metrics' }));
     expect(screen.getByText('Min:')).toBeInTheDocument();
@@ -342,6 +367,34 @@ describe('PlaygroundPage', () => {
     await user.click(screen.getByRole('button', { name: 'debug' }));
     expect(screen.queryByText(/Query Variants:/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Score Range:/)).not.toBeInTheDocument();
+  });
+
+  it('forwards the selected collection in the outgoing query request body', async () => {
+    mockCollections([
+      { name: 'default', doc_count: 5, chunk_count: 40, embedding_models: [] },
+      { name: 'alt-collection', doc_count: 2, chunk_count: 10, embedding_models: [] },
+    ]);
+    const user = userEvent.setup();
+    let capturedBody: any = null;
+
+    render(<PlaygroundPage />);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /run query/i })).toBeInTheDocument();
+    });
+
+    await user.selectOptions(screen.getByRole('combobox'), 'alt-collection');
+
+    server.use(
+      http.post('/api/v1/rag/metrics/query', async ({ request }) => {
+        capturedBody = await request.json();
+        return HttpResponse.json(minimalResponse);
+      })
+    );
+
+    await user.type(screen.getByPlaceholderText(/enter your search query/i), 'scoped query');
+    await user.click(screen.getByRole('button', { name: /run query/i }));
+
+    await waitFor(() => expect(capturedBody?.collection).toBe('alt-collection'));
   });
 
   it('defaults results to an empty array when the field is omitted from the response', async () => {
