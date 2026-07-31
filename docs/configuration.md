@@ -187,7 +187,7 @@ system_prompt_minimize = false
 | `chat_timeout_seconds` | Timeout for a single chat request (default: `180`) |
 | `auto_summarize_enabled` | Automatically generate session title/summary/tags |
 | `auto_summarize_after_messages` | Trigger auto-summarization after N messages (0 to disable) |
-| `auto_sync_filename` | Automatically sync session filename with title |
+| `auto_sync_filename` | Whether the on-demand filename-sync operations (the "sync filename" session action and `POST /sessions/{name}/sync-filename`/`rename`) are allowed to rename a session's file to match its title. **Not** applied automatically after a chat turn -- auto-summarization only ever writes the title/summary/tags onto the *existing* session file. Renaming a session mid-conversation would silently orphan whatever name a client (web UI, CLI) is still addressing it by, so it never happens as a side effect of chat (#3459). |
 | `system_prompt_minimize` | Minimize system prompts to reduce token usage |
 
 **Note:** `default_model`, `auto_summarize_enabled`, and `auto_summarize_after_messages` are **hot-reloadable** and do not require a restart.

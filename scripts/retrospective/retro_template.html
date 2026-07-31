@@ -1,0 +1,646 @@
+<title>nyxGPT Project Retrospective</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e;
+    --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7;
+    --ring: rgba(11,11,11,0.10);
+    --sev-crit: #d03b3b; --sev-med: #ec835a; --sev-minor: #898781;
+    --good: #0ca30c;
+    --accent: #2a78d6;
+    --chip: #f0efec;
+    --c1:#2a78d6; --c2:#eb6834; --c3:#1baf7a; --c4:#eda100; --c5:#e87ba4; --c6:#008300; --c7:#4a3aa7; --c8:#898781;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+      --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+      --ring: rgba(255,255,255,0.10);
+      --sev-crit: #d03b3b; --sev-med: #ec835a; --sev-minor: #898781;
+      --good: #0ca30c;
+      --accent: #3987e5;
+      --chip: #262625;
+      --c1:#3987e5; --c2:#d95926; --c3:#199e70; --c4:#c98500; --c5:#d55181; --c6:#008300; --c7:#9085e9; --c8:#898781;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+    --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+    --ring: rgba(255,255,255,0.10);
+    --sev-crit: #d03b3b; --sev-med: #ec835a; --sev-minor: #898781;
+    --good: #0ca30c;
+    --accent: #3987e5;
+    --chip: #262625;
+    --c1:#3987e5; --c2:#d95926; --c3:#199e70; --c4:#c98500; --c5:#d55181; --c6:#008300; --c7:#9085e9; --c8:#898781;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e;
+    --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7;
+    --ring: rgba(11,11,11,0.10);
+    --sev-crit: #d03b3b; --sev-med: #ec835a; --sev-minor: #898781;
+    --good: #0ca30c;
+    --accent: #2a78d6;
+    --chip: #f0efec;
+    --c1:#2a78d6; --c2:#eb6834; --c3:#1baf7a; --c4:#eda100; --c5:#e87ba4; --c6:#008300; --c7:#4a3aa7; --c8:#898781;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 32px 24px 56px; display: flex; flex-direction: column; gap: 20px; }
+
+  header .eyebrow {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+    display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline;
+  }
+  header h1 { margin: 6px 0 4px; font-size: 26px; font-weight: 650; letter-spacing: -0.01em; text-wrap: balance; }
+  header .sub { color: var(--ink-2); max-width: 72ch; margin: 0; }
+
+  h2.divider { margin: 14px 0 -8px; font-size: 14px; font-weight: 650; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 12px; }
+  h2.divider::after { content: ""; flex: 1; height: 1px; background: var(--grid); }
+
+  .strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+  .strip .chip {
+    background: var(--surface); border: 1px solid var(--ring); border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: 9px 13px; font-size: 13px; color: var(--ink-2); line-height: 1.45;
+  }
+  .strip .chip b { display: block; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); font-weight: 650; margin-bottom: 1px; }
+  .strip .chip .v { color: var(--ink); }
+  .colwrap { position: relative; }
+  .colwrap .rel { position: absolute; top: -14px; left: 50%; transform: translateX(-50%);
+    font-size: 9.5px; font-weight: 700; color: var(--ink-2); white-space: nowrap;
+    font-family: ui-monospace, Menlo, Consolas, monospace; border-bottom: 1px dashed var(--axis); padding: 0 2px; }
+  .gpct { font-size: 10px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .themebar { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 6px 0; }
+  .themebar + .themebar { border-top: 1px solid var(--grid); }
+  .themebar .tname { font-size: 13px; }
+  .themebar .tbar { display: flex; align-items: center; gap: 8px; }
+  .themebar .tbar i { display: block; height: 12px; background: var(--sev-med); border-radius: 3px; }
+  .themebar .tn { font-size: 12px; font-weight: 650; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile {
+    background: var(--surface); border: 1px solid var(--ring); border-radius: 8px;
+    padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 2px;
+  }
+  .tile .label { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+  .tile .value { font-size: 30px; font-weight: 650; line-height: 1.15; }
+  .tile .note { font-size: 12px; color: var(--ink-2); }
+  .dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: none; }
+  .dot.crit { background: var(--sev-crit); } .dot.med { background: var(--sev-med); } .dot.minor { background: var(--sev-minor); }
+  .dot.good { background: var(--good); }
+
+  .panel { background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 18px 20px 16px; }
+  .panel h2 { margin: 0 0 2px; font-size: 16px; font-weight: 650; }
+  .panel .desc { margin: 0 0 14px; font-size: 13px; color: var(--ink-2); max-width: 88ch; }
+  .charts { display: grid; grid-template-columns: 3fr 2fr; gap: 12px; }
+  @media (max-width: 800px) { .charts { grid-template-columns: 1fr; } }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-2); margin: 0 0 14px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+  .lens { display: flex; gap: 6px; margin: 0 0 12px; flex-wrap: wrap; }
+  .lens button {
+    font: 550 12.5px system-ui, sans-serif; color: var(--ink-2); background: transparent;
+    border: 1px solid var(--ring); border-radius: 999px; padding: 4px 14px; cursor: pointer;
+  }
+  .lens button:hover { background: var(--chip); }
+  .lens button[aria-pressed="true"] { background: var(--ink); color: var(--page); border-color: var(--ink); }
+  .lens button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* stacked weekly columns */
+  .colchart { display: flex; gap: 3px; align-items: flex-end; height: 190px; border-bottom: 1px solid var(--axis); padding-top: 16px; }
+  .colwrap { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; gap: 3px; cursor: default; min-width: 0; }
+  .colwrap .cnum { font-size: 10px; font-weight: 650; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; line-height: 1; }
+  .colwrap .stack { width: 100%; max-width: 26px; display: flex; flex-direction: column-reverse; gap: 1px; }
+  .colwrap .stack div { border-radius: 2px; min-height: 2px; }
+  .colwrap .stack div:last-child { border-radius: 3px 3px 2px 2px; }
+  .collabels { display: flex; gap: 3px; margin-top: 6px; }
+  .collabels div { flex: 1; text-align: center; font-size: 10.5px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; overflow: visible; white-space: nowrap; }
+
+  /* horizontal stacked rows */
+  .mrow { display: grid; grid-template-columns: 118px 1fr 92px; gap: 12px; align-items: center; padding: 7px 0; }
+  .mrow + .mrow { border-top: 1px solid var(--grid); }
+  .mrow .mname { font-size: 13.5px; font-weight: 550; }
+  .mrow .mmeta { font-size: 11.5px; color: var(--muted); }
+  .mrow .bar { display: flex; gap: 2px; height: 22px; align-items: stretch; }
+  .seg { border-radius: 0 4px 4px 0; min-width: 3px; position: relative; display: flex; align-items: center; justify-content: center; cursor: default; }
+  .seg:first-child { border-radius: 4px; }
+  .seg.crit { background: var(--sev-crit); } .seg.med { background: var(--sev-med); } .seg.minor { background: var(--sev-minor); }
+  .seg.clean { background: var(--good); } .seg.rework { background: var(--sev-minor); }
+  .seg .n { font-size: 11px; font-weight: 650; color: #fff; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .seg.minor .n, .seg.rework .n { color: var(--surface); }
+  .mrow .mtot { text-align: right; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .mrow .mtot .pct { color: var(--ink); font-weight: 600; }
+
+  /* review gate paired columns */
+  .gatechart { display: flex; gap: 14px; align-items: flex-end; height: 170px; border-bottom: 1px solid var(--axis); padding-top: 16px; }
+  .gmonth { flex: 1; display: flex; align-items: flex-end; justify-content: center; gap: 4px; height: 100%; cursor: default; }
+  .gmonth .gcol { width: 22px; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 3px; height: 100%; }
+  .gmonth .gcol .cnum { font-size: 10px; font-weight: 650; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; line-height: 1; }
+  .gmonth .gcol i { display: block; width: 100%; border-radius: 3px 3px 0 0; min-height: 2px; }
+  .gmonth .gcol.zero i { border-bottom: 2px solid var(--axis); min-height: 0; }
+  .gatelabels { display: flex; gap: 14px; margin-top: 6px; }
+  .gatelabels div { flex: 1; text-align: center; font-size: 11px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+  details.cleanlist { margin-top: 4px; }
+  details.cleanlist summary {
+    cursor: pointer; font-size: 13px; color: var(--accent); font-weight: 550;
+    list-style-position: inside; padding: 4px 0;
+  }
+  details.cleanlist summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  details.cleanlist .tablewrap { margin-top: 8px; }
+  details.cleanlist table { min-width: 620px; }
+
+  /* daily columns (7-day section) */
+  .daychart { display: flex; gap: 8px; align-items: flex-end; height: 150px; padding-top: 8px; border-bottom: 1px solid var(--axis); }
+  .daycol { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px; height: 100%; cursor: default; }
+  .daycol .cnum { font-size: 11.5px; font-weight: 650; color: var(--ink-2); font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .daycol .col { width: 70%; max-width: 34px; background: var(--accent); border-radius: 4px 4px 0 0; min-height: 2px; }
+  .daycol.zero .col { background: transparent; border-bottom: 2px solid var(--axis); border-radius: 0; }
+  .daylabels { display: flex; gap: 8px; margin-top: 6px; }
+  .daylabels div { flex: 1; text-align: center; font-size: 11px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+  /* table */
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 760px; }
+  th { text-align: left; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 550; padding: 6px 10px; border-bottom: 1px solid var(--axis); white-space: nowrap; }
+  th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; }
+  td { padding: 7px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  tr.expandable { cursor: pointer; }
+  tr.expandable:hover td { background: color-mix(in oklab, var(--chip) 55%, transparent); }
+  td .title { color: var(--ink); }
+  td a { color: var(--accent); text-decoration: none; }
+  td a:hover, td a:focus-visible { text-decoration: underline; }
+  .chipm { display: inline-block; font-size: 11px; font-family: ui-monospace, Menlo, Consolas, monospace; background: var(--chip); border: 1px solid var(--ring); border-radius: 999px; padding: 1px 8px; white-space: nowrap; color: var(--ink-2); }
+  td.num.zero { color: var(--muted); }
+  td.num .sevn { font-weight: 650; }
+  td.num .sevn.crit { color: var(--sev-crit); }
+  tr.detail td { background: color-mix(in oklab, var(--chip) 40%, transparent); font-size: 12.5px; color: var(--ink-2); padding: 8px 10px 10px 28px; }
+  tr.detail ul { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; }
+  tr.detail .sevtag { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; margin-right: 6px; }
+  tr.detail .sevtag.Critical { color: var(--sev-crit); }
+  tr.detail .sevtag.Medium { color: var(--sev-med); }
+
+  footer { font-size: 12.5px; color: var(--muted); max-width: 82ch; line-height: 1.55; }
+  footer p { margin: 4px 0; }
+
+  #tip {
+    position: fixed; pointer-events: none; z-index: 10; display: none;
+    background: var(--ink); color: var(--page); font-size: 12px; line-height: 1.45;
+    padding: 6px 9px; border-radius: 6px; max-width: 280px;
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">
+      <span>dkblinux98/nyxGPT</span><span>·</span><span>agent loop</span><span>·</span><span>Jan 1 – Jul 30, 2026</span>
+    </div>
+    <h1>nyxGPT Project Retrospective</h1>
+    <p class="sub">The overall quality picture across all 377 issues, from the perspective of final
+    acceptance: where each failure came from — code defects that escaped review, gaps in the spec,
+    or misses in the agent workflow itself — over time, by milestone, by label, and by module.</p>
+  </header>
+
+  <div class="tiles" id="qtiles"></div>
+
+  <div class="strip" id="takeaways"></div>
+
+  <section class="panel">
+    <h2>Failures and work by sprint</h2>
+    <p class="desc" id="wdesc"></p>
+    <div class="lens" id="wlens" role="group" aria-label="Weekly chart lens"></div>
+    <div class="legend" id="wlegend"></div>
+    <div class="colchart" id="wchart"></div>
+    <div class="collabels" id="wlabels"></div>
+  </section>
+
+  <section class="panel">
+    <h2>By milestone</h2>
+    <p class="desc" id="mdesc"></p>
+    <div class="lens" id="mlens" role="group" aria-label="Milestone chart lens"></div>
+    <div class="legend" id="mlegend"></div>
+    <div id="mchart"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Review gate by month — interception vs escapes</h2>
+    <p class="desc">Merge throughput, PRs the review gate caught (≥1 <span class="mono">REQUEST_CHANGES</span>),
+    and defects that escaped to acceptance (failure issues filed that month). The interception rate under each
+    month is review catches ÷ (review catches + escapes). Hover for median time-to-merge. The project idled
+    April–June between Phase&nbsp;5 and the v2.0.0 release push.</p>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--c1)"></span>PRs merged</span>
+      <span><span class="dot" style="background:var(--c2)"></span>PRs rejected ≥1× (caught in review)</span>
+      <span><span class="dot" style="background:var(--c3)"></span>Acceptance failures filed (escapes)</span>
+    </div>
+    <div class="gatechart" id="gchart"></div>
+    <div class="gatelabels" id="glabels"></div>
+  </section>
+
+  <div class="charts">
+    <section class="panel">
+      <h2>Failure backlog: created vs closed</h2>
+      <p class="desc">Acceptance-failure issues opened and closed per month — is the backlog draining or growing?</p>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--c2)"></span>Opened</span>
+        <span><span class="dot good"></span>Closed</span>
+      </div>
+      <div class="gatechart" id="flowchart"></div>
+      <div class="gatelabels" id="flowlabels"></div>
+    </section>
+    <section class="panel">
+      <h2>Open failures by age</h2>
+      <p class="desc" id="agingdesc"></p>
+      <div id="aging"></div>
+    </section>
+  </div>
+
+  <h2 class="divider">Last 7 days in review · Jul 23–30</h2>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="charts">
+    <section class="panel">
+      <h2>Findings by module</h2>
+      <p class="desc">All findings from rejected review rounds, per module.</p>
+      <div class="legend">
+        <span><span class="dot crit"></span>Critical (blocking)</span>
+        <span><span class="dot med"></span>Medium (blocking)</span>
+        <span><span class="dot minor"></span>Minor (non-blocking)</span>
+      </div>
+      <div id="modules"></div>
+    </section>
+    <section class="panel">
+      <h2>Rejected rounds per day</h2>
+      <p class="desc">Number of REQUEST_CHANGES reviews posted each day.</p>
+      <div class="daychart" id="days"></div>
+      <div class="daylabels" id="daylabels"></div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <h2>First-pass outcome by module</h2>
+    <p class="desc">Of the 57 pull requests the review-agent reviewed this window, 30 were approved on
+    the first pass with zero review failures. Bars count PRs, not findings. (11 further merges were
+    owner-carried workflow changes that bypassed agent review; they're excluded.)</p>
+    <div class="legend">
+      <span><span class="dot good"></span>Clean pass (approved first review)</span>
+      <span><span class="dot minor"></span>Needed rework (≥1 REQUEST_CHANGES)</span>
+    </div>
+    <div id="outcome"></div>
+    <details class="cleanlist">
+      <summary>Show the 30 zero-failure merges</summary>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>PR</th><th>Title</th><th>Module</th><th>Merged</th></tr></thead>
+          <tbody id="cleanrows"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <section class="panel">
+    <h2>Recurring finding themes</h2>
+    <p class="desc">The review-agent's findings from the last 7 days, clustered by theme — each cluster is a
+    candidate for a pre-submit check or developer-agent prompt rule.</p>
+    <div id="themes"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Issues behind the failures</h2>
+    <p class="desc">Sorted by blocking findings. Click a row to see its Critical and Medium finding titles.</p>
+    <details class="cleanlist">
+      <summary>Show the 27 work items with review failures</summary>
+      <div class="tablewrap">
+        <table>
+          <thead><tr>
+            <th>Issue</th><th>Title</th><th>Module</th><th>PR</th>
+            <th class="num">Rounds</th><th class="num">Crit</th><th class="num">Med</th><th class="num">Minor</th><th>Last reject</th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <footer>
+    <p><strong>Acceptance-perspective classification.</strong> The 168 issues labeled
+    <span class="mono">Acceptance Failure</span> (defects found at stakeholder acceptance, before release)
+    are classified by root cause: <em>escaped defect</em> — broken behavior in code that had passed
+    review (a review miss); <em>spec gap</em> — the delivered work matched the issue but the requirement
+    itself was wrong or incomplete (redesigns, consolidations, UX corrections); <em>workflow miss</em> —
+    the agent pipeline itself failed (review gate, branch hygiene, submission workflows). Classification
+    is keyword-heuristic over titles and bodies, hand-reviewed. No issue carries a Production Defect label.</p>
+    <p><strong>Sprints.</strong> Sprint buckets are the Project's real Sprint iterations, read from the
+    snapshot committed by the "Retro Dashboard - Dump Project Fields" workflow
+    (scripts/retrospective/data/project_fields.json) — each issue lands in the sprint it was actually
+    assigned to on the board, and Module values come from the Project's Module field. If the snapshot is
+    missing, the builder falls back to calendar weeks bucketed by creation date and title-inferred modules
+    (the sprint-axis caption says which mode is active). The last-7-days section always uses title-inferred
+    modules. Milestones are the repo's phase milestones, ordered. The six issues under the
+    "Phase X: Rejected" milestone (rejected, never worked) are excluded throughout.</p>
+    <p><strong>Review gate.</strong> Monthly counts of PRs with ≥1 REQUEST_CHANGES come from the complete
+    GitHub notification-email archive (thread-level, so a PR rejected in two months counts in both);
+    merged-PR counts from the GitHub API. Feb shows more rejected than merged because rejected PRs often
+    merged in a later month or were superseded.</p>
+    <p><strong>Last 7 days.</strong> The 41 REQUEST_CHANGES reviews on nyxGPT PRs between 2026-07-23 and
+    2026-07-30, parsed from the structured review comments (Critical / Medium / Minor findings sections).
+    Re-review rejections with no new findings count as a round with zero findings. Of 67 PRs merged in the
+    window, 11 owner-carried workflow merges bypassed agent review and are excluded from first-pass stats;
+    of the 57 reviewed PRs (56 merged + #3450 still in review), 30 were approved first-pass — verified
+    against each PR's review history. <strong>Module attribution</strong> follows the repo's module taxonomy,
+    inferred from issue titles (the Project's Module field is not API-readable here). PR #3398 has no linked
+    issue and is listed under its PR number.</p>
+  </footer>
+</div>
+<div id="tip"></div>
+
+<script>
+const QDATA = __QDATA__;
+const DATA = __DATA__;
+
+const fmt = n => n.toLocaleString('en-US');
+const CVAR = ['var(--c1)','var(--c2)','var(--c3)','var(--c4)','var(--c5)','var(--c6)','var(--c7)','var(--c8)'];
+
+/* ---------- project-wide quality ---------- */
+const qt = QDATA.qtotals;
+document.getElementById('qtiles').innerHTML = [
+  {label:'Issues total', value:qt.issues, note:'Jan 1 – Jul 30'},
+  {label:'Acceptance failures', value:qt.af, note:`${Math.round(qt.af/qt.issues*100)}% of all issues`},
+  {label:'Escaped defects', value:qt.defect, note:'review misses', color:'var(--c1)'},
+  {label:'Spec gaps', value:qt.spec, note:'bad or incomplete spec', color:'var(--c2)'},
+  {label:'Workflow misses', value:qt.workflow, note:'agent pipeline failures', color:'var(--c3)'},
+  {label:'Production defects', value:qt.production, note:'none reported', color:'var(--good)'},
+].map(x => `<div class="tile">
+  <div class="label">${x.color?`<span class="dot" style="background:${x.color}"></span>`:''}${x.label}</div>
+  <div class="value">${fmt(x.value)}</div><div class="note">${x.note}</div></div>`).join('');
+
+const LENSES = {
+  cause: {
+    title: 'Acceptance view',
+    keys: QDATA.lens.causes,
+    names: {defect:'Escaped defect (review miss)', spec:'Spec gap', workflow:'Agent workflow miss'},
+    desc: 'Acceptance failures by root cause — what the stakeholder found after review had approved the work.',
+  },
+  label: {
+    title: 'By label',
+    keys: QDATA.lens.labels,
+    names: Object.fromEntries(QDATA.lens.labels.map(l => [l, l])),
+    desc: 'All issues opened, by label — the mix of failure demand (Acceptance Failure) against feature and process work.',
+  },
+  module: {
+    title: 'By module',
+    keys: QDATA.lens.modules,
+    names: Object.fromEntries(QDATA.lens.modules.map(m => [m, m])),
+    desc: 'All issues opened, by module (top 7 modules; the rest fold into “other”).',
+  },
+};
+
+function legendHTML(lens) {
+  return LENSES[lens].keys.map((k, i) =>
+    `<span><span class="dot" style="background:${CVAR[i]}"></span>${LENSES[lens].names[k]}</span>`).join('');
+}
+function lensButtons(el, current, onpick) {
+  el.innerHTML = Object.entries(LENSES).map(([id, l]) =>
+    `<button aria-pressed="${id===current}" data-lens="${id}">${l.title}</button>`).join('');
+  el.querySelectorAll('button').forEach(b => b.addEventListener('click', () => onpick(b.dataset.lens)));
+}
+
+/* takeaway strip */
+document.getElementById('takeaways').innerHTML = (QDATA.takeaways || []).map(x =>
+  `<div class="chip"><b>${x.k}</b><span class="v">${x.v}</span></div>`).join('');
+
+/* weekly chart */
+let wlens = 'cause';
+function renderWeekly() {
+  const L = LENSES[wlens];
+  document.getElementById('wdesc').textContent = L.desc + (QDATA.sprintSource === 'project' ? ' Sprints are the Project’s real Sprint iterations.' : ' One-week sprints, numbered from the project’s first week (see method note).');
+  document.getElementById('wlegend').innerHTML = legendHTML(wlens);
+  lensButtons(document.getElementById('wlens'), wlens, id => { wlens = id; renderWeekly(); });
+  const rows = QDATA.weeks.map(w => ({w: w.w, vals: L.keys.map(k => w[wlens][k] || 0)}));
+  const max = Math.max(1, ...rows.map(r => r.vals.reduce((a,b)=>a+b,0)));
+  document.getElementById('wchart').innerHTML = rows.map(r => {
+    const total = r.vals.reduce((a,b)=>a+b,0);
+    const tips = r.vals.map((v,i)=> v ? `${LENSES[wlens].names[L.keys[i]]}: ${v}` : null).filter(Boolean).join(' · ');
+    const wk = QDATA.weeks.find(x => x.w === r.w);
+    const sprintNo = QDATA.weeks.indexOf(wk) + 1;
+    const label = wk.sname || `Sprint ${sprintNo} (wk of ${new Date(r.w+'T00:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})})`;
+    const segs = r.vals.map((v,i)=> v ? `<div style="background:${CVAR[i]};height:${Math.max(v/max*100,1.5)}%"></div>` : '').join('');
+    const wk0 = QDATA.weeks.find(x => x.w === r.w);
+    const idx0 = QDATA.weeks.indexOf(wk0);
+    const bEnd = wk0.end ? new Date(wk0.end+'T00:00:00Z')
+      : (QDATA.weeks[idx0+1] ? new Date(QDATA.weeks[idx0+1].w+'T00:00:00Z')
+                             : new Date(new Date(r.w+'T00:00:00Z').getTime() + 7*86400*1000));
+    const rel = (QDATA.releases || []).find(rl => {
+      const rd = new Date(rl.date+'T00:00:00Z');
+      return rd >= new Date(r.w+'T00:00:00Z') && rd < bEnd;
+    });
+    return `<div class="colwrap" data-tip="${label} — ${total} issue${total===1?'':'s'}${tips?': '+tips:''}${rel ? ' · '+rel.label+' released '+rel.date : ''}">
+      ${rel ? `<span class="rel">${rel.label}</span>` : ''}
+      <span class="cnum">${total||''}</span>
+      <div class="stack" style="height:${total/max*100}%">${segs}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('wlabels').innerHTML = QDATA.weeks.map((w,i) => {
+    if (QDATA.sprintSource === 'project') {
+      const d = new Date(w.w+'T00:00:00Z');
+      const sub = w.w.startsWith('9999') ? '' : '<br>' + d.toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'});
+      return `<div>${w.sname || ''}${sub}</div>`;
+    }
+    const d = new Date(w.w+'T00:00:00Z');
+    const first = i===0 || d.getUTCMonth() !== new Date(QDATA.weeks[i-1].w+'T00:00:00Z').getUTCMonth();
+    return `<div>${(i+1)%5===1 ? 'S'+(i+1) : ''}${first ? '<br>'+d.toLocaleDateString('en-US',{month:'short',timeZone:'UTC'}) : ''}</div>`;
+  }).join('');
+}
+renderWeekly();
+
+/* milestone chart */
+let mlensState = 'cause';
+function renderMilestones() {
+  const L = LENSES[mlensState];
+  document.getElementById('mdesc').textContent =
+    (mlensState==='cause'
+      ? 'Acceptance failures per phase milestone, by root cause. Row meta shows the phase’s total issue count and failure share.'
+      : L.desc.replace('opened','per phase milestone'));
+  document.getElementById('mlegend').innerHTML = legendHTML(mlensState);
+  lensButtons(document.getElementById('mlens'), mlensState, id => { mlensState = id; renderMilestones(); });
+  const rows = QDATA.milestones.map(m => ({m, vals: L.keys.map(k => m[mlensState][k] || 0)}));
+  const max = Math.max(1, ...rows.map(r => r.vals.reduce((a,b)=>a+b,0)));
+  document.getElementById('mchart').innerHTML = rows.map(({m, vals}) => {
+    const total = vals.reduce((a,b)=>a+b,0);
+    const segs = vals.map((v,i)=> v ? `<div class="seg" style="background:${CVAR[i]};width:${v/max*100}%"
+        data-tip="${m.name} · ${LENSES[mlensState].names[L.keys[i]]}: ${v}">${v/max*100>5?`<span class="n">${v}</span>`:''}</div>` : '').join('');
+    const share = m.total ? Math.round(m.af/m.total*100) : 0;
+    return `<div class="mrow">
+      <div><div class="mname">${m.name}</div><div class="mmeta">${m.total} issues · ${share}% AF</div></div>
+      <div class="bar" style="width:${Math.max(total/max*100, total?2:0)}%">${segs}</div>
+      <div class="mtot">${total||'·'}${total? (mlensState==='cause'?' failures':' issues') :''}</div>
+    </div>`;
+  }).join('');
+}
+renderMilestones();
+
+/* review gate */
+const gmax = Math.max(...QDATA.gate.map(g => Math.max(g.merged, g.rejected, g.af || 0)));
+document.getElementById('gchart').innerHTML = QDATA.gate.map(g => {
+  const col = (v, c) => `<div class="gcol${v?'':' zero'}"><span class="cnum">${v}</span><i style="background:${c};height:${Math.max(v/gmax*100, v?2:0)}%"></i></div>`;
+  const mh = g.medianHrs != null ? `, median time-to-merge ${g.medianHrs < 48 ? g.medianHrs+'h' : Math.round(g.medianHrs/24)+'d'}` : '';
+  return `<div class="gmonth" data-tip="${g.m} 2026 — ${g.merged} PRs merged, ${g.rejected} caught in review, ${g.af||0} escaped to acceptance${mh}">
+    ${col(g.merged,'var(--c1)')}${col(g.rejected,'var(--c2)')}${col(g.af||0,'var(--c3)')}</div>`;
+}).join('');
+document.getElementById('glabels').innerHTML = QDATA.gate.map(g => {
+  const tot = g.rejected + (g.af || 0);
+  const pct = tot ? Math.round(g.rejected / tot * 100) + '%' : '·';
+  return `<div>${g.m}<br><span class="gpct">${pct}</span></div>`;
+}).join('');
+
+/* failure backlog flow */
+const fmax = Math.max(1, ...QDATA.flow.map(f => Math.max(f.opened, f.closed)));
+document.getElementById('flowchart').innerHTML = QDATA.flow.map(f => {
+  const col = (v, c) => `<div class="gcol${v?'':' zero'}"><span class="cnum">${v}</span><i style="background:${c};height:${Math.max(v/fmax*100, v?2:0)}%"></i></div>`;
+  const net = f.opened - f.closed;
+  return `<div class="gmonth" data-tip="${f.m} 2026 — ${f.opened} failures opened, ${f.closed} closed (net ${net>0?'+':''}${net})">
+    ${col(f.opened,'var(--c2)')}${col(f.closed,'var(--good)')}</div>`;
+}).join('');
+document.getElementById('flowlabels').innerHTML = QDATA.flow.map(f => `<div>${f.m}</div>`).join('');
+
+/* aging */
+const amax = Math.max(1, ...QDATA.aging.map(a => a.n));
+const atot = QDATA.aging.reduce((s,a)=>s+a.n,0);
+document.getElementById('agingdesc').textContent =
+  `${atot} acceptance-failure issue${atot===1?' is':'s are'} open right now, by age since filing.`;
+document.getElementById('aging').innerHTML = QDATA.aging.map(a => `<div class="mrow">
+  <div><div class="mname">${a.bucket}</div></div>
+  <div class="bar" style="width:${a.n/amax*100}%">${a.n ? `<div class="seg" style="background:var(--accent);width:100%"
+    data-tip="${a.n} open failure${a.n===1?'':'s'} aged ${a.bucket}"><span class="n">${a.n}</span></div>` : ''}</div>
+  <div class="mtot">${a.n||'·'}</div>
+</div>`).join('');
+
+/* recurring finding themes */
+const TH = QDATA.themes || {top: [], other: 0};
+const tmax = Math.max(1, ...TH.top.map(x => x.n));
+document.getElementById('themes').innerHTML = TH.top.map(x => `<div class="themebar">
+  <span class="tname">${x.theme}</span>
+  <span class="tbar"><i style="width:${20 + x.n/tmax*160}px"></i><span class="tn">${x.n}</span></span>
+</div>`).join('') + (TH.other ? `<div class="themebar"><span class="tname" style="color:var(--muted)">
+  …plus ${TH.other} findings that don't fit a recurring theme</span><span></span></div>` : '');
+
+/* ---------- last 7 days ---------- */
+const SEV = [["C","crit","Critical"],["M","med","Medium"],["m","minor","Minor"]];
+const t = DATA.totals;
+document.getElementById('tiles').innerHTML = [
+  {label:'Rejected rounds', value:t.rounds, note:'REQUEST_CHANGES reviews'},
+  {label:'Clean passes', value:t.clean, note:`${Math.round(t.clean/t.reviewed*100)}% of ${t.reviewed} reviewed PRs`, dot:'good'},
+  {label:'Critical findings', value:t.C, note:'blocking', dot:'crit'},
+  {label:'Medium findings', value:t.M, note:'blocking', dot:'med'},
+  {label:'Minor findings', value:t.m, note:'non-blocking', dot:'minor'},
+  {label:'Work items hit', value:t.items, note:'26 issues + 1 unlinked PR'},
+].map(x => `<div class="tile">
+  <div class="label">${x.dot?`<span class="dot ${x.dot}"></span>`:''}${x.label}</div>
+  <div class="value">${fmt(x.value)}</div><div class="note">${x.note}</div></div>`).join('');
+
+const mods = Object.entries(DATA.modules);
+const maxTot = Math.max(...mods.map(([,v]) => v.C + v.M + v.m));
+document.getElementById('modules').innerHTML = mods.map(([name, v]) => {
+  const total = v.C + v.M + v.m;
+  const segs = SEV.filter(([k]) => v[k] > 0).map(([k, cls, sev]) => {
+    const pct = (v[k] / maxTot) * 100;
+    return `<div class="seg ${cls}" style="width:${pct}%" data-tip="${name} · ${sev}: ${v[k]} finding${v[k]===1?'':'s'} (${Math.round(v[k]/total*100)}% of module)">
+      ${pct > 6 ? `<span class="n">${v[k]}</span>` : ''}</div>`;
+  }).join('');
+  return `<div class="mrow">
+    <div><div class="mname">${name}</div><div class="mmeta">${v.issues} issue${v.issues===1?'':'s'} · ${v.rounds} rounds</div></div>
+    <div class="bar" style="width:${(total/maxTot)*100}%">${segs}</div>
+    <div class="mtot">${total} findings</div>
+  </div>`;
+}).join('');
+
+const WINDOW = ['2026-07-23','2026-07-24','2026-07-25','2026-07-26','2026-07-27','2026-07-28','2026-07-29','2026-07-30'];
+const maxDay = Math.max(...WINDOW.map(d => (DATA.days[d]||{rounds:0}).rounds));
+document.getElementById('days').innerHTML = WINDOW.map(d => {
+  const v = (DATA.days[d]||{rounds:0,C:0,M:0,m:0});
+  const h = v.rounds / maxDay * 100;
+  return `<div class="daycol${v.rounds?'':' zero'}" data-tip="${d}: ${v.rounds} rejected round${v.rounds===1?'':'s'} — ${v.C} Critical, ${v.M} Medium, ${v.m} Minor findings">
+    <span class="cnum">${v.rounds}</span><div class="col" style="height:${Math.max(h, v.rounds?3:0)}%"></div></div>`;
+}).join('');
+document.getElementById('daylabels').innerHTML =
+  WINDOW.map(d => `<div>${d.slice(8)}</div>`).join('');
+
+const omods = Object.keys({...DATA.modules, ...DATA.cleanByModule})
+  .map(name => {
+    const clean = DATA.cleanByModule[name] || 0;
+    const rework = (DATA.modules[name] || {issues:0}).issues;
+    return {name, clean, rework, total: clean + rework};
+  })
+  .filter(m => m.total > 0)
+  .sort((a, b) => b.total - a.total);
+const maxOut = Math.max(...omods.map(m => m.total));
+document.getElementById('outcome').innerHTML = omods.map(m => {
+  const pct = Math.round(m.clean / m.total * 100);
+  const seg = (n, cls, label) => n ? `<div class="seg ${cls}" style="width:${n/maxOut*100}%"
+    data-tip="${m.name}: ${n} PR${n===1?'':'s'} ${label}">${n/maxOut*100 > 6 ? `<span class="n">${n}</span>` : ''}</div>` : '';
+  return `<div class="mrow">
+    <div><div class="mname">${m.name}</div><div class="mmeta">${m.total} PR${m.total===1?'':'s'} reviewed</div></div>
+    <div class="bar" style="width:${m.total/maxOut*100}%">
+      ${seg(m.clean,'clean','approved on first review')}${seg(m.rework,'rework','needed at least one rework round')}
+    </div>
+    <div class="mtot"><span class="pct">${pct}%</span> clean</div>
+  </div>`;
+}).join('');
+
+document.getElementById('cleanrows').innerHTML = DATA.cleanPRs.map(p => `<tr>
+  <td class="num"><a href="https://github.com/dkblinux98/nyxGPT/pull/${p.pr}" target="_blank" rel="noopener">#${p.pr}</a></td>
+  <td><span class="title">${p.title.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span></td>
+  <td><span class="chipm">${p.module}</span></td>
+  <td class="num">${p.merged.slice(5,10)}</td>
+</tr>`).join('');
+
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const rowsEl = document.getElementById('rows');
+rowsEl.innerHTML = DATA.issues.map((it, i) => {
+  const id = it.issue ? `#${it.issue}` : `PR #${it.pr}`;
+  const url = it.issue ? `https://github.com/dkblinux98/nyxGPT/issues/${it.issue}` : `https://github.com/dkblinux98/nyxGPT/pull/${it.pr}`;
+  const title = esc(it.title.replace(/^(Acceptance Failure|Feature|Improvement|Release Management):\s*/,'').replace(/\s*\(#\d+\)\s*$/,''));
+  const cell = (n, cls) => `<td class="num${n?'':' zero'}"><span class="sevn ${n?cls:''}">${n||'·'}</span></td>`;
+  const hasDetail = it.findings.length > 0;
+  return `<tr class="${hasDetail?'expandable':''}" data-i="${i}">
+    <td class="num"><a href="${url}" target="_blank" rel="noopener">${id}</a></td>
+    <td><span class="title">${title}</span></td>
+    <td><span class="chipm">${it.module}</span></td>
+    <td class="num"><a href="https://github.com/dkblinux98/nyxGPT/pull/${it.pr}" target="_blank" rel="noopener">#${it.pr}</a></td>
+    <td class="num">${it.rounds}</td>${cell(it.C,'crit')}${cell(it.M,'')}${cell(it.m,'')}
+    <td class="num">${it.last.slice(5,10)}</td>
+  </tr>` + (hasDetail ? `<tr class="detail" hidden data-for="${i}"><td colspan="9">
+    <ul>${it.findings.map(([sev, f]) =>
+      `<li><span class="sevtag ${sev}">${sev}</span>${esc(f.length>220?f.slice(0,220)+'…':f)}</li>`).join('')}</ul>
+  </td></tr>` : '');
+}).join('');
+rowsEl.addEventListener('click', e => {
+  if (e.target.closest('a')) return;
+  const tr = e.target.closest('tr.expandable');
+  if (!tr) return;
+  const d = rowsEl.querySelector(`tr.detail[data-for="${tr.dataset.i}"]`);
+  if (d) d.hidden = !d.hidden;
+});
+
+/* tooltip */
+const tip = document.getElementById('tip');
+document.addEventListener('mousemove', e => {
+  const el = e.target.closest('[data-tip]');
+  if (!el) { tip.style.display = 'none'; return; }
+  tip.textContent = el.dataset.tip;
+  tip.style.display = 'block';
+  const x = Math.min(e.clientX + 12, innerWidth - tip.offsetWidth - 8);
+  const y = e.clientY + 14 + tip.offsetHeight > innerHeight ? e.clientY - tip.offsetHeight - 10 : e.clientY + 14;
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+});
+</script>

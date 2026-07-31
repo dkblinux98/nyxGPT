@@ -2512,10 +2512,17 @@ def test_persist_after_exchange_config_error_falls_back(tmp_path: Path) -> None:
     assert name == "persist-bad-cfg"
 
 
-def test_persist_after_exchange_auto_summarize_and_sync_renames(
+def test_persist_after_exchange_auto_summarize_does_not_rename_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Successful auto-summarize + auto-sync should rename the session."""
+    """Regression test for #3459: auto-summarize must set title/summary/tags
+    but must NOT rename the session file, even with auto_sync_filename=true.
+
+    Callers (web UI, CLI REPL) keep addressing the session by its original
+    name for the rest of the conversation; renaming it here would orphan
+    that name and cause the next turn to silently start a brand-new,
+    empty session instead of appending.
+    """
     sessions_dir = tmp_path / "sessions"
     sf, mf, msgs, meta = sessions.init_session(
         "auto-sum-test", sessions_dir, new_session=True, model="llama3.1:8b"
@@ -2526,9 +2533,9 @@ def test_persist_after_exchange_auto_summarize_and_sync_renames(
     fake_response = json.dumps({"title": "Auto Title", "summary": "A summary", "tags": ["a", "b"]})
     monkeypatch.setattr(sessions, "ollama_chat", lambda **kwargs: fake_response)
 
-    # sync_filename_with_title (called internally without force=True) reads the
-    # *global* config via load_config(None), so that must also report
-    # auto_sync_filename=true for the rename branch to trigger.
+    # Even if the global config (read internally by sync_filename_with_title)
+    # reports auto_sync_filename=true, persist_after_exchange must not call
+    # into it as a side effect of a chat exchange.
     sync_cfg = configparser.ConfigParser()
     sync_cfg["nyxgpt"] = {"auto_sync_filename": "true"}
     monkeypatch.setattr(sessions, "load_config", lambda path=None: sync_cfg)
@@ -2536,9 +2543,17 @@ def test_persist_after_exchange_auto_summarize_and_sync_renames(
     cfg = _cfg_auto_summarize(sessions_dir)
     new_name = sessions.persist_after_exchange(sf, mf, msgs, model="llama3.1:8b", cfg=cfg)
 
-    assert new_name == "auto-title"
-    new_sf = sessions.session_file_for(new_name, sessions_dir)
-    assert new_sf.exists()
+    assert new_name == "auto-sum-test"
+    assert sf.exists()
+
+    # Title/summary/tags were still generated -- only the rename is gone.
+    new_meta = sessions.load_session_meta(mf)
+    assert new_meta.get("title") == "Auto Title"
+    assert new_meta.get("tags") == ["a", "b"]
+
+    # No stray "auto-title.json" was created either.
+    renamed_sf = sessions.session_file_for("auto-title", sessions_dir)
+    assert not renamed_sf.exists()
 
 
 def test_persist_after_exchange_auto_summarize_failure_logs_warning(
@@ -2565,14 +2580,18 @@ def test_persist_after_exchange_auto_summarize_failure_logs_warning(
     assert "Auto-summarization failed" in caplog.text
 
 
-def test_save_session_updates_state_on_auto_sync_rename(
+def test_save_session_keeps_name_stable_after_auto_summarize(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """save_session should update the SessionState when auto-sync renames it."""
+    """Regression test for #3459: save_session must keep the SessionState's
+    name/session_file stable across auto-summarization, even with
+    auto_sync_filename=true -- a caller (e.g. the web UI, which keeps
+    posting to the session name it started with) must be able to keep
+    addressing the same session name for every subsequent turn."""
     sessions_dir = tmp_path / "sessions"
     cfg = _cfg_auto_summarize(sessions_dir, auto_sync=True)
 
-    state = sessions.load_session("rename-me", cfg, new_session=True)
+    state = sessions.load_session("default", cfg, new_session=True)
     state.messages.append({"role": "user", "content": "Hello"})
     state.messages.append({"role": "assistant", "content": "Hi"})
 
@@ -2585,9 +2604,12 @@ def test_save_session_updates_state_on_auto_sync_rename(
 
     sessions.save_session(state, cfg)
 
-    assert state.name == "renamed-title"
-    assert state.session_file.name == "renamed-title.json"
+    assert state.name == "default"
+    assert state.session_file.name == "default.json"
     assert state.session_file.exists()
+
+    renamed_sf = sessions.session_file_for("renamed-title", sessions_dir)
+    assert not renamed_sf.exists()
 
 
 # --- list_sessions: stat() exception fallback ---

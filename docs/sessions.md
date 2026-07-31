@@ -216,21 +216,20 @@ nyxgpt sessions title default "Python Debugging Session"
 
 ### Filename sync
 
-Sync session filenames with their titles for better organization:
+Sync a session's filename with its title for better organization, on demand:
 
-```bash
-# Manual sync
-nyxgpt sessions sync-filename default
+- **Web UI**: Click "✏️ Rename" (with filename sync) or the explicit sync-filename action in the chat interface
+- **API**: `POST /api/v1/sessions/{name}/sync-filename` or `POST /api/v1/sessions/{name}/rename` with `sync_filename: true` — see [API — Session Metadata Management](api.md#post-apiv1sessionsnamerename)
 
-# Auto-sync (configured in config.ini)
+```ini
 [nyxgpt]
 auto_sync_filename = true
 ```
 
-When enabled, session filenames automatically update to match their titles (sanitized for filesystem compatibility).
+This is gated by `auto_sync_filename`, but is **not** triggered automatically after a chat turn — it only runs when explicitly requested via the endpoints above. Earlier versions synced the filename automatically as soon as auto-summarization generated a title, but a session is addressed by name for the rest of a conversation (by the web UI and the CLI REPL alike); renaming it out from under an in-progress conversation silently orphaned that name, so the next turn started a brand-new, empty session instead of appending (#3459). Auto-summarization ([above](#auto-summarization)) still runs automatically and writes the title/summary/tags onto the existing session file — only the filename rename is now an explicit, on-demand action.
 
 **How it works:**
-1. After the configured number of messages, nyxGPT automatically generates a title
+1. The caller requests a sync (via the web UI action or the API endpoint) for a session that already has a title
 2. The session filename is updated to match the sanitized title using atomic operations with file locking
 3. Sessions remain easily browsable in `~/.nyxGPT/sessions/`
 

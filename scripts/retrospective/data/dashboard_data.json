@@ -1,0 +1,868 @@
+{
+ "modules": {
+  "observability": {
+   "C": 4,
+   "M": 17,
+   "m": 17,
+   "rounds": 14,
+   "issues": 9
+  },
+  "cli": {
+   "C": 8,
+   "M": 8,
+   "m": 6,
+   "rounds": 8,
+   "issues": 5
+  },
+  "web-ui": {
+   "C": 0,
+   "M": 12,
+   "m": 15,
+   "rounds": 13,
+   "issues": 9
+  },
+  "api": {
+   "C": 1,
+   "M": 6,
+   "m": 8,
+   "rounds": 5,
+   "issues": 3
+  },
+  "documentation": {
+   "C": 0,
+   "M": 2,
+   "m": 0,
+   "rounds": 1,
+   "issues": 1
+  }
+ },
+ "days": {
+  "2026-07-24": {
+   "C": 0,
+   "M": 2,
+   "m": 0,
+   "rounds": 1
+  },
+  "2026-07-25": {
+   "C": 1,
+   "M": 6,
+   "m": 4,
+   "rounds": 4
+  },
+  "2026-07-26": {
+   "C": 0,
+   "M": 6,
+   "m": 5,
+   "rounds": 5
+  },
+  "2026-07-27": {
+   "C": 4,
+   "M": 10,
+   "m": 12,
+   "rounds": 10
+  },
+  "2026-07-28": {
+   "C": 4,
+   "M": 2,
+   "m": 4,
+   "rounds": 2
+  },
+  "2026-07-29": {
+   "C": 3,
+   "M": 16,
+   "m": 19,
+   "rounds": 16
+  },
+  "2026-07-30": {
+   "C": 1,
+   "M": 3,
+   "m": 2,
+   "rounds": 3
+  }
+ },
+ "issues": [
+  {
+   "issue": 3409,
+   "pr": 3418,
+   "title": "Acceptance Failure: bug: consolidate deploy model on canary - retire blue/green, honest status (#3409)",
+   "module": "observability",
+   "rounds": 4,
+   "C": 0,
+   "M": 6,
+   "m": 4,
+   "last": "2026-07-29T07:29:39Z",
+   "findings": [
+    [
+     "Medium",
+     "Vitest suite failing (blocking gate)"
+    ],
+    [
+     "Medium",
+     "New raw-`kubectl` instruction introduced in docs/kubernetes.md"
+    ],
+    [
+     "Medium",
+     "Web canary coverage acceptance criterion not met"
+    ],
+    [
+     "Medium",
+     "Unmet acceptance criterion without a linked follow-up or sign-off"
+    ],
+    [
+     "Medium",
+     "Unmet acceptance criterion without a linked follow-up or sign-off"
+    ],
+    [
+     "Medium",
+     "Stale self-reference to #3409 remains in `src/nyxgpt/canary.py:16`"
+    ]
+   ]
+  },
+  {
+   "issue": 3406,
+   "pr": 3408,
+   "title": "Acceptance Failure: feat: real Homebrew installable app + off-by-default self-heal across all install methods (#3406)",
+   "module": "cli",
+   "rounds": 2,
+   "C": 4,
+   "M": 2,
+   "m": 4,
+   "last": "2026-07-28T21:32:28Z",
+   "findings": [
+    [
+     "Critical",
+     "Vitest failure is a real regression, not a stale test"
+    ],
+    [
+     "Critical",
+     "Homebrew \"real installable app\" acceptance criteria \u2014 entirely unaddressed"
+    ],
+    [
+     "Medium",
+     "`nyxgpt ops down` (native/Compose scope) can mismark Terraform-managed components as intentionally stopped without actually stopping them"
+    ],
+    [
+     "Critical",
+     "Vitest regression not fixed"
+    ],
+    [
+     "Critical",
+     "Homebrew packaging work not implemented"
+    ],
+    [
+     "Medium",
+     "`nyxgpt ops down` (native/Compose scope) can mismark Terraform-managed components as intentionally stopped without stopping them"
+    ]
+   ]
+  },
+  {
+   "issue": 3392,
+   "pr": 3395,
+   "title": "Acceptance Failure: fix: auto-delete superseded and closed-PR agent branches (branch hygiene) (#3392)",
+   "module": "api",
+   "rounds": 3,
+   "C": 1,
+   "M": 4,
+   "m": 4,
+   "last": "2026-07-27T18:49:22Z",
+   "findings": [
+    [
+     "Critical",
+     "`cleanup_superseded_branches` fails open if the open-PR check errors, risking deletion of an active branch"
+    ],
+    [
+     "Medium",
+     "Missing tests for all new logic"
+    ],
+    [
+     "Medium",
+     "AC \"PR closed without merging \u2192 branch deleted automatically\" is not actually automatic"
+    ],
+    [
+     "Medium",
+     "AC \"PR closed without merging \u2192 branch deleted automatically\" still not wired to an automatic trigger"
+    ],
+    [
+     "Medium",
+     "AC \"PR closed without merging \u2192 branch deleted automatically\" still not wired to an automatic trigger"
+    ]
+   ]
+  },
+  {
+   "issue": null,
+   "pr": 3398,
+   "title": "fix: make docker/config.docker.ini a derived per-machine artifact, not tracked",
+   "module": "cli",
+   "rounds": 3,
+   "C": 3,
+   "M": 2,
+   "m": 1,
+   "last": "2026-07-27T19:54:58Z",
+   "findings": [
+    [
+     "Critical",
+     "Full Docker Compose Quickstart is now broken on a fresh checkout"
+    ],
+    [
+     "Critical",
+     "Terraform deployment path is broken the same way the Compose path was, and remains unfixed"
+    ],
+    [
+     "Medium",
+     "`docs/docker-compose.md`'s \"quick one-off evaluation\" path is also broken and undocumented"
+    ],
+    [
+     "Critical",
+     "Terraform deployment path still broken (carried over from previous review, unfixed)"
+    ],
+    [
+     "Medium",
+     "\"Quick one-off evaluation\" doc path still broken (carried over from previous review, unfixed)"
+    ]
+   ]
+  },
+  {
+   "issue": 3415,
+   "pr": 3427,
+   "title": "Release Management: chore: close instrumentation gaps blocking RCA, self-heal, and SRE work - sre (#3415)",
+   "module": "observability",
+   "rounds": 3,
+   "C": 3,
+   "M": 2,
+   "m": 5,
+   "last": "2026-07-29T20:26:25Z",
+   "findings": [
+    [
+     "Critical",
+     "PR claims to close #3415, but Gap 1 (web tier) and Gap 6 (OTel correlation backbone) \u2014 the two gaps the issue's owner-approved plan centers on \u2014 are entirely unimplemented."
+    ],
+    [
+     "Critical",
+     "The \"tracing enabled by default\" change is inconsistent and self-contradicting between the API and the admin UI/docs."
+    ],
+    [
+     "Critical",
+     "PR still claims \"Closes #3415\" while gaps 1 and 6 remain unimplemented"
+    ],
+    [
+     "Medium",
+     "Self-heal probe evidence (gap 7) is not surfaced in the SRE dashboard, contradicting the issue's own acceptance criterion and CLAUDE.md's Definition of Done"
+    ],
+    [
+     "Medium",
+     "Fix"
+    ]
+   ]
+  },
+  {
+   "issue": 3352,
+   "pr": 3372,
+   "title": "Acceptance Failure: bug: Resource Usage timeframe buttons cosmetic - no server-side history (#3352)",
+   "module": "web-ui",
+   "rounds": 2,
+   "C": 0,
+   "M": 3,
+   "m": 3,
+   "last": "2026-07-26T14:20:05Z",
+   "findings": [
+    [
+     "Medium",
+     "Missing tests for the new `/api/v1/metrics/history` proxy route (breaks CI coverage gate)"
+    ],
+    [
+     "Medium",
+     "Missing tests for `ResourceMetrics.tsx`'s new error-handling paths (also breaks the coverage gate)"
+    ],
+    [
+     "Medium",
+     "Server-side history does not actually survive an API restart in the realistic startup ordering, contradicting the documented behavior"
+    ]
+   ]
+  },
+  {
+   "issue": 3346,
+   "pr": 3363,
+   "title": "Acceptance Failure: bug: container data hidden in named volumes - relocate under ~/.nyxGPT (#3346)",
+   "module": "cli",
+   "rounds": 1,
+   "C": 1,
+   "M": 2,
+   "m": 0,
+   "last": "2026-07-25T22:40:44Z",
+   "findings": [
+    [
+     "Critical",
+     "`migrate_legacy_volumes()`'s \"already migrated\" check can silently strand pre-upgrade chat/RAG data with no warning"
+    ],
+    [
+     "Medium",
+     "Missing ordering warning in docs tied to the above"
+    ],
+    [
+     "Medium",
+     "Silent no-op when two legacy volumes exist for a shared destination"
+    ]
+   ]
+  },
+  {
+   "issue": 3309,
+   "pr": 3334,
+   "title": "Feature: docs: slim the 1,146-line README to a landing page - move depth into docs/ (#3309)",
+   "module": "documentation",
+   "rounds": 1,
+   "C": 0,
+   "M": 2,
+   "m": 0,
+   "last": "2026-07-24T21:15:14Z",
+   "findings": [
+    [
+     "Medium",
+     "\"Collections Management UI\" content deleted, not moved, and left a dead link"
+    ],
+    [
+     "Medium",
+     "RAG Collections management"
+    ]
+   ]
+  },
+  {
+   "issue": 3348,
+   "pr": 3364,
+   "title": "Acceptance Failure: bug: self-heal only watches Compose - core native components unmonitored (#3348)",
+   "module": "observability",
+   "rounds": 1,
+   "C": 0,
+   "M": 2,
+   "m": 1,
+   "last": "2026-07-25T23:38:08Z",
+   "findings": [
+    [
+     "Medium",
+     "Vitest regression \u2014 stale assertion in `web/tests/app/admin/self-heal.test.tsx:175`"
+    ],
+    [
+     "Medium",
+     "Missing/ineffective test coverage for the new `source` badge"
+    ]
+   ]
+  },
+  {
+   "issue": 3407,
+   "pr": 3417,
+   "title": "Acceptance Failure: bug: wizard Summary, per-page save/cancel layout, restart-required flow - web-ui (#3407)",
+   "module": "web-ui",
+   "rounds": 1,
+   "C": 0,
+   "M": 2,
+   "m": 2,
+   "last": "2026-07-29T04:23:01Z",
+   "findings": [
+    [
+     "Medium",
+     "Missing effective test coverage for per-page Save-and-advance"
+    ],
+    [
+     "Medium",
+     "Missing effective test coverage for restart-required POST failure"
+    ]
+   ]
+  },
+  {
+   "issue": 3419,
+   "pr": 3433,
+   "title": "Feature: feat: extend canary deployment to web and ollama - net-new k8s workloads (#3419)",
+   "module": "observability",
+   "rounds": 1,
+   "C": 0,
+   "M": 2,
+   "m": 2,
+   "last": "2026-07-29T22:35:23Z",
+   "findings": [
+    [
+     "Medium",
+     "Missing/ineffective tests for the new component tab switcher (blocks the Vitest coverage gate)"
+    ],
+    [
+     "Medium",
+     "`nyxgpt ops status` / Infrastructure Status page were not extended for per-component canary reporting, contradicting this PR's own checklist item and #3419's acceptance criteria"
+    ]
+   ]
+  },
+  {
+   "issue": 3430,
+   "pr": 3450,
+   "title": "Release Management: chore: web-tier instrumentation and OTel trace correlation backbone - sre (#3430)",
+   "module": "observability",
+   "rounds": 1,
+   "C": 0,
+   "M": 2,
+   "m": 0,
+   "last": "2026-07-30T04:45:15Z",
+   "findings": [
+    [
+     "Medium",
+     "Missing tests for `web/src/instrumentation.ts` and `web/src/instrumentation-client.ts`"
+    ],
+    [
+     "Medium",
+     "New raw `docker compose build web` command shown as a user instruction"
+    ]
+   ]
+  },
+  {
+   "issue": 3410,
+   "pr": 3420,
+   "title": "Acceptance Failure: bug: Infrastructure page becomes honest status-only display - drop Install/Destroy (#3410)",
+   "module": "web-ui",
+   "rounds": 4,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-07-29T10:20:43Z",
+   "findings": [
+    [
+     "Medium",
+     "\"Which instance/service is currently serving traffic\" is not shown on the Infrastructure page"
+    ]
+   ]
+  },
+  {
+   "issue": 3314,
+   "pr": 3339,
+   "title": "Feature: feat: Add query cache stats panel to admin dashboard - web-ui (#3314)",
+   "module": "web-ui",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-07-25T03:27:40Z",
+   "findings": [
+    [
+     "Medium",
+     "`ttl_seconds` reports `null` even when the cache has an effective default TTL"
+    ]
+   ]
+  },
+  {
+   "issue": 3344,
+   "pr": 3361,
+   "title": "Acceptance Failure: bug: wrap terraform and k8s deploys as one-command nyxgpt ops install flags (#3344)",
+   "module": "cli",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 1,
+   "last": "2026-07-25T20:38:14Z",
+   "findings": [
+    [
+     "Medium",
+     "Missing tests for new frontend surface"
+    ]
+   ]
+  },
+  {
+   "issue": 3353,
+   "pr": 3373,
+   "title": "Acceptance Failure: fix: Settings back-nav should match the standard admin back link - web-ui (#3353)",
+   "module": "web-ui",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 0,
+   "last": "2026-07-26T14:33:41Z",
+   "findings": [
+    [
+     "Medium",
+     "Missing documentation confirmation for user-facing nav change"
+    ]
+   ]
+  },
+  {
+   "issue": 3354,
+   "pr": 3374,
+   "title": "Improvement: feat: Configuration Wizard covers all settings with apply-on-save reload (#3354)",
+   "module": "web-ui",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-07-26T16:14:56Z",
+   "findings": [
+    [
+     "Medium",
+     "`docs/configuration.md` and `docs/ui.md` contradict themselves \u2014 and the code \u2014 about whether rate limiting is hot-reloadable"
+    ]
+   ]
+  },
+  {
+   "issue": 3356,
+   "pr": 3375,
+   "title": "Acceptance Failure: bug: self-heal cannot restore a down stack - no desired-state model; Refresh gives no feedback (#3356)",
+   "module": "observability",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 0,
+   "last": "2026-07-26T18:00:10Z",
+   "findings": [
+    [
+     "Medium",
+     "Regression: `_wait_for_glitchtip_healthy` now polls for 120s instead of failing fast when a torn-down-but-enabled `error_tracking` profile is absent"
+    ]
+   ]
+  },
+  {
+   "issue": 3370,
+   "pr": 3380,
+   "title": "Acceptance Failure: bug: snapshot step's blanket git add -A commits untracked junk to branches (#3370)",
+   "module": "api",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-07-27T06:27:07Z",
+   "findings": [
+    [
+     "Medium",
+     "Size-guard trip aborts the whole snapshot step, potentially losing already-committed implementation work, not just the oversized delta"
+    ]
+   ]
+  },
+  {
+   "issue": 3381,
+   "pr": 3382,
+   "title": "Acceptance Failure: bug: self-heal falsely reports glitchtip-migrate one-shot job as unhealthy (#3381)",
+   "module": "observability",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 1,
+   "last": "2026-07-27T16:35:17Z",
+   "findings": [
+    [
+     "Medium",
+     "Failed one-shot job is never marked `desired\ufffdlse` after its profile is disabled, so auto-heal keeps trying to restart it"
+    ]
+   ]
+  },
+  {
+   "issue": 3385,
+   "pr": 3393,
+   "title": "Acceptance Failure: bug: Configuration Wizard shows empty fields instead of effective config values (#3385)",
+   "module": "web-ui",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 1,
+   "last": "2026-07-27T18:22:34Z",
+   "findings": [
+    [
+     "Medium",
+     "Vitest coverage gate failure (branch coverage)"
+    ]
+   ]
+  },
+  {
+   "issue": 3388,
+   "pr": 3400,
+   "title": "Acceptance Failure: feat: derive Configuration Wizard schema from example.config.ini (#3388)",
+   "module": "web-ui",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 3,
+   "last": "2026-07-27T20:25:44Z",
+   "findings": [
+    [
+     "Medium",
+     "Missing dedicated test for the new proxy route"
+    ]
+   ]
+  },
+  {
+   "issue": 3411,
+   "pr": 3422,
+   "title": "Acceptance Failure: feat: Grafana single pane of glass - retire in-app SRE screens, wire all four signals (#3411)",
+   "module": "observability",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-07-29T11:44:36Z",
+   "findings": [
+    [
+     "Medium",
+     "Missing test for `loadMonitoring`'s network-error path breaks the 100% coverage gate"
+    ]
+   ]
+  },
+  {
+   "issue": 3434,
+   "pr": 3435,
+   "title": "Acceptance Failure: bug: query cache stats show bare zeros when RAG is disabled - web-ui (#3434)",
+   "module": "web-ui",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 0,
+   "last": "2026-07-29T22:54:29Z",
+   "findings": [
+    [
+     "Medium",
+     "Panel hides real, non-zero cache stats and the Clear Cache button whenever global RAG is off, even though per-chat RAG activity can populate the cache independent of the global toggle"
+    ]
+   ]
+  },
+  {
+   "issue": 3431,
+   "pr": 3437,
+   "title": "Release Management: fix: unify Ollama model library across native/container launch modes (#3431)",
+   "module": "api",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 2,
+   "last": "2026-07-29T23:08:26Z",
+   "findings": [
+    [
+     "Medium",
+     "Boot-time race between the two `RunAtLoad` LaunchAgents can silently re-break the \"single shared library\" guarantee"
+    ]
+   ]
+  },
+  {
+   "issue": 3428,
+   "pr": 3446,
+   "title": "Acceptance Failure: bug: self-heal attributes cassandra to stopped native container in tf mode (#3428)",
+   "module": "observability",
+   "rounds": 1,
+   "C": 1,
+   "M": 0,
+   "m": 2,
+   "last": "2026-07-30T00:37:03Z",
+   "findings": [
+    [
+     "Critical",
+     "CI-blocking: Vitest coverage gate fails, and it's caused by untested new code"
+    ]
+   ]
+  },
+  {
+   "issue": 3439,
+   "pr": 3453,
+   "title": "Acceptance Failure: bug: doctor flags stale terraform state forever after clean down --terraform (#3439)",
+   "module": "cli",
+   "rounds": 1,
+   "C": 0,
+   "M": 1,
+   "m": 0,
+   "last": "2026-07-30T06:01:04Z",
+   "findings": [
+    [
+     "Medium",
+     "New doctor test doesn't mock `_compose_stack_snapshot`, breaking test isolation convention and creating a real (if narrow) flakiness vector"
+    ]
+   ]
+  }
+ ],
+ "totals": {
+  "rounds": 41,
+  "C": 13,
+  "M": 45,
+  "m": 46,
+  "items": 27,
+  "clean": 30,
+  "reviewed": 57,
+  "merged": 67,
+  "unreviewed": 11
+ },
+ "cleanPRs": [
+  {
+   "pr": 3335,
+   "merged": "2026-07-24",
+   "title": "feat: nyxgpt ops restart should restart the entire stack including observability",
+   "module": "cli"
+  },
+  {
+   "pr": 3336,
+   "merged": "2026-07-24",
+   "title": "bug: accept-and-merge sometimes leaves review agent as closed-issue assignee",
+   "module": "api"
+  },
+  {
+   "pr": 3337,
+   "merged": "2026-07-25",
+   "title": "bug: issue hygiene silently skips milestone on API failure, comment overstates result",
+   "module": "api"
+  },
+  {
+   "pr": 3338,
+   "merged": "2026-07-25",
+   "title": "chore: pin MCP server versions - track package-lock.json, drop wildcards",
+   "module": "api"
+  },
+  {
+   "pr": 3362,
+   "merged": "2026-07-25",
+   "title": "bug: pin all third-party Docker image versions - compose, terraform, ops",
+   "module": "cli"
+  },
+  {
+   "pr": 3365,
+   "merged": "2026-07-26",
+   "title": "bug: curated Loki queries return no data - timestamp timezone and label gaps",
+   "module": "observability"
+  },
+  {
+   "pr": 3366,
+   "merged": "2026-07-26",
+   "title": "bug: native-mode tracing dead - otel-collector publishes no host port",
+   "module": "observability"
+  },
+  {
+   "pr": 3376,
+   "merged": "2026-07-26",
+   "title": "bug: self-heal events Explore link loads no query - reuse #3320 deep-link fix",
+   "module": "observability"
+  },
+  {
+   "pr": 3377,
+   "merged": "2026-07-26",
+   "title": "chore: remove CI Workflow Analytics dashboard - agent-level, out of scope",
+   "module": "web-ui"
+  },
+  {
+   "pr": 3378,
+   "merged": "2026-07-26",
+   "title": "bug: nyxgpt models list POSTs to Ollama /api/tags - HTTP 405",
+   "module": "cli"
+  },
+  {
+   "pr": 3379,
+   "merged": "2026-07-27",
+   "title": "bug: usage-limit-retry label deadlocks PR submission and is falsely triggered",
+   "module": "api"
+  },
+  {
+   "pr": 3386,
+   "merged": "2026-07-27",
+   "title": "bug: ops status false phantom-backend warning for cassandra (native counted as Compose)",
+   "module": "cli"
+  },
+  {
+   "pr": 3389,
+   "merged": "2026-07-27",
+   "title": "bug: Configuration Wizard interrupts config flow with a Resource Usage monitor",
+   "module": "web-ui"
+  },
+  {
+   "pr": 3394,
+   "merged": "2026-07-27",
+   "title": "chore: remove admin View Logs feature once log aggregation is fixed",
+   "module": "web-ui"
+  },
+  {
+   "pr": 3399,
+   "merged": "2026-07-27",
+   "title": "bug: Configuration Wizard has no cancel - only Save Configuration",
+   "module": "web-ui"
+  },
+  {
+   "pr": 3401,
+   "merged": "2026-07-27",
+   "title": "feat: record nyxgpt ops lifecycle actions as observable events",
+   "module": "observability"
+  },
+  {
+   "pr": 3402,
+   "merged": "2026-07-27",
+   "title": "feat: split admin dashboard tiles by observe vs operate",
+   "module": "web-ui"
+  },
+  {
+   "pr": 3403,
+   "merged": "2026-07-27",
+   "title": "feat: slim Settings\u2192Admin menu - remove six entries covered by consolidation",
+   "module": "web-ui"
+  },
+  {
+   "pr": 3404,
+   "merged": "2026-07-27",
+   "title": "fix: RAG Collections and Playground back-nav should go to chat - web-ui",
+   "module": "web-ui"
+  },
+  {
+   "pr": 3405,
+   "merged": "2026-07-28",
+   "title": "feat: rescue 7/15 shelf - first-run wizard, path auto-detect, formula version stamping",
+   "module": "cli"
+  },
+  {
+   "pr": 3423,
+   "merged": "2026-07-29",
+   "title": "bug: Query Cache card shows zeros instead of disabled state - web-ui",
+   "module": "web-ui"
+  },
+  {
+   "pr": 3425,
+   "merged": "2026-07-29",
+   "title": "feat: consolidate System Health, Usage Analytics, Full Metrics into one screen",
+   "module": "web-ui"
+  },
+  {
+   "pr": 3426,
+   "merged": "2026-07-29",
+   "title": "feat: mirror Homebrew rebuild/reinstall-if-needed in the Docker image build",
+   "module": "cli"
+  },
+  {
+   "pr": 3447,
+   "merged": "2026-07-30",
+   "title": "bug: SRE Home SPOG fails acceptance - layout redesign, dead datasources, no data",
+   "module": "observability"
+  },
+  {
+   "pr": 3448,
+   "merged": "2026-07-30",
+   "title": "chore: remove the nyxgpt tools and nyxgpt tui features",
+   "module": "tui"
+  },
+  {
+   "pr": 3449,
+   "merged": "2026-07-30",
+   "title": "bug: glitchtip token write fails on Linux, Grafana provisioning dies - sre",
+   "module": "observability"
+  },
+  {
+   "pr": 3451,
+   "merged": "2026-07-30",
+   "title": "bug: probe failures log bare \"Subprocess exited non-zero\" warnings - sre",
+   "module": "observability"
+  },
+  {
+   "pr": 3452,
+   "merged": "2026-07-30",
+   "title": "bug: doctor Loki log-volume check gets 401 via Grafana datasource proxy - sre",
+   "module": "observability"
+  },
+  {
+   "pr": 3455,
+   "merged": "2026-07-30",
+   "title": "bug: chat stream 502s instantly - undici Agent incompatible with Next 16 fetch",
+   "module": "api"
+  },
+  {
+   "pr": 3456,
+   "merged": "2026-07-30",
+   "title": "feat: per-service service_name labels in Loki; ship native ollama logs - sre",
+   "module": "observability"
+  }
+ ],
+ "cleanByModule": {
+  "cli": 6,
+  "api": 5,
+  "observability": 9,
+  "web-ui": 9,
+  "tui": 1
+ }
+}

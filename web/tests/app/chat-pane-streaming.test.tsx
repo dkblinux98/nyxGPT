@@ -165,6 +165,30 @@ describe('ChatPane send() SSE streaming', () => {
     await waitFor(() => expect(onSessionUpdated).toHaveBeenCalled());
   });
 
+  it('always sends the active session name in the /api/chat/stream request body (#3459)', async () => {
+    // Regression coverage for #3459: the send path must forward the
+    // component's active `sessionName` on every request (including
+    // "default") so the server appends to the same session instead of the
+    // client silently drifting to a different one.
+    const raw = ['event: done', 'data: {"ok":true}', '', ''].join('\n');
+
+    let capturedInit: RequestInit | undefined;
+    global.fetch = makeFetchMock((_url, init) => {
+      capturedInit = init;
+      return sseResponse(raw);
+    }) as unknown as typeof fetch;
+
+    render(<ChatPane sessionName="default" />);
+    const user = userEvent.setup();
+    const input = await screen.findByPlaceholderText('Type your message…');
+    await user.type(input, 'session field check');
+    await user.click(screen.getByTitle('Send message'));
+
+    await waitFor(() => expect(capturedInit).toBeDefined());
+    const body = JSON.parse(capturedInit!.body as string);
+    expect(body.session).toBe('default');
+  });
+
   it('handles the error SSE event with a parseable payload', async () => {
     const raw = ['event: error', 'data: {"error":"boom"}', '', ''].join('\n');
     global.fetch = makeFetchMock(() => sseResponse(raw)) as unknown as typeof fetch;

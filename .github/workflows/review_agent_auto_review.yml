@@ -92,6 +92,9 @@ jobs:
           STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
 
           RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          RELEASE_ISSUE_NUMBER=${{ vars.RELEASE_ISSUE_NUMBER }}
+          SPRINT_AUTOPILOT=${{ vars.SPRINT_AUTOPILOT }}
+          SPRINT_FIELD=${{ vars.SPRINT_FIELD }}
           EOF
 
           echo "NYXGPT_CONFIG_FILE=$CFG" >> "$GITHUB_ENV"
