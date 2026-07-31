@@ -16,7 +16,6 @@ import inspect
 import io
 import logging
 import os
-import re
 import secrets
 import threading
 import time
@@ -3557,7 +3556,9 @@ def rag_collection_create(
     """Create a new RAG collection.
 
     Creates a new empty collection with the specified embedding dimension.
-    Collection names must be alphanumeric with underscores only (no hyphens).
+    Collection names must be alphanumeric with underscores only (no hyphens),
+    and are capped in length by Cassandra's identifier limit (see
+    `max_collection_name_length`).
 
     Args:
         body: Collection creation request with name and embedding_dim
@@ -3565,7 +3566,11 @@ def rag_collection_create(
     Returns:
         CreateCollectionResponse with collection name and status
     """
-    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+    from nyxgpt.rag.vectorstore_cassandra import (
+        COLLECTION_NAME_PATTERN,
+        CassandraVectorStore,
+        max_collection_name_length,
+    )
 
     # Validate collection name
     collection_name = body.name.strip()
@@ -3578,10 +3583,20 @@ def rag_collection_create(
         )
 
     # Validate name format (alphanumeric and underscores only - no hyphens for Cassandra compatibility)
-    if not re.match(r"^[a-zA-Z0-9_]+$", collection_name):
+    if not COLLECTION_NAME_PATTERN.match(collection_name):
         raise HTTPException(
             status_code=400,
-            detail="Collection name must contain only letters, numbers, and underscores.",
+            detail=(
+                "Collection name must contain only letters, numbers, and underscores "
+                "(no hyphens, spaces, or other characters)."
+            ),
+        )
+
+    max_name_len = max_collection_name_length()
+    if len(collection_name) > max_name_len:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Collection name must be at most {max_name_len} characters long.",
         )
 
     # Validate embedding dimension

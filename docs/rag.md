@@ -781,6 +781,13 @@ The web UI includes a dedicated collections management page at `/admin/collectio
   - Document count
   - Total chunk count
   - Embedding models used in each collection
+- **Create collections** with a name and embedding dimension. Names become
+  part of a Cassandra table identifier, so only letters, digits, and
+  underscores are allowed (no hyphens, spaces, or other characters), up to
+  the length Cassandra's identifier limit permits (37 characters against the
+  default `rag_chunks` table -- see `max_collection_name_length()` in
+  `vectorstore_cassandra.py`). The UI validates this client-side before
+  submitting and surfaces the same rule as helper text.
 - **Clear collections** to remove all documents and chunks (with confirmation)
 - **Collection insights** showing which embedding models are active
 - **Protected default collection** cannot be cleared to prevent accidental data loss
@@ -805,20 +812,21 @@ and complement `GET /api/v1/rag/collections` / `DELETE
 #### `POST /api/v1/rag/collections`
 
 Create a new, empty collection with the given embedding dimension.
-Collection names must be alphanumeric with underscores only (no hyphens),
-and the `default` collection cannot be created manually (it's managed
-automatically).
+Collection names must be alphanumeric with underscores only (no hyphens,
+spaces, or other characters), capped at the length Cassandra's identifier
+limit allows (37 characters against the default `rag_chunks` table), and the
+`default` collection cannot be created manually (it's managed automatically).
 
 **Request:**
 
 ```json
-{ "name": "all-minilm", "embedding_dim": 384, "embedding_model": "all-minilm:latest" }
+{ "name": "all_minilm", "embedding_dim": 384, "embedding_model": "all-minilm:latest" }
 ```
 
 **Response (`201 Created`):**
 
 ```json
-{ "collection": "all-minilm", "status": "Collection 'all-minilm' created successfully", "embedding_dim": 384 }
+{ "collection": "all_minilm", "status": "Collection 'all_minilm' created successfully", "embedding_dim": 384 }
 ```
 
 **Error Responses:** `400` invalid name/dimension or `default` requested, `409` collection already exists.

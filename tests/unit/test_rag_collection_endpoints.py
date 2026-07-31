@@ -156,6 +156,35 @@ def test_create_collection_rejects_invalid_name_format() -> None:
     assert "letters, numbers, and underscores" in resp.json()["error"]["message"]
 
 
+def test_create_collection_rejects_hyphenated_name() -> None:
+    """Repro from the owner acceptance bug report: a dashed name is rejected
+    with a specific, actionable message rather than a raw backend error."""
+    with _client() as client:
+        resp = client.post(
+            "/api/v1/rag/collections", json={"name": "test-collection", "embedding_dim": 768}
+        )
+
+    assert resp.status_code == 400
+    body = resp.json()["error"]["message"]
+    assert "letters, numbers, and underscores" in body
+    assert "hyphens" in body
+
+
+def test_create_collection_rejects_overlong_name() -> None:
+    from nyxgpt.rag.vectorstore_cassandra import max_collection_name_length
+
+    max_len = max_collection_name_length()
+    overlong_name = "a" * (max_len + 1)
+
+    with _client() as client:
+        resp = client.post(
+            "/api/v1/rag/collections", json={"name": overlong_name, "embedding_dim": 768}
+        )
+
+    assert resp.status_code == 400
+    assert f"at most {max_len} characters" in resp.json()["error"]["message"]
+
+
 @pytest.mark.parametrize("embedding_dim", [0, -5, 10001])
 def test_create_collection_rejects_invalid_embedding_dim(embedding_dim: int) -> None:
     with _client() as client:

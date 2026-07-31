@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import re
 import threading
 import time
 from collections.abc import Iterable
@@ -291,6 +292,33 @@ def _cassandra_cfg() -> CassandraConfig:
         ann_oversample_factor=ann_oversample_factor,
         batch_query_concurrency=batch_query_concurrency,
     )
+
+
+# Cassandra caps unquoted identifiers (table, column, etc. names) at 48
+# characters. Collection names become part of a per-collection table name
+# (`{base_table}_{collection}`), so this is the single source of truth for
+# collection name validation -- `src/nyxgpt/app.py`'s create-collection
+# endpoint uses it directly, and the web UI
+# (`web/src/app/admin/collections/page.tsx`) mirrors it and must be kept in
+# sync.
+CASSANDRA_IDENTIFIER_MAX_LEN = 48
+
+COLLECTION_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_]+$")
+
+
+def max_collection_name_length(base_table: str | None = None) -> int:
+    """Longest collection name that keeps its table name within Cassandra's identifier limit.
+
+    Args:
+        base_table: Base table name to size against; defaults to the
+            configured `[rag] cassandra_table` value.
+
+    Returns:
+        Maximum number of characters allowed in a collection name.
+    """
+    if base_table is None:
+        base_table = _cassandra_cfg().table
+    return max(0, CASSANDRA_IDENTIFIER_MAX_LEN - len(base_table) - 1)
 
 
 class CassandraConnectionPool:
