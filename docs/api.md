@@ -3358,13 +3358,18 @@ Resource Metrics section of the [System Health screen](ui.md#web-ui-features)
 3. Jump to the "Resource Metrics" section (anchor link at the top of the page)
 
 **Dashboard Features:**
-- Real-time metric updates (auto-refresh every 5 seconds)
-- Visual display of memory, CPU, latency, and queue metrics
+- A "Current Usage" section, labeled **Live**, showing memory, CPU, latency,
+  and queue metrics from the most recent `/api/metrics` snapshot (auto-refresh
+  every 5 seconds). These tiles always reflect the live snapshot and are
+  intentionally *not* affected by the Historical Trends range selector below
 - Color-coded warning indicators (normal/warning/critical thresholds)
-- Historical trends backed by server-side history (`GET /api/v1/metrics/history`),
-  with switchable time ranges (1 hour, 24 hours, 7 days) that each fetch and
-  render their own window -- including data from before the page was opened
-- Export functionality (CSV and JSON formats) for the currently selected window
+- A separate "Historical Trends" section backed by server-side history
+  (`GET /api/v1/metrics/history`), with its own switchable time ranges (1 hour,
+  24 hours, 7 days) that each fetch and render their own window -- including
+  data from before the page was opened. This range selector scopes only the
+  Historical Trends charts, not the Current Usage tiles above
+- Export functionality (CSV and JSON formats) for the currently selected
+  Historical Trends window
 - Toggle auto-refresh on/off
 
 **Warning Thresholds:**
