@@ -14,7 +14,7 @@ import json
 import math
 import sys
 from datetime import date
-from typing import Any, Optional
+from typing import Any
 
 _PRIORITY_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
@@ -25,7 +25,7 @@ def sprint_velocity(done_count: float, elapsed_days: float) -> float:
     return round(done_count / elapsed, 4)
 
 
-def sprint_verdict(remaining: float, velocity: float, days_left: Optional[float]) -> str:
+def sprint_verdict(remaining: float, velocity: float, days_left: float | None) -> str:
     """on-track / at-risk / off-track, with a 20% buffer before off-track."""
     if remaining <= 0:
         return "on-track"
@@ -39,7 +39,7 @@ def sprint_verdict(remaining: float, velocity: float, days_left: Optional[float]
     return "off-track"
 
 
-def reorg_target_count(remaining: float, velocity: float, days_left: Optional[float]) -> int:
+def reorg_target_count(remaining: float, velocity: float, days_left: float | None) -> int:
     """How many backlog issues to propose moving out of the sprint.
 
     Callers must clamp the result to the number of available candidates:
@@ -64,7 +64,7 @@ def reorg_target_count(remaining: float, velocity: float, days_left: Optional[fl
 _DEFAULT_RANK = _PRIORITY_RANK["P2"]
 
 
-def _priority_rank(priority: Optional[str]) -> int:
+def _priority_rank(priority: str | None) -> int:
     if not priority:
         return _DEFAULT_RANK
     upper = priority.upper()
@@ -124,7 +124,7 @@ def build_sprint_report(payload: dict[str, Any]) -> dict[str, Any]:
     needed_days = round(remaining / velocity, 1) if velocity > 0 else None
 
     backlog_issues = payload.get("backlog_issues", [])
-    proposal: Optional[dict[str, Any]] = None
+    proposal: dict[str, Any] | None = None
     if verdict == "off-track" and backlog_issues:
         target = min(reorg_target_count(remaining, velocity, days_left), len(backlog_issues))
         candidates = select_reorg_candidates(backlog_issues, target)

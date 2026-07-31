@@ -92,7 +92,7 @@ def main(argv: list[str]) -> int:
     if not argv:
         print("usage: summarize_backlog_page.py <page.json>", file=sys.stderr)
         return 2
-    with open(argv[0], "r", encoding="utf-8") as f:
+    with open(argv[0], encoding="utf-8") as f:
         page = json.load(f)
     print(json.dumps(summarize(page)))
     return 0
