@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-31T02:40:17Z",
+  "generated_at": "2026-07-31T10:08:59Z",
   "sprints": [
     {
       "duration": 28,
@@ -30,9 +30,453 @@
       "duration": 15,
       "startDate": "2026-07-17",
       "title": "Sprint 6"
+    },
+    {
+      "duration": 14,
+      "startDate": "2026-08-01",
+      "title": "Sprint 7"
+    },
+    {
+      "duration": 14,
+      "startDate": "2026-08-15",
+      "title": "Sprint 8"
     }
   ],
   "items": [
+    {
+      "type": "ISSUE",
+      "number": 3480,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3475,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "web-ui",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3443,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3442,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3441,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3440,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3439,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3438,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3436,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3432,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3424,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3428,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3429,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "web-ui",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3430,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
     {
       "type": "PULL_REQUEST",
       "number": 3437,
@@ -1028,6 +1472,37 @@
     {
       "type": "ISSUE",
       "number": 3355,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "web-ui",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3459,
       "fields": [
         {
           "field": "Status",
@@ -19769,6 +20244,11 @@
           "field": "Status",
           "value": "For Release",
           "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
         }
       ]
     },
@@ -19887,6 +20367,11 @@
         {
           "field": "Status",
           "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
           "start": null
         }
       ]
@@ -21292,7 +21777,7 @@
       "fields": [
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         },
         {
@@ -21304,6 +21789,16 @@
           "field": "Effort",
           "value": "XS",
           "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
         }
       ]
     },
@@ -21313,369 +21808,7 @@
       "fields": [
         {
           "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
-      "number": 3424,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        },
-        {
-          "field": "Module",
-          "value": "sre",
-          "start": null
-        },
-        {
-          "field": "Sprint",
-          "value": "Sprint 6",
-          "start": "2026-07-17"
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
-      "number": 3428,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        },
-        {
-          "field": "Module",
-          "value": "sre",
-          "start": null
-        },
-        {
-          "field": "Sprint",
-          "value": "Sprint 6",
-          "start": "2026-07-17"
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
-      "number": 3429,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        },
-        {
-          "field": "Module",
-          "value": "web-ui",
-          "start": null
-        },
-        {
-          "field": "Sprint",
-          "value": "Sprint 6",
-          "start": "2026-07-17"
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
-      "number": 3430,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        },
-        {
-          "field": "Module",
-          "value": "sre",
-          "start": null
-        },
-        {
-          "field": "Sprint",
-          "value": "Sprint 6",
-          "start": "2026-07-17"
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
-      "number": 3432,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        },
-        {
-          "field": "Module",
-          "value": "sre",
-          "start": null
-        },
-        {
-          "field": "Sprint",
-          "value": "Sprint 6",
-          "start": "2026-07-17"
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
-      "number": 3436,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        },
-        {
-          "field": "Module",
-          "value": "sre",
-          "start": null
-        },
-        {
-          "field": "Sprint",
-          "value": "Sprint 6",
-          "start": "2026-07-17"
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
-      "number": 3438,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        },
-        {
-          "field": "Module",
-          "value": "sre",
-          "start": null
-        },
-        {
-          "field": "Sprint",
-          "value": "Sprint 6",
-          "start": "2026-07-17"
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
-      "number": 3439,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        },
-        {
-          "field": "Module",
-          "value": "sre",
-          "start": null
-        },
-        {
-          "field": "Sprint",
-          "value": "Sprint 6",
-          "start": "2026-07-17"
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
-      "number": 3440,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        },
-        {
-          "field": "Module",
-          "value": "sre",
-          "start": null
-        },
-        {
-          "field": "Sprint",
-          "value": "Sprint 6",
-          "start": "2026-07-17"
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
-      "number": 3441,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        },
-        {
-          "field": "Module",
-          "value": "sre",
-          "start": null
-        },
-        {
-          "field": "Sprint",
-          "value": "Sprint 6",
-          "start": "2026-07-17"
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
-      "number": 3442,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        },
-        {
-          "field": "Module",
-          "value": "sre",
-          "start": null
-        },
-        {
-          "field": "Sprint",
-          "value": "Sprint 6",
-          "start": "2026-07-17"
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
-      "number": 3443,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         },
         {
@@ -21705,11 +21838,6 @@
       "number": 3444,
       "fields": [
         {
-          "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
           "field": "Priority",
           "value": "P1 - High",
           "start": null
@@ -21728,6 +21856,11 @@
           "field": "Sprint",
           "value": "Sprint 6",
           "start": "2026-07-17"
+        },
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
         }
       ]
     },
@@ -21737,7 +21870,7 @@
       "fields": [
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         },
         {
@@ -21788,7 +21921,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -21819,7 +21952,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -21850,7 +21983,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -21881,7 +22014,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -21912,7 +22045,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -21943,7 +22076,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -21974,7 +22107,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -22005,7 +22138,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -22016,7 +22149,7 @@
       "fields": [
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         },
         {
@@ -22028,6 +22161,16 @@
           "field": "Effort",
           "value": "XS",
           "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
         }
       ]
     },
@@ -22057,7 +22200,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -22088,7 +22231,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -22099,7 +22242,7 @@
       "fields": [
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         },
         {
@@ -22130,7 +22273,7 @@
       "fields": [
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         },
         {
@@ -22157,42 +22300,11 @@
     },
     {
       "type": "ISSUE",
-      "number": 3459,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        },
-        {
-          "field": "Module",
-          "value": "web-ui",
-          "start": null
-        },
-        {
-          "field": "Sprint",
-          "value": "Sprint 6",
-          "start": "2026-07-17"
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
       "number": 3460,
       "fields": [
         {
           "field": "Status",
-          "value": "In Progress",
+          "value": "Acceptance Testing",
           "start": null
         },
         {
@@ -22223,7 +22335,7 @@
       "fields": [
         {
           "field": "Status",
-          "value": "Backlog",
+          "value": "Acceptance Testing",
           "start": null
         },
         {
@@ -22274,7 +22386,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -22285,7 +22397,7 @@
       "fields": [
         {
           "field": "Status",
-          "value": "Backlog",
+          "value": "Acceptance Testing",
           "start": null
         },
         {
@@ -22646,7 +22758,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -22677,7 +22789,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -22708,7 +22820,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -22739,7 +22851,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -22750,28 +22862,7 @@
       "fields": [
         {
           "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
-      "number": 3480,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         },
         {
@@ -22787,37 +22878,6 @@
         {
           "field": "Module",
           "value": "sre",
-          "start": null
-        },
-        {
-          "field": "Sprint",
-          "value": "Sprint 6",
-          "start": "2026-07-17"
-        }
-      ]
-    },
-    {
-      "type": "ISSUE",
-      "number": 3475,
-      "fields": [
-        {
-          "field": "Status",
-          "value": "In Review",
-          "start": null
-        },
-        {
-          "field": "Priority",
-          "value": "P1 - High",
-          "start": null
-        },
-        {
-          "field": "Effort",
-          "value": "XS",
-          "start": null
-        },
-        {
-          "field": "Module",
-          "value": "web-ui",
           "start": null
         },
         {
@@ -22853,7 +22913,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -22884,7 +22944,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -22915,7 +22975,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -22977,7 +23037,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -23008,7 +23068,7 @@
         },
         {
           "field": "Status",
-          "value": "In Review",
+          "value": "For Release",
           "start": null
         }
       ]
@@ -23050,6 +23110,223 @@
       "fields": [
         {
           "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3489,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "web-ui",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 3490,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 3491,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "documentation",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 3492,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "documentation",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 3493,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 3494,
+      "fields": [
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Status",
+          "value": "For Release",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 3495,
+      "fields": [
+        {
+          "field": "Status",
           "value": "In Review",
           "start": null
         },
@@ -23061,6 +23338,710 @@
         {
           "field": "Effort",
           "value": "XS",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 3496,
+      "fields": [
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "web-ui",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        },
+        {
+          "field": "Status",
+          "value": "In Review",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 3497,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "In Review",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 3498,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "In Review",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 3499,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "In Review",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3500,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 7",
+          "start": "2026-08-01"
+        },
+        {
+          "field": "Module",
+          "value": "security",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "S",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3501,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 7",
+          "start": "2026-08-01"
+        },
+        {
+          "field": "Module",
+          "value": "security",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "S",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3502,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 7",
+          "start": "2026-08-01"
+        },
+        {
+          "field": "Module",
+          "value": "testing",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "S",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3503,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 7",
+          "start": "2026-08-01"
+        },
+        {
+          "field": "Module",
+          "value": "documentation",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "S",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3504,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 7",
+          "start": "2026-08-01"
+        },
+        {
+          "field": "Module",
+          "value": "cli",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "S",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3505,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 7",
+          "start": "2026-08-01"
+        },
+        {
+          "field": "Module",
+          "value": "cli",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "M",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3506,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 7",
+          "start": "2026-08-01"
+        },
+        {
+          "field": "Module",
+          "value": "documentation",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "S",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3507,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 7",
+          "start": "2026-08-01"
+        },
+        {
+          "field": "Module",
+          "value": "security",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "M",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3508,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 7",
+          "start": "2026-08-01"
+        },
+        {
+          "field": "Module",
+          "value": "cli",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "L",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3509,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "In Progress",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 8",
+          "start": "2026-08-15"
+        },
+        {
+          "field": "Module",
+          "value": "cli",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XL",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3510,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "In Progress",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 8",
+          "start": "2026-08-15"
+        },
+        {
+          "field": "Module",
+          "value": "cli",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "M",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3511,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 8",
+          "start": "2026-08-15"
+        },
+        {
+          "field": "Module",
+          "value": "cli",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "L",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3512,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 8",
+          "start": "2026-08-15"
+        },
+        {
+          "field": "Module",
+          "value": "cli",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "M",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3513,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 8",
+          "start": "2026-08-15"
+        },
+        {
+          "field": "Module",
+          "value": "cli",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XL",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3514,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 8",
+          "start": "2026-08-15"
+        },
+        {
+          "field": "Module",
+          "value": "sre",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "L",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3515,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 8",
+          "start": "2026-08-15"
+        },
+        {
+          "field": "Module",
+          "value": "testing",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "M",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "ISSUE",
+      "number": 3516,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "Backlog",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 8",
+          "start": "2026-08-15"
+        },
+        {
+          "field": "Module",
+          "value": "cli",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XL",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 3517,
+      "fields": [
+        {
+          "field": "Status",
+          "value": "In Review",
+          "start": null
+        },
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 3518,
+      "fields": [
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "web-ui",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        },
+        {
+          "field": "Status",
+          "value": "In Review",
+          "start": null
+        }
+      ]
+    },
+    {
+      "type": "PULL_REQUEST",
+      "number": 3519,
+      "fields": [
+        {
+          "field": "Priority",
+          "value": "P1 - High",
+          "start": null
+        },
+        {
+          "field": "Effort",
+          "value": "XS",
+          "start": null
+        },
+        {
+          "field": "Module",
+          "value": "web-ui",
+          "start": null
+        },
+        {
+          "field": "Sprint",
+          "value": "Sprint 6",
+          "start": "2026-07-17"
+        },
+        {
+          "field": "Status",
+          "value": "In Review",
           "start": null
         }
       ]
