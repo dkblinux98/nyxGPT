@@ -66,8 +66,10 @@ tuning guidance and hardware-based recommendations.
       cross-service issues (see [`docs/api.md`](api.md#distributed-tracing)
       and [`docs/api.md#error-tracking`](api.md#error-tracking))
 - [ ] Alerting rules reviewed for the metrics that matter to you (error rate,
-      p95 latency — the same signals `nyxgpt canary evaluate` reads, see
-      [`docs/kubernetes.md#metrics-source`](kubernetes.md#metrics-source))
+      p95 latency, CPU/memory/disk, self-heal giving up, canary
+      auto-rollback — provisioned in Grafana, see
+      [`docs/alerting.md`](alerting.md)) and `[monitoring] slack_webhook_url`
+      set (`nyxgpt ops alert-test` to verify delivery)
 
 ## 4. Backup configuration
 

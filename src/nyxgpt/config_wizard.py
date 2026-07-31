@@ -392,6 +392,7 @@ _FIELD_OVERRIDES: dict[tuple[str, str], _Override] = {
     ("monitoring", "grafana_admin_password"): _Override(
         validator=_validate_optional_str, secret=True
     ),
+    ("monitoring", "slack_webhook_url"): _Override(validator=_validate_optional_str, secret=True),
     ("log_aggregation", "enabled"): _Override(validator=_validate_bool, observability=True),
     ("log_aggregation", "grafana_explore_url"): _Override(validator=_validate_url),
     ("self_heal", "check_interval_seconds"): _Override(validator=_bounded_float(min_value=1.0)),

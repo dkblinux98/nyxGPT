@@ -63,6 +63,7 @@ def test_get_metrics_basic():
     assert metrics.memory_available_mb > 0
     assert metrics.cpu_percent_process >= 0
     assert metrics.cpu_percent_system >= 0
+    assert 0 <= metrics.disk_percent <= 100
     assert metrics.total_requests == 3
     assert metrics.queue_depth == 0  # No batch processor
 
@@ -85,6 +86,7 @@ def test_metrics_to_dict():
     # Check structure
     assert "memory" in metrics_dict
     assert "cpu" in metrics_dict
+    assert "disk" in metrics_dict
     assert "latency" in metrics_dict
     assert "queue" in metrics_dict
 
@@ -97,6 +99,9 @@ def test_metrics_to_dict():
     # Check CPU fields
     assert "process_percent" in metrics_dict["cpu"]
     assert "system_percent" in metrics_dict["cpu"]
+
+    # Check disk fields
+    assert "percent" in metrics_dict["disk"]
 
     # Check latency fields
     assert "avg_ms" in metrics_dict["latency"]

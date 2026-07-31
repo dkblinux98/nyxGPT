@@ -196,3 +196,178 @@ def test_compute_alerts_handles_missing_resource_metrics():
     alerts = health.compute_alerts(None, [])
 
     assert alerts == []
+
+
+def test_compute_alerts_warns_on_elevated_disk_usage():
+    metrics = {
+        "memory": {"percent": 10.0},
+        "cpu": {"process_percent": 5.0},
+        "disk": {"percent": 85.0},
+        "errors": {"rate_percent": 0.0},
+    }
+    alerts = health.compute_alerts(metrics, [])
+
+    assert len(alerts) == 1
+    assert alerts[0].severity == "warning"
+    assert "Disk usage" in alerts[0].message
+
+
+def test_compute_alerts_critical_on_exhausted_disk():
+    metrics = {
+        "memory": {"percent": 10.0},
+        "cpu": {"process_percent": 5.0},
+        "disk": {"percent": 95.0},
+        "errors": {"rate_percent": 0.0},
+    }
+    alerts = health.compute_alerts(metrics, [])
+
+    assert len(alerts) == 1
+    assert alerts[0].severity == "critical"
+
+
+def test_alert_to_dict_defaults_source_to_local():
+    alert = health.Alert(severity="warning", message="test")
+
+    assert alert.to_dict() == {"severity": "warning", "message": "test", "source": "local"}
+
+
+# --- fetch_grafana_alerts ---
+
+
+def _cfg_with_monitoring(**overrides):
+    from configparser import ConfigParser
+
+    cfg = ConfigParser()
+    cfg["monitoring"] = {
+        "enabled": "true",
+        "grafana_ui_url": "http://localhost:3001",
+        "grafana_admin_password": "test-password",
+        **overrides,
+    }
+    return cfg
+
+
+def test_fetch_grafana_alerts_returns_none_when_monitoring_disabled():
+    from configparser import ConfigParser
+
+    cfg = ConfigParser()
+    cfg["monitoring"] = {"enabled": "false"}
+
+    assert health.fetch_grafana_alerts(cfg) is None
+
+
+def test_fetch_grafana_alerts_falls_back_to_ops_managed_password_when_config_unset(
+    tmp_path, monkeypatch
+):
+    """Reproduces the documented default install: `grafana_admin_password` is
+    left unset in config.ini and `nyxgpt ops install` has already generated
+    (and reset the Grafana container to) its own secret on disk. Before this
+    fix, `fetch_grafana_alerts` only looked at the raw config value and
+    silently returned None without ever making a request -- reintroducing
+    the #3458 class of bug where the health panel's "grafana" source never
+    activates (#3466)."""
+    from nyxgpt import config as config_module
+
+    secret_path = tmp_path / "grafana-admin-password"
+    secret_path.write_text("ops-managed-secret")
+    monkeypatch.setattr(config_module, "grafana_admin_password_path", lambda: secret_path)
+
+    cfg = _cfg_with_monitoring(grafana_admin_password="")
+    mock_response = MagicMock()
+    mock_response.json.return_value = []
+    mock_response.raise_for_status.return_value = None
+
+    with patch("nyxgpt.health.httpx.get", return_value=mock_response) as mock_get:
+        alerts = health.fetch_grafana_alerts(cfg)
+
+    assert mock_get.call_args.kwargs["auth"] == ("admin", "ops-managed-secret")
+    assert alerts == []
+
+
+def test_fetch_grafana_alerts_generates_secret_when_none_configured_or_on_disk(
+    tmp_path, monkeypatch
+):
+    """When neither config.ini nor the ops-managed secret path has a
+    password yet (e.g. health is queried before `nyxgpt ops install` has
+    ever run), resolution generates one rather than giving up -- matching
+    `ops._grafana_admin_password`'s behavior so both sides always agree on
+    the same password once either has run (#3466)."""
+    from nyxgpt import config as config_module
+
+    secret_path = tmp_path / "secrets" / "grafana-admin-password"
+    monkeypatch.setattr(config_module, "grafana_admin_password_path", lambda: secret_path)
+
+    cfg = _cfg_with_monitoring(grafana_admin_password="")
+    mock_response = MagicMock()
+    mock_response.json.return_value = []
+    mock_response.raise_for_status.return_value = None
+
+    with patch("nyxgpt.health.httpx.get", return_value=mock_response) as mock_get:
+        alerts = health.fetch_grafana_alerts(cfg)
+
+    used_password = mock_get.call_args.kwargs["auth"][1]
+    assert used_password
+    assert secret_path.read_text().strip() == used_password
+    assert alerts == []
+
+
+def test_fetch_grafana_alerts_returns_none_on_request_failure():
+    import httpx
+
+    cfg = _cfg_with_monitoring()
+
+    with patch("nyxgpt.health.httpx.get", side_effect=httpx.ConnectError("connection refused")):
+        assert health.fetch_grafana_alerts(cfg) is None
+
+
+def test_fetch_grafana_alerts_returns_none_on_401_unauthorized():
+    import httpx
+
+    cfg = _cfg_with_monitoring()
+    response = httpx.Response(401, request=httpx.Request("GET", "http://localhost:3001"))
+
+    with patch(
+        "nyxgpt.health.httpx.get",
+        side_effect=httpx.HTTPStatusError("401", request=response.request, response=response),
+    ):
+        assert health.fetch_grafana_alerts(cfg) is None
+
+
+def test_fetch_grafana_alerts_maps_firing_alerts():
+    cfg = _cfg_with_monitoring()
+    raw_alerts = [
+        {
+            "labels": {"alertname": "NyxGPTHighCPU", "severity": "critical"},
+            "annotations": {"summary": "CPU usage above 95%"},
+        },
+        {
+            "labels": {"alertname": "NyxGPTHighLatency", "severity": "warning"},
+            "annotations": {},
+        },
+    ]
+    mock_response = MagicMock()
+    mock_response.json.return_value = raw_alerts
+    mock_response.raise_for_status.return_value = None
+
+    with patch("nyxgpt.health.httpx.get", return_value=mock_response) as mock_get:
+        alerts = health.fetch_grafana_alerts(cfg)
+
+    assert mock_get.call_args.kwargs["auth"] == ("admin", "test-password")
+    assert len(alerts) == 2
+    assert alerts[0] == health.Alert(
+        severity="critical", message="CPU usage above 95%", source="grafana"
+    )
+    assert alerts[1].source == "grafana"
+    assert "NyxGPTHighLatency" in alerts[1].message
+
+
+def test_fetch_grafana_alerts_returns_empty_list_when_nothing_firing():
+    cfg = _cfg_with_monitoring()
+    mock_response = MagicMock()
+    mock_response.json.return_value = []
+    mock_response.raise_for_status.return_value = None
+
+    with patch("nyxgpt.health.httpx.get", return_value=mock_response):
+        alerts = health.fetch_grafana_alerts(cfg)
+
+    assert alerts == []

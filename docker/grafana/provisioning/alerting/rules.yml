@@ -1,0 +1,425 @@
+apiVersion: 1
+
+# Grafana unified alerting rules for the core health signals (#3466). These
+# supersede docker/prometheus-alerts.yml -- Grafana evaluates these directly
+# against the Prometheus datasource (docker/grafana/provisioning/datasources/
+# datasource.yml, uid `prometheus`), so Prometheus's own rule evaluation
+# (rule_files:) is no longer needed. Firing/normal state is visible in
+# Grafana's Alerting UI and on the SRE Home dashboard, and routes through
+# notification-policies.yml to the nyxgpt-slack contact point
+# (contact-points.yml). Thresholds mirror src/nyxgpt/health.py's constants --
+# keep them in sync; health.py's are only the local fallback used when
+# Grafana's alerting API is unreachable (see health.fetch_grafana_alerts).
+groups:
+  - orgId: 1
+    name: nyxgpt-core
+    folder: nyxGPT Alerts
+    interval: 1m
+    rules:
+      - uid: nyxgpt-api-down
+        title: NyxGPT API down
+        condition: C
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: nyxGPT API is unreachable
+          description: Prometheus has been unable to scrape the nyxGPT API (/metrics) for 1 minute.
+        noDataState: Alerting
+        execErrState: Alerting
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 120
+              to: 0
+            model:
+              refId: A
+              expr: up{job="nyxgpt-api"}
+              instant: true
+              range: false
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 120
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: lt
+                    params: [1]
+
+      - uid: nyxgpt-high-error-rate
+        title: NyxGPT high error rate
+        condition: C
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: nyxGPT API error rate above 5%
+          description: More than 5% of HTTP requests have resulted in 5xx errors over the last 5 minutes.
+        noDataState: OK
+        execErrState: Alerting
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              instant: true
+              range: false
+              expr: >-
+                sum(rate(nyxgpt_http_errors_total[5m]))
+                / sum(rate(nyxgpt_http_requests_total[5m]))
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0.05]
+
+      - uid: nyxgpt-high-latency
+        title: NyxGPT high latency
+        condition: C
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: nyxGPT API p95 latency above 2s
+          description: The 95th percentile HTTP request latency has exceeded 2 seconds for 5 minutes.
+        noDataState: OK
+        execErrState: Alerting
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              instant: true
+              range: false
+              expr: >-
+                histogram_quantile(0.95,
+                  sum(rate(nyxgpt_http_request_duration_seconds_bucket[5m])) by (le)
+                )
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [2]
+
+      - uid: nyxgpt-high-cpu-warning
+        title: NyxGPT high CPU usage (warning)
+        condition: C
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: nyxGPT API CPU usage above 80%
+          description: The API process has used more than 80% CPU for 5 minutes.
+        noDataState: OK
+        execErrState: Alerting
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              instant: true
+              range: false
+              expr: nyxgpt_resource_cpu_percent
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [80]
+
+      - uid: nyxgpt-high-cpu-critical
+        title: NyxGPT high CPU usage (critical)
+        condition: C
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: nyxGPT API CPU usage above 95%
+          description: The API process has used more than 95% CPU for 5 minutes.
+        noDataState: OK
+        execErrState: Alerting
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              instant: true
+              range: false
+              expr: nyxgpt_resource_cpu_percent
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [95]
+
+      - uid: nyxgpt-high-memory-warning
+        title: NyxGPT high memory usage (warning)
+        condition: C
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: nyxGPT API memory usage above 75%
+          description: The API process has used more than 75% of system memory for 5 minutes.
+        noDataState: OK
+        execErrState: Alerting
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              instant: true
+              range: false
+              expr: nyxgpt_resource_memory_percent
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [75]
+
+      - uid: nyxgpt-high-memory-critical
+        title: NyxGPT high memory usage (critical)
+        condition: C
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: nyxGPT API memory usage above 90%
+          description: The API process has used more than 90% of system memory for 5 minutes.
+        noDataState: OK
+        execErrState: Alerting
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              instant: true
+              range: false
+              expr: nyxgpt_resource_memory_percent
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [90]
+
+      - uid: nyxgpt-high-disk-warning
+        title: NyxGPT high disk usage (warning)
+        condition: C
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: nyxGPT disk usage above 80%
+          description: The filesystem backing ~/.nyxGPT has used more than 80% of its capacity for 5 minutes.
+        noDataState: OK
+        execErrState: Alerting
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              instant: true
+              range: false
+              expr: nyxgpt_resource_disk_percent
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [80]
+
+      - uid: nyxgpt-high-disk-critical
+        title: NyxGPT high disk usage (critical)
+        condition: C
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: nyxGPT disk usage above 90%
+          description: The filesystem backing ~/.nyxGPT has used more than 90% of its capacity for 5 minutes.
+        noDataState: OK
+        execErrState: Alerting
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              instant: true
+              range: false
+              expr: nyxgpt_resource_disk_percent
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [90]
+
+      - uid: nyxgpt-selfheal-giving-up
+        title: NyxGPT self-heal giving up
+        condition: C
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: Self-heal has given up on a component
+          description: >-
+            Self-heal exhausted its consecutive-restart budget for a component
+            in the last 10 minutes and stopped trying -- it needs a manual
+            "Heal now" or investigation. See the Self-Healing dashboard for
+            which service.
+        noDataState: OK
+        execErrState: Alerting
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              instant: true
+              range: false
+              expr: sum(increase(nyxgpt_selfheal_giveup_total[10m]))
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+
+      - uid: nyxgpt-canary-auto-rollback
+        title: NyxGPT canary auto-rollback
+        condition: C
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: A canary rollout was automatically rolled back
+          description: >-
+            A canary rollout was automatically rolled back due to a metrics
+            regression (error rate or p95 latency breach) in the last 10
+            minutes. See the Canary Deployments dashboard for details.
+        noDataState: OK
+        execErrState: Alerting
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              instant: true
+              range: false
+              expr: sum(increase(nyxgpt_canary_auto_rollback_total[10m]))
+          - refId: C
+            datasourceUid: __expr__
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]

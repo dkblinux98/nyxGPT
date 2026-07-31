@@ -410,6 +410,7 @@ when `[logging] format = json` -- see
 | `nyxgpt_selfheal_restarts_total` | Counter | `service`, `result` | Restart attempts, by service and outcome |
 | `nyxgpt_selfheal_restart_count` | Gauge | `service` | Current consecutive-restart count per service |
 | `nyxgpt_selfheal_last_recovery_timestamp` | Gauge | `service` | Unix timestamp of the last successful restart |
+| `nyxgpt_selfheal_giveup_total` | Counter | `service` | Self-heal gave up on a component after exhausting its consecutive-restart budget -- backs the "NyxGPT self-heal giving up" Grafana alert, see [alerting.md](alerting.md) |
 | `nyxgpt_ops_actions_total` | Counter | `command`, `service`, `result` | Operator `nyxgpt ops`/dashboard lifecycle actions -- see [below](#self-heal-restarts-vs-operator-nyxgpt-ops-actions) |
 
 **Grafana dashboard**: `docker/grafana/dashboards/self-healing.json` is

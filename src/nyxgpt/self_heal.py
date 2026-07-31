@@ -1515,6 +1515,7 @@ def heal_now(
 
             if not manual:
                 if count >= max_consecutive_restarts:
+                    prom_metrics.SELFHEAL_GIVEUP_TOTAL.labels(service=status.service).inc()
                     logger.warning(
                         "self-heal: giving up on %s, %d consecutive restart(s) already failed"
                         " (max=%d)",

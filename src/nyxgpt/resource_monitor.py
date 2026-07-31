@@ -13,6 +13,7 @@ import logging
 import threading
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import psutil
@@ -31,6 +32,7 @@ class ResourceMetrics:
         memory_available_mb: Available system memory in MB
         cpu_percent_process: CPU usage percentage for this process
         cpu_percent_system: Overall system CPU usage percentage
+        disk_percent: Usage percentage of the filesystem backing ~/.nyxGPT
         avg_request_latency_ms: Average request latency in milliseconds
         p50_request_latency_ms: 50th percentile (median) request latency
         p95_request_latency_ms: 95th percentile request latency
@@ -47,6 +49,7 @@ class ResourceMetrics:
     memory_available_mb: float
     cpu_percent_process: float
     cpu_percent_system: float
+    disk_percent: float
     avg_request_latency_ms: float
     p50_request_latency_ms: float
     p95_request_latency_ms: float
@@ -68,6 +71,9 @@ class ResourceMetrics:
             "cpu": {
                 "process_percent": round(self.cpu_percent_process, 2),
                 "system_percent": round(self.cpu_percent_system, 2),
+            },
+            "disk": {
+                "percent": round(self.disk_percent, 2),
             },
             "latency": {
                 "avg_ms": round(self.avg_request_latency_ms, 2),
@@ -147,6 +153,13 @@ class ResourceMonitor:
         cpu_percent_process = self._process.cpu_percent()
         cpu_percent_system = psutil.cpu_percent()
 
+        # Disk usage of the filesystem backing ~/.nyxGPT (sessions, vectorstore,
+        # logs, config) -- falls back to the home directory if ~/.nyxGPT hasn't
+        # been created yet, since it lives on the same filesystem either way.
+        nyxgpt_home = Path.home() / ".nyxGPT"
+        disk_path = nyxgpt_home if nyxgpt_home.exists() else Path.home()
+        disk_percent = psutil.disk_usage(str(disk_path)).percent
+
         # Calculate latency percentiles
         with self._lock:
             samples = sorted(self._latency_samples)
@@ -181,6 +194,7 @@ class ResourceMonitor:
             memory_available_mb=system_mem.available / (1024 * 1024),
             cpu_percent_process=cpu_percent_process,
             cpu_percent_system=cpu_percent_system,
+            disk_percent=disk_percent,
             avg_request_latency_ms=avg_latency,
             p50_request_latency_ms=p50_latency,
             p95_request_latency_ms=p95_latency,

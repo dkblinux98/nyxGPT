@@ -202,22 +202,60 @@ RESOURCE_CPU_PERCENT = Gauge(
     registry=REGISTRY,
 )
 
+RESOURCE_MEMORY_PERCENT = Gauge(
+    "nyxgpt_resource_memory_percent",
+    "Percentage of system memory used by the API process",
+    registry=REGISTRY,
+)
+
 RESOURCE_QUEUE_DEPTH = Gauge(
     "nyxgpt_resource_queue_depth",
     "Current number of requests in the batch processing queue",
     registry=REGISTRY,
 )
 
+RESOURCE_DISK_PERCENT = Gauge(
+    "nyxgpt_resource_disk_percent",
+    "Disk usage percentage of the filesystem backing ~/.nyxGPT",
+    registry=REGISTRY,
+)
 
-def update_resource_gauges(*, rss_mb: float, cpu_percent: float, queue_depth: int) -> None:
+SELFHEAL_GIVEUP_TOTAL = Counter(
+    "nyxgpt_selfheal_giveup_total",
+    "Total times self-heal gave up on a component after exhausting its "
+    "consecutive-restart budget",
+    ["service"],
+    registry=REGISTRY,
+)
+
+CANARY_AUTO_ROLLBACK_TOTAL = Counter(
+    "nyxgpt_canary_auto_rollback_total",
+    "Total canary rollouts automatically rolled back due to a metrics regression -- "
+    'distinct from nyxgpt_canary_events_total{action="rollback"}, which also counts '
+    "operator-initiated rollbacks",
+    ["component"],
+    registry=REGISTRY,
+)
+
+
+def update_resource_gauges(
+    *,
+    rss_mb: float,
+    cpu_percent: float,
+    queue_depth: int,
+    disk_percent: float = 0.0,
+    memory_percent: float = 0.0,
+) -> None:
     """Refresh the resource-usage gauges from a live `ResourceMonitor` snapshot.
 
     Called just before `/metrics` is rendered rather than on every request,
     since Prometheus only needs the value at scrape time.
     """
     RESOURCE_MEMORY_RSS_MB.set(rss_mb)
+    RESOURCE_MEMORY_PERCENT.set(memory_percent)
     RESOURCE_CPU_PERCENT.set(cpu_percent)
     RESOURCE_QUEUE_DEPTH.set(queue_depth)
+    RESOURCE_DISK_PERCENT.set(disk_percent)
 
 
 def initialize_known_rag_metric_series() -> None:
