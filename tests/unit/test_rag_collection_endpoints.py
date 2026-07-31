@@ -80,12 +80,50 @@ def test_list_collections_success_with_stats(monkeypatch: pytest.MonkeyPatch) ->
     assert names["alpha"]["doc_count"] == 2
     assert names["alpha"]["chunk_count"] == 5
     assert names["alpha"]["embedding_models"] == ["text-embedding-3"]
+    # No stored setting for alpha, but exactly one observed model -> unambiguous.
+    assert names["alpha"]["embedding_model"] == "text-embedding-3"
     assert names["beta"]["doc_count"] == 1
     assert names["beta"]["chunk_count"] == 5
     assert names["beta"]["embedding_models"] == []
+    # beta has no stored setting and no observed model (embedding_model was None
+    # on its only doc) -> nothing to report.
+    assert names["beta"]["embedding_model"] is None
     temp_store.close.assert_called_once()
     alpha_store.close.assert_called_once()
     beta_store.close.assert_called_once()
+
+
+def test_list_collections_configured_but_empty_shows_stored_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A collection with a stored embedding_model setting but zero chunks must
+    report that configured model, not "None" (the bug reported in #3461)."""
+    temp_store = Mock()
+    temp_store.list_collections.return_value = ["empty_coll"]
+
+    empty_store = Mock()
+    empty_store.list_docs.return_value = []
+    empty_store.get_collection_settings.return_value = {
+        "embedding_model": "nomic-embed-text",
+        "chunk_size": None,
+        "chunk_overlap": None,
+    }
+
+    def resolver(collection: str) -> Any:
+        return temp_store if collection == "default" else empty_store
+
+    _patch_store(monkeypatch, resolver)
+
+    with _client() as client:
+        resp = client.get("/api/v1/rag/collections")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    coll = body["collections"][0]
+    assert coll["doc_count"] == 0
+    assert coll["chunk_count"] == 0
+    assert coll["embedding_models"] == []
+    assert coll["embedding_model"] == "nomic-embed-text"
 
 
 def test_list_collections_top_level_error_returns_500(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -126,7 +164,13 @@ def test_list_collections_per_collection_stats_error_falls_back_to_zero(
     assert resp.status_code == 200
     body = resp.json()
     assert body["collections"] == [
-        {"name": "broken", "doc_count": 0, "chunk_count": 0, "embedding_models": []}
+        {
+            "name": "broken",
+            "doc_count": 0,
+            "chunk_count": 0,
+            "embedding_model": None,
+            "embedding_models": [],
+        }
     ]
     broken_store.close.assert_called_once()
 
@@ -213,6 +257,27 @@ def test_create_collection_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert body["collection"] == "new_coll"
     assert body["embedding_dim"] == 512
     store.ensure_schema.assert_called_once_with(embedding_dim=512, collection="new_coll")
+    assert not store.update_collection_settings.called
+    store.close.assert_called_once()
+
+
+def test_create_collection_persists_submitted_embedding_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A submitted `embedding_model` must be persisted, not silently discarded (#3461)."""
+    store = Mock()
+    store.list_collections.return_value = ["other"]
+
+    _patch_store(monkeypatch, lambda _collection: store)
+
+    with _client() as client:
+        resp = client.post(
+            "/api/v1/rag/collections",
+            json={"name": "new_coll", "embedding_dim": 512, "embedding_model": "nomic-embed-text"},
+        )
+
+    assert resp.status_code == 201
+    store.update_collection_settings.assert_called_once_with(embedding_model="nomic-embed-text")
     store.close.assert_called_once()
 
 

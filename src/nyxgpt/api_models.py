@@ -422,7 +422,17 @@ class CollectionInfo(BaseModel):
     name: str = Field(..., description="Collection name")
     doc_count: int = Field(..., description="Number of documents in collection")
     chunk_count: int = Field(..., description="Total number of chunks in collection")
-    embedding_models: list[str] = Field(..., description="Embedding models used in this collection")
+    embedding_model: str | None = Field(
+        None,
+        description=(
+            "Configured embedding model for this collection (from stored settings, "
+            "or derived from ingested chunks if unambiguous). Populated even when "
+            "the collection has no chunks yet."
+        ),
+    )
+    embedding_models: list[str] = Field(
+        ..., description="Embedding models observed in this collection's ingested chunks"
+    )
 
 
 class CollectionsListResponse(BaseModel):
@@ -444,7 +454,11 @@ class CreateCollectionRequest(BaseModel):
     name: str = Field(..., description="Collection name (alphanumeric and underscores only)")
     embedding_dim: int = Field(..., description="Embedding dimension (e.g., 768, 1536)")
     embedding_model: str | None = Field(
-        None, description="Embedding model name (optional, for documentation)"
+        None,
+        description=(
+            "Embedding model name (optional). If set, persisted as this collection's "
+            "configured embedding model and used as the default for ingestion."
+        ),
     )
 
 

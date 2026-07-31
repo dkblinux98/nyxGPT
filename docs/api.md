@@ -2175,13 +2175,15 @@ List all RAG collections with statistics including document count, chunk count, 
       "name": "default",
       "doc_count": 15,
       "chunk_count": 342,
+      "embedding_model": "nomic-embed-text",
       "embedding_models": ["nomic-embed-text"]
     },
     {
       "name": "all-minilm",
-      "doc_count": 8,
-      "chunk_count": 156,
-      "embedding_models": ["all-minilm:latest"]
+      "doc_count": 0,
+      "chunk_count": 0,
+      "embedding_model": "all-minilm:latest",
+      "embedding_models": []
     }
   ]
 }
@@ -2191,7 +2193,8 @@ List all RAG collections with statistics including document count, chunk count, 
 - `name` - Collection name
 - `doc_count` - Number of documents in the collection
 - `chunk_count` - Total number of chunks across all documents
-- `embedding_models` - List of unique embedding models used in this collection
+- `embedding_model` - The collection's *configured* embedding model (from stored settings via `POST /rag/collections` or `PUT .../settings`, or derived from ingested chunks if unambiguous). Populated even for an empty collection with no chunks yet; `null` if nothing is configured and chunks use more than one model.
+- `embedding_models` - List of unique embedding models *observed* in this collection's ingested chunks (empty for a collection with no chunks, regardless of configuration)
 
 **Use Cases:**
 - Monitor collection growth and usage

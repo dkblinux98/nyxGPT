@@ -10,12 +10,14 @@ const sampleCollections = [
     name: 'default',
     doc_count: 12,
     chunk_count: 340,
+    embedding_model: 'text-embedding-default',
     embedding_models: [],
   },
   {
     name: 'notes',
     doc_count: 3,
     chunk_count: 20,
+    embedding_model: null,
     embedding_models: ['nomic-embed-text', 'mxbai-embed-large'],
   },
 ];
@@ -127,12 +129,21 @@ describe('CollectionsPage', () => {
     });
     expect(screen.getByText('12')).toBeInTheDocument();
     expect(screen.getByText('340')).toBeInTheDocument();
-    expect(screen.getByText('None')).toBeInTheDocument();
     expect(screen.getByText('nomic-embed-text')).toBeInTheDocument();
     expect(screen.getByText('mxbai-embed-large')).toBeInTheDocument();
 
     // Default collection has no "Clear Collection" button
     const defaultCard = screen.getByText('default').closest('div')!.parentElement!.parentElement!;
+    // Configured embedding model (distinct from "observed in chunks") is shown
+    // even for a collection with zero chunks -- the regression this issue is about.
+    expect(within(defaultCard).getByText('text-embedding-default')).toBeInTheDocument();
+    expect(within(defaultCard).getByText('None')).toBeInTheDocument();
+
+    const notesCard = screen.getByText('notes').closest('div')!.parentElement!.parentElement!;
+    // "notes" has no configured setting stored -- distinct from the "None"
+    // used for the observed-models list, so this can't be misread as "no model".
+    expect(within(notesCard).getByText('Not configured')).toBeInTheDocument();
+
     expect(within(defaultCard).queryByRole('button', { name: /clear collection/i })).not.toBeInTheDocument();
   });
 
@@ -435,6 +446,66 @@ describe('CollectionsPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('heading', { name: 'Collection Settings: notes' })).not.toBeInTheDocument();
+  });
+
+  it('refreshes the collection card with the newly configured embedding model after a settings save', async () => {
+    // Regression coverage: saving a settings edit must be reflected in the
+    // card immediately, not just inside the (now-closed) settings modal.
+    mockCollections();
+    const user = userEvent.setup();
+
+    render(<CollectionsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('notes')).toBeInTheDocument();
+    });
+
+    const notesCardBefore = screen.getByText('notes').closest('div')!.parentElement!.parentElement!;
+    expect(within(notesCardBefore).getByText('Not configured')).toBeInTheDocument();
+
+    server.use(
+      http.get('/api/v1/rag/collections/notes/settings', () =>
+        HttpResponse.json({ settings: { embedding_model: null, chunk_size: null, chunk_overlap: null } })
+      )
+    );
+
+    const viewSettingsButtons = screen.getAllByRole('button', { name: /view settings/i });
+    await user.click(viewSettingsButtons[1]);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Collection Settings: notes' })).toBeInTheDocument();
+    });
+
+    const embeddingModelInput = screen.getByPlaceholderText('e.g., nomic-embed-text');
+    await user.type(embeddingModelInput, 'newly-configured-model');
+
+    server.use(
+      http.put('/api/v1/rag/collections/notes/settings', () =>
+        HttpResponse.json({
+          settings: { embedding_model: 'newly-configured-model', chunk_size: null, chunk_overlap: null },
+        })
+      ),
+      http.get('/api/v1/rag/collections', () =>
+        HttpResponse.json({
+          collections: [
+            sampleCollections[0],
+            { ...sampleCollections[1], embedding_model: 'newly-configured-model' },
+          ],
+        })
+      )
+    );
+
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+    await waitFor(() => {
+      expect(global.alert).toHaveBeenCalledWith('Settings saved successfully');
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+
+    const notesCardAfter = screen.getByText('notes').closest('div')!.parentElement!.parentElement!;
+    expect(within(notesCardAfter).getByText('newly-configured-model')).toBeInTheDocument();
+    expect(within(notesCardAfter).queryByText('Not configured')).not.toBeInTheDocument();
   });
 
   it('handles blank optional settings and closes via the overlay click', async () => {
