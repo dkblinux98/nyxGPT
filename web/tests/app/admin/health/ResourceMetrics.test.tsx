@@ -403,6 +403,45 @@ describe('ResourceMetrics', () => {
     });
   });
 
+  it('labels the aggregate tiles as a live snapshot, separated from the range selector', async () => {
+    global.fetch = mockFetchRouting() as unknown as typeof fetch;
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Memory Usage')).toBeInTheDocument();
+    });
+
+    expect(screen.getByText('Current Usage')).toBeInTheDocument();
+    expect(screen.getByText('Live')).toBeInTheDocument();
+    expect(screen.getByText('Historical Trends range')).toBeInTheDocument();
+  });
+
+  it('does not change the current-usage aggregate values when the time range selector changes', async () => {
+    const fetchMock = mockFetchRouting();
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    render(<ResourceMetrics />);
+
+    await waitFor(() => {
+      expect(screen.getByText('256.5 MB')).toBeInTheDocument();
+    });
+
+    const dayButton = screen.getByRole('button', { name: /Last 24 Hours/i });
+    fireEvent.click(dayButton);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/v1/metrics/history?range=24h');
+    });
+
+    // Switching the historical range must not touch the live aggregate
+    // tiles -- they keep polling /api/metrics on their own 5s cadence and
+    // are unaffected by the range selector (#3467).
+    expect(screen.getByText('256.5 MB')).toBeInTheDocument();
+    expect(screen.getByText('15.2%')).toBeInTheDocument();
+    expect(countCalls(fetchMock, (u) => u === '/api/metrics')).toBe(1);
+  });
+
   it('exports history_available_seconds as 0 when history has not loaded yet', async () => {
     global.fetch = mockFetchRouting({
       history: () => new Promise(() => {}), // never resolves

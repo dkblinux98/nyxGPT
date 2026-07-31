@@ -130,7 +130,13 @@ def compute_alerts(
 
     if resource_metrics:
         mem_percent = resource_metrics.get("memory", {}).get("percent", 0.0)
-        cpu_percent = resource_metrics.get("cpu", {}).get("process_percent", 0.0)
+        # System-wide, core-normalized (0-100) -- matches what Resource
+        # Metrics history reports as "System" and can never exceed 100.
+        # `cpu.process_percent` (this process's own usage) is NOT
+        # normalized by core count and can read >100% on a multi-core
+        # machine even while the system is idle, which is why it must
+        # never be used for threshold alerting.
+        cpu_percent = resource_metrics.get("cpu", {}).get("system_percent", 0.0)
         error_rate = resource_metrics.get("errors", {}).get("rate_percent", 0.0)
 
         alerts.extend(

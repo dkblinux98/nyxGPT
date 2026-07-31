@@ -266,12 +266,25 @@ export default function ResourceMetrics() {
           border: '1px solid var(--border)',
         }}
       >
-        <div style={{ display: 'flex', gap: 8 }}>
-          {(Object.keys(RANGE_LABELS) as TimeRange[]).map((range) => (
-            <button key={range} onClick={() => setTimeRange(range)} style={buttonStyle(timeRange === range)}>
-              {RANGE_LABELS[range]}
-            </button>
-          ))}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              textTransform: 'uppercase',
+              letterSpacing: 0.4,
+              color: 'var(--text-secondary)',
+            }}
+          >
+            Historical Trends range
+          </span>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {(Object.keys(RANGE_LABELS) as TimeRange[]).map((range) => (
+              <button key={range} onClick={() => setTimeRange(range)} style={buttonStyle(timeRange === range)}>
+                {RANGE_LABELS[range]}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -320,6 +333,36 @@ export default function ResourceMetrics() {
           </button>
         </div>
       </div>
+
+      {/* Current usage snapshot -- always the live 5s-polled values from
+          /api/metrics, never scoped by the "Historical Trends range"
+          selector above. Labeling it explicitly and separating it from the
+          range controls resolves the ambiguity from #3467 (owner acceptance
+          read the shared controls bar as implying these tiles would follow
+          the selected range too). */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Current Usage</h3>
+        <span
+          title="Reflects the most recent snapshot; not affected by the Historical Trends range selector above."
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '2px 10px',
+            borderRadius: 999,
+            fontSize: 12,
+            fontWeight: 600,
+            background: 'var(--info-bg)',
+            color: 'inherit',
+          }}
+        >
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e' }} />
+          Live
+        </span>
+      </div>
+      <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 0, marginBottom: 16 }}>
+        Updates every 5 seconds and is not affected by the time range selected above.
+      </p>
 
       {/* Metrics Grid */}
       <div

@@ -803,6 +803,12 @@ error rate, and critical on any unreachable dependency) and
 computation running in parallel with real alerting -- when Grafana is
 reachable, its state *is* the response's state.
 
+The local fallback's CPU alert evaluates `resource_metrics.cpu.system_percent`
+-- the system-wide, core-normalized utilization (0-100%) also shown by the
+Resource Metrics history panel -- never `cpu.process_percent`, which is this
+process's own CPU usage and is not normalized by core count (it can read
+above 100% on a multi-core machine even while the system is otherwise idle).
+
 **Response:**
 
 ```json
@@ -3366,13 +3372,18 @@ Resource Metrics section of the [System Health screen](ui.md#web-ui-features)
 3. Jump to the "Resource Metrics" section (anchor link at the top of the page)
 
 **Dashboard Features:**
-- Real-time metric updates (auto-refresh every 5 seconds)
-- Visual display of memory, CPU, latency, and queue metrics
+- A "Current Usage" section, labeled **Live**, showing memory, CPU, latency,
+  and queue metrics from the most recent `/api/metrics` snapshot (auto-refresh
+  every 5 seconds). These tiles always reflect the live snapshot and are
+  intentionally *not* affected by the Historical Trends range selector below
 - Color-coded warning indicators (normal/warning/critical thresholds)
-- Historical trends backed by server-side history (`GET /api/v1/metrics/history`),
-  with switchable time ranges (1 hour, 24 hours, 7 days) that each fetch and
-  render their own window -- including data from before the page was opened
-- Export functionality (CSV and JSON formats) for the currently selected window
+- A separate "Historical Trends" section backed by server-side history
+  (`GET /api/v1/metrics/history`), with its own switchable time ranges (1 hour,
+  24 hours, 7 days) that each fetch and render their own window -- including
+  data from before the page was opened. This range selector scopes only the
+  Historical Trends charts, not the Current Usage tiles above
+- Export functionality (CSV and JSON formats) for the currently selected
+  Historical Trends window
 - Toggle auto-refresh on/off
 
 **Warning Thresholds:**
