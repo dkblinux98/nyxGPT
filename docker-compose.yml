@@ -216,9 +216,17 @@ services:
     networks:
       - nyxgpt
     environment:
-      # GRAFANA_ADMIN_PASSWORD's single source of truth is ~/.nyxGPT/config.ini's
-      # [monitoring] grafana_admin_password -- run `nyxgpt ops env-sync` to
-      # derive .env's value from it instead of editing .env by hand.
+      # GF_SECURITY_ADMIN_PASSWORD only takes effect on this container's
+      # FIRST boot -- it's ignored on every boot after that, including on an
+      # existing/long-lived volume. `nyxgpt ops install` does not rely on
+      # it: it reconciles the actual admin password deterministically via
+      # `grafana cli admin reset-admin-password` (#3458), using
+      # ~/.nyxGPT/config.ini's [monitoring] grafana_admin_password when set,
+      # else an ops-managed secret at ~/.nyxGPT/secrets/grafana-admin-password.
+      # This env var only matters for a from-scratch volume brought up with
+      # plain `docker compose` outside of `nyxgpt ops` -- run `nyxgpt ops
+      # env-sync` to derive .env's value from config.ini instead of editing
+      # .env by hand.
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       # Grafana is the single pane of glass (#3411): guarantee the Logs

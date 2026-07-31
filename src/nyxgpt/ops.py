@@ -24,7 +24,7 @@ import sys
 import tarfile
 import time
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
@@ -4457,6 +4457,182 @@ def _grafana_provisioned_datasource_uids() -> list[str]:
     return uids
 
 
+def _grafana_admin_password_path() -> Path:
+    """Where the ops-managed Grafana admin password is stored, for when
+    `[monitoring] grafana_admin_password` is unset in config.ini.
+
+    Same pattern as `_glitchtip_grafana_token_path`/`_grafana_doctor_token_path`:
+    a generated-once secret read straight off disk, so it can't drift from
+    whatever `nyxgpt ops install` last reconciled the container to (#3458).
+    """
+    return Path.home() / ".nyxGPT" / "secrets" / "grafana-admin-password"
+
+
+def _grafana_admin_password(cfg: ConfigParser) -> str:
+    """Resolve the Grafana admin password `nyxgpt ops` should reconcile the
+    container to.
+
+    `[monitoring] grafana_admin_password` wins when the user has explicitly
+    set one in config.ini (a deliberate override). Otherwise this falls back
+    to an ops-managed secret generated once and reused from
+    `_grafana_admin_password_path()` -- never the `""` fallback that
+    previously guaranteed a 401 on every default-config install (#3458).
+    """
+    configured = get_monitoring_grafana_admin_password(cfg).strip()
+    if configured:
+        return configured
+
+    path = _grafana_admin_password_path()
+    if path.exists():
+        existing = path.read_text().strip()
+        if existing:
+            return existing
+
+    password = secrets.token_urlsafe(24)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text(password)
+    path.chmod(0o600)
+    return password
+
+
+def _grafana_admin_client(grafana_ui_url: str, grafana_admin_password: str) -> httpx.Client:
+    """Single source of truth for how ops's install-time checks authenticate
+    against Grafana's API -- one place to change the URL/credential wiring
+    instead of three separate `auth=("admin", ...)` call sites (#3458)."""
+    return httpx.Client(
+        base_url=grafana_ui_url,
+        auth=("admin", grafana_admin_password),
+        timeout=5.0,
+    )
+
+
+@contextlib.contextmanager
+def _quiet_httpx_retries() -> Iterator[None]:
+    """Suppress httpx's per-request INFO log line for the duration of a
+    bounded retry loop against Grafana.
+
+    Each attempt otherwise logs an `HTTP Request: GET ... "200 OK"` line at
+    INFO -- pure noise for a handful of retries polled every couple seconds,
+    the same "expected outcome shouldn't spam the console" philosophy #3436
+    applied to subprocess probe failures.
+    """
+    httpx_logger = logging.getLogger("httpx")
+    previous_level = httpx_logger.level
+    httpx_logger.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        httpx_logger.setLevel(previous_level)
+
+
+def _grafana_admin_authenticates(grafana_ui_url: str, grafana_admin_password: str) -> bool:
+    """Whether `grafana_admin_password` currently authenticates as `admin`
+    against the running Grafana instance."""
+    try:
+        with _grafana_admin_client(grafana_ui_url, grafana_admin_password) as client:
+            return client.get("/api/org").status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+def _reset_grafana_admin_password(password: str) -> OpsResult:
+    """Force Grafana's actual admin password to `password` via `grafana cli
+    admin reset-admin-password` run inside the container.
+
+    Unlike `GF_SECURITY_ADMIN_PASSWORD`, this takes effect regardless of
+    whether the volume is fresh (first boot) or long-lived (env var is only
+    applied at first boot -- irrelevant to an existing volume, which is
+    exactly the deployment shape that reproduced #3458's 401s).
+    """
+    if not _compose_available():
+        return OpsResult(
+            False,
+            "Cannot reset Grafana admin password",
+            "Docker Compose not found -- install Docker to manage the observability stack.",
+        )
+    cmd = [
+        "docker",
+        "compose",
+        "-f",
+        str(self_heal.COMPOSE_FILE),
+        "exec",
+        "-T",
+        "grafana",
+        "grafana",
+        "cli",
+        "admin",
+        "reset-admin-password",
+        password,
+    ]
+    cp = _run(cmd, check=False)
+    if cp.returncode != 0:
+        return OpsResult(
+            False,
+            "Failed to reset Grafana admin password",
+            (cp.stderr or cp.stdout or "").strip(),
+        )
+    return OpsResult(True, "Reset Grafana admin password to the ops-managed credential")
+
+
+def _reconcile_grafana_admin_credential(
+    grafana_ui_url: str,
+    cfg: ConfigParser,
+    *,
+    attempts: int = 3,
+    delay_s: float = 2.0,
+) -> tuple[str | None, OpsResult]:
+    """Make the Grafana admin credential deterministic before anything else
+    authenticates with it (#3458).
+
+    Never authenticates with an empty password: `_grafana_admin_password`
+    always returns a real value. Tries that value against the running
+    instance first (retrying briefly for Grafana's own startup window); if
+    it doesn't work -- unset config default drifted from an existing
+    volume's real password, a hand-edited `.env`, whatever -- resets the
+    container's password to it via `grafana cli admin reset-admin-password`
+    and re-verifies. Returns `(password, result)`: `password` is `None` and
+    `result.ok` is `False` when reconciliation could not be completed, so
+    callers can skip credential-dependent follow-on checks and surface this
+    ONE actionable failure instead of each of them separately 401ing.
+    """
+    password = _grafana_admin_password(cfg)
+
+    with _quiet_httpx_retries():
+        for attempt in range(attempts):
+            if _grafana_admin_authenticates(grafana_ui_url, password):
+                return password, OpsResult(True, "Grafana admin credential already reconciled")
+            if attempt < attempts - 1:
+                time.sleep(delay_s)
+
+        reset_result = _reset_grafana_admin_password(password)
+        if not reset_result.ok:
+            return None, OpsResult(
+                False,
+                "Could not reconcile Grafana admin credential",
+                f"{reset_result.message}"
+                + (f": {reset_result.details}" if reset_result.details else "")
+                + " -- check `nyxgpt ops logs grafana` and confirm the grafana container "
+                "is running.",
+            )
+
+        for attempt in range(attempts):
+            if _grafana_admin_authenticates(grafana_ui_url, password):
+                return password, OpsResult(
+                    True,
+                    f"{reset_result.message} (stored at {_grafana_admin_password_path()})",
+                )
+            if attempt < attempts - 1:
+                time.sleep(delay_s)
+
+    return None, OpsResult(
+        False,
+        "Grafana admin credential still doesn't authenticate after reset",
+        f"Reset via `grafana cli admin reset-admin-password` succeeded but GET /api/org "
+        f"still rejects the password stored at {_grafana_admin_password_path()} -- check "
+        "`nyxgpt ops logs grafana` for a startup error.",
+    )
+
+
 def _verify_grafana_datasources_resolve(
     grafana_ui_url: str,
     grafana_admin_password: str,
@@ -4480,37 +4656,35 @@ def _verify_grafana_datasources_resolve(
         return OpsResult(True, "No datasources declared in provisioning -- nothing to verify")
 
     last_error: Exception | None = None
-    for attempt in range(attempts):
-        try:
-            with httpx.Client(
-                base_url=grafana_ui_url,
-                auth=("admin", grafana_admin_password),
-                timeout=5.0,
-            ) as client:
-                resp = client.get("/api/datasources")
-                resp.raise_for_status()
-                actual = {ds.get("uid") for ds in resp.json()}
-            missing = expected - actual
-            if not missing:
+    with _quiet_httpx_retries():
+        for attempt in range(attempts):
+            try:
+                with _grafana_admin_client(grafana_ui_url, grafana_admin_password) as client:
+                    resp = client.get("/api/datasources")
+                    resp.raise_for_status()
+                    actual = {ds.get("uid") for ds in resp.json()}
+                missing = expected - actual
+                if not missing:
+                    return OpsResult(
+                        True,
+                        f"Verified {len(expected)} provisioned Grafana datasource(s) resolve",
+                    )
+                if attempt < attempts - 1:
+                    time.sleep(delay_s)
+                    continue
                 return OpsResult(
-                    True, f"Verified {len(expected)} provisioned Grafana datasource(s) resolve"
+                    False,
+                    f"Grafana datasource(s) failed to provision: {', '.join(sorted(missing))}",
+                    "Declared in docker/grafana/provisioning/datasources/*.yml but not "
+                    "returned by GET /api/datasources -- check `nyxgpt ops logs grafana` for a "
+                    "provisioning error (bad plugin id, YAML syntax, unreachable datasource "
+                    "type) near 'inserting datasource from configuration'.",
                 )
-            if attempt < attempts - 1:
-                time.sleep(delay_s)
-                continue
-            return OpsResult(
-                False,
-                f"Grafana datasource(s) failed to provision: {', '.join(sorted(missing))}",
-                "Declared in docker/grafana/provisioning/datasources/*.yml but not "
-                "returned by GET /api/datasources -- check `nyxgpt ops logs grafana` for a "
-                "provisioning error (bad plugin id, YAML syntax, unreachable datasource type) "
-                "near 'inserting datasource from configuration'.",
-            )
-        except Exception as e:
-            last_error = e
-            if attempt < attempts - 1:
-                time.sleep(delay_s)
-                continue
+            except Exception as e:
+                last_error = e
+                if attempt < attempts - 1:
+                    time.sleep(delay_s)
+                    continue
     return OpsResult(
         False,
         "Could not reach Grafana to verify provisioned datasources",
@@ -4552,38 +4726,35 @@ def _verify_grafana_plugins_installed(
         return OpsResult(True, "No plugins declared in GF_INSTALL_PLUGINS -- nothing to verify")
 
     last_error: Exception | None = None
-    for attempt in range(attempts):
-        try:
-            missing: list[str] = []
-            with httpx.Client(
-                base_url=grafana_ui_url,
-                auth=("admin", grafana_admin_password),
-                timeout=5.0,
-            ) as client:
-                for plugin_id in expected:
-                    resp = client.get(f"/api/plugins/{plugin_id}/settings")
-                    if resp.status_code != 200 or not resp.json().get("enabled"):
-                        missing.append(plugin_id)
-            if not missing:
+    with _quiet_httpx_retries():
+        for attempt in range(attempts):
+            try:
+                missing: list[str] = []
+                with _grafana_admin_client(grafana_ui_url, grafana_admin_password) as client:
+                    for plugin_id in expected:
+                        resp = client.get(f"/api/plugins/{plugin_id}/settings")
+                        if resp.status_code != 200 or not resp.json().get("enabled"):
+                            missing.append(plugin_id)
+                if not missing:
+                    return OpsResult(
+                        True, f"Verified {len(expected)} GF_INSTALL_PLUGINS plugin(s) installed"
+                    )
+                if attempt < attempts - 1:
+                    time.sleep(delay_s)
+                    continue
                 return OpsResult(
-                    True, f"Verified {len(expected)} GF_INSTALL_PLUGINS plugin(s) installed"
+                    False,
+                    f"Grafana plugin(s) failed to install: {', '.join(missing)}",
+                    "Listed in docker-compose.yml's GF_INSTALL_PLUGINS but not enabled per "
+                    "GET /api/plugins/<id>/settings -- check `nyxgpt ops logs grafana` for a "
+                    "plugin download error (no network access, registry outage, renamed/typo'd "
+                    "plugin id).",
                 )
-            if attempt < attempts - 1:
-                time.sleep(delay_s)
-                continue
-            return OpsResult(
-                False,
-                f"Grafana plugin(s) failed to install: {', '.join(missing)}",
-                "Listed in docker-compose.yml's GF_INSTALL_PLUGINS but not enabled per "
-                "GET /api/plugins/<id>/settings -- check `nyxgpt ops logs grafana` for a "
-                "plugin download error (no network access, registry outage, renamed/typo'd "
-                "plugin id).",
-            )
-        except Exception as e:
-            last_error = e
-            if attempt < attempts - 1:
-                time.sleep(delay_s)
-                continue
+            except Exception as e:
+                last_error = e
+                if attempt < attempts - 1:
+                    time.sleep(delay_s)
+                    continue
     return OpsResult(
         False,
         "Could not reach Grafana to verify installed plugins",
@@ -4615,11 +4786,7 @@ def _provision_grafana_doctor_token(grafana_ui_url: str, grafana_admin_password:
         return OpsResult(True, f"{token_path} already holds a Grafana service-account token")
 
     try:
-        with httpx.Client(
-            base_url=grafana_ui_url,
-            auth=("admin", grafana_admin_password),
-            timeout=5.0,
-        ) as client:
+        with _grafana_admin_client(grafana_ui_url, grafana_admin_password) as client:
             sa_id: Any = None
             resp = client.get(
                 "/api/serviceaccounts/search", params={"query": GRAFANA_DOCTOR_SA_NAME}
@@ -4819,10 +4986,11 @@ def _start_observability_stack(
 
 def _reconcile_grafana_provisioning() -> list[OpsResult]:
     """Bring the observability stack up AND make Grafana's provisioning
-    state deterministic: recreate on drift before starting, then verify the
-    declared datasources and GF_INSTALL_PLUGINS plugins actually resolve
-    afterward (#3424), and mint doctor's Loki service-account token if it
-    doesn't already have one (#3438).
+    state deterministic: recreate on drift before starting, reconcile the
+    admin credential (#3458), then verify the declared datasources and
+    GF_INSTALL_PLUGINS plugins actually resolve afterward (#3424), and mint
+    doctor's Loki service-account token if it doesn't already have one
+    (#3438).
 
     This is the entrypoint `nyxgpt ops install` / `nyxgpt ops observability`
     / wizard toggles use instead of calling `_start_observability_stack`
@@ -4850,14 +5018,23 @@ def _reconcile_grafana_provisioning() -> list[OpsResult]:
             cfg_parser.read(cfg_path)
             monitoring_config = get_monitoring_config(cfg_parser)
             grafana_ui_url = monitoring_config["grafana_ui_url"]
-            grafana_admin_password = get_monitoring_grafana_admin_password(cfg_parser)
-            results.append(
-                _verify_grafana_plugins_installed(grafana_ui_url, grafana_admin_password)
+            grafana_admin_password, credential_result = _reconcile_grafana_admin_credential(
+                grafana_ui_url, cfg_parser
             )
-            results.append(
-                _verify_grafana_datasources_resolve(grafana_ui_url, grafana_admin_password)
-            )
-            results.append(_provision_grafana_doctor_token(grafana_ui_url, grafana_admin_password))
+            results.append(credential_result)
+            # Only attempt the credential-dependent checks once the admin
+            # password is known-good -- otherwise each would independently
+            # 401 and turn one auth problem into three separate FAILs.
+            if grafana_admin_password is not None:
+                results.append(
+                    _verify_grafana_plugins_installed(grafana_ui_url, grafana_admin_password)
+                )
+                results.append(
+                    _verify_grafana_datasources_resolve(grafana_ui_url, grafana_admin_password)
+                )
+                results.append(
+                    _provision_grafana_doctor_token(grafana_ui_url, grafana_admin_password)
+                )
         except Exception as e:
             logger.warning(
                 "Failed to verify Grafana plugins/datasources, skipping: %s",

@@ -5429,6 +5429,246 @@ def test_provision_grafana_doctor_token_fails_when_grafana_unreachable(monkeypat
 
 
 @pytest.mark.unit
+def test_grafana_admin_password_generates_and_persists_when_unset(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    cfg = ConfigParser()
+    cfg.add_section("monitoring")
+
+    password = ops._grafana_admin_password(cfg)
+
+    assert password
+    path = tmp_path / ".nyxGPT" / "secrets" / "grafana-admin-password"
+    assert path.read_text().strip() == password
+    # Re-reading (e.g. a second `nyxgpt ops install` run) reuses the same secret.
+    assert ops._grafana_admin_password(cfg) == password
+
+
+@pytest.mark.unit
+def test_grafana_admin_password_never_empty_even_with_blank_config_value(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    cfg = ConfigParser()
+    cfg.add_section("monitoring")
+    cfg.set("monitoring", "grafana_admin_password", "")
+
+    assert ops._grafana_admin_password(cfg) != ""
+
+
+@pytest.mark.unit
+def test_grafana_admin_password_prefers_explicit_config_value(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    cfg = ConfigParser()
+    cfg.add_section("monitoring")
+    cfg.set("monitoring", "grafana_admin_password", "owner-chosen-secret")
+
+    assert ops._grafana_admin_password(cfg) == "owner-chosen-secret"
+    # The ops-managed secret file is never created when config.ini already has one.
+    assert not (tmp_path / ".nyxGPT" / "secrets" / "grafana-admin-password").exists()
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_admin_credential_skips_reset_when_already_working(monkeypatch):
+    monkeypatch.setattr(ops, "_grafana_admin_password", lambda cfg: "already-good")
+    monkeypatch.setattr(ops, "_grafana_admin_authenticates", lambda url, pw: True)
+
+    def _boom(*a, **kw):
+        raise AssertionError("should not reset when the current password already authenticates")
+
+    monkeypatch.setattr(ops, "_reset_grafana_admin_password", _boom)
+
+    password, result = ops._reconcile_grafana_admin_credential(
+        "http://localhost:3001", ConfigParser()
+    )
+
+    assert password == "already-good"
+    assert result.ok is True
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_admin_credential_resets_on_401_then_succeeds(monkeypatch):
+    monkeypatch.setattr(ops, "_grafana_admin_password", lambda cfg: "ops-managed-secret")
+    monkeypatch.setattr(ops.time, "sleep", lambda _: None)
+
+    reset_calls = []
+
+    def _authenticates(url, pw):
+        # Fails before the reset (stale/empty container password), then
+        # succeeds afterward -- simulates a long-lived volume (#3458).
+        return bool(reset_calls)
+
+    monkeypatch.setattr(ops, "_grafana_admin_authenticates", _authenticates)
+    monkeypatch.setattr(
+        ops,
+        "_reset_grafana_admin_password",
+        lambda pw: reset_calls.append(pw) or ops.OpsResult(True, "Reset Grafana admin password"),
+    )
+
+    password, result = ops._reconcile_grafana_admin_credential(
+        "http://localhost:3001", ConfigParser(), attempts=2
+    )
+
+    assert password == "ops-managed-secret"
+    assert result.ok is True
+    assert reset_calls == ["ops-managed-secret"]
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_admin_credential_reports_one_failure_when_reset_fails(monkeypatch):
+    monkeypatch.setattr(ops, "_grafana_admin_password", lambda cfg: "ops-managed-secret")
+    monkeypatch.setattr(ops, "_grafana_admin_authenticates", lambda url, pw: False)
+    monkeypatch.setattr(ops.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        ops,
+        "_reset_grafana_admin_password",
+        lambda pw: ops.OpsResult(False, "Failed to reset Grafana admin password", "boom"),
+    )
+
+    password, result = ops._reconcile_grafana_admin_credential(
+        "http://localhost:3001", ConfigParser(), attempts=2
+    )
+
+    assert password is None
+    assert result.ok is False
+    assert "boom" in result.details
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_admin_credential_reports_one_failure_when_reset_verify_fails(
+    monkeypatch,
+):
+    monkeypatch.setattr(ops, "_grafana_admin_password", lambda cfg: "ops-managed-secret")
+    monkeypatch.setattr(ops, "_grafana_admin_authenticates", lambda url, pw: False)
+    monkeypatch.setattr(ops.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        ops,
+        "_reset_grafana_admin_password",
+        lambda pw: ops.OpsResult(True, "Reset Grafana admin password"),
+    )
+
+    password, result = ops._reconcile_grafana_admin_credential(
+        "http://localhost:3001", ConfigParser(), attempts=2
+    )
+
+    assert password is None
+    assert result.ok is False
+    assert "still doesn't authenticate" in result.message
+
+
+@pytest.mark.unit
+def test_grafana_admin_authenticates_true_on_200(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    assert ops._grafana_admin_authenticates("http://localhost:3001", "admin") is True
+
+
+@pytest.mark.unit
+def test_grafana_admin_authenticates_false_on_401(monkeypatch):
+    class FakeResponse:
+        status_code = 401
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, path, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    assert ops._grafana_admin_authenticates("http://localhost:3001", "wrong") is False
+
+
+@pytest.mark.unit
+def test_grafana_admin_authenticates_false_when_unreachable(monkeypatch):
+    class FailingClient:
+        def __init__(self, *a, **kw):
+            raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(ops.httpx, "Client", FailingClient)
+
+    assert ops._grafana_admin_authenticates("http://localhost:3001", "admin") is False
+
+
+@pytest.mark.unit
+def test_reset_grafana_admin_password_runs_grafana_cli_via_compose_exec(tmp_path, monkeypatch):
+    compose_path = tmp_path / "docker-compose.yml"
+    compose_path.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(ops.self_heal, "COMPOSE_FILE", compose_path)
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+
+    captured_cmd = []
+
+    def _fake_run(cmd, check=False):
+        captured_cmd.extend(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="Admin password changed", stderr="")
+
+    monkeypatch.setattr(ops, "_run", _fake_run)
+
+    result = ops._reset_grafana_admin_password("new-secret")
+
+    assert result.ok is True
+    assert captured_cmd == [
+        "docker",
+        "compose",
+        "-f",
+        str(compose_path),
+        "exec",
+        "-T",
+        "grafana",
+        "grafana",
+        "cli",
+        "admin",
+        "reset-admin-password",
+        "new-secret",
+    ]
+
+
+@pytest.mark.unit
+def test_reset_grafana_admin_password_fails_without_docker_compose(monkeypatch):
+    monkeypatch.setattr(ops, "_compose_available", lambda: False)
+
+    result = ops._reset_grafana_admin_password("new-secret")
+
+    assert result.ok is False
+    assert "Docker Compose not found" in result.details
+
+
+@pytest.mark.unit
+def test_reset_grafana_admin_password_fails_on_nonzero_exit(tmp_path, monkeypatch):
+    compose_path = tmp_path / "docker-compose.yml"
+    compose_path.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(ops.self_heal, "COMPOSE_FILE", compose_path)
+    monkeypatch.setattr(ops, "_compose_available", lambda: True)
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, check=False: subprocess.CompletedProcess(
+            cmd, 1, stdout="", stderr="grafana: no such service"
+        ),
+    )
+
+    result = ops._reset_grafana_admin_password("new-secret")
+
+    assert result.ok is False
+    assert "no such service" in result.details
+
+
+@pytest.mark.unit
 def test_reconcile_grafana_provisioning_records_fingerprint_and_verifies(tmp_path, monkeypatch):
     _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
     monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
@@ -5464,6 +5704,15 @@ def test_reconcile_grafana_provisioning_verifies_when_config_exists(tmp_path, mo
     monkeypatch.setattr(
         ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "stack up")]
     )
+    credential_calls = []
+    monkeypatch.setattr(
+        ops,
+        "_reconcile_grafana_admin_credential",
+        lambda url, cfg: credential_calls.append(
+            (url, cfg.get("monitoring", "grafana_admin_password"))
+        )
+        or ("secret", ops.OpsResult(True, "credential reconciled")),
+    )
     plugin_verify_calls = []
     monkeypatch.setattr(
         ops,
@@ -5486,9 +5735,51 @@ def test_reconcile_grafana_provisioning_verifies_when_config_exists(tmp_path, mo
     results = ops._reconcile_grafana_provisioning()
 
     assert all(r.ok for r in results)
+    assert credential_calls == [("http://localhost:3001", "secret")]
     assert plugin_verify_calls == [("http://localhost:3001", "secret")]
     assert verify_calls == [("http://localhost:3001", "secret")]
     assert token_calls == [("http://localhost:3001", "secret")]
+
+
+@pytest.mark.unit
+def test_reconcile_grafana_provisioning_reports_single_failure_when_credential_broken(
+    tmp_path, monkeypatch
+):
+    """A broken admin credential must surface as ONE actionable failure, not
+    three separate 401s from the plugin/datasource/token checks (#3458)."""
+    _write_grafana_fixture(tmp_path, monkeypatch, datasource_yml=_SAMPLE_DATASOURCE_YML)
+    (tmp_path / ".nyxGPT").mkdir()
+    cfg_path = tmp_path / ".nyxGPT" / "config.ini"
+    cfg_path.write_text(
+        "[monitoring]\ngrafana_ui_url = http://localhost:3001\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(ops, "_recreate_grafana_if_provisioning_drifted", lambda: None)
+    monkeypatch.setattr(
+        ops, "_start_observability_stack", lambda: [ops.OpsResult(True, "stack up")]
+    )
+    monkeypatch.setattr(
+        ops,
+        "_reconcile_grafana_admin_credential",
+        lambda url, cfg: (
+            None,
+            ops.OpsResult(False, "Could not reconcile Grafana admin credential"),
+        ),
+    )
+
+    def _boom(*a, **kw):
+        raise AssertionError("credential-dependent checks must not run when reconciliation failed")
+
+    monkeypatch.setattr(ops, "_verify_grafana_plugins_installed", _boom)
+    monkeypatch.setattr(ops, "_verify_grafana_datasources_resolve", _boom)
+    monkeypatch.setattr(ops, "_provision_grafana_doctor_token", _boom)
+
+    results = ops._reconcile_grafana_provisioning()
+
+    failures = [r for r in results if not r.ok]
+    assert len(failures) == 1
+    assert "Could not reconcile Grafana admin credential" in failures[0].message
 
 
 @pytest.mark.unit
