@@ -416,6 +416,7 @@ component (`api` included), so a single query covers both:
 | `nyxgpt_canary_component_evaluations_total` | Counter | `component`, `result` | Metric evaluations, by component and result |
 | `nyxgpt_canary_component_events_total` | Counter | `component`, `action`, `result` | Lifecycle events, by component, action, and outcome |
 | `nyxgpt_canary_component_track_version_info` | Gauge | `component`, `track`, `version` | 1 for the (component, track, version) currently observed on that component's track Deployment |
+| `nyxgpt_canary_auto_rollback_total` | Counter | `component` | Rollouts automatically rolled back by `evaluate()` due to a metrics regression -- distinct from `nyxgpt_canary_events_total{action="rollback"}` /`nyxgpt_canary_component_events_total{action="rollback"}`, which also count operator-initiated rollbacks. Backs the "NyxGPT canary auto-rollback" Grafana alert, see [alerting.md](alerting.md) |
 
 The pre-provisioned Grafana **Canary Rollout** dashboard
 (`docker/grafana/dashboards/canary.json`, auto-provisioned like the other

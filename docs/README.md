@@ -18,6 +18,7 @@ started, read [Configuration](configuration.md) and the root
 ## Operations & deployment
 
 - [Docker Compose](docker-compose.md) — the containerized stack + monitoring profiles
+- [Alerting](alerting.md) — Grafana alert rules, the Slack contact point, and `nyxgpt ops alert-test`
 - [Kubernetes](kubernetes.md) — local-cluster manifests, canary deploy/gate/promote
 - [Terraform](terraform.md) — local-first infrastructure-as-code
 - [Self-healing](self-healing.md) — the watchdog, healthchecks, and `/admin/self-heal`

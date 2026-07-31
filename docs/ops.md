@@ -591,6 +591,41 @@ Exit codes:
 
 ---
 
+## `nyxgpt ops alert-test`
+
+Fires a synthetic alert straight into Grafana's embedded Alertmanager, to
+verify the whole alerting pipeline -- rules, notification policy, and the
+Slack contact point -- end to end, without waiting for a real
+CPU/memory/disk/self-heal/canary threshold breach. See
+[alerting.md](alerting.md#testing-the-pipeline) for the full walkthrough.
+
+Usage:
+
+```bash
+nyxgpt ops alert-test
+```
+
+Behavior:
+
+- Requires `[monitoring] enabled = true` and a reachable Grafana -- reports
+  a clear, actionable message and exits non-zero otherwise (rather than a
+  raw connection error).
+- Posts a `NyxGPTAlertTest` alert (labels `severity=warning`) to
+  `/api/alertmanager/grafana/api/v2/alerts`, the same embedded Alertmanager
+  API real firing rules route through -- it shows up on Grafana's Alerting
+  page and reaches Slack (if `slack_webhook_url` is configured) exactly like
+  a genuine alert would.
+- The synthetic alert auto-resolves after 5 minutes, so a forgotten test run
+  doesn't page anyone indefinitely.
+
+Exit codes:
+
+- `0` -- test alert sent successfully
+- `2` -- monitoring is disabled, config.ini is missing, or Grafana couldn't
+  be reached
+
+---
+
 ## `nyxgpt ops migrate-volumes`
 
 Migrates container data out of pre-#3346 named Docker volumes
