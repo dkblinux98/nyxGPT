@@ -16,6 +16,18 @@ Env vars:
                                        ACTIVE_SPRINT_TITLE are eligible --
                                        everything else behaves exactly as
                                        before (no Sprint awareness at all).
+  RELEASE_VERSION                     When set (e.g. "v2.0.0"), only issues
+                                       whose milestone title contains this
+                                       version string are eligible. This is
+                                       the release wall (owner decision
+                                       2026-07-31): the autopilot and the
+                                       selector must never cross into the
+                                       next release's work -- sprint dates
+                                       drift, so the gate is the release
+                                       version carried in milestone titles,
+                                       not the calendar. Empty/unset means
+                                       no release filtering (pre-wall
+                                       behavior).
 """
 
 from __future__ import annotations
@@ -39,6 +51,7 @@ def summarize(page: dict) -> dict:
     sprint_field = os.getenv("SPRINT_FIELD", "Sprint")
     sprint_scoped = os.getenv("SPRINT_SCOPED", "0") == "1"
     active_sprint_title = os.getenv("ACTIVE_SPRINT_TITLE", "")
+    release_version = os.getenv("RELEASE_VERSION", "")
 
     items = page["data"]["node"]["items"]["nodes"]
     total = len(items)
@@ -70,11 +83,20 @@ def summarize(page: dict) -> dict:
         if status != status_backlog:
             continue
 
+        ms_title = ((c.get("milestone") or {}) or {}).get("title")
+
+        # Release wall: an issue outside the current release's milestone is
+        # never eligible, regardless of sprint. Issues with NO milestone are
+        # also excluded when the wall is up -- unmilestoned work has no
+        # release membership, so continuing into it automatically would be
+        # exactly the boundary-crossing the wall exists to prevent.
+        if release_version and release_version not in (ms_title or ""):
+            continue
+
         if sprint_scoped and sprint_title != active_sprint_title:
             continue
 
         backlog_open += 1
-        ms_title = ((c.get("milestone") or {}) or {}).get("title")
         cand = (phase_num(ms_title), int(c["number"]))
         if best is None or cand < best:
             best = cand

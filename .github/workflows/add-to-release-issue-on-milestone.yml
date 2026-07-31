@@ -34,6 +34,22 @@ jobs:
             const rel = await github.rest.issues.get({ owner, repo, issue_number: releaseIssueNumber });
             const body = rel.data.body || "";
 
+            // Release wall (owner decision 2026-07-31): only track issues whose
+            // milestone belongs to THIS release. Milestone titles carry the
+            // release version ("Phase 6 — ... (v3.0.0)") and so does the release
+            // issue's title ("Release v2.0.0"); a version mismatch means the
+            // issue belongs to a different release's tracking issue. Before this
+            // gate, filing the Phase 6 (v3.0.0) issues appended all 17 to the
+            // v2.0.0 release issue #2759. If either side has no parseable
+            // version, keep the pre-gate behavior (add).
+            const verRe = /v\d+\.\d+\.\d+/;
+            const relVer = (rel.data.title || "").match(verRe)?.[0];
+            const msVer = milestoneTitle.match(verRe)?.[0];
+            if (relVer && msVer && relVer !== msVer) {
+              core.notice(`Issue #${issueNumber} milestone is ${msVer} but the configured release issue #${releaseIssueNumber} is ${relVer} — not adding (belongs to that release's own tracking issue).`);
+              return;
+            }
+
             // Avoid duplicates
             if (body.includes(`#${issueNumber}`)) return;
 
