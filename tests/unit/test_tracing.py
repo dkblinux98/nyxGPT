@@ -352,6 +352,137 @@ def test_current_trace_id_returns_hex_trace_id_for_active_span() -> None:
     int(trace_id, 16)  # must be valid hex
 
 
+def test_tracing_module_imports_when_instrumentation_package_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The core #3484 regression: nyxgpt.tracing -- and therefore every
+    process that imports nyxgpt code (app.py, ollama_client.py, rag/*) --
+    must not crash at import time just because an optional OTel
+    instrumentation package isn't installed in this venv."""
+    import builtins
+    import importlib
+
+    real_import = builtins.__import__
+
+    def _fake_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "opentelemetry.instrumentation.urllib":
+            raise ModuleNotFoundError(f"No module named {name!r}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+    try:
+        importlib.reload(tracing)
+        assert tracing.URLLibInstrumentor is None
+        assert "opentelemetry-instrumentation-urllib" in tracing.missing_tracing_packages()
+    finally:
+        # Restore the real import hook *before* reloading -- reloading while
+        # still patched would leave URLLibInstrumentor permanently None for
+        # every later test in this process.
+        monkeypatch.setattr(builtins, "__import__", real_import)
+        importlib.reload(tracing)
+
+
+def test_missing_tracing_packages_empty_when_all_present() -> None:
+    """In this repo's test venv every optional OTel package is installed, so
+    the doctor helper must report nothing missing."""
+    assert tracing.missing_tracing_packages() == []
+
+
+def test_missing_tracing_packages_reports_missing_symbol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tracing, "URLLibInstrumentor", None)
+
+    assert tracing.missing_tracing_packages() == ["opentelemetry-instrumentation-urllib"]
+
+
+def test_init_tracing_disables_when_exporter_missing(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The #3484 failure mode: a stale venv is missing the OTLP exporter
+    package itself. `init_tracing` must not raise -- it must log a bounded
+    WARNING naming the missing package and the remedy, then leave tracing
+    disabled so the process starts and serves normally."""
+    monkeypatch.setattr(tracing, "_enabled", True)
+    monkeypatch.setattr(tracing, "OTLPSpanExporter", None)
+
+    with caplog.at_level("WARNING", logger="nyxgpt.tracing"):
+        tracing.init_tracing(
+            app=None,  # type: ignore[arg-type]
+            tracing_config={
+                "enabled": True,
+                "service_name": "my-service",
+                "otlp_endpoint": "http://collector:4318/v1/traces",
+            },
+        )
+
+    assert tracing.is_tracing_enabled() is False
+    assert len(caplog.records) == 1
+    assert "opentelemetry-exporter-otlp-proto-http" in caplog.text
+    assert "nyxgpt ops install" in caplog.text
+
+
+def test_init_tracing_skips_missing_instrumentor_but_stays_enabled(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """When only an instrumentor (not the exporter) is missing, init_tracing
+    must skip that instrumentor, log a bounded WARNING, and still fully
+    enable tracing -- spans still export, just without that instrumentation."""
+    monkeypatch.setattr(tracing, "_enabled", False)
+    monkeypatch.setattr(tracing, "URLLibInstrumentor", None)
+
+    instrumented_apps = []
+
+    class FakeInstrumentor:
+        @staticmethod
+        def instrument_app(app: Any) -> None:
+            instrumented_apps.append(app)
+
+    class FakeCassandraInstrumentor:
+        def instrument(self) -> None:
+            pass
+
+    class FakeExporter:
+        def __init__(self, endpoint: str) -> None:
+            pass
+
+    class FakeProcessor:
+        def __init__(self, exporter: Any) -> None:
+            pass
+
+    class FakeProvider:
+        def __init__(self, resource: Any) -> None:
+            pass
+
+        def add_span_processor(self, processor: Any) -> None:
+            pass
+
+    monkeypatch.setattr(tracing, "FastAPIInstrumentor", FakeInstrumentor)
+    monkeypatch.setattr(tracing, "CassandraInstrumentor", FakeCassandraInstrumentor)
+    monkeypatch.setattr(tracing, "OTLPSpanExporter", FakeExporter)
+    monkeypatch.setattr(tracing, "TracerProvider", FakeProvider)
+    monkeypatch.setattr(tracing, "BatchSpanProcessor", FakeProcessor)
+    monkeypatch.setattr(tracing.trace, "set_tracer_provider", lambda provider: None)
+
+    fake_app = object()
+    with caplog.at_level("WARNING", logger="nyxgpt.tracing"):
+        tracing.init_tracing(
+            app=fake_app,  # type: ignore[arg-type]
+            tracing_config={
+                "enabled": True,
+                "service_name": "my-service",
+                "otlp_endpoint": "http://collector:4318/v1/traces",
+            },
+        )
+
+    assert tracing.is_tracing_enabled() is True
+    assert instrumented_apps == [fake_app]
+    assert len(caplog.records) == 1
+    assert "opentelemetry-instrumentation-urllib" in caplog.text
+    assert "nyxgpt ops install" in caplog.text
+
+
 def test_otlp_endpoint_reachable_parses_host_and_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
