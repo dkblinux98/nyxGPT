@@ -1,0 +1,635 @@
+<title>nyxGPT Project Retrospective</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e;
+    --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7;
+    --ring: rgba(11,11,11,0.10);
+    --sev-crit: #d03b3b; --sev-med: #ec835a; --sev-minor: #898781;
+    --good: #0ca30c;
+    --accent: #2a78d6;
+    --chip: #f0efec;
+    --c1:#2a78d6; --c2:#eb6834; --c3:#1baf7a; --c4:#eda100; --c5:#e87ba4; --c6:#008300; --c7:#4a3aa7; --c8:#898781;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+      --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+      --ring: rgba(255,255,255,0.10);
+      --sev-crit: #d03b3b; --sev-med: #ec835a; --sev-minor: #898781;
+      --good: #0ca30c;
+      --accent: #3987e5;
+      --chip: #262625;
+      --c1:#3987e5; --c2:#d95926; --c3:#199e70; --c4:#c98500; --c5:#d55181; --c6:#008300; --c7:#9085e9; --c8:#898781;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7;
+    --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+    --ring: rgba(255,255,255,0.10);
+    --sev-crit: #d03b3b; --sev-med: #ec835a; --sev-minor: #898781;
+    --good: #0ca30c;
+    --accent: #3987e5;
+    --chip: #262625;
+    --c1:#3987e5; --c2:#d95926; --c3:#199e70; --c4:#c98500; --c5:#d55181; --c6:#008300; --c7:#9085e9; --c8:#898781;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e;
+    --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7;
+    --ring: rgba(11,11,11,0.10);
+    --sev-crit: #d03b3b; --sev-med: #ec835a; --sev-minor: #898781;
+    --good: #0ca30c;
+    --accent: #2a78d6;
+    --chip: #f0efec;
+    --c1:#2a78d6; --c2:#eb6834; --c3:#1baf7a; --c4:#eda100; --c5:#e87ba4; --c6:#008300; --c7:#4a3aa7; --c8:#898781;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 32px 24px 56px; display: flex; flex-direction: column; gap: 20px; }
+
+  header .eyebrow {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+    display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline;
+  }
+  header h1 { margin: 6px 0 4px; font-size: 26px; font-weight: 650; letter-spacing: -0.01em; text-wrap: balance; }
+  header .sub { color: var(--ink-2); max-width: 72ch; margin: 0; }
+
+  h2.divider { margin: 14px 0 -8px; font-size: 14px; font-weight: 650; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 12px; }
+  h2.divider::after { content: ""; flex: 1; height: 1px; background: var(--grid); }
+
+  .strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+  .strip .chip {
+    background: var(--surface); border: 1px solid var(--ring); border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: 9px 13px; font-size: 13px; color: var(--ink-2); line-height: 1.45;
+  }
+  .strip .chip b { display: block; font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); font-weight: 650; margin-bottom: 1px; }
+  .strip .chip .v { color: var(--ink); }
+  .colwrap { position: relative; }
+  .colwrap .rel { position: absolute; top: -14px; left: 50%; transform: translateX(-50%);
+    font-size: 9.5px; font-weight: 700; color: var(--ink-2); white-space: nowrap;
+    font-family: ui-monospace, Menlo, Consolas, monospace; border-bottom: 1px dashed var(--axis); padding: 0 2px; }
+  .gpct { font-size: 10px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .themebar { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 6px 0; }
+  .themebar + .themebar { border-top: 1px solid var(--grid); }
+  .themebar .tname { font-size: 13px; }
+  .themebar .tbar { display: flex; align-items: center; gap: 8px; }
+  .themebar .tbar i { display: block; height: 12px; background: var(--sev-med); border-radius: 3px; }
+  .themebar .tn { font-size: 12px; font-weight: 650; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile {
+    background: var(--surface); border: 1px solid var(--ring); border-radius: 8px;
+    padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 2px;
+  }
+  .tile .label { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+  .tile .value { font-size: 30px; font-weight: 650; line-height: 1.15; }
+  .tile .note { font-size: 12px; color: var(--ink-2); }
+  .dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: none; }
+  .dot.crit { background: var(--sev-crit); } .dot.med { background: var(--sev-med); } .dot.minor { background: var(--sev-minor); }
+  .dot.good { background: var(--good); }
+
+  .panel { background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 18px 20px 16px; }
+  .panel h2 { margin: 0 0 2px; font-size: 16px; font-weight: 650; }
+  .panel .desc { margin: 0 0 14px; font-size: 13px; color: var(--ink-2); max-width: 88ch; }
+  .charts { display: grid; grid-template-columns: 3fr 2fr; gap: 12px; }
+  @media (max-width: 800px) { .charts { grid-template-columns: 1fr; } }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-2); margin: 0 0 14px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+
+  .lens { display: flex; gap: 6px; margin: 0 0 12px; flex-wrap: wrap; }
+  .lens button {
+    font: 550 12.5px system-ui, sans-serif; color: var(--ink-2); background: transparent;
+    border: 1px solid var(--ring); border-radius: 999px; padding: 4px 14px; cursor: pointer;
+  }
+  .lens button:hover { background: var(--chip); }
+  .lens button[aria-pressed="true"] { background: var(--ink); color: var(--page); border-color: var(--ink); }
+  .lens button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* stacked weekly columns */
+  .colchart { display: flex; gap: 3px; align-items: flex-end; height: 190px; border-bottom: 1px solid var(--axis); padding-top: 16px; }
+  .colwrap { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; gap: 3px; cursor: default; min-width: 0; }
+  .colwrap .cnum { font-size: 10px; font-weight: 650; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; line-height: 1; }
+  .colwrap .stack { width: 100%; max-width: 26px; display: flex; flex-direction: column-reverse; gap: 1px; }
+  .colwrap .stack div { border-radius: 2px; min-height: 2px; }
+  .colwrap .stack div:last-child { border-radius: 3px 3px 2px 2px; }
+  .collabels { display: flex; gap: 3px; margin-top: 6px; }
+  .collabels div { flex: 1; text-align: center; font-size: 10.5px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; overflow: visible; white-space: nowrap; }
+
+  /* horizontal stacked rows */
+  .mrow { display: grid; grid-template-columns: 118px 1fr 92px; gap: 12px; align-items: center; padding: 7px 0; }
+  .mrow + .mrow { border-top: 1px solid var(--grid); }
+  .mrow .mname { font-size: 13.5px; font-weight: 550; }
+  .mrow .mmeta { font-size: 11.5px; color: var(--muted); }
+  .mrow .bar { display: flex; gap: 2px; height: 22px; align-items: stretch; }
+  .seg { border-radius: 0 4px 4px 0; min-width: 3px; position: relative; display: flex; align-items: center; justify-content: center; cursor: default; }
+  .seg:first-child { border-radius: 4px; }
+  .seg.crit { background: var(--sev-crit); } .seg.med { background: var(--sev-med); } .seg.minor { background: var(--sev-minor); }
+  .seg.clean { background: var(--good); } .seg.rework { background: var(--sev-minor); }
+  .seg .n { font-size: 11px; font-weight: 650; color: #fff; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .seg.minor .n, .seg.rework .n { color: var(--surface); }
+  .mrow .mtot { text-align: right; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .mrow .mtot .pct { color: var(--ink); font-weight: 600; }
+
+  /* review gate paired columns */
+  .gatechart { display: flex; gap: 14px; align-items: flex-end; height: 170px; border-bottom: 1px solid var(--axis); padding-top: 16px; }
+  .gmonth { flex: 1; display: flex; align-items: flex-end; justify-content: center; gap: 4px; height: 100%; cursor: default; }
+  .gmonth .gcol { width: 22px; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 3px; height: 100%; }
+  .gmonth .gcol .cnum { font-size: 10px; font-weight: 650; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; line-height: 1; }
+  .gmonth .gcol i { display: block; width: 100%; border-radius: 3px 3px 0 0; min-height: 2px; }
+  .gmonth .gcol.zero i { border-bottom: 2px solid var(--axis); min-height: 0; }
+  .gatelabels { display: flex; gap: 14px; margin-top: 6px; }
+  .gatelabels div { flex: 1; text-align: center; font-size: 11px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+  details.cleanlist { margin-top: 4px; }
+  details.cleanlist summary {
+    cursor: pointer; font-size: 13px; color: var(--accent); font-weight: 550;
+    list-style-position: inside; padding: 4px 0;
+  }
+  details.cleanlist summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  details.cleanlist .tablewrap { margin-top: 8px; }
+  details.cleanlist table { min-width: 620px; }
+
+  /* daily columns (7-day section) */
+  .daychart { display: flex; gap: 8px; align-items: flex-end; height: 150px; padding-top: 8px; border-bottom: 1px solid var(--axis); }
+  .daycol { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px; height: 100%; cursor: default; }
+  .daycol .cnum { font-size: 11.5px; font-weight: 650; color: var(--ink-2); font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .daycol .col { width: 70%; max-width: 34px; background: var(--accent); border-radius: 4px 4px 0 0; min-height: 2px; }
+  .daycol.zero .col { background: transparent; border-bottom: 2px solid var(--axis); border-radius: 0; }
+  .daylabels { display: flex; gap: 8px; margin-top: 6px; }
+  .daylabels div { flex: 1; text-align: center; font-size: 11px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+  /* table */
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 760px; }
+  th { text-align: left; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 550; padding: 6px 10px; border-bottom: 1px solid var(--axis); white-space: nowrap; }
+  th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; }
+  td { padding: 7px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  tr.expandable { cursor: pointer; }
+  tr.expandable:hover td { background: color-mix(in oklab, var(--chip) 55%, transparent); }
+  td .title { color: var(--ink); }
+  td a { color: var(--accent); text-decoration: none; }
+  td a:hover, td a:focus-visible { text-decoration: underline; }
+  .chipm { display: inline-block; font-size: 11px; font-family: ui-monospace, Menlo, Consolas, monospace; background: var(--chip); border: 1px solid var(--ring); border-radius: 999px; padding: 1px 8px; white-space: nowrap; color: var(--ink-2); }
+  td.num.zero { color: var(--muted); }
+  td.num .sevn { font-weight: 650; }
+  td.num .sevn.crit { color: var(--sev-crit); }
+  tr.detail td { background: color-mix(in oklab, var(--chip) 40%, transparent); font-size: 12.5px; color: var(--ink-2); padding: 8px 10px 10px 28px; }
+  tr.detail ul { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; }
+  tr.detail .sevtag { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; font-weight: 700; margin-right: 6px; }
+  tr.detail .sevtag.Critical { color: var(--sev-crit); }
+  tr.detail .sevtag.Medium { color: var(--sev-med); }
+
+  footer { font-size: 12.5px; color: var(--muted); max-width: 82ch; line-height: 1.55; }
+  footer p { margin: 4px 0; }
+
+  #tip {
+    position: fixed; pointer-events: none; z-index: 10; display: none;
+    background: var(--ink); color: var(--page); font-size: 12px; line-height: 1.45;
+    padding: 6px 9px; border-radius: 6px; max-width: 280px;
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">
+      <span>dkblinux98/nyxGPT</span><span>·</span><span>agent loop</span><span>·</span><span>Jan 1 – Jul 30, 2026</span>
+    </div>
+    <h1>nyxGPT Project Retrospective</h1>
+    <p class="sub">The overall quality picture across all 377 issues, from the perspective of final
+    acceptance: where each failure came from — code defects that escaped review, gaps in the spec,
+    or misses in the agent workflow itself — over time, by milestone, by label, and by module.</p>
+  </header>
+
+  <div class="tiles" id="qtiles"></div>
+
+  <div class="strip" id="takeaways"></div>
+
+  <section class="panel">
+    <h2>Failures and work by sprint</h2>
+    <p class="desc" id="wdesc"></p>
+    <div class="lens" id="wlens" role="group" aria-label="Weekly chart lens"></div>
+    <div class="legend" id="wlegend"></div>
+    <div class="colchart" id="wchart"></div>
+    <div class="collabels" id="wlabels"></div>
+  </section>
+
+  <section class="panel">
+    <h2>By milestone</h2>
+    <p class="desc" id="mdesc"></p>
+    <div class="lens" id="mlens" role="group" aria-label="Milestone chart lens"></div>
+    <div class="legend" id="mlegend"></div>
+    <div id="mchart"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Review gate by month — interception vs escapes</h2>
+    <p class="desc">Merge throughput, PRs the review gate caught (≥1 <span class="mono">REQUEST_CHANGES</span>),
+    and defects that escaped to acceptance (failure issues filed that month). The interception rate under each
+    month is review catches ÷ (review catches + escapes). Hover for median time-to-merge. The project idled
+    April–June between Phase&nbsp;5 and the v2.0.0 release push.</p>
+    <div class="legend">
+      <span><span class="dot" style="background:var(--c1)"></span>PRs merged</span>
+      <span><span class="dot" style="background:var(--c2)"></span>PRs rejected ≥1× (caught in review)</span>
+      <span><span class="dot" style="background:var(--c3)"></span>Acceptance failures filed (escapes)</span>
+    </div>
+    <div class="gatechart" id="gchart"></div>
+    <div class="gatelabels" id="glabels"></div>
+  </section>
+
+  <div class="charts">
+    <section class="panel">
+      <h2>Failure backlog: created vs closed</h2>
+      <p class="desc">Acceptance-failure issues opened and closed per month — is the backlog draining or growing?</p>
+      <div class="legend">
+        <span><span class="dot" style="background:var(--c2)"></span>Opened</span>
+        <span><span class="dot good"></span>Closed</span>
+      </div>
+      <div class="gatechart" id="flowchart"></div>
+      <div class="gatelabels" id="flowlabels"></div>
+    </section>
+    <section class="panel">
+      <h2>Open failures by age</h2>
+      <p class="desc" id="agingdesc"></p>
+      <div id="aging"></div>
+    </section>
+  </div>
+
+  <h2 class="divider">Last 7 days in review · Jul 23–30</h2>
+
+  <div class="tiles" id="tiles"></div>
+
+  <div class="charts">
+    <section class="panel">
+      <h2>Findings by module</h2>
+      <p class="desc">All findings from rejected review rounds, per module.</p>
+      <div class="legend">
+        <span><span class="dot crit"></span>Critical (blocking)</span>
+        <span><span class="dot med"></span>Medium (blocking)</span>
+        <span><span class="dot minor"></span>Minor (non-blocking)</span>
+      </div>
+      <div id="modules"></div>
+    </section>
+    <section class="panel">
+      <h2>Rejected rounds per day</h2>
+      <p class="desc">Number of REQUEST_CHANGES reviews posted each day.</p>
+      <div class="daychart" id="days"></div>
+      <div class="daylabels" id="daylabels"></div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <h2>First-pass outcome by module</h2>
+    <p class="desc">Of the 57 pull requests the review-agent reviewed this window, 30 were approved on
+    the first pass with zero review failures. Bars count PRs, not findings. (11 further merges were
+    owner-carried workflow changes that bypassed agent review; they're excluded.)</p>
+    <div class="legend">
+      <span><span class="dot good"></span>Clean pass (approved first review)</span>
+      <span><span class="dot minor"></span>Needed rework (≥1 REQUEST_CHANGES)</span>
+    </div>
+    <div id="outcome"></div>
+    <details class="cleanlist">
+      <summary>Show the 30 zero-failure merges</summary>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>PR</th><th>Title</th><th>Module</th><th>Merged</th></tr></thead>
+          <tbody id="cleanrows"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <section class="panel">
+    <h2>Recurring finding themes</h2>
+    <p class="desc">The review-agent's findings from the last 7 days, clustered by theme — each cluster is a
+    candidate for a pre-submit check or developer-agent prompt rule.</p>
+    <div id="themes"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Issues behind the failures</h2>
+    <p class="desc">Sorted by blocking findings. Click a row to see its Critical and Medium finding titles.</p>
+    <details class="cleanlist">
+      <summary>Show the 27 work items with review failures</summary>
+      <div class="tablewrap">
+        <table>
+          <thead><tr>
+            <th>Issue</th><th>Title</th><th>Module</th><th>PR</th>
+            <th class="num">Rounds</th><th class="num">Crit</th><th class="num">Med</th><th class="num">Minor</th><th>Last reject</th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <footer>
+    <p><strong>Acceptance-perspective classification.</strong> The 168 issues labeled
+    <span class="mono">Acceptance Failure</span> (defects found at stakeholder acceptance, before release)
+    are classified by root cause: <em>escaped defect</em> — broken behavior in code that had passed
+    review (a review miss); <em>spec gap</em> — the delivered work matched the issue but the requirement
+    itself was wrong or incomplete (redesigns, consolidations, UX corrections); <em>workflow miss</em> —
+    the agent pipeline itself failed (review gate, branch hygiene, submission workflows). Classification
+    is keyword-heuristic over titles and bodies, hand-reviewed. No issue carries a Production Defect label.</p>
+    <p><strong>Sprints.</strong> The Sprint field lives in the GitHub Project (iteration field), which is not
+    readable through the API surface available here. Sprints on this page are therefore derived from the
+    calendar: one-week sprints starting Monday, numbered from the project's first week (Sprint 1 = week of
+    Dec 29, 2025), bucketing issues by creation date. If the real sprint cadence differs, the numbering can
+    be re-mapped without changing the underlying data. Milestones are the repo's phase milestones, ordered. The six issues under the
+    "Phase X: Rejected" milestone (rejected, never worked) are excluded throughout.</p>
+    <p><strong>Review gate.</strong> Monthly counts of PRs with ≥1 REQUEST_CHANGES come from the complete
+    GitHub notification-email archive (thread-level, so a PR rejected in two months counts in both);
+    merged-PR counts from the GitHub API. Feb shows more rejected than merged because rejected PRs often
+    merged in a later month or were superseded.</p>
+    <p><strong>Last 7 days.</strong> The 41 REQUEST_CHANGES reviews on nyxGPT PRs between 2026-07-23 and
+    2026-07-30, parsed from the structured review comments (Critical / Medium / Minor findings sections).
+    Re-review rejections with no new findings count as a round with zero findings. Of 67 PRs merged in the
+    window, 11 owner-carried workflow merges bypassed agent review and are excluded from first-pass stats;
+    of the 57 reviewed PRs (56 merged + #3450 still in review), 30 were approved first-pass — verified
+    against each PR's review history. <strong>Module attribution</strong> follows the repo's module taxonomy,
+    inferred from issue titles (the Project's Module field is not API-readable here). PR #3398 has no linked
+    issue and is listed under its PR number.</p>
+  </footer>
+</div>
+<div id="tip"></div>
+
+<script>
+const QDATA = {"weeks":[{"w":"2025-12-29","label":{"Acceptance Failure":22,"Feature":89,"Release Management":14,"Improvement":4,"Documentation":9},"cause":{"defect":22,"spec":0,"workflow":0},"module":{"web-ui":25,"api":52,"observability":12,"testing":14,"cli":12,"rag":9,"tui":6,"other":8}},{"w":"2026-01-05","label":{"Acceptance Failure":32,"Feature":3,"Release Management":2,"Improvement":9,"Documentation":2},"cause":{"defect":31,"spec":1,"workflow":0},"module":{"web-ui":19,"api":17,"observability":2,"testing":3,"cli":2,"rag":2,"tui":1,"other":1}},{"w":"2026-01-12","label":{"Acceptance Failure":19,"Feature":0,"Release Management":2,"Improvement":0,"Documentation":0},"cause":{"defect":19,"spec":0,"workflow":0},"module":{"web-ui":1,"api":8,"observability":0,"testing":10,"cli":0,"rag":0,"tui":1,"other":1}},{"w":"2026-01-19","label":{"Acceptance Failure":1,"Feature":3,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":1,"spec":0,"workflow":0},"module":{"web-ui":1,"api":0,"observability":0,"testing":0,"cli":0,"rag":2,"tui":1,"other":0}},{"w":"2026-01-26","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-02-02","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-02-09","label":{"Acceptance Failure":3,"Feature":2,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":1,"spec":0,"workflow":2},"module":{"web-ui":1,"api":2,"observability":0,"testing":0,"cli":0,"rag":2,"tui":0,"other":0}},{"w":"2026-02-16","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-02-23","label":{"Acceptance Failure":1,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":1,"spec":0,"workflow":0},"module":{"web-ui":1,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-03-02","label":{"Acceptance Failure":0,"Feature":5,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":5,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-03-09","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-03-16","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-03-23","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-03-30","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-04-06","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-04-13","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-04-20","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-04-27","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-05-04","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-05-11","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-05-18","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-05-25","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-06-01","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-06-08","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-06-15","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-06-22","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-06-29","label":{"Acceptance Failure":0,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":0},"module":{"web-ui":0,"api":0,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-07-06","label":{"Acceptance Failure":1,"Feature":2,"Release Management":0,"Improvement":0,"Documentation":0},"cause":{"defect":0,"spec":0,"workflow":1},"module":{"web-ui":2,"api":0,"observability":1,"testing":0,"cli":0,"rag":0,"tui":0,"other":0}},{"w":"2026-07-13","label":{"Acceptance Failure":27,"Feature":7,"Release Management":31,"Improvement":0,"Documentation":2},"cause":{"defect":24,"spec":1,"workflow":2},"module":{"web-ui":23,"api":4,"observability":11,"testing":17,"cli":5,"rag":2,"tui":0,"other":5}},{"w":"2026-07-20","label":{"Acceptance Failure":23,"Feature":5,"Release Management":3,"Improvement":3,"Documentation":0},"cause":{"defect":11,"spec":7,"workflow":5},"module":{"web-ui":14,"api":8,"observability":7,"testing":1,"cli":3,"rag":0,"tui":0,"other":1}},{"w":"2026-07-27","label":{"Acceptance Failure":39,"Feature":2,"Release Management":3,"Improvement":8,"Documentation":0},"cause":{"defect":29,"spec":9,"workflow":1},"module":{"web-ui":25,"api":2,"observability":16,"testing":0,"cli":5,"rag":3,"tui":1,"other":0}}],"sprintSource":"calendar","milestones":[{"name":"Phase 0","cause":{"defect":2,"spec":0,"workflow":0},"label":{"Acceptance Failure":2,"Feature":7,"Release Management":0,"Improvement":0,"Documentation":2},"module":{"web-ui":2,"api":3,"observability":0,"testing":3,"cli":1,"rag":1,"tui":0,"other":1},"total":11,"af":2},{"name":"Phase 1","cause":{"defect":20,"spec":0,"workflow":0},"label":{"Acceptance Failure":20,"Feature":11,"Release Management":0,"Improvement":4,"Documentation":6},"module":{"web-ui":1,"api":16,"observability":6,"testing":10,"cli":1,"rag":0,"tui":0,"other":6},"total":40,"af":20},{"name":"Phase 2","cause":{"defect":46,"spec":1,"workflow":0},"label":{"Acceptance Failure":47,"Feature":31,"Release Management":2,"Improvement":9,"Documentation":1},"module":{"web-ui":34,"api":29,"observability":1,"testing":12,"cli":6,"rag":3,"tui":4,"other":1},"total":90,"af":47},{"name":"Phase 3","cause":{"defect":1,"spec":0,"workflow":0},"label":{"Acceptance Failure":1,"Feature":28,"Release Management":0,"Improvement":0,"Documentation":0},"module":{"web-ui":4,"api":14,"observability":1,"testing":0,"cli":0,"rag":5,"tui":5,"other":0},"total":29,"af":1},{"name":"Phase 3.5","cause":{"defect":4,"spec":0,"workflow":0},"label":{"Acceptance Failure":4,"Feature":0,"Release Management":0,"Improvement":0,"Documentation":0},"module":{"web-ui":0,"api":2,"observability":0,"testing":1,"cli":0,"rag":0,"tui":0,"other":1},"total":4,"af":4},{"name":"Phase 4","cause":{"defect":2,"spec":0,"workflow":2},"label":{"Acceptance Failure":4,"Feature":23,"Release Management":0,"Improvement":0,"Documentation":0},"module":{"web-ui":3,"api":16,"observability":1,"testing":0,"cli":1,"rag":6,"tui":0,"other":0},"total":27,"af":4},{"name":"Phase 5","cause":{"defect":24,"spec":1,"workflow":3},"label":{"Acceptance Failure":28,"Feature":14,"Release Management":48,"Improvement":0,"Documentation":4},"module":{"web-ui":31,"api":9,"observability":17,"testing":18,"cli":10,"rag":2,"tui":0,"other":7},"total":94,"af":28},{"name":"Phase 5.5","cause":{"defect":40,"spec":16,"workflow":6},"label":{"Acceptance Failure":62,"Feature":4,"Release Management":3,"Improvement":11,"Documentation":0},"module":{"web-ui":37,"api":7,"observability":23,"testing":1,"cli":8,"rag":3,"tui":1,"other":0},"total":80,"af":62},{"name":"(none)","cause":{"defect":0,"spec":0,"workflow":0},"label":{"Acceptance Failure":0,"Feature":0,"Release Management":2,"Improvement":0,"Documentation":0},"module":{"web-ui":0,"api":2,"observability":0,"testing":0,"cli":0,"rag":0,"tui":0,"other":0},"total":2,"af":0}],"gate":[{"m":"Jan","merged":153,"rejected":62,"af":74,"medianHrs":0.1},{"m":"Feb","merged":15,"rejected":26,"af":4,"medianHrs":0.1},{"m":"Mar","merged":7,"rejected":5,"af":0,"medianHrs":0.2},{"m":"Apr","merged":0,"rejected":0,"af":0,"medianHrs":null},{"m":"May","merged":0,"rejected":0,"af":0,"medianHrs":null},{"m":"Jun","merged":0,"rejected":0,"af":0,"medianHrs":null},{"m":"Jul","merged":175,"rejected":67,"af":90,"medianHrs":0.2}],"qtotals":{"issues":377,"af":168,"defect":139,"spec":18,"workflow":11,"production":0},"lens":{"causes":["defect","spec","workflow"],"labels":["Acceptance Failure","Feature","Release Management","Improvement","Documentation"],"modules":["web-ui","api","observability","testing","cli","rag","tui","other"]},"aging":[{"bucket":"<2d","n":16},{"bucket":"2-7d","n":0},{"bucket":"7-30d","n":0},{"bucket":">30d","n":0}],"flow":[{"m":"Jan","opened":74,"closed":74},{"m":"Feb","opened":4,"closed":2},{"m":"Mar","opened":0,"closed":1},{"m":"Apr","opened":0,"closed":0},{"m":"May","opened":0,"closed":0},{"m":"Jun","opened":0,"closed":0},{"m":"Jul","opened":90,"closed":75}],"themes":{"top":[{"theme":"Missing tests / coverage gate","n":27},{"theme":"Docs not updated","n":15},{"theme":"Config / secrets / environment","n":13},{"theme":"Acceptance criteria not fully implemented","n":10},{"theme":"Error handling & edge cases","n":5}],"other":34},"takeaways":[{"k":"Worst module (7d)","v":"observability \u2014 21 blocking findings across 14 rejected rounds"},{"k":"Failure trend","v":"39 acceptance failures this sprint vs 23 last (+16)"},{"k":"Stickiest item (7d)","v":"#3409 \u2014 4 review rounds (observability)"},{"k":"Open failure backlog","v":"16 acceptance-failure issues currently open"}],"releases":[{"date":"2026-01-29","label":"v1.0.0"},{"date":"2026-07-20","label":"v2.0.0"}]};
+const DATA = {"modules":{"observability":{"C":4,"M":17,"m":17,"rounds":14,"issues":9},"cli":{"C":8,"M":8,"m":6,"rounds":8,"issues":5},"web-ui":{"C":0,"M":12,"m":15,"rounds":13,"issues":9},"api":{"C":1,"M":6,"m":8,"rounds":5,"issues":3},"documentation":{"C":0,"M":2,"m":0,"rounds":1,"issues":1}},"days":{"2026-07-24":{"C":0,"M":2,"m":0,"rounds":1},"2026-07-25":{"C":1,"M":6,"m":4,"rounds":4},"2026-07-26":{"C":0,"M":6,"m":5,"rounds":5},"2026-07-27":{"C":4,"M":10,"m":12,"rounds":10},"2026-07-28":{"C":4,"M":2,"m":4,"rounds":2},"2026-07-29":{"C":3,"M":16,"m":19,"rounds":16},"2026-07-30":{"C":1,"M":3,"m":2,"rounds":3}},"issues":[{"issue":3409,"pr":3418,"title":"Acceptance Failure: bug: consolidate deploy model on canary - retire blue/green, honest status (#3409)","module":"observability","rounds":4,"C":0,"M":6,"m":4,"last":"2026-07-29T07:29:39Z","findings":[["Medium","Vitest suite failing (blocking gate)"],["Medium","New raw-`kubectl` instruction introduced in docs/kubernetes.md"],["Medium","Web canary coverage acceptance criterion not met"],["Medium","Unmet acceptance criterion without a linked follow-up or sign-off"],["Medium","Unmet acceptance criterion without a linked follow-up or sign-off"],["Medium","Stale self-reference to #3409 remains in `src/nyxgpt/canary.py:16`"]]},{"issue":3406,"pr":3408,"title":"Acceptance Failure: feat: real Homebrew installable app + off-by-default self-heal across all install methods (#3406)","module":"cli","rounds":2,"C":4,"M":2,"m":4,"last":"2026-07-28T21:32:28Z","findings":[["Critical","Vitest failure is a real regression, not a stale test"],["Critical","Homebrew \"real installable app\" acceptance criteria \u2014 entirely unaddressed"],["Medium","`nyxgpt ops down` (native/Compose scope) can mismark Terraform-managed components as intentionally stopped without actually stopping them"],["Critical","Vitest regression not fixed"],["Critical","Homebrew packaging work not implemented"],["Medium","`nyxgpt ops down` (native/Compose scope) can mismark Terraform-managed components as intentionally stopped without stopping them"]]},{"issue":3392,"pr":3395,"title":"Acceptance Failure: fix: auto-delete superseded and closed-PR agent branches (branch hygiene) (#3392)","module":"api","rounds":3,"C":1,"M":4,"m":4,"last":"2026-07-27T18:49:22Z","findings":[["Critical","`cleanup_superseded_branches` fails open if the open-PR check errors, risking deletion of an active branch"],["Medium","Missing tests for all new logic"],["Medium","AC \"PR closed without merging \u2192 branch deleted automatically\" is not actually automatic"],["Medium","AC \"PR closed without merging \u2192 branch deleted automatically\" still not wired to an automatic trigger"],["Medium","AC \"PR closed without merging \u2192 branch deleted automatically\" still not wired to an automatic trigger"]]},{"issue":null,"pr":3398,"title":"fix: make docker/config.docker.ini a derived per-machine artifact, not tracked","module":"cli","rounds":3,"C":3,"M":2,"m":1,"last":"2026-07-27T19:54:58Z","findings":[["Critical","Full Docker Compose Quickstart is now broken on a fresh checkout"],["Critical","Terraform deployment path is broken the same way the Compose path was, and remains unfixed"],["Medium","`docs/docker-compose.md`'s \"quick one-off evaluation\" path is also broken and undocumented"],["Critical","Terraform deployment path still broken (carried over from previous review, unfixed)"],["Medium","\"Quick one-off evaluation\" doc path still broken (carried over from previous review, unfixed)"]]},{"issue":3415,"pr":3427,"title":"Release Management: chore: close instrumentation gaps blocking RCA, self-heal, and SRE work - sre (#3415)","module":"observability","rounds":3,"C":3,"M":2,"m":5,"last":"2026-07-29T20:26:25Z","findings":[["Critical","PR claims to close #3415, but Gap 1 (web tier) and Gap 6 (OTel correlation backbone) \u2014 the two gaps the issue's owner-approved plan centers on \u2014 are entirely unimplemented."],["Critical","The \"tracing enabled by default\" change is inconsistent and self-contradicting between the API and the admin UI/docs."],["Critical","PR still claims \"Closes #3415\" while gaps 1 and 6 remain unimplemented"],["Medium","Self-heal probe evidence (gap 7) is not surfaced in the SRE dashboard, contradicting the issue's own acceptance criterion and CLAUDE.md's Definition of Done"],["Medium","Fix"]]},{"issue":3352,"pr":3372,"title":"Acceptance Failure: bug: Resource Usage timeframe buttons cosmetic - no server-side history (#3352)","module":"web-ui","rounds":2,"C":0,"M":3,"m":3,"last":"2026-07-26T14:20:05Z","findings":[["Medium","Missing tests for the new `/api/v1/metrics/history` proxy route (breaks CI coverage gate)"],["Medium","Missing tests for `ResourceMetrics.tsx`'s new error-handling paths (also breaks the coverage gate)"],["Medium","Server-side history does not actually survive an API restart in the realistic startup ordering, contradicting the documented behavior"]]},{"issue":3346,"pr":3363,"title":"Acceptance Failure: bug: container data hidden in named volumes - relocate under ~/.nyxGPT (#3346)","module":"cli","rounds":1,"C":1,"M":2,"m":0,"last":"2026-07-25T22:40:44Z","findings":[["Critical","`migrate_legacy_volumes()`'s \"already migrated\" check can silently strand pre-upgrade chat/RAG data with no warning"],["Medium","Missing ordering warning in docs tied to the above"],["Medium","Silent no-op when two legacy volumes exist for a shared destination"]]},{"issue":3309,"pr":3334,"title":"Feature: docs: slim the 1,146-line README to a landing page - move depth into docs/ (#3309)","module":"documentation","rounds":1,"C":0,"M":2,"m":0,"last":"2026-07-24T21:15:14Z","findings":[["Medium","\"Collections Management UI\" content deleted, not moved, and left a dead link"],["Medium","RAG Collections management"]]},{"issue":3348,"pr":3364,"title":"Acceptance Failure: bug: self-heal only watches Compose - core native components unmonitored (#3348)","module":"observability","rounds":1,"C":0,"M":2,"m":1,"last":"2026-07-25T23:38:08Z","findings":[["Medium","Vitest regression \u2014 stale assertion in `web/tests/app/admin/self-heal.test.tsx:175`"],["Medium","Missing/ineffective test coverage for the new `source` badge"]]},{"issue":3407,"pr":3417,"title":"Acceptance Failure: bug: wizard Summary, per-page save/cancel layout, restart-required flow - web-ui (#3407)","module":"web-ui","rounds":1,"C":0,"M":2,"m":2,"last":"2026-07-29T04:23:01Z","findings":[["Medium","Missing effective test coverage for per-page Save-and-advance"],["Medium","Missing effective test coverage for restart-required POST failure"]]},{"issue":3419,"pr":3433,"title":"Feature: feat: extend canary deployment to web and ollama - net-new k8s workloads (#3419)","module":"observability","rounds":1,"C":0,"M":2,"m":2,"last":"2026-07-29T22:35:23Z","findings":[["Medium","Missing/ineffective tests for the new component tab switcher (blocks the Vitest coverage gate)"],["Medium","`nyxgpt ops status` / Infrastructure Status page were not extended for per-component canary reporting, contradicting this PR's own checklist item and #3419's acceptance criteria"]]},{"issue":3430,"pr":3450,"title":"Release Management: chore: web-tier instrumentation and OTel trace correlation backbone - sre (#3430)","module":"observability","rounds":1,"C":0,"M":2,"m":0,"last":"2026-07-30T04:45:15Z","findings":[["Medium","Missing tests for `web/src/instrumentation.ts` and `web/src/instrumentation-client.ts`"],["Medium","New raw `docker compose build web` command shown as a user instruction"]]},{"issue":3410,"pr":3420,"title":"Acceptance Failure: bug: Infrastructure page becomes honest status-only display - drop Install/Destroy (#3410)","module":"web-ui","rounds":4,"C":0,"M":1,"m":2,"last":"2026-07-29T10:20:43Z","findings":[["Medium","\"Which instance/service is currently serving traffic\" is not shown on the Infrastructure page"]]},{"issue":3314,"pr":3339,"title":"Feature: feat: Add query cache stats panel to admin dashboard - web-ui (#3314)","module":"web-ui","rounds":1,"C":0,"M":1,"m":2,"last":"2026-07-25T03:27:40Z","findings":[["Medium","`ttl_seconds` reports `null` even when the cache has an effective default TTL"]]},{"issue":3344,"pr":3361,"title":"Acceptance Failure: bug: wrap terraform and k8s deploys as one-command nyxgpt ops install flags (#3344)","module":"cli","rounds":1,"C":0,"M":1,"m":1,"last":"2026-07-25T20:38:14Z","findings":[["Medium","Missing tests for new frontend surface"]]},{"issue":3353,"pr":3373,"title":"Acceptance Failure: fix: Settings back-nav should match the standard admin back link - web-ui (#3353)","module":"web-ui","rounds":1,"C":0,"M":1,"m":0,"last":"2026-07-26T14:33:41Z","findings":[["Medium","Missing documentation confirmation for user-facing nav change"]]},{"issue":3354,"pr":3374,"title":"Improvement: feat: Configuration Wizard covers all settings with apply-on-save reload (#3354)","module":"web-ui","rounds":1,"C":0,"M":1,"m":2,"last":"2026-07-26T16:14:56Z","findings":[["Medium","`docs/configuration.md` and `docs/ui.md` contradict themselves \u2014 and the code \u2014 about whether rate limiting is hot-reloadable"]]},{"issue":3356,"pr":3375,"title":"Acceptance Failure: bug: self-heal cannot restore a down stack - no desired-state model; Refresh gives no feedback (#3356)","module":"observability","rounds":1,"C":0,"M":1,"m":0,"last":"2026-07-26T18:00:10Z","findings":[["Medium","Regression: `_wait_for_glitchtip_healthy` now polls for 120s instead of failing fast when a torn-down-but-enabled `error_tracking` profile is absent"]]},{"issue":3370,"pr":3380,"title":"Acceptance Failure: bug: snapshot step's blanket git add -A commits untracked junk to branches (#3370)","module":"api","rounds":1,"C":0,"M":1,"m":2,"last":"2026-07-27T06:27:07Z","findings":[["Medium","Size-guard trip aborts the whole snapshot step, potentially losing already-committed implementation work, not just the oversized delta"]]},{"issue":3381,"pr":3382,"title":"Acceptance Failure: bug: self-heal falsely reports glitchtip-migrate one-shot job as unhealthy (#3381)","module":"observability","rounds":1,"C":0,"M":1,"m":1,"last":"2026-07-27T16:35:17Z","findings":[["Medium","Failed one-shot job is never marked `desired\ufffdlse` after its profile is disabled, so auto-heal keeps trying to restart it"]]},{"issue":3385,"pr":3393,"title":"Acceptance Failure: bug: Configuration Wizard shows empty fields instead of effective config values (#3385)","module":"web-ui","rounds":1,"C":0,"M":1,"m":1,"last":"2026-07-27T18:22:34Z","findings":[["Medium","Vitest coverage gate failure (branch coverage)"]]},{"issue":3388,"pr":3400,"title":"Acceptance Failure: feat: derive Configuration Wizard schema from example.config.ini (#3388)","module":"web-ui","rounds":1,"C":0,"M":1,"m":3,"last":"2026-07-27T20:25:44Z","findings":[["Medium","Missing dedicated test for the new proxy route"]]},{"issue":3411,"pr":3422,"title":"Acceptance Failure: feat: Grafana single pane of glass - retire in-app SRE screens, wire all four signals (#3411)","module":"observability","rounds":1,"C":0,"M":1,"m":2,"last":"2026-07-29T11:44:36Z","findings":[["Medium","Missing test for `loadMonitoring`'s network-error path breaks the 100% coverage gate"]]},{"issue":3434,"pr":3435,"title":"Acceptance Failure: bug: query cache stats show bare zeros when RAG is disabled - web-ui (#3434)","module":"web-ui","rounds":1,"C":0,"M":1,"m":0,"last":"2026-07-29T22:54:29Z","findings":[["Medium","Panel hides real, non-zero cache stats and the Clear Cache button whenever global RAG is off, even though per-chat RAG activity can populate the cache independent of the global toggle"]]},{"issue":3431,"pr":3437,"title":"Release Management: fix: unify Ollama model library across native/container launch modes (#3431)","module":"api","rounds":1,"C":0,"M":1,"m":2,"last":"2026-07-29T23:08:26Z","findings":[["Medium","Boot-time race between the two `RunAtLoad` LaunchAgents can silently re-break the \"single shared library\" guarantee"]]},{"issue":3428,"pr":3446,"title":"Acceptance Failure: bug: self-heal attributes cassandra to stopped native container in tf mode (#3428)","module":"observability","rounds":1,"C":1,"M":0,"m":2,"last":"2026-07-30T00:37:03Z","findings":[["Critical","CI-blocking: Vitest coverage gate fails, and it's caused by untested new code"]]},{"issue":3439,"pr":3453,"title":"Acceptance Failure: bug: doctor flags stale terraform state forever after clean down --terraform (#3439)","module":"cli","rounds":1,"C":0,"M":1,"m":0,"last":"2026-07-30T06:01:04Z","findings":[["Medium","New doctor test doesn't mock `_compose_stack_snapshot`, breaking test isolation convention and creating a real (if narrow) flakiness vector"]]}],"totals":{"rounds":41,"C":13,"M":45,"m":46,"items":27,"clean":30,"reviewed":57,"merged":67,"unreviewed":11},"cleanPRs":[{"pr":3335,"merged":"2026-07-24","title":"feat: nyxgpt ops restart should restart the entire stack including observability","module":"cli"},{"pr":3336,"merged":"2026-07-24","title":"bug: accept-and-merge sometimes leaves review agent as closed-issue assignee","module":"api"},{"pr":3337,"merged":"2026-07-25","title":"bug: issue hygiene silently skips milestone on API failure, comment overstates result","module":"api"},{"pr":3338,"merged":"2026-07-25","title":"chore: pin MCP server versions - track package-lock.json, drop wildcards","module":"api"},{"pr":3362,"merged":"2026-07-25","title":"bug: pin all third-party Docker image versions - compose, terraform, ops","module":"cli"},{"pr":3365,"merged":"2026-07-26","title":"bug: curated Loki queries return no data - timestamp timezone and label gaps","module":"observability"},{"pr":3366,"merged":"2026-07-26","title":"bug: native-mode tracing dead - otel-collector publishes no host port","module":"observability"},{"pr":3376,"merged":"2026-07-26","title":"bug: self-heal events Explore link loads no query - reuse #3320 deep-link fix","module":"observability"},{"pr":3377,"merged":"2026-07-26","title":"chore: remove CI Workflow Analytics dashboard - agent-level, out of scope","module":"web-ui"},{"pr":3378,"merged":"2026-07-26","title":"bug: nyxgpt models list POSTs to Ollama /api/tags - HTTP 405","module":"cli"},{"pr":3379,"merged":"2026-07-27","title":"bug: usage-limit-retry label deadlocks PR submission and is falsely triggered","module":"api"},{"pr":3386,"merged":"2026-07-27","title":"bug: ops status false phantom-backend warning for cassandra (native counted as Compose)","module":"cli"},{"pr":3389,"merged":"2026-07-27","title":"bug: Configuration Wizard interrupts config flow with a Resource Usage monitor","module":"web-ui"},{"pr":3394,"merged":"2026-07-27","title":"chore: remove admin View Logs feature once log aggregation is fixed","module":"web-ui"},{"pr":3399,"merged":"2026-07-27","title":"bug: Configuration Wizard has no cancel - only Save Configuration","module":"web-ui"},{"pr":3401,"merged":"2026-07-27","title":"feat: record nyxgpt ops lifecycle actions as observable events","module":"observability"},{"pr":3402,"merged":"2026-07-27","title":"feat: split admin dashboard tiles by observe vs operate","module":"web-ui"},{"pr":3403,"merged":"2026-07-27","title":"feat: slim Settings\u2192Admin menu - remove six entries covered by consolidation","module":"web-ui"},{"pr":3404,"merged":"2026-07-27","title":"fix: RAG Collections and Playground back-nav should go to chat - web-ui","module":"web-ui"},{"pr":3405,"merged":"2026-07-28","title":"feat: rescue 7/15 shelf - first-run wizard, path auto-detect, formula version stamping","module":"cli"},{"pr":3423,"merged":"2026-07-29","title":"bug: Query Cache card shows zeros instead of disabled state - web-ui","module":"web-ui"},{"pr":3425,"merged":"2026-07-29","title":"feat: consolidate System Health, Usage Analytics, Full Metrics into one screen","module":"web-ui"},{"pr":3426,"merged":"2026-07-29","title":"feat: mirror Homebrew rebuild/reinstall-if-needed in the Docker image build","module":"cli"},{"pr":3447,"merged":"2026-07-30","title":"bug: SRE Home SPOG fails acceptance - layout redesign, dead datasources, no data","module":"observability"},{"pr":3448,"merged":"2026-07-30","title":"chore: remove the nyxgpt tools and nyxgpt tui features","module":"tui"},{"pr":3449,"merged":"2026-07-30","title":"bug: glitchtip token write fails on Linux, Grafana provisioning dies - sre","module":"observability"},{"pr":3451,"merged":"2026-07-30","title":"bug: probe failures log bare \"Subprocess exited non-zero\" warnings - sre","module":"observability"},{"pr":3452,"merged":"2026-07-30","title":"bug: doctor Loki log-volume check gets 401 via Grafana datasource proxy - sre","module":"observability"},{"pr":3455,"merged":"2026-07-30","title":"bug: chat stream 502s instantly - undici Agent incompatible with Next 16 fetch","module":"api"},{"pr":3456,"merged":"2026-07-30","title":"feat: per-service service_name labels in Loki; ship native ollama logs - sre","module":"observability"}],"cleanByModule":{"cli":6,"api":5,"observability":9,"web-ui":9,"tui":1}};
+
+const fmt = n => n.toLocaleString('en-US');
+const CVAR = ['var(--c1)','var(--c2)','var(--c3)','var(--c4)','var(--c5)','var(--c6)','var(--c7)','var(--c8)'];
+
+/* ---------- project-wide quality ---------- */
+const qt = QDATA.qtotals;
+document.getElementById('qtiles').innerHTML = [
+  {label:'Issues total', value:qt.issues, note:'Jan 1 – Jul 30'},
+  {label:'Acceptance failures', value:qt.af, note:`${Math.round(qt.af/qt.issues*100)}% of all issues`},
+  {label:'Escaped defects', value:qt.defect, note:'review misses', color:'var(--c1)'},
+  {label:'Spec gaps', value:qt.spec, note:'bad or incomplete spec', color:'var(--c2)'},
+  {label:'Workflow misses', value:qt.workflow, note:'agent pipeline failures', color:'var(--c3)'},
+  {label:'Production defects', value:qt.production, note:'none reported', color:'var(--good)'},
+].map(x => `<div class="tile">
+  <div class="label">${x.color?`<span class="dot" style="background:${x.color}"></span>`:''}${x.label}</div>
+  <div class="value">${fmt(x.value)}</div><div class="note">${x.note}</div></div>`).join('');
+
+const LENSES = {
+  cause: {
+    title: 'Acceptance view',
+    keys: QDATA.lens.causes,
+    names: {defect:'Escaped defect (review miss)', spec:'Spec gap', workflow:'Agent workflow miss'},
+    desc: 'Acceptance failures by root cause — what the stakeholder found after review had approved the work.',
+  },
+  label: {
+    title: 'By label',
+    keys: QDATA.lens.labels,
+    names: Object.fromEntries(QDATA.lens.labels.map(l => [l, l])),
+    desc: 'All issues opened, by label — the mix of failure demand (Acceptance Failure) against feature and process work.',
+  },
+  module: {
+    title: 'By module',
+    keys: QDATA.lens.modules,
+    names: Object.fromEntries(QDATA.lens.modules.map(m => [m, m])),
+    desc: 'All issues opened, by module (top 7 modules; the rest fold into “other”).',
+  },
+};
+
+function legendHTML(lens) {
+  return LENSES[lens].keys.map((k, i) =>
+    `<span><span class="dot" style="background:${CVAR[i]}"></span>${LENSES[lens].names[k]}</span>`).join('');
+}
+function lensButtons(el, current, onpick) {
+  el.innerHTML = Object.entries(LENSES).map(([id, l]) =>
+    `<button aria-pressed="${id===current}" data-lens="${id}">${l.title}</button>`).join('');
+  el.querySelectorAll('button').forEach(b => b.addEventListener('click', () => onpick(b.dataset.lens)));
+}
+
+/* takeaway strip */
+document.getElementById('takeaways').innerHTML = (QDATA.takeaways || []).map(x =>
+  `<div class="chip"><b>${x.k}</b><span class="v">${x.v}</span></div>`).join('');
+
+/* weekly chart */
+let wlens = 'cause';
+function renderWeekly() {
+  const L = LENSES[wlens];
+  document.getElementById('wdesc').textContent = L.desc + (QDATA.sprintSource === 'project' ? ' Sprints are the Project’s real Sprint iterations.' : ' One-week sprints, numbered from the project’s first week (see method note).');
+  document.getElementById('wlegend').innerHTML = legendHTML(wlens);
+  lensButtons(document.getElementById('wlens'), wlens, id => { wlens = id; renderWeekly(); });
+  const rows = QDATA.weeks.map(w => ({w: w.w, vals: L.keys.map(k => w[wlens][k] || 0)}));
+  const max = Math.max(1, ...rows.map(r => r.vals.reduce((a,b)=>a+b,0)));
+  document.getElementById('wchart').innerHTML = rows.map(r => {
+    const total = r.vals.reduce((a,b)=>a+b,0);
+    const tips = r.vals.map((v,i)=> v ? `${LENSES[wlens].names[L.keys[i]]}: ${v}` : null).filter(Boolean).join(' · ');
+    const wk = QDATA.weeks.find(x => x.w === r.w);
+    const sprintNo = QDATA.weeks.indexOf(wk) + 1;
+    const label = wk.label || `Sprint ${sprintNo} (wk of ${new Date(r.w+'T00:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})})`;
+    const segs = r.vals.map((v,i)=> v ? `<div style="background:${CVAR[i]};height:${Math.max(v/max*100,1.5)}%"></div>` : '').join('');
+    const rel = (QDATA.releases || []).find(rl => {
+      const t0 = new Date(r.w+'T00:00:00Z'), t1 = new Date(t0.getTime() + 7*86400*1000);
+      const rd = new Date(rl.date+'T00:00:00Z');
+      return rd >= t0 && rd < t1;
+    });
+    return `<div class="colwrap" data-tip="${label} — ${total} issue${total===1?'':'s'}${tips?': '+tips:''}${rel ? ' · '+rel.label+' released '+rel.date : ''}">
+      ${rel ? `<span class="rel">${rel.label}</span>` : ''}
+      <span class="cnum">${total||''}</span>
+      <div class="stack" style="height:${total/max*100}%">${segs}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('wlabels').innerHTML = QDATA.weeks.map((w,i) => {
+    const d = new Date(w.w+'T00:00:00Z');
+    const first = i===0 || d.getUTCMonth() !== new Date(QDATA.weeks[i-1].w+'T00:00:00Z').getUTCMonth();
+    return `<div>${(i+1)%5===1 ? 'S'+(i+1) : ''}${first ? '<br>'+d.toLocaleDateString('en-US',{month:'short',timeZone:'UTC'}) : ''}</div>`;
+  }).join('');
+}
+renderWeekly();
+
+/* milestone chart */
+let mlensState = 'cause';
+function renderMilestones() {
+  const L = LENSES[mlensState];
+  document.getElementById('mdesc').textContent =
+    (mlensState==='cause'
+      ? 'Acceptance failures per phase milestone, by root cause. Row meta shows the phase’s total issue count and failure share.'
+      : L.desc.replace('opened','per phase milestone'));
+  document.getElementById('mlegend').innerHTML = legendHTML(mlensState);
+  lensButtons(document.getElementById('mlens'), mlensState, id => { mlensState = id; renderMilestones(); });
+  const rows = QDATA.milestones.map(m => ({m, vals: L.keys.map(k => m[mlensState][k] || 0)}));
+  const max = Math.max(1, ...rows.map(r => r.vals.reduce((a,b)=>a+b,0)));
+  document.getElementById('mchart').innerHTML = rows.map(({m, vals}) => {
+    const total = vals.reduce((a,b)=>a+b,0);
+    const segs = vals.map((v,i)=> v ? `<div class="seg" style="background:${CVAR[i]};width:${v/max*100}%"
+        data-tip="${m.name} · ${LENSES[mlensState].names[L.keys[i]]}: ${v}">${v/max*100>5?`<span class="n">${v}</span>`:''}</div>` : '').join('');
+    const share = m.total ? Math.round(m.af/m.total*100) : 0;
+    return `<div class="mrow">
+      <div><div class="mname">${m.name}</div><div class="mmeta">${m.total} issues · ${share}% AF</div></div>
+      <div class="bar" style="width:${Math.max(total/max*100, total?2:0)}%">${segs}</div>
+      <div class="mtot">${total||'·'}${total? (mlensState==='cause'?' failures':' issues') :''}</div>
+    </div>`;
+  }).join('');
+}
+renderMilestones();
+
+/* review gate */
+const gmax = Math.max(...QDATA.gate.map(g => Math.max(g.merged, g.rejected, g.af || 0)));
+document.getElementById('gchart').innerHTML = QDATA.gate.map(g => {
+  const col = (v, c) => `<div class="gcol${v?'':' zero'}"><span class="cnum">${v}</span><i style="background:${c};height:${Math.max(v/gmax*100, v?2:0)}%"></i></div>`;
+  const mh = g.medianHrs != null ? `, median time-to-merge ${g.medianHrs < 48 ? g.medianHrs+'h' : Math.round(g.medianHrs/24)+'d'}` : '';
+  return `<div class="gmonth" data-tip="${g.m} 2026 — ${g.merged} PRs merged, ${g.rejected} caught in review, ${g.af||0} escaped to acceptance${mh}">
+    ${col(g.merged,'var(--c1)')}${col(g.rejected,'var(--c2)')}${col(g.af||0,'var(--c3)')}</div>`;
+}).join('');
+document.getElementById('glabels').innerHTML = QDATA.gate.map(g => {
+  const tot = g.rejected + (g.af || 0);
+  const pct = tot ? Math.round(g.rejected / tot * 100) + '%' : '·';
+  return `<div>${g.m}<br><span class="gpct">${pct}</span></div>`;
+}).join('');
+
+/* failure backlog flow */
+const fmax = Math.max(1, ...QDATA.flow.map(f => Math.max(f.opened, f.closed)));
+document.getElementById('flowchart').innerHTML = QDATA.flow.map(f => {
+  const col = (v, c) => `<div class="gcol${v?'':' zero'}"><span class="cnum">${v}</span><i style="background:${c};height:${Math.max(v/fmax*100, v?2:0)}%"></i></div>`;
+  const net = f.opened - f.closed;
+  return `<div class="gmonth" data-tip="${f.m} 2026 — ${f.opened} failures opened, ${f.closed} closed (net ${net>0?'+':''}${net})">
+    ${col(f.opened,'var(--c2)')}${col(f.closed,'var(--good)')}</div>`;
+}).join('');
+document.getElementById('flowlabels').innerHTML = QDATA.flow.map(f => `<div>${f.m}</div>`).join('');
+
+/* aging */
+const amax = Math.max(1, ...QDATA.aging.map(a => a.n));
+const atot = QDATA.aging.reduce((s,a)=>s+a.n,0);
+document.getElementById('agingdesc').textContent =
+  `${atot} acceptance-failure issue${atot===1?' is':'s are'} open right now, by age since filing.`;
+document.getElementById('aging').innerHTML = QDATA.aging.map(a => `<div class="mrow">
+  <div><div class="mname">${a.bucket}</div></div>
+  <div class="bar" style="width:${a.n/amax*100}%">${a.n ? `<div class="seg" style="background:var(--accent);width:100%"
+    data-tip="${a.n} open failure${a.n===1?'':'s'} aged ${a.bucket}"><span class="n">${a.n}</span></div>` : ''}</div>
+  <div class="mtot">${a.n||'·'}</div>
+</div>`).join('');
+
+/* recurring finding themes */
+const TH = QDATA.themes || {top: [], other: 0};
+const tmax = Math.max(1, ...TH.top.map(x => x.n));
+document.getElementById('themes').innerHTML = TH.top.map(x => `<div class="themebar">
+  <span class="tname">${x.theme}</span>
+  <span class="tbar"><i style="width:${20 + x.n/tmax*160}px"></i><span class="tn">${x.n}</span></span>
+</div>`).join('') + (TH.other ? `<div class="themebar"><span class="tname" style="color:var(--muted)">
+  …plus ${TH.other} findings that don't fit a recurring theme</span><span></span></div>` : '');
+
+/* ---------- last 7 days ---------- */
+const SEV = [["C","crit","Critical"],["M","med","Medium"],["m","minor","Minor"]];
+const t = DATA.totals;
+document.getElementById('tiles').innerHTML = [
+  {label:'Rejected rounds', value:t.rounds, note:'REQUEST_CHANGES reviews'},
+  {label:'Clean passes', value:t.clean, note:`${Math.round(t.clean/t.reviewed*100)}% of ${t.reviewed} reviewed PRs`, dot:'good'},
+  {label:'Critical findings', value:t.C, note:'blocking', dot:'crit'},
+  {label:'Medium findings', value:t.M, note:'blocking', dot:'med'},
+  {label:'Minor findings', value:t.m, note:'non-blocking', dot:'minor'},
+  {label:'Work items hit', value:t.items, note:'26 issues + 1 unlinked PR'},
+].map(x => `<div class="tile">
+  <div class="label">${x.dot?`<span class="dot ${x.dot}"></span>`:''}${x.label}</div>
+  <div class="value">${fmt(x.value)}</div><div class="note">${x.note}</div></div>`).join('');
+
+const mods = Object.entries(DATA.modules);
+const maxTot = Math.max(...mods.map(([,v]) => v.C + v.M + v.m));
+document.getElementById('modules').innerHTML = mods.map(([name, v]) => {
+  const total = v.C + v.M + v.m;
+  const segs = SEV.filter(([k]) => v[k] > 0).map(([k, cls, sev]) => {
+    const pct = (v[k] / maxTot) * 100;
+    return `<div class="seg ${cls}" style="width:${pct}%" data-tip="${name} · ${sev}: ${v[k]} finding${v[k]===1?'':'s'} (${Math.round(v[k]/total*100)}% of module)">
+      ${pct > 6 ? `<span class="n">${v[k]}</span>` : ''}</div>`;
+  }).join('');
+  return `<div class="mrow">
+    <div><div class="mname">${name}</div><div class="mmeta">${v.issues} issue${v.issues===1?'':'s'} · ${v.rounds} rounds</div></div>
+    <div class="bar" style="width:${(total/maxTot)*100}%">${segs}</div>
+    <div class="mtot">${total} findings</div>
+  </div>`;
+}).join('');
+
+const WINDOW = ['2026-07-23','2026-07-24','2026-07-25','2026-07-26','2026-07-27','2026-07-28','2026-07-29','2026-07-30'];
+const maxDay = Math.max(...WINDOW.map(d => (DATA.days[d]||{rounds:0}).rounds));
+document.getElementById('days').innerHTML = WINDOW.map(d => {
+  const v = (DATA.days[d]||{rounds:0,C:0,M:0,m:0});
+  const h = v.rounds / maxDay * 100;
+  return `<div class="daycol${v.rounds?'':' zero'}" data-tip="${d}: ${v.rounds} rejected round${v.rounds===1?'':'s'} — ${v.C} Critical, ${v.M} Medium, ${v.m} Minor findings">
+    <span class="cnum">${v.rounds}</span><div class="col" style="height:${Math.max(h, v.rounds?3:0)}%"></div></div>`;
+}).join('');
+document.getElementById('daylabels').innerHTML =
+  WINDOW.map(d => `<div>${d.slice(8)}</div>`).join('');
+
+const omods = Object.keys({...DATA.modules, ...DATA.cleanByModule})
+  .map(name => {
+    const clean = DATA.cleanByModule[name] || 0;
+    const rework = (DATA.modules[name] || {issues:0}).issues;
+    return {name, clean, rework, total: clean + rework};
+  })
+  .filter(m => m.total > 0)
+  .sort((a, b) => b.total - a.total);
+const maxOut = Math.max(...omods.map(m => m.total));
+document.getElementById('outcome').innerHTML = omods.map(m => {
+  const pct = Math.round(m.clean / m.total * 100);
+  const seg = (n, cls, label) => n ? `<div class="seg ${cls}" style="width:${n/maxOut*100}%"
+    data-tip="${m.name}: ${n} PR${n===1?'':'s'} ${label}">${n/maxOut*100 > 6 ? `<span class="n">${n}</span>` : ''}</div>` : '';
+  return `<div class="mrow">
+    <div><div class="mname">${m.name}</div><div class="mmeta">${m.total} PR${m.total===1?'':'s'} reviewed</div></div>
+    <div class="bar" style="width:${m.total/maxOut*100}%">
+      ${seg(m.clean,'clean','approved on first review')}${seg(m.rework,'rework','needed at least one rework round')}
+    </div>
+    <div class="mtot"><span class="pct">${pct}%</span> clean</div>
+  </div>`;
+}).join('');
+
+document.getElementById('cleanrows').innerHTML = DATA.cleanPRs.map(p => `<tr>
+  <td class="num"><a href="https://github.com/dkblinux98/nyxGPT/pull/${p.pr}" target="_blank" rel="noopener">#${p.pr}</a></td>
+  <td><span class="title">${p.title.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span></td>
+  <td><span class="chipm">${p.module}</span></td>
+  <td class="num">${p.merged.slice(5,10)}</td>
+</tr>`).join('');
+
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const rowsEl = document.getElementById('rows');
+rowsEl.innerHTML = DATA.issues.map((it, i) => {
+  const id = it.issue ? `#${it.issue}` : `PR #${it.pr}`;
+  const url = it.issue ? `https://github.com/dkblinux98/nyxGPT/issues/${it.issue}` : `https://github.com/dkblinux98/nyxGPT/pull/${it.pr}`;
+  const title = esc(it.title.replace(/^(Acceptance Failure|Feature|Improvement|Release Management):\s*/,'').replace(/\s*\(#\d+\)\s*$/,''));
+  const cell = (n, cls) => `<td class="num${n?'':' zero'}"><span class="sevn ${n?cls:''}">${n||'·'}</span></td>`;
+  const hasDetail = it.findings.length > 0;
+  return `<tr class="${hasDetail?'expandable':''}" data-i="${i}">
+    <td class="num"><a href="${url}" target="_blank" rel="noopener">${id}</a></td>
+    <td><span class="title">${title}</span></td>
+    <td><span class="chipm">${it.module}</span></td>
+    <td class="num"><a href="https://github.com/dkblinux98/nyxGPT/pull/${it.pr}" target="_blank" rel="noopener">#${it.pr}</a></td>
+    <td class="num">${it.rounds}</td>${cell(it.C,'crit')}${cell(it.M,'')}${cell(it.m,'')}
+    <td class="num">${it.last.slice(5,10)}</td>
+  </tr>` + (hasDetail ? `<tr class="detail" hidden data-for="${i}"><td colspan="9">
+    <ul>${it.findings.map(([sev, f]) =>
+      `<li><span class="sevtag ${sev}">${sev}</span>${esc(f.length>220?f.slice(0,220)+'…':f)}</li>`).join('')}</ul>
+  </td></tr>` : '');
+}).join('');
+rowsEl.addEventListener('click', e => {
+  if (e.target.closest('a')) return;
+  const tr = e.target.closest('tr.expandable');
+  if (!tr) return;
+  const d = rowsEl.querySelector(`tr.detail[data-for="${tr.dataset.i}"]`);
+  if (d) d.hidden = !d.hidden;
+});
+
+/* tooltip */
+const tip = document.getElementById('tip');
+document.addEventListener('mousemove', e => {
+  const el = e.target.closest('[data-tip]');
+  if (!el) { tip.style.display = 'none'; return; }
+  tip.textContent = el.dataset.tip;
+  tip.style.display = 'block';
+  const x = Math.min(e.clientX + 12, innerWidth - tip.offsetWidth - 8);
+  const y = e.clientY + 14 + tip.offsetHeight > innerHeight ? e.clientY - tip.offsetHeight - 10 : e.clientY + 14;
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+});
+</script>
