@@ -4154,6 +4154,7 @@ def rag_query(_request: Request, req: RagQueryRequest) -> RagQueryResponse:
                 total_chars_before_truncation=debug_info.total_chars_before_truncation,
                 total_chars_after_truncation=debug_info.total_chars_after_truncation,
                 chunks_included=debug_info.chunks_included,
+                collection=debug_info.collection,
             )
         else:
             # Type narrowing: debug_mode=False means result is list[dict]
@@ -4247,6 +4248,7 @@ def rag_metrics_query(_request: Request, req: RagMetricsQueryRequest) -> RagMetr
             total_chars_before_truncation=debug_info.total_chars_before_truncation,
             total_chars_after_truncation=debug_info.total_chars_after_truncation,
             chunks_included=debug_info.chunks_included,
+            collection=debug_info.collection,
         )
 
         # Compute evaluation metrics if requested

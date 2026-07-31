@@ -125,6 +125,11 @@ class RAGDebugInfo:
     total_chars_after_truncation: int
     chunks_included: int
 
+    # Collection actually queried (#3464: surfaces the effective collection
+    # in the Debug tab so a scoped query's isolation is independently
+    # verifiable, not just trusted from the request payload).
+    collection: str = "default"
+
 
 @dataclass
 class RetrievalAccuracyMetrics:
@@ -1737,6 +1742,7 @@ def retrieve_context(
         total_chars_before_truncation=0,  # Not available at this level
         total_chars_after_truncation=0,  # Not available at this level
         chunks_included=len(filtered),
+        collection=collection,
     )
 
     _log_retrieval_completed(filtered, cache_hit=False)
