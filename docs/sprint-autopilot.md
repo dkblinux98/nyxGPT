@@ -43,6 +43,12 @@ the boundary. Instead:
   the active (already-started) sprint's issues, and falls back to the rest
   of the release's backlog if the active sprint has none -- a slipped item
   never strands the loop, and the wall never falls.
+- Sprint-date boundaries are evaluated in the owner's timezone, not UTC
+  (owner rule 2026-07-31: "midnight is midnight EDT"). Every "has this
+  sprint started/ended?" comparison uses `sprint_today()` from
+  `lib/gh_project.sh`, which computes today in `SPRINT_TIMEZONE`
+  (optional config key, default `America/New_York` -- EST/EDT handled
+  automatically). Under UTC, sprints flipped at 8pm Eastern.
 - When the release's Backlog drains, the autopilot posts a
   release-drained note and **parks**. There is no switch to remember: the
   gate reopens automatically when the owner performs the release ceremony --

@@ -182,7 +182,9 @@ if [[ "$(echo "$in_review_issues" | jq 'length')" -gt 0 ]]; then
 fi
 log "Blockers detected: $(echo "$blockers" | jq 'length')"
 
-today="$(date -u +%Y-%m-%d)"
+# Sprint boundaries are evaluated in the owner's timezone (SPRINT_TIMEZONE,
+# default America/New_York) -- see sprint_today() in lib/gh_project.sh.
+today="$(sprint_today)"
 
 payload="$(jq -n \
   --arg sprint_title "$active_sprint" \

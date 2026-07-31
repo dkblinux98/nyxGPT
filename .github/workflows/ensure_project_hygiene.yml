@@ -195,7 +195,10 @@ jobs:
             exit 1
           fi
 
-          CURRENT_SPRINT=$(echo "$SPRINT_JSON" | jq -r --arg today "$(date -u +%Y-%m-%d)" '
+          # sprint_today() evaluates "today" in SPRINT_TIMEZONE (owner rule:
+          # sprint midnights are Eastern, not UTC) -- from lib/gh_project.sh,
+          # sourced above.
+          CURRENT_SPRINT=$(echo "$SPRINT_JSON" | jq -r --arg today "$(sprint_today)" '
                    .data.user.projectV2.fields.nodes[] |
                    select(.name=="Sprint") |
                    .configuration.iterations |
