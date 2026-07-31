@@ -435,7 +435,7 @@
           "type": "json",
           "source": "url",
           "format": "table",
-          "url": "/api/0/projects/nyxgpt/nyxgpt-backend/issues/?statsPeriod=24h",
+          "url": "/api/0/projects/nyxgpt/nyxgpt-backend/issues/?statsPeriod=24h&query=is%3Aunresolved",
           "url_options": { "method": "GET" },
           "root_selector": "",
           "columns": [{ "selector": "id", "text": "id", "type": "string" }],
@@ -455,12 +455,13 @@
           "type": "json",
           "source": "url",
           "format": "table",
-          "url": "/api/0/projects/nyxgpt/nyxgpt-backend/issues/?statsPeriod=24h",
+          "url": "/api/0/projects/nyxgpt/nyxgpt-backend/issues/?statsPeriod=24h&query=is%3Aunresolved",
           "url_options": { "method": "GET" },
           "root_selector": "",
           "columns": [
             { "selector": "title", "text": "Title", "type": "string" },
             { "selector": "culprit", "text": "Culprit", "type": "string" },
+            { "selector": "status", "text": "Status", "type": "string" },
             { "selector": "count", "text": "Events", "type": "number" },
             { "selector": "lastSeen", "text": "Last Seen", "type": "timestamp" },
             { "selector": "permalink", "text": "Link", "type": "string" }
