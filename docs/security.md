@@ -40,6 +40,16 @@ run `nyxgpt ops env-sync` instead, which copies them out of config.ini. This
 keeps config.ini as the one place you ever look for or rotate a secret,
 regardless of whether you're running nyxGPT natively or via Compose.
 
+If `monitoring.grafana_admin_password` is left unset, `nyxgpt ops install`
+falls back to an ops-managed secret it generates and stores at
+`~/.nyxGPT/secrets/grafana-admin-password`, and always deterministically
+resets the running Grafana container's actual admin password to match
+whichever of the two applies (via `grafana cli admin reset-admin-password`)
+-- this is what makes `nyxgpt ops install` work the same way against a
+fresh volume and an existing long-lived one, instead of depending on
+`GF_SECURITY_ADMIN_PASSWORD`, which Grafana only honors on first boot
+(#3458).
+
 **Best practices:**
 
 - **Generate strong, random keys.** For the API auth key:
