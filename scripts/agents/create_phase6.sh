@@ -30,8 +30,8 @@
 #
 # ENV:
 #   DRY_RUN=1        (default) print the filing plan, create nothing
-#   SPRINT_EARLY     iteration title for the first sprint  (default: Sprint 6)
-#   SPRINT_LATE      iteration title for the second sprint (default: Sprint 7)
+#   SPRINT_EARLY     iteration title for the first sprint  (default: Sprint 7)
+#   SPRINT_LATE      iteration title for the second sprint (default: Sprint 8)
 
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,8 +40,8 @@ load_config
 require_gh_auth
 
 DRY_RUN="${DRY_RUN:-1}"
-SPRINT_EARLY="${SPRINT_EARLY:-Sprint 6}"
-SPRINT_LATE="${SPRINT_LATE:-Sprint 7}"
+SPRINT_EARLY="${SPRINT_EARLY:-Sprint 7}"
+SPRINT_LATE="${SPRINT_LATE:-Sprint 8}"
 
 # --- Preflight 1: milestone (owner-created; matched by title prefix so the
 # --- owner's exact wording/dash/version-suffix never matters) ---

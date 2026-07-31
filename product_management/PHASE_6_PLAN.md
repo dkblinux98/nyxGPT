@@ -2,10 +2,11 @@
 
 **Created:** 2026-07-15 · **Rewritten:** 2026-07-31 (post-Phase-5.5 scope re-review)
 **Milestone:** `Phase 6 — Enterprise Deployment & Hardening (v3.0.0)` (owner-created)
-**Sprints:** `Sprint 6` + `Sprint 7` (two 2-week sprints — owner decision 2026-07-31;
-no `6.x` sprint naming). Split by effort and dependencies:
-Sprint 6 = hardening gate, decision records, and cloud-independent platform work
-(P6-1..P6-7, P6-10, P6-14); Sprint 7 = the dependency-blocked cloud build chain
+**Sprints:** `Sprint 7` (2026-08-01) + `Sprint 8` (2026-08-15) — two 2-week sprints,
+owner decision 2026-07-31 (`Sprint 6` belongs to Phase 5.5; no `6.x` sprint naming).
+Split by effort and dependencies:
+Sprint 7 = hardening gate, decision records, and cloud-independent platform work
+(P6-1..P6-7, P6-10, P6-14); Sprint 8 = the dependency-blocked cloud build chain
 (P6-8, P6-9, P6-11..P6-13, P6-15..P6-17), capstone P6-16 selected last.
 Filed via `scripts/agents/create_phase6.sh` (workflow `file_phase6_issues.yml`).
 
@@ -53,8 +54,8 @@ Sequencing: **P6-1..P6-3 are the hardening gate — no cloud-exposure work (P6-8
 merges before they do.** P6-4 (access mechanism) and P6-7 (substrate) are decision issues
 blocking the infra builds. P6-16 (capstone) is selected LAST.
 
-Sprint assignment: **Sprint 6** carries P6-1..P6-7, P6-10, P6-14 (6×S, 2×M, 1×L — the
-gate, both decisions, and platform work with no cloud dependency). **Sprint 7** carries
+Sprint assignment: **Sprint 7** carries P6-1..P6-7, P6-10, P6-14 (6×S, 2×M, 1×L — the
+gate, both decisions, and platform work with no cloud dependency). **Sprint 8** carries
 P6-8, P6-9, P6-12, P6-13, P6-11, P6-15, P6-17, P6-16 (3×XL, 3×M, 2×L — the cloud chain,
 dependency-forced into the second sprint; issues are filed in that order so
 lowest-number-first selection respects the dependencies).
