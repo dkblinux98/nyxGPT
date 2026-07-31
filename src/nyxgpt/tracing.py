@@ -23,10 +23,6 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI
 from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.instrumentation.cassandra import CassandraInstrumentor
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.urllib import URLLibInstrumentor
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -38,6 +34,77 @@ _TRACER_NAME = "nyxgpt"
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 _enabled = False
+
+# The exporter and instrumentors below are optional at import time: this
+# module is imported by app.py, ollama_client.py, rag/rag.py, and
+# rag/embeddings.py, so *every* nyxgpt process (API, CLI, MCP server) would
+# crash at startup if one of these packages were missing -- even with
+# tracing disabled in config. `opentelemetry-instrumentation-urllib` etc.
+# were added to pyproject.toml alongside the #3430 OTel backbone, so a venv
+# that predates that merge must degrade gracefully here rather than hard
+# crash on the next restart (#3484).
+try:
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+        OTLPSpanExporter,
+    )
+except ImportError:
+    OTLPSpanExporter = None  # type: ignore[assignment,misc]
+
+try:
+    from opentelemetry.instrumentation.cassandra import CassandraInstrumentor
+except ImportError:
+    CassandraInstrumentor = None  # type: ignore[assignment,misc]
+
+try:
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+except ImportError:
+    FastAPIInstrumentor = None  # type: ignore[assignment,misc]
+
+try:
+    from opentelemetry.instrumentation.urllib import URLLibInstrumentor
+except ImportError:
+    URLLibInstrumentor = None  # type: ignore[assignment,misc]
+
+# Human-facing pip package name for each optional symbol above, keyed by the
+# symbol's name in this module -- used both for the enabled-but-missing
+# warning in `init_tracing` and for `missing_tracing_packages()` (the `nyxgpt
+# ops doctor` check).
+_OPTIONAL_TRACING_PACKAGES: dict[str, str] = {
+    "OTLPSpanExporter": "opentelemetry-exporter-otlp-proto-http",
+    "CassandraInstrumentor": "opentelemetry-instrumentation-cassandra",
+    "FastAPIInstrumentor": "opentelemetry-instrumentation-fastapi",
+    "URLLibInstrumentor": "opentelemetry-instrumentation-urllib",
+}
+
+
+def missing_tracing_packages() -> list[str]:
+    """Pip package names for optional OTel packages not installed in this venv.
+
+    Used by `nyxgpt ops doctor` to flag a stale venv (missing a package added
+    after the operator's last `nyxgpt ops install`) as an actionable issue,
+    the same #3350-style pattern as the OTLP-reachability check.
+    """
+    symbols = {
+        "OTLPSpanExporter": OTLPSpanExporter,
+        "CassandraInstrumentor": CassandraInstrumentor,
+        "FastAPIInstrumentor": FastAPIInstrumentor,
+        "URLLibInstrumentor": URLLibInstrumentor,
+    }
+    return [
+        package for name, package in _OPTIONAL_TRACING_PACKAGES.items() if symbols[name] is None
+    ]
+
+
+def _warn_missing_package(symbol_name: str) -> None:
+    """Log one bounded WARNING for a missing optional OTel package and its fix."""
+    package = _OPTIONAL_TRACING_PACKAGES[symbol_name]
+    logger.warning(
+        "Tracing: %s unavailable (missing package %s); skipping it. "
+        "Run `nyxgpt ops install` to fix.",
+        symbol_name,
+        package,
+        extra={"component": "tracing", "missing_package": package},
+    )
 
 
 def instrument_fastapi_app(app: FastAPI) -> None:
@@ -60,6 +127,9 @@ def instrument_fastapi_app(app: FastAPI) -> None:
     ever runs) installs the real one -- see `ProxyTracerProvider` in the
     `opentelemetry-api` package.
     """
+    if FastAPIInstrumentor is None:
+        _warn_missing_package("FastAPIInstrumentor")
+        return
     FastAPIInstrumentor.instrument_app(app)
 
 
@@ -82,14 +152,26 @@ def init_tracing(tracing_config: dict[str, Any]) -> None:
         _enabled = False
         return
 
+    if OTLPSpanExporter is None:
+        _warn_missing_package("OTLPSpanExporter")
+        _enabled = False
+        return
+
     resource = Resource.create({SERVICE_NAME: tracing_config["service_name"]})
     provider = TracerProvider(resource=resource)
     exporter = OTLPSpanExporter(endpoint=tracing_config["otlp_endpoint"])
     provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
 
-    CassandraInstrumentor().instrument()
-    URLLibInstrumentor().instrument()
+    if CassandraInstrumentor is not None:
+        CassandraInstrumentor().instrument()
+    else:
+        _warn_missing_package("CassandraInstrumentor")
+
+    if URLLibInstrumentor is not None:
+        URLLibInstrumentor().instrument()
+    else:
+        _warn_missing_package("URLLibInstrumentor")
 
     _enabled = True
     logger.info(

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
+from nyxgpt import metrics as prom_metrics
 from nyxgpt.cache import CacheBackend, DiskCache, MemoryCache, NoOpCache, hash_text
 from nyxgpt.config import (
     get_context_warning_threshold,
@@ -508,8 +509,14 @@ def _build_user_message(
                 media_type = att.get("media_type", "")
                 text = _extract_document_text(raw_bytes, media_type, filename)
                 doc_text_parts.append(f"[Attached document: {filename}]\n{text}")
+                prom_metrics.RAG_INGESTS_TOTAL.labels(
+                    source="chat_attachment", result="success"
+                ).inc()
             except Exception:
                 logger.warning("Failed to decode document attachment: %s", filename)
+                prom_metrics.RAG_INGESTS_TOTAL.labels(
+                    source="chat_attachment", result="failure"
+                ).inc()
 
     full_prompt = prompt
     if doc_text_parts:

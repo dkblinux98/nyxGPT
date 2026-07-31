@@ -316,17 +316,28 @@ top to bottom in a fixed order:
    own label filtering (`level`, `logger`) replaces them. See
    [Log Aggregation](#log-aggregation) below.
 3. **Traces** — a Jaeger datasource is provisioned in Grafana alongside
-   Prometheus and Loki, so a live traces panel renders inline; the native
-   Jaeger UI is demoted to a debug tool (no primary-navigation link to it
-   from nyxGPT). See [Distributed Tracing](#distributed-tracing) below.
+   Prometheus and Loki, so a live traces panel renders inline; the "Recent
+   nyxgpt traces" panel's title carries a link (opens in a new tab) to the
+   native Jaeger UI for its own trace search when the inline panel isn't
+   enough. See [Distributed Tracing](#distributed-tracing) below.
 4. **Errors** — GlitchTip's Sentry-compatible REST API, queried through the
    Infinity datasource plugin, surfaces an open-issues count and a recent-
-   errors table as Grafana panels with click-through to the GlitchTip UI for
-   detail. See [Error Tracking](#error-tracking) below.
+   errors table as Grafana panels; both panels' titles link (new tab) to
+   the GlitchTip UI for issue management. See [Error Tracking](#error-tracking)
+   below.
 
 The Prometheus and Jaeger native UIs remain reachable directly (their ports
-are still published to the host) but are debug tools now, not primary
-navigation surfaces — Grafana is where you look first.
+are still published to the host) — Grafana is where you look first, but
+each backing tool's own UI is one click away via a panel-title link on the
+section it backs (2026-07-30 owner decision, #3471): Jaeger on the traces
+panel, GlitchTip on its two panels, and Prometheus (which backs the whole
+health/metrics section rather than one dedicated panel) on the overview
+panel heading that section. There's no top-of-dashboard link row. The
+dashboard JSON is static, so these links are hardcoded to the same
+localhost defaults `nyxgpt.config` falls back to for the in-app pages —
+if you change `jaeger_ui_url`/`glitchtip_ui_url`/`prometheus_ui_url` in
+config, update `docker/grafana/dashboards/sre-home.json`'s panel links to
+match.
 
 ## Monitoring Dashboards
 

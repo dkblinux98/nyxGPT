@@ -253,6 +253,32 @@ def test_canary_auto_rollback_metric_is_registered() -> None:
 
 
 @pytest.mark.unit
+def test_initialize_known_rag_metric_series_populates_zero_samples() -> None:
+    """Every known RAG query/ingest label combination must have a sample
+    (value 0 if never incremented) after startup init, so the SPOG RAG
+    panels render an honest zero instead of "No data" before the first
+    real event -- see nyxgpt.metrics.initialize_known_rag_metric_series."""
+    prom_metrics.initialize_known_rag_metric_series()
+
+    body, _ = prom_metrics.render_metrics()
+    text = body.decode("utf-8")
+
+    query_samples = _samples(text, "nyxgpt_rag_queries_total")
+    for source in ("chat", "rag_query"):
+        assert any(
+            s.labels.get("source") == source for s in query_samples
+        ), f"expected a pre-initialized nyxgpt_rag_queries_total series for source={source!r}"
+
+    ingest_samples = _samples(text, "nyxgpt_rag_ingests_total")
+    for source in ("document", "upload", "repo", "chat_attachment"):
+        for result in ("success", "failure"):
+            assert any(
+                s.labels.get("source") == source and s.labels.get("result") == result
+                for s in ingest_samples
+            ), f"expected a pre-initialized nyxgpt_rag_ingests_total series for {source=} {result=}"
+
+
+@pytest.mark.unit
 def test_metrics_endpoint_reflects_live_resource_usage() -> None:
     """A real GET /metrics must refresh the resource gauges from the actual
     ResourceMonitor snapshot (initialized unconditionally at app startup),
