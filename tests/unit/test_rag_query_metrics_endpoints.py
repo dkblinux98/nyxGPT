@@ -283,6 +283,28 @@ def test_rag_metrics_query_increments_rag_queries_total_metric() -> None:
     assert 'nyxgpt_rag_queries_total{source="rag_query"}' in metrics_text.replace(" ", "")
 
 
+def test_rag_metrics_query_debug_info_reports_effective_collection() -> None:
+    """Mirrors test_rag_query_debug_info_reports_effective_collection above
+    for the /rag/metrics/query endpoint (#3464): its debug_info.collection
+    propagation is the same code pattern as /rag/query's but had no
+    dedicated test."""
+    debug_info = _fake_debug_info(collection="research-notes")
+    mock_store = Mock()
+    mock_store.list_collections.return_value = ["default", "research-notes"]
+
+    with (
+        patch("nyxgpt.rag.vectorstore_cassandra.CassandraVectorStore", return_value=mock_store),
+        patch("nyxgpt.app.retrieve_context", return_value=(_fake_rows(), debug_info)),
+    ):
+        response = client.post(
+            "/api/v1/rag/metrics/query",
+            json={"query": "test query", "collection": "research-notes"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["debug_info"]["collection"] == "research-notes"
+
+
 def test_rag_metrics_query_retrieval_failure_returns_400() -> None:
     with patch("nyxgpt.app.retrieve_context", side_effect=RuntimeError("embedding backend down")):
         response = client.post(

@@ -1362,6 +1362,81 @@ def test_retrieve_context_debug_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     assert debug_info.chunks_included == 3
 
 
+@pytest.mark.unit
+def test_retrieve_context_debug_mode_reports_effective_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for #3464: RAGDebugInfo.collection must reflect the
+    collection that was *actually* queried, so the Playground Debug tab's
+    collection display is trustworthy rather than just echoing the request
+    payload. Uses a non-default collection so a hardcoded fallback (e.g.
+    always "default") would be caught. Exercises the real retrieve_context
+    code path (not mocked out), unlike the API-level test that only checks
+    app.py forwards debug_info.collection into the response."""
+    cfg = ConfigParser()
+    cfg["rag"] = {
+        "chat_top_k": "5",
+        "min_score": "0.0",
+        "max_chunks": "10",
+        "dedupe": "true",
+    }
+
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+
+    from nyxgpt.rag.embeddings import EmbeddingDebugMetrics
+
+    def mock_embed_texts(texts, *, collect_metrics=False, **kwargs):
+        embeddings = [[0.1, 0.2, 0.3] for _ in texts]
+        if collect_metrics:
+            metrics = EmbeddingDebugMetrics(
+                embedding_model="test-model",
+                embedding_dim=3,
+                num_texts_embedded=len(texts),
+                batch_size=16,
+                embedding_time_ms=10.5,
+            )
+            return embeddings, metrics
+        return embeddings
+
+    monkeypatch.setattr("nyxgpt.rag.rag.embed_texts", mock_embed_texts)
+    monkeypatch.setattr("nyxgpt.rag.rag.embed_text", lambda _q, **kwargs: [0.1, 0.2, 0.3])
+
+    from nyxgpt.rag.vectorstore_cassandra import VectorSearchDebugMetrics
+
+    class FakeStore:
+        def __init__(self, **kwargs):
+            pass
+
+        def query_by_embedding(self, _emb, k: int, *, collect_metrics=False, **kwargs):
+            results = [{"text": "result one", "score": 0.90, "doc_id": "doc1", "chunk_id": 0}]
+            if collect_metrics:
+                metrics = VectorSearchDebugMetrics(
+                    raw_results_count=1,
+                    score_min=0.90,
+                    score_max=0.90,
+                    score_mean=0.90,
+                    vector_search_time_ms=25.3,
+                )
+                return results, metrics
+            return results
+
+        def list_docs(self):
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("nyxgpt.rag.rag.CassandraVectorStore", FakeStore)
+
+    from nyxgpt.rag.rag import retrieve_context
+
+    result = retrieve_context("test query", debug_mode=True, collection="research-notes")
+    assert isinstance(result, tuple)
+    _, debug_info = result
+
+    assert debug_info.collection == "research-notes"
+
+
 # =============================================================================
 # Evaluation Metrics Tests
 # =============================================================================
