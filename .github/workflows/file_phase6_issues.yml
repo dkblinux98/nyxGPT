@@ -1,0 +1,75 @@
+name: File Phase 6 Issues
+
+# One-shot filing of the Phase 6 issue set (product_management/PHASE_6_PLAN.md,
+# 2026-07-31 rewrite) into the owner-created "Phase 6*" milestone and the two
+# 2-week sprints. Runs scripts/agents/create_phase6.sh under the scrummaster
+# identity so issues are authored per the identity policy. Dry-run by default;
+# the script has its own duplicate guard (aborts if P6-1's title already
+# exists as an open issue).
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview only — print the filing plan, create nothing'
+        type: boolean
+        default: true
+      sprint_early:
+        description: 'Iteration title for the first sprint'
+        default: 'Sprint 6'
+      sprint_late:
+        description: 'Iteration title for the second sprint'
+        default: 'Sprint 7'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: file-phase6-issues
+  cancel-in-progress: false
+
+jobs:
+  file-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Write agent config
+        run: |
+          cat > /tmp/nyxgpt-config.ini <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          EOF
+          echo "NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini" >> "$GITHUB_ENV"
+
+      - name: File Phase 6 issues
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          DRY_RUN_INPUT: ${{ inputs.dry_run }}
+          SPRINT_EARLY: ${{ inputs.sprint_early }}
+          SPRINT_LATE: ${{ inputs.sprint_late }}
+        run: |
+          if [[ "$DRY_RUN_INPUT" == "true" ]]; then
+            export DRY_RUN=1
+          else
+            export DRY_RUN=0
+          fi
+          ./scripts/agents/create_phase6.sh
