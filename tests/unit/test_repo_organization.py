@@ -1,7 +1,9 @@
 """Guards the `product_management/` planning-doc convention (see CLAUDE.md's
 "Repository Organization" section). Phase-planning and project-management
-docs must live under `product_management/`, never at the repo root, and
-code/scripts must reference them by their new path.
+docs must live in the `product_management/` tree -- either directly (latest
+decisions) or under `product_management/archived_product_docs/` (preserved
+institutional knowledge, owner reorganization of 2026-07-31) -- never at the
+repo root, and code/scripts must reference them by a product_management path.
 """
 
 from __future__ import annotations
@@ -29,11 +31,18 @@ PLANNING_DOCS = (
 REFERENCING_DIRS = ("scripts", "src", ".github")
 
 
+# Docs may live directly under product_management/ (current decisions) or in
+# its archived_product_docs/ subfolder (superseded docs kept for history).
+ALLOWED_SUBDIRS = ("", "archived_product_docs")
+
+
 @pytest.mark.parametrize("doc", PLANNING_DOCS)
 def test_planning_doc_lives_under_product_management(doc: str) -> None:
-    assert (REPO_ROOT / "product_management" / doc).is_file(), (
-        f"{doc} must live under product_management/ per CLAUDE.md's "
-        "Repository Organization convention."
+    assert any(
+        (REPO_ROOT / "product_management" / sub / doc).is_file() for sub in ALLOWED_SUBDIRS
+    ), (
+        f"{doc} must live under product_management/ (or its archived_product_docs/ "
+        "subfolder) per CLAUDE.md's Repository Organization convention."
     )
     assert not (
         REPO_ROOT / doc
@@ -52,7 +61,10 @@ def test_no_stray_root_references_to_planning_docs() -> None:
                 continue
             for doc in PLANNING_DOCS:
                 for line_no, line in enumerate(text.splitlines(), start=1):
-                    if doc in line and f"product_management/{doc}" not in line:
+                    if doc in line and not any(
+                        f"product_management/{sub}{'/' if sub else ''}{doc}" in line
+                        for sub in ALLOWED_SUBDIRS
+                    ):
                         stray.append(f"{path.relative_to(REPO_ROOT)}:{line_no}: {line.strip()}")
 
     assert not stray, (

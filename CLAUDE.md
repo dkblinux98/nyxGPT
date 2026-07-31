@@ -65,6 +65,9 @@ Root holds only the anchored docs (`CLAUDE.md`, `AGENTS.md`, `README.md`,
   - Project audits (`PROJECT_AUDIT.md`)
   - The product vision (`VISION.md`)
   - Proposed/forward-looking architecture (`PROPOSED_ARCHITECTURE.md`)
+  - `archived_product_docs/` — superseded planning docs kept for
+    institutional knowledge (owner reorganization, 2026-07-31); the main
+    folder holds only the latest decisions
 
 Any new planning, roadmap, phase, audit, or product-decision document must be
 created under `product_management/` — never at the repo root. New agent-system
