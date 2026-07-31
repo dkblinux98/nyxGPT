@@ -16,10 +16,10 @@ on:
         default: true
       sprint_early:
         description: 'Iteration title for the first sprint'
-        default: 'Sprint 6'
+        default: 'Sprint 7'
       sprint_late:
         description: 'Iteration title for the second sprint'
-        default: 'Sprint 7'
+        default: 'Sprint 8'
 
 permissions:
   contents: read
