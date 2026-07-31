@@ -109,15 +109,93 @@ def test_rag_collection_delete_protection(api_base_url: str, require_cassandra: 
 
 @pytest.mark.integration
 def test_rag_collection_delete_nonexistent(api_base_url: str, require_cassandra: None) -> None:
-    """Test deleting a non-existent collection."""
+    """Deleting a non-existent collection is a clean 404, not a raw Cassandra error."""
     fake_collection = f"nonexistent-{uuid.uuid4().hex[:8]}"
 
     with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
-        # Attempt to delete non-existent collection
-        # This should succeed (truncate on non-existent table may create it or fail gracefully)
         delete_resp = client.delete(f"/api/v1/rag/collections/{fake_collection}")
-        # Accept either success or error for non-existent collection
-        assert delete_resp.status_code in (200, 400, 404, 500)
+        assert delete_resp.status_code == 404
+
+        error_data = delete_resp.json()
+        assert "error" in error_data or "detail" in error_data
+
+
+@pytest.mark.integration
+def test_rag_collection_clear_nonexistent(api_base_url: str, require_cassandra: None) -> None:
+    """Clearing a non-existent collection is a clean 404, not a raw Cassandra error."""
+    fake_collection = f"nonexistent-{uuid.uuid4().hex[:8]}"
+
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        clear_resp = client.post(f"/api/v1/rag/collections/{fake_collection}/clear")
+        assert clear_resp.status_code == 404
+
+        error_data = clear_resp.json()
+        assert "error" in error_data or "detail" in error_data
+
+
+@pytest.mark.integration
+def test_rag_collection_clear_protection(api_base_url: str, require_cassandra: None) -> None:
+    """Test that the default collection cannot be cleared."""
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        clear_resp = client.post("/api/v1/rag/collections/default/clear")
+        assert clear_resp.status_code == 400
+
+        error_data = clear_resp.json()
+        assert "error" in error_data or "detail" in error_data
+
+
+@pytest.mark.integration
+def test_rag_collection_clear_removes_documents_but_keeps_collection(
+    api_base_url: str, require_ollama: None, require_cassandra: None
+) -> None:
+    """Clearing a collection empties it while leaving the collection (and its
+    settings) usable, unlike DELETE which removes the collection entirely."""
+    collection_name = f"test_coll_{uuid.uuid4().hex[:8]}"
+    doc_id = f"clear-test-{uuid.uuid4().hex[:10]}"
+
+    with httpx.Client(base_url=api_base_url, timeout=60.0) as client:
+        create_resp = client.post(
+            "/api/v1/rag/collections",
+            json={
+                "name": collection_name,
+                "embedding_dim": 768,
+                "embedding_model": "nomic-embed-text",
+            },
+        )
+        assert create_resp.status_code == 201
+
+        ingest_resp = client.post(
+            "/api/v1/rag/ingest",
+            json={
+                "doc_id": doc_id,
+                "text": "Document used to verify collection clearing.",
+                "collection": collection_name,
+                "ensure_schema": True,
+            },
+        )
+        assert ingest_resp.status_code in (200, 201)
+
+        time.sleep(1.0)
+
+        clear_resp = client.post(f"/api/v1/rag/collections/{collection_name}/clear")
+        assert clear_resp.status_code == 200
+        clear_data = clear_resp.json()
+        assert clear_data["collection"] == collection_name
+        assert clear_data["doc_count"] == 0
+        assert clear_data["chunk_count"] == 0
+
+        # The collection itself must still exist (and be settable) after clear.
+        list_resp = client.get("/api/v1/rag/collections")
+        assert list_resp.status_code == 200
+        collection_names = [c["name"] for c in list_resp.json()["collections"]]
+        assert collection_name in collection_names
+
+        settings_resp = client.get(f"/api/v1/rag/collections/{collection_name}/settings")
+        assert settings_resp.status_code == 200
+        assert settings_resp.json()["settings"]["embedding_model"] == "nomic-embed-text"
+
+        # Cleanup: delete the test collection entirely.
+        client.delete(f"/api/v1/rag/collections/{collection_name}")
 
 
 @pytest.mark.integration

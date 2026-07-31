@@ -1,8 +1,8 @@
 """Unit tests for the RAG query cache API surface in app.py.
 
 Covers the two dedicated cache endpoints (`GET /rag/cache/stats`,
-`POST /rag/cache/clear`) plus the invalidation call site wired into
-`DELETE /rag/collections/{name}`.
+`POST /rag/cache/clear`) plus the invalidation call sites wired into
+`POST /rag/collections/{name}/clear` and `DELETE /rag/collections/{name}`.
 """
 
 from __future__ import annotations
@@ -162,6 +162,37 @@ def test_cache_clear_endpoint_empties_cache(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.unit
+def test_collection_clear_invalidates_query_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """POST /rag/collections/{name}/clear clears previously cached query results."""
+    from fastapi.testclient import TestClient
+
+    from nyxgpt.app import app
+    from nyxgpt.rag.rag import get_query_cache_stats, retrieve_context
+
+    cfg = _cache_cfg()
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.rag.rag.embed_text", lambda _q, **kwargs: [0.0] * 3)
+    monkeypatch.setattr("nyxgpt.rag.rag.CassandraVectorStore", FakeStore)
+    FakeStore.call_count = 0
+
+    retrieve_context("hello", collection="mycoll")
+    assert get_query_cache_stats()["size"] == 1
+
+    mock_store = Mock()
+    mock_store.list_collections.return_value = ["mycoll"]
+    monkeypatch.setattr(
+        "nyxgpt.rag.vectorstore_cassandra.CassandraVectorStore", lambda **kwargs: mock_store
+    )
+
+    with TestClient(app) as client:
+        resp = client.post("/api/v1/rag/collections/mycoll/clear")
+
+    assert resp.status_code == 200
+    mock_store.truncate.assert_called_once()
+    assert get_query_cache_stats()["size"] == 0
+
+
+@pytest.mark.unit
 def test_collection_delete_invalidates_query_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     """DELETE /rag/collections/{name} clears previously cached query results."""
     from fastapi.testclient import TestClient
@@ -179,6 +210,7 @@ def test_collection_delete_invalidates_query_cache(monkeypatch: pytest.MonkeyPat
     assert get_query_cache_stats()["size"] == 1
 
     mock_store = Mock()
+    mock_store.list_collections.return_value = ["mycoll"]
     monkeypatch.setattr(
         "nyxgpt.rag.vectorstore_cassandra.CassandraVectorStore", lambda **kwargs: mock_store
     )
@@ -187,7 +219,8 @@ def test_collection_delete_invalidates_query_cache(monkeypatch: pytest.MonkeyPat
         resp = client.delete("/api/v1/rag/collections/mycoll")
 
     assert resp.status_code == 200
-    mock_store.truncate.assert_called_once()
+    mock_store.drop_collection.assert_called_once()
+    mock_store.delete_collection_settings.assert_called_once()
     assert get_query_cache_stats()["size"] == 0
 
 
