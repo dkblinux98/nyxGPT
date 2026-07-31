@@ -20,13 +20,12 @@ from urllib.parse import urlparse
 from fastapi import FastAPI
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.instrumentation.cassandra import CassandraInstrumentor
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.urllib import URLLibInstrumentor
 from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.trace import Span, Status, StatusCode
+
+from nyxgpt.optional_imports import try_import_attr
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +33,31 @@ _TRACER_NAME = "nyxgpt"
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 _enabled = False
+
+# The three OTel *instrumentation* packages are separate pip distributions
+# from opentelemetry-api/sdk above -- a venv can be missing one of these
+# after a pull adds/bumps it (#3487) even though the core SDK imports fine.
+# Guarded so that importing this module never crashes; init_tracing() checks
+# for None and disables tracing with a single actionable warning instead.
+CassandraInstrumentor = try_import_attr(
+    "opentelemetry.instrumentation.cassandra", "CassandraInstrumentor"
+)
+FastAPIInstrumentor = try_import_attr(
+    "opentelemetry.instrumentation.fastapi", "FastAPIInstrumentor"
+)
+URLLibInstrumentor = try_import_attr("opentelemetry.instrumentation.urllib", "URLLibInstrumentor")
+
+
+def _missing_instrumentation_packages() -> list[str]:
+    """Names of any guarded instrumentation packages not installed in this venv."""
+    missing = []
+    if CassandraInstrumentor is None:
+        missing.append("opentelemetry-instrumentation-cassandra")
+    if FastAPIInstrumentor is None:
+        missing.append("opentelemetry-instrumentation-fastapi")
+    if URLLibInstrumentor is None:
+        missing.append("opentelemetry-instrumentation-urllib")
+    return missing
 
 
 def init_tracing(app: FastAPI, tracing_config: dict[str, Any]) -> None:
@@ -52,6 +76,24 @@ def init_tracing(app: FastAPI, tracing_config: dict[str, Any]) -> None:
     if not tracing_config.get("enabled"):
         _enabled = False
         return
+
+    missing = _missing_instrumentation_packages()
+    if missing:
+        logger.warning(
+            "Tracing is enabled but missing instrumentation package(s): %s -- "
+            "your environment is likely stale after a pull; run `pip install -e .` "
+            "to install them. Tracing stays disabled until then.",
+            ", ".join(missing),
+            extra={"component": "tracing", "missing_packages": missing},
+        )
+        _enabled = False
+        return
+
+    # `_missing_instrumentation_packages()` already confirmed all three are
+    # importable; assert narrows their `Any | None` type for mypy.
+    assert CassandraInstrumentor is not None
+    assert FastAPIInstrumentor is not None
+    assert URLLibInstrumentor is not None
 
     resource = Resource.create({SERVICE_NAME: tracing_config["service_name"]})
     provider = TracerProvider(resource=resource)

@@ -108,6 +108,44 @@ def test_traced_decorator_preserves_return_value_when_disabled() -> None:
     assert add(2, 3) == 5
 
 
+def test_init_tracing_disables_and_warns_when_instrumentation_package_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#3487: a stale venv missing an OTel instrumentation package must not
+    crash init_tracing (or, transitively, every `nyxgpt` command) -- it must
+    disable tracing with a single bounded warning naming the missing
+    package and the fix command instead."""
+    monkeypatch.setattr(tracing, "_enabled", False)
+    monkeypatch.setattr(tracing, "URLLibInstrumentor", None)
+
+    with caplog.at_level("WARNING", logger="nyxgpt.tracing"):
+        tracing.init_tracing(
+            app=None,  # type: ignore[arg-type]
+            tracing_config={
+                "enabled": True,
+                "service_name": "my-service",
+                "otlp_endpoint": "http://collector:4318/v1/traces",
+            },
+        )
+
+    assert tracing.is_tracing_enabled() is False
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "opentelemetry-instrumentation-urllib" in warnings[0]
+    assert "pip install -e ." in warnings[0]
+
+
+def test_missing_instrumentation_packages_reports_only_absent_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tracing, "CassandraInstrumentor", object())
+    monkeypatch.setattr(tracing, "FastAPIInstrumentor", None)
+    monkeypatch.setattr(tracing, "URLLibInstrumentor", object())
+
+    assert tracing._missing_instrumentation_packages() == ["opentelemetry-instrumentation-fastapi"]
+
+
 def test_init_tracing_is_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     """init_tracing must not touch the OTel SDK or instrument anything when
     the config says tracing is disabled (the default for every deployment
