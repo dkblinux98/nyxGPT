@@ -1,0 +1,45 @@
+name: Retro Dashboard - Merge Data Branch
+
+# Auto-merges the owner's retrospective data-refresh branch (claude/retro-data)
+# into the repository default branch immediately on push. Owner tooling for the
+# retrospective dashboard (see scripts/retrospective/REFRESH_RUNBOOK.md); the
+# direct merge is the owner-approved exception to the review loop for this
+# tooling (2026-07-31). Guard: refuses to merge if the branch changes anything
+# outside scripts/retrospective/.
+
+on:
+  push:
+    branches: [claude/retro-data]
+
+permissions:
+  contents: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge into default branch
+        run: |
+          set -euo pipefail
+          DEFAULT="${{ github.event.repository.default_branch }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout "$DEFAULT"
+
+          BASE="$(git merge-base HEAD "origin/claude/retro-data")"
+          OUTSIDE="$(git diff --name-only "$BASE" "origin/claude/retro-data" \
+            | grep -v '^scripts/retrospective/' || true)"
+          if [ -n "$OUTSIDE" ]; then
+            echo "Refusing to merge: claude/retro-data changes files outside scripts/retrospective/:"
+            echo "$OUTSIDE"
+            exit 1
+          fi
+
+          git merge --no-ff "origin/claude/retro-data" \
+            -m "chore(retro): merge daily data refresh"
+          git push origin "HEAD:$DEFAULT"

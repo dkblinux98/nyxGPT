@@ -56,9 +56,17 @@ Artifact URL (republish to this URL, do not mint a new one):
 6. **Publish** the built file with the Artifact tool to the URL above
    (`url` parameter — same URL, do not create a new artifact). Favicon stays 🔍.
 
-7. **Commit** refreshed `data/*.json` (and GATE/template edits) to the default
-   branch and push (owner-approved exception to the review loop for this tooling,
-   2026-07-31). Touch only files under `scripts/retrospective/` and never open PRs.
+7. **Commit** refreshed `data/*.json` (and GATE/template edits) via the
+   `claude/retro-data` branch: force-reset `claude/retro-data` to the current
+   default-branch tip (`git checkout -B claude/retro-data`), commit there, and
+   `git push --force origin claude/retro-data`. The
+   `retro_data_merge.yml` workflow then merges it into the default branch
+   immediately (owner-approved exception to the review loop for this tooling,
+   2026-07-31). Verify the merge landed (workflow completes in ~30 s; check with
+   `git ls-remote` that the default branch tip now contains the merge commit)
+   and report a failed merge in the run summary. Touch only files under
+   `scripts/retrospective/` — the workflow refuses to merge anything else — and
+   never open PRs or push to any other branch.
 
 ## Module attribution and classification
 
