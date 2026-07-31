@@ -135,6 +135,7 @@ from nyxgpt.rag.rag import (
 from nyxgpt.rate_limiter import RateLimiter
 from nyxgpt.resource_monitor import ResourceMonitor, get_resource_monitor, init_resource_monitor
 from nyxgpt.token_counter import count_tokens as _count_usage_tokens
+from nyxgpt.tracing import current_trace_id
 
 log = logging.getLogger("nyxgpt.api")
 
@@ -516,10 +517,14 @@ async def add_request_id_and_limits(request: Request, call_next):
     Returns a `413 payload_too_large` JSON error when the `Content-Length`
     header exceeds `MAX_BODY_BYTES` (malformed/missing `Content-Length` is
     ignored rather than rejected). Otherwise reuses the client-supplied
-    `X-Request-Id` header or generates a new UUID4, stores it on
-    `request.state.request_id` and the `request_id_var` context variable
-    for structured logging, and echoes it back as `X-Request-Id` on the
-    response.
+    `X-Request-Id` header; failing that, derives one from the active OTel
+    span's trace id (set by `FastAPIInstrumentor`, which wraps the whole
+    ASGI app and so runs before this middleware -- see `tracing.init_tracing`)
+    so the human-facing id and the Jaeger trace are the same value; failing
+    that (tracing disabled/unreachable), falls back to a new UUID4. Stores
+    the result on `request.state.request_id` and the `request_id_var`
+    context variable for structured logging, and echoes it back as
+    `X-Request-Id` on the response.
     """
     # Request size guard based on Content-Length when available
     cl = request.headers.get("content-length")
@@ -539,8 +544,9 @@ async def add_request_id_and_limits(request: Request, call_next):
             # Ignore malformed content-length
             pass
 
-    # Accept client-provided request ID or generate new one
-    req_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    # Accept client-provided request ID; else derive from the active trace,
+    # so the id printed in logs is the same one Jaeger has; else generate one.
+    req_id = request.headers.get("x-request-id") or current_trace_id() or str(uuid.uuid4())
     request.state.request_id = req_id
 
     # Set request ID in context variable for automatic logging

@@ -1,6 +1,8 @@
 import { NextRequest } from "next/server";
 import { request as undiciRequest } from "undici";
 import { apiUrl, attachApiKey } from "@/lib/apiProxy";
+import { logger } from "@/lib/logger";
+import { resolveRequestId, withRequestId } from "@/lib/requestContext";
 
 // This route drives the upstream call through the `undici` package's own
 // request() rather than Next's built-in `fetch`. Next 16 bundles its own
@@ -14,12 +16,6 @@ import { apiUrl, attachApiKey } from "@/lib/apiProxy";
 // fetch. Do not resurrect a `dispatcher`/Agent passed into `fetch()` here.
 const HEADERS_TIMEOUT_MS =
   Number(process.env.NYXGPT_CHAT_STREAM_HEADERS_TIMEOUT_MS) || 300_000; // 5 min: must outlast a cold local-model load, not just a warm one
-
-function ts(): string {
-  // ISO timestamp for log readability
-  return new Date().toISOString();
-}
-
 
 // High-resolution timer compatible with browsers and Node.js
 function nowMs(): number {
@@ -40,16 +36,26 @@ interface ChatStreamRequest {
 
 export async function POST(req: NextRequest) {
   const startMs = nowMs();
-  const reqId = Math.random().toString(16).slice(2, 10);
+  // Resolved once and threaded explicitly (rather than relying on
+  // withRequestLog's ambient AsyncLocalStorage context) because this
+  // handler's ReadableStream `pull`/`cancel` callbacks fire long after the
+  // handler itself has returned -- logging from them needs the same request
+  // id this handler attached as X-Request-Id on the upstream call.
+  const requestId = resolveRequestId(req);
+  const log = {
+    info: (message: string) => withRequestId(requestId, () => logger.info(message)),
+    error: (message: string, error?: unknown) =>
+      withRequestId(requestId, () => logger.error(message, error)),
+  };
 
   let body: ChatStreamRequest;
   try {
     body = await req.json();
   } catch (e) {
-    console.error(`[${ts()}] [web] [chat/stream] [${reqId}] invalid json:`, e);
+    log.error("chat/stream: invalid json", e);
     return new Response(JSON.stringify({ error: "Invalid JSON" }), {
       status: 400,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Request-Id": requestId },
     });
   }
 
@@ -58,10 +64,8 @@ export async function POST(req: NextRequest) {
   // Log minimal metadata (don’t dump full prompts)
   const session = typeof body?.session === "string" ? body.session : undefined;
   const promptLen = typeof body?.prompt === "string" ? body.prompt.length : undefined;
-  console.log(
-    `[${ts()}] [web] [chat/stream] [${reqId}] start session=${session ?? ""} prompt_len=${
-      promptLen ?? ""
-    } upstream=${upstreamPath}`
+  log.info(
+    `chat/stream: start session=${session ?? ""} prompt_len=${promptLen ?? ""} upstream=${upstreamPath}`
   );
 
   let statusCode: number;
@@ -79,6 +83,11 @@ export async function POST(req: NextRequest) {
         "X-Client-Max-Event-Size": "0", // 0 = unlimited
       })
     );
+    // This route bypasses apiFetch (fetch-based), so forward the correlation
+    // id explicitly -- same header apiFetch attaches ambiently (#3430).
+    if (!headers.has("X-Request-Id")) {
+      headers.set("X-Request-Id", requestId);
+    }
 
     const result = await undiciRequest(apiUrl(upstreamPath), {
       method: "POST",
@@ -90,19 +99,14 @@ export async function POST(req: NextRequest) {
     statusCode = result.statusCode;
     upstreamBody = result.body;
   } catch (e) {
-    console.error(
-      `[${ts()}] [web] [chat/stream] [${reqId}] upstream fetch failed after ${nowMs() - startMs}ms:`,
-      e
-    );
+    log.error(`chat/stream: upstream fetch failed after ${nowMs() - startMs}ms`, e);
     return new Response(JSON.stringify({ error: "Upstream unreachable" }), {
       status: 502,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "X-Request-Id": requestId },
     });
   }
 
-  console.log(
-    `[${ts()}] [web] [chat/stream] [${reqId}] upstream status=${statusCode} after ${nowMs() - startMs}ms`
-  );
+  log.info(`chat/stream: upstream status=${statusCode} after ${nowMs() - startMs}ms`);
 
   // undici's request() only resolves with the final response — informational
   // (1xx) statuses are consumed internally, so statusCode is always >= 200.
@@ -114,8 +118,8 @@ export async function POST(req: NextRequest) {
       // ignore
     }
 
-    console.error(
-      `[${ts()}] [web] [chat/stream] [${reqId}] upstream not ok after ${nowMs() - startMs}ms detail_len=${detail.length}`
+    log.error(
+      `chat/stream: upstream not ok after ${nowMs() - startMs}ms detail_len=${detail.length}`
     );
 
     // Pass the real upstream status through instead of flattening every
@@ -123,7 +127,10 @@ export async function POST(req: NextRequest) {
     // apart from "backend rejected the request" / "model runtime error".
     return new Response(
       JSON.stringify({ error: "Upstream chat stream failed", detail }),
-      { status: statusCode, headers: { "Content-Type": "application/json" } }
+      {
+        status: statusCode,
+        headers: { "Content-Type": "application/json", "X-Request-Id": requestId },
+      }
     );
   }
 
@@ -139,9 +146,7 @@ export async function POST(req: NextRequest) {
       try {
         const { done, value } = await iterator.next();
         if (done) {
-          console.log(
-            `[${ts()}] [web] [chat/stream] [${reqId}] end after ${nowMs() - startMs}ms bytes=${totalBytes}`
-          );
+          log.info(`chat/stream: end after ${nowMs() - startMs}ms bytes=${totalBytes}`);
           controller.close();
           return;
         }
@@ -150,17 +155,12 @@ export async function POST(req: NextRequest) {
           totalBytes += value.byteLength;
           if (!sawFirst) {
             sawFirst = true;
-            console.log(
-              `[${ts()}] [web] [chat/stream] [${reqId}] first_byte after ${nowMs() - startMs}ms`
-            );
+            log.info(`chat/stream: first_byte after ${nowMs() - startMs}ms`);
           }
           controller.enqueue(value);
         }
       } catch (e) {
-        console.error(
-          `[${ts()}] [web] [chat/stream] [${reqId}] stream error after ${nowMs() - startMs}ms:`,
-          e
-        );
+        log.error(`chat/stream: stream error after ${nowMs() - startMs}ms`, e);
         // best effort: emit a newline + error marker to client
         try {
           controller.enqueue(encoder.encode("\n[stream error]\n"));
@@ -176,9 +176,7 @@ export async function POST(req: NextRequest) {
       } catch {
         // ignore
       }
-      console.log(
-        `[${ts()}] [web] [chat/stream] [${reqId}] client_cancel after ${nowMs() - startMs}ms bytes=${totalBytes}`
-      );
+      log.info(`chat/stream: client_cancel after ${nowMs() - startMs}ms bytes=${totalBytes}`);
     },
   });
 
@@ -189,6 +187,7 @@ export async function POST(req: NextRequest) {
       "Cache-Control": "no-cache, no-transform, no-store",
       "Connection": "keep-alive",
       "X-Accel-Buffering": "no",
+      "X-Request-Id": requestId,
     },
   });
 }

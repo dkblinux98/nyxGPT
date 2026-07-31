@@ -69,7 +69,14 @@ This command:
 - Detects and stops any Docker Compose app-tier containers (`api`, `web`,
   `ollama`, `cassandra`) left running from an earlier raw `docker compose
   up` or a previous mixed-mode install, reporting what it stopped
-- Installs Homebrew formulas (`nyxgpt-api`, `nyxgpt-web`) if missing
+- Installs Homebrew formulas (`nyxgpt-api`, `nyxgpt-web`) if missing, or
+  reinstalls them when the vendored source has changed since the last
+  install. When `nyxgpt-web` is actually rebuilt this way, the service is
+  **restarted** (not just started) so the running `next start` process picks
+  up the new `.next` build output instead of continuing to serve the old
+  build's chunk manifest against the new on-disk chunks -- see
+  [Automatic update recovery](service-worker-pwa.md#automatic-update-recovery)
+  for the client-side half of this (#3445).
 - Registers and loads required LaunchAgents, including `com.nyxgpt.ollama-logs`
   (tails Ollama's logs into `~/.nyxGPT/logs/ollama.log`, from the
   `nyxgpt-ollama` container's docker logs in Compose mode or Homebrew's own

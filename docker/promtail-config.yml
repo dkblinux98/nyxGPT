@@ -10,7 +10,7 @@ clients:
 
 scrape_configs:
   # Every target below carries a fixed, bounded `service_name` label (api,
-  # cli, ollama, cassandra -- web joins once #3430 lands) so Grafana's Logs
+  # cli, web, ollama, cassandra) so Grafana's Logs
   # Drilldown service breakdown reflects the real services instead of one
   # flat, undifferentiated `job=nyxgpt` bucket (#3441). `job: nyxgpt` stays
   # on every target unchanged, so #3349's pipeline and the curated Explore
@@ -66,6 +66,24 @@ scrape_configs:
           job: nyxgpt
           service_name: cassandra
           __path__: /var/log/nyxgpt-native/logs/cassandra.log*
+      # Web tier (#3430): native mode's run-web.sh redirects the Next.js
+      # process's stdout to ~/.nyxGPT/logs/nyxgpt-web.log (a real file, no
+      # symlink); Compose mode's web container writes the same structured
+      # lines into ~/.nyxGPT/volumes/nyxgpt-web-logs, bind-mounted at
+      # /var/log/nyxgpt-web (see web/src/lib/logger.ts and
+      # docker-compose.yml's web + promtail services).
+      - targets:
+          - localhost
+        labels:
+          job: nyxgpt
+          service_name: web
+          __path__: /var/log/nyxgpt-native/logs/nyxgpt-web.log*
+      - targets:
+          - localhost
+        labels:
+          job: nyxgpt
+          service_name: web
+          __path__: /var/log/nyxgpt-web/*.log*
     pipeline_stages:
       # nyxgpt's default text log format (see nyxgpt.logging.DEFAULT_FMT):
       # "<timestamp> <LEVEL> [<request_id>] <logger>: <message>". Extract

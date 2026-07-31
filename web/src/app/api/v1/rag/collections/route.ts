@@ -1,6 +1,8 @@
 import { apiFetch } from "@/lib/apiProxy";
+import { logger } from "@/lib/logger";
+import { withRequestLog } from "@/lib/withRequestLog";
 
-export async function GET() {
+export const GET = withRequestLog(async function GET() {
   try {
     const res = await apiFetch(`/api/v1/rag/collections`, {
       method: "GET",
@@ -24,7 +26,7 @@ export async function GET() {
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Failed to fetch RAG collections:", error);
+    logger.error("Failed to fetch RAG collections:", error);
     return new Response(
       JSON.stringify({ error: "Failed to fetch collections from backend" }),
       {
@@ -33,9 +35,9 @@ export async function GET() {
       }
     );
   }
-}
+});
 
-export async function POST(request: Request) {
+export const POST = withRequestLog(async function POST(request: Request) {
   try {
     const body = await request.json();
     const res = await apiFetch(`/api/v1/rag/collections`, {
@@ -58,7 +60,7 @@ export async function POST(request: Request) {
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Failed to create collection:", error);
+    logger.error("Failed to create collection:", error);
     return new Response(
       JSON.stringify({ error: "Failed to create collection" }),
       {
@@ -67,4 +69,4 @@ export async function POST(request: Request) {
       }
     );
   }
-}
+});

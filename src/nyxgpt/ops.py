@@ -41,6 +41,7 @@ from nyxgpt.config import (
     get_tracing_config,
     get_tracing_enabled,
 )
+from nyxgpt.logging import get_correlation_id
 
 logger = logging.getLogger(__name__)
 
@@ -220,14 +221,22 @@ def _record_ops_action(command: str, service: str, result: str, message: str = "
     SRE/admin dashboard's equivalent API calls funnel through, so a metrics gap
     can be attributed to a deliberate `ops down` rather than reading as an
     unexplained outage.
+
+    `correlation_id` (#3430) is `get_correlation_id()`'s resolution: the
+    active HTTP request's `request_id` for dashboard-triggered actions, or
+    `NYXGPT_CORRELATION_ID` from the environment for CLI-triggered ones (see
+    `mint_correlation_id`) -- lets an operator join this event to the
+    subprocess it drove, or the request that triggered it.
     """
+    correlation_id = get_correlation_id()
     prom_metrics.OPS_ACTIONS_TOTAL.labels(command=command, service=service, result=result).inc()
     log = logger.info if result == "success" else logger.warning
     log(
-        "ops: lifecycle action command=%s service=%s result=%s%s",
+        "ops: lifecycle action command=%s service=%s result=%s correlation_id=%s%s",
         command,
         service,
         result,
+        correlation_id,
         f": {message}" if message else "",
         extra={
             "component": "ops",
@@ -236,6 +245,7 @@ def _record_ops_action(command: str, service: str, result: str, message: str = "
             "service": service,
             "result": result,
             "result_message": message,
+            "correlation_id": correlation_id,
         },
     )
 
@@ -707,7 +717,7 @@ def _install_cassandra_launchagent() -> list[OpsResult]:
     label = "com.nyxgpt.cassandra-logs"
     domain = f"gui/{os.getuid()}"
 
-    _run(["launchctl", "bootout", domain, str(dst)], check=False)
+    _run(["launchctl", "bootout", domain, str(dst)], check=False, expected=True)
     _run(["launchctl", "bootstrap", domain, str(dst)], check=False)
     _run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=False)
 
@@ -743,7 +753,7 @@ def _install_ollama_launchagent() -> list[OpsResult]:
     label = "com.nyxgpt.ollama-logs"
     domain = f"gui/{os.getuid()}"
 
-    _run(["launchctl", "bootout", domain, str(dst)], check=False)
+    _run(["launchctl", "bootout", domain, str(dst)], check=False, expected=True)
     _run(["launchctl", "bootstrap", domain, str(dst)], check=False)
     _run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=False)
 
@@ -778,7 +788,7 @@ def _install_ollama_env_launchagent() -> list[OpsResult]:
     label = "com.nyxgpt.ollama-env"
     domain = f"gui/{os.getuid()}"
 
-    _run(["launchctl", "bootout", domain, str(dst)], check=False)
+    _run(["launchctl", "bootout", domain, str(dst)], check=False, expected=True)
     _run(["launchctl", "bootstrap", domain, str(dst)], check=False)
     _run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=False)
 
@@ -1105,18 +1115,29 @@ def _install_homebrew_api(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
 
 
 def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResult]:
-    """Build and install the `nyxgpt-web` Homebrew formula into `tap`, then start the service.
+    """Build and install the `nyxgpt-web` Homebrew formula into `tap`, then (re)start the service.
 
     Generates a dist tarball vendoring the `web/` source tree (minus
     gitignored build artifacts -- see `_WEB_VENDOR_EXCLUDES`), substitutes
     its `file://` URL and sha256 into the formula template, writes the
     formula into the tap's Formula/ dir, and installs/reinstalls it only if
     the vendored source actually changed since the last install (see
-    `_brew_install_or_reinstall`), then requests `brew services start`. The
-    formula itself runs `npm ci`/`npm run build` inside the Cellar keg from
-    that vendored source -- the installed app never depends on the repo
-    checkout (#3406). Returns a list of OpsResult; fails early if brew isn't
-    installed or the formula template is missing.
+    `_brew_install_or_reinstall`). The formula itself runs `npm ci`/`npm run
+    build` inside the Cellar keg from that vendored source -- the installed
+    app never depends on the repo checkout (#3406).
+
+    When a rebuild actually happened (`decision` is "installed" or
+    "reinstalled ..."), this restarts the service (`brew services restart`)
+    instead of just starting it: `brew services start` on an already-running
+    service is a no-op, so a rebuild-while-serving would otherwise leave the
+    old `next start` process running against the *old* in-memory build
+    manifest while the on-disk `.next` chunks are already the new build's --
+    every served page then references chunk hashes that no longer exist,
+    404ing (#3445). When nothing changed, a plain `start` is used so an
+    already-up-to-date install doesn't bounce a healthy running service.
+
+    Returns a list of OpsResult; fails early if brew isn't installed or the
+    formula template is missing.
     """
     results: list[OpsResult] = []
     if _which("brew") is None:
@@ -1148,8 +1169,15 @@ def _install_homebrew_web(tap: str = "dkblinux98/nyxgpt-local") -> list[OpsResul
     decision = _brew_install_or_reinstall(
         f"{tap}/nyxgpt-web", "nyxgpt-web", sha256=sha, marker_dir=tap_dir / "dist"
     )
-    _run(["brew", "services", "start", "nyxgpt-web"], check=False)
-    results.append(OpsResult(True, f"nyxgpt-web: {decision}; requested service start", ""))
+    if decision == "already up to date (skipped reinstall)":
+        _run(["brew", "services", "start", "nyxgpt-web"], check=False)
+        results.append(OpsResult(True, f"nyxgpt-web: {decision}; requested service start", ""))
+    else:
+        # A new keg (and new `.next` build output) was just installed --
+        # restart, not start, so the running process actually picks it up
+        # instead of continuing to serve the old build's chunk manifest.
+        results.append(OpsResult(True, f"nyxgpt-web: {decision}", ""))
+        results.extend(_restart_brew_service("nyxgpt-web"))
 
     return results
 
@@ -1863,7 +1891,7 @@ def _migrate_docker_volume_to_bind_dir(
             _cp_details(cp),
         )
 
-    rm = _run(["docker", "volume", "rm", volume_name], check=False)
+    rm = _run(["docker", "volume", "rm", volume_name], check=False, expected=True)
     if rm.returncode == 0:
         return OpsResult(
             True,
@@ -3769,7 +3797,7 @@ def _stop_launchagent(label: str) -> list[OpsResult]:
     """
     domain = f"gui/{os.getuid()}/{label}"
     try:
-        cp = _run(["launchctl", "bootout", domain], check=False)
+        cp = _run(["launchctl", "bootout", domain], check=False, expected=True)
         details = (cp.stdout or "").strip() + (
             "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
         )

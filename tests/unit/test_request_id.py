@@ -103,6 +103,32 @@ def test_api_response_includes_request_id_header():
     assert len(response.headers["X-Request-Id"]) == 36
 
 
+def test_api_derives_request_id_from_active_trace_when_no_header(monkeypatch):
+    """With tracing active and no client-supplied X-Request-Id, the request
+    id must be derived from the trace context (#3430) rather than a fresh
+    UUID -- so the id printed in logs is the same one Jaeger has."""
+    import nyxgpt.app as app_module
+
+    monkeypatch.setattr(app_module, "current_trace_id", lambda: "a" * 32)
+    client = TestClient(app)
+
+    response = client.get("/health")
+
+    assert response.headers["X-Request-Id"] == "a" * 32
+
+
+def test_api_prefers_client_header_over_trace_context(monkeypatch):
+    """A client-supplied X-Request-Id still wins even when a trace is active."""
+    import nyxgpt.app as app_module
+
+    monkeypatch.setattr(app_module, "current_trace_id", lambda: "a" * 32)
+    client = TestClient(app)
+
+    response = client.get("/health", headers={"X-Request-Id": "client-supplied"})
+
+    assert response.headers["X-Request-Id"] == "client-supplied"
+
+
 def test_api_accepts_client_provided_request_id():
     """API should accept and use client-provided X-Request-ID header."""
     client = TestClient(app)

@@ -93,7 +93,7 @@ from nyxgpt.config import (
     get_tracing_enabled,
     load_config,
 )
-from nyxgpt.logging import get_log_dir
+from nyxgpt.logging import get_correlation_id, get_log_dir, mint_correlation_id
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +282,7 @@ class HealEvent:
     restart_count: int
     message: str = ""
     evidence: dict[str, Any] = field(default_factory=dict)
+    correlation_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict suitable for JSON responses/state storage."""
@@ -294,6 +295,7 @@ class HealEvent:
             "restart_count": self.restart_count,
             "message": self.message,
             "evidence": self.evidence,
+            "correlation_id": self.correlation_id,
         }
 
 
@@ -1546,17 +1548,28 @@ def heal_now(
                 if manual
                 else f"state={status.state} health={status.health or 'n/a'}"
             )
+            # Reuse the ambient correlation id (CLI env var or dashboard
+            # request_id) when this heal was operator-triggered; mint a
+            # fresh one for the autonomous watchdog, which has neither, so
+            # this attempt's HealEvent and the restart subprocess it drives
+            # (inherited via os.environ) can still be joined (#3390, #3430).
+            correlation_id = get_correlation_id()
+            if correlation_id == "-":
+                correlation_id = mint_correlation_id()
+            os.environ["NYXGPT_CORRELATION_ID"] = correlation_id
             logger.info(
-                "self-heal: attempting restart of %s (reason=%s, attempt=%d)",
+                "self-heal: attempting restart of %s (reason=%s, attempt=%d, correlation_id=%s)",
                 status.service,
                 reason,
                 count + 1,
+                correlation_id,
                 extra={
                     "component": "self_heal",
                     "service": status.service,
                     "reason": reason,
                     "attempt": count + 1,
                     "manual": manual,
+                    "correlation_id": correlation_id,
                 },
             )
             if status.source == "native":
@@ -1625,6 +1638,7 @@ def heal_now(
                 restart_count=new_count,
                 message=result.message,
                 evidence=evidence,
+                correlation_id=correlation_id,
             )
             events.append(event.to_dict())
             healed.append(event.to_dict())

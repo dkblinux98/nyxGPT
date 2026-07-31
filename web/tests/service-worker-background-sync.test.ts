@@ -97,4 +97,14 @@ describe('Background sync – runtime caching configuration', () => {
       expect(entry.options?.backgroundSync?.name).toBeTruthy();
     }
   });
+
+  it('never reuses a backgroundSync queue name across routes (#3445)', () => {
+    // Workbox creates one Queue per runtimeCaching entry with a
+    // `backgroundSync` option and throws `duplicate-queue-name` if two
+    // Queues in the same generated service worker share a name -- this
+    // wedged every client's service worker until the DELETE route's queue
+    // was renamed off the POST route's "session-mutations-queue".
+    const names = findBackgroundSyncEntries().map((e) => e.options?.backgroundSync?.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
 });

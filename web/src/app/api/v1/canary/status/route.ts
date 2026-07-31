@@ -1,6 +1,8 @@
 import { apiFetch } from "@/lib/apiProxy";
+import { logger } from "@/lib/logger";
+import { withRequestLog } from "@/lib/withRequestLog";
 
-export async function GET(request: Request) {
+export const GET = withRequestLog(async function GET(request: Request) {
   try {
     const component = new URL(request.url).searchParams.get("component") ?? "api";
     const res = await apiFetch(
@@ -26,7 +28,7 @@ export async function GET(request: Request) {
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Failed to fetch canary status:", error);
+    logger.error("Failed to fetch canary status:", error);
     return new Response(
       JSON.stringify({ error: "Failed to fetch canary status from backend" }),
       {
@@ -35,4 +37,4 @@ export async function GET(request: Request) {
       }
     );
   }
-}
+});

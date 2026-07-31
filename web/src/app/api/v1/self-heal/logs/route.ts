@@ -1,6 +1,8 @@
 import { apiFetch } from '@/lib/apiProxy';
+import { logger } from '@/lib/logger';
+import { withRequestLog } from '@/lib/withRequestLog';
 
-export async function GET(request: Request) {
+export const GET = withRequestLog(async function GET(request: Request) {
   const { search } = new URL(request.url);
 
   try {
@@ -16,10 +18,10 @@ export async function GET(request: Request) {
       headers: { 'Content-Type': 'application/json' },
     });
   } catch (error) {
-    console.error('Failed to fetch component logs:', error);
+    logger.error('Failed to fetch component logs:', error);
     return new Response(JSON.stringify({ error: 'Failed to fetch component logs from backend' }), {
       status: 502,
       headers: { 'Content-Type': 'application/json' },
     });
   }
-}
+});

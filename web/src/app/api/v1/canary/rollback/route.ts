@@ -1,6 +1,8 @@
 import { apiFetch } from "@/lib/apiProxy";
+import { logger } from "@/lib/logger";
+import { withRequestLog } from "@/lib/withRequestLog";
 
-export async function POST(request: Request) {
+export const POST = withRequestLog(async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
     const res = await apiFetch(`/api/v1/canary/rollback`, {
@@ -17,7 +19,7 @@ export async function POST(request: Request) {
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Failed to roll back canary rollout:", error);
+    logger.error("Failed to roll back canary rollout:", error);
     return new Response(
       JSON.stringify({ error: "Failed to roll back canary rollout" }),
       {
@@ -26,4 +28,4 @@ export async function POST(request: Request) {
       }
     );
   }
-}
+});

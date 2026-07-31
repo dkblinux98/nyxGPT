@@ -1326,6 +1326,14 @@ The playground uses existing RAG API endpoints:
 
 No new backend endpoints are required; the playground is a pure frontend enhancement.
 
+The query and metrics-query calls go through the Next.js server-side proxy
+routes (`web/src/app/api/v1/rag/query/route.ts` and
+`web/src/app/api/v1/rag/metrics/query/route.ts`), the same as every other
+admin surface — the browser never calls the FastAPI backend directly. This
+keeps base-URL resolution and `X-API-Key` attachment on the server, so the
+playground works from non-local sessions (e.g. a LAN address) and with
+`[auth]` enabled.
+
 ### Storage and Privacy
 
 - Query history stored in browser localStorage (client-side only)

@@ -181,6 +181,52 @@ Streaming is exposed consistently across:
 
 ---
 
+## Observability
+
+Metrics, logs, traces, and error tracking are four separate, local-only
+opt-in Compose profiles (`monitoring`, `logging`, `tracing`, `errors`) --
+nothing is ever sent to an external/cloud endpoint. See
+[docs/docker-compose.md](docker-compose.md) for the full per-profile detail;
+this section covers how the pieces correlate across the API and web tiers
+(#3430):
+
+- **Metrics**: Prometheus scrapes the API's `/metrics`; Grafana visualizes.
+  Not migrated to OTLP metrics -- Prometheus stays the metrics pipeline.
+- **Logs**: both the API (`nyxgpt.logging`) and the web tier
+  (`web/src/lib/logger.ts`) emit the same line shape -- UTC timestamp,
+  level, `[request_id]`, logger name, message -- so promtail's single regex
+  (`docker/promtail-config.yml`) extracts `level`/`logger` labels from
+  either tier's output identically. Not migrated to an OTLP logs pipeline
+  -- file + promtail → Loki stays the logs pipeline.
+- **Traces**: OpenTelemetry is the correlation backbone, not a metrics or
+  logs replacement. W3C `traceparent` propagates browser → Next.js server
+  → FastAPI → Ollama (browser `WebTracerProvider`, Next.js `@vercel/otel`,
+  Python `FastAPIInstrumentor`/`URLLibInstrumentor`), so one chat request
+  is one trace in Jaeger end to end. `request_id` (the human-facing id in
+  logs and the `X-Request-Id` header) is derived from the active trace id
+  on both tiers when present, so it isn't a second, disconnected identifier
+  -- and `trace_id=`/`span_id=` appended to log lines drive Grafana's
+  Loki→Jaeger derived-field navigation.
+- **Errors**: the Python API (`sentry_sdk`) and the web tier
+  (`@sentry/nextjs`, browser + Next.js server) both report into the same
+  self-hosted GlitchTip instance, independently of the tracing SDKs (each
+  side's Sentry setup runs with tracing disabled to avoid two libraries
+  contending for the global TracerProvider).
+- **Ops/self-heal correlation**: `nyxgpt ops`/`canary` CLI invocations and
+  autonomous self-heal restarts mint a correlation id
+  (`NYXGPT_CORRELATION_ID`) that every subprocess they spawn inherits via
+  the environment, and that the `#3390` ops-lifecycle events / self-heal
+  `HealEvent` log carry -- joining "what command/heal attempt caused this
+  restart" independently of (and in addition to) the trace/request id.
+
+Every piece above degrades gracefully by design: with the observability
+stack not yet up (fresh install, `--skip-observability`, a collector
+restart), spans/logs/errors are dropped rather than blocking a request, and
+`nyxgpt ops doctor` is the diagnostic surface for "enabled but not actually
+reaching anything."
+
+---
+
 ## Testing architecture
 
 - **Unit tests** exercise core services in isolation

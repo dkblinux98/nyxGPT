@@ -14,9 +14,12 @@ import json
 import logging
 import os
 import time
+import uuid
 from configparser import ConfigParser
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+from opentelemetry import trace
 
 DEFAULT_LOGGER_NAME = "nyxgpt"
 
@@ -27,13 +30,45 @@ DEFAULT_LOGGER_NAME = "nyxgpt"
 # [logging] dir of its own) still can't fall through to the real production
 # log dir default (see #3443).
 LOG_DIR_OVERRIDE_ENV = "NYXGPT_LOG_DIR"
-DEFAULT_FMT = "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"
+# %(trace_suffix)s is "" when no span is active (TraceContextFilter) so this
+# format stays byte-identical to pre-#3430 lines and needs no promtail regex
+# change -- Grafana's Loki->Jaeger derived field already matches `trace_id=`
+# wherever it appears in the line (see docker/grafana/provisioning/datasources).
+DEFAULT_FMT = "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s%(trace_suffix)s"
 DEFAULT_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 # Context variable for request ID tracking
 request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "request_id", default=None
 )
+
+
+def get_correlation_id() -> str:
+    """Resolve the current cause-effect correlation id (#3430).
+
+    Prefers the active HTTP request's `request_id` (set by `app.py`'s
+    `add_request_id_and_limits` middleware) so dashboard/API-triggered ops
+    actions (e.g. "Heal Now") correlate with the request that caused them.
+    Falls back to `NYXGPT_CORRELATION_ID` from the process environment --
+    set by the CLI (`nyxgpt ops`/`nyxgpt canary` dispatch) or minted per
+    heal attempt by the autonomous self-heal watchdog -- since those have no
+    HTTP request to read a request_id from. Subprocesses spawned afterward
+    (docker/brew/kubectl) inherit that same env var automatically, so a
+    `#3390` event and the subprocess it triggered can be joined by this id.
+    """
+    return request_id_var.get() or os.environ.get("NYXGPT_CORRELATION_ID", "") or "-"
+
+
+def mint_correlation_id() -> str:
+    """Generate a fresh correlation id for a new CLI invocation or heal attempt.
+
+    Callers set the result onto `NYXGPT_CORRELATION_ID` in `os.environ`
+    (never pass it around explicitly) so every subsequent `subprocess.run`
+    call in the same process -- none of which pass an explicit `env=`, so
+    they inherit the parent's environment as-is -- carries it into
+    docker/brew/kubectl automatically (#3390 cause->effect joins, #3430).
+    """
+    return uuid.uuid4().hex
 
 
 class StructuredFormatter(logging.Formatter):
@@ -63,6 +98,10 @@ class StructuredFormatter(logging.Formatter):
         # Add extra fields if present
         if hasattr(record, "request_id"):
             log_data["request_id"] = record.request_id
+        if hasattr(record, "trace_id") and record.trace_id:
+            log_data["trace_id"] = record.trace_id
+        if hasattr(record, "span_id") and record.span_id:
+            log_data["span_id"] = record.span_id
         if hasattr(record, "session"):
             log_data["session"] = record.session
         if hasattr(record, "model"):
@@ -93,6 +132,9 @@ class StructuredFormatter(logging.Formatter):
                 "exc_text",
                 "stack_info",
                 "request_id",
+                "trace_id",
+                "span_id",
+                "trace_suffix",
                 "session",
                 "model",
             ]:
@@ -112,6 +154,40 @@ class RequestIdFilter(logging.Filter):
         """Add request_id to log record if not already present."""
         if not hasattr(record, "request_id"):
             record.request_id = request_id_var.get() or "N/A"
+        return True
+
+
+class TraceContextFilter(logging.Filter):
+    """Stamps the active OTel trace/span id onto every log record (#3430).
+
+    Reads `opentelemetry.trace.get_current_span()` directly rather than
+    checking `tracing.is_tracing_enabled()`: the OTel API always returns a
+    (no-op) span when the SDK isn't initialized, and a no-op span's context
+    is invalid, so this degrades to a no-op automatically whether tracing is
+    disabled, not yet initialized, or simply has no span active for this
+    record (e.g. a log line outside any request/span).
+
+    `trace_suffix` renders as `" trace_id=<32 hex> span_id=<16 hex>"` when a
+    span is active, `""` otherwise, and is appended verbatim by
+    `DEFAULT_FMT` -- this is what makes Grafana's Loki->Jaeger derived field
+    (`matcherRegex: 'trace_id=(\\w+)'`) resolve instead of staying inert.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Add trace_id/span_id/trace_suffix to the record if not already present."""
+        if hasattr(record, "trace_suffix"):
+            return True
+        span_context = trace.get_current_span().get_span_context()
+        if span_context.is_valid:
+            trace_id = format(span_context.trace_id, "032x")
+            span_id = format(span_context.span_id, "016x")
+            record.trace_id = trace_id
+            record.span_id = span_id
+            record.trace_suffix = f" trace_id={trace_id} span_id={span_id}"
+        else:
+            record.trace_id = ""
+            record.span_id = ""
+            record.trace_suffix = ""
         return True
 
 
@@ -177,19 +253,24 @@ def get_log_dir(cfg: ConfigParser | None = None) -> Path:
     return Path(log_dir_str).expanduser()
 
 
-def _set_request_id_filter(handler: logging.Handler, request_id_filter: RequestIdFilter) -> None:
-    """Ensure exactly one RequestIdFilter is attached to the handler.
+def _set_context_filters(
+    handler: logging.Handler,
+    request_id_filter: RequestIdFilter,
+    trace_context_filter: TraceContextFilter,
+) -> None:
+    """Ensure exactly one RequestIdFilter and one TraceContextFilter are attached.
 
     Filters attached to a Logger only run for records logged directly at that
     logger, not for records propagated from child loggers (e.g. uvicorn,
     cassandra-driver). Handler-level filters run for every record the handler
-    emits regardless of origin, so the filter must live here, not on the
+    emits regardless of origin, so the filters must live here, not on the
     root Logger.
     """
     for f in handler.filters[:]:
-        if isinstance(f, RequestIdFilter):
+        if isinstance(f, (RequestIdFilter, TraceContextFilter)):
             handler.removeFilter(f)
     handler.addFilter(request_id_filter)
+    handler.addFilter(trace_context_filter)
 
 
 def _ensure_rotating_file_handler(
@@ -198,6 +279,7 @@ def _ensure_rotating_file_handler(
     formatter: logging.Formatter,
     level: int,
     request_id_filter: RequestIdFilter,
+    trace_context_filter: TraceContextFilter,
     *,
     max_bytes: int,
     backups: int,
@@ -205,9 +287,9 @@ def _ensure_rotating_file_handler(
     """Attach (or update) a `RotatingFileHandler` pointed at `log_file`.
 
     If `logger` already has a rotating file handler for the same path, its
-    level, formatter, and request-id filter are updated in place and it is
-    reused; otherwise a new handler is created and attached. Idempotent, so
-    it's safe to call on every `configure_logging` invocation.
+    level, formatter, and request-id/trace-context filters are updated in
+    place and it is reused; otherwise a new handler is created and attached.
+    Idempotent, so it's safe to call on every `configure_logging` invocation.
 
     Args:
         logger: Logger to attach the handler to (typically the root logger).
@@ -215,6 +297,7 @@ def _ensure_rotating_file_handler(
         formatter: Formatter to apply to the handler.
         level: Log level to set on the handler.
         request_id_filter: Filter ensuring records carry a request ID.
+        trace_context_filter: Filter ensuring records carry trace/span ids.
         max_bytes: Max size in bytes before the log file is rotated.
         backups: Number of rotated backup files to keep.
 
@@ -225,7 +308,7 @@ def _ensure_rotating_file_handler(
         if isinstance(h, RotatingFileHandler) and Path(h.baseFilename) == log_file:
             h.setLevel(level)
             h.setFormatter(formatter)
-            _set_request_id_filter(h, request_id_filter)
+            _set_context_filters(h, request_id_filter, trace_context_filter)
             return h
 
     fh = RotatingFileHandler(
@@ -235,7 +318,7 @@ def _ensure_rotating_file_handler(
     )
     fh.setFormatter(formatter)
     fh.setLevel(level)
-    _set_request_id_filter(fh, request_id_filter)
+    _set_context_filters(fh, request_id_filter, trace_context_filter)
     logger.addHandler(fh)
     return fh
 
@@ -245,13 +328,14 @@ def _ensure_console_handler(
     formatter: logging.Formatter,
     level: int,
     request_id_filter: RequestIdFilter,
+    trace_context_filter: TraceContextFilter,
 ) -> logging.Handler:
     """Attach (or update) a console (`StreamHandler`) log handler.
 
     If `logger` already has a plain `StreamHandler` (excluding the
     `RotatingFileHandler`, which subclasses `StreamHandler`), its level,
-    formatter, and request-id filter are updated in place and it is
-    reused; otherwise a new handler is created and attached. Idempotent,
+    formatter, and request-id/trace-context filters are updated in place and
+    it is reused; otherwise a new handler is created and attached. Idempotent,
     so it's safe to call on every `configure_logging` invocation.
 
     Args:
@@ -259,6 +343,7 @@ def _ensure_console_handler(
         formatter: Formatter to apply to the handler.
         level: Log level to set on the handler.
         request_id_filter: Filter ensuring records carry a request ID.
+        trace_context_filter: Filter ensuring records carry trace/span ids.
 
     Returns:
         The attached (or reused) console handler.
@@ -268,13 +353,13 @@ def _ensure_console_handler(
         if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
             h.setLevel(level)
             h.setFormatter(formatter)
-            _set_request_id_filter(h, request_id_filter)
+            _set_context_filters(h, request_id_filter, trace_context_filter)
             return h
 
     ch = logging.StreamHandler()
     ch.setFormatter(formatter)
     ch.setLevel(level)
-    _set_request_id_filter(ch, request_id_filter)
+    _set_context_filters(ch, request_id_filter, trace_context_filter)
     logger.addHandler(ch)
     return ch
 
@@ -307,7 +392,9 @@ def configure_logging(
         formatter = StructuredFormatter(datefmt=DEFAULT_DATEFMT)
     else:
         formatter = logging.Formatter(
-            fmt=DEFAULT_FMT, datefmt=DEFAULT_DATEFMT, defaults={"request_id": "-"}
+            fmt=DEFAULT_FMT,
+            datefmt=DEFAULT_DATEFMT,
+            defaults={"request_id": "-", "trace_suffix": ""},
         )
     # Timestamps are logged in UTC (not the host's local time) so promtail's
     # `timestamp` pipeline stage -- which parses them as UTC -- doesn't shift
@@ -324,11 +411,12 @@ def configure_logging(
     root = logging.getLogger()
     root.setLevel(level)
 
-    # The filter must be attached to handlers, not the root Logger: Logger-level
+    # The filters must be attached to handlers, not the root Logger: Logger-level
     # filters only run for records logged directly at that logger, not for
     # records propagated from child loggers (uvicorn, cassandra-driver, etc.),
     # which is how they were bypassing request_id injection entirely.
     request_id_filter = RequestIdFilter()
+    trace_context_filter = TraceContextFilter()
 
     # Ensure our handlers exist on root (so third-party loggers propagate into our files).
     _ensure_rotating_file_handler(
@@ -337,11 +425,12 @@ def configure_logging(
         formatter,
         level,
         request_id_filter,
+        trace_context_filter,
         max_bytes=max_bytes,
         backups=backups,
     )
     if console:
-        _ensure_console_handler(root, formatter, level, request_id_filter)
+        _ensure_console_handler(root, formatter, level, request_id_filter, trace_context_filter)
 
     # Normalize existing root handlers to the effective level.
     for h in root.handlers:

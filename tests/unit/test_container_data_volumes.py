@@ -42,6 +42,7 @@ def test_docker_compose_declares_no_named_volumes() -> None:
         ("ollama", "/root/.ollama", "ollama"),
         ("cassandra", "/var/lib/cassandra", "cassandra"),
         ("api", "/root/.nyxGPT", "nyxgpt-data"),
+        ("web", "/var/log/nyxgpt-web", "nyxgpt-web-logs"),
         ("prometheus", "/prometheus", "prometheus"),
         ("grafana", "/var/lib/grafana", "grafana"),
         ("loki", "/loki", "loki"),

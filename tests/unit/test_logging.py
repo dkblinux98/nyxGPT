@@ -24,7 +24,9 @@ from nyxgpt.logging import (
     AccessLogNoiseFilter,
     RequestIdFilter,
     StructuredFormatter,
+    TraceContextFilter,
     configure_logging,
+    get_correlation_id,
     get_log_dir,
     get_logger,
     refresh_logging,
@@ -47,7 +49,7 @@ def _record(name: str = "some.logger", msg: str = "hello") -> logging.LogRecord:
 
 
 def test_formatter_handles_record_without_request_id() -> None:
-    formatter = logging.Formatter(fmt=DEFAULT_FMT, defaults={"request_id": "-"})
+    formatter = logging.Formatter(fmt=DEFAULT_FMT, defaults={"request_id": "-", "trace_suffix": ""})
     record = _record()
 
     assert not hasattr(record, "request_id")
@@ -58,7 +60,7 @@ def test_formatter_handles_record_without_request_id() -> None:
 
 
 def test_formatter_handles_record_with_request_id() -> None:
-    formatter = logging.Formatter(fmt=DEFAULT_FMT, defaults={"request_id": "-"})
+    formatter = logging.Formatter(fmt=DEFAULT_FMT, defaults={"request_id": "-", "trace_suffix": ""})
     record = _record()
     record.request_id = "abc-123"
 
@@ -131,6 +133,93 @@ def test_request_id_filter_does_not_override_existing_value() -> None:
     try:
         filt.filter(record)
         assert record.request_id == "explicit"
+    finally:
+        request_id_var.reset(token)
+
+
+def test_trace_context_filter_no_op_without_active_span() -> None:
+    """No active span (the common case: tracing disabled or no request context)."""
+    filt = TraceContextFilter()
+    record = _record()
+
+    assert filt.filter(record) is True
+    assert record.trace_id == ""
+    assert record.span_id == ""
+    assert record.trace_suffix == ""
+
+
+def test_trace_context_filter_stamps_ids_for_active_span() -> None:
+    """A real span produces `trace_id=<32hex> span_id=<16hex>` in trace_suffix.
+
+    The exact format matters: Grafana's Loki datasource derived field
+    (`matcherRegex: 'trace_id=(\\w+)'`) depends on this literal substring
+    appearing in the formatted log line.
+    """
+    from opentelemetry.sdk.trace import TracerProvider
+
+    provider = TracerProvider()
+    tracer = provider.get_tracer("test")
+    filt = TraceContextFilter()
+    record = _record()
+
+    with tracer.start_as_current_span("test-span"):
+        assert filt.filter(record) is True
+
+    assert record.trace_id
+    assert record.span_id
+    assert record.trace_suffix == f" trace_id={record.trace_id} span_id={record.span_id}"
+    assert len(record.trace_id) == 32
+    assert len(record.span_id) == 16
+
+
+def test_trace_context_filter_does_not_override_existing_value() -> None:
+    filt = TraceContextFilter()
+    record = _record()
+    record.trace_suffix = " trace_id=explicit span_id=explicit"
+
+    filt.filter(record)
+
+    assert record.trace_suffix == " trace_id=explicit span_id=explicit"
+
+
+def test_configure_logging_formats_a_line_with_trace_context(tmp_path: Path) -> None:
+    """End-to-end: a log emitted inside an active span includes `trace_id=`."""
+    from opentelemetry.sdk.trace import TracerProvider
+
+    cfg = _make_cfg(tmp_path, log_format="text")
+    logger = configure_logging(cfg, logger_name="nyxgpt.trace_test", console=False)
+
+    provider = TracerProvider()
+    tracer = provider.get_tracer("test")
+    with tracer.start_as_current_span("test-span"):
+        logger.info("traced message")
+
+    log_file = tmp_path / "nyxgpt.log"
+    contents = log_file.read_text()
+    assert "traced message" in contents
+    assert "trace_id=" in contents
+    assert "span_id=" in contents
+
+
+def test_get_correlation_id_falls_back_to_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("NYXGPT_CORRELATION_ID", raising=False)
+    token = request_id_var.set(None)
+    try:
+        assert get_correlation_id() == "-"
+
+        monkeypatch.setenv("NYXGPT_CORRELATION_ID", "env-correlation-id")
+        assert get_correlation_id() == "env-correlation-id"
+    finally:
+        request_id_var.reset(token)
+
+
+def test_get_correlation_id_prefers_request_id_over_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NYXGPT_CORRELATION_ID", "env-correlation-id")
+    token = request_id_var.set("request-scoped-id")
+    try:
+        assert get_correlation_id() == "request-scoped-id"
     finally:
         request_id_var.reset(token)
 

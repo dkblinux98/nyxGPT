@@ -99,6 +99,7 @@ its own duplicate copy:
 | `~/.nyxGPT/volumes/ollama`               | `/root/.ollama`                | Pulled Ollama models | Compose + Terraform + native `nyxgpt ops install` |
 | `~/.nyxGPT/volumes/cassandra`            | `/var/lib/cassandra`           | Cassandra's data directory (chats/RAG vectors) | Compose + Terraform + native `nyxgpt ops install` |
 | `~/.nyxGPT/volumes/nyxgpt-data`          | `/root/.nyxGPT` (in `api`)     | The containerized api's chat sessions/vector store/logs | Compose + Terraform |
+| `~/.nyxGPT/volumes/nyxgpt-web-logs`      | `/var/log/nyxgpt-web` (in `web`) | The containerized web tier's structured logs (#3430) | Compose only today |
 | `~/.nyxGPT/volumes/prometheus`           | `/prometheus`                  | `monitoring` profile's metrics | Compose only today |
 | `~/.nyxGPT/volumes/grafana`              | `/var/lib/grafana`             | `monitoring` profile's dashboard state | Compose only today |
 | `~/.nyxGPT/volumes/loki`                 | `/loki`                        | `logging` profile's indexed/stored log chunks | Compose only today |
@@ -511,9 +512,27 @@ dashboard was retired in favor of that panel plus Drilldown.
 
 The Loki datasource also carries a derived-field extraction for `trace_id`
 that links a log line straight to its trace in the Jaeger datasource (see
-[Distributed Tracing](#distributed-tracing) below) — this is inert until
-#3415 lands the correlation work that actually stamps `trace_id` into log
-lines.
+[Distributed Tracing](#distributed-tracing) below). This is live: both
+`nyxgpt.logging` (`TraceContextFilter`) and the web tier's structured
+logger (`web/src/lib/logger.ts`) append a ` trace_id=<hex> span_id=<hex>`
+suffix to any log line emitted while a span is active, and are otherwise
+unchanged (#3430) — click the trace icon next to a log line in Drilldown
+to jump straight into that request's spans in Jaeger; from a slow/errored
+span in Jaeger, its `service.name` + timestamp narrow a Drilldown query
+back to the matching log lines.
+
+The web tier (Next.js server routes) now participates in the same log
+pipeline instead of writing unparseable bare `console.error` lines: every
+route handler logs through `web/src/lib/logger.ts` (level, `nyxgpt.web`
+logger name, request id, UTC timestamp — the same line shape
+`nyxgpt.logging.DEFAULT_FMT` produces), wrapped via
+`web/src/lib/withRequestLog.ts` so the request id is ambient for the whole
+handler. In Compose mode the web service writes to a dedicated
+`~/.nyxGPT/volumes/nyxgpt-web-logs` volume (`NYXGPT_LOG_DIR`) that promtail
+also mounts; in native mode brew's `StandardOutPath` already redirects
+`nyxgpt-web`'s stdout into `~/.nyxGPT/logs`, which the existing native
+scrape path picks up with no extra wiring. Filter on `{job="nyxgpt",
+logger="nyxgpt.web"}` in Drilldown to see web-tier logs alongside the API's.
 
 The self-heal and canary pages still show their own curated Loki query
 links (`GET /api/v1/log-aggregation`, see [api.md](api.md#log-aggregation))
@@ -565,6 +584,72 @@ and both Jaeger and Grafana's traces view stay empty while `[tracing]
 enabled` still reports `true` -- `nyxgpt ops doctor` checks that something
 is actually listening on the configured `otlp_endpoint` and flags the gap.
 
+### Correlation backbone (browser → Next.js → FastAPI → Ollama)
+
+The web tier participates in the same trace as the API (#3430) via
+standard OTel instrumentation, not hand-rolled header forwarding:
+
+- **Browser**: `web/src/instrumentation-client.ts` registers a
+  `WebTracerProvider` with `FetchInstrumentation`, so a browser `fetch()`
+  to any `/api/**` route starts a span and attaches a W3C `traceparent`
+  header.
+- **Next.js server**: `web/src/instrumentation.ts` uses `@vercel/otel` to
+  instrument the server's own outgoing `fetch()` (i.e. every
+  `apiProxy.ts` `apiFetch` call) -- it continues the browser's trace (or
+  starts a new one) and forwards `traceparent` into the call to FastAPI.
+- **FastAPI → Ollama**: `nyxgpt.tracing.init_tracing` now also
+  instruments `urllib.request` (`ollama_client.py`'s HTTP client), so the
+  outbound Ollama call gets its own client span and W3C header, continuing
+  the same trace one hop further.
+
+One chat request therefore produces a single trace spanning browser click
+to Ollama and back, browsable as one trace in Jaeger (via the Grafana
+Jaeger datasource) and joinable to the log lines each hop produced via the
+`trace_id=`/Loki derived-field link described above. `request_id` (the
+human-facing id in `X-Request-Id` and log lines) is derived from the trace
+id whenever a trace is active, both in `nyxgpt.app`'s middleware and the
+web tier's `requestContext.ts` -- so the two ids agree without a second,
+disconnected identifier.
+
+The web tier's OTel setup degrades gracefully exactly like the API's: a
+missing/unreachable collector (fresh install, `--skip-observability`, a
+collector restart) never blocks a request -- span export failures are
+handled by the exporter itself (silently dropped, same OTLP exporter
+contract as the Python side), and `instrumentation.ts`/
+`instrumentation-client.ts` wrap their own setup in `try`/`catch` so a
+setup-time failure can't crash the web server or the browser bundle. Point
+`web`'s `NYXGPT_OTLP_ENDPOINT`/`NEXT_PUBLIC_NYXGPT_OTLP_ENDPOINT` at the
+same collector the API uses -- see
+[configuration.md](configuration.md#web-tier-environment-variables).
+
+### Verifying the backbone end to end
+
+Reproducible on a fresh `nyxgpt ops install` (which brings up the
+`tracing`/`logging`/`monitoring` profiles automatically):
+
+1. Open the web UI and send one chat message.
+2. **Loki → Jaeger**: open Grafana's Logs Drilldown (Admin Dashboard → SRE
+   Overview → SRE Home), filter to `{job="nyxgpt", logger="nyxgpt.web"}`,
+   find the `chat/stream: start ...` line for that request, and click its
+   trace-id derived-field link -- it opens the matching trace in the
+   Jaeger datasource.
+3. **Jaeger → Loki**: from that trace, note its `trace_id`; back in
+   Drilldown, query `{job="nyxgpt"} |= "<trace_id>"` -- it returns every
+   log line from every hop (web, api, and any RAG/Cassandra spans) for that
+   one request.
+4. **Single trace, multiple hops**: the trace itself should show a root
+   span from the browser's `fetch` (or the Next.js server span if browser
+   tracing didn't start one), a child span for the Next.js → FastAPI call,
+   and a further child span for the FastAPI → Ollama call --
+   `service.name` distinguishes `nyxgpt-web-browser`, `nyxgpt-web`, and
+   `nyxgpt-api`.
+
+If step 2's derived-field link is missing or step 4 shows disconnected
+traces instead of one, `nyxgpt ops doctor`'s OTLP-reachability check
+(#3350) is the first thing to check -- it flags `[tracing] enabled` but
+nothing listening on `otlp_endpoint`, the most common reason spans go
+missing silently.
+
 ## Error Tracking
 
 Self-hosted error tracking (GlitchTip) is local-only — no exception data is
@@ -611,6 +696,36 @@ at startup, so `glitchtip-init` restarts the `grafana` container directly
 once the token is written (if it's already running); re-run
 `nyxgpt ops glitchtip-init` if the GlitchTip panels in the SRE Home
 dashboard show an auth error.
+
+### Web tier (browser + Next.js server errors)
+
+The Python API is one reporter into GlitchTip; the web tier is a second,
+independent one (#3430), using the JS Sentry SDK (`@sentry/nextjs`)
+instead of `sentry_sdk` -- same GlitchTip project, same opt-in-with-a-DSN
+contract, no data ever leaves the machine:
+
+- **Browser**: `web/src/instrumentation-client.ts` calls `Sentry.init()`
+  with `NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_DSN` when set, capturing
+  uncaught exceptions and unhandled rejections from client components with
+  full stack traces/breadcrumbs -- a real Sentry-protocol event, not just
+  the message/stack strings `ClientErrorReporter.tsx`'s legacy relay
+  forwards through the API (`ClientErrorReporter` is left in place as a
+  harmless fallback; both are no-ops with tracking disabled).
+- **Next.js server**: `web/src/instrumentation.ts` calls `Sentry.init()`
+  for the Node.js runtime and wires Next's `onRequestError` hook to
+  `Sentry.captureRequestError`, so uncaught errors from route handlers/
+  Server Components are reported the same way.
+
+Both set `tracesSampleRate: 0` -- Sentry is errors-only here; distributed
+tracing is `@vercel/otel`'s job (see
+[Distributed Tracing](#distributed-tracing) above), so the two SDKs never
+compete for the global TracerProvider. `NEXT_PUBLIC_NYXGPT_ERROR_TRACKING_DSN`
+is a Next.js build arg (baked into the browser bundle, like
+`NEXT_PUBLIC_API_BASE_URL`), so set it to match `[error_tracking] dsn` in
+config.ini and rebuild the web image/formula to enable it -- see
+[configuration.md](configuration.md#web-tier-environment-variables). This
+manual sync (there's no automatic config.ini → build-arg pipeline yet) is
+a known follow-up.
 
 **Linux note (#3432):** `nyxgpt ops install` creates `~/.nyxGPT/secrets`
 itself, before Grafana's bind mount can touch it, so the token write above

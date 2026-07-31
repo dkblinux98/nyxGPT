@@ -2032,6 +2032,73 @@ def test_install_cassandra_launchagent_installs_when_template_found(monkeypatch,
     assert len(run_calls) == 3
 
 
+@pytest.mark.unit
+def test_install_cassandra_launchagent_bootout_not_loaded_logs_debug_not_warning(
+    monkeypatch, tmp_path, caplog
+):
+    """rc=5 ("not loaded") on the reload-before-bootstrap bootout is the normal
+    first-install case (#3457) -- it must log at DEBUG, never WARNING."""
+    tpl = tmp_path / "com.nyxgpt.cassandra-logs.plist"
+    tpl.write_text(
+        "<plist>__NYXGPT_HOME__/.nyxGPT/scripts/follow-cassandra-logs.sh</plist>",
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+
+    monkeypatch.setattr(ops, "_find_launchagent_template", lambda: (tpl, [tpl]))
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+
+    def fake_subprocess_run(cmd, **kwargs):
+        if cmd[:2] == ["launchctl", "bootout"]:
+            return subprocess.CompletedProcess(
+                cmd, 5, stdout="", stderr="Could not find service in domain"
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_subprocess_run)
+
+    with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+        results = ops._install_cassandra_launchagent()
+
+    assert results[0].ok is True
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected the bootout non-zero exit to still be logged"
+    assert all(r.levelno == logging.DEBUG for r in records)
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_install_cassandra_launchagent_bootstrap_failure_logs_warning(
+    monkeypatch, tmp_path, caplog
+):
+    """A genuine `launchctl bootstrap` failure is a real problem, unlike the
+    expected bootout rc=5 -- it must stay at WARNING (#3457)."""
+    tpl = tmp_path / "com.nyxgpt.cassandra-logs.plist"
+    tpl.write_text(
+        "<plist>__NYXGPT_HOME__/.nyxGPT/scripts/follow-cassandra-logs.sh</plist>",
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+
+    monkeypatch.setattr(ops, "_find_launchagent_template", lambda: (tpl, [tpl]))
+    monkeypatch.setattr(ops.Path, "home", lambda: home)
+
+    def fake_subprocess_run(cmd, **kwargs):
+        if cmd[:2] == ["launchctl", "bootstrap"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Input/output error")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_subprocess_run)
+
+    with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+        ops._install_cassandra_launchagent()
+
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    bootstrap_records = [r for r in records if "bootstrap" in r.getMessage()]
+    assert bootstrap_records, "Expected the bootstrap failure to be logged"
+    assert all(r.levelno == logging.WARNING for r in bootstrap_records)
+
+
 # --- _install_ollama_launchagent ---
 
 
@@ -2790,6 +2857,35 @@ def test_migrate_docker_volume_to_bind_dir_rm_failure_is_non_fatal(tmp_path):
 
 
 @pytest.mark.unit
+def test_migrate_docker_volume_to_bind_dir_rm_failure_logs_debug_not_warning(
+    tmp_path, monkeypatch, caplog
+):
+    """The best-effort `docker volume rm` teardown-if-present is non-fatal by
+    design (#3457) -- a failure to remove the old volume must log at DEBUG,
+    never WARNING."""
+    dest = tmp_path / "cassandra"
+    dest.mkdir()
+
+    def fake_subprocess_run(cmd, **kwargs):
+        if cmd[:3] == ["docker", "volume", "rm"]:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="volume in use")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_subprocess_run)
+
+    with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+        result = ops._migrate_docker_volume_to_bind_dir(
+            "nyxgpt_cassandra_data", dest, label="cassandra"
+        )
+
+    assert result.ok is True
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected the rm non-zero exit to still be logged"
+    assert all(r.levelno == logging.DEBUG for r in records)
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
+
+
+@pytest.mark.unit
 def test_migrate_legacy_volumes_skipped_without_docker(monkeypatch, tmp_path):
     monkeypatch.setattr(ops.Path, "home", lambda: tmp_path / "home")
     with patch.object(ops, "_which", lambda _: None):
@@ -3345,7 +3441,48 @@ def test_install_homebrew_web_success(monkeypatch, tmp_path):
     assert "__NYXGPT_WEB_SHA256__" not in content
     assert "__VERSION__" not in content
     assert any(cmd[:2] in (["brew", "install"], ["brew", "reinstall"]) for cmd in run_calls)
+    # A fresh install/reinstall must restart (not merely start) the service so
+    # the running `next start` process actually picks up the newly built
+    # `.next` output instead of continuing to serve the old build's chunk
+    # manifest against the new on-disk chunks (#3445).
+    assert any(cmd[:3] == ["brew", "services", "restart"] for cmd in run_calls)
+    assert not any(cmd[:3] == ["brew", "services", "start"] for cmd in run_calls)
+
+
+@pytest.mark.unit
+def test_install_homebrew_web_already_up_to_date_uses_start_not_restart(monkeypatch, tmp_path):
+    """When the vendored web source hasn't changed since the last install,
+    `_brew_install_or_reinstall` skips the rebuild entirely -- and this must
+    only `start` (idempotent) the service rather than bounce an
+    already-healthy running process for no reason (#3445)."""
+    repo_root = _make_fake_web_repo_root(tmp_path)
+    (repo_root / "homebrew").mkdir(parents=True)
+    (repo_root / "homebrew" / "nyxgpt-web.rb").write_text(
+        'url "__NYXGPT_WEB_URL__"\nsha256 "__NYXGPT_WEB_SHA256__"\nversion "__VERSION__"\n',
+        encoding="utf-8",
+    )
+    tap_dir = tmp_path / "tap"
+
+    monkeypatch.setattr(ops, "_which", lambda _: "/usr/local/bin/brew")
+    monkeypatch.setattr(ops, "REPO_ROOT", repo_root)
+    monkeypatch.setattr(ops, "_tap_repo", lambda tap: tap_dir)
+    monkeypatch.setattr(ops, "_read_project_version", lambda: "2.0.0")
+    monkeypatch.setattr(
+        ops,
+        "_brew_install_or_reinstall",
+        lambda *a, **k: "already up to date (skipped reinstall)",
+    )
+    run_calls = []
+    monkeypatch.setattr(
+        ops,
+        "_run",
+        lambda cmd, **k: run_calls.append(cmd) or subprocess.CompletedProcess(cmd, 0),
+    )
+
+    results = ops._install_homebrew_web()
+    assert all(r.ok for r in results)
     assert any(cmd[:3] == ["brew", "services", "start"] for cmd in run_calls)
+    assert not any(cmd[:3] == ["brew", "services", "restart"] for cmd in run_calls)
 
 
 # --- real formula invariants (regression guards for launchd error 78, #3406) ---
@@ -5560,6 +5697,29 @@ def test_stop_launchagent_exception(monkeypatch):
     results = ops._stop_launchagent("com.nyxgpt.cassandra-logs")
     assert results[0].ok is False
     assert "OSError" in results[0].details
+
+
+@pytest.mark.unit
+def test_stop_launchagent_not_loaded_logs_debug_not_warning(monkeypatch, caplog):
+    """The bootout `_stop_launchagent` issues during `nyxgpt ops down`/`stop`
+    is the same unload-if-loaded pattern (#3457) -- "not loaded" must log at
+    DEBUG, never WARNING."""
+
+    def fake_subprocess_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 5, stdout="", stderr="Could not find service in domain"
+        )
+
+    monkeypatch.setattr(ops.subprocess, "run", fake_subprocess_run)
+
+    with caplog.at_level("DEBUG", logger="nyxgpt.ops"):
+        results = ops._stop_launchagent("com.nyxgpt.cassandra-logs")
+
+    assert results[0].ok is True
+    records = [r for r in caplog.records if "Subprocess exited non-zero" in r.getMessage()]
+    assert records, "Expected the bootout non-zero exit to still be logged"
+    assert all(r.levelno == logging.DEBUG for r in records)
+    assert not any(r.levelno == logging.WARNING for r in caplog.records)
 
 
 # --- _compose_stop_service ---

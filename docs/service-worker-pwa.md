@@ -114,18 +114,45 @@ API Cache:       50 entries, 5 minutes
    or "failed" toast) — instead you should see an info toast noting the
    change will complete once you're back online
 4. Open DevTools > Application > Background Services > Background Sync (or
-   inspect the `session-mutations-queue` IndexedDB store) to see the queued
-   request
+   inspect the `session-mutations-queue`/`document-mutations-queue`
+   IndexedDB store, matching whichever action you triggered) to see the
+   queued request
 5. Go back online and confirm the queued request fires automatically
    (visible in the Network tab or by reloading and seeing the change
    persisted server-side)
 
 ### Test Service Worker Updates
 1. Make changes to the app
-2. Build and deploy
-3. Open app in browser (with old version)
-4. Service worker will download new version in background
-5. Close all tabs and reopen - new version activates
+2. Build and deploy (`nyxgpt ops install` restarts `nyxgpt-web` for you --
+   see [ops.md](ops.md#nyxgpt-ops-install))
+3. Open app in browser (with old version) and confirm the console has no
+   `duplicate-queue-name` error (Application > Service Workers should show
+   the worker `activated and is running`, not stuck `waiting`/`redundant`)
+4. The new service worker installs, activates, and (via `skipWaiting`/
+   `clientsClaim`) takes over the already-open tab automatically -- no tab
+   close/reopen needed
+
+### Test Stranded-Client Recovery (#3445, manual)
+
+Not automated by the test harness (it would require actually swapping build
+output under a live browser session). To verify by hand:
+
+1. `npm run build && npm start` (or `nyxgpt ops install`) to get a running
+   production server
+2. Open the app in a browser tab and navigate around so some route chunks
+   are loaded
+3. Rebuild with different content (bump anything that changes the output,
+   e.g. a comment) *without* restarting the server, to reproduce the
+   original bug's window: `npm run build` again in the same terminal while
+   the old `npm start` process is still serving
+4. In the still-open tab, trigger a client-side navigation to a route whose
+   chunk hash changed -- it should now show the "A new version of nyxGPT is
+   available" banner (`AppUpdateBanner`) with a "Reload to update" button,
+   instead of hanging with no feedback
+5. Click "Reload to update" and confirm the page reloads to the new build
+   successfully
+6. Restart the server (or use `nyxgpt ops install`, which does this for you)
+   and confirm a fresh load has no console errors
 
 ## Background Sync
 
@@ -140,11 +167,18 @@ worker and automatically replayed once connectivity returns, instead of
 simply failing:
 
 - **`session-mutations-queue`**: `POST /api/sessions/{name}/rename`,
-  `/pin`, `/unpin`, `/delete`, `/title`, `/sync-filename`, and
-  `DELETE /api/sessions/{name}/documents/{doc_id}`.
+  `/pin`, `/unpin`, `/delete`, `/title`, `/sync-filename`.
+- **`document-mutations-queue`**: `DELETE /api/sessions/{name}/documents/{doc_id}`.
 - Uses the `NetworkOnly` handler with a `backgroundSync` plugin
   (`workbox-background-sync`), retaining queued requests for 24 hours
   (`maxRetentionTime: 24 * 60`).
+- Each queued route needs its **own** queue name: Workbox creates one `Queue`
+  per `runtimeCaching` entry with a `backgroundSync` option and throws
+  `duplicate-queue-name` if two `Queue`s in the same generated service
+  worker share a name. Both routes originally used
+  `session-mutations-queue`, which wedged every client's service worker on
+  install (#3445) -- see
+  [Automatic update recovery](#automatic-update-recovery) below.
 - The browser replays the queue via the Background Sync API when available,
   falling back to a retry-on-reconnect strategy otherwise.
 - These routes are safe to queue because the UI already applies optimistic
@@ -164,6 +198,35 @@ request has no live client to stream the reply to. File uploads
 (`POST /api/sessions/{name}/documents`) are also excluded, since large
 request bodies are a poor fit for the background-sync queue and users
 expect immediate upload feedback rather than a silent retry.
+
+## Automatic update recovery
+
+A web rebuild (`nyxgpt ops install`) restarts the `nyxgpt-web` service (see
+[ops.md](ops.md#nyxgpt-ops-install)) so the server side never serves HTML
+referencing chunk hashes that no longer exist on disk. But a tab that was
+already open before the rebuild can still be running old client-side code
+that references the old chunk names, or (more rarely) get stuck on a wedged
+service worker update. `useAppUpdate`
+(`web/src/hooks/useAppUpdate.ts`) detects this on the client and
+`AppUpdateBanner` (`web/src/components/AppUpdateBanner.tsx`, mounted in
+`web/src/app/layout.tsx`) surfaces an actionable "reload to update" banner
+instead of a silent infinite spinner, on any of:
+
+- an unhandled `ChunkLoadError`/CSS-chunk-load promise rejection (a dynamic
+  import for a route chunk that no longer exists on disk)
+- a failed resource load (`error` event, capture phase) for a
+  `/_next/static/` script or stylesheet
+- the service worker's `controller` changing after this page was already
+  under an existing SW's control -- a genuine version swap, as distinct from
+  the very first `clientsClaim` on a page that had no controller yet (which
+  is ignored so first-time visitors don't see a spurious prompt)
+
+`skipWaiting`/`clientsClaim`/`cleanupOutdatedCaches` are all enabled by
+default by `@ducanh2912/next-pwa` (no explicit override needed in
+`next.config.ts`), so once the service worker itself installs successfully
+(see the `duplicate-queue-name` note above -- that bug prevented the SW from
+ever reaching this point), it takes over existing tabs without waiting for
+them to close.
 
 ## Monitoring
 

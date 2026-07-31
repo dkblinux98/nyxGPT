@@ -1,6 +1,8 @@
 import { apiFetch } from "@/lib/apiProxy";
+import { logger } from "@/lib/logger";
+import { withRequestLog } from "@/lib/withRequestLog";
 
-export async function GET() {
+export const GET = withRequestLog(async function GET() {
   try {
     const res = await apiFetch(`/api/v1/infra/restart-status`, {
       method: "GET",
@@ -15,7 +17,7 @@ export async function GET() {
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Failed to fetch restart-required status:", error);
+    logger.error("Failed to fetch restart-required status:", error);
     return new Response(
       JSON.stringify({ error: "Failed to fetch restart-required status from backend" }),
       {
@@ -24,4 +26,4 @@ export async function GET() {
       }
     );
   }
-}
+});
