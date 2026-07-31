@@ -31,6 +31,15 @@ The review-agent OWNS the review process:
 - Run CI checks on ALL code in the repository (not just changed files)
 - Review ALL changed files in the PR (not just new changes from current cycle)
 - This ensures comprehensive quality coverage across the entire codebase
+- **Reproduce gate failures with the EXACT gate commands, never approximations.**
+  The web test gate is `npx vitest run --coverage` (100% line/branch/function/
+  statement thresholds) — plain `npx vitest run` passes while the coverage
+  gate fails, which has twice caused reviewers to mislabel a real coverage
+  failure as unreproducible CI flakiness and burn escalation cycles
+  (PR #3423 on 2026-07-29, PR #3486 on 2026-07-31). If a gate reports FAIL
+  and your local run passes, diff your command against the workflow's
+  (`.github/workflows/claude-code-review.yml`) before concluding flakiness;
+  a coverage-threshold failure names the metric in the vitest output.
 
 ### Core Requirements (from project standards)
 - Correctness vs issue acceptance criteria
