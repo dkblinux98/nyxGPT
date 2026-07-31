@@ -54,6 +54,13 @@ RELEASES = [
     {'date': '2026-07-20', 'label': 'v2.0.0'},  # approx: Post Release 2.0.0 milestone created
 ]
 
+# Phase -> release era (owner mapping, 2026-07-31): Phases 0-3.5 built v1.0.0,
+# Phases 4-5.5 build v2.0.0. Sprint buckets get the era of their majority phase;
+# empty sprints inherit the preceding sprint's era.
+PHASE_ERA = {'Phase 0': 'v1.0.0', 'Phase 1': 'v1.0.0', 'Phase 2': 'v1.0.0',
+             'Phase 3': 'v1.0.0', 'Phase 3.5': 'v1.0.0',
+             'Phase 4': 'v2.0.0', 'Phase 5': 'v2.0.0', 'Phase 5.5': 'v2.0.0'}
+
 # Recurring-finding themes (last-7-days review findings), first match wins.
 THEME_RULES = [
     ('Missing tests / coverage gate', r'test|coverage|vitest|pytest|mock|isolation'),
@@ -216,12 +223,15 @@ def takeaways(issues, dashboard, weeks, open_af):
         worst, v = max(mods.items(), key=lambda kv: kv[1]['C'] + kv[1]['M'])
         out.append({'k': 'Worst module (7d)',
                     'v': f"{worst} — {v['C'] + v['M']} blocking findings across {v['rounds']} rejected rounds"})
-    data_weeks = [w for w in weeks if sum(w['cause'].values()) or sum(w['label'].values())]
+    data_weeks = [w for w in weeks
+                  if w.get('sname') != '(no sprint)'
+                  and (sum(w['cause'].values()) or sum(w['label'].values()))]
     if len(data_weeks) >= 2:
         cur, prev = sum(data_weeks[-1]['cause'].values()), sum(data_weeks[-2]['cause'].values())
         delta = cur - prev
+        name = data_weeks[-1].get('sname') or 'this sprint'
         out.append({'k': 'Failure trend',
-                    'v': f"{cur} acceptance failures this sprint vs {prev} last ({'+' if delta >= 0 else ''}{delta})"})
+                    'v': f"{cur} acceptance failure{'s' if cur != 1 else ''} in {name} vs {prev} last sprint ({'+' if delta >= 0 else ''}{delta})"})
     items = dashboard.get('issues', [])
     if items:
         sticky = max(items, key=lambda i: i['rounds'])
@@ -255,6 +265,7 @@ def build_qdata(issues, project_fields):
 
     buckets, source = sprint_buckets(issues, project_fields)
     weeks = []
+    prev_era = None
     for b in buckets:
         agg = empty()
         for i in b['issues']:
@@ -264,7 +275,14 @@ def build_qdata(issues, project_fields):
             agg['module'][mod(i)] += 1
             if i['cause']:
                 agg['cause'][i['cause']] += 1
-        weeks.append({'w': b['w'], 'sname': b.get('label'),
+        votes = Counter()
+        for i in b['issues']:
+            s = MS_SHORT[MS_ORDER.index(i['milestone'])] if i['milestone'] in MS_ORDER else None
+            if s in PHASE_ERA:
+                votes[PHASE_ERA[s]] += 1
+        era = votes.most_common(1)[0][0] if votes else prev_era
+        prev_era = era
+        weeks.append({'w': b['w'], 'sname': b.get('label'), 'era': era,
                       'end': b.get('end'), **agg})
 
     ms = {s: {**empty(), 'total': 0, 'af': 0} for s in MS_SHORT}
@@ -320,6 +338,8 @@ def main():
     qdata['takeaways'] = takeaways(classified, dashboard, qdata['weeks'], open_af)
     qdata['releases'] = RELEASES
     html = Path(args.template).read_text()
+    html = re.sub(r'across all \d+ issues',
+                  f"across all {qdata['qtotals']['issues']} issues", html)
     html = html.replace('__QDATA__', json.dumps(qdata, separators=(',', ':')))
     html = html.replace('__DATA__', json.dumps(dashboard, separators=(',', ':')))
     Path(args.out).write_text(html)
