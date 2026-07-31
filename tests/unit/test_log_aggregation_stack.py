@@ -351,9 +351,9 @@ def test_sre_home_deep_dive_links_sit_above_their_own_sections() -> None:
 
     # (deep-dive dashboard uid fragment, titles of the panels it deepens)
     sections = [
-        ("nyxgpt-system-overview", ["API up", "Request rate"]),
-        ("nyxgpt-api-metrics", ["API up", "Request rate"]),
-        ("nyxgpt-rag-performance", ["RAG query rate by source"]),
+        ("nyxgpt-system-overview", ["API up", "Requests by status"]),
+        ("nyxgpt-api-metrics", ["API up", "Requests by status"]),
+        ("nyxgpt-rag-performance", ["RAG queries by source"]),
         ("nyxgpt-resource-usage", ["Memory (RSS)"]),
         ("nyxgpt-self-healing", ["Unhealthy components (now)"]),
         ("nyxgpt-canary", ["Canary rollout active"]),

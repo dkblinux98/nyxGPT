@@ -19,7 +19,12 @@ from fastapi.testclient import TestClient
 
 from nyxgpt import metrics as prom_metrics
 from nyxgpt.app import app
-from nyxgpt.config import get_monitoring_config, get_monitoring_enabled
+from nyxgpt.config import (
+    get_error_tracking_config,
+    get_monitoring_config,
+    get_monitoring_enabled,
+    get_tracing_config,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -201,6 +206,61 @@ def test_promql_expressions_only_reference_known_metrics(config_path: Path) -> N
             ), f"{config_path.name} references unknown metric {name!r} in expr: {expr!r}"
 
 
+LOCAL_TRAFFIC_PANELS = {
+    "docker/grafana/dashboards/sre-home.json": [
+        "Requests by status",
+        "5xx errors",
+        "RAG queries by source",
+        "RAG ingests by source and outcome",
+        "Chat requests (streaming vs. non-streaming)",
+    ],
+    "docker/grafana/dashboards/rag-performance.json": [
+        "RAG queries by source",
+        "Chat requests (streaming vs. non-streaming)",
+        "RAG ingests by source and outcome",
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    "dashboard_name, panel_title",
+    [
+        (dashboard_name, panel_title)
+        for dashboard_name, panel_titles in LOCAL_TRAFFIC_PANELS.items()
+        for panel_title in panel_titles
+    ],
+)
+def test_local_traffic_panels_use_increase_not_bare_rate(
+    dashboard_name: str, panel_title: str
+) -> None:
+    """A handful of interactive queries/ingests on a single-user local
+    instance divide down to a near-invisible fraction of a request/second
+    under `rate(...[5m])` plotted against a `reqps` unit (#3469). These
+    panels must use `increase(...[$__rate_interval])` -- a visible integer
+    count over the dashboard window -- with a `short` unit instead, so a
+    revert back to `rate(`/`reqps` fails this test rather than shipping the
+    illegibility bug again undetected."""
+    dashboard = json.loads((REPO_ROOT / dashboard_name).read_text())
+    panels = {p["title"]: p for p in dashboard["panels"]}
+    assert panel_title in panels, f"{dashboard_name} is missing panel {panel_title!r}"
+    panel = panels[panel_title]
+
+    assert panel["fieldConfig"]["defaults"]["unit"] == "short", (
+        f"{dashboard_name}::{panel_title} unit should be 'short', "
+        "not a per-second rate unit like 'reqps'"
+    )
+
+    assert panel["targets"], f"{dashboard_name}::{panel_title} has no targets"
+    for target in panel["targets"]:
+        expr = target["expr"]
+        assert (
+            "increase(" in expr
+        ), f"{dashboard_name}::{panel_title} expr should use increase(): {expr!r}"
+        assert (
+            "rate(" not in expr
+        ), f"{dashboard_name}::{panel_title} expr should not use a bare rate(): {expr!r}"
+
+
 def test_grafana_dashboards_are_provisioned() -> None:
     dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
     dashboard_files = sorted(p.name for p in dashboards_dir.glob("*.json"))
@@ -301,11 +361,85 @@ def test_sre_home_glitchtip_open_issues_stat_panel_reduces_over_all_fields() -> 
     assert panel["options"]["reduceOptions"]["fields"] != ""
 
 
+def test_sre_home_glitchtip_panels_filter_to_unresolved_issues() -> None:
+    """Regression test for #3470: GlitchTip's issues endpoint returns every
+    issue regardless of resolution status unless the query carries an
+    `is:unresolved` filter, so a dashboard querying without it shows the
+    all-time issue count (e.g. "50 open issues") instead of matching
+    GlitchTip's own UI, which defaults to the unresolved view. Both the
+    "open issues" stat and the "recent errors" table must request the
+    filter so neither surfaces resolved issues as open."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / "sre-home.json").read_text()
+    )
+    glitchtip_panels = [p for p in dashboard["panels"] if p["title"].startswith("GlitchTip:")]
+    assert len(glitchtip_panels) == 2
+    for panel in glitchtip_panels:
+        for target in panel["targets"]:
+            assert (
+                "query=is%3Aunresolved" in target["url"]
+            ), f"{panel['title']!r} issues query is missing the unresolved status filter"
+
+
+def test_sre_home_glitchtip_recent_errors_table_shows_status() -> None:
+    """The "recent errors" table also carries a status column (#3470) so an
+    issue that gets resolved between dashboard refreshes isn't mistaken for
+    open before the panel next reloads."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / "sre-home.json").read_text()
+    )
+    panel = next(
+        p for p in dashboard["panels"] if p["title"].startswith("GlitchTip: recent errors")
+    )
+    selectors = {c["selector"] for c in panel["targets"][0]["columns"]}
+    assert "status" in selectors
+
+
 def _cfg(**monitoring_options: str) -> ConfigParser:
     cfg = ConfigParser()
     if monitoring_options:
         cfg["monitoring"] = monitoring_options
     return cfg
+
+
+def test_sre_home_panel_title_links_open_underlying_tool_uis_in_new_tabs() -> None:
+    """Owner design decision for #3471 (2026-07-30): no top-of-dashboard link
+    row -- Jaeger, GlitchTip, and Prometheus are each reachable via a
+    Grafana panel-title link on the section they back (traces panel,
+    GlitchTip panels, and the overview panel heading the health/metrics
+    section, which has no single dedicated panel of its own). The
+    dashboard JSON is static and can't read `config.ini` at provisioning
+    time, so the linked URLs are hardcoded to the same defaults
+    `nyxgpt.config` falls back to for the in-app pages -- this test fails
+    if those defaults ever drift apart."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / "sre-home.json").read_text()
+    )
+    panels = {p["title"]: p for p in dashboard["panels"]}
+
+    tracing_defaults = get_tracing_config(_cfg())
+    error_tracking_defaults = get_error_tracking_config(_cfg())
+    monitoring_defaults = get_monitoring_config(_cfg())
+
+    def assert_single_link(panel_title: str, expected_url: str) -> None:
+        links = panels[panel_title]["links"]
+        assert len(links) == 1
+        assert links[0]["url"] == expected_url
+        assert links[0]["targetBlank"] is True
+
+    assert_single_link("Recent nyxgpt traces", tracing_defaults["jaeger_ui_url"])
+    assert_single_link(
+        "GlitchTip: open issues (nyxgpt-backend)", error_tracking_defaults["glitchtip_ui_url"]
+    )
+    assert_single_link(
+        "GlitchTip: recent errors (nyxgpt-backend)", error_tracking_defaults["glitchtip_ui_url"]
+    )
+    assert_single_link("nyxGPT SRE Home", monitoring_defaults["prometheus_ui_url"])
+
+    # The old top-of-dashboard GlitchTip text link is absorbed into the
+    # GlitchTip panels' title links above, not duplicated in the markdown.
+    overview_panel = panels["nyxGPT SRE Home"]
+    assert "glitchtip" not in overview_panel["options"]["content"].lower()
 
 
 def test_get_monitoring_enabled_defaults_to_false() -> None:

@@ -405,6 +405,12 @@ Checks include:
   host (the default native deployment's only path to it), which otherwise
   silently drops every span while the panel still reports "active" (see
   [docker-compose.md#distributed-tracing](docker-compose.md#distributed-tracing))
+- (when tracing is enabled) whether every `opentelemetry-instrumentation-*`
+  package and the OTLP exporter are actually importable in this venv --
+  catches a venv that predates a dependency bump (or had a package manually
+  uninstalled) running degraded: missing instrumentors are silently skipped,
+  or tracing is disabled outright if the exporter itself is missing. Flags
+  the missing package names and points at `nyxgpt ops install`
 - (once the shared Ollama store has been configured) whether native
   Ollama's live `launchctl getenv OLLAMA_MODELS` still matches the expected
   shared `~/.nyxGPT/volumes/ollama/models` path -- catches drift back to
