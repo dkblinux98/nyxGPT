@@ -540,3 +540,43 @@ def test_force_include_skipped_when_attached_doc_ids_absent(
 
     # Only one retrieve call (normal RAG), no force-include call
     assert call_count["n"] == 1
+
+
+def test_rag_enabled_session_appends_across_turns_including_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression test for #3459: with RAG enabled, two consecutive chat()
+    calls against the same session name -- including "default" -- must
+    append to that one session rather than each creating a new one, and the
+    second call must actually see the first exchange in the messages sent
+    to the model (proving multi-turn context reaches the LLM, not just that
+    the file on disk grew)."""
+    cfg = _cfg(tmp_path, rag_enabled=True)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.sessions.load_config", lambda *_a, **_k: cfg)
+    monkeypatch.setattr("nyxgpt.chat.retrieve_context", lambda *a, **k: [])
+
+    sent_messages: list[list[dict[str, str]]] = []
+
+    def fake_ollama_chat(*, messages: list[dict[str, str]], **_: Any) -> str:
+        sent_messages.append(messages)
+        return f"reply {len(sent_messages)}"
+
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", fake_ollama_chat)
+
+    first = chat("first message", session="default", rag_enabled=True, config_path=None)
+    second = chat("second message", session="default", rag_enabled=True, config_path=None)
+
+    assert first.session == "default"
+    assert second.session == "default"
+
+    # The second call's prompt to the model must include the first turn's
+    # user message and assistant reply.
+    second_call_text = "\n".join(m.get("content", "") for m in sent_messages[1])
+    assert "first message" in second_call_text
+    assert "reply 1" in second_call_text
+
+    # Exactly one session file exists on disk -- no new session per turn.
+    sessions_dir = tmp_path / "sessions"
+    session_files = [p for p in sessions_dir.glob("*.json") if not p.name.endswith(".meta.json")]
+    assert [p.stem for p in session_files] == ["default"]

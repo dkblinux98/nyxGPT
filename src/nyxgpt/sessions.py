@@ -522,7 +522,9 @@ def persist_after_exchange(
 ) -> str:
     """Persist session messages and metadata after a chat exchange.
 
-    Also triggers auto-summarization and filename sync if enabled in config.
+    Also triggers auto-summarization (title/summary/tags) if enabled in
+    config. Deliberately does NOT rename the session file to match the
+    generated title -- see the note below.
 
     Args:
         session_file: Path to session JSON file
@@ -532,7 +534,7 @@ def persist_after_exchange(
         cfg: Optional config object. If not provided, loads global config.
 
     Returns:
-        Session name (possibly updated if filename was synced)
+        Session name (unchanged; kept in the return type for API stability)
     """
     save_session_messages(session_file, messages)
     meta = load_session_meta(meta_file)
@@ -563,18 +565,22 @@ def persist_after_exchange(
         message_count = len(messages)
         has_title = bool(meta.get("title"))
 
-        # Only auto-summarize once (when reaching threshold without a title)
+        # Only auto-summarize once (when reaching threshold without a title).
+        # This only sets meta.title/summary/tags -- it must NOT also rename
+        # the session file here. Callers (web UI, CLI REPL) keep addressing
+        # the session by its original name for the rest of the conversation;
+        # renaming the file out from under them mid-conversation orphans it,
+        # so the next turn silently creates a brand-new empty session under
+        # the old name instead of appending (#3459). Filename sync remains
+        # available on demand via sync_filename_with_title()/the
+        # POST /sessions/{name}/sync-filename and
+        # POST /sessions/{name}/rename (sync_filename=true) endpoints, which
+        # the caller triggers explicitly and can react to the new name.
         if not has_title and message_count >= auto_summarize_after:
             log.info(f"Auto-summarizing session '{session_name}' ({message_count} messages)")
             success, msg = summarize_session(session_name, sessions_dir)
             if not success:
                 log.warning(f"Auto-summarization failed for '{session_name}': {msg}")
-            else:
-                # After summarization, sync filename if enabled
-                success, status, new_name = sync_filename_with_title(session_name, sessions_dir)
-                if success and status == "renamed":
-                    log.info(f"Auto-synced filename '{session_name}' -> '{new_name}'")
-                    session_name = new_name
 
     return session_name
 
@@ -627,9 +633,8 @@ def save_session(
 ) -> None:
     """Persist messages and meta for an existing SessionState.
 
-    Note: If auto-summarization and filename sync are enabled, the session
-    name may change after calling this function. The SessionState object
-    will be updated to reflect the new name.
+    May trigger auto-summarization (title/summary/tags), but never renames
+    the session file -- see `persist_after_exchange`.
     """
     if sessions_dir_override:
         sessions_dir = Path(sessions_dir_override).expanduser()
@@ -641,7 +646,8 @@ def save_session(
         state.session_file, state.meta_file, state.messages, model=chosen_model, cfg=cfg
     )
 
-    # Update SessionState if name changed (due to filename sync)
+    # Defensive: persist_after_exchange() never returns a different name
+    # today, but keep this in sync in case that changes.
     if new_name != state.name:
         state.name = new_name
         sessions_dir = state.session_file.parent
