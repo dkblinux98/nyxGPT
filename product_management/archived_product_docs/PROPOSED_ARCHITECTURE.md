@@ -1,7 +1,7 @@
 # Proposed Architecture
 
 Forward-looking architecture discussion for nyxGPT. Current-state architecture
-and its invariants are documented in [`docs/architecture.md`](../docs/architecture.md);
+and its invariants are documented in [`docs/architecture.md`](../../docs/architecture.md);
 anything here is proposal, not commitment.
 
 ## Candidate extensions

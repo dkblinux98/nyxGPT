@@ -296,4 +296,4 @@ Access at `http://127.0.0.1:3000` after starting the service.
 ## Proposed / future architecture
 
 Proposed extensions and forward-looking architecture discussion live in
-[`product_management/PROPOSED_ARCHITECTURE.md`](../product_management/PROPOSED_ARCHITECTURE.md).
+[`product_management/PROPOSED_ARCHITECTURE.md`](../product_management/archived_product_docs/PROPOSED_ARCHITECTURE.md).
