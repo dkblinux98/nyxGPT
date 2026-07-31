@@ -52,6 +52,7 @@ def summarize(page: dict) -> dict:
     sprint_scoped = os.getenv("SPRINT_SCOPED", "0") == "1"
     active_sprint_title = os.getenv("ACTIVE_SPRINT_TITLE", "")
     release_version = os.getenv("RELEASE_VERSION", "")
+    release_issue = os.getenv("RELEASE_ISSUE", "")
 
     items = page["data"]["node"]["items"]["nodes"]
     total = len(items)
@@ -91,6 +92,13 @@ def summarize(page: dict) -> dict:
         # release membership, so continuing into it automatically would be
         # exactly the boundary-crossing the wall exists to prevent.
         if release_version and release_version not in (ms_title or ""):
+            continue
+
+        # The release tracking issue is a ledger, never work. Left
+        # unguarded, project hygiene stamping it Backlog + the current
+        # milestone made the selector hand it to the developer agent, which
+        # crash-looped trying to "implement" it (#3521, 2026-07-31).
+        if release_issue and str(c.get("number")) == release_issue:
             continue
 
         if sprint_scoped and sprint_title != active_sprint_title:

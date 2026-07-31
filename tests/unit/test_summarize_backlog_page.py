@@ -66,6 +66,7 @@ def _clean_env(monkeypatch):
         "SPRINT_SCOPED",
         "ACTIVE_SPRINT_TITLE",
         "RELEASE_VERSION",
+        "RELEASE_ISSUE",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -243,3 +244,40 @@ class TestReleaseWall:
         out = summarize_backlog_page.summarize(_page(items))
         assert out["backlog_open"] == 1
         assert out["best_issue"] == 42
+
+
+class TestReleaseIssueGuard:
+    """The release tracking issue is a ledger, never selectable work --
+    project hygiene stamping it Backlog + the current milestone once made
+    the selector hand it to the developer agent (#3521, 2026-07-31)."""
+
+    def test_release_issue_is_never_a_candidate(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        monkeypatch.setenv("RELEASE_VERSION", "v2.0.0")
+        monkeypatch.setenv("RELEASE_ISSUE", "2759")
+        items = [
+            _item(2759, status="Backlog", milestone="Phase 5.5: Fixes (v2.0.0)"),
+            _item(3464, status="Backlog", milestone="Phase 5.5: Fixes (v2.0.0)"),
+        ]
+        out = summarize_backlog_page.summarize(_page(items))
+        assert out["backlog_open"] == 1
+        assert out["best_issue"] == 3464
+
+    def test_release_issue_alone_counts_as_drained(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        monkeypatch.setenv("RELEASE_VERSION", "v2.0.0")
+        monkeypatch.setenv("RELEASE_ISSUE", "2759")
+        items = [_item(2759, status="Backlog", milestone="Phase 5.5: Fixes (v2.0.0)")]
+        out = summarize_backlog_page.summarize(_page(items))
+        assert out["backlog_open"] == 0
+        assert out["best_issue"] is None
+
+    def test_unset_release_issue_changes_nothing(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        items = [_item(2759, status="Backlog", milestone="Phase 5.5: Fixes (v2.0.0)")]
+        out = summarize_backlog_page.summarize(_page(items))
+        assert out["backlog_open"] == 1
+        assert out["best_issue"] == 2759

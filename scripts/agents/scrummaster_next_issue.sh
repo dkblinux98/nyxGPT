@@ -125,6 +125,7 @@ summarize_page_file() {
     SPRINT_FIELD="$SPRINT_FIELD" SPRINT_SCOPED="$SPRINT_SCOPED_FLAG" \
     ACTIVE_SPRINT_TITLE="$ACTIVE_SPRINT_TITLE" \
     RELEASE_VERSION="$RELEASE_VERSION" \
+    RELEASE_ISSUE="${RELEASE_ISSUE_NUMBER:-}" \
     python3 "$DIR/lib/summarize_backlog_page.py" "$json_file"
 }
 
