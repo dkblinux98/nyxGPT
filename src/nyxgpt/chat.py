@@ -31,7 +31,7 @@ from nyxgpt.config import (
     load_config,
 )
 from nyxgpt.ollama_client import ollama_chat, ollama_chat_stream_tokens
-from nyxgpt.rag.rag import compose_context, retrieve_context
+from nyxgpt.rag.rag import annotate_chunk_numbering, compose_context, retrieve_context
 from nyxgpt.rag.vectorstore_cassandra import MetadataFilter
 from nyxgpt.sessions import load_session, save_session
 from nyxgpt.token_counter import count_message_tokens, count_tokens
@@ -602,6 +602,12 @@ def _prepare_chat_context(
     rag_rows = None  # Store raw RAG results
 
     if should_use_rag:
+        # Collection to search: explicit rag_filters override, else "default".
+        # Force-included attached documents are searched in this same
+        # collection -- attaching a doc only force-includes it while the
+        # chat's collection scope matches where that doc was ingested.
+        collection = (rag_filters or {}).get("collection") or "default"
+
         # Build metadata filter from rag_filters dict if provided
         metadata_filter = None
         if rag_filters:
@@ -630,7 +636,9 @@ def _prepare_chat_context(
             )
 
         # Disable debug mode for chat path - we don't need debug info here
-        rows_result = retrieve_context(prompt, debug_mode=False, metadata_filter=metadata_filter)
+        rows_result = retrieve_context(
+            prompt, debug_mode=False, collection=collection, metadata_filter=metadata_filter
+        )
         # Type narrowing: debug_mode=False means result is list[dict], not tuple
         rows = cast(list[dict], rows_result)
 
@@ -639,7 +647,9 @@ def _prepare_chat_context(
         attached_doc_ids = state.meta.get("attached_doc_ids", [])
         if attached_doc_ids and isinstance(attached_doc_ids, list):
             force_filter = MetadataFilter(doc_ids=list(attached_doc_ids))
-            force_result = retrieve_context(prompt, debug_mode=False, metadata_filter=force_filter)
+            force_result = retrieve_context(
+                prompt, debug_mode=False, collection=collection, metadata_filter=force_filter
+            )
             force_rows = cast(list[dict], force_result)
 
             # Merge: deduplicate by (doc_id, chunk_id), force-included rows take precedence
@@ -657,6 +667,7 @@ def _prepare_chat_context(
                     merged.append(r)
             rows = merged
 
+        rows = annotate_chunk_numbering(rows, collection=collection)
         rag_chunks = len(rows)
         rag_rows = rows  # Save raw results
         rag_context = compose_context(rows)
@@ -744,6 +755,9 @@ def _persist_chat_turn(
                 "doc_id": chunk.get("doc_id"),
                 "chunk_id": chunk.get("chunk_id"),
                 "similarity_score": chunk.get("similarity_score"),
+                "collection": chunk.get("collection"),
+                "chunk_number": chunk.get("chunk_number"),
+                "total_chunks": chunk.get("total_chunks"),
             }
             for chunk in (context.rag_context or [])
         ]
@@ -970,6 +984,9 @@ def chat_stream(
                     "doc_id": chunk.get("doc_id"),
                     "chunk_id": chunk.get("chunk_id"),
                     "similarity_score": chunk.get("similarity_score"),
+                    "collection": chunk.get("collection"),
+                    "chunk_number": chunk.get("chunk_number"),
+                    "total_chunks": chunk.get("total_chunks"),
                 }
                 for chunk in context.rag_context
             ],

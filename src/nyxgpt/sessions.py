@@ -891,6 +891,28 @@ def summarize_session(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
     return True, "OK"
 
 
+def format_chunk_ref(chunk: dict[str, Any]) -> str:
+    """Human-readable citation ref for a RAG chunk, e.g. "chunk 2 of 5".
+
+    Prefers the 1-based `chunk_number`/`total_chunks` fields. Falls back to
+    `chunk_id + 1` for citations persisted before those fields were tracked,
+    since the raw zero-based `chunk_id` alone reads as a chunk *count* of 0
+    rather than an index.
+    """
+    chunk_number = chunk.get("chunk_number")
+    if chunk_number is not None:
+        total_chunks = chunk.get("total_chunks")
+        return (
+            f"chunk {chunk_number} of {total_chunks}" if total_chunks else f"chunk {chunk_number}"
+        )
+
+    chunk_id = chunk.get("chunk_id")
+    if chunk_id is not None:
+        return f"chunk {int(chunk_id) + 1}"
+
+    return "source"
+
+
 def export_session_markdown(name: str, sessions_dir: Path | None) -> tuple[bool, str]:
     """Export session to Markdown format."""
     sessions_dir = sessions_dir or default_sessions_dir()
@@ -939,15 +961,20 @@ def export_session_markdown(name: str, sessions_dir: Path | None) -> tuple[bool,
                 lines.append("### RAG Sources\n")
                 for idx, chunk in enumerate(rag_chunks, 1):
                     doc_id = chunk.get("doc_id", "Unknown")
-                    chunk_id = chunk.get("chunk_id")
                     # Use explicit None checking to avoid treating 0.0 as falsy
                     score = chunk.get("similarity_score")
                     if score is None:
                         score = chunk.get("score", 0.0)
                     text = chunk.get("text", "")
 
-                    chunk_ref = f"chunk {chunk_id}" if chunk_id is not None else "source"
-                    lines.append(f"**[{idx}] {doc_id}** ({chunk_ref}) - Confidence: {score:.3f}\n")
+                    chunk_ref = format_chunk_ref(chunk)
+                    collection = chunk.get("collection")
+                    collection_suffix = (
+                        f", {collection}" if collection and collection != "default" else ""
+                    )
+                    lines.append(
+                        f"**[{idx}] {doc_id}** ({chunk_ref}{collection_suffix}) - Confidence: {score:.3f}\n"
+                    )
 
                     # Include preview of source text (first 200 chars)
                     if text:
@@ -1065,7 +1092,6 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
                 html_parts.append('      <div class="citation-header">RAG Sources</div>')
                 for idx, chunk in enumerate(rag_chunks, 1):
                     doc_id = chunk.get("doc_id", "Unknown")
-                    chunk_id = chunk.get("chunk_id")
                     # Use explicit None checking to avoid treating 0.0 as falsy
                     score = chunk.get("similarity_score")
                     if score is None:
@@ -1075,7 +1101,7 @@ def export_session_html(name: str, sessions_dir: Path | None) -> tuple[bool, str
                     # Escape HTML in text
                     text = text.replace("<", "&lt;").replace(">", "&gt;")
 
-                    chunk_ref = f"chunk {chunk_id}" if chunk_id is not None else "source"
+                    chunk_ref = format_chunk_ref(chunk)
                     html_parts.append('      <div class="citation-item">')
                     html_parts.append(
                         f'        <div class="citation-title">[{idx}] {doc_id} ({chunk_ref})</div>'
