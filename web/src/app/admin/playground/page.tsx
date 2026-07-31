@@ -37,6 +37,7 @@ type RAGDebugInfo = {
   after_min_score_filter: number;
   after_dedupe_filter: number;
   after_max_chunks_filter: number;
+  collection: string;
 };
 
 type RAGEvaluationMetrics = {
@@ -765,6 +766,7 @@ export default function PlaygroundPage() {
                             Query Processing
                           </h4>
                           <div style={{ fontSize: '0.875rem' }}>
+                            <div><strong>Collection:</strong> {currentResult.debug_info.collection}</div>
                             <div><strong>Original Query:</strong> {currentResult.debug_info.original_query}</div>
                             <div><strong>Total Queries:</strong> {currentResult.debug_info.num_queries}</div>
                             {currentResult.debug_info.query_variants && currentResult.debug_info.query_variants.length > 0 && (
