@@ -8,21 +8,39 @@ snapshot served by `GET /api/v1/admin/health` and rendered at
 
 from __future__ import annotations
 
+import logging
 import time
 import urllib.error
 import urllib.request
+from configparser import ConfigParser
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
+logger = logging.getLogger(__name__)
+
 # Thresholds are intentionally simple fixed constants rather than a config
 # section: they exist to flag obviously unhealthy states (near-exhausted
-# memory/CPU, elevated error rates) rather than to support fine-grained SLOs.
+# memory/CPU/disk, elevated error rates) rather than to support fine-grained
+# SLOs. The same thresholds also back the Grafana-provisioned alert rules
+# (docker/grafana/provisioning/alerting/rules.yml) -- keep them in sync, since
+# that's the alerting source of truth; these constants only remain here as
+# the *local fallback* used when Grafana's alerting API is unreachable, see
+# `fetch_grafana_alerts`.
 MEMORY_WARN_PERCENT = 75.0
 MEMORY_CRITICAL_PERCENT = 90.0
 CPU_WARN_PERCENT = 80.0
 CPU_CRITICAL_PERCENT = 95.0
+DISK_WARN_PERCENT = 80.0
+DISK_CRITICAL_PERCENT = 90.0
 ERROR_RATE_WARN_PERCENT = 5.0
 ERROR_RATE_CRITICAL_PERCENT = 15.0
+
+# Timeout for the Grafana Alertmanager query below -- this runs inline in the
+# `/api/v1/admin/health` request path, so it must fail fast and fall back to
+# the local snapshot rather than hang the dashboard on an unreachable Grafana.
+GRAFANA_ALERTS_TIMEOUT_S = 2.0
 
 _START_TIME = time.time()
 
@@ -48,14 +66,18 @@ class DependencyCheck:
 
 @dataclass
 class Alert:
-    """A threshold-triggered health alert."""
+    """A health alert, either sourced from Grafana's alerting API (the
+    source of truth, see `fetch_grafana_alerts`) or computed locally as a
+    fallback (see `compute_alerts`) when Grafana is disabled or unreachable.
+    """
 
     severity: str  # "warning" | "critical"
     message: str
+    source: str = "local"  # "grafana" | "local"
 
     def to_dict(self) -> dict[str, str]:
         """Return a JSON-serializable dict representation of this alert."""
-        return {"severity": self.severity, "message": self.message}
+        return {"severity": self.severity, "message": self.message, "source": self.source}
 
 
 def uptime_seconds() -> float:
@@ -119,6 +141,10 @@ def compute_alerts(
         alerts.extend(
             _threshold_alert("CPU usage", cpu_percent, CPU_WARN_PERCENT, CPU_CRITICAL_PERCENT)
         )
+        disk_percent = resource_metrics.get("disk", {}).get("percent", 0.0)
+        alerts.extend(
+            _threshold_alert("Disk usage", disk_percent, DISK_WARN_PERCENT, DISK_CRITICAL_PERCENT)
+        )
         alerts.extend(
             _threshold_alert(
                 "Error rate", error_rate, ERROR_RATE_WARN_PERCENT, ERROR_RATE_CRITICAL_PERCENT
@@ -131,6 +157,55 @@ def compute_alerts(
                 Alert("critical", f"Dependency '{dep.name}' is unreachable: {dep.detail}")
             )
 
+    return alerts
+
+
+def fetch_grafana_alerts(cfg: ConfigParser) -> list[Alert] | None:
+    """Fetch currently firing alerts from Grafana's embedded Alertmanager.
+
+    This is the alerting source of truth (docker/grafana/provisioning/alerting)
+    -- when it's reachable, the admin health dashboard should show exactly
+    what Grafana itself considers firing rather than recomputing thresholds
+    independently, which is how the health panel and real alerting silently
+    drifted apart before.
+
+    Returns `None` (not an empty list) when monitoring is disabled or the API
+    can't be reached in time, so callers can tell "no alerts firing" apart
+    from "couldn't check" and fall back to `compute_alerts`'s local snapshot
+    instead of reporting a false all-clear.
+    """
+    from nyxgpt.config import get_monitoring_config, get_monitoring_grafana_admin_password
+
+    monitoring = get_monitoring_config(cfg)
+    if not monitoring["enabled"]:
+        return None
+
+    password = get_monitoring_grafana_admin_password(cfg)
+    if not password:
+        return None
+
+    url = monitoring["grafana_ui_url"].rstrip("/") + "/api/alertmanager/grafana/api/v2/alerts"
+    try:
+        response = httpx.get(
+            url,
+            auth=("admin", password),
+            timeout=GRAFANA_ALERTS_TIMEOUT_S,
+            params={"active": "true", "silenced": "false", "inhibited": "false"},
+        )
+        response.raise_for_status()
+        raw_alerts = response.json()
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning("health: could not reach Grafana alerting API at %s: %s", url, e)
+        return None
+
+    alerts: list[Alert] = []
+    for raw in raw_alerts:
+        labels = raw.get("labels", {})
+        annotations = raw.get("annotations", {})
+        severity = labels.get("severity", "warning")
+        name = labels.get("alertname", "Alert")
+        summary = annotations.get("summary") or f"{name} is firing"
+        alerts.append(Alert(severity=severity, message=summary, source="grafana"))
     return alerts
 
 

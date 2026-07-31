@@ -131,3 +131,116 @@ def test_compute_alerts_handles_missing_resource_metrics():
     alerts = health.compute_alerts(None, [])
 
     assert alerts == []
+
+
+def test_compute_alerts_warns_on_elevated_disk_usage():
+    metrics = {
+        "memory": {"percent": 10.0},
+        "cpu": {"process_percent": 5.0},
+        "disk": {"percent": 85.0},
+        "errors": {"rate_percent": 0.0},
+    }
+    alerts = health.compute_alerts(metrics, [])
+
+    assert len(alerts) == 1
+    assert alerts[0].severity == "warning"
+    assert "Disk usage" in alerts[0].message
+
+
+def test_compute_alerts_critical_on_exhausted_disk():
+    metrics = {
+        "memory": {"percent": 10.0},
+        "cpu": {"process_percent": 5.0},
+        "disk": {"percent": 95.0},
+        "errors": {"rate_percent": 0.0},
+    }
+    alerts = health.compute_alerts(metrics, [])
+
+    assert len(alerts) == 1
+    assert alerts[0].severity == "critical"
+
+
+def test_alert_to_dict_defaults_source_to_local():
+    alert = health.Alert(severity="warning", message="test")
+
+    assert alert.to_dict() == {"severity": "warning", "message": "test", "source": "local"}
+
+
+# --- fetch_grafana_alerts ---
+
+
+def _cfg_with_monitoring(**overrides):
+    from configparser import ConfigParser
+
+    cfg = ConfigParser()
+    cfg["monitoring"] = {
+        "enabled": "true",
+        "grafana_ui_url": "http://localhost:3001",
+        "grafana_admin_password": "test-password",
+        **overrides,
+    }
+    return cfg
+
+
+def test_fetch_grafana_alerts_returns_none_when_monitoring_disabled():
+    from configparser import ConfigParser
+
+    cfg = ConfigParser()
+    cfg["monitoring"] = {"enabled": "false"}
+
+    assert health.fetch_grafana_alerts(cfg) is None
+
+
+def test_fetch_grafana_alerts_returns_none_when_password_unset():
+    cfg = _cfg_with_monitoring(grafana_admin_password="")
+
+    assert health.fetch_grafana_alerts(cfg) is None
+
+
+def test_fetch_grafana_alerts_returns_none_on_request_failure():
+    import httpx
+
+    cfg = _cfg_with_monitoring()
+
+    with patch("nyxgpt.health.httpx.get", side_effect=httpx.ConnectError("connection refused")):
+        assert health.fetch_grafana_alerts(cfg) is None
+
+
+def test_fetch_grafana_alerts_maps_firing_alerts():
+    cfg = _cfg_with_monitoring()
+    raw_alerts = [
+        {
+            "labels": {"alertname": "NyxGPTHighCPU", "severity": "critical"},
+            "annotations": {"summary": "CPU usage above 95%"},
+        },
+        {
+            "labels": {"alertname": "NyxGPTHighLatency", "severity": "warning"},
+            "annotations": {},
+        },
+    ]
+    mock_response = MagicMock()
+    mock_response.json.return_value = raw_alerts
+    mock_response.raise_for_status.return_value = None
+
+    with patch("nyxgpt.health.httpx.get", return_value=mock_response) as mock_get:
+        alerts = health.fetch_grafana_alerts(cfg)
+
+    assert mock_get.call_args.kwargs["auth"] == ("admin", "test-password")
+    assert len(alerts) == 2
+    assert alerts[0] == health.Alert(
+        severity="critical", message="CPU usage above 95%", source="grafana"
+    )
+    assert alerts[1].source == "grafana"
+    assert "NyxGPTHighLatency" in alerts[1].message
+
+
+def test_fetch_grafana_alerts_returns_empty_list_when_nothing_firing():
+    cfg = _cfg_with_monitoring()
+    mock_response = MagicMock()
+    mock_response.json.return_value = []
+    mock_response.raise_for_status.return_value = None
+
+    with patch("nyxgpt.health.httpx.get", return_value=mock_response):
+        alerts = health.fetch_grafana_alerts(cfg)
+
+    assert alerts == []

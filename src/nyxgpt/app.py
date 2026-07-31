@@ -1036,6 +1036,7 @@ def prometheus_metrics_endpoint() -> Response:
             rss_mb=snapshot.memory_rss_mb,
             cpu_percent=snapshot.cpu_percent_process,
             queue_depth=snapshot.queue_depth,
+            disk_percent=snapshot.disk_percent,
         )
     body, content_type = prom_metrics.render_metrics()
     return Response(content=body, media_type=content_type)
@@ -1697,7 +1698,12 @@ def admin_health(request: Request) -> dict[str, Any]:
         health_module.check_ollama(get_ollama_base_url(cfg)),
         health_module.check_cassandra(rag_enabled),
     ]
-    alerts = health_module.compute_alerts(resource_metrics_summary, dependencies)
+    grafana_alerts = health_module.fetch_grafana_alerts(cfg)
+    alerts = (
+        grafana_alerts
+        if grafana_alerts is not None
+        else health_module.compute_alerts(resource_metrics_summary, dependencies)
+    )
 
     return {
         "service": {"status": "ok", "uptime_s": round(health_module.uptime_seconds(), 1)},

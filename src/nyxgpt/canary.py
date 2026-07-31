@@ -920,6 +920,7 @@ def evaluate(
                 "canary_component": component,
             },
         )
+        prom_metrics.CANARY_AUTO_ROLLBACK_TOTAL.labels(component=component).inc()
         rollback_result = rollback(namespace, trigger="auto", component=component)
         return CanaryResult(
             False,

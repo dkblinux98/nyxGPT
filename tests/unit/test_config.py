@@ -34,6 +34,7 @@ from nyxgpt.config import (
     get_monitoring_config,
     get_monitoring_enabled,
     get_monitoring_grafana_admin_password,
+    get_monitoring_slack_webhook_url,
     get_prompt_mode_enabled,
     get_prompt_mode_long_threshold,
     get_prompt_mode_short_threshold,
@@ -1146,6 +1147,44 @@ base_url = http://127.0.0.1:11434
     assert get_monitoring_grafana_admin_password(cfg) == ""
 
 
+def test_get_monitoring_slack_webhook_url_reads_value(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+
+[monitoring]
+enabled = true
+slack_webhook_url = https://hooks.slack.com/services/T00/B00/XXX
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_monitoring_slack_webhook_url(cfg) == "https://hooks.slack.com/services/T00/B00/XXX"
+
+
+def test_get_monitoring_slack_webhook_url_defaults_to_empty(tmp_path: Path) -> None:
+    ini = tmp_path / "config.ini"
+    _write(
+        ini,
+        """
+[nyxgpt]
+default_model = llama3.1:8b
+
+[ollama]
+base_url = http://127.0.0.1:11434
+""".lstrip(),
+    )
+
+    cfg = load_config(str(ini))
+    assert get_monitoring_slack_webhook_url(cfg) == ""
+
+
 def test_get_monitoring_config_never_exposes_grafana_admin_password(tmp_path: Path) -> None:
     """get_monitoring_config() is returned verbatim by GET /api/v1/monitoring --
     the Grafana admin password must never appear in it (see #3194)."""
@@ -2000,7 +2039,8 @@ def test_get_effective_config_summary_redacts_secrets(tmp_path: Path) -> None:
     _write(
         ini,
         "[error_tracking]\ndsn = https://secret@example.com/1\n"
-        "[monitoring]\ngrafana_admin_password = hunter2\n",
+        "[monitoring]\ngrafana_admin_password = hunter2\n"
+        "slack_webhook_url = https://hooks.slack.com/services/T00/B00/XXX\n",
     )
     cfg = load_config(str(ini))
 
@@ -2008,8 +2048,10 @@ def test_get_effective_config_summary_redacts_secrets(tmp_path: Path) -> None:
 
     assert summary["error_tracking.dsn"] == "***redacted***"
     assert summary["monitoring.grafana_admin_password"] == "***redacted***"
+    assert summary["monitoring.slack_webhook_url"] == "***redacted***"
     assert "hunter2" not in str(summary)
     assert "secret@example.com" not in str(summary)
+    assert "hooks.slack.com" not in str(summary)
     assert summary["tracing.enabled"] is True
 
 
@@ -2022,6 +2064,7 @@ def test_get_effective_config_summary_empty_secrets_stay_empty(tmp_path: Path) -
 
     assert summary["error_tracking.dsn"] == ""
     assert summary["monitoring.grafana_admin_password"] == ""
+    assert summary["monitoring.slack_webhook_url"] == ""
 
 
 def test_log_effective_config_logs_at_info(

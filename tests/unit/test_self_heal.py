@@ -1287,6 +1287,31 @@ def test_heal_now_logs_give_up_after_max_consecutive_restarts(monkeypatch, caplo
 
 
 @pytest.mark.unit
+def test_heal_now_increments_giveup_metric_after_max_consecutive_restarts(monkeypatch):
+    service = "giveup-metric-test-svc"
+    monkeypatch.setattr(
+        self_heal,
+        "list_component_status",
+        lambda: [self_heal.ComponentStatus(service, f"nyxgpt-{service}-1", "exited", "", False)],
+    )
+    monkeypatch.setattr(
+        self_heal,
+        "restart_component",
+        lambda svc: self_heal.HealResult(False, f"Failed to restart {svc}"),
+    )
+
+    for _ in range(2):
+        self_heal.heal_now(max_consecutive_restarts=2, backoff_seconds=0.0)
+    assert _metric_value("nyxgpt_selfheal_giveup_total", service=service) is None
+
+    self_heal.heal_now(max_consecutive_restarts=2, backoff_seconds=0.0)
+    assert _metric_value("nyxgpt_selfheal_giveup_total", service=service) == 1
+
+    self_heal.heal_now(max_consecutive_restarts=2, backoff_seconds=0.0)
+    assert _metric_value("nyxgpt_selfheal_giveup_total", service=service) == 2
+
+
+@pytest.mark.unit
 def test_heal_now_resets_restart_count_metric_on_recovery(monkeypatch):
     monkeypatch.setattr(
         self_heal,

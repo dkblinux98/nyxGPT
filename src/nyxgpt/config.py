@@ -1227,6 +1227,24 @@ def get_monitoring_grafana_admin_password(cfg: ConfigParser) -> str:
     return cfg.get("monitoring", "grafana_admin_password", fallback="")
 
 
+def get_monitoring_slack_webhook_url(cfg: ConfigParser) -> str:
+    """Get the Slack incoming-webhook URL for Grafana's alerting contact point.
+
+    Deliberately kept out of `get_monitoring_config` -- that dict is returned
+    verbatim by `GET /api/v1/monitoring`, and this value must never be
+    exposed over the API. It exists only so local tooling (`nyxgpt ops
+    env-sync`/`install`) can provision Grafana's `nyxgpt-slack` contact point
+    (docker/grafana/provisioning/alerting/contact-points.yml) from config.ini.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        The configured webhook URL, or "" if unset
+    """
+    return cfg.get("monitoring", "slack_webhook_url", fallback="")
+
+
 def get_log_aggregation_enabled(cfg: ConfigParser) -> bool:
     """Get whether the Loki/promtail log aggregation stack is enabled.
 
@@ -1350,6 +1368,9 @@ def get_effective_config_summary(cfg: ConfigParser) -> dict[str, object]:
         "monitoring.grafana_admin_password": (
             _REDACTED if get_monitoring_grafana_admin_password(cfg) else ""
         ),
+        "monitoring.slack_webhook_url": (
+            _REDACTED if get_monitoring_slack_webhook_url(cfg) else ""
+        ),
         "log_aggregation.enabled": get_log_aggregation_enabled(cfg),
         "rate_limit.enabled": get_rate_limit_enabled(cfg),
         "rag.enabled": get_rag_enabled(cfg),
@@ -1403,6 +1424,7 @@ __all__ = [
     "get_monitoring_enabled",
     "get_monitoring_config",
     "get_monitoring_grafana_admin_password",
+    "get_monitoring_slack_webhook_url",
     "get_log_aggregation_enabled",
     "get_log_aggregation_config",
     "get_self_heal_default_enabled",
