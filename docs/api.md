@@ -789,7 +789,12 @@ Aggregate system health for the admin health dashboard (`/admin/health`):
 service uptime, dependency reachability checks (Ollama, and Cassandra when
 RAG is enabled), resource utilization, and threshold-based alert
 indicators (warning/critical on elevated memory, CPU, or error rate, and
-critical on any unreachable dependency).
+critical on any unreachable dependency). The CPU alert evaluates
+`resource_metrics.cpu.system_percent` -- the system-wide, core-normalized
+utilization (0-100%) also shown by the Resource Metrics history panel --
+never `cpu.process_percent`, which is this process's own CPU usage and is
+not normalized by core count (it can read above 100% on a multi-core
+machine even while the system is otherwise idle).
 
 **Response:**
 
