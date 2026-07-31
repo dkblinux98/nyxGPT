@@ -1,0 +1,65 @@
+name: Verify Phase 6 Issue Fields
+
+# Verifies (and optionally repairs) the project fields of the Phase 6 issue
+# set (#3500-#3516) against product_management/PHASE_6_PLAN.md, after the
+# ensure_project_hygiene race stamped defaults over #3500's fields.
+# See scripts/agents/verify_phase6_fields.sh.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repair:
+        description: 'Repair mismatched fields (otherwise report-only)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-phase6-issues
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.RELEASE_BRANCH }}
+
+      - name: Write agent config
+        run: |
+          cat > /tmp/nyxgpt-config.ini <<EOF
+          REPO_OWNER=${{ vars.REPO_OWNER }}
+          REPO_NAME=${{ vars.REPO_NAME }}
+          PROJECT_OWNER=${{ vars.PROJECT_OWNER }}
+          PROJECT_NUMBER=${{ vars.PROJECT_NUMBER }}
+
+          DEV_AGENT=${{ vars.DEV_AGENT }}
+          REVIEW_AGENT=${{ vars.REVIEW_AGENT }}
+          SCRUM_AGENT=${{ vars.SCRUM_AGENT }}
+          HUMAN_OWNER=${{ vars.HUMAN_OWNER }}
+
+          STATUS_FIELD=${{ vars.STATUS_FIELD }}
+          STATUS_BACKLOG=${{ vars.STATUS_BACKLOG }}
+          STATUS_IN_PROGRESS=${{ vars.STATUS_IN_PROGRESS }}
+          STATUS_IN_REVIEW=${{ vars.STATUS_IN_REVIEW }}
+          STATUS_FOR_RELEASE=${{ vars.STATUS_FOR_RELEASE }}
+
+          RELEASE_BRANCH=${{ vars.RELEASE_BRANCH }}
+          EOF
+          echo "NYXGPT_CONFIG_FILE=/tmp/nyxgpt-config.ini" >> "$GITHUB_ENV"
+
+      - name: Verify Phase 6 issue fields
+        env:
+          GH_TOKEN: ${{ secrets.SCRUMMASTER_AGENT_TOKEN }}
+          REPAIR_INPUT: ${{ inputs.repair }}
+        run: |
+          if [[ "$REPAIR_INPUT" == "true" ]]; then
+            export REPAIR=1
+          else
+            export REPAIR=0
+          fi
+          ./scripts/agents/verify_phase6_fields.sh
