@@ -130,6 +130,9 @@ def test_ingest_document_with_collection(monkeypatch: pytest.MonkeyPatch) -> Non
         def ensure_schema(self, dim, collection="default"):
             pass
 
+        def get_collection_settings(self):
+            return {"embedding_model": None, "chunk_size": None, "chunk_overlap": None}
+
         def document_needs_update(self, doc_id, doc_hash):
             return True
 
@@ -172,6 +175,140 @@ def test_ingest_document_with_collection(monkeypatch: pytest.MonkeyPatch) -> Non
     assert upsert_call is not None
     assert upsert_call["upsert"]["embedding_model"] == "all-minilm:latest"
     assert upsert_call["upsert"]["embedding_dim"] == 384
+
+
+def _fake_ingest_store(store_calls: list, *, stored_embedding_model: str | None) -> type:
+    """Build a minimal CassandraVectorStore stand-in for ingest_document tests,
+    with a configurable `get_collection_settings()` to test the settings
+    round-trip (#3461: a collection's configured embedding model must
+    actually be used by ingestion, not just displayed).
+    """
+
+    class FakeStore:
+        def __init__(self, collection="default"):
+            self.collection = collection
+
+        def schema_exists(self):
+            return True
+
+        def get_collection_settings(self):
+            return {
+                "embedding_model": stored_embedding_model,
+                "chunk_size": None,
+                "chunk_overlap": None,
+            }
+
+        def document_needs_update(self, doc_id, doc_hash):
+            return True
+
+        def get_document_hash(self, doc_id):
+            return None
+
+        def get_document_info(self, doc_id):
+            return None
+
+        def delete_doc(self, doc_id):
+            pass
+
+        def upsert_chunks(self, **kwargs):
+            store_calls.append({"upsert": kwargs})
+
+        def close(self):
+            pass
+
+    return FakeStore
+
+
+@pytest.mark.unit
+def test_ingest_document_falls_back_to_collection_configured_embedding_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the caller doesn't pass `embedding_model`, ingest_document must use
+    the collection's stored setting (from POST .../collections or PUT
+    .../settings) instead of silently using the global config default."""
+    from configparser import ConfigParser
+
+    cfg = ConfigParser()
+    cfg["rag"] = {"chunk_size": "800", "chunk_overlap": "100"}
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_: cfg)
+
+    embed_calls = []
+
+    def fake_embed_texts(texts, **kwargs):
+        embed_calls.append(kwargs.get("model"))
+        return [[0.1] * 8 for _ in texts]
+
+    monkeypatch.setattr("nyxgpt.rag.rag.embed_texts", fake_embed_texts)
+    monkeypatch.setattr(
+        "nyxgpt.rag.embeddings._embedding_cfg",
+        lambda **kw: type(
+            "obj",
+            (),
+            {"model": kw.get("model") or "nomic", "dimension": kw.get("dimension") or 8},
+        )(),
+    )
+
+    store_calls: list = []
+    monkeypatch.setattr(
+        "nyxgpt.rag.rag.CassandraVectorStore",
+        _fake_ingest_store(store_calls, stored_embedding_model="mxbai-embed-large:latest"),
+    )
+
+    from nyxgpt.rag.rag import ingest_document
+
+    result = ingest_document(doc_id="doc1", text="Some text to chunk", collection="mycoll")
+
+    assert result["chunks_ingested"] > 0
+    assert embed_calls == ["mxbai-embed-large:latest"]
+    upsert_call = next(call for call in store_calls if "upsert" in call)
+    assert upsert_call["upsert"]["embedding_model"] == "mxbai-embed-large:latest"
+
+
+@pytest.mark.unit
+def test_ingest_document_explicit_embedding_model_overrides_collection_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit `embedding_model` argument wins over the collection's stored
+    setting -- the fallback only applies when the caller doesn't specify one."""
+    from configparser import ConfigParser
+
+    cfg = ConfigParser()
+    cfg["rag"] = {"chunk_size": "800", "chunk_overlap": "100"}
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_: cfg)
+
+    embed_calls = []
+
+    def fake_embed_texts(texts, **kwargs):
+        embed_calls.append(kwargs.get("model"))
+        return [[0.1] * 8 for _ in texts]
+
+    monkeypatch.setattr("nyxgpt.rag.rag.embed_texts", fake_embed_texts)
+    monkeypatch.setattr(
+        "nyxgpt.rag.embeddings._embedding_cfg",
+        lambda **kw: type(
+            "obj",
+            (),
+            {"model": kw.get("model") or "nomic", "dimension": kw.get("dimension") or 8},
+        )(),
+    )
+
+    store_calls: list = []
+    monkeypatch.setattr(
+        "nyxgpt.rag.rag.CassandraVectorStore",
+        _fake_ingest_store(store_calls, stored_embedding_model="mxbai-embed-large:latest"),
+    )
+
+    from nyxgpt.rag.rag import ingest_document
+
+    result = ingest_document(
+        doc_id="doc1",
+        text="Some text to chunk",
+        collection="mycoll",
+        embedding_model="explicit-override:latest",
+    )
+
+    assert result["chunks_ingested"] > 0
+    assert embed_calls == ["explicit-override:latest"]
 
 
 @pytest.mark.unit

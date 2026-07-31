@@ -947,6 +947,15 @@ def ingest_document(
             # would fail with "keyspace does not exist" instead of bootstrapping.
             ensure_schema = True
 
+        if embedding_model is None:
+            # No explicit override: fall back to the collection's configured
+            # embedding model (set via POST /rag/collections or PUT
+            # .../settings) so a configured setting actually affects what
+            # ingestion embeds with, instead of always using the global default.
+            stored_model = store.get_collection_settings().get("embedding_model")
+            if isinstance(stored_model, str):
+                embedding_model = stored_model
+
         if ensure_schema:
             # Need to chunk and embed first to infer dimension
             chunks = chunk_text(text)

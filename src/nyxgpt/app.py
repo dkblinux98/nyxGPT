@@ -3486,6 +3486,29 @@ def rag_cache_clear(_request: Request) -> QueryCacheClearResponse:
     return QueryCacheClearResponse(status="Query result cache cleared")
 
 
+def _configured_embedding_model(
+    store: Any, stored_settings: dict[str, Any], docs: list[dict[str, Any]] | None = None
+) -> str | None:
+    """Resolve the collection's *configured* embedding model.
+
+    Prefers the explicitly stored per-collection setting; falls back to the
+    single observed model across ingested chunks when unambiguous. Returns
+    None if nothing is configured and chunks use more than one model.
+
+    `docs` may be passed in when the caller already fetched `list_docs()`, to
+    avoid an extra round-trip; otherwise it's fetched lazily only if needed.
+    """
+    embedding_model_raw = stored_settings.get("embedding_model")
+    if isinstance(embedding_model_raw, str):
+        return embedding_model_raw
+
+    if docs is None:
+        docs = store.list_docs()
+
+    observed_models = list({d["embedding_model"] for d in docs if d.get("embedding_model")})
+    return observed_models[0] if len(observed_models) == 1 else None
+
+
 @api.get("/rag/collections", response_model=CollectionsListResponse)
 def rag_collections_list(_request: Request) -> CollectionsListResponse:
     """List all RAG collections with their statistics.
@@ -3494,7 +3517,9 @@ def rag_collections_list(_request: Request) -> CollectionsListResponse:
     - Collection name
     - Number of documents
     - Total number of chunks
-    - Embedding models used
+    - Configured embedding model (from stored settings, or derived from
+      ingested chunks if unambiguous)
+    - Embedding models observed in ingested chunks
     """
     from nyxgpt.api_models import CollectionsListResponse
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
@@ -3518,7 +3543,7 @@ def rag_collections_list(_request: Request) -> CollectionsListResponse:
             doc_count = len(docs)
             chunk_count = sum(d["chunks"] for d in docs)
 
-            # Get unique embedding models
+            # Get unique embedding models observed in ingested chunks
             embedding_models = list(
                 {d["embedding_model"] for d in docs if d.get("embedding_model")}
             )
@@ -3529,6 +3554,9 @@ def rag_collections_list(_request: Request) -> CollectionsListResponse:
                     name=coll_name,
                     doc_count=doc_count,
                     chunk_count=chunk_count,
+                    embedding_model=_configured_embedding_model(
+                        store, store.get_collection_settings(), docs
+                    ),
                     embedding_models=embedding_models,
                 )
             )
@@ -3540,6 +3568,7 @@ def rag_collections_list(_request: Request) -> CollectionsListResponse:
                     name=coll_name,
                     doc_count=0,
                     chunk_count=0,
+                    embedding_model=None,
                     embedding_models=[],
                 )
             )
@@ -3618,6 +3647,12 @@ def rag_collection_create(
 
         # Create the collection schema
         store.ensure_schema(embedding_dim=body.embedding_dim, collection=collection_name)
+
+        # Persist the submitted embedding model as this collection's configured
+        # setting, so it's used by ingestion and shown on the collection card
+        # instead of being silently discarded.
+        if body.embedding_model:
+            store.update_collection_settings(embedding_model=body.embedding_model)
 
         return CreateCollectionResponse(
             collection=collection_name,
@@ -3826,17 +3861,7 @@ def rag_collection_get_settings(
         global_chunk_overlap = cfg.getint("rag", "chunk_overlap", fallback=200)
 
         # If no stored settings, derive embedding_model from documents
-        embedding_model_raw = stored_settings.get("embedding_model")
-        embedding_model: str | None = None
-        if isinstance(embedding_model_raw, str):
-            embedding_model = embedding_model_raw
-        elif not embedding_model_raw:
-            docs = store.list_docs()
-            embedding_models = list(
-                {d["embedding_model"] for d in docs if d.get("embedding_model")}
-            )
-            # Use first model if only one, otherwise None (indicates mixed)
-            embedding_model = embedding_models[0] if len(embedding_models) == 1 else None
+        embedding_model = _configured_embedding_model(store, stored_settings)
 
         # Use stored settings if available, otherwise fall back to global config
         chunk_size_raw = stored_settings.get("chunk_size")

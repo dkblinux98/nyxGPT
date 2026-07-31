@@ -8,6 +8,7 @@ type CollectionInfo = {
   name: string;
   doc_count: number;
   chunk_count: number;
+  embedding_model: string | null;
   embedding_models: string[];
 };
 
@@ -217,6 +218,9 @@ export default function CollectionsPage() {
 
       const data = await res.json();
       setCollectionSettings(data);
+      // Refresh the collection list so the card's configured embedding model
+      // reflects this edit immediately, without requiring a page reload.
+      await loadCollections();
       alert('Settings saved successfully');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -382,7 +386,29 @@ export default function CollectionsPage() {
                 </div>
                 <div>
                   <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', textTransform: 'uppercase', marginBottom: '0.25rem' }}>
-                    Embedding Models
+                    Embedding Model
+                  </div>
+                  <div style={{ fontSize: '0.875rem', marginTop: '0.25rem' }}>
+                    {coll.embedding_model ? (
+                      <code
+                        style={{
+                          fontSize: '0.75rem',
+                          backgroundColor: 'var(--background)',
+                          padding: '0.25rem 0.5rem',
+                          borderRadius: '0.25rem',
+                          display: 'inline-block',
+                        }}
+                      >
+                        {coll.embedding_model}
+                      </code>
+                    ) : (
+                      <span style={{ color: 'var(--foreground-muted)' }}>Not configured</span>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)', textTransform: 'uppercase', marginBottom: '0.25rem' }}>
+                    Observed In Chunks
                   </div>
                   <div style={{ fontSize: '0.875rem', marginTop: '0.25rem' }}>
                     {coll.embedding_models.length === 0 ? (
@@ -587,7 +613,9 @@ export default function CollectionsPage() {
                 }}
               />
               <p style={{ marginTop: '0.25rem', fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>
-                For documentation purposes
+                If set, this is saved as the collection&apos;s configured embedding model
+                and used by default when ingesting documents. Leave blank to configure it
+                later via View Settings.
               </p>
             </div>
 
