@@ -637,6 +637,7 @@ count_release_backlog_open() {
 
     page_count="$(STATUS_FIELD="$STATUS_FIELD" STATUS_BACKLOG="$STATUS_BACKLOG" \
       RELEASE_VERSION="$release_version" SPRINT_SCOPED=0 \
+      RELEASE_ISSUE="${RELEASE_ISSUE_NUMBER:-}" \
       python3 "${_LIB_DIR}/summarize_backlog_page.py" "$tmp" | jq -r '.backlog_open')"
     total=$((total + page_count))
 
