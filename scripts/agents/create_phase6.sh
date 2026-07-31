@@ -1,198 +1,438 @@
 #!/usr/bin/env bash
-# Create the Phase 6 / v3.0.0 milestone and all its issues.
+# File the Phase 6 issue set from product_management/PHASE_6_PLAN.md
+# (2026-07-31 rewrite) into the owner-created milestone and the two 2-week
+# sprints (owner decision 2026-07-31: split by effort and dependencies).
 #
-# WHY THIS SCRIPT EXISTS / WHERE TO RUN IT:
-#   GitHub writes from the remote Claude Code session authenticate as the repo
-#   owner and cannot create milestones (proxy returns 403), so this was prepared
-#   there but must be RUN FROM A LOCAL session, where `gh` is authenticated as
-#   myGPT-scrummaster-agent (per the session-start hook). Running it locally also
-#   means every issue is authored by the scrummaster agent, per the identity policy.
+# HOW TO RUN:
+#   Via .github/workflows/file_phase6_issues.yml (workflow_dispatch), which
+#   runs this script under SCRUMMASTER_AGENT_TOKEN so every issue is authored
+#   by the scrummaster agent per the identity policy. Dry-run first.
 #
-# PREREQUISITE — SPRINTS (one-time, GitHub Projects UI):
-#   Sprint is a ProjectV2 *iteration* field. Neither this script nor
-#   create_issue.sh can CREATE iterations (create_issue.sh only assigns to
-#   existing ones). Before running with SPRINTS_READY=1, add these four 2-week
-#   iterations to the project's "Sprint" field in the Projects UI:
-#     Sprint 6.0  2026-07-20 -> 2026-08-02
-#     Sprint 6.1  2026-08-03 -> 2026-08-16
-#     Sprint 6.2  2026-08-17 -> 2026-08-30
-#     Sprint 6.3  2026-08-31 -> 2026-09-13
-#   (Titles must match SPRINT_* below exactly.)
+# WHAT IT DOES:
+#   - Preflight: resolves the open "Phase 6*" milestone by title prefix
+#     (owner-created; this script never creates milestones), lists the
+#     project's Sprint iterations, and fails fast if the two target sprint
+#     titles are missing.
+#   - Duplicate guard: aborts if an open issue already carries the P6-1
+#     title (re-running would file duplicates).
+#   - Files 17 issues via create_issue.sh with explicit Status/Priority/
+#     Effort/Module/Sprint/Milestone per the plan, in dependency order so
+#     the autopilot's lowest-number-first selection respects sequencing.
+#     Later bodies reference earlier issues by real number.
 #
-# USAGE:
-#   ./scripts/agents/create_phase6.sh            # create milestone + issues (no sprint assignment)
-#   SPRINTS_READY=1 ./scripts/agents/create_phase6.sh   # also assign issues to sprints
-#   DRY_RUN=1 ./scripts/agents/create_phase6.sh   # print create_issue.sh calls, create nothing
+# SPRINT SPLIT (effort- and dependency-aware):
+#   Early sprint  — hardening gate, decision records, and platform work with
+#                   no cloud dependency: P6-1..P6-7, P6-10, P6-14
+#                   (6xS, 2xM, 1xL)
+#   Late sprint   — the cloud build chain, blocked on the gate/decisions:
+#                   P6-8, P6-9, P6-12, P6-13, P6-11, P6-15, P6-17, P6-16
+#                   (3xXL, 3xM, 2xL; P6-16 capstone filed LAST)
 #
-# Idempotency: re-running creates DUPLICATE issues. Run once. The milestone
-# creation step is guarded (skips if a "Phase 6" milestone already exists).
+# ENV:
+#   DRY_RUN=1        (default) print the filing plan, create nothing
+#   SPRINT_EARLY     iteration title for the first sprint  (default: Sprint 6)
+#   SPRINT_LATE      iteration title for the second sprint (default: Sprint 7)
 
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/lib/gh_project.sh"
+load_config
+require_gh_auth
 
-MILESTONE_TITLE="Phase 6: Cloud & Unified Deployment"
-MILESTONE_DESC="v3.0.0 — cloud-native AWS deploy + unified one-command, OS-aware deployment. See product_management/PHASE_6_PLAN.md."
-MILESTONE_DUE="2026-09-13T23:59:59Z"
+DRY_RUN="${DRY_RUN:-1}"
+SPRINT_EARLY="${SPRINT_EARLY:-Sprint 6}"
+SPRINT_LATE="${SPRINT_LATE:-Sprint 7}"
 
-SPRINT_60="Sprint 6.0"
-SPRINT_61="Sprint 6.1"
-SPRINT_62="Sprint 6.2"
-SPRINT_63="Sprint 6.3"
+# --- Preflight 1: milestone (owner-created; matched by title prefix so the
+# --- owner's exact wording/dash/version-suffix never matters) ---
+echo "[phase6] Open milestones:"
+gh api "repos/${REPO_OWNER}/${REPO_NAME}/milestones?state=open&per_page=50" \
+  --jq '.[] | "  - \(.title) (due: \(.due_on // "none"))"'
+MILESTONE="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/milestones?state=open&per_page=50" \
+  --jq '[.[] | select(.title | startswith("Phase 6"))][0].title // empty')"
+[[ -n "$MILESTONE" ]] || _die "No open milestone with title starting 'Phase 6'. Owner must create it first."
+echo "[phase6] Target milestone: '$MILESTONE'"
 
-DRY_RUN="${DRY_RUN:-0}"
-SPRINTS_READY="${SPRINTS_READY:-0}"
+# --- Preflight 2: sprint iterations must exist ---
+ITER_JSON="$(graphql "query(\$owner:String!, \$number:Int!) {
+  user(login:\$owner) {
+    projectV2(number:\$number) {
+      fields(first:20) {
+        nodes {
+          ... on ProjectV2IterationField {
+            name
+            configuration { iterations { title startDate duration } }
+          }
+        }
+      }
+    }
+  }
+}" -F owner="$PROJECT_OWNER" -F number="$PROJECT_NUMBER")"
+echo "[phase6] Sprint iterations on the project:"
+echo "$ITER_JSON" | jq -r '.data.user.projectV2.fields.nodes[] | select(.name=="Sprint") |
+  .configuration.iterations[] | "  - \(.title): \(.startDate) + \(.duration)d"'
+for s in "$SPRINT_EARLY" "$SPRINT_LATE"; do
+  found="$(echo "$ITER_JSON" | jq -r --arg t "$s" '.data.user.projectV2.fields.nodes[] |
+    select(.name=="Sprint") | .configuration.iterations[] | select(.title==$t) | .title' | head -1)"
+  [[ -n "$found" ]] || _die "Sprint iteration '$s' not found on the project. Owner must create it first."
+done
+echo "[phase6] Sprint split: early='$SPRINT_EARLY' late='$SPRINT_LATE'"
 
-# --- 1. Create the milestone (guarded) ---
-existing="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/milestones?state=all" \
-  --jq '.[] | select(.title | startswith("Phase 6")) | .title' 2>/dev/null | head -1 || true)"
-if [[ -n "$existing" ]]; then
-  echo "[phase6] Milestone already exists: '$existing' — skipping creation."
-elif [[ "$DRY_RUN" == "1" ]]; then
-  echo "[dry-run] would create milestone: '$MILESTONE_TITLE' (due $MILESTONE_DUE)"
-else
-  gh api -X POST "repos/${REPO_OWNER}/${REPO_NAME}/milestones" \
-    -f title="$MILESTONE_TITLE" -f state="open" \
-    -f description="$MILESTONE_DESC" -f due_on="$MILESTONE_DUE" >/dev/null
-  echo "[phase6] Created milestone: '$MILESTONE_TITLE'"
+# --- Duplicate guard ---
+P61_TITLE="feat: refuse non-loopback API bind without auth enabled"
+dupe="$(gh issue list --repo "${REPO_OWNER}/${REPO_NAME}" --state open \
+  --search "\"$P61_TITLE\" in:title" --json number --jq '.[0].number // empty')"
+if [[ -n "$dupe" ]]; then
+  _die "Open issue #$dupe already carries the P6-1 title — Phase 6 appears already filed. Aborting (re-running duplicates)."
 fi
 
-# --- helper: create one issue with common hygiene ---
+# --- Filing helper ---
+declare -A NUM
+ref() { # ref P6-1 -> "#3498 (P6-1)" once filed, "P6-1" in dry-run / before filing
+  local k="$1"
+  if [[ -n "${NUM[$k]:-}" ]]; then echo "#${NUM[$k]} ($k)"; else echo "$k"; fi
+}
+
 mk() {
-  local title="$1" label="$2" module="$3" effort="$4" sprint="$5" body="$6"
-  local args=(
-    --title "$title"
-    --label "$label"
-    --module "$module"
-    --effort "$effort"
-    --priority P1
-    --milestone "$MILESTONE_TITLE"
-    --phase "$MILESTONE_TITLE"
-    --body "$body"
-  )
-  [[ "$SPRINTS_READY" == "1" && -n "$sprint" ]] && args+=(--sprint "$sprint")
+  local key="$1" sprint="$2" module="$3" effort="$4" title="$5" body="$6"
   if [[ "$DRY_RUN" == "1" ]]; then
-    printf '[dry-run] create_issue.sh --title %q --label %q --module %q --effort %q --sprint %q\n' \
-      "$title" "$label" "$module" "$effort" "${sprint:-<none>}"
-  else
-    "$DIR/create_issue.sh" "${args[@]}"
-    sleep 2
+    echo ""
+    echo "[dry-run] $key -> '$title'"
+    echo "          Sprint='$sprint' Module='$module' Effort='$effort' Priority='P1 - High' Label=Feature"
+    echo "          Milestone='$MILESTONE' Status=Backlog body=${#body} chars"
+    NUM[$key]=""
+    return 0
   fi
+  local n
+  n="$("$DIR/create_issue.sh" \
+    --title "$title" \
+    --label "Feature" \
+    --module "$module" \
+    --effort "$effort" \
+    --priority "P1 - High" \
+    --sprint "$sprint" \
+    --milestone "$MILESTONE" \
+    --body "$body")"
+  [[ "$n" =~ ^[0-9]+$ ]] || _die "create_issue.sh did not return an issue number for $key (got: '$n')"
+  NUM[$key]="$n"
+  echo "[phase6] $key filed as #$n ($sprint, $module, $effort)"
 }
 
-body() {
-  # body <problem> <criterion1>;<criterion2>;...  -> formatted issue body
-  local problem="$1"; shift
-  local out="## Problem / Motivation\n\n${problem}\n\n## Acceptance Criteria\n"
-  local IFS=';'
-  for c in $1; do out+="- [ ] ${c}\n"; done
-  out+="\n## Related\n\n- Part of Phase 6 / v3.0.0 (see product_management/PHASE_6_PLAN.md)"
-  printf '%b' "$out"
-}
+PLAN_REF="product_management/PHASE_6_PLAN.md (2026-07-31 rewrite)"
 
-# ================= Sprint 6.0 — Hardening gate =================
-mk "fix: Sandbox /api/v1/tools/{cat,ls,grep} to prevent arbitrary file read" \
-  "Acceptance Failure" "API" "S" "$SPRINT_60" \
-  "$(body "The tools endpoints resolve a caller-supplied path with no sandbox, allowing arbitrary file read (incl. ~/.nyxGPT/config.ini). Auth is off by default and the k8s config binds 0.0.0.0. Audit finding S1." \
-  "Constrain resolved paths to an allowlisted workspace root (mirror the /api/v1/logs/view guard);Reject paths whose resolve() escapes the root;Add regression tests for traversal attempts")"
+# =====================================================================
+# EARLY SPRINT — hardening gate, decisions, cloud-independent platform
+# =====================================================================
 
-mk "feat: Require auth when the API binds to a non-loopback host" \
-  "Feature" "API" "S" "$SPRINT_60" \
-  "$(body "API auth is disabled by default and only /api/v1 is ever protected; the deploy config binds 0.0.0.0. Audit finding S2." \
-  "Refuse to start (or hard-warn) when api.host is non-loopback and [auth] enabled is false;Document auth-on as the deploy default in the deployment checklist")"
+mk P6-1 "$SPRINT_EARLY" security S \
+  "$P61_TITLE" \
+"## Problem / Motivation
+The API is unauthenticated by default and deploy configs can bind \`0.0.0.0\`. Exposure without auth must be impossible, not just discouraged — env-sync's warning text exists, enforcement doesn't. This is part of the Phase 6 hardening gate: no cloud-exposure work merges before it.
 
-mk "fix: Persist config.ini with 0600 permissions to protect the API key" \
-  "Acceptance Failure" "API" "XS" "$SPRINT_60" \
-  "$(body "config.ini is written with default permissions but stores the API key in cleartext. Audit finding S3." \
-  "chmod config.ini to 0600 after every write;Create the parent dir 0700;Test the resulting mode")"
+## Acceptance Criteria
+- [ ] API startup with a non-loopback \`api.host\` and \`[auth] enabled != true\` refuses to start with an actionable error (what to set, pointer to the wizard)
+- [ ] Loopback binds are unaffected
+- [ ] Deployment checklist documents auth-on as the deploy default
+- [ ] Re-verify every config/secrets write path still lands 0600/0700 perms (closes the audit S3 residue)
+- [ ] Tests for the refusal matrix (host x auth) and the perms sweep
 
-mk "feat: Add security scanning to CI (bandit, pip-audit, npm audit)" \
-  "Feature" "Agent System" "S" "$SPRINT_60" \
-  "$(body "No SAST or dependency-CVE scanning exists in CI. Audit finding S4." \
-  "New push/PR-triggered job runs bandit, pip-audit, and npm audit;Fails on high-severity findings;Documented in testing.md")"
+## Technical Details
+- Files affected: \`src/nyxgpt/app.py\` startup path, config handling, \`docs/deployment-checklist.md\`, tests
+- Part of the hardening gate (with P6-2, P6-3): blocks all cloud-exposure work
 
-mk "feat: Add an independent push/PR Python test + mypy gate in CI" \
-  "Feature" "Agent System" "S" "$SPRINT_60" \
-  "$(body "pytest runs only inside the agent workflows (tests/unit only); a direct push merges with no Python test signal, and mypy is non-blocking. Audit findings C1/C2." \
-  "Standalone workflow runs the full tests/ suite on push/PR;mypy runs blocking on a defined module set;Green on v3 branch")"
+## Related Issues/PRs
+- Spec: P6-1 in $PLAN_REF"
 
-# ================= Sprint 6.1 — Unified local deploy =================
-mk "feat: nyxgpt up — one command brings up the full stack after checkout" \
-  "Feature" "CLI" "L" "$SPRINT_61" \
-  "$(body "There is no single command that brings up the whole stack; today it is four separate hand-invoked paths (Compose, k8s, Terraform, ops install). Audit finding F1." \
-  "A single documented command brings up API, web UI, Cassandra, wired to host Ollama;Waits for health and prints the web URL;Idempotent re-run;Status visible in the SRE dashboard (DoD)")"
+mk P6-2 "$SPRINT_EARLY" security S \
+  "feat: security scanning in CI - bandit, pip-audit, npm audit" \
+"## Problem / Motivation
+No security scanning runs in CI. Part of the Phase 6 hardening gate.
 
-mk "feat: Include Prometheus/Grafana/Loki/Jaeger in the default bring-up" \
-  "Feature" "Observability" "M" "$SPRINT_61" \
-  "$(body "Monitoring services are opt-in Compose profiles, so a bare bring-up skips them; 'one command brings up prometheus + grafana' is currently false. Audit finding F1." \
-  "nyxgpt up starts the monitoring stack by default;--no-monitoring opts out;Dashboards reachable after bring-up")"
+## Acceptance Criteria
+- [ ] Push/PR workflow running bandit (Python SAST), pip-audit, and \`npm audit\` (web)
+- [ ] Fails on high-severity findings
+- [ ] Baseline/suppression file for accepted findings with justification comments
+- [ ] Documented in the developer runbook
 
-mk "feat: macOS/Linux detection with platform-appropriate native install" \
-  "Feature" "CLI" "L" "$SPRINT_61" \
-  "$(body "The native install path (ops.py) is macOS-only (launchctl/launchd/brew); there is no Linux/systemd path and no platform dispatch. Audit finding F1." \
-  "platform.system() dispatch selects the correct native backend;Linux path uses systemd units;macOS path unchanged;Both verified")"
+## Technical Details
+- Workflow-file note: agents cannot write \`.github/workflows/*\` — deliver the proposed YAML in-repo for owner-side application (hand-carry pattern per #3454/#3479)
+- Part of the hardening gate (with P6-1, P6-3)
 
-mk "feat: Single-command teardown + idempotent re-deploy for the unified stack" \
-  "Feature" "CLI" "M" "$SPRINT_61" \
-  "$(body "There is no clean teardown/redeploy for the unified stack." \
-  "nyxgpt down tears everything down cleanly;Re-running nyxgpt up is idempotent;Teardown control in the SRE dashboard")"
+## Related Issues/PRs
+- Spec: P6-2 in $PLAN_REF"
 
-mk "feat: Guided credentials/secrets setup during deploy (CLI + /admin wizard)" \
-  "Feature" "CLI" "L" "$SPRINT_61" \
-  "$(body "Deploy needs secrets written to ~/.nyxGPT/config.ini but nothing collects them with guidance; existing wizard prompts are bare. Owner requirement 2026-07-15." \
-  "For each required secret ([auth] api_key, [error_tracking] dsn, [openai] api_key, [github] pat): name it plainly, explain its purpose, and say where to obtain/create it (URL + steps);Masked input (getpass) with format validation;Offer to generate [auth] api_key;Write config.ini at 0600;Never re-prompt for a secret already set (--reconfigure to force);Implemented on BOTH the CLI (run_wizard) and the /admin web wizard (DoD)")"
+mk P6-3 "$SPRINT_EARLY" testing S \
+  "feat: standalone push/PR CI gate - full pytest suite plus blocking mypy" \
+"## Problem / Motivation
+pytest/mypy today run only inside the agent workflows, and only over \`tests/unit/\`. There is no independent CI gate on push/PR. Part of the Phase 6 hardening gate.
 
-# ================= Sprint 6.2 — AWS IaC foundation =================
-mk "feat: Architecture decision — AWS compute substrate (EC2 vs EKS)" \
-  "Feature" "Agent System" "S" "$SPRINT_62" \
-  "$(body "The cloud deploy needs a chosen compute substrate before modules are written." \
-  "Recommendation with rationale (EC2 single-box vs EKS) for local-first-parity cloud deploy;Owner sign-off;Picks the target for the IaC modules")"
+## Acceptance Criteria
+- [ ] An independent workflow on push/PR runs the full \`tests/\` suite (unit + integration where environment-feasible) and a blocking \`mypy src/\`
+- [ ] Green on the current release branch before merge (fix or explicitly skip-with-comment anything red)
+- [ ] Documented in the developer runbook
 
-mk "feat: Terraform AWS modules — VPC, subnets, security groups, compute" \
-  "Feature" "CLI" "XL" "$SPRINT_62" \
-  "$(body "Cloud-native AWS provisioning (owner decision 2026-07-15, Phase 6). Provision the chosen substrate with least-privilege networking." \
-  "Terraform modules provision VPC, subnets, security groups, and compute per the decision issue;Least-privilege security groups;terraform plan/apply/destroy documented")"
+## Technical Details
+- Same workflow-file hand-carry note as P6-2: deliver proposed YAML for owner-side application
+- Part of the hardening gate (with P6-1, P6-2)
 
-mk "feat: Terraform remote state (S3 backend + DynamoDB lock)" \
-  "Feature" "CLI" "M" "$SPRINT_62" \
-  "$(body "Cloud IaC needs shared, locked remote state." \
-  "S3 backend configured for Terraform state;DynamoDB table for state locking;Documented bootstrap")"
+## Related Issues/PRs
+- Spec: P6-3 in $PLAN_REF"
 
-mk "feat: Cloud secrets management (SSM / Secrets Manager) — no plaintext keys" \
-  "Feature" "API" "M" "$SPRINT_62" \
-  "$(body "Cloud deploys must not bake secrets into images/config in cleartext." \
-  "API key and credentials sourced from AWS SSM Parameter Store or Secrets Manager;No plaintext secrets in images or config.ini on the cloud instance;Documented")"
+mk P6-4 "$SPRINT_EARLY" documentation S \
+  "feat: decision - private access mechanism for cloud deployments" \
+"## Problem / Motivation
+Standing owner decision (2026-07-15): every deployment, local or AWS, is reachable only from the owner's workstation over a locked path — never a public endpoint, for the app AND the observability tools. The concrete mechanism is undecided and blocks the infra builds.
 
-# ================= Sprint 6.3 — One-command cloud deploy =================
-mk "feat: nyxgpt cloud deploy — provision AWS + deploy the full app after checkout" \
-  "Feature" "CLI" "XL" "$SPRINT_63" \
-  "$(body "The headline v3 capability: one command provisions AWS and deploys the full app after a clean checkout." \
-  "Single CLI command applies the infra then brings up the full stack on the provisioned instance;Wired to the monitoring stack;Returns the public URL;Idempotent re-deploy and teardown")"
+## Acceptance Criteria
+- [ ] A decision record under \`product_management/\` comparing SSH tunnel, WireGuard, Tailscale, and owner-IP-scoped security groups against the private-access principle
+- [ ] Picks one with rationale, spelling out how the owner reaches app + observability UIs and what \"returns the URL\" means under it
+- [ ] Reviewed/approved by the owner on this issue before $(ref P6-8)/$(ref P6-11)-class work starts
 
-mk "feat: Guided cloud-credential collection for AWS deploy" \
-  "Feature" "CLI" "L" "$SPRINT_63" \
-  "$(body "Cloud deploy needs AWS credentials collected with the same guided UX as local secrets. Owner requirement 2026-07-15." \
-  "Collect AWS access key/secret/region/profile and secret-store refs with what-it-is + where-to-get-it help and masked entry;Never write AWS secrets to config.ini in plaintext (route to keychain/AWS profile/secret store);CLI + /admin cloud-deploy wizard")"
+## Technical Details
+- Decision issue — blocks the Terraform AWS modules and cloud deploy issues
 
-mk "feat: Target OS detection/provisioning for Linux vs macOS AWS instances" \
-  "Feature" "CLI" "L" "$SPRINT_63" \
-  "$(body "The cloud deploy must handle both Linux and macOS (EC2 mac) targets." \
-  "Detects/selects the target AMI OS;Provisions and configures correctly for Linux and macOS instances;Documented")"
+## Related Issues/PRs
+- Spec: P6-4 in $PLAN_REF"
 
-mk "feat: Cloud deploy status / teardown / rollback from the SRE dashboard" \
-  "Feature" "Web UI" "L" "$SPRINT_63" \
-  "$(body "Per the Definition of Done, the cloud deploy lifecycle must be operable from the dashboard, not just the CLI." \
-  "Dashboard shows cloud deploy status;Teardown and rollback operable from /admin;CLI parity may exist but the dashboard is the required surface")"
+mk P6-5 "$SPRINT_EARLY" cli S \
+  "feat: nyxgpt up and down aliases with health-wait and URL print" \
+"## Problem / Motivation
+\`nyxgpt ops install\`/\`down\` are the shipped one-command story; the original Phase 6 \`up\`/\`down\` naming plus bring-up UX polish remain undone.
 
-mk "feat: Cloud smoke test — provision -> verify chat/RAG over public endpoint -> teardown" \
-  "Feature" "Testing" "M" "$SPRINT_63" \
-  "$(body "Mirror scripts/smoke-test.sh against a live AWS deployment." \
-  "Script provisions, verifies chat + RAG over the public endpoint, then tears down;Documented;Runnable end-to-end")"
+## Acceptance Criteria
+- [ ] \`nyxgpt up\` = alias for the full reconcile (mode flags pass through), then waits for component health (reusing self-heal probes) and prints the web URL
+- [ ] \`nyxgpt down\` = alias for teardown
+- [ ] Both idempotent
+- [ ] Docs/help updated
+- [ ] No behavior forked from \`ops\` (thin aliases, single code path)
 
-# ================= Capstone (LAST) =================
-mk "feat: Phase 6 capstone — deploy to AWS from a clean checkout in one command, monitored + self-healing" \
-  "Feature" "CLI" "XL" "$SPRINT_63" \
-  "$(body "Ultimate finishing touch of Phase 6: from a clean checkout, one command yields a provisioned, deployed, monitored, self-healing nyxGPT reachable over the internet, operable entirely from the SRE dashboard. Implement LAST, after all Phase 6 issues above are closed." \
-  "Clean checkout -> one command -> provisioned + deployed + monitored + self-healing app reachable over the internet;Entire lifecycle operable from the SRE dashboard;Documented end-to-end smoke test;Teardown;Depends on all other Phase 6 issues (do not select while any are open)")"
+## Technical Details
+- Files affected: \`src/nyxgpt/cli.py\` (or equivalent entrypoint), \`src/nyxgpt/ops.py\`, docs
 
-echo "[phase6] Done. Review the created issues on the project board."
+## Related Issues/PRs
+- Spec: P6-5 in $PLAN_REF
+- Builds on #3406/#3414 (ops install reconcile)"
+
+mk P6-6 "$SPRINT_EARLY" cli M \
+  "feat: guided secrets setup - masked input and per-key help, CLI + admin wizard" \
+"## Problem / Motivation
+The first-run wizard exists but secrets entry lacks the guided treatment. DSN collection is obsolete (auto-provisioned per #3411/#3458), shrinking the original scope.
+
+## Acceptance Criteria
+- [ ] For each secret still human-provided (\`[auth] api_key\` — with an offer to generate, \`[openai] api_key\`, \`[github] pat\`): plain-language name, what-it's-for, exactly where to obtain it, masked entry (\`getpass\`), format validation, 0600 write
+- [ ] Idempotent (\`--reconfigure\` to force)
+- [ ] The same guided step exists in the \`/admin\` wizard per the Definition of Done
+- [ ] Tests for prompt/skip/validate flows
+
+## Technical Details
+- Files affected: first-run wizard (CLI + \`web/src/app/admin\`), config write paths, tests
+
+## Related Issues/PRs
+- Spec: P6-6 in $PLAN_REF"
+
+mk P6-7 "$SPRINT_EARLY" documentation S \
+  "feat: decision - AWS compute substrate, EC2 single-box vs EKS" \
+"## Problem / Motivation
+The AWS compute substrate is undecided and blocks the Terraform modules, cloud deploy, and target-OS provisioning work.
+
+## Acceptance Criteria
+- [ ] Decision record with recommendation + rationale: cost, ops burden, fit with the canary/k8s substrate (#3409/#3419), and the private-access mechanism from $(ref P6-4)
+- [ ] Owner-approved on this issue
+
+## Technical Details
+- Decision issue — blocks the Terraform AWS modules, cloud deploy, and OS-provisioning issues
+
+## Related Issues/PRs
+- Spec: P6-7 in $PLAN_REF"
+
+mk P6-10 "$SPRINT_EARLY" security M \
+  "feat: cloud secrets via SSM Parameter Store or Secrets Manager" \
+"## Problem / Motivation
+Cloud deploys must never bake credentials into AMIs, user-data, tfvars, or config files.
+
+## Acceptance Criteria
+- [ ] API key and credentials sourced from AWS secret storage on cloud deploys
+- [ ] Local deploys unchanged
+- [ ] Rotation documented
+- [ ] Tests with mocked AWS clients
+
+## Technical Details
+- Blocked by: $(ref P6-7) (substrate decision)
+- Testable with mocked AWS clients — no live infra dependency, so it fits the early sprint once the decision lands
+
+## Related Issues/PRs
+- Spec: P6-10 in $PLAN_REF"
+
+mk P6-14 "$SPRINT_EARLY" cli L \
+  "feat: Linux-native install path - systemd units with OS dispatch" \
+"## Problem / Motivation
+The native install path is macOS-only (brew + launchd). Linux runs the stack (CI terraform smoke proves it) but has no native-first story.
+
+## Acceptance Criteria
+- [ ] \`platform.system()\` dispatch in ops
+- [ ] systemd unit generation/management mirroring the launchd path (install/start/stop/restart/status/logs per service, log paths feeding the same \`~/.nyxGPT/logs\` shipping)
+- [ ] Self-heal's native probes work on Linux
+- [ ] Doctor checks are OS-appropriate
+- [ ] Docs gain a Linux install section
+- [ ] CI exercise of the systemd path (container or unit-level as feasible)
+
+## Technical Details
+- Files affected: \`src/nyxgpt/ops.py\`, self-heal probes, doctor, docs, CI
+- Pairs with $(ref P6-12) (shares the OS-dispatch layer); no cloud dependency, so it anchors the early sprint's L slot
+
+## Related Issues/PRs
+- Spec: P6-14 in $PLAN_REF"
+
+# =====================================================================
+# LATE SPRINT — the cloud build chain (dependency-forced), capstone LAST
+# =====================================================================
+
+mk P6-8 "$SPRINT_LATE" cli XL \
+  "feat: Terraform AWS modules - VPC, subnets, security groups, compute" \
+"## Problem / Motivation
+Cloud-native AWS provisioning (standing owner decision 2026-07-15). Provision the chosen substrate with least-privilege networking implementing the private-access mechanism.
+
+## Acceptance Criteria
+- [ ] Provider modules provisioning the $(ref P6-7) substrate
+- [ ] Least-privilege SGs implementing the $(ref P6-4) access mechanism (no 0.0.0.0/0 ingress anywhere)
+- [ ] Builds on the local terraform layout (\`nyxgpt-tf-*\` naming/conventions)
+- [ ] \`terraform validate\` + a plan-level test in CI
+- [ ] Wrapped entirely behind \`nyxgpt\` commands
+
+## Technical Details
+- Blocked by the hardening gate $(ref P6-1)/$(ref P6-2)/$(ref P6-3) and decisions $(ref P6-4)/$(ref P6-7) — do not select before they close
+
+## Related Issues/PRs
+- Spec: P6-8 in $PLAN_REF
+- Builds on #3410/#3428 (local terraform substrate)"
+
+mk P6-9 "$SPRINT_LATE" cli M \
+  "feat: Terraform remote state - S3 backend with DynamoDB locking" \
+"## Problem / Motivation
+Cloud Terraform needs shared, locked remote state.
+
+## Acceptance Criteria
+- [ ] S3 backend + DynamoDB lock provisioning and migration from local state
+- [ ] Documented recovery story
+- [ ] Wrapped setup (no raw \`terraform init\` instructions)
+
+## Technical Details
+- Blocked by: $(ref P6-8)
+
+## Related Issues/PRs
+- Spec: P6-9 in $PLAN_REF"
+
+mk P6-12 "$SPRINT_LATE" cli L \
+  "feat: target-OS provisioning for Linux and macOS AWS instances" \
+"## Problem / Motivation
+Cloud provisioning must configure the stack correctly on Linux AMIs and EC2 Mac.
+
+## Acceptance Criteria
+- [ ] Cloud provisioning configures the stack correctly on Linux AMIs and EC2 Mac
+- [ ] Documented support matrix
+- [ ] CI coverage where feasible (Linux at minimum)
+
+## Technical Details
+- Blocked by: $(ref P6-7) (substrate decision)
+- Pairs with $(ref P6-14) (shares the OS-dispatch layer)
+
+## Related Issues/PRs
+- Spec: P6-12 in $PLAN_REF"
+
+mk P6-13 "$SPRINT_LATE" cli M \
+  "feat: guided AWS credential collection for cloud deploy" \
+"## Problem / Motivation
+Cloud deploy needs AWS credentials collected with the same guided treatment as the local secrets flow.
+
+## Acceptance Criteria
+- [ ] Extends $(ref P6-6)'s guided flow to AWS access key/secret/region/profile + secret-store references
+- [ ] Masked entry with what-it-is/where-to-get-it help
+- [ ] AWS secrets never written to \`config.ini\` — routed to AWS profile / OS keychain / secret store
+- [ ] CLI + \`/admin\` cloud wizard parity
+
+## Technical Details
+- Blocked by: $(ref P6-6), $(ref P6-10)
+
+## Related Issues/PRs
+- Spec: P6-13 in $PLAN_REF"
+
+mk P6-11 "$SPRINT_LATE" cli XL \
+  "feat: nyxgpt cloud deploy - provision AWS and deploy the full stack" \
+"## Problem / Motivation
+One command from provisioned infra to a running, monitored stack over the private access path.
+
+## Acceptance Criteria
+- [ ] One command: apply infra, deploy the full app + observability onto the provisioned instance, wire the $(ref P6-4) access path, wait for health, print the (tunnel/loopback) URL
+- [ ] Idempotent re-runs
+- [ ] \`nyxgpt cloud destroy\` counterpart
+- [ ] Smoke-verifiable end to end
+
+## Technical Details
+- Blocked by: $(ref P6-8), $(ref P6-9), $(ref P6-10)
+
+## Related Issues/PRs
+- Spec: P6-11 in $PLAN_REF"
+
+mk P6-15 "$SPRINT_LATE" sre L \
+  "feat: cloud deploy lifecycle from the SRE dashboard" \
+"## Problem / Motivation
+Cloud deploy must be visible (and possibly operable) from \`/admin\` per the Definition of Done.
+
+## Acceptance Criteria
+- [ ] Cloud deploy status visible from \`/admin\`
+- [ ] Lifecycle controls (deploy/teardown/rollback) reconciled with the owner's #3410 status-only precedent for the local Infrastructure page — an explicit owner decision on this issue settles whether cloud gets controls or status-plus-CLI-pointers
+- [ ] Whatever is decided is fully implemented and tested
+
+## Technical Details
+- Blocked by: $(ref P6-11)
+
+## Related Issues/PRs
+- Spec: P6-15 in $PLAN_REF
+- Owner precedent: #3410 (Infrastructure page is status-only)"
+
+mk P6-17 "$SPRINT_LATE" testing M \
+  "feat: cloud smoke test - provision, verify chat and RAG, teardown" \
+"## Problem / Motivation
+The cloud path needs an end-to-end smoke test mirroring the local one.
+
+## Acceptance Criteria
+- [ ] Mirrors \`scripts/smoke-test.sh\` against a live cloud deployment over the private access path (chat round-trip, RAG ingest+query, observability reachable)
+- [ ] Leaves no billed resources behind on success or failure
+- [ ] Wrapped invocation
+
+## Technical Details
+- Blocked by: $(ref P6-11)
+- $(ref P6-16) (capstone) runs this script green as one of its ACs
+
+## Related Issues/PRs
+- Spec: P6-17 in $PLAN_REF"
+
+mk P6-16 "$SPRINT_LATE" cli XL \
+  "feat: Phase 6 capstone - clean checkout to monitored AWS deploy in one command" \
+"## Problem / Motivation
+The Phase 6 end-to-end acceptance: from a clean checkout, one command yields a provisioned, deployed, monitored, self-healing nyxGPT reachable only via the private access path.
+
+## Acceptance Criteria
+- [ ] Clean checkout -> one command -> provisioned, deployed, monitored, self-healing app reachable only via the private access path
+- [ ] Operable per the $(ref P6-15) decision
+- [ ] Documented end-to-end smoke test ($(ref P6-17)'s script) run green
+- [ ] Teardown verified
+
+## Technical Details
+- **Sequencing: select LAST — depends on every other Phase 6 issue.** Do not select while any other Phase 6 issue is open.
+
+## Related Issues/PRs
+- Spec: P6-16 in $PLAN_REF"
+
+# --- Summary ---
+echo ""
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "[phase6] DRY RUN complete — 17 issues would be filed into '$MILESTONE'"
+  echo "[phase6]   $SPRINT_EARLY: P6-1 P6-2 P6-3 P6-4 P6-5 P6-6 P6-7 P6-10 P6-14"
+  echo "[phase6]   $SPRINT_LATE:  P6-8 P6-9 P6-12 P6-13 P6-11 P6-15 P6-17 P6-16"
+else
+  echo "[phase6] Filed 17 issues into '$MILESTONE':"
+  for k in P6-1 P6-2 P6-3 P6-4 P6-5 P6-6 P6-7 P6-10 P6-14 P6-8 P6-9 P6-12 P6-13 P6-11 P6-15 P6-17 P6-16; do
+    echo "  $k -> #${NUM[$k]}"
+  done
+fi
