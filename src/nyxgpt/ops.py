@@ -2845,6 +2845,15 @@ def infra_status() -> dict[str, Any]:
     `nyxgpt ops` CLI-only (see docs/terraform.md / docs/kubernetes.md). Also
     reports `serving`, which instance/service is currently handling traffic
     (see `_serving_status`) -- traffic *control* stays on the canary page.
+
+    Kubernetes refines this further (#3468): `configured` reports whether a
+    kubeconfig current-context exists at all (kubectl missing counts as not
+    configured, since there's then no context to read). No configured
+    cluster means there was never anything to be unreachable -- that's a
+    confidently-determined NOT DEPLOYED, not CANNOT DETERMINE. The latter is
+    reserved for a *configured* context the probe couldn't reach (timeout,
+    connection refused to a cluster that's meant to exist, auth failure),
+    preserving #3410's original false-NOT-DEPLOYED protection for that case.
     """
     mode_info = detect_deployment_mode()
 
@@ -2857,9 +2866,15 @@ def infra_status() -> dict[str, Any]:
     }
 
     kubectl_available = _which("kubectl") is not None
+    kubernetes_configured = kubectl_available and bool(_kubectl_context())
     pods: list[str] = []
-    kubernetes_probe_available = False
-    if kubectl_available:
+    # No kubeconfig/current-context means no cluster was ever configured here --
+    # that's a confidently-determined NOT DEPLOYED (#3468), not the CANNOT
+    # DETERMINE state reserved for a *configured* cluster the probe couldn't
+    # reach (kubectl missing entirely is folded into "not configured" too,
+    # since there's no context to read either way).
+    kubernetes_probe_available = not kubernetes_configured
+    if kubernetes_configured:
         cp = _run(
             ["kubectl", "-n", K8S_NAMESPACE, "get", "pods", "--no-headers"],
             check=False,
@@ -2870,6 +2885,7 @@ def infra_status() -> dict[str, Any]:
             pods = [line for line in (cp.stdout or "").splitlines() if line.strip()]
     kubernetes = {
         "available": kubectl_available,
+        "configured": kubernetes_configured,
         "probe_available": kubernetes_probe_available,
         "deployed": bool(pods),
         "namespace": K8S_NAMESPACE,

@@ -18,6 +18,7 @@ type InfraStatus = {
   };
   kubernetes: {
     available: boolean;
+    configured: boolean;
     probe_available: boolean;
     deployed: boolean;
     namespace: string;
@@ -290,7 +291,11 @@ export default function InfrastructurePage() {
 
             {!status.kubernetes.available ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
-                kubectl not found from this vantage point — cannot determine cluster status.
+                kubectl not found from this vantage point — no cluster configured to detect.
+              </p>
+            ) : !status.kubernetes.configured ? (
+              <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>
+                No kubeconfig current-context configured — no cluster to detect.
               </p>
             ) : !status.kubernetes.probe_available ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--foreground-muted)' }}>

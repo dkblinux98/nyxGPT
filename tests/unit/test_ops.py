@@ -8894,6 +8894,7 @@ def test_infra_status_reports_terraform_and_kubernetes(monkeypatch):
     assert result["terraform"]["deployed"] is True
     assert result["terraform"]["containers"] == {"api": "running", "web": "absent"}
     assert result["kubernetes"]["available"] is True
+    assert result["kubernetes"]["configured"] is True
     assert result["kubernetes"]["probe_available"] is True
     assert result["kubernetes"]["deployed"] is True
     assert result["kubernetes"]["namespace"] == "nyxgpt"
@@ -8915,7 +8916,101 @@ def test_infra_status_reports_nothing_deployed(monkeypatch):
     assert result["terraform"]["probe_available"] is False
     assert result["terraform"]["deployed"] is False
     assert result["kubernetes"]["available"] is False
+    # kubectl missing entirely means there's no context to read either --
+    # folded into "not configured", which is a confident NOT DEPLOYED, not
+    # CANNOT DETERMINE (#3468).
+    assert result["kubernetes"]["configured"] is False
+    assert result["kubernetes"]["probe_available"] is True
+    assert result["kubernetes"]["deployed"] is False
+    assert result["kubernetes"]["pods"] == []
+
+
+@pytest.mark.unit
+def test_infra_status_kubernetes_no_context_is_not_deployed(monkeypatch):
+    """No kubeconfig/current-context configured -- #3468.
+
+    A cluster that was never configured must read as a confidently
+    determined NOT DEPLOYED, not CANNOT DETERMINE (reserved for a
+    *configured* cluster the probe couldn't reach).
+    """
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(returncode=1, stdout="")
+        raise AssertionError(f"kubectl should not be probed further: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops.infra_status()
+    assert result["kubernetes"]["available"] is True
+    assert result["kubernetes"]["configured"] is False
+    assert result["kubernetes"]["probe_available"] is True
+    assert result["kubernetes"]["deployed"] is False
+    assert result["kubernetes"]["pods"] == []
+
+
+@pytest.mark.unit
+def test_infra_status_kubernetes_configured_but_unreachable_is_cannot_determine(monkeypatch):
+    """A *configured* context the probe can't reach preserves #3410's protection."""
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(returncode=0, stdout="kind-nyxgpt\n")
+        if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"]:
+            return CP(returncode=1, stdout="", stderr="connection refused")
+        raise AssertionError(f"unexpected kubectl command: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops.infra_status()
+    assert result["kubernetes"]["configured"] is True
     assert result["kubernetes"]["probe_available"] is False
+    assert result["kubernetes"]["deployed"] is False
+    assert result["kubernetes"]["pods"] == []
+
+
+@pytest.mark.unit
+def test_infra_status_kubernetes_configured_reachable_empty_namespace_is_not_deployed(monkeypatch):
+    monkeypatch.setattr(ops, "terraform_stack_state", lambda: {"api": "absent"})
+    monkeypatch.setattr(
+        ops,
+        "detect_deployment_mode",
+        lambda: ops.DeploymentMode(native={}, compose={}, conflicts=[]),
+    )
+    monkeypatch.setattr(
+        ops, "_which", lambda prog: "/usr/local/bin/kubectl" if prog == "kubectl" else None
+    )
+
+    def fake_run(cmd, check=True, **_k):
+        if cmd[:2] == ["kubectl", "config"]:
+            return CP(returncode=0, stdout="kind-nyxgpt\n")
+        if cmd[:4] == ["kubectl", "-n", "nyxgpt", "get"]:
+            return CP(returncode=0, stdout="")
+        raise AssertionError(f"unexpected kubectl command: {cmd}")
+
+    monkeypatch.setattr(ops, "_run", fake_run)
+
+    result = ops.infra_status()
+    assert result["kubernetes"]["configured"] is True
+    assert result["kubernetes"]["probe_available"] is True
     assert result["kubernetes"]["deployed"] is False
     assert result["kubernetes"]["pods"] == []
 

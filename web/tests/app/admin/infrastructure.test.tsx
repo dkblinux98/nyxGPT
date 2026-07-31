@@ -17,6 +17,7 @@ const mockStatusTerraform = {
   },
   kubernetes: {
     available: true,
+    configured: true,
     probe_available: true,
     deployed: true,
     namespace: 'nyxgpt',
@@ -40,7 +41,32 @@ const mockStatusEmpty = {
   },
   kubernetes: {
     available: false,
-    probe_available: false,
+    configured: false,
+    probe_available: true,
+    deployed: false,
+    namespace: 'nyxgpt',
+    pods: [],
+  },
+  serving: {
+    supported: false,
+    message: 'Single instance serving 100% of traffic -- traffic splitting is a Kubernetes-mode feature (see the Canary page).',
+  },
+};
+
+const mockStatusKubernetesNotConfigured = {
+  mode: 'none',
+  native: {},
+  compose: {},
+  conflicts: [],
+  terraform: {
+    probe_available: true,
+    deployed: false,
+    containers: {},
+  },
+  kubernetes: {
+    available: true,
+    configured: false,
+    probe_available: true,
     deployed: false,
     namespace: 'nyxgpt',
     pods: [],
@@ -63,6 +89,7 @@ const mockStatusCannotDetermine = {
   },
   kubernetes: {
     available: true,
+    configured: true,
     probe_available: false,
     deployed: false,
     namespace: 'nyxgpt',
@@ -82,6 +109,7 @@ const mockStatusKubernetesServing = {
   terraform: { probe_available: true, deployed: false, containers: {} },
   kubernetes: {
     available: true,
+    configured: true,
     probe_available: true,
     deployed: true,
     namespace: 'nyxgpt',
@@ -119,6 +147,7 @@ describe('InfrastructurePage', () => {
       ...mockStatusKubernetesServing,
       kubernetes: {
         available: true,
+        configured: true,
         probe_available: true,
         deployed: false,
         namespace: 'nyxgpt',
@@ -175,10 +204,28 @@ describe('InfrastructurePage', () => {
     render(<InfrastructurePage />);
 
     await waitFor(() => {
-      expect(screen.getAllByText('NOT DEPLOYED')).toHaveLength(1);
+      // Terraform and kubernetes both confidently NOT DEPLOYED: kubectl missing
+      // means there was never a context to be unreachable (see #3468).
+      expect(screen.getAllByText('NOT DEPLOYED')).toHaveLength(2);
     });
     expect(screen.getByText(/kubectl not found/)).toBeInTheDocument();
     expect(screen.getByText('Nothing detected running')).toBeInTheDocument();
+  });
+
+  it('renders NOT DEPLOYED (not CANNOT DETERMINE) when kubectl has no current-context configured', async () => {
+    // Repro for #3468: a machine that has never had a k8s deployment (no
+    // kubeconfig/current-context) must read as NOT DEPLOYED, not CANNOT
+    // DETERMINE -- that state is reserved for a *configured* cluster the
+    // probe couldn't reach.
+    server.use(http.get('/api/v1/infra/status', () => HttpResponse.json(mockStatusKubernetesNotConfigured)));
+
+    render(<InfrastructurePage />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('NOT DEPLOYED')).toHaveLength(2);
+    });
+    expect(screen.queryByText('CANNOT DETERMINE')).not.toBeInTheDocument();
+    expect(screen.getByText(/No kubeconfig current-context configured/)).toBeInTheDocument();
   });
 
   it('renders "cannot determine" instead of a false NOT DEPLOYED when probes fail', async () => {
