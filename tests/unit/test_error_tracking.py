@@ -109,6 +109,35 @@ def test_init_error_tracking_is_noop_when_enabled_without_dsn(
     assert init_calls == []
 
 
+def test_init_error_tracking_disables_and_warns_when_sentry_sdk_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#3487: a stale venv missing sentry-sdk must not crash
+    init_error_tracking -- it must disable error tracking with a single
+    bounded warning naming the fix command instead."""
+    monkeypatch.setattr(error_tracking, "_enabled", False)
+    monkeypatch.setattr(error_tracking, "sentry_sdk", None)
+
+    with caplog.at_level("WARNING", logger="nyxgpt.error_tracking"):
+        error_tracking.init_error_tracking({"enabled": True, "dsn": "http://key@localhost:8080/1"})
+
+    assert error_tracking.is_error_tracking_enabled() is False
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "sentry-sdk" in warnings[0]
+    assert "pip install -e ." in warnings[0]
+
+
+def test_capture_exception_is_noop_when_sentry_sdk_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(error_tracking, "_enabled", True)
+    monkeypatch.setattr(error_tracking, "sentry_sdk", None)
+
+    error_tracking.capture_exception(ValueError("boom"))  # must not raise
+
+
 def test_init_error_tracking_enables_with_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(error_tracking, "_enabled", False)
     init_calls = []
