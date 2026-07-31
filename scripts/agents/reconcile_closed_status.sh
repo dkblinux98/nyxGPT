@@ -117,8 +117,8 @@ fi
 
 while IFS=$'\t' read -r num status reason title; do
   [[ -n "${num:-}" ]] || continue
-  echo "[reconcile] #${num}: ${status} -> ${STATUS_IN_REVIEW}; assign @${HUMAN_OWNER}" >&2
-  set_issue_status "$num" "$STATUS_IN_REVIEW" \
+  echo "[reconcile] #${num}: ${status} -> ${STATUS_ACCEPTANCE_TESTING}; assign @${HUMAN_OWNER}" >&2
+  set_issue_status "$num" "$STATUS_ACCEPTANCE_TESTING" \
     || echo "[reconcile] WARN: failed to set Status on #${num}" >&2
   issue_assign_only "$num" "${HUMAN_OWNER}" \
     || echo "[reconcile] WARN: failed to assign #${num}" >&2
