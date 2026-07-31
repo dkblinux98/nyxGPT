@@ -3354,6 +3354,48 @@ def _tracing_wiring_issue(cfg_path: Path | None = None) -> str | None:
     )
 
 
+def _tracing_packages_doctor_issue(cfg_path: Path | None = None) -> str | None:
+    """Detect the #3484 failure mode: a venv predating the #3430 OTel backbone
+    (or missing a package `pip uninstall`'d since) is missing an
+    `opentelemetry-instrumentation-*`/exporter package.
+
+    `nyxgpt.tracing` no longer crashes on import when a package is missing
+    (that's the #3484 fix), but if tracing is enabled in config the operator
+    is silently running degraded -- missing instrumentors are skipped, or
+    tracing is disabled outright if the exporter itself is missing -- until
+    they reinstall. Only reports an issue when tracing is actually enabled,
+    same gating as `_tracing_wiring_issue`.
+    """
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return None
+
+    parser = ConfigParser()
+    try:
+        parser.read(cfg_path)
+    except Exception as e:
+        logger.warning(
+            "Failed to parse %s, skipping tracing packages check: %s",
+            cfg_path,
+            e,
+            extra={"component": "ops"},
+        )
+        return None
+    if not get_tracing_enabled(parser):
+        return None
+
+    missing = tracing.missing_tracing_packages()
+    if not missing:
+        return None
+
+    return (
+        "Tracing is enabled but these OTel packages are missing from this venv: "
+        f"{', '.join(missing)}. Tracing is running degraded (missing instrumentors "
+        "are skipped, or tracing is disabled if the exporter itself is missing) "
+        "until you run: nyxgpt ops install."
+    )
+
+
 def _ollama_env_drift_issue() -> str | None:
     """Detect the #3431 boot-race failure mode: native Ollama's OLLAMA_MODELS
     env drifting back to Ollama's default `~/.ollama/models` store.
@@ -3608,6 +3650,10 @@ def doctor(_args) -> int:
     tracing_issue = _tracing_wiring_issue()
     if tracing_issue:
         issues.append(tracing_issue)
+
+    tracing_packages_issue = _tracing_packages_doctor_issue()
+    if tracing_packages_issue:
+        issues.append(tracing_packages_issue)
 
     ollama_env_issue = _ollama_env_drift_issue()
     if ollama_env_issue:

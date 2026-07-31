@@ -19,7 +19,12 @@ from fastapi.testclient import TestClient
 
 from nyxgpt import metrics as prom_metrics
 from nyxgpt.app import app
-from nyxgpt.config import get_monitoring_config, get_monitoring_enabled
+from nyxgpt.config import (
+    get_error_tracking_config,
+    get_monitoring_config,
+    get_monitoring_enabled,
+    get_tracing_config,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -395,6 +400,48 @@ def _cfg(**monitoring_options: str) -> ConfigParser:
     if monitoring_options:
         cfg["monitoring"] = monitoring_options
     return cfg
+
+
+def test_sre_home_panel_title_links_open_underlying_tool_uis_in_new_tabs() -> None:
+    """Owner design decision for #3471 (2026-07-30): no top-of-dashboard link
+    row -- Jaeger, GlitchTip, and Prometheus are each reachable via a
+    Grafana panel-title link on the section they back (traces panel,
+    GlitchTip panels, and the overview panel heading the health/metrics
+    section, which has no single dedicated panel of its own). The
+    dashboard JSON is static and can't read `config.ini` at provisioning
+    time, so the linked URLs are hardcoded to the same defaults
+    `nyxgpt.config` falls back to for the in-app pages -- this test fails
+    if those defaults ever drift apart."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / "sre-home.json").read_text()
+    )
+    panels = {p["title"]: p for p in dashboard["panels"]}
+
+    tracing_defaults = get_tracing_config(_cfg())
+    error_tracking_defaults = get_error_tracking_config(_cfg())
+    monitoring_defaults = get_monitoring_config(_cfg())
+
+    def assert_single_link(panel_title: str, expected_url: str) -> None:
+        links = panels[panel_title]["links"]
+        assert len(links) == 1
+        assert links[0]["url"] == expected_url
+        assert links[0]["targetBlank"] is True
+
+    assert_single_link("Recent nyxgpt traces", tracing_defaults["jaeger_ui_url"])
+    assert_single_link(
+        "GlitchTip: open issues (nyxgpt-backend)", error_tracking_defaults["glitchtip_ui_url"]
+    )
+    assert_single_link(
+        "GlitchTip: recent errors (nyxgpt-backend)", error_tracking_defaults["glitchtip_ui_url"]
+    )
+    assert_single_link(
+        "nyxGPT SRE Home -- single pane of glass", monitoring_defaults["prometheus_ui_url"]
+    )
+
+    # The old top-of-dashboard GlitchTip text link is absorbed into the
+    # GlitchTip panels' title links above, not duplicated in the markdown.
+    overview_panel = panels["nyxGPT SRE Home -- single pane of glass"]
+    assert "glitchtip" not in overview_panel["options"]["content"].lower()
 
 
 def test_get_monitoring_enabled_defaults_to_false() -> None:

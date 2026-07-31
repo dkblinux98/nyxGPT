@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
+import sys
+from collections.abc import Iterator
 from configparser import ConfigParser
+from contextlib import contextmanager
+from importlib.abc import MetaPathFinder
 from typing import Any
 
 import pytest
@@ -13,6 +18,38 @@ from nyxgpt.app import app
 from nyxgpt.config import get_error_tracking_config, get_error_tracking_enabled
 
 pytestmark = pytest.mark.unit
+
+
+class _BlockedModuleFinder(MetaPathFinder):
+    """Meta-path finder that makes `module_name` genuinely unimportable.
+
+    Unlike patching `builtins.__import__`, this intercepts the real import
+    machinery `importlib.import_module` (and hence `optional_imports.try_import`)
+    uses internally, so it catches a regression back to a bare top-level
+    import just as reliably as an actually-missing package would.
+    """
+
+    def __init__(self, module_name: str) -> None:
+        self._module_name = module_name
+
+    def find_spec(self, fullname: str, path: Any, target: Any = None) -> None:
+        if fullname == self._module_name or fullname.startswith(f"{self._module_name}."):
+            raise ModuleNotFoundError(f"No module named '{fullname}'")
+        return None
+
+
+@contextmanager
+def _module_genuinely_missing(module_name: str) -> Iterator[None]:
+    for name in list(sys.modules):
+        if name == module_name or name.startswith(f"{module_name}."):
+            del sys.modules[name]
+
+    finder = _BlockedModuleFinder(module_name)
+    sys.meta_path.insert(0, finder)
+    try:
+        yield
+    finally:
+        sys.meta_path.remove(finder)
 
 
 class _FakeScope:
@@ -127,6 +164,25 @@ def test_init_error_tracking_disables_and_warns_when_sentry_sdk_missing(
     assert len(warnings) == 1
     assert "sentry-sdk" in warnings[0]
     assert "pip install -e ." in warnings[0]
+
+
+def test_error_tracking_import_survives_missing_sentry_sdk() -> None:
+    """#3487 regression guard: simulates a genuinely missing sentry-sdk
+    package (not just a patched attribute) and reloads the real module,
+    mirroring the effective pattern in tests/unit/test_metrics.py. If
+    error_tracking.py's guarded `try_import`/`try_import_attr` calls were
+    ever reverted back to bare top-level imports, importing this module
+    would raise ModuleNotFoundError here instead of degrading gracefully."""
+    try:
+        with _module_genuinely_missing("sentry_sdk"):
+            importlib.reload(error_tracking)
+
+            # Must not raise even though the real package is gone.
+            assert error_tracking.sentry_sdk is None
+            assert error_tracking.FastApiIntegration is None
+            assert error_tracking.StarletteIntegration is None
+    finally:
+        importlib.reload(error_tracking)
 
 
 def test_capture_exception_is_noop_when_sentry_sdk_missing(
