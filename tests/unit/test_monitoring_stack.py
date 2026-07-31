@@ -201,6 +201,61 @@ def test_promql_expressions_only_reference_known_metrics(config_path: Path) -> N
             ), f"{config_path.name} references unknown metric {name!r} in expr: {expr!r}"
 
 
+LOCAL_TRAFFIC_PANELS = {
+    "docker/grafana/dashboards/sre-home.json": [
+        "Requests by status",
+        "5xx errors",
+        "RAG queries by source",
+        "RAG ingests by source and outcome",
+        "Chat requests (streaming vs. non-streaming)",
+    ],
+    "docker/grafana/dashboards/rag-performance.json": [
+        "RAG queries by source",
+        "Chat requests (streaming vs. non-streaming)",
+        "RAG ingests by source and outcome",
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    "dashboard_name, panel_title",
+    [
+        (dashboard_name, panel_title)
+        for dashboard_name, panel_titles in LOCAL_TRAFFIC_PANELS.items()
+        for panel_title in panel_titles
+    ],
+)
+def test_local_traffic_panels_use_increase_not_bare_rate(
+    dashboard_name: str, panel_title: str
+) -> None:
+    """A handful of interactive queries/ingests on a single-user local
+    instance divide down to a near-invisible fraction of a request/second
+    under `rate(...[5m])` plotted against a `reqps` unit (#3469). These
+    panels must use `increase(...[$__rate_interval])` -- a visible integer
+    count over the dashboard window -- with a `short` unit instead, so a
+    revert back to `rate(`/`reqps` fails this test rather than shipping the
+    illegibility bug again undetected."""
+    dashboard = json.loads((REPO_ROOT / dashboard_name).read_text())
+    panels = {p["title"]: p for p in dashboard["panels"]}
+    assert panel_title in panels, f"{dashboard_name} is missing panel {panel_title!r}"
+    panel = panels[panel_title]
+
+    assert panel["fieldConfig"]["defaults"]["unit"] == "short", (
+        f"{dashboard_name}::{panel_title} unit should be 'short', "
+        "not a per-second rate unit like 'reqps'"
+    )
+
+    assert panel["targets"], f"{dashboard_name}::{panel_title} has no targets"
+    for target in panel["targets"]:
+        expr = target["expr"]
+        assert (
+            "increase(" in expr
+        ), f"{dashboard_name}::{panel_title} expr should use increase(): {expr!r}"
+        assert (
+            "rate(" not in expr
+        ), f"{dashboard_name}::{panel_title} expr should not use a bare rate(): {expr!r}"
+
+
 def test_grafana_dashboards_are_provisioned() -> None:
     dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
     dashboard_files = sorted(p.name for p in dashboards_dir.glob("*.json"))
