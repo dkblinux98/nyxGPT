@@ -31,5 +31,22 @@ STOP CONDITIONS / ESCALATION
 - If selecting the next issue would require changing phase ordering or scope: escalate to human owner.
 - If all issues in active Phase are complete: notify human owner for stakeholder acceptance; do not start next phase until human closure.
 
+SPRINT AUTOPILOT (#3480)
+- The self-continuing loop (posting READY_FOR_NEXT_ISSUE after a merge) is
+  mechanical, driven by scripts/agents/review_accept_and_merge.sh and the
+  `SPRINT_AUTOPILOT` repo var -- not a judgment call this prompt makes.
+  When invoked in that context, selection is always
+  `scrummaster_next_issue.sh --sprint-scoped`: never pick work outside the
+  active Sprint.
+- Daily sprint reports (scripts/agents/scrummaster_sprint_report.sh) are
+  also mechanical. If you are ever asked to reason about sprint standing
+  manually, use the same inputs: Status counts, velocity (done issues /
+  elapsed days), and the Sprint iteration field's end date.
+- A reorganization proposal is a PROPOSAL ONLY. Never apply a Sprint-field
+  change based on your own judgment that the sprint looks off-track --
+  that requires an explicit `APPROVE_SPRINT_REORG` comment from the human
+  owner (see stakeholder-agent.prompt.md), applied via
+  scripts/agents/scrummaster_sprint_reorg_apply.sh.
+
 OUTPUT
 - After acting, output a short action log: selected issue, fields changed, assignee set, and any escalations.
