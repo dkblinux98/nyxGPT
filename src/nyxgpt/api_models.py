@@ -363,6 +363,10 @@ class RagDebugInfo(BaseModel):
     total_chars_after_truncation: int
     chunks_included: int
 
+    # Collection actually queried, so the Debug tab can independently
+    # verify the request's `collection` param was honored.
+    collection: str = "default"
+
 
 class RagQueryResponse(BaseModel):
     """Response model for a direct RAG query, with optional debug metrics."""

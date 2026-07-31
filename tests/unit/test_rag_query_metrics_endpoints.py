@@ -162,6 +162,26 @@ def test_rag_query_retrieval_failure_returns_400() -> None:
     assert response.json()["error"]["message"] == "vector store unreachable"
 
 
+def test_rag_query_debug_info_reports_effective_collection() -> None:
+    """AC (#3464): the Debug tab must be able to show which collection was
+    actually queried, independent of trusting the request payload."""
+    debug_info = _fake_debug_info(collection="research-notes")
+    mock_store = Mock()
+    mock_store.list_collections.return_value = ["default", "research-notes"]
+
+    with (
+        patch("nyxgpt.rag.vectorstore_cassandra.CassandraVectorStore", return_value=mock_store),
+        patch("nyxgpt.app.retrieve_context", return_value=(_fake_rows(), debug_info)),
+    ):
+        response = client.post(
+            "/api/v1/rag/query",
+            json={"query": "test query", "debug_mode": True, "collection": "research-notes"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["debug_info"]["collection"] == "research-notes"
+
+
 def test_rag_query_with_collection_scopes_retrieval(monkeypatch: pytest.MonkeyPatch) -> None:
     """The Playground's collection dropdown was previously "dead": it was
     wired to UI state but RagQueryRequest had no `collection` field and
@@ -183,6 +203,19 @@ def test_rag_query_with_collection_scopes_retrieval(monkeypatch: pytest.MonkeyPa
     assert kwargs["collection"] == "research-notes"
     body = response.json()
     assert all(r["collection"] == "research-notes" for r in body["results"])
+
+
+def test_rag_query_missing_collection_defaults_to_default_collection() -> None:
+    """AC (#3464): omitting `collection` entirely must preserve the existing
+    default-collection behavior explicitly, not just as a side effect."""
+    with patch("nyxgpt.app.retrieve_context", return_value=_fake_rows()) as mock_retrieve:
+        response = client.post("/api/v1/rag/query", json={"query": "plain query"})
+
+    assert response.status_code == 200
+    _, kwargs = mock_retrieve.call_args
+    assert kwargs["collection"] == "default"
+    body = response.json()
+    assert all(r["collection"] == "default" for r in body["results"])
 
 
 def test_rag_query_with_unknown_collection_returns_400() -> None:
@@ -248,6 +281,28 @@ def test_rag_metrics_query_increments_rag_queries_total_metric() -> None:
     assert response.status_code == 200
     metrics_text = client.get("/metrics").text
     assert 'nyxgpt_rag_queries_total{source="rag_query"}' in metrics_text.replace(" ", "")
+
+
+def test_rag_metrics_query_debug_info_reports_effective_collection() -> None:
+    """Mirrors test_rag_query_debug_info_reports_effective_collection above
+    for the /rag/metrics/query endpoint (#3464): its debug_info.collection
+    propagation is the same code pattern as /rag/query's but had no
+    dedicated test."""
+    debug_info = _fake_debug_info(collection="research-notes")
+    mock_store = Mock()
+    mock_store.list_collections.return_value = ["default", "research-notes"]
+
+    with (
+        patch("nyxgpt.rag.vectorstore_cassandra.CassandraVectorStore", return_value=mock_store),
+        patch("nyxgpt.app.retrieve_context", return_value=(_fake_rows(), debug_info)),
+    ):
+        response = client.post(
+            "/api/v1/rag/metrics/query",
+            json={"query": "test query", "collection": "research-notes"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["debug_info"]["collection"] == "research-notes"
 
 
 def test_rag_metrics_query_retrieval_failure_returns_400() -> None:

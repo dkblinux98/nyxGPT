@@ -390,6 +390,89 @@ def test_retrieve_context_with_collection(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.unit
+def test_retrieve_context_empty_collection_returns_no_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for #3464: with a collection selected, retrieval must
+    be scoped to *only* that collection's data. Reproduces the reported
+    acceptance-test failure directly: an empty collection returned a chunk
+    (`smoke-test-doc`) that actually lives in the "default" collection.
+
+    Each collection is backed by its own Cassandra table
+    (`CassandraVectorStore.table_name`), so `FakeStore` here keys its data by
+    `self.collection` -- exactly like two real, physically separate tables
+    would -- rather than mocking `retrieve_context` and merely asserting the
+    parameter was forwarded (as the existing API-level tests do).
+    """
+    from configparser import ConfigParser
+
+    cfg = ConfigParser()
+    cfg["rag"] = {
+        "chat_top_k": "5",
+        "min_score": "0.0",
+        "max_chunks": "10",
+        "dedupe": "true",
+    }
+
+    monkeypatch.setattr("nyxgpt.rag.rag.load_config", lambda *_: cfg)
+    monkeypatch.setattr("nyxgpt.rag.rag.embed_text", lambda *args, **kwargs: [0.1] * 768)
+    monkeypatch.setattr(
+        "nyxgpt.rag.embeddings._embedding_cfg",
+        lambda **kw: type(
+            "obj",
+            (),
+            {"model": kw.get("model", "nomic"), "dimension": kw.get("dimension", 768)},
+        )(),
+    )
+
+    # Data keyed by collection, mirroring physically separate per-collection
+    # tables: "default" holds the smoke-test doc, "empty-collection" holds
+    # nothing.
+    collection_data = {
+        "default": [
+            {
+                "doc_id": "smoke-test-doc",
+                "chunk_id": 0,
+                "text": "the secret is hunter2",
+                "score": 0.95,
+            }
+        ],
+        "empty-collection": [],
+    }
+
+    class FakeStore:
+        def __init__(self, collection: str = "default") -> None:
+            self.collection = collection
+
+        def query_by_embedding(self, emb, k, **kwargs):
+            embedding_model = kwargs.get("embedding_model")
+            return [
+                {**row, "embedding_model": embedding_model}
+                for row in collection_data[self.collection]
+            ]
+
+        def list_docs(self):
+            return [
+                {"doc_id": row["doc_id"], "chunks": 1, "embedding_model": None}
+                for row in collection_data[self.collection]
+            ]
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("nyxgpt.rag.rag.CassandraVectorStore", FakeStore)
+
+    from nyxgpt.rag.rag import retrieve_context
+
+    default_results = retrieve_context(query="what is your secret?", collection="default")
+    assert len(default_results) == 1
+    assert default_results[0]["doc_id"] == "smoke-test-doc"
+
+    empty_results = retrieve_context(query="what is your secret?", collection="empty-collection")
+    assert empty_results == []
+
+
+@pytest.mark.unit
 def test_model_comparison_benchmark_embedding_speed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

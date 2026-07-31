@@ -1056,7 +1056,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/rag/metrics/query \
     "filtering_time_ms": 5.0,
     "score_min": 0.85,
     "score_max": 0.95,
-    "score_mean": 0.90
+    "score_mean": 0.90,
+    "collection": "default"
   },
   "evaluation_metrics": {
     "retrieval_accuracy": {
@@ -1236,6 +1237,7 @@ The playground consists of four main panels:
 
 **Debug Tab** (requires `debug_mode` enabled):
 - **Query Processing**:
+  - Effective collection queried (confirms the selected Collection was actually applied)
   - Original query text
   - Total queries executed
   - Query variants (if query expansion enabled)
