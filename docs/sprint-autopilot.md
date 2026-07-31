@@ -22,7 +22,36 @@ this PR:
   markdown report renderer.
 - `scripts/agents/scrummaster_next_issue.sh` -- new `--sprint-scoped` flag.
 - `scripts/agents/review_accept_and_merge.sh` -- post-merge autopilot kick
-  (or sprint-complete note), gated on `SPRINT_AUTOPILOT` and `PAUSE_SPRINT`.
+  (or release-drained park note), gated on `SPRINT_AUTOPILOT` and `PAUSE_SPRINT`.
+
+## The release wall (owner decision, 2026-07-31)
+
+The autopilot's continue/park decision is **release-gated, not
+sprint-gated**. Sprint dates drift, and future sprints exist on the project
+board before their release starts (adding Sprint 7/8 mid-Sprint-6 made a
+naive "latest iteration" lookup jump ahead), so the calendar can never be
+the boundary. Instead:
+
+- The release tracking issue's title carries the release version
+  ("Release v2.0.0"), and every milestone title carries its release version
+  ("Phase 5.5: ... (v2.0.0)", "Phase 6 — ... (v3.0.0)"). An issue is
+  eligible for autopilot continuation and scrummaster selection **only if
+  its milestone version matches the configured release issue's version**
+  (`RELEASE_VERSION` filter in `lib/summarize_backlog_page.py`; wall applies
+  to manual kicks too, since agents merge to `RELEASE_BRANCH`).
+- Sprint scoping is a soft *preference inside* the wall: selection prefers
+  the active (already-started) sprint's issues, and falls back to the rest
+  of the release's backlog if the active sprint has none -- a slipped item
+  never strands the loop, and the wall never falls.
+- When the release's Backlog drains, the autopilot posts a
+  release-drained note and **parks**. There is no switch to remember: the
+  gate reopens automatically when the owner performs the release ceremony --
+  pointing `RELEASE_ISSUE_NUMBER` at the next release's tracking issue and
+  `RELEASE_BRANCH` at its branch. Until then the next release's issues are
+  structurally invisible to the loop.
+- `add-to-release-issue-on-milestone.yml` applies the same version match:
+  a milestoned issue is appended only to the tracking issue of its own
+  release.
 - `scripts/agents/scrummaster_sprint_report.sh` -- new: posts the sprint
   standing report (+ reorg proposal when off-track).
 - `scripts/agents/scrummaster_sprint_reorg_apply.sh` -- new: applies the

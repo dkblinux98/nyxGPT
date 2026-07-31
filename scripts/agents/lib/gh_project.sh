@@ -319,10 +319,16 @@ single_select_option_id() {
 iteration_active_title() {
   require_cmd jq
   local field_name="$1"
-  get_fields_json | jq -r --arg f "$field_name" '
+  # "Active" = the latest iteration that has already STARTED. The iterations
+  # list includes future iterations too, so a bare `sort_by | last` returns
+  # the furthest-future sprint the moment the owner schedules it ahead of
+  # time (2026-07-31: adding Sprint 7/8 made "active" jump to Sprint 8 while
+  # Sprint 6 was still running). Filter to startDate <= today first.
+  get_fields_json | jq -r --arg f "$field_name" --arg today "$(date -u +%Y-%m-%d)" '
     .data.node.fields.nodes[]
     | select(.name==$f and .__typename=="ProjectV2IterationField")
     | .configuration.iterations
+    | map(select(.startDate <= $today))
     | sort_by(.startDate)
     | last
     | .title
@@ -562,6 +568,61 @@ count_sprint_backlog_open() {
 
     page_count="$(STATUS_FIELD="$STATUS_FIELD" STATUS_BACKLOG="$STATUS_BACKLOG" \
       SPRINT_FIELD="$sprint_field" SPRINT_SCOPED=1 ACTIVE_SPRINT_TITLE="$sprint_title" \
+      python3 "${_LIB_DIR}/summarize_backlog_page.py" "$tmp" | jq -r '.backlog_open')"
+    total=$((total + page_count))
+
+    has_next="$(jq -r '.data.node.items.pageInfo.hasNextPage' "$tmp")"
+    next_cursor="$(jq -r '.data.node.items.pageInfo.endCursor // empty' "$tmp")"
+    [[ "$has_next" == "true" && -n "$next_cursor" ]] || break
+    cursor="$next_cursor"
+  done
+
+  rm -f "$tmp"
+  echo "$total"
+}
+
+# Release wall helpers (owner decision 2026-07-31). The release tracking
+# issue's title carries the release version ("Release v2.0.0"), and the
+# owner's milestone naming carries it too ("Phase 5.5: ... (v2.0.0)",
+# "Phase 6 — ... (v3.0.0)"). Matching the two is the version boundary the
+# autopilot must never cross on its own: sprint dates drift and sprints can
+# straddle a release, but milestone membership only changes when the owner
+# changes it. The gate opens via the release ceremony -- pointing
+# RELEASE_ISSUE_NUMBER (and RELEASE_BRANCH) at the next release -- with no
+# separate on/off switch to remember.
+
+# Prints the vX.Y.Z version parsed from the release tracking issue's title,
+# or nothing if the issue/title has no version.
+release_version_from_issue() {
+  local release_issue="$1"
+  gh issue view "$release_issue" --repo "${REPO_OWNER}/${REPO_NAME}" --json title \
+    --jq '.title' 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1
+}
+
+# Counts open Backlog issues whose milestone title contains the given
+# release version -- the autopilot's continue/park decision input. Same
+# paging as count_sprint_backlog_open, release-filtered instead of
+# sprint-filtered (an in-release issue in ANY sprint keeps the loop alive).
+count_release_backlog_open() {
+  local release_version="$1"
+  require_cmd jq
+  require_cmd python3
+
+  local project_id cursor="" total=0 tmp has_next next_cursor page_count
+  project_id="$(get_project_id)"
+  tmp="$(mktemp)"
+
+  local max_pages="${MAX_PAGES:-200}"
+  local page
+  for ((page = 1; page <= max_pages; page++)); do
+    if [[ -n "$cursor" ]]; then
+      graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" -F after="$cursor" >"$tmp"
+    else
+      graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" >"$tmp"
+    fi
+
+    page_count="$(STATUS_FIELD="$STATUS_FIELD" STATUS_BACKLOG="$STATUS_BACKLOG" \
+      RELEASE_VERSION="$release_version" SPRINT_SCOPED=0 \
       python3 "${_LIB_DIR}/summarize_backlog_page.py" "$tmp" | jq -r '.backlog_open')"
     total=$((total + page_count))
 

@@ -224,23 +224,30 @@ elif sprint_autopilot_paused "$RELEASE_ISSUE_NUMBER"; then
   issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Sprint Autopilot**: Issue #${ISSUE} merged, but autopilot is paused (\`PAUSE_SPRINT\`) -- no automatic kick posted. Comment \`RESUME_SPRINT\` to continue, or \`READY_FOR_NEXT_ISSUE\` to kick manually." \
     || _warn "Failed to post autopilot-paused notice."
 else
-  SPRINT_FIELD_VALUE="${SPRINT_FIELD:-Sprint}"
-  active_sprint="$(iteration_active_title "$SPRINT_FIELD_VALUE" 2>/dev/null || echo "")"
-  if [[ -z "$active_sprint" || "$active_sprint" == "null" ]]; then
-    echo "[review] Sprint autopilot: no active Sprint -- no auto-kick." >&2
+  # The continue/park decision is RELEASE-gated, not sprint-gated (owner
+  # decision 2026-07-31): sprint dates drift and future sprints exist on the
+  # board before their release starts, so the boundary is the release
+  # version carried by the tracking issue's title and the milestone titles.
+  # The autopilot continues while the CURRENT release has open Backlog work
+  # (any sprint) and parks when it drains; it never crosses into the next
+  # release -- the gate reopens when the owner points RELEASE_ISSUE_NUMBER /
+  # RELEASE_BRANCH at the next release as part of the release ceremony.
+  release_version="$(release_version_from_issue "$RELEASE_ISSUE_NUMBER" 2>/dev/null || echo "")"
+  if [[ -z "$release_version" ]]; then
+    _warn "Autopilot: could not parse a vX.Y.Z version from release issue #${RELEASE_ISSUE_NUMBER}'s title -- no auto-kick (conservative stop)."
   else
-    remaining="$(count_sprint_backlog_open "$SPRINT_FIELD_VALUE" "$active_sprint" 2>/dev/null || echo "")"
+    remaining="$(count_release_backlog_open "$release_version" 2>/dev/null || echo "")"
     decision="$(python3 "${_LIB_DIR}/sprint_calc.py" autopilot-decision "${remaining:-0}")"
     if [[ "$decision" == "continue" ]]; then
-      issue_comment "$RELEASE_ISSUE_NUMBER" "🔁 **Sprint Autopilot**: Issue #${ISSUE} merged. Sprint \"${active_sprint}\" still has ${remaining} open Backlog issue(s) -- continuing automatically.
+      issue_comment "$RELEASE_ISSUE_NUMBER" "🔁 **Sprint Autopilot**: Issue #${ISSUE} merged. Release ${release_version} still has ${remaining} open Backlog issue(s) -- continuing automatically.
 
 READY_FOR_NEXT_ISSUE" \
-        && echo "[review] Autopilot: posted READY_FOR_NEXT_ISSUE (sprint '${active_sprint}' has ${remaining} remaining)." >&2 \
+        && echo "[review] Autopilot: posted READY_FOR_NEXT_ISSUE (release ${release_version} has ${remaining} remaining)." >&2 \
         || _warn "Autopilot: failed to post READY_FOR_NEXT_ISSUE kick."
     else
-      issue_comment "$RELEASE_ISSUE_NUMBER" "🏁 **Sprint Autopilot**: Issue #${ISSUE} merged. Sprint \"${active_sprint}\" has no open Backlog issues remaining -- sprint complete. Autopilot is stopping; a human \`READY_FOR_NEXT_ISSUE\` kick is required to start work outside this sprint." \
-        && echo "[review] Autopilot: sprint '${active_sprint}' complete -- posted completion note, no kick." >&2 \
-        || _warn "Autopilot: failed to post sprint-complete note."
+      issue_comment "$RELEASE_ISSUE_NUMBER" "🏁 **Sprint Autopilot**: Issue #${ISSUE} merged. Release ${release_version} has no open Backlog issues remaining -- the release backlog is drained and autopilot is parked. Merged work is in **Acceptance Testing** for stakeholder sign-off. Autopilot resumes automatically when \`RELEASE_ISSUE_NUMBER\` and \`RELEASE_BRANCH\` point at the next release; it never crosses a release boundary on its own." \
+        && echo "[review] Autopilot: release ${release_version} drained -- parked, no kick." >&2 \
+        || _warn "Autopilot: failed to post release-drained note."
     fi
   fi
 fi

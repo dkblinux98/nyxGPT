@@ -81,6 +81,25 @@ if [[ "$SPRINT_SCOPED_FLAG" == "1" ]]; then
   fi
 fi
 
+# Release wall (owner decision 2026-07-31): when a release tracking issue is
+# configured, selection NEVER crosses into another release's work -- every
+# candidate's milestone must carry the current release's version (parsed
+# from the tracking issue's title, e.g. "Release v2.0.0"). This applies to
+# manual kicks too: agents merge to RELEASE_BRANCH, so starting next-release
+# work before the owner performs the release ceremony (new branch + new
+# tracking issue + repo-var flip) would land it on the wrong branch. Sprint
+# scoping remains a soft PREFERENCE inside the wall (fallback below);
+# release membership is the hard boundary.
+RELEASE_VERSION=""
+if [[ -n "${RELEASE_ISSUE_NUMBER:-}" ]]; then
+  RELEASE_VERSION="$(release_version_from_issue "$RELEASE_ISSUE_NUMBER" 2>/dev/null || echo "")"
+  if [[ -n "$RELEASE_VERSION" ]]; then
+    log "Release wall: only issues whose milestone carries '${RELEASE_VERSION}' are eligible."
+  else
+    log "Release issue #${RELEASE_ISSUE_NUMBER} title has no vX.Y.Z version -- release wall disabled."
+  fi
+fi
+
 MAX_PAGES="${MAX_PAGES:-200}"  # growth-safe; stops early once it finds a candidate
 log "Pagination: up to ${MAX_PAGES} pages (stop at first candidate page)"
 
@@ -105,12 +124,18 @@ summarize_page_file() {
   STATUS_FIELD="$STATUS_FIELD" STATUS_BACKLOG="$STATUS_BACKLOG" \
     SPRINT_FIELD="$SPRINT_FIELD" SPRINT_SCOPED="$SPRINT_SCOPED_FLAG" \
     ACTIVE_SPRINT_TITLE="$ACTIVE_SPRINT_TITLE" \
+    RELEASE_VERSION="$RELEASE_VERSION" \
     python3 "$DIR/lib/summarize_backlog_page.py" "$json_file"
 }
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
+# One full paging pass over the project items with the current scoping env
+# (SPRINT_SCOPED_FLAG / ACTIVE_SPRINT_TITLE / RELEASE_VERSION). Exits the
+# script directly when a candidate is selected; returns 1 if the pass
+# exhausted all pages without one.
+selection_pass() {
 cursor=""
 
 for page in $(seq 1 "$MAX_PAGES"); do
@@ -158,6 +183,22 @@ for page in $(seq 1 "$MAX_PAGES"); do
   fi
   cursor="$next_cursor"
 done
+
+return 1
+}
+
+selection_pass || true
+
+# Sprint preference is soft INSIDE the release wall: when the active sprint
+# has no eligible work left but the release still does (e.g. a slipped item
+# from the previous sprint after the next one started), fall back to
+# release-wide selection rather than stranding the loop. The release wall
+# itself stays up -- there is no fallback across a release boundary.
+if [[ "$SPRINT_SCOPED_FLAG" == "1" && -n "$RELEASE_VERSION" ]]; then
+  log "Active sprint '${ACTIVE_SPRINT_TITLE}' has no eligible Backlog work -- retrying release-wide (wall '${RELEASE_VERSION}' stays up)."
+  SPRINT_SCOPED_FLAG=0
+  selection_pass || true
+fi
 
 log "No Backlog+OPEN issues found."
 exit 1

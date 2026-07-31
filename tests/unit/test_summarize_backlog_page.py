@@ -65,6 +65,7 @@ def _clean_env(monkeypatch):
         "SPRINT_FIELD",
         "SPRINT_SCOPED",
         "ACTIVE_SPRINT_TITLE",
+        "RELEASE_VERSION",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -165,3 +166,80 @@ class TestSprintScopedGuard:
         ]
         result = summarize_backlog_page.summarize(_page(items))
         assert result["best_issue"] == 10
+
+
+class TestReleaseWall:
+    """RELEASE_VERSION filters eligibility to the current release's
+    milestones (owner decision 2026-07-31): the autopilot/selector must
+    never cross a release boundary on their own, and sprint dates cannot
+    be the gate because they drift and future sprints exist on the board
+    before their release starts."""
+
+    def test_unset_release_version_changes_nothing(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        items = [
+            _item(10, status="Backlog", milestone="Phase 6 — Enterprise (v3.0.0)"),
+            _item(20, status="Backlog", milestone="Phase 5.5: Fixes (v2.0.0)"),
+        ]
+        out = summarize_backlog_page.summarize(_page(items))
+        assert out["backlog_open"] == 2
+        assert out["best_issue"] == 20  # lowest phase number wins as before
+
+    def test_wall_excludes_other_release_and_prefers_in_release(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        monkeypatch.setenv("RELEASE_VERSION", "v2.0.0")
+        items = [
+            # Lower number but belongs to the NEXT release: must be invisible.
+            _item(10, status="Backlog", milestone="Phase 6 — Enterprise (v3.0.0)"),
+            _item(20, status="Backlog", milestone="Phase 5.5: Fixes (v2.0.0)"),
+        ]
+        out = summarize_backlog_page.summarize(_page(items))
+        assert out["backlog_open"] == 1
+        assert out["best_issue"] == 20
+
+    def test_wall_excludes_unmilestoned_issues(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        monkeypatch.setenv("RELEASE_VERSION", "v2.0.0")
+        items = [_item(30, status="Backlog", milestone=None)]
+        out = summarize_backlog_page.summarize(_page(items))
+        assert out["backlog_open"] == 0
+        assert out["best_issue"] is None
+
+    def test_wall_drained_release_yields_no_candidates(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        monkeypatch.setenv("RELEASE_VERSION", "v2.0.0")
+        items = [
+            _item(10, status="Backlog", milestone="Phase 6 — Enterprise (v3.0.0)"),
+            _item(
+                20, status="Backlog", sprint="Sprint 8", milestone="Phase 6 — Enterprise (v3.0.0)"
+            ),
+        ]
+        out = summarize_backlog_page.summarize(_page(items))
+        assert out["backlog_open"] == 0
+        assert out["best_issue"] is None
+
+    def test_wall_composes_with_sprint_scoping(self, monkeypatch):
+        monkeypatch.setenv("STATUS_FIELD", "Status")
+        monkeypatch.setenv("STATUS_BACKLOG", "Backlog")
+        monkeypatch.setenv("RELEASE_VERSION", "v3.0.0")
+        monkeypatch.setenv("SPRINT_SCOPED", "1")
+        monkeypatch.setenv("ACTIVE_SPRINT_TITLE", "Sprint 7")
+        items = [
+            # In release, wrong sprint: excluded by sprint preference.
+            _item(
+                40, status="Backlog", sprint="Sprint 8", milestone="Phase 6 — Enterprise (v3.0.0)"
+            ),
+            # In sprint, wrong release: excluded by the wall.
+            _item(41, status="Backlog", sprint="Sprint 7", milestone="Phase 5.5: Fixes (v2.0.0)"),
+            # In release AND in sprint: the one eligible candidate.
+            _item(
+                42, status="Backlog", sprint="Sprint 7", milestone="Phase 6 — Enterprise (v3.0.0)"
+            ),
+        ]
+        out = summarize_backlog_page.summarize(_page(items))
+        assert out["backlog_open"] == 1
+        assert out["best_issue"] == 42
