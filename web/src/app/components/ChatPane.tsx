@@ -164,7 +164,10 @@ type RagChunk = {
   score: number;
   similarity_score?: number | null;  // Original vector similarity (0-1), used for UI display
   doc_id?: string | null;
-  chunk_id?: number | null;
+  chunk_id?: number | null;  // Internal zero-based clustering key; not for display
+  collection?: string | null;
+  chunk_number?: number | null;  // 1-based, human-readable chunk position
+  total_chunks?: number | null;
 };
 
 type RagConfig = {
@@ -193,6 +196,22 @@ function getScoreQuality(score: number, config: RagConfig | null): { quality: st
   } else {
     return { quality: 'low', color: '#ef4444', label: 'Low' }; // red
   }
+}
+
+// Human-readable citation ref, e.g. "chunk 2 of 5". Prefers the 1-based
+// chunk_number/total_chunks fields; falls back to chunk_id + 1 for
+// citations persisted before those fields were tracked (the raw
+// zero-based chunk_id alone reads as a chunk *count* of 0, not an index).
+function formatChunkRef(chunk: RagChunk): string {
+  if (chunk.chunk_number != null) {
+    return chunk.total_chunks
+      ? `chunk ${chunk.chunk_number} of ${chunk.total_chunks}`
+      : `chunk ${chunk.chunk_number}`;
+  }
+  if (chunk.chunk_id !== null && chunk.chunk_id !== undefined) {
+    return `chunk ${chunk.chunk_id + 1}`;
+  }
+  return '';
 }
 
 // The parent only mounts this component when the message already carries a
@@ -323,7 +342,8 @@ function RagCitationsCollapsible({ initialChunks }: { initialChunks: RagChunk[] 
                 {chunk.doc_id && (
                   <div style={{ fontSize: 11, color: 'var(--foreground)', opacity: 0.6, marginBottom: 4 }}>
                     Doc: {chunk.doc_id}
-                    {chunk.chunk_id !== null && chunk.chunk_id !== undefined && ` (chunk ${chunk.chunk_id})`}
+                    {formatChunkRef(chunk) && ` (${formatChunkRef(chunk)})`}
+                    {chunk.collection && chunk.collection !== 'default' && ` · ${chunk.collection}`}
                   </div>
                 )}
                 <div style={{ color: 'var(--foreground)', whiteSpace: 'pre-wrap' }}>
@@ -403,6 +423,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     tags?: string[];
     date_from?: string;
     date_to?: string;
+    collection?: string;
   }>({});
   const [availableDocuments, setAvailableDocuments] = useState<Array<{
     doc_id: string;
@@ -410,6 +431,15 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     chunks: number;
     tags: string[] | null;
     ingested_at: string | null;
+  }>>([]);
+  // Collections available for scoping RAG queries and chat-uploaded documents.
+  // The same `ragFilters.collection` selection is used for both search
+  // scoping and as the ingest target for files uploaded via chat, so there
+  // is one clearly-labeled "current collection" for the whole chat surface.
+  const [availableCollections, setAvailableCollections] = useState<Array<{
+    name: string;
+    doc_count: number;
+    chunk_count: number;
   }>>([]);
 
   // Attached documents state (force-include for RAG)
@@ -515,9 +545,10 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
           setSelectedModel(data.model || '');
           setRagError(null);
 
-          // Fetch available documents if RAG is enabled
+          // Fetch available documents and collections if RAG is enabled
           if (data.rag_enabled) {
             fetchAvailableDocuments();
+            fetchAvailableCollections();
           }
         }
       })
@@ -726,6 +757,18 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     }
   }
 
+  async function fetchAvailableCollections() {
+    try {
+      const res = await fetch('/api/v1/rag/collections');
+      if (res.ok) {
+        const data = await res.json();
+        setAvailableCollections(data.collections || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch available collections:', err);
+    }
+  }
+
   async function attachDocument(docId: string) {
     try {
       const res = await fetch(`/api/sessions/${encodeURIComponent(sessionName)}/documents`, {
@@ -773,9 +816,10 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       setRagEnabled(newRagEnabled);
       setRagError(null);
 
-      // Fetch available documents when enabling RAG
+      // Fetch available documents and collections when enabling RAG
       if (newRagEnabled) {
         fetchAvailableDocuments();
+        fetchAvailableCollections();
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -791,16 +835,25 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
     const formData = new FormData();
     formData.append('file', file);
 
+    // Uploads target the currently selected RAG collection (the same
+    // selector used to scope chat retrieval), defaulting to "default" when
+    // none is picked.
+    const query = ragFilters.collection
+      ? `?collection=${encodeURIComponent(ragFilters.collection)}`
+      : '';
+
     try {
-      const res = await fetch('/api/rag/upload', {
+      const res = await fetch(`/api/rag/upload${query}`, {
         method: 'POST',
         body: formData,
       });
       if (!res.ok) throw new Error('Upload failed');
 
       const data = await res.json();
-      console.log('File uploaded:', data.doc_id);
+      console.log('File uploaded:', data.doc_id, 'into collection:', data.collection);
+      toast.success(`Uploaded "${data.doc_id}" to collection "${data.collection || 'default'}"`);
       setRagStatus('idle');
+      fetchAvailableDocuments();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setRagError(msg);
@@ -912,7 +965,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       };
 
       // Add rag_filters if any filters are set
-      if (ragEnabled && (ragFilters.doc_ids?.length || ragFilters.filename || ragFilters.tags?.length || ragFilters.date_from || ragFilters.date_to)) {
+      if (ragEnabled && (ragFilters.doc_ids?.length || ragFilters.filename || ragFilters.tags?.length || ragFilters.date_from || ragFilters.date_to || ragFilters.collection)) {
         requestBody.rag_filters = ragFilters;
       }
 
@@ -1133,7 +1186,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
       };
 
       // Add rag_filters if any filters are set
-      if (ragEnabled && (ragFilters.doc_ids?.length || ragFilters.filename || ragFilters.tags?.length || ragFilters.date_from || ragFilters.date_to)) {
+      if (ragEnabled && (ragFilters.doc_ids?.length || ragFilters.filename || ragFilters.tags?.length || ragFilters.date_from || ragFilters.date_to || ragFilters.collection)) {
         requestBody.rag_filters = ragFilters;
       }
 
@@ -1705,6 +1758,38 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
             >
               Clear All
             </button>
+          </div>
+
+          {/* Collection selection */}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: 'block', fontSize: 12, fontWeight: 500, marginBottom: 6 }}>
+              Collection
+            </label>
+            <select
+              value={ragFilters.collection || ''}
+              onChange={(e) => setRagFilters((prev) => ({ ...prev, collection: e.target.value || undefined }))}
+              style={{
+                width: '100%',
+                padding: '6px 10px',
+                border: '1px solid var(--border)',
+                borderRadius: 6,
+                background: 'var(--background)',
+                color: 'var(--foreground)',
+                fontSize: 12,
+              }}
+            >
+              <option value="">Default</option>
+              {availableCollections
+                .filter((coll) => coll.name !== 'default')
+                .map((coll) => (
+                  <option key={coll.name} value={coll.name}>
+                    {coll.name} ({coll.doc_count} docs)
+                  </option>
+                ))}
+            </select>
+            <p style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>
+              Scopes RAG search to this collection, and is also where files you upload from chat are ingested.
+            </p>
           </div>
 
           {/* Document selection */}
@@ -2305,7 +2390,7 @@ export default function ChatPane({ sessionName, onSessionUpdated, scrollToMessag
                 }}
                 title="Filter RAG documents"
               >
-                Filters {(ragFilters.doc_ids?.length || ragFilters.filename || ragFilters.tags?.length || ragFilters.date_from || ragFilters.date_to) ? '(active)' : ''}
+                Filters {(ragFilters.doc_ids?.length || ragFilters.filename || ragFilters.tags?.length || ragFilters.date_from || ragFilters.date_to) ? '(active)' : ''} · {ragFilters.collection || 'default'}
               </button>
             )}
 
