@@ -220,6 +220,23 @@ def update_resource_gauges(*, rss_mb: float, cpu_percent: float, queue_depth: in
     RESOURCE_QUEUE_DEPTH.set(queue_depth)
 
 
+def initialize_known_rag_metric_series() -> None:
+    """Touch every known RAG query/ingest label combination at startup.
+
+    A `Counter` child only exists in the registry once `.labels(...)` has
+    been called on it, so on a fresh instance the RAG panels show "No data"
+    (series absent) rather than a real zero (series present, value 0) until
+    the first matching event happens -- indistinguishable in Grafana from a
+    broken metric. Touching every known combination up front (without
+    incrementing) makes every legitimate zero render honestly.
+    """
+    for source in ("chat", "rag_query"):
+        RAG_QUERIES_TOTAL.labels(source=source)
+    for source in ("document", "upload", "repo", "chat_attachment"):
+        for result in ("success", "failure"):
+            RAG_INGESTS_TOTAL.labels(source=source, result=result)
+
+
 def render_metrics() -> tuple[bytes, str]:
     """Render all registered metrics in Prometheus text exposition format.
 

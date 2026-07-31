@@ -281,6 +281,13 @@ async def lifespan(_app: FastAPI):
     except Exception as e:
         log.error("Failed to prepare sessions directory %s: %s", sessions_dir, e)
 
+    # Pre-touch known RAG metric label combinations so legitimate zero
+    # states render as 0 on the SPOG panels instead of "No data"
+    try:
+        prom_metrics.initialize_known_rag_metric_series()
+    except Exception as e:
+        log.warning("Failed to initialize RAG metric series: %s", e, extra={"component": "startup"})
+
     # Warn-only Ollama reachability check
     base_url = get_ollama_base_url(cfg).rstrip("/")
     health_url = f"{base_url}/api/tags"
