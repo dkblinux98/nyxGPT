@@ -171,6 +171,39 @@ def test_rag_collection_create_invalid_name(api_base_url: str, require_cassandra
 
 
 @pytest.mark.integration
+def test_rag_collection_create_rejects_hyphenated_name(
+    api_base_url: str, require_cassandra: None
+) -> None:
+    """Repro from the owner acceptance bug report: dashed names are rejected
+    with a specific message, not a raw Cassandra/500 error."""
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        create_resp = client.post(
+            "/api/v1/rag/collections",
+            json={"name": "test-collection", "embedding_dim": 768},
+        )
+        assert create_resp.status_code == 400
+        error_data = create_resp.json()
+        message = error_data.get("error", {}).get("message") or error_data.get("detail", "")
+        assert "letters, numbers, and underscores" in message
+
+
+@pytest.mark.integration
+def test_rag_collection_create_rejects_overlong_name(
+    api_base_url: str, require_cassandra: None
+) -> None:
+    """Test that a collection name exceeding Cassandra's identifier limit is rejected."""
+    with httpx.Client(base_url=api_base_url, timeout=30.0) as client:
+        create_resp = client.post(
+            "/api/v1/rag/collections",
+            json={"name": "a" * 100, "embedding_dim": 768},
+        )
+        assert create_resp.status_code == 400
+        error_data = create_resp.json()
+        message = error_data.get("error", {}).get("message") or error_data.get("detail", "")
+        assert "characters" in message
+
+
+@pytest.mark.integration
 def test_rag_collection_create_duplicate(api_base_url: str, require_cassandra: None) -> None:
     """Test that creating a duplicate collection is rejected."""
     collection_name = f"test_dup_{uuid.uuid4().hex[:8]}"
