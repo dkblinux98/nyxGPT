@@ -2221,9 +2221,9 @@ List all RAG collections with statistics including document count, chunk count, 
 - Verify which embedding models are active
 - Understand document distribution across collections
 
-### `DELETE /api/v1/rag/collections/{name}`
+### `POST /api/v1/rag/collections/{name}/clear`
 
-Clear all data from a RAG collection (truncates the collection table).
+Remove all documents and chunks from a RAG collection (truncates the collection table) **without** removing the collection itself. The collection's stored settings (embedding model, chunk size/overlap) are left in place, so ingestion can resume immediately.
 
 **WARNING:** This operation permanently deletes all documents and chunks in the collection and cannot be undone.
 
@@ -2238,14 +2238,44 @@ Clear all data from a RAG collection (truncates the collection table).
 ```json
 {
   "collection": "all-minilm",
-  "status": "Collection 'all-minilm' has been cleared (truncated)"
+  "status": "Collection 'all-minilm' has been cleared. All documents and chunks were removed; the collection and its settings remain.",
+  "doc_count": 0,
+  "chunk_count": 0
 }
 ```
 
 **Error Responses:**
-- `400 Bad Request` - Attempted to clear default collection (message: "Cannot clear the 'default' collection. This collection is protected.")
+- `400 Bad Request` - Attempted to clear the default collection (message: "Cannot clear the 'default' collection. This collection is protected.")
+- `404 Not Found` - Collection does not exist
 - `503 Service Unavailable` - Cassandra driver not available
 - `500 Internal Server Error` - Failed to clear collection
+
+### `DELETE /api/v1/rag/collections/{name}`
+
+Permanently delete a RAG collection: its documents/chunks, its stored settings, and its backing Cassandra table (`DROP TABLE`). This is different from clearing -- after a delete, the collection no longer exists and must be re-created (via `POST /rag/collections`) before it can be used again.
+
+**WARNING:** This operation cannot be undone.
+
+**Path Parameters:**
+- `name` - Collection name to delete
+
+**Restrictions:**
+- Cannot delete the `default` collection (returns 400 error) -- chat and ingestion fall back to it by default
+
+**Response:**
+
+```json
+{
+  "collection": "all-minilm",
+  "status": "Collection 'all-minilm' has been permanently deleted."
+}
+```
+
+**Error Responses:**
+- `400 Bad Request` - Attempted to delete the default collection (message: "Cannot delete the 'default' collection. It is protected because chat and ingestion fall back to it by default.")
+- `404 Not Found` - Collection does not exist
+- `503 Service Unavailable` - Cassandra driver not available
+- `500 Internal Server Error` - Failed to delete collection
 
 ### `GET /api/v1/rag/documents`
 
@@ -2336,7 +2366,7 @@ When caching is disabled, all counters are zeroed and `enabled` is `false` rathe
 
 ### `POST /api/v1/rag/cache/clear`
 
-Manually clear the RAG query result cache. Also triggered automatically on document ingestion/update, collection deletion, and collection re-indexing; this endpoint is mainly for manual troubleshooting.
+Manually clear the RAG query result cache. Also triggered automatically on document ingestion/update, collection clear, collection deletion, and collection re-indexing; this endpoint is mainly for manual troubleshooting.
 
 **Response:**
 
