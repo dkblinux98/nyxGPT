@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import socket
+from configparser import ConfigParser
 from pathlib import Path
 
 import pytest
@@ -79,25 +80,123 @@ release_branch = v1.0.0
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _configure_test_logging():
-    """
-    Ensure pytest runs write logs to ~/.nyxGPT/logs/tests.log (in addition to pytest capture).
-    """
-    # In CI or when config doesn't exist, use default log directory
-    try:
-        cfg = load_config(None)
-        log_dir = Path(get_log_dir(cfg)).expanduser()
-    except FileNotFoundError:
-        # Config doesn't exist (e.g., in CI), use default log directory
-        log_dir = Path("~/.nyxGPT/logs").expanduser()
-        cfg = None
+def _isolate_test_log_dir(tmp_path_factory, _ensure_test_config):
+    """Redirect the real config.ini's [logging] dir to a temp dir for the session.
 
+    Root cause of #3443: `_configure_test_logging` (below), and every other
+    code path that loads the real config (`app.py`, `cli.py`, `self_heal.py`,
+    `admin_activity.py`, etc.), calls `load_config(None)` and then passes the
+    *loaded* `ConfigParser` on to `configure_logging`/`get_log_dir` -- so an
+    override keyed on "no cfg was passed" can't reach it. Rewriting
+    `[logging] dir` in the actual `~/.nyxGPT/config.ini` file on disk (for
+    the whole session, restored at teardown) is the one place that's
+    upstream of every one of those call sites: `load_config` is mtime-cached,
+    so this edit takes effect on the next call and needs no per-test
+    cooperation (no caplog, no mocking get_log_dir).
+
+    A second gap: some tests swap in their own bare/isolated config (e.g.
+    `test_config_sections_endpoint.py` monkeypatches
+    `nyxgpt.config.DEFAULT_CONFIG_PATH` to a tmp file with no `[logging]`
+    section of its own) -- for those, `get_log_dir()` falls through to its
+    *default*, which is `NYXGPT_LOG_DIR` when set (see nyxgpt/logging.py),
+    so that env var is set here too, for the same reason.
+
+    On a dev machine where promtail ships the real log dir to Loki, a plain
+    `pytest tests/unit/` run's synthetic ERROR/WARNING records (e.g. the fake
+    "Ollama HTTP 500" exception in test_chat_completeness.py) showed up in
+    Grafana indistinguishable from a real chat failure and derailed an
+    incident investigation -- this is what that redirected.
+
+    Also asserts, at session teardown, that the real production log dir
+    (resolved from the *original* config, before the rewrite) gained no
+    files/bytes during the run -- so a future code path that bypasses both
+    of the above and writes to the prod dir directly (e.g. a hardcoded
+    ``~/.nyxGPT/logs`` path) fails the suite instead of silently shipping
+    test noise to Loki again.
+
+    Crash safety: before overwriting config.ini, the pre-redirect content is
+    also written to a sibling ``config.ini.pytest-bak`` backup. If the
+    process is killed mid-session (OOM, `kill -9`, CI eviction) the teardown
+    below never runs and the real config.ini is left pointing at a tmp dir
+    that will eventually be cleaned up -- silently misdirecting the
+    developer's real logs away from Loki, which is exactly the failure mode
+    this fixture exists to prevent. On the *next* session, an orphaned
+    backup is detected and restored before anything else reads config.ini,
+    so the corruption self-heals instead of persisting (or perpetuating,
+    since a naive restore would otherwise re-snapshot the corrupted file as
+    "original").
+    """
+    config_path = Path.home() / ".nyxGPT" / "config.ini"
+    backup_path = config_path.with_name(config_path.name + ".pytest-bak")
+
+    if backup_path.exists():
+        # A prior session crashed before restoring config.ini -- recover the
+        # real content now, before anything else (including this fixture)
+        # reads or snapshots it.
+        config_path.write_text(backup_path.read_text())
+        backup_path.unlink()
+
+    original_text = config_path.read_text()
+
+    prod_log_dir = get_log_dir(load_config(None))
+
+    def _snapshot() -> dict[str, tuple[int, float]]:
+        if not prod_log_dir.exists():
+            return {}
+        return {
+            str(p): (p.stat().st_size, p.stat().st_mtime)
+            for p in prod_log_dir.rglob("*")
+            if p.is_file()
+        }
+
+    before = _snapshot()
+
+    tmp_log_dir = tmp_path_factory.mktemp("nyxgpt-test-logs")
+    redirected_cfg = ConfigParser()
+    redirected_cfg.read_string(original_text)
+    if not redirected_cfg.has_section("logging"):
+        redirected_cfg.add_section("logging")
+    redirected_cfg.set("logging", "dir", str(tmp_log_dir))
+
+    # Persist the pre-redirect content as a recovery backup *before*
+    # overwriting config.ini, so a hard-killed process leaves behind
+    # something the next session can recover from.
+    backup_path.write_text(original_text)
+    with config_path.open("w", encoding="utf-8") as fh:
+        redirected_cfg.write(fh)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setenv("NYXGPT_LOG_DIR", str(tmp_log_dir))
+
+    yield tmp_log_dir
+
+    monkeypatch.undo()
+    config_path.write_text(original_text)
+    backup_path.unlink(missing_ok=True)
+
+    after = _snapshot()
+    changed = sorted(p for p in after if before.get(p) != after.get(p))
+    assert not changed, (
+        f"pytest run wrote to the production log directory {prod_log_dir}: "
+        f"{changed} -- tests must never write to the real log dir (see #3443)"
+    )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _configure_test_logging(_isolate_test_log_dir):
+    """
+    Ensure pytest runs write logs to a session-scoped temp dir (in addition to
+    pytest capture) -- never to the real production log directory. Depends on
+    `_isolate_test_log_dir` (above), which redirects config.ini's [logging]
+    dir to a temp dir before this fixture (or anything else) loads config.
+    """
+    cfg = load_config(None)
+    log_dir = Path(get_log_dir(cfg)).expanduser()
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initialize the same rotating-file logging used by the app/CLI if config available
-    # This adds the RequestIdFilter to the root logger
-    if cfg is not None:
-        configure_logging(cfg, console=False)
+    # Initialize the same rotating-file logging used by the app/CLI.
+    # This adds the RequestIdFilter to the root logger.
+    configure_logging(cfg, console=False)
 
     # IMPORTANT: Ensure root logger level allows WARNING/INFO during tests
     # The configure_logging might set it too high

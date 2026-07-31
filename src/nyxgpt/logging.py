@@ -22,6 +22,14 @@ from pathlib import Path
 from opentelemetry import trace
 
 DEFAULT_LOGGER_NAME = "nyxgpt"
+
+# When [logging] dir isn't explicitly set in the loaded config, get_log_dir()
+# falls back to this env var (if set) instead of the hardcoded ~/.nyxGPT/logs
+# default. The test suite (tests/conftest.py) sets this for the whole session
+# so that any test which swaps in its own bare/isolated config (no explicit
+# [logging] dir of its own) still can't fall through to the real production
+# log dir default (see #3443).
+LOG_DIR_OVERRIDE_ENV = "NYXGPT_LOG_DIR"
 # %(trace_suffix)s is "" when no span is active (TraceContextFilter) so this
 # format stays byte-identical to pre-#3430 lines and needs no promtail regex
 # change -- Grafana's Loki->Jaeger derived field already matches `trace_id=`
@@ -235,10 +243,13 @@ def get_log_dir(cfg: ConfigParser | None = None) -> Path:
     """Return the configured log directory.
 
     This is the single source of truth for where logs are stored.
-    Reads from [logging] dir, falls back to ~/.nyxGPT/logs.
+    Reads from [logging] dir, falls back to `NYXGPT_LOG_DIR` (if set) or
+    else ~/.nyxGPT/logs. A `cfg` that explicitly sets [logging] dir always
+    wins -- only the *fallback* used when it's unset can be overridden.
     """
     cfg = _coerce_cfg(cfg)
-    log_dir_str = cfg.get("logging", "dir", fallback=str(Path.home() / ".nyxGPT" / "logs"))
+    default_dir = os.environ.get(LOG_DIR_OVERRIDE_ENV) or str(Path.home() / ".nyxGPT" / "logs")
+    log_dir_str = cfg.get("logging", "dir", fallback=default_dir)
     return Path(log_dir_str).expanduser()
 
 

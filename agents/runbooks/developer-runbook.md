@@ -64,6 +64,21 @@ touching:
   fixed interval belongs in `logging.py`'s
   `_ACCESS_LOG_EXCLUDED_PATH_PREFIXES`, or it will fill the rotating file
   handler with near-zero-signal INFO lines on every poll.
+- **Tests must never write to the production log dir.** A local
+  `pytest tests/unit/` run once wrote synthetic ERROR records through the
+  real rotating file handler into `~/.nyxGPT/logs`, which promtail shipped
+  to Loki and which then derailed a real incident RCA because it looked
+  indistinguishable from a genuine chat failure (#3443). Two structural
+  fixes, both in `tests/conftest.py`'s session-scoped `_isolate_test_log_dir`
+  fixture: it rewrites the real `~/.nyxGPT/config.ini`'s `[logging] dir` to a
+  temp dir for the whole session (restored at teardown), covering every code
+  path that loads the real config; and it sets a `NYXGPT_LOG_DIR` env var
+  that `get_log_dir()` (`logging.py`) uses as the *fallback* when a cfg
+  doesn't set `[logging] dir` at all, covering tests that swap in their own
+  bare/isolated config. The fixture also asserts the real log dir is
+  untouched at teardown. Don't bypass `get_log_dir()` with a hardcoded
+  `~/.nyxGPT/logs` path in new code, and don't rely on per-test caplog
+  discipline as the only safeguard.
 
 ## 4) Verification loop (MANDATORY - ALL must pass before commit)
 Run ALL of the following checks and fix issues until they pass:
