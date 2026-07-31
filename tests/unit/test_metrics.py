@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import builtins
+import importlib
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -342,3 +345,34 @@ def test_rag_query_endpoint_increments_business_metrics() -> None:
     assert any(
         s.labels.get("source") == "rag_query" for s in rag_samples
     ), "expected a rag counter sample for the real /api/v1/rag/query request"
+
+
+@pytest.mark.unit
+def test_metrics_falls_back_to_noop_when_prometheus_client_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#3487: a stale venv missing prometheus-client must not crash importing
+    nyxgpt.metrics (and transitively every module that imports it) -- every
+    call site must keep working as a no-op instead."""
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):  # type: ignore[no-untyped-def]
+        if name == "prometheus_client":
+            raise ModuleNotFoundError("No module named 'prometheus_client'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.delitem(sys.modules, "prometheus_client", raising=False)
+
+    try:
+        importlib.reload(prom_metrics)
+
+        # Must not raise even though the real backend is gone.
+        prom_metrics.HTTP_REQUESTS_TOTAL.labels(method="GET", path="/x", status="200").inc()
+        body, content_type = prom_metrics.render_metrics()
+
+        assert body == b""
+        assert content_type.startswith("text/plain")
+    finally:
+        monkeypatch.undo()
+        importlib.reload(prom_metrics)

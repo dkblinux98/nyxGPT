@@ -17,15 +17,22 @@ import os
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
-import sentry_sdk
-from sentry_sdk.integrations.fastapi import FastApiIntegration
-from sentry_sdk.integrations.starlette import StarletteIntegration
+from nyxgpt.optional_imports import try_import, try_import_attr
 
 _LogLevel = Literal["fatal", "critical", "error", "warning", "info", "debug"]
 
 logger = logging.getLogger(__name__)
 
 _enabled = False
+
+# sentry_sdk and its integrations are separate concerns from an import-crash
+# perspective: a venv can be missing one after a pull adds/bumps it (#3487).
+# Guarded so that importing this module never crashes; init_error_tracking()
+# checks for None and disables error tracking with a single actionable
+# warning instead.
+sentry_sdk = try_import("sentry_sdk")
+FastApiIntegration = try_import_attr("sentry_sdk.integrations.fastapi", "FastApiIntegration")
+StarletteIntegration = try_import_attr("sentry_sdk.integrations.starlette", "StarletteIntegration")
 
 # GlitchTip always issues DSNs using [error_tracking]'s GLITCHTIP_DOMAIN host
 # (localhost), since that's what a browser needs to reach its UI. Pasted
@@ -101,6 +108,16 @@ def init_error_tracking(error_tracking_config: dict[str, Any]) -> None:
         _enabled = False
         return
 
+    if sentry_sdk is None or FastApiIntegration is None or StarletteIntegration is None:
+        logger.warning(
+            "Error tracking is enabled but the sentry-sdk package is not installed -- "
+            "your environment is likely stale after a pull; run `pip install -e .` "
+            "to install it. Error tracking stays disabled until then.",
+            extra={"component": "error_tracking"},
+        )
+        _enabled = False
+        return
+
     dsn = _normalize_dsn_host(dsn)
 
     sentry_sdk.init(
@@ -133,7 +150,7 @@ def capture_exception(exc: BaseException, **context: Any) -> None:
     No-op when error tracking is disabled, so call sites don't need to
     special-case it.
     """
-    if not _enabled:
+    if not _enabled or sentry_sdk is None:
         return
 
     with sentry_sdk.isolation_scope() as scope:
@@ -147,7 +164,7 @@ def capture_message(message: str, *, level: _LogLevel = "error", **context: Any)
 
     No-op when error tracking is disabled.
     """
-    if not _enabled:
+    if not _enabled or sentry_sdk is None:
         return
 
     with sentry_sdk.isolation_scope() as scope:

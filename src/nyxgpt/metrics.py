@@ -8,14 +8,70 @@ the `/metrics` endpoint.
 
 from __future__ import annotations
 
-from prometheus_client import (
-    CONTENT_TYPE_LATEST,
-    CollectorRegistry,
-    Counter,
-    Gauge,
-    Histogram,
-    generate_latest,
-)
+import logging
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+try:
+    from prometheus_client import (
+        CONTENT_TYPE_LATEST,
+        CollectorRegistry,
+        Counter,
+        Gauge,
+        Histogram,
+        generate_latest,
+    )
+except ModuleNotFoundError:
+    # prometheus-client is declared in pyproject.toml but a venv can be
+    # missing it after a pull adds/bumps a dependency (#3487). Metrics are
+    # collected unconditionally (no config-driven "enabled" gate like
+    # tracing/error_tracking), so there's no init function to defer this
+    # warning to -- log it once here and fall back to no-op collectors so
+    # every call site across the app (chat, self_heal, cache, ops, ...)
+    # keeps working without special-casing a missing metrics backend.
+    logger.warning(
+        "prometheus-client is not installed; metrics collection is disabled -- "
+        "your environment is likely stale after a pull; run `pip install -e .` "
+        "to install it.",
+        extra={"component": "metrics"},
+    )
+
+    class _NoOpMetric:
+        """Stand-in for Counter/Gauge/Histogram that drops every call."""
+
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            """Accept and ignore whatever arguments the real metric takes."""
+
+        def labels(self, *_args: Any, **_kwargs: Any) -> _NoOpMetric:
+            """Return self so chained `.labels(...).inc()` calls keep working."""
+            return self
+
+        def inc(self, *_args: Any, **_kwargs: Any) -> None:
+            """No-op counter increment."""
+
+        def set(self, *_args: Any, **_kwargs: Any) -> None:
+            """No-op gauge set."""
+
+        def observe(self, *_args: Any, **_kwargs: Any) -> None:
+            """No-op histogram observation."""
+
+    class _NoOpCollectorRegistry:
+        """Stand-in for `CollectorRegistry` that holds nothing."""
+
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            """Accept and ignore whatever arguments the real registry takes."""
+
+    CollectorRegistry = _NoOpCollectorRegistry  # type: ignore[assignment, misc]
+    Counter = _NoOpMetric  # type: ignore[assignment, misc]
+    Gauge = _NoOpMetric  # type: ignore[assignment, misc]
+    Histogram = _NoOpMetric  # type: ignore[assignment, misc]
+    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
+
+    def generate_latest(_registry: Any) -> bytes:  # type: ignore[misc]
+        """Stand-in for `generate_latest`: nothing was ever collected."""
+        return b""
+
 
 REGISTRY = CollectorRegistry()
 

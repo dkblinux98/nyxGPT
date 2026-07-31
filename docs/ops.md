@@ -416,6 +416,11 @@ Checks include:
   shared `~/.nyxGPT/volumes/ollama/models` path -- catches drift back to
   Ollama's own default store (see
   [homebrew.md#ollama-model-store](homebrew.md#ollama-model-store))
+- Whether the installed Python environment actually has every dependency
+  declared in `pyproject.toml` (via `importlib.metadata`) -- catches a venv
+  that wasn't refreshed after a `git pull` added or bumped a dependency,
+  reporting exactly which package(s) are missing and to run
+  `pip install -e .`
 
 Results are reported with clear PASS / FAIL indicators.
 
