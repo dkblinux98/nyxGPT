@@ -197,6 +197,33 @@ this hostname does not resolve by default; either:
 
 The same applies to `rag.cassandra_hosts` if you enable RAG.
 
+## Infrastructure Status card (#3468)
+
+The **Infrastructure Status** admin page (`/admin/infrastructure`, see
+[ui.md](ui.md#admin-dashboard)) reports the Kubernetes probe (`GET
+/api/v1/infra/status`, backed by `ops.infra_status()`) as one of three honest
+states rather than folding every failure into a single "not deployed":
+
+- **NOT DEPLOYED** -- no kubeconfig current-context is configured at all
+  (`kubectl` missing from PATH is folded into this same bucket, since
+  there's then no context to read either way). By definition, no configured
+  cluster means there was never anything to be unreachable. This is also
+  the state once a context *is* configured, the cluster answers, and the
+  `nyxgpt` namespace simply has no Pods.
+- **CANNOT DETERMINE** -- a context is configured but the `kubectl -n
+  nyxgpt get pods` probe itself failed (timeout, connection refused to a
+  cluster that's meant to exist, an auth failure). This is reserved for a
+  cluster that's genuinely supposed to be there, preserving the original
+  #3410 protection against misreporting a flaky-but-real cluster as "not
+  deployed."
+- **DEPLOYED** -- the probe succeeded and found Pods in the `nyxgpt`
+  namespace.
+
+This mirrors, but is distinct from, the canary status honesty states
+described in [Honest status, mode-aware (#3409)](#honest-status-mode-aware-3409)
+below -- that section covers per-track rollout health once something is
+deployed, while this one covers whether a cluster is deployed at all.
+
 ## Canary Deployment
 
 Canary is the sole deployment model (#3409 retired blue/green -- a separate
