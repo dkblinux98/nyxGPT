@@ -205,6 +205,46 @@ fi
 
 echo "[review] ✓ Critical path complete" >&2
 
+# ---- OPTIONAL: Sprint autopilot kick (#3480) ----
+# Self-continuing loop: while the active Sprint still has open Backlog work,
+# post READY_FOR_NEXT_ISSUE ourselves instead of waiting for a human to do
+# it. The sprint boundary is the stop condition -- once the sprint has no
+# open Backlog issues left, post a completion note instead of a kick; a
+# human kick is still required to start work outside the sprint. Off by
+# default (SPRINT_AUTOPILOT unset/false): behavior is then exactly the
+# pre-#3480 manual-kick flow. Best-effort: never fails the merge itself.
+echo "[review] ===== Sprint autopilot =====" >&2
+SPRINT_AUTOPILOT_VALUE="${SPRINT_AUTOPILOT:-false}"
+if [[ "$SPRINT_AUTOPILOT_VALUE" != "true" ]]; then
+  echo "[review] Sprint autopilot disabled (SPRINT_AUTOPILOT=${SPRINT_AUTOPILOT_VALUE}) -- no auto-kick." >&2
+elif [[ -z "${RELEASE_ISSUE_NUMBER:-}" ]]; then
+  _warn "SPRINT_AUTOPILOT is on but RELEASE_ISSUE_NUMBER is not configured -- skipping auto-kick."
+elif sprint_autopilot_paused "$RELEASE_ISSUE_NUMBER"; then
+  echo "[review] Sprint autopilot paused (PAUSE_SPRINT) -- no auto-kick." >&2
+  issue_comment "$RELEASE_ISSUE_NUMBER" "⏸️ **Sprint Autopilot**: Issue #${ISSUE} merged, but autopilot is paused (\`PAUSE_SPRINT\`) -- no automatic kick posted. Comment \`RESUME_SPRINT\` to continue, or \`READY_FOR_NEXT_ISSUE\` to kick manually." \
+    || _warn "Failed to post autopilot-paused notice."
+else
+  SPRINT_FIELD_VALUE="${SPRINT_FIELD:-Sprint}"
+  active_sprint="$(iteration_active_title "$SPRINT_FIELD_VALUE" 2>/dev/null || echo "")"
+  if [[ -z "$active_sprint" || "$active_sprint" == "null" ]]; then
+    echo "[review] Sprint autopilot: no active Sprint -- no auto-kick." >&2
+  else
+    remaining="$(count_sprint_backlog_open "$SPRINT_FIELD_VALUE" "$active_sprint" 2>/dev/null || echo "")"
+    decision="$(python3 "${_LIB_DIR}/sprint_calc.py" autopilot-decision "${remaining:-0}")"
+    if [[ "$decision" == "continue" ]]; then
+      issue_comment "$RELEASE_ISSUE_NUMBER" "🔁 **Sprint Autopilot**: Issue #${ISSUE} merged. Sprint \"${active_sprint}\" still has ${remaining} open Backlog issue(s) -- continuing automatically.
+
+READY_FOR_NEXT_ISSUE" \
+        && echo "[review] Autopilot: posted READY_FOR_NEXT_ISSUE (sprint '${active_sprint}' has ${remaining} remaining)." >&2 \
+        || _warn "Autopilot: failed to post READY_FOR_NEXT_ISSUE kick."
+    else
+      issue_comment "$RELEASE_ISSUE_NUMBER" "🏁 **Sprint Autopilot**: Issue #${ISSUE} merged. Sprint \"${active_sprint}\" has no open Backlog issues remaining -- sprint complete. Autopilot is stopping; a human \`READY_FOR_NEXT_ISSUE\` kick is required to start work outside this sprint." \
+        && echo "[review] Autopilot: sprint '${active_sprint}' complete -- posted completion note, no kick." >&2 \
+        || _warn "Autopilot: failed to post sprint-complete note."
+    fi
+  fi
+fi
+
 # ---- OPTIONAL: Branch cleanup ----
 echo "[review] ===== Performing optional cleanup =====" >&2
 

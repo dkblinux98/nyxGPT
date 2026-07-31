@@ -7,6 +7,13 @@ set -euo pipefail
 # - NO self-sourcing
 # ============================================================
 
+# Directory this file lives in, resolved at source time (not inside a
+# function -- BASH_SOURCE[0] there would resolve to gh_project.sh itself,
+# which is what we want, but computing it once up front keeps every caller
+# consistent). Used to locate the sibling python helpers (sprint_calc.py,
+# summarize_backlog_page.py, #3480).
+_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # -------------------------
 # Logging / error handling
 # -------------------------
@@ -463,6 +470,118 @@ set_issue_status() {
   local item_id
   item_id="$(ensure_issue_in_project "$issue")"
   set_project_field_value "$item_id" "$STATUS_FIELD" "$status"
+}
+
+# Clears (unsets) a project field on an item -- used by
+# scrummaster_sprint_reorg_apply.sh to move an issue out of a Sprint
+# iteration field. There is no "unset" case in set_project_field_value
+# because every existing caller always sets a concrete value (#3480).
+clear_project_field_value() {
+  local item_id="$1" field_name="$2"
+  require_cmd jq
+
+  local project_id field_id
+  project_id="$(get_project_id)"
+  field_id="$(field_id_by_name "$field_name")"
+  [[ -n "$field_id" && "$field_id" != "null" ]] || _die "Project field not found: ${field_name}"
+
+  local q
+  q="mutation(\$project:ID!, \$item:ID!, \$field:ID!){
+    clearProjectV2ItemFieldValue(input:{
+      projectId:\$project,
+      itemId:\$item,
+      fieldId:\$field
+    }){ projectV2Item { id } }
+  }"
+  graphql "$q" -F project="$project_id" -F item="$item_id" -F field="$field_id" >/dev/null
+}
+
+# -------------------------
+# Sprint autopilot (#3480)
+# -------------------------
+# Shared page query for scrummaster_next_issue.sh's --sprint-scoped guard and
+# count_sprint_backlog_open() below: fetches Status + Sprint iteration field
+# values alongside issue number/state/milestone, one project-items page at a
+# time. Kept in one place so both callers can't drift out of sync.
+BACKLOG_PAGE_QUERY='query($project:ID!, $after:String){
+  node(id:$project){
+    ... on ProjectV2{
+      items(first:100, after:$after){
+        pageInfo { hasNextPage endCursor }
+        nodes{
+          content{
+            __typename
+            ... on Issue { number state milestone { title } }
+          }
+          fieldValues(first:50){
+            nodes{
+              __typename
+              ... on ProjectV2ItemFieldSingleSelectValue {
+                field { ... on ProjectV2SingleSelectField { name } }
+                name
+              }
+              ... on ProjectV2ItemFieldIterationValue {
+                field { ... on ProjectV2IterationField { name } }
+                title
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}'
+
+# Counts OPEN issues with Status=Backlog whose Sprint iteration field equals
+# `sprint_title`. This is the sprint-autopilot stop condition:
+# review_accept_and_merge.sh posts READY_FOR_NEXT_ISSUE while this is > 0,
+# and posts a "sprint complete" note (no kick) once it hits 0.
+count_sprint_backlog_open() {
+  local sprint_field="$1" sprint_title="$2"
+  require_cmd jq
+  require_cmd python3
+
+  local project_id cursor="" total=0 tmp has_next next_cursor page_count
+  project_id="$(get_project_id)"
+  tmp="$(mktemp)"
+
+  local max_pages="${MAX_PAGES:-200}"
+  local page
+  for ((page = 1; page <= max_pages; page++)); do
+    if [[ -n "$cursor" ]]; then
+      graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" -F after="$cursor" >"$tmp"
+    else
+      graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" >"$tmp"
+    fi
+
+    page_count="$(STATUS_FIELD="$STATUS_FIELD" STATUS_BACKLOG="$STATUS_BACKLOG" \
+      SPRINT_FIELD="$sprint_field" SPRINT_SCOPED=1 ACTIVE_SPRINT_TITLE="$sprint_title" \
+      python3 "${_LIB_DIR}/summarize_backlog_page.py" "$tmp" | jq -r '.backlog_open')"
+    total=$((total + page_count))
+
+    has_next="$(jq -r '.data.node.items.pageInfo.hasNextPage' "$tmp")"
+    next_cursor="$(jq -r '.data.node.items.pageInfo.endCursor // empty' "$tmp")"
+    [[ "$has_next" == "true" && -n "$next_cursor" ]] || break
+    cursor="$next_cursor"
+  done
+
+  rm -f "$tmp"
+  echo "$total"
+}
+
+# True if the most recent PAUSE_SPRINT/RESUME_SPRINT control comment on
+# `release_issue` is a PAUSE_SPRINT -- the sprint-autopilot kill switch
+# (#3480). No comment of either kind means "not paused" (default-on once
+# SPRINT_AUTOPILOT itself is enabled).
+sprint_autopilot_paused() {
+  local release_issue="$1"
+  require_cmd jq
+
+  local last_state
+  last_state="$(gh api "repos/${REPO_OWNER}/${REPO_NAME}/issues/${release_issue}/comments" --paginate \
+    --jq '[.[] | select(.body | test("^\\s*(PAUSE_SPRINT|RESUME_SPRINT)\\s*$"))] | sort_by(.created_at) | last | .body // empty' \
+    2>/dev/null | tr -d '[:space:]')"
+  [[ "$last_state" == "PAUSE_SPRINT" ]]
 }
 
 # -------------------------

@@ -53,6 +53,8 @@ Configure these in: **Settings → Secrets and variables → Actions → Variabl
 | `STATUS_FOR_RELEASE` | `For Release` | For release status value |
 | `RELEASE_BRANCH` | `v1.0.0` | Active release branch name |
 | `RELEASE_ISSUE_NUMBER` | `2709` | Release tracking issue number |
+| `SPRINT_AUTOPILOT` | `false` | Sprint autopilot kill switch (#3480) — `true` enables the self-continuing merge -> next-issue loop; see `docs/sprint-autopilot.md` |
+| `SPRINT_FIELD` | `Sprint` | Project iteration field name for sprint scoping/reporting (#3480); optional, defaults to `Sprint` |
 
 ## Token Scopes Required
 
