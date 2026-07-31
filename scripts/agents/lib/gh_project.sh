@@ -207,6 +207,20 @@ load_config() {
   # environments need no new repo variable; override via config if the
   # option is ever renamed.
   STATUS_ACCEPTANCE_TESTING="${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}"
+
+  # Timezone in which sprint-date boundaries are evaluated (owner rule,
+  # 2026-07-31: "midnight is midnight EDT, not UTC"). Iteration start dates
+  # are timezone-less, so every "has this sprint started/ended?" comparison
+  # must compute *today* in the owner's timezone -- with UTC, sprints
+  # flipped at 8pm Eastern. America/New_York tracks EST/EDT automatically.
+  # Optional config key; override via repo config if the owner relocates.
+  SPRINT_TIMEZONE="${SPRINT_TIMEZONE:-America/New_York}"
+}
+
+# Today's date (YYYY-MM-DD) in the sprint timezone -- use this, never
+# `date -u`, for any comparison against Sprint iteration start/end dates.
+sprint_today() {
+  TZ="${SPRINT_TIMEZONE:-America/New_York}" date +%Y-%m-%d
 }
 
 # -------------------------
@@ -324,7 +338,7 @@ iteration_active_title() {
   # the furthest-future sprint the moment the owner schedules it ahead of
   # time (2026-07-31: adding Sprint 7/8 made "active" jump to Sprint 8 while
   # Sprint 6 was still running). Filter to startDate <= today first.
-  get_fields_json | jq -r --arg f "$field_name" --arg today "$(date -u +%Y-%m-%d)" '
+  get_fields_json | jq -r --arg f "$field_name" --arg today "$(sprint_today)" '
     .data.node.fields.nodes[]
     | select(.name==$f and .__typename=="ProjectV2IterationField")
     | .configuration.iterations
