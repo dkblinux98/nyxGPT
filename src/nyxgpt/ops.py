@@ -27,6 +27,7 @@ import tomllib
 from collections.abc import Callable, Iterator
 from configparser import ConfigParser
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ from nyxgpt.config import (
     get_log_aggregation_enabled,
     get_monitoring_config,
     get_monitoring_grafana_admin_password,
+    get_monitoring_slack_webhook_url,
     get_tracing_config,
     get_tracing_enabled,
 )
@@ -3037,6 +3039,7 @@ def install(args) -> int:
         # bind-mount auto-creates a missing ~/.nyxGPT/secrets root-owned on
         # Linux (#3432), which then blocks the token write below.
         steps.append(("glitchtip secrets dir", _ensure_glitchtip_secrets_dir))
+        steps.append(("slack webhook secret", _sync_grafana_slack_webhook_secret))
         steps.append(("observability stack", _reconcile_grafana_provisioning))
         steps.append(("glitchtip auto-provisioning", _provision_glitchtip))
     for step_name, fn in steps:
@@ -5267,6 +5270,7 @@ def env_sync(args) -> int:
 
     results = _generate_compose_config()
     results += sync_env_from_config(cfg_path=cfg_path, env_path=env_path)
+    results += _sync_grafana_slack_webhook_secret(cfg_path=cfg_path)
 
     ok = _emit_results("env-sync", results)
     logger.info(
@@ -5909,12 +5913,13 @@ def _write_grafana_glitchtip_token(token: str) -> tuple[bool, OpsResult]:
     return True, OpsResult(True, f"Wrote GlitchTip API token for Grafana to {path}")
 
 
-def _restart_grafana_if_running() -> OpsResult:
+def _restart_grafana_if_running(reason: str = "the new GlitchTip token") -> OpsResult:
     """Restart the `grafana` Compose container if it's currently running.
 
-    Grafana only reads `$__file{}` provisioning targets (like the GlitchTip
-    Infinity token, see `_write_grafana_glitchtip_token`) at startup, so a
-    freshly (re)written token needs this to actually take effect.
+    Grafana only reads `$__file{}` provisioning targets (the GlitchTip
+    Infinity token, see `_write_grafana_glitchtip_token`, and the Slack
+    alerting webhook, see `_write_grafana_slack_webhook_secret`) at startup,
+    so a freshly (re)written secret needs this to actually take effect.
     """
     if not _compose_available():
         return OpsResult(True, "Skipped Grafana restart (Docker not found)")
@@ -5927,7 +5932,177 @@ def _restart_grafana_if_running() -> OpsResult:
     cp = _run(cmd, check=False)
     if cp.returncode != 0:
         return OpsResult(False, "Failed to restart Grafana", (cp.stderr or cp.stdout or "").strip())
-    return OpsResult(True, "Restarted Grafana to pick up the new GlitchTip token")
+    return OpsResult(True, f"Restarted Grafana to pick up {reason}")
+
+
+def _slack_webhook_secret_path() -> Path:
+    """Where the Slack incoming-webhook URL is written for Grafana's alerting
+    contact point to read (#3466) -- see
+    docker/grafana/provisioning/alerting/contact-points.yml's `$__file{}`
+    reference. Lives in the same `~/.nyxGPT/secrets` directory as the
+    GlitchTip Grafana token (`_glitchtip_grafana_token_path`), so the
+    existing `_ensure_glitchtip_secrets_dir` preflight (#3432) already
+    guards this write against the root-owned bind-mount directory failure
+    mode too.
+
+    Computed fresh on every call, not a module-level constant, so tests can
+    monkeypatch `Path.home`.
+    """
+    return Path.home() / ".nyxGPT" / "secrets" / "slack-webhook-url"
+
+
+def _write_grafana_slack_webhook_secret(url: str) -> tuple[bool, OpsResult]:
+    """Write `url` (may be empty) to `_slack_webhook_secret_path()` for
+    Grafana's `nyxgpt-slack` contact point.
+
+    Always writes the file, even when `url` is `""` -- the contact point's
+    `$__file{}` reference must resolve to *something* at Grafana startup;
+    an empty webhook URL just means Slack delivery silently fails (visible
+    under Grafana's Alerting -> Contact points -> Test) while the alert
+    rules themselves still evaluate and fire regardless (#3466's "alerts
+    still fire visibly with no webhook configured" requirement).
+
+    Returns `(changed, result)` -- `changed` is False when the file already
+    holds this exact value, which callers use to skip an unnecessary
+    Grafana restart (mirrors `_write_grafana_glitchtip_token`).
+    """
+    path = _slack_webhook_secret_path()
+    try:
+        if path.exists() and path.read_text(encoding="utf-8").strip() == url.strip():
+            return False, OpsResult(True, f"{path} already holds the current Slack webhook URL")
+
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.write_text(url, encoding="utf-8")
+        os.chmod(path, 0o600)
+    except OSError as e:
+        result = _glitchtip_secrets_dir_unwritable_result(path.parent)
+        return False, OpsResult(
+            False,
+            f"Cannot write Slack webhook URL to {path}",
+            f"{result.details}\n{type(e).__name__}: {e}",
+        )
+    verb = "Wrote" if url.strip() else "Cleared"
+    return True, OpsResult(True, f"{verb} Slack webhook URL for Grafana at {path}")
+
+
+def _sync_grafana_slack_webhook_secret(cfg_path: Path | None = None) -> list[OpsResult]:
+    """Provision Grafana's Slack contact point secret from config.ini's
+    `[monitoring] slack_webhook_url` (#3466).
+
+    Run from both `install()` and `env_sync()` so the webhook is picked up
+    whether the user runs the full native install or just the Compose-only
+    Quickstart's `nyxgpt ops env-sync` before `docker compose up`.
+    """
+    from nyxgpt.config import load_config
+
+    cfg_path = cfg_path or (Path.home() / ".nyxGPT" / "config.ini")
+    if not cfg_path.exists():
+        return [OpsResult(True, "Skipped Slack webhook sync (no config.ini yet)")]
+    cfg = load_config(cfg_path)
+
+    url = get_monitoring_slack_webhook_url(cfg)
+    changed, write_result = _write_grafana_slack_webhook_secret(url)
+    results = [write_result]
+    if changed:
+        results.append(_restart_grafana_if_running("the new Slack webhook URL"))
+    return results
+
+
+def _send_grafana_test_alert(grafana_ui_url: str, grafana_admin_password: str) -> OpsResult:
+    """POST a synthetic alert straight into Grafana's embedded Alertmanager
+    (#3466) -- the same API real firing rules route through, so this
+    exercises the whole pipeline end to end: it shows up in Grafana's
+    Alerting -> Fired alerts UI, and reaches Slack via the nyxgpt-slack
+    contact point/notification policy if a webhook is configured, exactly
+    like a genuine CPU/memory/disk/self-heal/canary alert would.
+
+    `endsAt` is 5 minutes out so a forgotten test alert resolves itself
+    instead of paging anyone indefinitely.
+    """
+    now = datetime.now(UTC)
+    payload = [
+        {
+            "labels": {"alertname": "NyxGPTAlertTest", "severity": "warning"},
+            "annotations": {
+                "summary": "Test alert triggered by `nyxgpt ops alert-test`",
+                "description": (
+                    "Synthetic alert used to verify the Grafana alerting pipeline (rules -> "
+                    "notification policy -> Slack contact point) end to end. Resolves itself "
+                    "automatically."
+                ),
+            },
+            "startsAt": now.isoformat(),
+            "endsAt": (now + timedelta(minutes=5)).isoformat(),
+        }
+    ]
+    try:
+        with _grafana_admin_client(grafana_ui_url, grafana_admin_password) as client:
+            resp = client.post("/api/alertmanager/grafana/api/v2/alerts", json=payload)
+            resp.raise_for_status()
+    except httpx.HTTPError as e:
+        return OpsResult(
+            False,
+            "Failed to send test alert to Grafana's Alertmanager API",
+            f"{type(e).__name__}: {e}",
+        )
+    return OpsResult(
+        True,
+        "Sent test alert to Grafana -- check the Alerting UI's Fired alerts tab "
+        "(and Slack, if a webhook is configured) within a minute or two.",
+    )
+
+
+def alert_test(_args: Any) -> int:
+    """CLI entrypoint for `nyxgpt ops alert-test`.
+
+    Fires a synthetic alert directly into Grafana's embedded Alertmanager --
+    the acceptance test for the alerting pipeline: confirms rules ->
+    notification policy -> Slack contact point are wired correctly without
+    waiting for a real CPU/memory/disk/self-heal/canary threshold breach.
+    No-ops with a clear, actionable message if monitoring is disabled, unset
+    up, or Grafana isn't reachable.
+
+    Returns 0 on success, else 2.
+    """
+    from nyxgpt.config import load_config
+
+    logger.info("ops: alert-test starting", extra={"component": "ops", "action": "alert-test"})
+
+    cfg_path = Path.home() / ".nyxGPT" / "config.ini"
+    if not cfg_path.exists():
+        results = [
+            OpsResult(
+                False,
+                f"Missing config {cfg_path}",
+                "Run `nyxgpt wizard` first to generate config.ini.",
+            )
+        ]
+    else:
+        cfg = load_config(cfg_path)
+        monitoring = get_monitoring_config(cfg)
+        if not monitoring["enabled"]:
+            results = [
+                OpsResult(
+                    False,
+                    "Monitoring is disabled",
+                    "Set [monitoring] enabled = true in config.ini, then run `nyxgpt ops "
+                    "install` (or start the `monitoring` Compose profile) before testing "
+                    "alerts.",
+                )
+            ]
+        else:
+            grafana_admin_password = _grafana_admin_password(cfg)
+            results = [
+                _send_grafana_test_alert(monitoring["grafana_ui_url"], grafana_admin_password)
+            ]
+
+    ok = _emit_results("alert-test", results)
+    logger.info(
+        "ops: alert-test %s",
+        "succeeded" if ok else "failed",
+        extra={"component": "ops", "action": "alert-test", "ok": ok},
+    )
+    return 0 if ok else 2
 
 
 def _provision_glitchtip() -> list[OpsResult]:

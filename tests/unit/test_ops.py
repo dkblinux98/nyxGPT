@@ -7422,6 +7422,220 @@ def test_write_grafana_glitchtip_token_detects_a_rotated_token(tmp_path, monkeyp
     assert token_path.read_text(encoding="utf-8") == "tok-new"
 
 
+# --- Slack webhook secret for Grafana's alerting contact point (#3466) ---
+
+
+@pytest.mark.unit
+def test_write_grafana_slack_webhook_secret_writes_and_chmods(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    changed, result = ops._write_grafana_slack_webhook_secret("https://hooks.slack.com/x")
+
+    assert changed is True
+    assert result.ok
+    secret_path = tmp_path / ".nyxGPT" / "secrets" / "slack-webhook-url"
+    assert secret_path.read_text(encoding="utf-8") == "https://hooks.slack.com/x"
+    assert oct(secret_path.stat().st_mode)[-3:] == "600"
+
+
+@pytest.mark.unit
+def test_write_grafana_slack_webhook_secret_writes_empty_string_when_unset(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    changed, result = ops._write_grafana_slack_webhook_secret("")
+
+    assert changed is True
+    assert result.ok
+    secret_path = tmp_path / ".nyxGPT" / "secrets" / "slack-webhook-url"
+    assert secret_path.exists()
+    assert secret_path.read_text(encoding="utf-8") == ""
+
+
+@pytest.mark.unit
+def test_write_grafana_slack_webhook_secret_is_a_noop_when_unchanged(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    first_changed, _ = ops._write_grafana_slack_webhook_secret("https://hooks.slack.com/x")
+    second_changed, second_result = ops._write_grafana_slack_webhook_secret(
+        "https://hooks.slack.com/x"
+    )
+
+    assert first_changed is True
+    assert second_changed is False
+    assert second_result.ok
+
+
+@pytest.mark.unit
+def test_write_grafana_slack_webhook_secret_detects_a_rotated_url(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    ops._write_grafana_slack_webhook_secret("https://hooks.slack.com/old")
+    changed, _ = ops._write_grafana_slack_webhook_secret("https://hooks.slack.com/new")
+
+    assert changed is True
+    secret_path = tmp_path / ".nyxGPT" / "secrets" / "slack-webhook-url"
+    assert secret_path.read_text(encoding="utf-8") == "https://hooks.slack.com/new"
+
+
+@pytest.mark.unit
+def test_write_grafana_slack_webhook_secret_reports_actionable_error_on_permission_denied(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    secrets_dir = tmp_path / ".nyxGPT" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    secrets_dir.chmod(0o500)
+    try:
+        changed, result = ops._write_grafana_slack_webhook_secret("https://hooks.slack.com/x")
+    finally:
+        secrets_dir.chmod(0o700)
+
+    assert changed is False
+    assert result.ok is False
+    assert "Cannot write Slack webhook URL" in result.message
+    assert "sudo chown" in result.details
+
+
+@pytest.mark.unit
+def test_sync_grafana_slack_webhook_secret_skips_without_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    results = ops._sync_grafana_slack_webhook_secret()
+
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert "no config.ini yet" in results[0].message
+
+
+@pytest.mark.unit
+def test_sync_grafana_slack_webhook_secret_writes_from_config_and_restarts(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    cfg_path = tmp_path / ".nyxGPT" / "config.ini"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("[monitoring]\nslack_webhook_url = https://hooks.slack.com/x\n")
+    monkeypatch.setattr(
+        ops, "_restart_grafana_if_running", lambda reason="": ops.OpsResult(True, "restarted")
+    )
+
+    results = ops._sync_grafana_slack_webhook_secret()
+
+    secret_path = tmp_path / ".nyxGPT" / "secrets" / "slack-webhook-url"
+    assert secret_path.read_text(encoding="utf-8") == "https://hooks.slack.com/x"
+    assert any("Wrote" in r.message for r in results)
+    assert any(r.message == "restarted" for r in results)
+
+
+@pytest.mark.unit
+def test_sync_grafana_slack_webhook_secret_skips_restart_when_unchanged(tmp_path, monkeypatch):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    cfg_path = tmp_path / ".nyxGPT" / "config.ini"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("[monitoring]\nslack_webhook_url = https://hooks.slack.com/x\n")
+    ops._sync_grafana_slack_webhook_secret()
+
+    restart_mock = MagicMock()
+    monkeypatch.setattr(ops, "_restart_grafana_if_running", restart_mock)
+    results = ops._sync_grafana_slack_webhook_secret()
+
+    restart_mock.assert_not_called()
+    assert len(results) == 1
+
+
+# --- Grafana test-notification path: `nyxgpt ops alert-test` (#3466) ---
+
+
+@pytest.mark.unit
+def test_send_grafana_test_alert_posts_to_alertmanager_api(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, path, json=None):
+            calls.append((path, json))
+            return FakeResponse()
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._send_grafana_test_alert("http://localhost:3001", "admin-pw")
+
+    assert result.ok is True
+    assert calls[0][0] == "/api/alertmanager/grafana/api/v2/alerts"
+    alert = calls[0][1][0]
+    assert alert["labels"]["alertname"] == "NyxGPTAlertTest"
+    assert "startsAt" in alert and "endsAt" in alert
+
+
+@pytest.mark.unit
+def test_send_grafana_test_alert_reports_failure_on_http_error(monkeypatch):
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, path, json=None):
+            raise ops.httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(ops.httpx, "Client", lambda **kwargs: FakeClient())
+
+    result = ops._send_grafana_test_alert("http://localhost:3001", "admin-pw")
+
+    assert result.ok is False
+    assert "Failed to send test alert" in result.message
+
+
+@pytest.mark.unit
+def test_alert_test_fails_without_config(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+
+    rc = ops.alert_test(MagicMock())
+
+    assert rc == 2
+    assert "Missing config" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_alert_test_fails_when_monitoring_disabled(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    cfg_path = tmp_path / ".nyxGPT" / "config.ini"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text("[monitoring]\nenabled = false\n")
+
+    rc = ops.alert_test(MagicMock())
+
+    assert rc == 2
+    assert "Monitoring is disabled" in capsys.readouterr().out
+
+
+@pytest.mark.unit
+def test_alert_test_sends_synthetic_alert_when_monitoring_enabled(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(ops.Path, "home", lambda: tmp_path)
+    cfg_path = tmp_path / ".nyxGPT" / "config.ini"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text(
+        "[monitoring]\nenabled = true\ngrafana_ui_url = http://localhost:3001\n"
+        "grafana_admin_password = admin-pw\n"
+    )
+    monkeypatch.setattr(
+        ops, "_send_grafana_test_alert", lambda url, pw: ops.OpsResult(True, "sent")
+    )
+
+    rc = ops.alert_test(MagicMock())
+
+    assert rc == 0
+    assert "sent" in capsys.readouterr().out
+
+
 # --- Linux bind-mount ownership: ~/.nyxGPT/secrets preflight (#3432) ---
 
 

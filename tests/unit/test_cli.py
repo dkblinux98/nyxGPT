@@ -2699,6 +2699,18 @@ def test_ops_glitchtip_init_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(calls) == 1
 
 
+def test_ops_alert_test_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    import nyxgpt.cli as cli_mod
+
+    calls: list[object] = []
+    monkeypatch.setattr(cli_mod.ops_mod, "alert_test", lambda args: (calls.append(args), 0)[1])
+
+    exit_code = cli(["ops", "alert-test"])
+
+    assert exit_code == 0
+    assert len(calls) == 1
+
+
 # --- canary command dispatch ---
 
 
