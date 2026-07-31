@@ -436,6 +436,21 @@ jobs:
 
             let body;
             if (decision === 'APPROVE') {
+              // The merge script can succeed (exit 0) without merging -- e.g.
+              // an approved-but-conflicted PR dispatches an automated
+              // conflict-resolution round instead (#3479). Verify the PR is
+              // actually merged before claiming so; when it isn't, the merge
+              // script's own comments (conflict dispatch / failure detail)
+              // are the accurate record, so post nothing here.
+              const pr = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr_number,
+              });
+              if (!pr.data.merged) {
+                core.notice(`PR #${pr_number} approved but not merged (conflict dispatch or merge failure) -- skipping the merged-success comment.`);
+                return;
+              }
               body = '✅ **Review Agent**: Code review approved and PR merged.\n\n' +
                      'Changes have been merged to release branch.';
             } else if (decision === 'REQUEST_CHANGES' && escalate === 'true') {
