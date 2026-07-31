@@ -201,6 +201,12 @@ load_config() {
   do
     [[ -n "${!k:-}" ]] || _die "Missing required config key: $k (in $CONFIG_FILE)"
   done
+
+  # Post-merge/acceptance handoff status (owner-created Project option,
+  # 2026-07-31). Optional config key with a literal default so existing
+  # environments need no new repo variable; override via config if the
+  # option is ever renamed.
+  STATUS_ACCEPTANCE_TESTING="${STATUS_ACCEPTANCE_TESTING:-Acceptance Testing}"
 }
 
 # -------------------------

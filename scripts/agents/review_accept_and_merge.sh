@@ -10,7 +10,7 @@ Usage:
   review_accept_and_merge.sh [--dry-run] <pr_number_or_url> <issue_number>
 
 Merges the PR into the current release branch (merge commit) and deletes the PR branch, then:
-  - Issue Status -> In Review
+  - Issue Status -> Acceptance Testing
   - Issue assignee -> HUMAN_OWNER
   - Comment on issue with merge info
 EOF
@@ -137,7 +137,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "[dry-run] pr_head_branch=$pr_head_branch" >&2
   echo "[dry-run] would: gh pr merge $PR --merge --delete-branch" >&2
   echo "[dry-run] would: gh issue close $ISSUE" >&2
-  echo "[dry-run] would: set_issue_status #$ISSUE -> '$STATUS_IN_REVIEW'" >&2
+  echo "[dry-run] would: set_issue_status #$ISSUE -> '$STATUS_ACCEPTANCE_TESTING'" >&2
   echo "[dry-run] would: assign issue #$ISSUE -> @$HUMAN_OWNER" >&2
   exit 0
 fi
@@ -164,7 +164,7 @@ echo "[review] ✓ PR #${PR} merged successfully" >&2
 
 # Close the issue (GitHub state) - required because merge to non-default branch doesn't auto-close
 echo "[review] Closing issue #${ISSUE}..." >&2
-if ! gh issue close "$ISSUE" --repo "${REPO_OWNER}/${REPO_NAME}" --comment "Merged via review-agent. Issue closed and moved to In Review status for stakeholder acceptance." 2>&1; then
+if ! gh issue close "$ISSUE" --repo "${REPO_OWNER}/${REPO_NAME}" --comment "Merged via review-agent. Issue closed and moved to Acceptance Testing status for stakeholder acceptance." 2>&1; then
   _warn "Failed to close issue #${ISSUE}. PR is merged but issue may still be open. Continuing..."
 else
   # Manually trigger auto-check-tasklist workflow as safety measure
@@ -178,9 +178,9 @@ else
   fi
 fi
 
-# Set issue status to In Review
-echo "[review] Setting issue #${ISSUE} status to '${STATUS_IN_REVIEW}'..." >&2
-if ! set_issue_status "$ISSUE" "$STATUS_IN_REVIEW" 2>&1; then
+# Set issue status to Acceptance Testing (owner acceptance gate, 2026-07-31)
+echo "[review] Setting issue #${ISSUE} status to '${STATUS_ACCEPTANCE_TESTING}'..." >&2
+if ! set_issue_status "$ISSUE" "$STATUS_ACCEPTANCE_TESTING" 2>&1; then
   _warn "Failed to set issue status. PR is merged but project status may be incorrect. Continuing..."
 fi
 
@@ -199,7 +199,7 @@ fi
 
 # Post final comment
 echo "[review] Posting completion comment..." >&2
-if ! issue_comment "$ISSUE" "PR #${PR} merged into \`${pr_base_branch}\` and branch deleted. Status -> ${STATUS_IN_REVIEW}. Assigned -> @${HUMAN_OWNER}." 2>&1; then
+if ! issue_comment "$ISSUE" "PR #${PR} merged into \`${pr_base_branch}\` and branch deleted. Status -> ${STATUS_ACCEPTANCE_TESTING}. Assigned -> @${HUMAN_OWNER}." 2>&1; then
   _warn "Failed to post comment. PR is merged and issue updated, but comment missing."
 fi
 
@@ -295,4 +295,4 @@ if [[ "$OWNER_ASSIGN_FAILED" == "1" ]]; then
   exit 1
 fi
 
-echo "SUCCESS: Merged PR #${PR}. Issue #${ISSUE} closed and set to ${STATUS_IN_REVIEW}, assigned to @${HUMAN_OWNER}."
+echo "SUCCESS: Merged PR #${PR}. Issue #${ISSUE} closed and set to ${STATUS_ACCEPTANCE_TESTING}, assigned to @${HUMAN_OWNER}."

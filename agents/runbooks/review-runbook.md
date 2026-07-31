@@ -31,6 +31,15 @@ The review-agent OWNS the review process:
 - Run CI checks on ALL code in the repository (not just changed files)
 - Review ALL changed files in the PR (not just new changes from current cycle)
 - This ensures comprehensive quality coverage across the entire codebase
+- **Reproduce gate failures with the EXACT gate commands, never approximations.**
+  The web test gate is `npx vitest run --coverage` (100% line/branch/function/
+  statement thresholds) — plain `npx vitest run` passes while the coverage
+  gate fails, which has twice caused reviewers to mislabel a real coverage
+  failure as unreproducible CI flakiness and burn escalation cycles
+  (PR #3423 on 2026-07-29, PR #3486 on 2026-07-31). If a gate reports FAIL
+  and your local run passes, diff your command against the workflow's
+  (`.github/workflows/claude-code-review.yml`) before concluding flakiness;
+  a coverage-threshold failure names the metric in the vitest output.
 
 ### Core Requirements (from project standards)
 - Correctness vs issue acceptance criteria
@@ -107,7 +116,7 @@ When PR is merged (automatically on APPROVE or via human `@approve-merge` overri
 - Automation merges into active release branch (NEVER merge to master/main)
 - Delete short-lived feature/fix branches created for the feature
 - Close the issue (GitHub state)
-- Keep issue status -> In Review (for human stakeholder acceptance)
+- Set issue status -> Acceptance Testing (for human stakeholder acceptance)
 - Assign issue -> human owner (dkblinux98)
 - Notify scrummaster-agent that developer-agent is ready for next issue
 
@@ -115,11 +124,11 @@ When PR is merged (automatically on APPROVE or via human `@approve-merge` overri
 - PRs merged to the release branch (e.g., v1.0.0) do NOT auto-close linked issues
 - GitHub only auto-closes issues when PRs merge to the default branch (master)
 - Automation manually closes issues after merging to release branch
-- Post-merge: issue should be CLOSED (GitHub state) + In Review (project status) + assigned to human
+- Post-merge: issue should be CLOSED (GitHub state) + Acceptance Testing (project status) + assigned to human
 
 ## 9) Human stakeholder acceptance
 
-After merge, each issue is assigned to the human owner with status "In Review" for final acceptance.
+After merge, each issue is assigned to the human owner with status "Acceptance Testing" for final acceptance -- the owner-created gate (2026-07-31) that marks work as merged and ready to acceptance-test, so unmerged In Review issues are never tested by mistake.
 
 ### If acceptance passes
 Move the issue to "For Release" in the project board. No action needed in GitHub.

@@ -123,6 +123,12 @@
   .colwrap .stack div { border-radius: 2px; min-height: 2px; }
   .colwrap .stack div:last-child { border-radius: 3px 3px 2px 2px; }
   .collabels { display: flex; gap: 3px; margin-top: 6px; }
+  .erabands { display: flex; gap: 3px; margin-top: 8px; }
+  .erabands .era {
+    text-align: center; font-size: 10.5px; font-weight: 700; letter-spacing: .05em;
+    font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--ink-2);
+    border-top: 2px solid var(--axis); padding-top: 3px;
+  }
   .collabels div { flex: 1; text-align: center; font-size: 10.5px; color: var(--muted); font-family: ui-monospace, Menlo, Consolas, monospace; overflow: visible; white-space: nowrap; }
 
   /* horizontal stacked rows */
@@ -221,6 +227,7 @@
     <div class="legend" id="wlegend"></div>
     <div class="colchart" id="wchart"></div>
     <div class="collabels" id="wlabels"></div>
+    <div class="erabands" id="werabands"></div>
   </section>
 
   <section class="panel">
@@ -460,6 +467,14 @@ function renderWeekly() {
     const first = i===0 || d.getUTCMonth() !== new Date(QDATA.weeks[i-1].w+'T00:00:00Z').getUTCMonth();
     return `<div>${(i+1)%5===1 ? 'S'+(i+1) : ''}${first ? '<br>'+d.toLocaleDateString('en-US',{month:'short',timeZone:'UTC'}) : ''}</div>`;
   }).join('');
+  const bands = [];
+  QDATA.weeks.forEach(w => {
+    const last = bands[bands.length-1];
+    if (last && last.era === (w.era||'')) last.n++;
+    else bands.push({era: w.era||'', n: 1});
+  });
+  document.getElementById('werabands').innerHTML = bands.map(b =>
+    `<div class="era" style="flex:${b.n}">${b.era ? b.era + ' development' : ''}</div>`).join('');
 }
 renderWeekly();
 

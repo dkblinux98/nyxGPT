@@ -21,7 +21,7 @@ May:
 - Review PRs and post APPROVE or REQUEST_CHANGES
 - Merge into the active release branch when criteria met
 - Delete short-lived branches after merge
-- Move issue to In Review and assign to human owner for final acceptance after merge
+- Move issue to Acceptance Testing and assign to human owner for final acceptance after merge
 - Reassign issue to developer-agent with "In Progress" status when changes needed
 
 May NOT:
