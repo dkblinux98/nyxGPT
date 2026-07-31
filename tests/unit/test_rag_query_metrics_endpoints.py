@@ -31,7 +31,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -160,6 +160,43 @@ def test_rag_query_retrieval_failure_returns_400() -> None:
 
     assert response.status_code == 400
     assert response.json()["error"]["message"] == "vector store unreachable"
+
+
+def test_rag_query_with_collection_scopes_retrieval(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Playground's collection dropdown was previously "dead": it was
+    wired to UI state but RagQueryRequest had no `collection` field and
+    the endpoint never forwarded it to retrieve_context (#3463)."""
+    mock_store = Mock()
+    mock_store.list_collections.return_value = ["default", "research-notes"]
+
+    with (
+        patch("nyxgpt.rag.vectorstore_cassandra.CassandraVectorStore", return_value=mock_store),
+        patch("nyxgpt.app.retrieve_context", return_value=_fake_rows()) as mock_retrieve,
+    ):
+        response = client.post(
+            "/api/v1/rag/query",
+            json={"query": "test query", "collection": "research-notes"},
+        )
+
+    assert response.status_code == 200
+    _, kwargs = mock_retrieve.call_args
+    assert kwargs["collection"] == "research-notes"
+    body = response.json()
+    assert all(r["collection"] == "research-notes" for r in body["results"])
+
+
+def test_rag_query_with_unknown_collection_returns_400() -> None:
+    mock_store = Mock()
+    mock_store.list_collections.return_value = ["default"]
+
+    with patch("nyxgpt.rag.vectorstore_cassandra.CassandraVectorStore", return_value=mock_store):
+        response = client.post(
+            "/api/v1/rag/query",
+            json={"query": "test query", "collection": "does-not-exist"},
+        )
+
+    assert response.status_code == 400
+    assert "Unknown collection" in response.json()["error"]["message"]
 
 
 # ============================================================================

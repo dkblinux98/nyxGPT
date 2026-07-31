@@ -600,3 +600,79 @@ def test_rag_enabled_session_appends_across_turns_including_default(
     sessions_dir = tmp_path / "sessions"
     session_files = [p for p in sessions_dir.glob("*.json") if not p.name.endswith(".meta.json")]
     assert [p.stem for p in session_files] == ["default"]
+
+
+def test_rag_filters_collection_is_passed_to_retrieve_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A `collection` in rag_filters must scope retrieval -- this is the
+    "surfacing" fix for #3463: the chat path always queried "default"
+    regardless of which collection a document was actually ingested into."""
+    cfg = _cfg(tmp_path, rag_enabled=True)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+
+    captured_collections: list[str] = []
+
+    def fake_retrieve(prompt: str, *, collection: str = "default", **_: Any) -> list[dict]:
+        captured_collections.append(collection)
+        return []
+
+    monkeypatch.setattr("nyxgpt.chat.retrieve_context", fake_retrieve)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", lambda **_: "answer")
+
+    chat(
+        "question",
+        rag_enabled=True,
+        rag_filters={"collection": "research-notes"},
+        config_path=None,
+    )
+
+    assert captured_collections == ["research-notes"]
+
+
+def test_rag_filters_without_collection_defaults_to_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No `collection` in rag_filters (or no rag_filters at all) must still
+    scope retrieval to "default", matching pre-#3463 behavior."""
+    cfg = _cfg(tmp_path, rag_enabled=True)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+
+    captured_collections: list[str] = []
+
+    def fake_retrieve(prompt: str, *, collection: str = "default", **_: Any) -> list[dict]:
+        captured_collections.append(collection)
+        return []
+
+    monkeypatch.setattr("nyxgpt.chat.retrieve_context", fake_retrieve)
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", lambda **_: "answer")
+
+    chat("question", rag_enabled=True, config_path=None)
+
+    assert captured_collections == ["default"]
+
+
+def test_chat_rag_chunks_get_human_readable_chunk_number(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Retrieved rows must carry a 1-based `chunk_number` and the source
+    `collection`, not just the internal zero-based `chunk_id` -- this is
+    what citation displays use instead of showing "(chunk 0)" for a
+    document's first (and possibly only) chunk."""
+    cfg = _cfg(tmp_path, rag_enabled=True)
+    monkeypatch.setattr("nyxgpt.chat.load_config", lambda *_a, **_k: cfg)
+
+    monkeypatch.setattr(
+        "nyxgpt.chat.retrieve_context",
+        lambda *a, **k: [{"text": "chunk text", "score": 0.9, "doc_id": "doc-1", "chunk_id": 0}],
+    )
+    monkeypatch.setattr("nyxgpt.chat.ollama_chat", lambda **_: "answer")
+
+    result = chat(
+        "question", rag_enabled=True, rag_filters={"collection": "research-notes"}, config_path=None
+    )
+
+    assert result.rag_context is not None
+    row = result.rag_context[0]
+    assert row["chunk_number"] == 1
+    assert row["collection"] == "research-notes"

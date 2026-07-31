@@ -342,6 +342,75 @@ def test_rag_upload_ingestion_failure_returns_500() -> None:
 
 
 # ============================================================================
+# POST /rag/upload -- collection targeting (#3463)
+# ============================================================================
+
+
+def test_rag_upload_with_collection_param_ingests_into_that_collection() -> None:
+    """Chat-uploaded documents must be able to target a non-default
+    collection -- previously `/rag/upload` had no `collection` param at
+    all and always ingested into "default"."""
+    client = _client()
+    captured: dict[str, Any] = {}
+
+    def fake_ingest(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return _fake_ingest_result()
+
+    mock_store = Mock()
+    mock_store.list_collections.return_value = ["default", "research-notes"]
+
+    with (
+        patch("nyxgpt.rag.vectorstore_cassandra.CassandraVectorStore", return_value=mock_store),
+        patch("nyxgpt.app.ingest_document", side_effect=fake_ingest),
+    ):
+        response = client.post(
+            f"{UPLOAD_URL}?collection=research-notes",
+            files={"file": ("notes.txt", b"plain text content", "text/plain")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["collection"] == "research-notes"
+    assert captured["collection"] == "research-notes"
+
+
+def test_rag_upload_without_collection_defaults_to_default() -> None:
+    client = _client()
+    captured: dict[str, Any] = {}
+
+    def fake_ingest(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return _fake_ingest_result()
+
+    with patch("nyxgpt.app.ingest_document", side_effect=fake_ingest):
+        response = client.post(
+            UPLOAD_URL,
+            files={"file": ("notes.txt", b"plain text content", "text/plain")},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["collection"] == "default"
+    assert captured["collection"] == "default"
+
+
+def test_rag_upload_with_unknown_collection_returns_400() -> None:
+    """A typo'd collection name must be rejected before it silently opens a
+    brand-new, unrelated empty table."""
+    client = _client()
+    mock_store = Mock()
+    mock_store.list_collections.return_value = ["default"]
+
+    with patch("nyxgpt.rag.vectorstore_cassandra.CassandraVectorStore", return_value=mock_store):
+        response = client.post(
+            f"{UPLOAD_URL}?collection=does-not-exist",
+            files={"file": ("notes.txt", b"plain text content", "text/plain")},
+        )
+
+    assert response.status_code == 400
+    assert "Unknown collection" in response.json()["error"]["message"]
+
+
+# ============================================================================
 # POST /rag/upload -- .json
 # ============================================================================
 

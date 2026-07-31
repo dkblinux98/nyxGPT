@@ -2255,6 +2255,26 @@ def test_export_session_html_with_citations(tmp_path: Path) -> None:
     assert ".citation-item" in content
 
 
+def test_format_chunk_ref_prefers_chunk_number_and_total() -> None:
+    assert sessions.format_chunk_ref({"chunk_number": 2, "total_chunks": 5}) == "chunk 2 of 5"
+
+
+def test_format_chunk_ref_chunk_number_without_total() -> None:
+    assert sessions.format_chunk_ref({"chunk_number": 1, "total_chunks": None}) == "chunk 1"
+
+
+def test_format_chunk_ref_falls_back_to_chunk_id_plus_one() -> None:
+    """Citations persisted before chunk_number/total_chunks were tracked
+    fall back to the zero-based chunk_id + 1 -- this is what turns
+    "(chunk 0)" into the correct "(chunk 1)"."""
+    assert sessions.format_chunk_ref({"chunk_id": 0}) == "chunk 1"
+    assert sessions.format_chunk_ref({"chunk_id": 3}) == "chunk 4"
+
+
+def test_format_chunk_ref_no_chunk_info_falls_back_to_source() -> None:
+    assert sessions.format_chunk_ref({}) == "source"
+
+
 def test_export_markdown_no_citations(tmp_path: Path) -> None:
     """Test that markdown export works correctly when there are no citations."""
     sessions_dir = tmp_path / "sessions"
