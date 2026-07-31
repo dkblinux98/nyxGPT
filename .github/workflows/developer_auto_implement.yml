@@ -295,9 +295,21 @@ jobs:
             .body // ""
           ')
 
-          if [[ -n "$REVIEW_COMMENT" ]]; then
+          # A PR that conflicts with its base also routes through the fix
+          # path: review_accept_and_merge.sh dispatches an automated
+          # conflict-resolution round here when an approved PR can't merge
+          # because the base moved (previously this escalated straight to a
+          # human). Without this clause, an approved-but-conflicted PR with
+          # no CHANGES_REQUESTED history would fall into the implement path.
+          MERGEABLE=$(gh pr view "$PR" --json mergeable --jq '.mergeable // ""')
+
+          if [[ -n "$REVIEW_COMMENT" || "$MERGEABLE" == "CONFLICTING" ]]; then
             echo "has_review_issues=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::PR has CHANGES_REQUESTED review - will fix issues"
+            if [[ "$MERGEABLE" == "CONFLICTING" ]]; then
+              echo "::notice::PR conflicts with its base branch - will resolve"
+            else
+              echo "::notice::PR has CHANGES_REQUESTED review - will fix issues"
+            fi
           else
             echo "has_review_issues=false" >> "$GITHUB_OUTPUT"
             echo "::notice::PR has no pending review changes - skipping"
@@ -502,6 +514,18 @@ jobs:
                - For each: identify the root cause, plan the fix, and anticipate side effects
                - Confirm your plan covers all issues before writing a single line
             3. Implement fixes for each issue
+
+            ### Step 2.5: Resolve merge conflicts with the release branch (if any)
+            Check mergeability: `gh pr view ${{ steps.check_pr.outputs.existing_pr }} --json mergeable -q .mergeable`
+            If it reports CONFLICTING (or a conflict-resolution comment on the
+            PR/issue requests it):
+            - `git fetch origin` and merge `origin/${{ vars.RELEASE_BRANCH }}` into the PR branch
+            - Resolve every conflict preserving BOTH sides' intents: this PR's
+              feature content AND everything merged into the release branch
+              since (never discard either side wholesale)
+            - This can be the round's only work: if the review findings were
+              already addressed by earlier commits and only conflicts remain,
+              resolve the conflicts, validate, and push the merge commit
 
             ### Step 3: Validate before committing
             BEFORE committing, run ALL validation checks (ALL must pass):

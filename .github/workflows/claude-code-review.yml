@@ -26,8 +26,10 @@ jobs:
       (github.event_name == 'pull_request' && github.event.action == 'review_requested' &&
        github.event.requested_reviewer.login == vars.REVIEW_AGENT) ||
       (github.event_name == 'pull_request' && github.event.action == 'synchronize' &&
-       contains(toJSON(github.event.pull_request.requested_reviewers.*.login),
-                vars.REVIEW_AGENT)) ||
+       (contains(toJSON(github.event.pull_request.requested_reviewers.*.login),
+                 vars.REVIEW_AGENT) ||
+        contains(toJSON(github.event.pull_request.assignees.*.login),
+                 vars.REVIEW_AGENT))) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
        contains(github.event.comment.body, '@review')) ||
       github.event_name == 'workflow_dispatch'
