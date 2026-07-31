@@ -120,3 +120,60 @@ def test_admin_health_handles_missing_resource_monitor():
     body = response.json()
     assert body["resource_metrics"] is None
     assert body["alerts"] == []
+
+
+def test_admin_health_reports_local_alerts_source_when_grafana_unreachable():
+    """The test config fixture has no [monitoring] section (disabled), so
+    fetch_grafana_alerts returns None and the endpoint must fall back to the
+    local computation, tagging the response accordingly."""
+    with (
+        patch("nyxgpt.app.get_resource_monitor", return_value=None),
+        patch(
+            "nyxgpt.app.health_module.check_ollama",
+            return_value=DependencyCheck(name="ollama", ok=True, detail="ok"),
+        ),
+        patch(
+            "nyxgpt.app.health_module.check_cassandra",
+            return_value=DependencyCheck(
+                name="cassandra", ok=True, detail="RAG disabled", applicable=False
+            ),
+        ),
+    ):
+        client = TestClient(app)
+        response = client.get("/api/v1/admin/health")
+
+    assert response.status_code == 200
+    assert response.json()["alerts_source"] == "local"
+
+
+def test_admin_health_reports_grafana_alerts_source_when_reachable():
+    from nyxgpt.health import Alert
+
+    with (
+        patch("nyxgpt.app.get_resource_monitor", return_value=None),
+        patch(
+            "nyxgpt.app.health_module.check_ollama",
+            return_value=DependencyCheck(name="ollama", ok=True, detail="ok"),
+        ),
+        patch(
+            "nyxgpt.app.health_module.check_cassandra",
+            return_value=DependencyCheck(
+                name="cassandra", ok=True, detail="RAG disabled", applicable=False
+            ),
+        ),
+        patch(
+            "nyxgpt.app.health_module.fetch_grafana_alerts",
+            return_value=[
+                Alert(severity="critical", message="CPU usage above 95%", source="grafana")
+            ],
+        ),
+    ):
+        client = TestClient(app)
+        response = client.get("/api/v1/admin/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["alerts_source"] == "grafana"
+    assert body["alerts"] == [
+        {"severity": "critical", "message": "CPU usage above 95%", "source": "grafana"}
+    ]

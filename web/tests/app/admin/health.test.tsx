@@ -92,8 +92,13 @@ describe('AdminHealthPage', () => {
             { name: 'ollama', ok: false, detail: 'Connection refused', applicable: true },
           ],
           resource_metrics: null,
+          alerts_source: 'local',
           alerts: [
-            { severity: 'critical', message: "Dependency 'ollama' is unreachable: Connection refused" },
+            {
+              severity: 'critical',
+              message: "Dependency 'ollama' is unreachable: Connection refused",
+              source: 'local',
+            },
           ],
         });
       })
@@ -104,6 +109,46 @@ describe('AdminHealthPage', () => {
       expect(screen.getByRole('alert')).toBeInTheDocument();
     });
     expect(screen.getByText(/unreachable: Connection refused/)).toBeInTheDocument();
+  });
+
+  it('labels alerts as live from Grafana when alerts_source is grafana', async () => {
+    server.use(
+      http.get('/api/v1/admin/health', () => {
+        return HttpResponse.json({
+          service: { status: 'ok', uptime_s: 60 },
+          dependencies: [],
+          resource_metrics: null,
+          alerts_source: 'grafana',
+          alerts: [
+            { severity: 'critical', message: 'CPU usage above 95%', source: 'grafana' },
+          ],
+        });
+      })
+    );
+
+    render(<AdminHealthPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Live from Grafana alerting/)).toBeInTheDocument();
+    });
+  });
+
+  it('labels alerts as a local estimate when alerts_source is local', async () => {
+    server.use(
+      http.get('/api/v1/admin/health', () => {
+        return HttpResponse.json({
+          service: { status: 'ok', uptime_s: 60 },
+          dependencies: [],
+          resource_metrics: null,
+          alerts_source: 'local',
+          alerts: [],
+        });
+      })
+    );
+
+    render(<AdminHealthPage />);
+    await waitFor(() => {
+      expect(screen.getByText(/Local estimate/)).toBeInTheDocument();
+    });
   });
 
   it('shows an error message when the request fails', async () => {
@@ -202,7 +247,8 @@ describe('AdminHealthPage', () => {
           service: { status: 'ok', uptime_s: 60 },
           dependencies: [],
           resource_metrics: null,
-          alerts: [{ severity: 'warning', message: 'Queue depth elevated' }],
+          alerts_source: 'local',
+          alerts: [{ severity: 'warning', message: 'Queue depth elevated', source: 'local' }],
         });
       })
     );
@@ -292,9 +338,11 @@ describe('AdminHealthPage', () => {
             resource_metrics: {
               memory: { rss_mb: 128, percent: 2.5 },
               cpu: { process_percent: 1.1 },
+              disk: { percent: 10 },
               queue: { depth: 0 },
               errors: { rate_percent: 0 },
             },
+            alerts_source: 'local',
             alerts: [],
           })
         )

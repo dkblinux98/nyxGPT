@@ -1,0 +1,28 @@
+apiVersion: 1
+
+# The Slack contact point for docker/grafana/provisioning/alerting/rules.yml,
+# routed to by notification-policies.yml (#3466). The webhook URL comes from
+# config.ini's [monitoring] slack_webhook_url (see example.config.ini),
+# written to the file below by `nyxgpt ops env-sync`/`install`
+# (src/nyxgpt/ops.py's `_write_grafana_slack_webhook_secret`) via Grafana's
+# `$__file{}` provisioning expansion -- same pattern as the GlitchTip token in
+# ../datasources/glitchtip.yml. That writer always creates the file (empty if
+# unset) specifically so this reference never dangles: an empty webhook URL
+# just means Slack delivery fails silently (visible under Grafana's Alerting
+# -> Contact points -> Test), while the alert rules themselves still
+# evaluate and fire in the Alerting UI regardless of contact point health.
+#
+# Grafana only re-reads `$__file{}` targets at startup, so a freshly written
+# webhook URL needs a Grafana restart to take effect -- `nyxgpt ops env-sync`
+# and `nyxgpt ops install` both do this automatically when the value changes.
+contactPoints:
+  - orgId: 1
+    name: nyxgpt-slack
+    receivers:
+      - uid: nyxgpt-slack-receiver
+        type: slack
+        disableResolveMessage: false
+        settings:
+          username: nyxGPT Alerting
+        secureSettings:
+          url: "$__file{/etc/nyxgpt-secrets/slack-webhook-url}"

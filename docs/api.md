@@ -174,12 +174,16 @@ Prometheus text exposition format metrics for scraping. Unauthenticated
 | `nyxgpt_canary_component_evaluations_total` | Counter | `component`, `result` | Canary metric evaluations, by component and result |
 | `nyxgpt_canary_component_events_total` | Counter | `component`, `action`, `result` | Canary lifecycle events, by component, action, and outcome |
 | `nyxgpt_canary_component_track_version_info` | Gauge | `component`, `track`, `version` | 1 for the (component, track, version) currently observed on that component's track Deployment |
+| `nyxgpt_canary_auto_rollback_total` | Counter | `component` | Canary rollouts automatically rolled back due to a metrics regression -- distinct from `nyxgpt_canary_events_total{action="rollback"}`, which also counts operator-initiated rollbacks. Backs the "NyxGPT canary auto-rollback" alert, see [alerting.md](alerting.md) |
 | `nyxgpt_rag_ingests_total` | Counter | `source`, `result` | RAG document ingestion attempts, by source (`document`/`upload`/`repo`) and outcome (`success`/`failure`) |
 | `nyxgpt_cache_requests_total` | Counter | `cache`, `result` | Cache lookups, by cache (`chat_response`/`embedding`/`rag_query_result`) and outcome (`hit`/`miss`) |
 | `nyxgpt_rate_limit_rejections_total` | Counter | `path` | Requests rejected by the per-client rate limiter |
 | `nyxgpt_resource_memory_rss_mb` | Gauge | — | API process resident set size, in MB (refreshed on each `/metrics` scrape) |
+| `nyxgpt_resource_memory_percent` | Gauge | — | API process memory usage, as a percentage of system memory (refreshed on each `/metrics` scrape) |
 | `nyxgpt_resource_cpu_percent` | Gauge | — | API process CPU usage percentage (refreshed on each `/metrics` scrape) |
+| `nyxgpt_resource_disk_percent` | Gauge | — | Disk usage percentage of the filesystem backing `~/.nyxGPT` (refreshed on each `/metrics` scrape) |
 | `nyxgpt_resource_queue_depth` | Gauge | — | Current number of requests in the batch processing queue |
+| `nyxgpt_selfheal_giveup_total` | Counter | `service` | Self-heal gave up on a component after exhausting its consecutive-restart budget. Backs the "NyxGPT self-heal giving up" alert, see [alerting.md](alerting.md) |
 
 `path` labels use the route's path template (e.g. `/api/v1/sessions/{name}`),
 not the raw request path, to keep cardinality bounded.
@@ -787,14 +791,23 @@ unavailable.
 
 Aggregate system health for the admin health dashboard (`/admin/health`):
 service uptime, dependency reachability checks (Ollama, and Cassandra when
-RAG is enabled), resource utilization, and threshold-based alert
-indicators (warning/critical on elevated memory, CPU, or error rate, and
-critical on any unreachable dependency). The CPU alert evaluates
-`resource_metrics.cpu.system_percent` -- the system-wide, core-normalized
-utilization (0-100%) also shown by the Resource Metrics history panel --
-never `cpu.process_percent`, which is this process's own CPU usage and is
-not normalized by core count (it can read above 100% on a multi-core
-machine even while the system is otherwise idle).
+RAG is enabled), resource utilization, and alert indicators.
+
+`alerts` prefers Grafana's real firing-alert state (queried from its
+embedded Alertmanager API, see [alerting.md](alerting.md)) whenever
+monitoring is enabled and Grafana is reachable -- `alerts_source` is
+`"grafana"` in that case. Otherwise it falls back to a local
+threshold snapshot (warning/critical on elevated memory, CPU, disk, or
+error rate, and critical on any unreachable dependency) and
+`alerts_source` is `"local"`. This is not a second, independent
+computation running in parallel with real alerting -- when Grafana is
+reachable, its state *is* the response's state.
+
+The local fallback's CPU alert evaluates `resource_metrics.cpu.system_percent`
+-- the system-wide, core-normalized utilization (0-100%) also shown by the
+Resource Metrics history panel -- never `cpu.process_percent`, which is this
+process's own CPU usage and is not normalized by core count (it can read
+above 100% on a multi-core machine even while the system is otherwise idle).
 
 **Response:**
 
@@ -805,7 +818,8 @@ machine even while the system is otherwise idle).
     { "name": "ollama", "ok": true, "detail": "Reachable at http://127.0.0.1:11434", "applicable": true },
     { "name": "cassandra", "ok": true, "detail": "RAG disabled; Cassandra is not required", "applicable": false }
   ],
-  "resource_metrics": { "memory": {}, "cpu": {}, "latency": {}, "queue": {}, "errors": {} },
+  "resource_metrics": { "memory": {}, "cpu": {}, "disk": {}, "latency": {}, "queue": {}, "errors": {} },
+  "alerts_source": "local",
   "alerts": []
 }
 ```

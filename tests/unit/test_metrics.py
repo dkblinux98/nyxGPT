@@ -196,7 +196,9 @@ def test_resource_ingest_cache_and_rate_limit_metrics_are_registered() -> None:
     prom_metrics.RAG_INGESTS_TOTAL.labels(source="unit-test", result="success").inc()
     prom_metrics.CACHE_REQUESTS_TOTAL.labels(cache="unit-test", result="hit").inc()
     prom_metrics.RATE_LIMIT_REJECTIONS_TOTAL.labels(path="/unit-test").inc()
-    prom_metrics.update_resource_gauges(rss_mb=123.4, cpu_percent=5.6, queue_depth=2)
+    prom_metrics.update_resource_gauges(
+        rss_mb=123.4, cpu_percent=5.6, queue_depth=2, disk_percent=45.0, memory_percent=12.5
+    )
 
     body, _ = prom_metrics.render_metrics()
     names = _sample_names(body.decode("utf-8"))
@@ -205,8 +207,49 @@ def test_resource_ingest_cache_and_rate_limit_metrics_are_registered() -> None:
     assert "nyxgpt_cache_requests_total" in names
     assert "nyxgpt_rate_limit_rejections_total" in names
     assert "nyxgpt_resource_memory_rss_mb" in names
+    assert "nyxgpt_resource_memory_percent" in names
     assert "nyxgpt_resource_cpu_percent" in names
     assert "nyxgpt_resource_queue_depth" in names
+    assert "nyxgpt_resource_disk_percent" in names
+
+    disk_samples = _samples(body.decode("utf-8"), "nyxgpt_resource_disk_percent")
+    assert disk_samples[0].value == 45.0
+    memory_percent_samples = _samples(body.decode("utf-8"), "nyxgpt_resource_memory_percent")
+    assert memory_percent_samples[0].value == 12.5
+
+
+@pytest.mark.unit
+def test_update_resource_gauges_defaults_disk_percent_to_zero() -> None:
+    """Callers that don't pass `disk_percent` (e.g. older call sites) must
+    not crash -- it's an additive kwarg with a safe default."""
+    prom_metrics.update_resource_gauges(rss_mb=1.0, cpu_percent=1.0, queue_depth=0)
+
+    body, _ = prom_metrics.render_metrics()
+    assert "nyxgpt_resource_disk_percent" in _sample_names(body.decode("utf-8"))
+
+
+@pytest.mark.unit
+def test_selfheal_giveup_metric_is_registered() -> None:
+    prom_metrics.SELFHEAL_GIVEUP_TOTAL.labels(service="unit-test-svc").inc()
+
+    body, _ = prom_metrics.render_metrics()
+    text = body.decode("utf-8")
+
+    assert "nyxgpt_selfheal_giveup_total" in _sample_names(text)
+    samples = _samples(text, "nyxgpt_selfheal_giveup_total")
+    assert any(s.labels.get("service") == "unit-test-svc" for s in samples)
+
+
+@pytest.mark.unit
+def test_canary_auto_rollback_metric_is_registered() -> None:
+    prom_metrics.CANARY_AUTO_ROLLBACK_TOTAL.labels(component="api").inc()
+
+    body, _ = prom_metrics.render_metrics()
+    text = body.decode("utf-8")
+
+    assert "nyxgpt_canary_auto_rollback_total" in _sample_names(text)
+    samples = _samples(text, "nyxgpt_canary_auto_rollback_total")
+    assert any(s.labels.get("component") == "api" for s in samples)
 
 
 @pytest.mark.unit

@@ -1,0 +1,14 @@
+apiVersion: 1
+
+# Routes every alert from rules.yml to the nyxgpt-slack contact point
+# (contact-points.yml) by default -- a single flat policy is enough for the
+# handful of core health rules provisioned today (#3466); split this into
+# per-severity routes if/when alert volume justifies different receivers or
+# notification cadences per severity.
+policies:
+  - orgId: 1
+    receiver: nyxgpt-slack
+    group_by: ["alertname", "severity"]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h

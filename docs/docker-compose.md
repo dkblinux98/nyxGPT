@@ -346,14 +346,14 @@ above is the supported way to start this profile (see
 --skip-observability` if you'd rather it stayed off.
 
 This starts `prometheus` (scrapes the API's [`/metrics`](api.md#get-metrics)
-endpoint every 15s using `docker/prometheus.yml`, and evaluates the alerting
-rules in `docker/prometheus-alerts.yml`) and `grafana` (UI at
+endpoint every 15s using `docker/prometheus.yml`) and `grafana` (UI at
 [http://localhost:3001](http://localhost:3001), reachable via the Admin
 Dashboard's SRE Overview tile). Grafana is pre-provisioned on first boot
 with a Prometheus datasource, a Jaeger datasource, an Infinity datasource
-(queries GlitchTip's REST API), and seven dashboards under
-`docker/grafana/dashboards`, plus the SRE Home landing dashboard described
-above:
+(queries GlitchTip's REST API), seven dashboards under
+`docker/grafana/dashboards`, and real alerting (rules, a Slack contact
+point, and a notification policy — see [alerting.md](alerting.md)), plus
+the SRE Home landing dashboard described above:
 
 - **System Overview** — request rate, error rate, request latency
   (p50/p95/p99), total requests, and API up/down status.
@@ -403,13 +403,13 @@ the profile is up -- see
 `.env`, update `grafana_ui_url` in config to match, or the SRE Overview
 tile will point at the wrong port.
 
-Alerting rules (`docker/prometheus-alerts.yml`) evaluate continuously and
-show their state (inactive/pending/firing) on Prometheus's own Alerts page at
-[http://localhost:9090/alerts](http://localhost:9090/alerts) if the API
-becomes unreachable, its 5xx error rate exceeds 5%, or its p95 latency
-exceeds 2 seconds. This is local-only rule evaluation — no Alertmanager or
-external notification channel (email/Slack/PagerDuty) is deployed by
-default.
+Alerting is real: rules provisioned as code under
+`docker/grafana/provisioning/alerting/` evaluate continuously in Grafana
+(not Prometheus) and show their state (Normal/Pending/Firing) on Grafana's
+own **Alerting** page, with a Slack contact point you can configure from the
+config wizard. See [alerting.md](alerting.md) for the full rule list,
+how to wire up Slack, and how to fire a test alert with `nyxgpt ops
+alert-test`.
 
 ## Log Aggregation
 

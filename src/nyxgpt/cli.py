@@ -1988,6 +1988,14 @@ def cli(argv: list[str] | None = None) -> int:
     )
 
     ops_sub.add_parser(
+        "alert-test",
+        help=(
+            "Fire a synthetic alert into Grafana's Alertmanager to verify the alerting "
+            "pipeline (rules -> notification policy -> Slack contact point) end to end"
+        ),
+    )
+
+    ops_sub.add_parser(
         "observability",
         help=(
             "Start the Grafana/Loki/Jaeger/GlitchTip Compose profiles "
@@ -2230,6 +2238,8 @@ def cli(argv: list[str] | None = None) -> int:
             return ops_mod.logs(args)
         if args.ops_cmd == "glitchtip-init":
             return ops_mod.glitchtip_init(args)
+        if args.ops_cmd == "alert-test":
+            return ops_mod.alert_test(args)
         if args.ops_cmd == "observability":
             return ops_mod.observability(args)
         if args.ops_cmd == "migrate-volumes":

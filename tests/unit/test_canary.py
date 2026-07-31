@@ -906,6 +906,7 @@ def test_evaluate_regression_logs_and_triggers_auto_rollback(monkeypatch, caplog
     assert "trigger=auto" in caplog.text
     assert _metric_value("nyxgpt_canary_evaluations_total", result="regression") >= 1
     assert _metric_value("nyxgpt_canary_events_total", action="rollback", result="ok") >= 1
+    assert _metric_value("nyxgpt_canary_auto_rollback_total", component="api") >= 1
 
 
 @pytest.mark.unit

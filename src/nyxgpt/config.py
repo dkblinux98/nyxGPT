@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import sys
 from configparser import ConfigParser
 from pathlib import Path
@@ -1227,6 +1228,66 @@ def get_monitoring_grafana_admin_password(cfg: ConfigParser) -> str:
     return cfg.get("monitoring", "grafana_admin_password", fallback="")
 
 
+def grafana_admin_password_path() -> Path:
+    """Where the ops-managed Grafana admin password is stored, for when
+    `[monitoring] grafana_admin_password` is unset in config.ini.
+
+    A generated-once secret read straight off disk, so it can't drift from
+    whatever `nyxgpt ops install` last reconciled the running Grafana
+    container to (#3458).
+    """
+    return Path.home() / ".nyxGPT" / "secrets" / "grafana-admin-password"
+
+
+def resolve_grafana_admin_password(cfg: ConfigParser) -> str:
+    """Resolve the Grafana admin password the same way `nyxgpt ops` reconciles
+    the container to it.
+
+    `[monitoring] grafana_admin_password` wins when the user has explicitly
+    set one in config.ini (a deliberate override). Otherwise this falls back
+    to an ops-managed secret generated once and reused from
+    `grafana_admin_password_path()` -- never the `""` fallback that
+    previously guaranteed a 401 on every default-config install (#3458).
+
+    Shared between `ops.py` (install-time reconciliation) and `health.py`
+    (reading Grafana's real alert state) so both resolve the same password
+    the same way instead of drifting apart (#3466).
+    """
+    configured = get_monitoring_grafana_admin_password(cfg).strip()
+    if configured:
+        return configured
+
+    path = grafana_admin_password_path()
+    if path.exists():
+        existing = path.read_text().strip()
+        if existing:
+            return existing
+
+    password = secrets.token_urlsafe(24)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text(password)
+    path.chmod(0o600)
+    return password
+
+
+def get_monitoring_slack_webhook_url(cfg: ConfigParser) -> str:
+    """Get the Slack incoming-webhook URL for Grafana's alerting contact point.
+
+    Deliberately kept out of `get_monitoring_config` -- that dict is returned
+    verbatim by `GET /api/v1/monitoring`, and this value must never be
+    exposed over the API. It exists only so local tooling (`nyxgpt ops
+    env-sync`/`install`) can provision Grafana's `nyxgpt-slack` contact point
+    (docker/grafana/provisioning/alerting/contact-points.yml) from config.ini.
+
+    Args:
+        cfg: ConfigParser instance
+
+    Returns:
+        The configured webhook URL, or "" if unset
+    """
+    return cfg.get("monitoring", "slack_webhook_url", fallback="")
+
+
 def get_log_aggregation_enabled(cfg: ConfigParser) -> bool:
     """Get whether the Loki/promtail log aggregation stack is enabled.
 
@@ -1350,6 +1411,9 @@ def get_effective_config_summary(cfg: ConfigParser) -> dict[str, object]:
         "monitoring.grafana_admin_password": (
             _REDACTED if get_monitoring_grafana_admin_password(cfg) else ""
         ),
+        "monitoring.slack_webhook_url": (
+            _REDACTED if get_monitoring_slack_webhook_url(cfg) else ""
+        ),
         "log_aggregation.enabled": get_log_aggregation_enabled(cfg),
         "rate_limit.enabled": get_rate_limit_enabled(cfg),
         "rag.enabled": get_rag_enabled(cfg),
@@ -1403,6 +1467,9 @@ __all__ = [
     "get_monitoring_enabled",
     "get_monitoring_config",
     "get_monitoring_grafana_admin_password",
+    "grafana_admin_password_path",
+    "resolve_grafana_admin_password",
+    "get_monitoring_slack_webhook_url",
     "get_log_aggregation_enabled",
     "get_log_aggregation_config",
     "get_self_heal_default_enabled",

@@ -50,8 +50,12 @@ KNOWN_METRIC_NAMES = {
     "nyxgpt_cache_requests_total",
     "nyxgpt_rate_limit_rejections_total",
     "nyxgpt_resource_memory_rss_mb",
+    "nyxgpt_resource_memory_percent",
     "nyxgpt_resource_cpu_percent",
+    "nyxgpt_resource_disk_percent",
     "nyxgpt_resource_queue_depth",
+    "nyxgpt_selfheal_giveup_total",
+    "nyxgpt_canary_auto_rollback_total",
     "up",
 }
 
@@ -87,8 +91,12 @@ def test_known_metric_names_match_registry() -> None:
         "nyxgpt_cache_requests_total",
         "nyxgpt_rate_limit_rejections_total",
         "nyxgpt_resource_memory_rss_mb",
+        "nyxgpt_resource_memory_percent",
         "nyxgpt_resource_cpu_percent",
+        "nyxgpt_resource_disk_percent",
         "nyxgpt_resource_queue_depth",
+        "nyxgpt_selfheal_giveup_total",
+        "nyxgpt_canary_auto_rollback_total",
     }
 
 
@@ -167,7 +175,7 @@ def _referenced_metric_names(expr: str) -> set[str]:
 @pytest.mark.parametrize(
     "config_path",
     [
-        REPO_ROOT / "docker" / "prometheus-alerts.yml",
+        REPO_ROOT / "docker" / "grafana" / "provisioning" / "alerting" / "rules.yml",
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "system-overview.json",
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "rag-performance.json",
         REPO_ROOT / "docker" / "grafana" / "dashboards" / "api-metrics.json",
@@ -346,3 +354,87 @@ def test_monitoring_status_endpoint_reports_disabled_by_default() -> None:
     assert data["active"] is False
     assert data["grafana_ui_url"] == "http://localhost:3001"
     assert data["prometheus_ui_url"] == "http://localhost:9090"
+
+
+# ---------------------------------------------------------------------------
+# Grafana alerting provisioning (#3466)
+# ---------------------------------------------------------------------------
+
+ALERTING_DIR = REPO_ROOT / "docker" / "grafana" / "provisioning" / "alerting"
+
+
+def test_prometheus_no_longer_runs_its_own_rule_evaluation() -> None:
+    """Alert rules are now provisioned in Grafana (rules.yml), not Prometheus
+    -- docker/prometheus-alerts.yml is gone and prometheus.yml must not
+    reference a rule_files entry that no longer exists."""
+    assert not (REPO_ROOT / "docker" / "prometheus-alerts.yml").exists()
+
+    prometheus_config = yaml.safe_load((REPO_ROOT / "docker" / "prometheus.yml").read_text())
+    assert "rule_files" not in prometheus_config
+
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    prometheus_volumes = compose["services"]["prometheus"]["volumes"]
+    assert not any("alerts.yml" in v for v in prometheus_volumes)
+
+
+def test_alerting_provisioning_files_exist_and_parse() -> None:
+    for name in ("rules.yml", "contact-points.yml", "notification-policies.yml"):
+        path = ALERTING_DIR / name
+        assert path.exists(), f"missing {path}"
+        doc = yaml.safe_load(path.read_text())
+        assert doc["apiVersion"] == 1
+
+
+def test_alert_rules_reference_provisioned_datasources() -> None:
+    """Every rule's `datasourceUid` must be either the built-in expression
+    datasource (`__expr__`) or a uid actually declared in the datasources
+    provisioning dir -- catches a typo'd/renamed datasource before it ships
+    as a silently-broken alert rule (mirrors the dashboard equivalent,
+    `test_dashboard_datasource_uids_are_all_provisioned`)."""
+    datasources_dir = REPO_ROOT / "docker" / "grafana" / "provisioning" / "datasources"
+    provisioned_uids = {
+        ds["uid"]
+        for path in sorted(datasources_dir.glob("*.yml"))
+        for ds in yaml.safe_load(path.read_text())["datasources"]
+    }
+
+    rules_doc = yaml.safe_load((ALERTING_DIR / "rules.yml").read_text())
+    groups = rules_doc["groups"]
+    assert groups, "expected at least one alert rule group"
+
+    seen_uids: set[str] = set()
+    for group in groups:
+        for rule in group["rules"]:
+            seen_uids.add(rule["uid"])
+            for query in rule["data"]:
+                ds_uid = query["datasourceUid"]
+                assert ds_uid == "__expr__" or ds_uid in provisioned_uids, (
+                    f"rule {rule['title']!r} references undeclared datasource " f"uid {ds_uid!r}"
+                )
+
+    assert len(seen_uids) == sum(len(g["rules"]) for g in groups), "rule uids must be unique"
+
+
+def test_notification_policy_routes_to_a_provisioned_contact_point() -> None:
+    contact_points_doc = yaml.safe_load((ALERTING_DIR / "contact-points.yml").read_text())
+    contact_point_names = {cp["name"] for cp in contact_points_doc["contactPoints"]}
+
+    policies_doc = yaml.safe_load((ALERTING_DIR / "notification-policies.yml").read_text())
+    for policy in policies_doc["policies"]:
+        assert policy["receiver"] in contact_point_names
+
+
+def test_slack_contact_point_reads_webhook_url_from_the_shared_secrets_mount() -> None:
+    """The webhook URL must come from the same `/etc/nyxgpt-secrets` mount
+    docker-compose.yml already gives Grafana for the GlitchTip token (#3432),
+    not a new bind mount -- otherwise Grafana can't resolve the `$__file{}`
+    reference at all."""
+    contact_points_doc = yaml.safe_load((ALERTING_DIR / "contact-points.yml").read_text())
+    receiver = contact_points_doc["contactPoints"][0]["receivers"][0]
+    assert receiver["type"] == "slack"
+    url_ref = receiver["secureSettings"]["url"]
+    assert url_ref.startswith("$__file{/etc/nyxgpt-secrets/")
+
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
+    grafana_volumes = compose["services"]["grafana"]["volumes"]
+    assert any(v.endswith(":/etc/nyxgpt-secrets:ro") for v in grafana_volumes)
