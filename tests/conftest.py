@@ -62,9 +62,9 @@ level = INFO
 
 [tracing]
 # Tracing defaults to enabled in production (#3415), but the OTel SDK
-# instrumentation `init_tracing` performs (FastAPIInstrumentor, a global
-# TracerProvider) is real, process-wide, and sticky across tests -- so the
-# test fixture config keeps it off unless a test explicitly opts in.
+# instrumentation `init_tracing` performs (Cassandra/urllib instrumentors, a
+# global TracerProvider) is real, process-wide, and sticky across tests -- so
+# the test fixture config keeps it off unless a test explicitly opts in.
 enabled = false
 
 [dev]

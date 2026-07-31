@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from configparser import ConfigParser
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -16,6 +18,8 @@ from nyxgpt.app import app
 from nyxgpt.config import get_tracing_config, get_tracing_enabled
 
 pytestmark = pytest.mark.unit
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class _FakeSpan:
@@ -114,7 +118,7 @@ def test_init_tracing_is_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> 
     unless the operator explicitly opts in)."""
     monkeypatch.setattr(tracing, "_enabled", True)
 
-    tracing.init_tracing(app=None, tracing_config={"enabled": False})
+    tracing.init_tracing(tracing_config={"enabled": False})
 
     assert tracing.is_tracing_enabled() is False
 
@@ -157,20 +161,18 @@ def test_init_tracing_enables_and_instruments_when_enabled(
 ) -> None:
     """With tracing enabled, init_tracing must build a TracerProvider bound
     to the configured service name, export via the configured OTLP
-    endpoint, instrument FastAPI + Cassandra, and flip _enabled to True."""
+    endpoint, instrument Cassandra + urllib, and flip _enabled to True.
+    FastAPI instrumentation is covered separately by
+    `instrument_fastapi_app` -- it must NOT run again from here (see
+    `test_fastapi_app_is_instrumented_before_lifespan_runs` for why running
+    it from inside app startup is the bug this module now avoids)."""
     monkeypatch.setattr(tracing, "_enabled", False)
 
-    instrumented_apps = []
     cassandra_instrumented = []
     urllib_instrumented = []
     exporter_endpoints = []
     provider_resources = []
     tracer_providers_set = []
-
-    class FakeInstrumentor:
-        @staticmethod
-        def instrument_app(app: Any) -> None:
-            instrumented_apps.append(app)
 
     class FakeCassandraInstrumentor:
         def instrument(self) -> None:
@@ -196,7 +198,6 @@ def test_init_tracing_enables_and_instruments_when_enabled(
         def add_span_processor(self, processor: Any) -> None:
             self.processors.append(processor)
 
-    monkeypatch.setattr(tracing, "FastAPIInstrumentor", FakeInstrumentor)
     monkeypatch.setattr(tracing, "CassandraInstrumentor", FakeCassandraInstrumentor)
     monkeypatch.setattr(tracing, "URLLibInstrumentor", FakeURLLibInstrumentor)
     monkeypatch.setattr(tracing, "OTLPSpanExporter", FakeExporter)
@@ -204,9 +205,7 @@ def test_init_tracing_enables_and_instruments_when_enabled(
     monkeypatch.setattr(tracing, "BatchSpanProcessor", FakeProcessor)
     monkeypatch.setattr(tracing.trace, "set_tracer_provider", tracer_providers_set.append)
 
-    fake_app = object()
     tracing.init_tracing(
-        app=fake_app,  # type: ignore[arg-type]
         tracing_config={
             "enabled": True,
             "service_name": "my-service",
@@ -215,13 +214,68 @@ def test_init_tracing_enables_and_instruments_when_enabled(
     )
 
     assert tracing.is_tracing_enabled() is True
-    assert instrumented_apps == [fake_app]
     assert cassandra_instrumented == [True]
     assert urllib_instrumented == [True]
     assert exporter_endpoints == ["http://collector:4318/v1/traces"]
     assert len(provider_resources) == 1
     assert provider_resources[0].attributes[SERVICE_NAME] == "my-service"
     assert len(tracer_providers_set) == 1
+
+
+def test_instrument_fastapi_app_calls_the_otel_instrumentor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """instrument_fastapi_app must delegate straight to
+    FastAPIInstrumentor.instrument_app -- it's the only thing it does."""
+    instrumented_apps = []
+
+    class FakeInstrumentor:
+        @staticmethod
+        def instrument_app(app: Any) -> None:
+            instrumented_apps.append(app)
+
+    monkeypatch.setattr(tracing, "FastAPIInstrumentor", FakeInstrumentor)
+
+    fake_app = object()
+    tracing.instrument_fastapi_app(fake_app)  # type: ignore[arg-type]
+
+    assert instrumented_apps == [fake_app]
+
+
+def test_fastapi_app_is_instrumented_before_lifespan_runs() -> None:
+    """Regression test for the bug this issue fixes: FastAPIInstrumentor
+    used to be wired up from inside app.py's `lifespan` startup handler.
+    Starlette caches `app.middleware_stack` on the very first ASGI message
+    it receives -- which is the lifespan startup message itself -- so
+    instrumenting from inside lifespan silently never took effect: no
+    exception, but every request served with zero HTTP-level spans, even
+    though Cassandra/urllib spans (monkey-patched, not middleware-based)
+    kept working and made tracing look healthy.
+
+    This exercises the real `nyxgpt.app.app` object end-to-end: a real
+    OTel TracerProvider with an in-memory exporter, a real request through
+    TestClient, and an assertion that a SERVER span was actually recorded.
+    If FastAPI instrumentation ever moves back into `lifespan`/
+    `init_tracing`, this test fails because no span is recorded."""
+    from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    exporter = InMemorySpanExporter()
+    provider = SDKTracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracing.trace.set_tracer_provider(provider)
+
+    with TestClient(app) as client:
+        response = client.get("/api/v1/tracing")
+    assert response.status_code == 200
+
+    server_spans = [
+        span for span in exporter.get_finished_spans() if span.name == "GET /api/v1/tracing"
+    ]
+    assert len(server_spans) == 1
 
 
 def test_traced_span_enabled_sets_attributes_on_the_span(
@@ -409,7 +463,6 @@ def test_init_tracing_disables_when_exporter_missing(
 
     with caplog.at_level("WARNING", logger="nyxgpt.tracing"):
         tracing.init_tracing(
-            app=None,  # type: ignore[arg-type]
             tracing_config={
                 "enabled": True,
                 "service_name": "my-service",
@@ -432,16 +485,11 @@ def test_init_tracing_skips_missing_instrumentor_but_stays_enabled(
     monkeypatch.setattr(tracing, "_enabled", False)
     monkeypatch.setattr(tracing, "URLLibInstrumentor", None)
 
-    instrumented_apps = []
-
-    class FakeInstrumentor:
-        @staticmethod
-        def instrument_app(app: Any) -> None:
-            instrumented_apps.append(app)
+    cassandra_instrumented = []
 
     class FakeCassandraInstrumentor:
         def instrument(self) -> None:
-            pass
+            cassandra_instrumented.append(True)
 
     class FakeExporter:
         def __init__(self, endpoint: str) -> None:
@@ -458,17 +506,14 @@ def test_init_tracing_skips_missing_instrumentor_but_stays_enabled(
         def add_span_processor(self, processor: Any) -> None:
             pass
 
-    monkeypatch.setattr(tracing, "FastAPIInstrumentor", FakeInstrumentor)
     monkeypatch.setattr(tracing, "CassandraInstrumentor", FakeCassandraInstrumentor)
     monkeypatch.setattr(tracing, "OTLPSpanExporter", FakeExporter)
     monkeypatch.setattr(tracing, "TracerProvider", FakeProvider)
     monkeypatch.setattr(tracing, "BatchSpanProcessor", FakeProcessor)
     monkeypatch.setattr(tracing.trace, "set_tracer_provider", lambda provider: None)
 
-    fake_app = object()
     with caplog.at_level("WARNING", logger="nyxgpt.tracing"):
         tracing.init_tracing(
-            app=fake_app,  # type: ignore[arg-type]
             tracing_config={
                 "enabled": True,
                 "service_name": "my-service",
@@ -477,7 +522,7 @@ def test_init_tracing_skips_missing_instrumentor_but_stays_enabled(
         )
 
     assert tracing.is_tracing_enabled() is True
-    assert instrumented_apps == [fake_app]
+    assert cassandra_instrumented == [True]
     assert len(caplog.records) == 1
     assert "opentelemetry-instrumentation-urllib" in caplog.text
     assert "nyxgpt ops install" in caplog.text
@@ -504,3 +549,39 @@ def test_otlp_endpoint_reachable_parses_host_and_port(
     tracing.otlp_endpoint_reachable("http://collector.internal:9999/v1/traces")
 
     assert seen == [("collector.internal", 9999)]
+
+
+def _iter_jaeger_panel_targets(dashboard: dict[str, Any]):
+    for panel in dashboard.get("panels", []):
+        if panel.get("datasource", {}).get("type") != "jaeger":
+            continue
+        for target in panel.get("targets", []):
+            if target.get("datasource", {}).get("type") == "jaeger":
+                yield panel, target
+
+
+def test_grafana_jaeger_panels_service_filter_matches_tracing_config() -> None:
+    """Regression test for #3472: the SPOG traces panel showed "No data
+    found in response" against a live Jaeger that had traces, because
+    nothing kept the panel's hardcoded Jaeger query `service` string in
+    sync with the `service.name` `tracing.py` actually exports. Sweeps
+    every dashboard for every panel wired to the Jaeger datasource (not
+    just the known one today) and asserts each target's `service` equals
+    `get_tracing_config`'s default -- so a future service-name rename in
+    either the panel JSON or `tracing.py` breaks this test, not the panel."""
+    expected_service = get_tracing_config(ConfigParser())["service_name"]
+
+    dashboards_dir = REPO_ROOT / "docker" / "grafana" / "dashboards"
+    jaeger_targets = []
+    for dashboard_path in sorted(dashboards_dir.glob("*.json")):
+        dashboard = json.loads(dashboard_path.read_text())
+        for panel, target in _iter_jaeger_panel_targets(dashboard):
+            jaeger_targets.append((dashboard_path.name, panel["title"], target))
+
+    assert jaeger_targets, "expected at least one panel wired to the Jaeger datasource"
+    for dashboard_name, panel_title, target in jaeger_targets:
+        assert target.get("service") == expected_service, (
+            f"{dashboard_name}: panel {panel_title!r} queries Jaeger for "
+            f"service={target.get('service')!r}, but tracing.py exports "
+            f"service.name={expected_service!r}"
+        )
