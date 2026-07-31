@@ -12,19 +12,26 @@ log() { echo "[scrum] $*" >&2; }
 usage() {
   cat <<'EOF'
 Usage:
-  scrummaster_next_issue.sh [--select-only]
+  scrummaster_next_issue.sh [--select-only] [--sprint-scoped]
 
 Selects the next Backlog issue (lowest Phase, lowest issue number).
 By default, automatically starts the issue (Status -> In Progress, assigns to DEV_AGENT).
 
 Options:
-  --select-only   Only select and print issue number, don't start it
-  -h, --help      Show this help
+  --select-only    Only select and print issue number, don't start it
+  --sprint-scoped  Only consider issues whose Sprint field matches the
+                    active Sprint iteration (SPRINT_FIELD, default "Sprint").
+                    Used by sprint autopilot (#3480) so continuation never
+                    pulls in work from outside the active sprint. Without
+                    this flag, behavior is unchanged from before #3480
+                    (Sprint is not considered at all).
+  -h, --help       Show this help
 EOF
 }
 
 # Parse arguments
 SELECT_ONLY=0
+SPRINT_SCOPED_FLAG=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
@@ -33,6 +40,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --select-only)
       SELECT_ONLY=1
+      shift
+      ;;
+    --sprint-scoped)
+      SPRINT_SCOPED_FLAG=1
       shift
       ;;
     *)
@@ -54,113 +65,47 @@ status_opt_backlog="$(single_select_option_id "$STATUS_FIELD" "$STATUS_BACKLOG")
 [[ -n "$status_opt_backlog" && "$status_opt_backlog" != "null" ]] || _die "Status option not found: ${STATUS_BACKLOG}"
 log "Status field '${STATUS_FIELD}' has Backlog option '${STATUS_BACKLOG}'."
 
+SPRINT_FIELD="${SPRINT_FIELD:-Sprint}"
+ACTIVE_SPRINT_TITLE=""
+if [[ "$SPRINT_SCOPED_FLAG" == "1" ]]; then
+  ACTIVE_SPRINT_TITLE="$(iteration_active_title "$SPRINT_FIELD" 2>/dev/null || echo "")"
+  if [[ -z "$ACTIVE_SPRINT_TITLE" || "$ACTIVE_SPRINT_TITLE" == "null" ]]; then
+    # No active Sprint: sprint scoping has nothing to scope to. Per #3480,
+    # "no active sprint" falls back to today's unscoped manual-kick
+    # behavior rather than reporting "no eligible work" -- only "autopilot
+    # on AND a sprint is active" restricts selection.
+    log "No active Sprint on field '${SPRINT_FIELD}' -- falling back to unscoped selection."
+    SPRINT_SCOPED_FLAG=0
+  else
+    log "Sprint-scoped selection: active sprint '${ACTIVE_SPRINT_TITLE}'"
+  fi
+fi
+
 MAX_PAGES="${MAX_PAGES:-200}"  # growth-safe; stops early once it finds a candidate
 log "Pagination: up to ${MAX_PAGES} pages (stop at first candidate page)"
-
-# ---- GraphQL query ----
-q='query($project:ID!, $after:String){
-  node(id:$project){
-    ... on ProjectV2{
-      items(first:100, after:$after){
-        pageInfo { hasNextPage endCursor }
-        nodes{
-          content{
-            __typename
-            ... on Issue {
-              number
-              state
-              milestone { title }
-            }
-          }
-          fieldValues(first:50){
-            nodes{
-              __typename
-              ... on ProjectV2ItemFieldSingleSelectValue {
-                field { ... on ProjectV2SingleSelectField { name } }
-                name
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}'
 
 fetch_page() {
   local cursor="${1:-}"
   if [[ -n "$cursor" ]]; then
     log "Fetching page (after cursor)..."
-    graphql "$q" -F project="$project_id" -f after="$cursor"
+    graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id" -f after="$cursor"
   else
     log "Fetching page (first page)..."
-    graphql "$q" -F project="$project_id"
+    graphql "$BACKLOG_PAGE_QUERY" -F project="$project_id"
   fi
 }
 
-# Python: summarize a page and return the best candidate ON THIS PAGE
+# Summarizes a page and returns the best candidate ON THIS PAGE.
 # Output JSON: { total_items, issue_items, open_issues, backlog_open, best_issue }
+# Delegates to lib/summarize_backlog_page.py (shared with
+# count_sprint_backlog_open() in gh_project.sh, and unit-tested directly in
+# tests/unit/test_summarize_backlog_page.py, #3480).
 summarize_page_file() {
   local json_file="${1:?json file required}"
-  python3 - "$json_file" <<'PY'
-import json, os, re, sys
-
-path = sys.argv[1]
-with open(path, "r", encoding="utf-8") as f:
-    d = json.load(f)
-
-STATUS_FIELD=os.getenv("STATUS_FIELD","Status")
-STATUS_BACKLOG=os.getenv("STATUS_BACKLOG","Backlog")
-
-def phase_num(title):
-    if not title:
-        return 10**9
-    m = re.search(r'(\d+)', title)
-    return int(m.group(1)) if m else 10**9
-
-items = d["data"]["node"]["items"]["nodes"]
-total = len(items)
-
-issues = 0
-open_issues = 0
-backlog_open = 0
-best = None  # (phase, issue_number)
-
-for it in items:
-    c = it.get("content") or {}
-    if c.get("__typename") != "Issue":
-        continue
-    issues += 1
-    if c.get("state") != "OPEN":
-        continue
-    open_issues += 1
-
-    status = None
-    for fv in (it.get("fieldValues") or {}).get("nodes", []):
-        if fv.get("__typename") == "ProjectV2ItemFieldSingleSelectValue":
-            field = fv.get("field") or {}
-            if field.get("name") == STATUS_FIELD:
-                status = fv.get("name")
-                break
-
-    if status != STATUS_BACKLOG:
-        continue
-
-    backlog_open += 1
-    ms_title = ((c.get("milestone") or {}) or {}).get("title")
-    cand = (phase_num(ms_title), int(c["number"]))
-    if best is None or cand < best:
-        best = cand
-
-out = {
-    "total_items": total,
-    "issue_items": issues,
-    "open_issues": open_issues,
-    "backlog_open": backlog_open,
-    "best_issue": (best[1] if best else None),
-}
-print(json.dumps(out))
-PY
+  STATUS_FIELD="$STATUS_FIELD" STATUS_BACKLOG="$STATUS_BACKLOG" \
+    SPRINT_FIELD="$SPRINT_FIELD" SPRINT_SCOPED="$SPRINT_SCOPED_FLAG" \
+    ACTIVE_SPRINT_TITLE="$ACTIVE_SPRINT_TITLE" \
+    python3 "$DIR/lib/summarize_backlog_page.py" "$json_file"
 }
 
 tmp="$(mktemp)"
