@@ -4,7 +4,7 @@
   "tags": ["nyxgpt", "rag"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": { "from": "now-6h", "to": "now" },
   "panels": [
@@ -14,11 +14,11 @@
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(nyxgpt_rag_queries_total[5m])) by (source)",
+          "expr": "sum(increase(nyxgpt_rag_queries_total[$__rate_interval])) by (source)",
           "legendFormat": "{{source}}",
           "refId": "A"
         }
@@ -46,11 +46,11 @@
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(nyxgpt_chat_requests_total[5m])) by (streaming)",
+          "expr": "sum(increase(nyxgpt_chat_requests_total[$__rate_interval])) by (streaming)",
           "legendFormat": "streaming={{streaming}}",
           "refId": "A"
         }
@@ -78,11 +78,11 @@
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(rate(nyxgpt_rag_ingests_total[5m])) by (source, result)",
+          "expr": "sum(increase(nyxgpt_rag_ingests_total[$__rate_interval])) by (source, result)",
           "legendFormat": "{{source}} ({{result}})",
           "refId": "A"
         }
