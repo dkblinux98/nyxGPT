@@ -4,7 +4,7 @@
   "tags": ["nyxgpt", "sre", "home"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 3,
+  "version": 4,
   "refresh": "1m",
   "time": { "from": "now-1h", "to": "now" },
   "panels": [
@@ -164,7 +164,7 @@
     },
     {
       "id": 8,
-      "title": "Request rate",
+      "title": "Requests by status",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 9 },
@@ -180,7 +180,7 @@
     },
     {
       "id": 9,
-      "title": "Error rate (5xx)",
+      "title": "5xx errors",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 9 },
@@ -224,7 +224,7 @@
     },
     {
       "id": 11,
-      "title": "RAG query rate by source",
+      "title": "RAG queries by source",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 8, "x": 0, "y": 17 },
@@ -240,7 +240,7 @@
     },
     {
       "id": 12,
-      "title": "RAG ingest rate by source and outcome",
+      "title": "RAG ingests by source and outcome",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 8, "x": 8, "y": 17 },
@@ -256,7 +256,7 @@
     },
     {
       "id": 13,
-      "title": "Chat request rate (streaming vs. non-streaming)",
+      "title": "Chat requests (streaming vs. non-streaming)",
       "type": "timeseries",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 8, "x": 16, "y": 17 },
