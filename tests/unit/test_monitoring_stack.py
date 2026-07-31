@@ -356,6 +356,40 @@ def test_sre_home_glitchtip_open_issues_stat_panel_reduces_over_all_fields() -> 
     assert panel["options"]["reduceOptions"]["fields"] != ""
 
 
+def test_sre_home_glitchtip_panels_filter_to_unresolved_issues() -> None:
+    """Regression test for #3470: GlitchTip's issues endpoint returns every
+    issue regardless of resolution status unless the query carries an
+    `is:unresolved` filter, so a dashboard querying without it shows the
+    all-time issue count (e.g. "50 open issues") instead of matching
+    GlitchTip's own UI, which defaults to the unresolved view. Both the
+    "open issues" stat and the "recent errors" table must request the
+    filter so neither surfaces resolved issues as open."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / "sre-home.json").read_text()
+    )
+    glitchtip_panels = [p for p in dashboard["panels"] if p["title"].startswith("GlitchTip:")]
+    assert len(glitchtip_panels) == 2
+    for panel in glitchtip_panels:
+        for target in panel["targets"]:
+            assert (
+                "query=is%3Aunresolved" in target["url"]
+            ), f"{panel['title']!r} issues query is missing the unresolved status filter"
+
+
+def test_sre_home_glitchtip_recent_errors_table_shows_status() -> None:
+    """The "recent errors" table also carries a status column (#3470) so an
+    issue that gets resolved between dashboard refreshes isn't mistaken for
+    open before the panel next reloads."""
+    dashboard = json.loads(
+        (REPO_ROOT / "docker" / "grafana" / "dashboards" / "sre-home.json").read_text()
+    )
+    panel = next(
+        p for p in dashboard["panels"] if p["title"].startswith("GlitchTip: recent errors")
+    )
+    selectors = {c["selector"] for c in panel["targets"][0]["columns"]}
+    assert "status" in selectors
+
+
 def _cfg(**monitoring_options: str) -> ConfigParser:
     cfg = ConfigParser()
     if monitoring_options:
