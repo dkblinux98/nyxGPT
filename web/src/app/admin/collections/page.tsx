@@ -61,6 +61,10 @@ export default function CollectionsPage() {
   const [error, setError] = useState<string | null>(null);
   const [deletingCollection, setDeletingCollection] = useState<string | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [clearingCollection, setClearingCollection] = useState<string | null>(null);
+  const [clearConfirm, setClearConfirm] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newCollectionName, setNewCollectionName] = useState('');
@@ -94,9 +98,40 @@ export default function CollectionsPage() {
     }
   }
 
+  async function handleClearCollection(collectionName: string) {
+    setClearingCollection(collectionName);
+    setError(null);
+    setActionMessage(null);
+    try {
+      const res = await fetch(
+        `/api/v1/rag/collections/${encodeURIComponent(collectionName)}/clear`,
+        { method: 'POST' }
+      );
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(extractErrorMessage(errorData, `HTTP ${res.status}`));
+      }
+
+      const data = await res.json();
+      // Reload collections so the card reflects the now-empty doc/chunk counts
+      await loadCollections();
+      setClearConfirm(null);
+      setActionMessage(
+        `Cleared '${collectionName}': ${data.doc_count} documents / ${data.chunk_count} chunks remain. The collection and its settings are intact.`
+      );
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(`Failed to clear collection: ${msg}`);
+    } finally {
+      setClearingCollection(null);
+    }
+  }
+
   async function handleDeleteCollection(collectionName: string) {
     setDeletingCollection(collectionName);
     setError(null);
+    setActionMessage(null);
     try {
       const res = await fetch(`/api/v1/rag/collections/${encodeURIComponent(collectionName)}`, {
         method: 'DELETE',
@@ -110,6 +145,10 @@ export default function CollectionsPage() {
       // Reload collections after successful delete
       await loadCollections();
       setDeleteConfirm(null);
+      setDeleteConfirmText('');
+      setActionMessage(
+        `Collection '${collectionName}' and its settings have been permanently deleted.`
+      );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(`Failed to delete collection: ${msg}`);
@@ -291,6 +330,22 @@ export default function CollectionsPage() {
         </div>
       )}
 
+      {actionMessage && (
+        <div
+          style={{
+            marginBottom: '1rem',
+            padding: '0.75rem 1rem',
+            backgroundColor: '#dcfce7',
+            border: '1px solid #16a34a',
+            borderRadius: '0.375rem',
+            color: '#166534',
+            fontSize: '0.875rem',
+          }}
+        >
+          {actionMessage}
+        </div>
+      )}
+
       {collections.length === 0 ? (
         <div
           style={{
@@ -330,6 +385,11 @@ export default function CollectionsPage() {
                       </span>
                     )}
                   </h3>
+                  {coll.name === 'default' && (
+                    <p style={{ fontSize: '0.75rem', color: 'var(--foreground-muted)' }}>
+                      Protected: chat and ingestion fall back to this collection, so it cannot be cleared or deleted.
+                    </p>
+                  )}
                 </div>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button
@@ -348,8 +408,38 @@ export default function CollectionsPage() {
                   </button>
                   {coll.name !== 'default' && (
                     <button
-                      onClick={() => setDeleteConfirm(coll.name)}
+                      onClick={() => {
+                        setActionMessage(null);
+                        setDeleteConfirm(null);
+                        setDeleteConfirmText('');
+                        setClearConfirm(coll.name);
+                      }}
+                      disabled={clearingCollection === coll.name}
+                      title="Remove all documents and chunks from this collection; the collection and its settings remain"
+                      style={{
+                        padding: '0.5rem 1rem',
+                        backgroundColor: '#d97706',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '0.375rem',
+                        cursor: clearingCollection === coll.name ? 'not-allowed' : 'pointer',
+                        fontSize: '0.875rem',
+                        opacity: clearingCollection === coll.name ? 0.6 : 1,
+                      }}
+                    >
+                      {clearingCollection === coll.name ? 'Clearing...' : 'Clear Collection'}
+                    </button>
+                  )}
+                  {coll.name !== 'default' && (
+                    <button
+                      onClick={() => {
+                        setActionMessage(null);
+                        setClearConfirm(null);
+                        setDeleteConfirmText('');
+                        setDeleteConfirm(coll.name);
+                      }}
                       disabled={deletingCollection === coll.name}
+                      title="Permanently delete this collection, its documents, and its settings"
                       style={{
                         padding: '0.5rem 1rem',
                         backgroundColor: '#dc2626',
@@ -361,7 +451,7 @@ export default function CollectionsPage() {
                         opacity: deletingCollection === coll.name ? 0.6 : 1,
                       }}
                     >
-                      {deletingCollection === coll.name ? 'Deleting...' : 'Clear Collection'}
+                      {deletingCollection === coll.name ? 'Deleting...' : 'Delete Collection'}
                     </button>
                   )}
                 </div>
@@ -435,6 +525,59 @@ export default function CollectionsPage() {
                 </div>
               </div>
 
+              {clearConfirm === coll.name && (
+                <div
+                  style={{
+                    marginTop: '1rem',
+                    padding: '1rem',
+                    backgroundColor: '#fef3c7',
+                    border: '1px solid #d97706',
+                    borderRadius: '0.375rem',
+                  }}
+                >
+                  <p style={{ marginBottom: '0.75rem', fontWeight: '600', color: '#92400e' }}>
+                    Remove all {coll.doc_count} documents and {coll.chunk_count} chunks from &apos;{coll.name}&apos;?
+                  </p>
+                  <p style={{ marginBottom: '1rem', fontSize: '0.875rem', color: '#78350f' }}>
+                    The collection and its settings (embedding model, chunk size/overlap) remain, so you can
+                    start ingesting into it again right away. This action cannot be undone.
+                  </p>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      onClick={() => handleClearCollection(coll.name)}
+                      disabled={clearingCollection === coll.name}
+                      style={{
+                        padding: '0.5rem 1rem',
+                        backgroundColor: '#d97706',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '0.375rem',
+                        cursor: clearingCollection === coll.name ? 'not-allowed' : 'pointer',
+                        fontSize: '0.875rem',
+                        fontWeight: '600',
+                        opacity: clearingCollection === coll.name ? 0.6 : 1,
+                      }}
+                    >
+                      {clearingCollection === coll.name ? 'Clearing...' : 'Yes, Clear Collection'}
+                    </button>
+                    <button
+                      onClick={() => setClearConfirm(null)}
+                      style={{
+                        padding: '0.5rem 1rem',
+                        backgroundColor: 'white',
+                        color: '#374151',
+                        border: '1px solid #d1d5db',
+                        borderRadius: '0.375rem',
+                        cursor: 'pointer',
+                        fontSize: '0.875rem',
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {deleteConfirm === coll.name && (
                 <div
                   style={{
@@ -446,30 +589,64 @@ export default function CollectionsPage() {
                   }}
                 >
                   <p style={{ marginBottom: '0.75rem', fontWeight: '600', color: '#991b1b' }}>
-                    Are you sure you want to clear this collection?
+                    Permanently delete &apos;{coll.name}&apos;?
                   </p>
-                  <p style={{ marginBottom: '1rem', fontSize: '0.875rem', color: '#7f1d1d' }}>
-                    This will permanently delete all {coll.doc_count} documents and {coll.chunk_count} chunks.
-                    This action cannot be undone.
+                  <p style={{ marginBottom: '0.75rem', fontSize: '0.875rem', color: '#7f1d1d' }}>
+                    This removes all {coll.doc_count} documents and {coll.chunk_count} chunks, the
+                    collection&apos;s settings, and its backing storage. It will disappear from every
+                    collection picker (this screen, the playground, and chat scoping). This action
+                    cannot be undone.
                   </p>
+                  <label
+                    htmlFor={`delete-confirm-${coll.name}`}
+                    style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', fontWeight: '600', color: '#7f1d1d' }}
+                  >
+                    Type <code>{coll.name}</code> to confirm
+                  </label>
+                  <input
+                    id={`delete-confirm-${coll.name}`}
+                    type="text"
+                    value={deleteConfirmText}
+                    onChange={(e) => setDeleteConfirmText(e.target.value)}
+                    placeholder={coll.name}
+                    disabled={deletingCollection === coll.name}
+                    style={{
+                      width: '100%',
+                      padding: '0.5rem',
+                      marginBottom: '1rem',
+                      border: '1px solid #dc2626',
+                      borderRadius: '0.375rem',
+                      fontSize: '0.875rem',
+                      backgroundColor: 'var(--background)',
+                      color: 'var(--foreground)',
+                    }}
+                  />
                   <div style={{ display: 'flex', gap: '0.5rem' }}>
                     <button
                       onClick={() => handleDeleteCollection(coll.name)}
+                      disabled={deletingCollection === coll.name || deleteConfirmText !== coll.name}
                       style={{
                         padding: '0.5rem 1rem',
                         backgroundColor: '#dc2626',
                         color: 'white',
                         border: 'none',
                         borderRadius: '0.375rem',
-                        cursor: 'pointer',
+                        cursor:
+                          deletingCollection === coll.name || deleteConfirmText !== coll.name
+                            ? 'not-allowed'
+                            : 'pointer',
                         fontSize: '0.875rem',
                         fontWeight: '600',
+                        opacity: deletingCollection === coll.name || deleteConfirmText !== coll.name ? 0.6 : 1,
                       }}
                     >
-                      Yes, Clear Collection
+                      {deletingCollection === coll.name ? 'Deleting...' : 'Yes, Delete Permanently'}
                     </button>
                     <button
-                      onClick={() => setDeleteConfirm(null)}
+                      onClick={() => {
+                        setDeleteConfirm(null);
+                        setDeleteConfirmText('');
+                      }}
                       style={{
                         padding: '0.5rem 1rem',
                         backgroundColor: 'white',
