@@ -197,7 +197,7 @@ def test_resource_ingest_cache_and_rate_limit_metrics_are_registered() -> None:
     prom_metrics.CACHE_REQUESTS_TOTAL.labels(cache="unit-test", result="hit").inc()
     prom_metrics.RATE_LIMIT_REJECTIONS_TOTAL.labels(path="/unit-test").inc()
     prom_metrics.update_resource_gauges(
-        rss_mb=123.4, cpu_percent=5.6, queue_depth=2, disk_percent=45.0
+        rss_mb=123.4, cpu_percent=5.6, queue_depth=2, disk_percent=45.0, memory_percent=12.5
     )
 
     body, _ = prom_metrics.render_metrics()
@@ -207,12 +207,15 @@ def test_resource_ingest_cache_and_rate_limit_metrics_are_registered() -> None:
     assert "nyxgpt_cache_requests_total" in names
     assert "nyxgpt_rate_limit_rejections_total" in names
     assert "nyxgpt_resource_memory_rss_mb" in names
+    assert "nyxgpt_resource_memory_percent" in names
     assert "nyxgpt_resource_cpu_percent" in names
     assert "nyxgpt_resource_queue_depth" in names
     assert "nyxgpt_resource_disk_percent" in names
 
     disk_samples = _samples(body.decode("utf-8"), "nyxgpt_resource_disk_percent")
     assert disk_samples[0].value == 45.0
+    memory_percent_samples = _samples(body.decode("utf-8"), "nyxgpt_resource_memory_percent")
+    assert memory_percent_samples[0].value == 12.5
 
 
 @pytest.mark.unit

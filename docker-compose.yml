@@ -177,12 +177,13 @@ services:
       start_period: 20s
 
   # Monitoring dashboards (opt-in): `docker compose --profile monitoring up`.
-  # Prometheus scrapes the API's `/metrics` endpoint (see docker/prometheus.yml)
-  # and evaluates the alerting rules in docker/prometheus-alerts.yml; Grafana
-  # is pre-provisioned with a Prometheus datasource and the dashboards under
-  # docker/grafana/dashboards (system overview, RAG performance, API
-  # metrics). Everything stays on this machine -- nothing is sent to an
-  # external/cloud monitoring service.
+  # Prometheus scrapes the API's `/metrics` endpoint (see docker/prometheus.yml);
+  # Grafana is pre-provisioned with a Prometheus datasource, the dashboards
+  # under docker/grafana/dashboards (system overview, RAG performance, API
+  # metrics), and real alerting (rules, Slack contact point, notification
+  # policy) under docker/grafana/provisioning/alerting (#3466). Everything
+  # stays on this machine -- nothing is sent to an external/cloud monitoring
+  # service.
   prometheus:
     image: prom/prometheus:v3.13.1
     restart: unless-stopped
@@ -197,7 +198,6 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./docker/prometheus-alerts.yml:/etc/prometheus/alerts.yml:ro
       - ${HOME}/.nyxGPT/volumes/prometheus:/prometheus
     ports:
       - "${NYXGPT_BIND_ADDR:-127.0.0.1}:${PROMETHEUS_UI_PORT:-9090}:9090"
@@ -242,8 +242,12 @@ services:
       - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - ${HOME}/.nyxGPT/volumes/grafana:/var/lib/grafana
-      # GlitchTip API token for the Infinity datasource, minted by `nyxgpt
-      # ops glitchtip-init` -- see datasource.yml's `$__file{}` reference and
+      # Secrets Grafana reads via `$__file{}` provisioning expansion: the
+      # GlitchTip API token for the Infinity datasource (minted by `nyxgpt
+      # ops glitchtip-init`, see datasources/glitchtip.yml) and the Slack
+      # webhook URL for the alerting contact point (synced by `nyxgpt ops
+      # env-sync`/`install` from config.ini, see
+      # provisioning/alerting/contact-points.yml, #3466). See
       # docs/docker-compose.md#grafana-single-pane-of-glass. Read-only,
       # outside grafana's own data dir so `nyxgpt ops down --volumes` never
       # deletes it.

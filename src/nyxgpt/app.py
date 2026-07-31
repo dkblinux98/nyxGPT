@@ -1037,6 +1037,7 @@ def prometheus_metrics_endpoint() -> Response:
             cpu_percent=snapshot.cpu_percent_process,
             queue_depth=snapshot.queue_depth,
             disk_percent=snapshot.disk_percent,
+            memory_percent=snapshot.memory_percent,
         )
     body, content_type = prom_metrics.render_metrics()
     return Response(content=body, media_type=content_type)

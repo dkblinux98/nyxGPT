@@ -202,6 +202,12 @@ RESOURCE_CPU_PERCENT = Gauge(
     registry=REGISTRY,
 )
 
+RESOURCE_MEMORY_PERCENT = Gauge(
+    "nyxgpt_resource_memory_percent",
+    "Percentage of system memory used by the API process",
+    registry=REGISTRY,
+)
+
 RESOURCE_QUEUE_DEPTH = Gauge(
     "nyxgpt_resource_queue_depth",
     "Current number of requests in the batch processing queue",
@@ -233,7 +239,12 @@ CANARY_AUTO_ROLLBACK_TOTAL = Counter(
 
 
 def update_resource_gauges(
-    *, rss_mb: float, cpu_percent: float, queue_depth: int, disk_percent: float = 0.0
+    *,
+    rss_mb: float,
+    cpu_percent: float,
+    queue_depth: int,
+    disk_percent: float = 0.0,
+    memory_percent: float = 0.0,
 ) -> None:
     """Refresh the resource-usage gauges from a live `ResourceMonitor` snapshot.
 
@@ -241,6 +252,7 @@ def update_resource_gauges(
     since Prometheus only needs the value at scrape time.
     """
     RESOURCE_MEMORY_RSS_MB.set(rss_mb)
+    RESOURCE_MEMORY_PERCENT.set(memory_percent)
     RESOURCE_CPU_PERCENT.set(cpu_percent)
     RESOURCE_QUEUE_DEPTH.set(queue_depth)
     RESOURCE_DISK_PERCENT.set(disk_percent)
