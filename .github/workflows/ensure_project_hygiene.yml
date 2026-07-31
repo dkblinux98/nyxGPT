@@ -54,6 +54,19 @@ jobs:
         run: |
           ISSUE=${{ github.event.issue.number }}
 
+          # Issues authored by the scrummaster agent come from
+          # create_issue.sh, which applies full hygiene (Status/Sprint/
+          # Module/Effort/Priority/Milestone) itself in the seconds after
+          # creation. Racing it here stamped defaults (current sprint,
+          # earliest milestone, Effort XS) over #3500's intended Phase 6
+          # fields on 2026-07-31 -- the Status check below ran before
+          # create_issue.sh's Status write landed. Skip them entirely.
+          if [[ "${{ github.event.issue.user.login }}" == "${{ vars.SCRUM_AGENT }}" ]]; then
+            echo "Issue #$ISSUE authored by scrummaster agent - create_issue.sh handles hygiene, skipping"
+            echo "needs_hygiene=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Check if issue already has Status set (web UI issues will)
           STATUS=$(gh issue view "$ISSUE" --json projectItems \
                    --jq '.projectItems[0].status.name // empty' \
