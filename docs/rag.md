@@ -788,9 +788,10 @@ The web UI includes a dedicated collections management page at `/admin/collectio
   default `rag_chunks` table -- see `max_collection_name_length()` in
   `vectorstore_cassandra.py`). The UI validates this client-side before
   submitting and surfaces the same rule as helper text.
-- **Clear collections** to remove all documents and chunks (with confirmation)
+- **Clear a collection** ("Clear Collection" button) to remove all of its documents and chunks, with a confirmation dialog that states exactly what's removed. The collection and its settings (embedding model, chunk size/overlap) are left in place, so you can start ingesting into it again immediately.
+- **Delete a collection** ("Delete Collection" button) to permanently remove it: its documents/chunks, its stored settings, and its backing Cassandra table. This requires typing the collection's name to confirm, since it cannot be undone -- once deleted, the collection must be re-created before it can be used again.
 - **Collection insights** showing which embedding models are active
-- **Protected default collection** cannot be cleared to prevent accidental data loss
+- **Protected default collection** cannot be cleared or deleted, to prevent accidental data loss -- chat and ingestion fall back to it by default
 
 **Use Cases:**
 - Monitor collection growth and usage
@@ -799,13 +800,15 @@ The web UI includes a dedicated collections management page at `/admin/collectio
 - Understand document distribution across collections
 
 **Note on collection lifecycle:**
-- **Creation**: Collections are created automatically when you ingest documents with specific embedding models using the CLI (see [Multiple Embedding Models](#multiple-embedding-models) above). No manual collection creation is needed.
-- **Deletion**: Collections can be cleared (truncated) via the UI, removing all documents and chunks while preserving the table structure. To fully drop a collection table, use Cassandra admin tools directly.
+- **Creation**: Collections are created automatically when you ingest documents with specific embedding models using the CLI (see [Multiple Embedding Models](#multiple-embedding-models) above), or manually via `POST /api/v1/rag/collections` / the "Create Collection" button in the UI.
+- **Clearing** (`POST /api/v1/rag/collections/{name}/clear`): truncates the collection's table, removing all documents and chunks while preserving the table structure and the collection's stored settings.
+- **Deletion** (`DELETE /api/v1/rag/collections/{name}`): drops the collection's table entirely and removes its stored settings. This is the only way to fully remove a collection; clearing does not do this.
 
 ### Collection Management API
 
 These endpoints back the collection management UI in the RAG dashboard
-and complement `GET /api/v1/rag/collections` / `DELETE
+and complement `GET /api/v1/rag/collections` / `POST
+/api/v1/rag/collections/{name}/clear` / `DELETE
 /api/v1/rag/collections/{name}` (documented in
 [`docs/api.md`](api.md#rag-endpoints)).
 

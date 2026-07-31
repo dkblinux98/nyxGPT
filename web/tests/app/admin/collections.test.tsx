@@ -132,12 +132,13 @@ describe('CollectionsPage', () => {
     expect(screen.getByText('nomic-embed-text')).toBeInTheDocument();
     expect(screen.getByText('mxbai-embed-large')).toBeInTheDocument();
 
-    // Default collection has no "Clear Collection" button
+    // Default collection has neither "Clear Collection" nor "Delete Collection" buttons
     const defaultCard = screen.getByText('default').closest('div')!.parentElement!.parentElement!;
     // Configured embedding model (distinct from "observed in chunks") is shown
     // even for a collection with zero chunks -- the regression this issue is about.
     expect(within(defaultCard).getByText('text-embedding-default')).toBeInTheDocument();
     expect(within(defaultCard).getByText('None')).toBeInTheDocument();
+    expect(within(defaultCard).getByText(/protected/i)).toBeInTheDocument();
 
     const notesCard = screen.getByText('notes').closest('div')!.parentElement!.parentElement!;
     // "notes" has no configured setting stored -- distinct from the "None"
@@ -145,9 +146,12 @@ describe('CollectionsPage', () => {
     expect(within(notesCard).getByText('Not configured')).toBeInTheDocument();
 
     expect(within(defaultCard).queryByRole('button', { name: /clear collection/i })).not.toBeInTheDocument();
+    expect(within(defaultCard).queryByRole('button', { name: /delete collection/i })).not.toBeInTheDocument();
+    expect(within(notesCard).getByRole('button', { name: /^clear collection$/i })).toBeInTheDocument();
+    expect(within(notesCard).getByRole('button', { name: /^delete collection$/i })).toBeInTheDocument();
   });
 
-  it('shows delete confirmation, allows cancelling, then walks every delete error branch before succeeding', async () => {
+  it('shows the clear confirmation dialog, allows cancelling, then walks every clear error branch before succeeding', async () => {
     mockCollections();
     const user = userEvent.setup();
 
@@ -157,14 +161,115 @@ describe('CollectionsPage', () => {
       expect(screen.getByText('notes')).toBeInTheDocument();
     });
 
-    await user.click(screen.getByRole('button', { name: /clear collection/i }));
-    expect(screen.getByText(/Are you sure you want to clear this collection/)).toBeInTheDocument();
-    expect(screen.getByText(/permanently delete all 3 documents and 20 chunks/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^clear collection$/i }));
+    expect(screen.getByText(/Remove all 3 documents and 20 chunks from 'notes'\?/)).toBeInTheDocument();
+    expect(screen.getByText(/collection and its settings.*remain/)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /cancel/i }));
-    expect(screen.queryByText(/Are you sure you want to clear this collection/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Remove all 3 documents and 20 chunks/)).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: /clear collection/i }));
+    await user.click(screen.getByRole('button', { name: /^clear collection$/i }));
+
+    // errorData.error.message branch (the real API error envelope shape --
+    // see http_exception_handler in src/nyxgpt/app.py)
+    server.use(
+      http.post('/api/v1/rag/collections/notes/clear', () =>
+        HttpResponse.json(
+          { error: { code: 'http_error', message: 'Collection is in use', details: null, request_id: 'req-1' } },
+          { status: 400 }
+        )
+      )
+    );
+    await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to clear collection: Collection is in use/)).toBeInTheDocument();
+    });
+
+    // errorData.error string branch (the Next.js proxy route's own catch-block
+    // shape, e.g. on a network failure between the proxy and the backend)
+    server.use(
+      http.post('/api/v1/rag/collections/notes/clear', () =>
+        HttpResponse.json({ error: 'Backend returned 502' }, { status: 502 })
+      )
+    );
+    await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to clear collection: Backend returned 502/)).toBeInTheDocument();
+    });
+
+    // errorData.detail branch (error absent)
+    server.use(
+      http.post('/api/v1/rag/collections/notes/clear', () =>
+        HttpResponse.json({ detail: 'referenced by an active session' }, { status: 400 })
+      )
+    );
+    await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to clear collection: referenced by an active session/)).toBeInTheDocument();
+    });
+
+    // HTTP status fallback branch (neither error nor detail present)
+    server.use(http.post('/api/v1/rag/collections/notes/clear', () => HttpResponse.json({}, { status: 500 })));
+    await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to clear collection: HTTP 500/)).toBeInTheDocument();
+    });
+
+    // Unparseable body branch (json() rejects, falls back to "Unknown error")
+    server.use(http.post('/api/v1/rag/collections/notes/clear', () => new HttpResponse(null, { status: 500 })));
+    await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to clear collection: Unknown error/)).toBeInTheDocument();
+    });
+
+    // Finally succeed -- the collection itself remains, only its documents/chunks are gone
+    server.use(
+      http.post('/api/v1/rag/collections/notes/clear', () =>
+        HttpResponse.json({ collection: 'notes', status: 'cleared', doc_count: 0, chunk_count: 0 })
+      ),
+      http.get('/api/v1/rag/collections', () =>
+        HttpResponse.json({
+          collections: [sampleCollections[0], { ...sampleCollections[1], doc_count: 0, chunk_count: 0 }],
+        })
+      )
+    );
+    await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Cleared 'notes': 0 documents \/ 0 chunks remain/)).toBeInTheDocument();
+    });
+    expect(screen.getByText('notes')).toBeInTheDocument();
+  });
+
+  it('shows the delete confirmation dialog with type-to-confirm, allows cancelling, then walks every delete error branch before succeeding', async () => {
+    mockCollections();
+    const user = userEvent.setup();
+
+    render(<CollectionsPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('notes')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: /^delete collection$/i }));
+    expect(screen.getByText(/Permanently delete 'notes'\?/)).toBeInTheDocument();
+    expect(screen.getByText(/every collection picker/)).toBeInTheDocument();
+
+    const confirmButton = screen.getByRole('button', { name: /yes, delete permanently/i });
+    expect(confirmButton).toBeDisabled();
+
+    const confirmInput = screen.getByLabelText(/type notes to confirm/i);
+    await user.type(confirmInput, 'wrong-name');
+    expect(confirmButton).toBeDisabled();
+
+    await user.clear(confirmInput);
+    await user.type(confirmInput, 'notes');
+    expect(confirmButton).toBeEnabled();
+
+    await user.click(screen.getByRole('button', { name: /cancel/i }));
+    expect(screen.queryByText(/Permanently delete 'notes'\?/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /^delete collection$/i }));
+    await user.type(screen.getByLabelText(/type notes to confirm/i), 'notes');
 
     // errorData.error.message branch (the real API error envelope shape --
     // see http_exception_handler in src/nyxgpt/app.py)
@@ -176,7 +281,7 @@ describe('CollectionsPage', () => {
         )
       )
     );
-    await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
+    await user.click(screen.getByRole('button', { name: /yes, delete permanently/i }));
     await waitFor(() => {
       expect(screen.getByText(/Failed to delete collection: Collection is in use/)).toBeInTheDocument();
     });
@@ -188,7 +293,7 @@ describe('CollectionsPage', () => {
         HttpResponse.json({ error: 'Backend returned 502' }, { status: 502 })
       )
     );
-    await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
+    await user.click(screen.getByRole('button', { name: /yes, delete permanently/i }));
     await waitFor(() => {
       expect(screen.getByText(/Failed to delete collection: Backend returned 502/)).toBeInTheDocument();
     });
@@ -199,34 +304,37 @@ describe('CollectionsPage', () => {
         HttpResponse.json({ detail: 'referenced by an active session' }, { status: 400 })
       )
     );
-    await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
+    await user.click(screen.getByRole('button', { name: /yes, delete permanently/i }));
     await waitFor(() => {
       expect(screen.getByText(/Failed to delete collection: referenced by an active session/)).toBeInTheDocument();
     });
 
     // HTTP status fallback branch (neither error nor detail present)
     server.use(http.delete('/api/v1/rag/collections/notes', () => HttpResponse.json({}, { status: 500 })));
-    await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
+    await user.click(screen.getByRole('button', { name: /yes, delete permanently/i }));
     await waitFor(() => {
       expect(screen.getByText(/Failed to delete collection: HTTP 500/)).toBeInTheDocument();
     });
 
     // Unparseable body branch (json() rejects, falls back to "Unknown error")
     server.use(http.delete('/api/v1/rag/collections/notes', () => new HttpResponse(null, { status: 500 })));
-    await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
+    await user.click(screen.getByRole('button', { name: /yes, delete permanently/i }));
     await waitFor(() => {
       expect(screen.getByText(/Failed to delete collection: Unknown error/)).toBeInTheDocument();
     });
 
-    // Finally succeed
+    // Finally succeed -- the collection disappears entirely
     server.use(
-      http.delete('/api/v1/rag/collections/notes', () => HttpResponse.json({ success: true })),
+      http.delete('/api/v1/rag/collections/notes', () =>
+        HttpResponse.json({ collection: 'notes', status: 'deleted' })
+      ),
       http.get('/api/v1/rag/collections', () => HttpResponse.json({ collections: [sampleCollections[0]] }))
     );
-    await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
+    await user.click(screen.getByRole('button', { name: /yes, delete permanently/i }));
     await waitFor(() => {
       expect(screen.queryByText('notes')).not.toBeInTheDocument();
     });
+    expect(screen.getByText(/permanently deleted/i)).toBeInTheDocument();
   });
 
   it('validates the create collection form, closes on idle overlay click, and is a no-op overlay click while creating', async () => {
@@ -682,10 +790,20 @@ describe('CollectionsPage', () => {
       expect(screen.getByText('notes')).toBeInTheDocument();
     });
 
-    // handleDeleteCollection
-    await user.click(screen.getByRole('button', { name: /clear collection/i }));
-    fetchSpy.mockImplementationOnce(() => Promise.reject('delete gremlin'));
+    // handleClearCollection
+    await user.click(screen.getByRole('button', { name: /^clear collection$/i }));
+    fetchSpy.mockImplementationOnce(() => Promise.reject('clear gremlin'));
     await user.click(screen.getByRole('button', { name: /yes, clear collection/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Failed to clear collection: clear gremlin')).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('button', { name: /cancel/i }));
+
+    // handleDeleteCollection
+    await user.click(screen.getByRole('button', { name: /^delete collection$/i }));
+    await user.type(screen.getByLabelText(/type notes to confirm/i), 'notes');
+    fetchSpy.mockImplementationOnce(() => Promise.reject('delete gremlin'));
+    await user.click(screen.getByRole('button', { name: /yes, delete permanently/i }));
     await waitFor(() => {
       expect(screen.getByText('Failed to delete collection: delete gremlin')).toBeInTheDocument();
     });

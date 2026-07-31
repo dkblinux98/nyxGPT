@@ -471,6 +471,15 @@ class CollectionDeleteResponse(BaseModel):
     status: str = Field(..., description="Deletion status message")
 
 
+class CollectionClearResponse(BaseModel):
+    """Response model for clearing a collection's documents."""
+
+    collection: str = Field(..., description="Name of cleared collection")
+    status: str = Field(..., description="Clear status message")
+    doc_count: int = Field(..., description="Number of documents remaining after clear (always 0)")
+    chunk_count: int = Field(..., description="Number of chunks remaining after clear (always 0)")
+
+
 class CreateCollectionRequest(BaseModel):
     """Request model for creating a new collection."""
 

@@ -1376,3 +1376,16 @@ class CassandraVectorStore:
             VALUES (%s, %s, %s, %s)
         """
         self.session.execute(query, [self.collection, embedding_model, chunk_size, chunk_overlap])
+
+    def delete_collection_settings(self) -> None:
+        """Remove any stored settings row for the current collection.
+
+        Safe to call even if no settings were ever saved for this collection.
+        """
+        self.ensure_settings_table()
+
+        query = f"""
+            DELETE FROM {self.cfg.keyspace}.collection_settings
+            WHERE collection_name = %s
+        """
+        self.session.execute(query, [self.collection])

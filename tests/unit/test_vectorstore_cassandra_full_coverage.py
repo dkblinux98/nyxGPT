@@ -15,7 +15,8 @@ test_cassandra_query_optimization.py:
   `InvalidRequest` errors
 - `delete_doc`, `truncate`, `drop_collection`, `list_collections`,
   `get_document_hash`, `get_document_info`, `document_needs_update`,
-  `get_all_chunks`, `get_collection_settings`, `update_collection_settings`
+  `get_all_chunks`, `get_collection_settings`, `update_collection_settings`,
+  `delete_collection_settings`
 
 The Cassandra driver is fully mocked throughout; no real cluster is used.
 """
@@ -727,3 +728,15 @@ def test_update_collection_settings_creates_table_and_inserts(monkeypatch):
     insert_call = mock_session.execute.call_args_list[-1]
     assert "INSERT INTO test_ks.collection_settings" in str(insert_call.args[0])
     assert insert_call.args[1] == ["default", "nomic", 512, 64]
+
+
+@pytest.mark.unit
+def test_delete_collection_settings_creates_table_and_deletes(monkeypatch):
+    store, mock_session = _make_store(monkeypatch)
+    mock_session.execute.return_value = Mock()
+
+    store.delete_collection_settings()
+
+    delete_call = mock_session.execute.call_args_list[-1]
+    assert "DELETE FROM test_ks.collection_settings" in str(delete_call.args[0])
+    assert delete_call.args[1] == ["default"]

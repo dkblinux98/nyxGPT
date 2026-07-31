@@ -1,6 +1,6 @@
 """Unit tests for the RAG collection administration endpoints in app.py.
 
-Covers list/create/delete/reindex/get-settings/update-settings for named RAG
+Covers list/create/clear/delete/reindex/get-settings/update-settings for named RAG
 collections (`/api/v1/rag/collections*`), which are all backed by
 `nyxgpt.rag.vectorstore_cassandra.CassandraVectorStore`. The handlers do a
 lazy `from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore`
@@ -331,6 +331,77 @@ def test_create_collection_generic_error_returns_500(monkeypatch: pytest.MonkeyP
 
 
 # ----------------------------
+# POST /rag/collections/{name}/clear
+# ----------------------------
+
+
+def test_clear_collection_rejects_default() -> None:
+    with _client() as client:
+        resp = client.post("/api/v1/rag/collections/default/clear")
+
+    assert resp.status_code == 400
+    assert "protected" in resp.json()["error"]["message"]
+
+
+def test_clear_collection_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = Mock()
+    store.list_collections.return_value = []
+    _patch_store(monkeypatch, lambda _collection: store)
+
+    with _client() as client:
+        resp = client.post("/api/v1/rag/collections/missing/clear")
+
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["error"]["message"]
+    store.close.assert_called_once()
+
+
+def test_clear_collection_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = Mock()
+    store.list_collections.return_value = ["mycoll"]
+    _patch_store(monkeypatch, lambda _collection: store)
+
+    with _client() as client:
+        resp = client.post("/api/v1/rag/collections/mycoll/clear")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["collection"] == "mycoll"
+    assert body["doc_count"] == 0
+    assert body["chunk_count"] == 0
+    store.truncate.assert_called_once()
+    store.close.assert_called_once()
+
+
+def test_clear_collection_import_error_returns_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = Mock()
+    store.list_collections.return_value = ["mycoll"]
+    store.truncate.side_effect = ImportError("cassandra-driver not installed")
+    _patch_store(monkeypatch, lambda _collection: store)
+
+    with _client() as client:
+        resp = client.post("/api/v1/rag/collections/mycoll/clear")
+
+    assert resp.status_code == 503
+    assert "Cassandra driver not found" in resp.json()["error"]["message"]
+    store.close.assert_called_once()
+
+
+def test_clear_collection_generic_error_returns_500(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = Mock()
+    store.list_collections.return_value = ["mycoll"]
+    store.truncate.side_effect = RuntimeError("truncate boom")
+    _patch_store(monkeypatch, lambda _collection: store)
+
+    with _client() as client:
+        resp = client.post("/api/v1/rag/collections/mycoll/clear")
+
+    assert resp.status_code == 500
+    assert "Failed to clear collection" in resp.json()["error"]["message"]
+    store.close.assert_called_once()
+
+
+# ----------------------------
 # DELETE /rag/collections/{name}
 # ----------------------------
 
@@ -343,8 +414,22 @@ def test_delete_collection_rejects_default() -> None:
     assert "protected" in resp.json()["error"]["message"]
 
 
+def test_delete_collection_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = Mock()
+    store.list_collections.return_value = []
+    _patch_store(monkeypatch, lambda _collection: store)
+
+    with _client() as client:
+        resp = client.delete("/api/v1/rag/collections/missing")
+
+    assert resp.status_code == 404
+    assert "not found" in resp.json()["error"]["message"]
+    store.close.assert_called_once()
+
+
 def test_delete_collection_success(monkeypatch: pytest.MonkeyPatch) -> None:
     store = Mock()
+    store.list_collections.return_value = ["mycoll"]
     _patch_store(monkeypatch, lambda _collection: store)
 
     with _client() as client:
@@ -352,13 +437,15 @@ def test_delete_collection_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert resp.status_code == 200
     assert resp.json()["collection"] == "mycoll"
-    store.truncate.assert_called_once()
+    store.drop_collection.assert_called_once()
+    store.delete_collection_settings.assert_called_once()
     store.close.assert_called_once()
 
 
 def test_delete_collection_import_error_returns_503(monkeypatch: pytest.MonkeyPatch) -> None:
     store = Mock()
-    store.truncate.side_effect = ImportError("cassandra-driver not installed")
+    store.list_collections.return_value = ["mycoll"]
+    store.drop_collection.side_effect = ImportError("cassandra-driver not installed")
     _patch_store(monkeypatch, lambda _collection: store)
 
     with _client() as client:
@@ -371,14 +458,15 @@ def test_delete_collection_import_error_returns_503(monkeypatch: pytest.MonkeyPa
 
 def test_delete_collection_generic_error_returns_500(monkeypatch: pytest.MonkeyPatch) -> None:
     store = Mock()
-    store.truncate.side_effect = RuntimeError("truncate boom")
+    store.list_collections.return_value = ["mycoll"]
+    store.drop_collection.side_effect = RuntimeError("drop boom")
     _patch_store(monkeypatch, lambda _collection: store)
 
     with _client() as client:
         resp = client.delete("/api/v1/rag/collections/mycoll")
 
     assert resp.status_code == 500
-    assert "Failed to clear collection" in resp.json()["error"]["message"]
+    assert "Failed to delete collection" in resp.json()["error"]["message"]
     store.close.assert_called_once()
 
 

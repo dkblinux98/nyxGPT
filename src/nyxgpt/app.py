@@ -62,6 +62,7 @@ from nyxgpt.api_models import (
     AttachDocumentRequest,
     ChatRequest,
     ChatResponse,
+    CollectionClearResponse,
     CollectionDeleteResponse,
     CollectionInfo,
     CollectionSettings,
@@ -3718,19 +3719,21 @@ def rag_collection_create(
         store.close()
 
 
-@api.delete("/rag/collections/{collection_name}", response_model=CollectionDeleteResponse)
-def rag_collection_delete(_request: Request, collection_name: str) -> CollectionDeleteResponse:
-    """Delete a RAG collection (truncates all data in the collection).
+@api.post("/rag/collections/{collection_name}/clear", response_model=CollectionClearResponse)
+def rag_collection_clear(_request: Request, collection_name: str) -> CollectionClearResponse:
+    """Clear all documents and chunks from a RAG collection.
 
-    WARNING: This operation cannot be undone. All documents and chunks in the
-    collection will be permanently deleted.
+    This removes every document/chunk from the collection's vector table via
+    a Cassandra `TRUNCATE`. The collection itself and its stored settings
+    (embedding model, chunk size/overlap) are left in place -- only its
+    contents are removed. This operation cannot be undone.
 
-    Note: This does not drop the Cassandra table, only truncates it.
-    To fully remove the table, use Cassandra admin tools.
+    To remove the collection entirely (data, settings, and the backing
+    Cassandra table), use `DELETE /rag/collections/{collection_name}`.
     """
     from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
 
-    # Prevent deletion of default collection via more descriptive error
+    # Prevent clearing the default collection via a more descriptive error
     if collection_name == "default":
         raise HTTPException(
             status_code=400,
@@ -3739,17 +3742,31 @@ def rag_collection_delete(_request: Request, collection_name: str) -> Collection
 
     store = CassandraVectorStore(collection=collection_name)
     try:
-        # Truncate the collection (remove all data)
+        existing_collections = store.list_collections()
+        if collection_name not in existing_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{collection_name}' not found.",
+            )
+
+        # Truncate the collection (remove all data, keep the collection/settings)
         store.truncate()
 
         # Invalidate query result cache: the document set changed, so any
         # cached retrieval results may now be stale.
         clear_query_cache()
 
-        return CollectionDeleteResponse(
+        return CollectionClearResponse(
             collection=collection_name,
-            status=f"Collection '{collection_name}' has been cleared (truncated)",
+            status=(
+                f"Collection '{collection_name}' has been cleared. All documents and "
+                "chunks were removed; the collection and its settings remain."
+            ),
+            doc_count=0,
+            chunk_count=0,
         )
+    except HTTPException:
+        raise
     except ImportError as e:
         # Cassandra driver not available
         log.error(f"Cassandra driver import error: {e}", exc_info=True)
@@ -3760,6 +3777,70 @@ def rag_collection_delete(_request: Request, collection_name: str) -> Collection
         # Catch database errors and other issues
         log.error(f"Failed to clear collection '{collection_name}': {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to clear collection: {str(e)}") from e
+    finally:
+        store.close()
+
+
+@api.delete("/rag/collections/{collection_name}", response_model=CollectionDeleteResponse)
+def rag_collection_delete(_request: Request, collection_name: str) -> CollectionDeleteResponse:
+    """Permanently delete a RAG collection.
+
+    Removes the collection's backing Cassandra table (all documents and
+    chunks) along with its stored settings/metadata. This cannot be undone.
+
+    The 'default' collection cannot be deleted: chat and ingestion fall back
+    to it by default. To empty a collection's documents while keeping the
+    collection and its settings, use
+    `POST /rag/collections/{collection_name}/clear` instead.
+    """
+    from nyxgpt.rag.vectorstore_cassandra import CassandraVectorStore
+
+    # Prevent deletion of the default collection via a more descriptive error
+    if collection_name == "default":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Cannot delete the 'default' collection. It is protected because chat "
+                "and ingestion fall back to it by default."
+            ),
+        )
+
+    store = CassandraVectorStore(collection=collection_name)
+    try:
+        existing_collections = store.list_collections()
+        if collection_name not in existing_collections:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Collection '{collection_name}' not found.",
+            )
+
+        # Drop the backing table and remove any stored settings/metadata.
+        store.drop_collection()
+        store.delete_collection_settings()
+
+        # Invalidate query result cache: the collection no longer exists, so
+        # any cached retrieval results referencing it may now be stale.
+        clear_query_cache()
+
+        return CollectionDeleteResponse(
+            collection=collection_name,
+            status=f"Collection '{collection_name}' has been permanently deleted.",
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        # drop_collection() also guards against dropping the default collection
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except ImportError as e:
+        # Cassandra driver not available
+        log.error(f"Cassandra driver import error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=503, detail="RAG service unavailable: Cassandra driver not found"
+        ) from e
+    except Exception as e:
+        # Catch database errors and other issues
+        log.error(f"Failed to delete collection '{collection_name}': {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to delete collection: {str(e)}") from e
     finally:
         store.close()
 
