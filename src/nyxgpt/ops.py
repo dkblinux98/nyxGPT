@@ -717,7 +717,7 @@ def _install_cassandra_launchagent() -> list[OpsResult]:
     label = "com.nyxgpt.cassandra-logs"
     domain = f"gui/{os.getuid()}"
 
-    _run(["launchctl", "bootout", domain, str(dst)], check=False)
+    _run(["launchctl", "bootout", domain, str(dst)], check=False, expected=True)
     _run(["launchctl", "bootstrap", domain, str(dst)], check=False)
     _run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=False)
 
@@ -753,7 +753,7 @@ def _install_ollama_launchagent() -> list[OpsResult]:
     label = "com.nyxgpt.ollama-logs"
     domain = f"gui/{os.getuid()}"
 
-    _run(["launchctl", "bootout", domain, str(dst)], check=False)
+    _run(["launchctl", "bootout", domain, str(dst)], check=False, expected=True)
     _run(["launchctl", "bootstrap", domain, str(dst)], check=False)
     _run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=False)
 
@@ -788,7 +788,7 @@ def _install_ollama_env_launchagent() -> list[OpsResult]:
     label = "com.nyxgpt.ollama-env"
     domain = f"gui/{os.getuid()}"
 
-    _run(["launchctl", "bootout", domain, str(dst)], check=False)
+    _run(["launchctl", "bootout", domain, str(dst)], check=False, expected=True)
     _run(["launchctl", "bootstrap", domain, str(dst)], check=False)
     _run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=False)
 
@@ -1891,7 +1891,7 @@ def _migrate_docker_volume_to_bind_dir(
             _cp_details(cp),
         )
 
-    rm = _run(["docker", "volume", "rm", volume_name], check=False)
+    rm = _run(["docker", "volume", "rm", volume_name], check=False, expected=True)
     if rm.returncode == 0:
         return OpsResult(
             True,
@@ -3797,7 +3797,7 @@ def _stop_launchagent(label: str) -> list[OpsResult]:
     """
     domain = f"gui/{os.getuid()}/{label}"
     try:
-        cp = _run(["launchctl", "bootout", domain], check=False)
+        cp = _run(["launchctl", "bootout", domain], check=False, expected=True)
         details = (cp.stdout or "").strip() + (
             "\n" + (cp.stderr or "").strip() if (cp.stderr or "").strip() else ""
         )
