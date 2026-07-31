@@ -21,6 +21,7 @@ type DependencyCheck = {
 type ResourceMetricsSummary = {
   memory: { rss_mb: number; percent: number };
   cpu: { process_percent: number };
+  disk: { percent: number };
   queue: { depth: number };
   errors: { rate_percent: number };
 } | null;
@@ -28,6 +29,7 @@ type ResourceMetricsSummary = {
 type Alert = {
   severity: 'warning' | 'critical';
   message: string;
+  source: 'grafana' | 'local';
 };
 
 type HealthData = {
@@ -35,6 +37,7 @@ type HealthData = {
   dependencies: DependencyCheck[];
   resource_metrics: ResourceMetricsSummary;
   alerts: Alert[];
+  alerts_source: 'grafana' | 'local';
 };
 
 const cardStyle: React.CSSProperties = {
@@ -204,6 +207,9 @@ export default function AdminHealthPage() {
                       CPU: <strong>{h.resource_metrics.cpu.process_percent.toFixed(1)}%</strong>
                     </div>
                     <div>
+                      Disk: <strong>{h.resource_metrics.disk.percent.toFixed(1)}%</strong>
+                    </div>
+                    <div>
                       Queue depth: <strong>{h.resource_metrics.queue.depth}</strong>
                     </div>
                     <div>
@@ -221,6 +227,11 @@ export default function AdminHealthPage() {
               {/* Alert Indicators */}
               <section style={cardStyle} aria-label="Alert indicators">
                 <h2 style={sectionTitleStyle}>Alerts</h2>
+                <p style={{ margin: '-0.5rem 0 1rem', fontSize: 12, color: 'var(--muted-foreground)' }}>
+                  {h.alerts_source === 'grafana'
+                    ? 'Live from Grafana alerting -- the source of truth.'
+                    : 'Local estimate (Grafana monitoring is disabled or unreachable).'}
+                </p>
                 {h.alerts.length === 0 ? (
                   <p style={{ color: 'var(--muted-foreground)', fontSize: 14 }}>No active alerts.</p>
                 ) : (

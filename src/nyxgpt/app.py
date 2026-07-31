@@ -1700,16 +1700,18 @@ def admin_health(request: Request) -> dict[str, Any]:
         health_module.check_cassandra(rag_enabled),
     ]
     grafana_alerts = health_module.fetch_grafana_alerts(cfg)
-    alerts = (
-        grafana_alerts
-        if grafana_alerts is not None
-        else health_module.compute_alerts(resource_metrics_summary, dependencies)
-    )
+    if grafana_alerts is not None:
+        alerts = grafana_alerts
+        alerts_source = "grafana"
+    else:
+        alerts = health_module.compute_alerts(resource_metrics_summary, dependencies)
+        alerts_source = "local"
 
     return {
         "service": {"status": "ok", "uptime_s": round(health_module.uptime_seconds(), 1)},
         "dependencies": [d.to_dict() for d in dependencies],
         "resource_metrics": resource_metrics_summary,
+        "alerts_source": alerts_source,
         "alerts": [a.to_dict() for a in alerts],
     }
 
