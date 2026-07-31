@@ -78,7 +78,7 @@ def test_check_cassandra_fails_when_connection_raises():
 def test_compute_alerts_empty_when_healthy():
     metrics = {
         "memory": {"percent": 10.0},
-        "cpu": {"process_percent": 5.0},
+        "cpu": {"process_percent": 5.0, "system_percent": 12.0},
         "errors": {"rate_percent": 0.0},
     }
     alerts = health.compute_alerts(metrics, [])
@@ -89,7 +89,7 @@ def test_compute_alerts_empty_when_healthy():
 def test_compute_alerts_warns_on_elevated_memory():
     metrics = {
         "memory": {"percent": 80.0},
-        "cpu": {"process_percent": 5.0},
+        "cpu": {"process_percent": 5.0, "system_percent": 12.0},
         "errors": {"rate_percent": 0.0},
     }
     alerts = health.compute_alerts(metrics, [])
@@ -102,13 +102,78 @@ def test_compute_alerts_warns_on_elevated_memory():
 def test_compute_alerts_critical_on_exhausted_memory():
     metrics = {
         "memory": {"percent": 95.0},
-        "cpu": {"process_percent": 5.0},
+        "cpu": {"process_percent": 5.0, "system_percent": 12.0},
         "errors": {"rate_percent": 0.0},
     }
     alerts = health.compute_alerts(metrics, [])
 
     assert len(alerts) == 1
     assert alerts[0].severity == "critical"
+
+
+def test_compute_alerts_uses_normalized_system_cpu_not_process_cpu():
+    """Regression test for #3465: a multi-threaded process's own CPU usage
+    (`cpu.process_percent`) is not normalized by core count and can read
+    >100% on an idle multi-core machine. The alert must key off the
+    system-wide, core-normalized `cpu.system_percent` instead -- the same
+    field the Resource Metrics history panel already renders correctly.
+    """
+    metrics = {
+        "memory": {"percent": 10.0},
+        "cpu": {"process_percent": 108.0, "system_percent": 12.0},
+        "errors": {"rate_percent": 0.0},
+    }
+    alerts = health.compute_alerts(metrics, [])
+
+    assert alerts == []
+
+
+def test_compute_alerts_warns_on_elevated_system_cpu():
+    metrics = {
+        "memory": {"percent": 10.0},
+        "cpu": {"process_percent": 5.0, "system_percent": 85.0},
+        "errors": {"rate_percent": 0.0},
+    }
+    alerts = health.compute_alerts(metrics, [])
+
+    assert len(alerts) == 1
+    assert alerts[0].severity == "warning"
+    assert "CPU usage" in alerts[0].message
+
+
+def test_compute_alerts_critical_on_high_system_cpu():
+    metrics = {
+        "memory": {"percent": 10.0},
+        "cpu": {"process_percent": 5.0, "system_percent": 97.0},
+        "errors": {"rate_percent": 0.0},
+    }
+    alerts = health.compute_alerts(metrics, [])
+
+    assert len(alerts) == 1
+    assert alerts[0].severity == "critical"
+    assert "CPU usage" in alerts[0].message
+
+
+def test_compute_alerts_cpu_clears_when_system_percent_drops_below_threshold():
+    high = health.compute_alerts(
+        {
+            "memory": {"percent": 10.0},
+            "cpu": {"process_percent": 5.0, "system_percent": 97.0},
+            "errors": {"rate_percent": 0.0},
+        },
+        [],
+    )
+    low = health.compute_alerts(
+        {
+            "memory": {"percent": 10.0},
+            "cpu": {"process_percent": 5.0, "system_percent": 12.0},
+            "errors": {"rate_percent": 0.0},
+        },
+        [],
+    )
+
+    assert any(a.severity == "critical" and "CPU usage" in a.message for a in high)
+    assert not any("CPU usage" in a.message for a in low)
 
 
 def test_compute_alerts_includes_unreachable_dependency():
